@@ -1,0 +1,49 @@
+name: Auto Acknowledge GH Issues
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  acknowledge:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Wait 15 minutes
+      - name: Wait 15 minutes
+        run: sleep 10
+
+      # Step 2: Check if a maintainer already responded
+      - name: Check for existing maintainer response
+        id: check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const maintainers = ['sumitmsft','dlevy-msft-sql']; 
+
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+
+            const maintainerReplied = comments.data.some(
+              comment => maintainers.includes(comment.user.login)
+            );
+
+            core.setOutput('skip', maintainerReplied.toString());
+            console.log(`Maintainer already replied: ${maintainerReplied}`);
+
+      # Step 3: Post acknowledgement ONLY if no maintainer has responded
+      - name: Post acknowledgement comment
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SUMIT_PAT_FOR_AUTO_RESPONSE }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Hi @${context.payload.issue.user.login}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours and get back to you.\n\nThank you for your patience!`
+            });
