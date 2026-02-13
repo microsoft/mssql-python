@@ -5,31 +5,34 @@ on:
     types: [opened]
 
 permissions:
-  contents: read
+  issues: read
   issues: write
+
 jobs:
   acknowledge:
     runs-on: ubuntu-latest
     permissions:
       issues: read
     steps:
-      # Step 1: Wait 15 minutes
       - name: Wait 15 minutes
-        run: sleep 10
+        run: sleep 30
 
-      # Step 2: Check if a maintainer already responded
       - name: Check for existing maintainer response
         id: check
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const maintainers = ['sumitmsft','dlevy-msft-sql']; 
+            const maintainers = ['sumitmsft'];
+
+            const issueNumber = context.payload.inputs?.issue_number
+              ? parseInt(context.payload.inputs.issue_number)
+              : context.payload.issue.number;
 
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.issue.number
+              issue_number: issueNumber
             });
 
             const maintainerReplied = comments.data.some(
@@ -37,18 +40,29 @@ jobs:
             );
 
             core.setOutput('skip', maintainerReplied.toString());
+            core.setOutput('issue_number', issueNumber.toString());
             console.log(`Maintainer already replied: ${maintainerReplied}`);
 
-      # Step 3: Post acknowledgement ONLY if no maintainer has responded
+      # Generate a short-lived token from the GitHub App
+      - name: Generate App Token
+        if: steps.check.outputs.skip == 'false'
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Post acknowledgement comment
         if: steps.check.outputs.skip == 'false'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.SUMIT_PAT_FOR_AUTO_RESPONSE }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
+            const issueNumber = parseInt('${{ steps.check.outputs.issue_number }}');
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              body: `Hi @${context.payload.issue.user.login}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours and get back to you.\n\nThank you for your patience!`
+              issue_number: issueNumber,
+              body: `Hi @${context.payload.issue?.user?.login || 'there'}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours.\n\nThank you for your patience!`
             });
