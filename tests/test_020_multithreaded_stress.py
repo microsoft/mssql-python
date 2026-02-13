@@ -28,7 +28,6 @@ import traceback
 import mssql_python
 from mssql_python import connect
 
-
 # ============================================================================
 # Data Classes for Test Results
 # ============================================================================
@@ -503,15 +502,13 @@ def test_50_threads_data_integrity(stress_conn_str):
             table_name = f"#stress_t{thread_id}"
             drop_table_if_exists(cursor, table_name)
 
-            cursor.execute(
-                f"""
+            cursor.execute(f"""
                 CREATE TABLE {table_name} (
                     id INT PRIMARY KEY,
                     thread_id INT,
                     data NVARCHAR(100)
                 )
-            """
-            )
+            """)
             conn.commit()
 
             # Perform iterations

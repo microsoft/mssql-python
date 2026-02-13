@@ -160,11 +160,11 @@ jobs:
   # Run original stress tests
   - powershell: |
       $env:DB_CONNECTION_STRING = 'Server=(localdb)\MSSQLLocalDB;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-      python -m pytest tests/test_011_performance_stress.py -v -m "stress" --junitxml=perf-stress-test-results.xml --timeout=1800 --capture=tee-sys
+      python -m pytest tests/test_011_singlethreaded_stress.py -v -m "stress" --junitxml=perf-stress-test-results.xml --timeout=1800 --capture=tee-sys
       $exitCode = $LASTEXITCODE
       Write-Host "Pytest exit code: $exitCode"
       exit $exitCode
-    displayName: 'Run Performance Stress Tests'
+    displayName: 'Run Single-Threaded Stress Tests'
     continueOnError: true
 
   # Publish test results
@@ -359,8 +359,8 @@ jobs:
 
   # Run original stress tests
   - script: |
-      python -m pytest tests/test_011_performance_stress.py -v -m "stress" --junitxml=perf-stress-test-results-linux.xml --timeout=1800 --capture=tee-sys
-    displayName: 'Run Performance Stress Tests'
+      python -m pytest tests/test_011_singlethreaded_stress.py -v -m "stress" --junitxml=perf-stress-test-results-linux.xml --timeout=1800 --capture=tee-sys
+    displayName: 'Run Single-Threaded Stress Tests'
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
     continueOnError: true
@@ -408,7 +408,7 @@ jobs:
       echo ""
       echo "Tests executed:"
       echo "  - test_020_multithreaded_stress.py (stress_threading marker)"
-      echo "  - test_011_performance_stress.py (stress marker)"
+      echo "  - test_011_singlethreaded_stress.py (stress marker)"
       echo ""
       echo "See individual job results for details."
     displayName: 'Print Summary'
