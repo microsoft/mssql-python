@@ -99,9 +99,9 @@ extends:
             pool:
               type: windows
               isCustom: true
-              name: Django-1ES-pool
+              name: Python-1ES-pool
               demands:
-              - imageOverride -equals WIN22-SQL22
+              - imageOverride -equals PYTHON-1ES-MMS2022
             
             variables:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
