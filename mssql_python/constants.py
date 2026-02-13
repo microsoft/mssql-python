@@ -115,6 +115,8 @@ class ConstantsDDBC(Enum):
     SQL_FETCH_RELATIVE = 6
     SQL_FETCH_BOOKMARK = 8
     SQL_DATETIMEOFFSET = -155
+    SQL_SS_TIME2 = -154
+    SQL_SS_XML = -152
     SQL_C_SS_TIMESTAMPOFFSET = 0x4001
     SQL_SCOPE_CURROW = 0
     SQL_BEST_ROWID = 1
@@ -365,6 +367,12 @@ class SQLTypes:
             ConstantsDDBC.SQL_DATE.value,
             ConstantsDDBC.SQL_TIME.value,
             ConstantsDDBC.SQL_TIMESTAMP.value,
+            ConstantsDDBC.SQL_TYPE_DATE.value,
+            ConstantsDDBC.SQL_TYPE_TIME.value,
+            ConstantsDDBC.SQL_TYPE_TIMESTAMP.value,
+            ConstantsDDBC.SQL_SS_TIME2.value,
+            ConstantsDDBC.SQL_DATETIMEOFFSET.value,
+            ConstantsDDBC.SQL_SS_XML.value,
             ConstantsDDBC.SQL_GUID.value,
         }
 
