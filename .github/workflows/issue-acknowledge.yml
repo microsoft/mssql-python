@@ -7,6 +7,8 @@ on:
 jobs:
   acknowledge:
     runs-on: ubuntu-latest
+    permissions:
+      issues: read
     steps:
       # Step 1: Wait 15 minutes
       - name: Wait 15 minutes
