@@ -1,0 +1,414 @@
+name: stress-test-pipeline
+
+# This pipeline runs stress tests for the mssql-python driver
+# Triggered manually or on a schedule (not on every PR)
+trigger: none
+
+schedules:
+- cron: "30 21 * * *"  # Run daily at 9:30 PM UTC (03:00 AM IST)
+  displayName: Daily Stress Test
+  branches:
+    include:
+    - main
+  always: true
+
+# Allow manual triggering
+pr: none
+
+# Resource reference to Build-Release-Package-Pipeline for downloading artifacts
+resources:
+  repositories:
+    - repository: self
+      type: git
+      name: 'mssql-python/mssql-python'
+      ref: 'refs/heads/main'
+  pipelines:
+    - pipeline: buildPipeline
+      source: 'Build-Release-Package-Pipeline'  # Name of the build pipeline
+      trigger: none  # Don't auto-trigger, we run on schedule or manually
+
+variables:
+  # Common variables
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - name: pythonVersion
+    value: '3.12'
+  - name: shortPyVer
+    value: '312'
+
+jobs:
+# ============================================================================
+# Windows Stress Tests with SQL Server 2022 (pre-installed on 1ES pool)
+# ============================================================================
+- job: StressTestWindows
+  displayName: 'Windows Stress Tests - SQL Server 2022'
+  # Use custom 1ES pool with Windows Server 2022 + SQL Server 2022 pre-installed
+  pool:
+    name: Python-1ES-pool
+    demands:
+    - imageOverride -equals PYTHON-1ES-MMS2022
+  timeoutInMinutes: 180  # 3 hours for stress tests
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '$(pythonVersion)'
+      architecture: 'x64'
+      addToPath: true
+    displayName: 'Use Python $(pythonVersion)'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install psutil pytest-timeout
+    displayName: 'Install dependencies'
+
+  # Download pre-built wheel from build-whl-pipeline instead of building from source
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: 2162  # build-whl-pipeline definition ID
+      buildVersionToDownload: 'latest'
+      branchName: 'refs/heads/main'
+      artifactName: 'mssql-python-wheels-dist'
+      targetPath: '$(Build.SourcesDirectory)\wheels'
+    displayName: 'Download pre-built wheel from build-whl-pipeline'
+
+  # Install the pre-built wheel
+  - script: |
+      echo "Installing pre-built wheel..."
+      dir "$(Build.SourcesDirectory)\wheels"
+      pip install --find-links=$(Build.SourcesDirectory)\wheels mssql-python --force-reinstall
+    displayName: 'Install pre-built mssql-python wheel'
+
+  # Rename local source folder to avoid import conflicts with installed wheel
+  - powershell: |
+      Write-Host "Renaming local mssql_python folder to avoid import conflicts..."
+      if (Test-Path "$(Build.SourcesDirectory)\mssql_python") {
+        Rename-Item -Path "$(Build.SourcesDirectory)\mssql_python" -NewName "mssql_python_src" -Force
+        Write-Host "Renamed mssql_python to mssql_python_src"
+      }
+      # Verify import from installed wheel
+      python -c "import mssql_python; print('Imported from:', mssql_python.__file__)"
+    displayName: 'Ensure tests use installed wheel'
+
+  # PYTHON-1ES-MMS2022 has LocalDB pre-installed (no full SQL Server instance)
+  - powershell: |
+      Write-Host "Setting up LocalDB for stress tests..."
+      sqllocaldb create MSSQLLocalDB
+      sqllocaldb start MSSQLLocalDB
+      sqllocaldb info MSSQLLocalDB
+    displayName: 'Start LocalDB instance'
+
+  - powershell: |
+      Write-Host "Creating database and user for stress tests..."
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE StressTestDB"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$env:DB_PASSWORD'"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+      Write-Host "Database setup completed"
+    displayName: 'Setup database and user'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Run multi-threaded stress tests in an isolated subprocess.
+  - powershell: |
+      $env:DB_CONNECTION_STRING = 'Server=(localdb)\MSSQLLocalDB;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      Write-Host "Starting stress tests..."
+
+      $xmlFile = "stress-test-results.xml"
+      $gracePeriod = 30
+      $arguments = "-m pytest tests/test_020_multithreaded_stress.py -v -m stress_threading --junitxml=$xmlFile --timeout=3600 --capture=tee-sys"
+      $process = Start-Process -FilePath "python" -ArgumentList $arguments -NoNewWindow -PassThru
+
+      # Poll: wait for process to exit or XML file to appear
+      $xmlSeenAt = $null
+      while (-not $process.HasExited) {
+        if ($null -eq $xmlSeenAt -and (Test-Path $xmlFile)) {
+          $xmlSeenAt = Get-Date
+          Write-Host "XML file detected, giving ${gracePeriod}s for clean shutdown..."
+        }
+        if ($null -ne $xmlSeenAt -and ((Get-Date) - $xmlSeenAt).TotalSeconds -gt $gracePeriod) {
+          Write-Host "Process still running after grace period, killing..."
+          $process | Stop-Process -Force
+          break
+        }
+        Start-Sleep -Seconds 1
+      }
+
+      $exitCode = $process.ExitCode
+      Write-Host "Process exit code: $exitCode"
+
+      # Check JUnit XML for actual test results
+      if (Test-Path $xmlFile) {
+        [xml]$xml = Get-Content $xmlFile
+        $tests = [int]$xml.testsuites.testsuite.tests
+        $failures = [int]$xml.testsuites.testsuite.failures
+        $errors = [int]$xml.testsuites.testsuite.errors
+        Write-Host "XML: $tests tests, $failures failures, $errors errors"
+        if ($tests -gt 0 -and $failures -eq 0 -and $errors -eq 0) {
+          Write-Host "All tests passed!"
+          exit 0
+        }
+      }
+      Write-Host "Test failures detected or XML not found"
+      exit 1
+    displayName: 'Run Multi-Threaded Stress Tests'
+    continueOnError: true
+
+
+  # Run original stress tests
+  - powershell: |
+      $env:DB_CONNECTION_STRING = 'Server=(localdb)\MSSQLLocalDB;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      python -m pytest tests/test_011_performance_stress.py -v -m "stress" --junitxml=perf-stress-test-results.xml --timeout=1800 --capture=tee-sys
+      $exitCode = $LASTEXITCODE
+      Write-Host "Pytest exit code: $exitCode"
+      exit $exitCode
+    displayName: 'Run Performance Stress Tests'
+    continueOnError: true
+
+  # Publish test results
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/stress-test-results.xml'
+      mergeTestResults: true
+      testRunTitle: 'Windows Stress Test Results'
+    condition: always()
+    displayName: 'Publish Stress Test Results'
+
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/perf-stress-test-results.xml'
+      mergeTestResults: true
+      testRunTitle: 'Windows Performance Stress Test Results'
+    condition: always()
+    displayName: 'Publish Performance Stress Test Results'
+
+# ============================================================================
+# Linux Stress Tests with SQL Server 2022 (pre-installed on 1ES pool)
+# ============================================================================
+- job: StressTestLinux
+  displayName: 'Linux Stress Tests - SQL Server 2022'
+  # Use custom 1ES pool with Ubuntu 24.04 + Docker pre-installed
+  pool:
+    name: Python-1ES-pool
+    demands:
+    - imageOverride -equals PYTHON-1ES-UB2404
+  timeoutInMinutes: 180
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '$(pythonVersion)'
+      addToPath: true
+    displayName: 'Use Python $(pythonVersion)'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install psutil pytest-timeout
+    displayName: 'Install Python dependencies'
+
+  # Download pre-built wheel from build-whl-pipeline instead of building from source
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: 2162  # build-whl-pipeline definition ID
+      buildVersionToDownload: 'latest'
+      branchName: 'refs/heads/main'
+      artifactName: 'mssql-python-wheels-dist'
+      targetPath: '$(Build.SourcesDirectory)/wheels'
+    displayName: 'Download pre-built wheel from build-whl-pipeline'
+
+  # Install the pre-built wheel
+  - script: |
+      echo "Installing pre-built wheel..."
+      ls -la "$(Build.SourcesDirectory)/wheels"
+      pip install --find-links=$(Build.SourcesDirectory)/wheels mssql-python --force-reinstall
+    displayName: 'Install pre-built mssql-python wheel'
+
+  # Rename local source folder to avoid import conflicts with installed wheel
+  - script: |
+      echo "Renaming local mssql_python folder to avoid import conflicts..."
+      if [ -d "$(Build.SourcesDirectory)/mssql_python" ]; then
+        mv "$(Build.SourcesDirectory)/mssql_python" "$(Build.SourcesDirectory)/mssql_python_src"
+        echo "Renamed mssql_python to mssql_python_src"
+      fi
+      # Verify import from installed wheel
+      python -c "import mssql_python; print('Imported from:', mssql_python.__file__)"
+    displayName: 'Ensure tests use installed wheel'
+
+  # Docker is pre-installed by linux-1es-pt-prerequisites-v2 artifact
+  # Just verify it's working and start the daemon if needed
+  - script: |
+      set -e
+      if ! docker info > /dev/null 2>&1; then
+        echo "Docker daemon not running, starting it..."
+        sudo dockerd > docker.log 2>&1 &
+        sleep 10
+      else
+        echo "Docker daemon already running"
+      fi
+      docker --version
+    displayName: 'Verify Docker'
+
+  # Start SQL Server container for stress tests
+  - script: |
+      set -euxo pipefail
+      
+      echo "Starting SQL Server 2022 container for stress tests..."
+      docker run -d --name sqlserver-stress \
+        --platform linux/amd64 \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        mcr.microsoft.com/mssql/server:2022-latest
+      
+      echo "Waiting for SQL Server to be ready..."
+      for i in {1..30}; do
+        if docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+          break
+        fi
+        echo "Waiting... ($i/30)"
+        sleep 2
+      done
+      
+      echo "Creating database and user for stress tests..."
+      docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "CREATE DATABASE StressTestDB"
+      docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+      docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -P "$(DB_PASSWORD)" -C -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+      docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -P "$(DB_PASSWORD)" -C -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+      
+      echo "Database setup completed"
+    displayName: 'Start SQL Server container and setup database'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Run multi-threaded stress tests in an isolated subprocess.
+  - script: |
+      echo "Starting stress tests..."
+      python - <<'WRAPPER'
+      import subprocess, sys, os, time, xml.etree.ElementTree as ET
+
+      XML_FILE = "stress-test-results-linux.xml"
+      SHUTDOWN_GRACE = 30  # seconds to wait for clean exit after XML is written
+
+      cmd = [
+          sys.executable, "-m", "pytest",
+          "tests/test_020_multithreaded_stress.py",
+          "-v", "-m", "stress_threading",
+          "--junitxml=" + XML_FILE,
+          "--timeout=3600",
+          "--capture=tee-sys",
+      ]
+
+      proc = subprocess.Popen(cmd)
+
+      # Poll: wait for process to exit or XML file to appear
+      xml_seen_at = None
+      while True:
+          ret = proc.poll()
+          if ret is not None:
+              break
+          if xml_seen_at is None and os.path.exists(XML_FILE):
+              xml_seen_at = time.time()
+              print(f"XML file detected, giving {SHUTDOWN_GRACE}s for clean shutdown...")
+          if xml_seen_at and (time.time() - xml_seen_at) > SHUTDOWN_GRACE:
+              print("Process still running after grace period, killing...")
+              proc.kill()
+              proc.wait()
+              break
+          time.sleep(1)
+
+      print(f"Process exit code: {proc.returncode}")
+
+      # Check JUnit XML for actual test results
+      # pytest generates <testsuites><testsuite tests=".." ...>...</testsuite></testsuites>
+      try:
+          tree = ET.parse(XML_FILE)
+          root = tree.getroot()
+          suite = root.find("testsuite") if root.tag == "testsuites" else root
+          failures = int(suite.attrib.get("failures", 0))
+          errors = int(suite.attrib.get("errors", 0))
+          tests = int(suite.attrib.get("tests", 0))
+          print(f"XML results: {tests} tests, {failures} failures, {errors} errors")
+          if tests > 0 and failures == 0 and errors == 0:
+              print("All tests passed!")
+              os._exit(0)
+          else:
+              print("Test failures detected")
+              os._exit(1)
+      except Exception as e:
+          print(f"Could not parse XML: {e}")
+          os._exit(proc.returncode if proc.returncode else 1)
+      WRAPPER
+    displayName: 'Run Multi-Threaded Stress Tests'
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    continueOnError: true
+
+
+  # Run original stress tests
+  - script: |
+      python -m pytest tests/test_011_performance_stress.py -v -m "stress" --junitxml=perf-stress-test-results-linux.xml --timeout=1800 --capture=tee-sys
+    displayName: 'Run Performance Stress Tests'
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    continueOnError: true
+
+  # Publish test results
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/stress-test-results-linux.xml'
+      mergeTestResults: true
+      testRunTitle: 'Linux Stress Test Results'
+    condition: always()
+    displayName: 'Publish Linux Stress Test Results'
+
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/perf-stress-test-results-linux.xml'
+      mergeTestResults: true
+      testRunTitle: 'Linux Performance Stress Test Results'
+    condition: always()
+    displayName: 'Publish Linux Performance Stress Test Results'
+
+# ============================================================================
+# Summary Job
+# ============================================================================
+- job: StressTestSummary
+  displayName: 'Stress Test Summary'
+  dependsOn:
+    - StressTestWindows
+    - StressTestLinux
+  condition: always()
+  pool:
+    name: Python-1ES-pool
+    demands:
+    - imageOverride -equals PYTHON-1ES-UB2404
+
+  steps:
+  - script: |
+      echo "======================================"
+      echo "Stress Test Summary"
+      echo "======================================"
+      echo ""
+      echo "Platform: Python-1ES-pool (PYTHON-1ES-MMS2022, PYTHON-1ES-UB2404)"
+      echo ""
+      echo "Tests executed:"
+      echo "  - test_020_multithreaded_stress.py (stress_threading marker)"
+      echo "  - test_011_performance_stress.py (stress marker)"
+      echo ""
+      echo "See individual job results for details."
+    displayName: 'Print Summary'
