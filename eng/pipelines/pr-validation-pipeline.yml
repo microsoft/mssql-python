@@ -1959,11 +1959,31 @@ jobs:
 # Azure SQL Database Testing Jobs
 # Gated on the AZURE_CONNECTION_STRING pipeline variable being set.
 # No local SQL Server install needed — tests run directly against the cloud database.
+# Runs every 16 days (on days divisible by 16) or when ENABLE_AZURE_SQL is set to true
 # ===========================================================================================
+
+- job: CheckAzureSQLSchedule
+  displayName: 'Check if Azure SQL tests should run'
+  pool:
+    vmImage: 'ubuntu-latest'
+  steps:
+  - bash: |
+      day=$(date +%d)
+      remainder=$((10#$day % 15))
+      if [ "$remainder" -eq 0 ] || [ "$(ENABLE_AZURE_SQL)" = "true" ]; then
+        echo "##vso[task.setvariable variable=shouldRunAzureSQL;isOutput=true]true"
+        echo "Azure SQL tests will run (day: $day, ENABLE_AZURE_SQL: $(ENABLE_AZURE_SQL))"
+      else
+        echo "##vso[task.setvariable variable=shouldRunAzureSQL;isOutput=true]false"
+        echo "Azure SQL tests will be skipped (day: $day, ENABLE_AZURE_SQL: $(ENABLE_AZURE_SQL))"
+      fi
+    displayName: 'Determine if Azure SQL tests should run'
+    name: checkSchedule
 
 - job: PytestOnWindows_AzureSQL
   displayName: 'Windows x64 AzureSQL'
-  condition: eq(variables['ENABLE_AZURE_SQL'], 'true')
+  dependsOn: CheckAzureSQLSchedule
+  condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
   pool:
     vmImage: 'windows-latest'
 
@@ -1999,7 +2019,8 @@ jobs:
 
 - job: PytestOnMacOS_AzureSQL
   displayName: 'macOS x86_64 AzureSQL'
-  condition: eq(variables['ENABLE_AZURE_SQL'], 'true')
+  dependsOn: CheckAzureSQLSchedule
+  condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
   pool:
     vmImage: 'macos-latest'
 
@@ -2040,7 +2061,8 @@ jobs:
 
 - job: PytestOnLinux_AzureSQL
   displayName: 'Linux x86_64 AzureSQL'
-  condition: eq(variables['ENABLE_AZURE_SQL'], 'true')
+  dependsOn: CheckAzureSQLSchedule
+  condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
   pool:
     vmImage: 'ubuntu-latest'
 
