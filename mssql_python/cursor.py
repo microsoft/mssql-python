@@ -2607,15 +2607,36 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         context = {
             "server": params.get("server"),
             "database": params.get("database"),
-            "user_name": params.get("uid", ""),
             "trust_server_certificate": trust_cert,
             "encryption": encryption,
         }
 
-        # Extract password separately to avoid storing it in generic context that may be logged
-        password = params.get("pwd", "")
+        # Build pycore_context with appropriate authentication.
+        # For Azure AD: acquire a FRESH token right now instead of reusing
+        # the one from connect() time — avoids expired-token errors when
+        # bulkcopy() is called long after the original connection.
         pycore_context = dict(context)
-        pycore_context["password"] = password
+
+        if self.connection._auth_type:
+            # Fresh token acquisition for mssql-py-core connection
+            from mssql_python.auth import AADAuth
+
+            try:
+                raw_token = AADAuth.get_raw_token(self.connection._auth_type)
+            except (RuntimeError, ValueError) as e:
+                raise RuntimeError(
+                    f"Bulk copy failed: unable to acquire Azure AD token "
+                    f"for auth_type '{self.connection._auth_type}': {e}"
+                ) from e
+            pycore_context["access_token"] = raw_token
+            logger.debug(
+                "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
+                self.connection._auth_type,
+            )
+        else:
+            # SQL Server authentication — use uid/password from connection string
+            pycore_context["user_name"] = params.get("uid", "")
+            pycore_context["password"] = params.get("pwd", "")
 
         pycore_connection = None
         pycore_cursor = None
@@ -2653,10 +2674,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         finally:
             # Clear sensitive data to minimize memory exposure
-            password = ""
             if pycore_context:
-                pycore_context["password"] = ""
-                pycore_context["user_name"] = ""
+                pycore_context.pop("password", None)
+                pycore_context.pop("user_name", None)
+                pycore_context.pop("access_token", None)
             # Clean up bulk copy resources
             for resource in (pycore_cursor, pycore_connection):
                 if resource and hasattr(resource, "close"):
