@@ -1,6 +1,142 @@
+# =============================================================================
+# Build System Configuration
+# =============================================================================
+[build-system]
+requires = ["setuptools>=64.0.0", "wheel", "pybind11"]
+build-backend = "build_ddbc.build_backend"
+backend-path = ["."]
+
+# =============================================================================
+# Project Metadata
+# =============================================================================
+[project]
+name = "mssql-python"
+version = "1.3.0"
+description = "A Python library for interacting with Microsoft SQL Server"
+readme = "PyPI_Description.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    { name = "Microsoft Corporation", email = "mssql-python@microsoft.com" }
+]
+keywords = ["mssql", "sql-server", "database", "odbc", "microsoft"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    "azure-identity>=1.12.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/microsoft/mssql-python"
+Documentation = "https://github.com/microsoft/mssql-python/wiki"
+Repository = "https://github.com/microsoft/mssql-python"
+Issues = "https://github.com/microsoft/mssql-python/issues"
+Changelog = "https://github.com/microsoft/mssql-python/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "coverage",
+    "unittest-xml-reporting",
+    "psutil",
+    "pybind11",
+    "setuptools",
+    "wheel",
+    "build",
+]
+lint = [
+    "black",
+    "autopep8",
+    "pylint",
+    "cpplint",
+    "mypy",
+    "types-setuptools",
+]
+all = [
+    # Dev dependencies
+    "pytest",
+    "pytest-cov",
+    "coverage",
+    "unittest-xml-reporting",
+    "psutil",
+    "pybind11",
+    "setuptools",
+    "wheel",
+    "build",
+    # Lint dependencies
+    "black",
+    "autopep8",
+    "pylint",
+    "cpplint",
+    "mypy",
+    "types-setuptools",
+]
+
+# =============================================================================
+# Setuptools Configuration
+# =============================================================================
+[tool.setuptools]
+zip-safe = false
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mssql_python*"]
+exclude = ["build_ddbc*", "tests*", "benchmarks*"]
+
+[tool.setuptools.package-data]
+mssql_python = [
+    "py.typed",
+    "ddbc_bindings.cp*.pyd",
+    "ddbc_bindings.cp*.so",
+    "libs/*",
+    "libs/**/*",
+    "*.dll",
+    "*.pyi",
+]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["*.yml", "*.yaml"]
+mssql_python = [
+    "libs/*/vcredist/*",
+    "libs/*/vcredist/**/*",
+]
+
+# =============================================================================
+# Pytest Configuration
+# =============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "stress: marks tests as stress tests (long-running, resource-intensive)",
+]
+addopts = "-m 'not stress'"
+
+# =============================================================================
+# Code Formatting - Black
+# =============================================================================
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311']
+target-version = ['py310', 'py311', 'py312', 'py313', 'py314']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -14,6 +150,9 @@ extend-exclude = '''
 )/
 '''
 
+# =============================================================================
+# Code Formatting - Autopep8
+# =============================================================================
 [tool.autopep8]
 max_line_length = 100
 ignore = "E203,W503"
@@ -21,6 +160,9 @@ in-place = true
 recursive = true
 aggressive = 3
 
+# =============================================================================
+# Linting - Pylint
+# =============================================================================
 [tool.pylint.messages_control]
 disable = [
     "fixme",
@@ -34,14 +176,16 @@ disable = [
 [tool.pylint.format]
 max-line-length = 100
 
-[tool.flake8]
-max-line-length = 100
-extend-ignore = ["E203", "W503"]
+# =============================================================================
+# Type Checking - MyPy
+# =============================================================================
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
 exclude = [
-    ".git",
-    "__pycache__",
     "build",
     "dist",
-    ".venv",
-    "htmlcov"
+    "tests",
 ]

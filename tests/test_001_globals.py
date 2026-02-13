@@ -740,3 +740,241 @@ def test_decimal_separator_concurrent_db_operations(db_connection):
         # Always make sure to clean up
         stop_event.set()
         setDecimalSeparator(original_separator)
+
+
+# =============================================================================
+# Platform Utils Tests
+# =============================================================================
+
+
+class TestPlatformUtils:
+    """Tests for mssql_python.platform_utils module."""
+
+    def test_get_platform_info_returns_tuple(self):
+        """Test that get_platform_info returns a tuple of two strings."""
+        from mssql_python.platform_utils import get_platform_info
+
+        result = get_platform_info()
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], str)  # architecture
+        assert isinstance(result[1], str)  # platform_tag
+
+    def test_get_platform_info_current_platform(self):
+        """Test get_platform_info on current platform returns valid values."""
+        from mssql_python.platform_utils import get_platform_info
+        import sys
+
+        arch, platform_tag = get_platform_info()
+
+        # Architecture should be non-empty
+        assert arch
+
+        # Platform tag should match current platform
+        if sys.platform.startswith("win"):
+            assert "win" in platform_tag
+        elif sys.platform.startswith("darwin"):
+            assert "macos" in platform_tag
+        elif sys.platform.startswith("linux"):
+            assert "linux" in platform_tag
+
+    def test_windows_x64_detection(self):
+        """Test Windows x64 platform detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "win32"):
+            with patch.object(platform_utils.os.environ, "get", return_value="x64"):
+                arch, tag = platform_utils.get_platform_info()
+                assert arch == "x64"
+                assert tag == "win_amd64"
+
+    def test_windows_x86_detection(self):
+        """Test Windows x86 platform detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "win32"):
+            with patch.object(platform_utils.os.environ, "get", return_value="x86"):
+                arch, tag = platform_utils.get_platform_info()
+                assert arch == "x86"
+                assert tag == "win32"
+
+    def test_windows_arm64_detection(self):
+        """Test Windows ARM64 platform detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "win32"):
+            with patch.object(platform_utils.os.environ, "get", return_value="arm64"):
+                arch, tag = platform_utils.get_platform_info()
+                assert arch == "arm64"
+                assert tag == "win_arm64"
+
+    def test_macos_detection(self):
+        """Test macOS platform detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "darwin"):
+            arch, tag = platform_utils.get_platform_info()
+            assert arch == "universal2"
+            assert "macosx" in tag
+            assert "universal2" in tag
+
+    def test_linux_x86_64_glibc_detection(self):
+        """Test Linux x86_64 glibc platform detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "linux"):
+            with patch.object(platform_utils.os.environ, "get", return_value="x86_64"):
+                with patch.object(platform_utils.platform, "machine", return_value="x86_64"):
+                    with patch.object(
+                        platform_utils.platform, "libc_ver", return_value=("glibc", "2.28")
+                    ):
+                        arch, tag = platform_utils.get_platform_info()
+                        assert arch == "x86_64"
+                        assert tag == "manylinux_2_28_x86_64"
+
+    def test_linux_x86_64_musl_detection(self):
+        """Test Linux x86_64 musl platform detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "linux"):
+            with patch.object(platform_utils.os.environ, "get", return_value="x86_64"):
+                with patch.object(platform_utils.platform, "machine", return_value="x86_64"):
+                    with patch.object(
+                        platform_utils.platform, "libc_ver", return_value=("musl", "1.2")
+                    ):
+                        arch, tag = platform_utils.get_platform_info()
+                        assert arch == "x86_64"
+                        assert tag == "musllinux_1_2_x86_64"
+
+    def test_linux_aarch64_glibc_detection(self):
+        """Test Linux aarch64 glibc platform detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "linux"):
+            with patch.object(platform_utils.os.environ, "get", return_value="aarch64"):
+                with patch.object(platform_utils.platform, "machine", return_value="aarch64"):
+                    with patch.object(
+                        platform_utils.platform, "libc_ver", return_value=("glibc", "2.28")
+                    ):
+                        arch, tag = platform_utils.get_platform_info()
+                        assert arch == "aarch64"
+                        assert tag == "manylinux_2_28_aarch64"
+
+    def test_linux_aarch64_musl_detection(self):
+        """Test Linux aarch64 musl platform detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "linux"):
+            with patch.object(platform_utils.os.environ, "get", return_value="aarch64"):
+                with patch.object(platform_utils.platform, "machine", return_value="aarch64"):
+                    with patch.object(
+                        platform_utils.platform, "libc_ver", return_value=("musl", "1.2")
+                    ):
+                        arch, tag = platform_utils.get_platform_info()
+                        assert arch == "aarch64"
+                        assert tag == "musllinux_1_2_aarch64"
+
+    def test_linux_arm64_alias(self):
+        """Test Linux arm64 is treated as aarch64."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "linux"):
+            with patch.object(platform_utils.os.environ, "get", return_value="arm64"):
+                with patch.object(platform_utils.platform, "machine", return_value="arm64"):
+                    with patch.object(
+                        platform_utils.platform, "libc_ver", return_value=("glibc", "2.28")
+                    ):
+                        arch, tag = platform_utils.get_platform_info()
+                        assert arch == "aarch64"
+                        assert tag == "manylinux_2_28_aarch64"
+
+    def test_linux_empty_libc_with_musl_glob(self):
+        """Test Linux with empty libc_ver falls back to glob for musl detection."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "linux"):
+            with patch.object(platform_utils.os.environ, "get", return_value="x86_64"):
+                with patch.object(platform_utils.platform, "machine", return_value="x86_64"):
+                    with patch.object(platform_utils.platform, "libc_ver", return_value=("", "")):
+                        with patch.object(
+                            platform_utils.glob, "glob", return_value=["/lib/ld-musl-x86_64.so.1"]
+                        ):
+                            arch, tag = platform_utils.get_platform_info()
+                            assert arch == "x86_64"
+                            assert tag == "musllinux_1_2_x86_64"
+
+    def test_linux_empty_libc_no_musl_glob(self, capsys):
+        """Test Linux with empty libc_ver and no musl glob defaults to glibc."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "linux"):
+            with patch.object(platform_utils.os.environ, "get", return_value="x86_64"):
+                with patch.object(platform_utils.platform, "machine", return_value="x86_64"):
+                    with patch.object(platform_utils.platform, "libc_ver", return_value=("", "")):
+                        with patch.object(platform_utils.glob, "glob", return_value=[]):
+                            arch, tag = platform_utils.get_platform_info()
+                            assert arch == "x86_64"
+                            assert tag == "manylinux_2_28_x86_64"
+                            # Check warning was printed
+                            captured = capsys.readouterr()
+                            assert "Warning" in captured.err or "warning" in captured.err.lower()
+
+    def test_linux_unsupported_architecture(self):
+        """Test Linux with unsupported architecture raises OSError."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "linux"):
+            with patch.object(platform_utils.os.environ, "get", return_value="ppc64le"):
+                with patch.object(platform_utils.platform, "machine", return_value="ppc64le"):
+                    with patch.object(
+                        platform_utils.platform, "libc_ver", return_value=("glibc", "2.28")
+                    ):
+                        with pytest.raises(OSError) as exc_info:
+                            platform_utils.get_platform_info()
+                        assert "ppc64le" in str(exc_info.value)
+                        assert "Unsupported architecture" in str(exc_info.value)
+
+    def test_unsupported_platform(self):
+        """Test unsupported platform raises OSError."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "freebsd"):
+            with pytest.raises(OSError) as exc_info:
+                platform_utils.get_platform_info()
+            assert "freebsd" in str(exc_info.value)
+            assert "Unsupported platform" in str(exc_info.value)
+
+    def test_windows_strips_quotes_from_arch(self):
+        """Test Windows architecture strips surrounding quotes."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "win32"):
+            with patch.object(platform_utils.os.environ, "get", return_value='"x64"'):
+                arch, tag = platform_utils.get_platform_info()
+                assert arch == "x64"
+                assert tag == "win_amd64"
+
+    def test_windows_win32_alias(self):
+        """Test Windows win32 is treated as x86."""
+        from unittest.mock import patch
+        from mssql_python import platform_utils
+
+        with patch.object(platform_utils.sys, "platform", "win32"):
+            with patch.object(platform_utils.os.environ, "get", return_value="win32"):
+                arch, tag = platform_utils.get_platform_info()
+                assert arch == "x86"
+                assert tag == "win32"
