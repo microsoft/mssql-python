@@ -865,6 +865,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ddbc_sql_const.SQL_BINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
             ddbc_sql_const.SQL_VARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
             ddbc_sql_const.SQL_LONGVARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+            ddbc_sql_const.SQL_SS_UDT.value: ddbc_sql_const.SQL_C_BINARY.value,
             ddbc_sql_const.SQL_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
             ddbc_sql_const.SQL_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
             ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
@@ -942,9 +943,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """Initialize the description attribute from column metadata."""
         if not column_metadata:
             self.description = None
+            self._column_sql_types = None
             return
 
         description = []
+        sql_types = []
         for _, col in enumerate(column_metadata):
             # Get column name - lowercase it if the lowercase flag is set
             column_name = col["ColumnName"]
@@ -952,6 +955,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Use the current global setting to ensure tests pass correctly
             if get_settings().lowercase:
                 column_name = column_name.lower()
+
+            sql_types.append(col["DataType"])
 
             # Add to description tuple (7 elements as per PEP-249)
             description.append(
@@ -966,6 +971,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
             )
         self.description = description
+        self._column_sql_types = sql_types
 
     def _build_converter_map(self):
         """
@@ -981,14 +987,24 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             return None
 
         converter_map = []
+        raw_types = getattr(self, "_column_sql_types", None)
 
-        for desc in self.description:
+        for i, desc in enumerate(self.description):
             if desc is None:
                 converter_map.append(None)
                 continue
-            sql_type = desc[1]
-            converter = self.connection.get_output_converter(sql_type)
-            # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
+
+            converter = None
+
+            # First try lookup by raw SQL type code (e.g. -151 for SQL_SS_UDT)
+            if raw_types and i < len(raw_types):
+                converter = self.connection.get_output_converter(raw_types[i])
+
+            # Fall back to lookup by Python type from description
+            if converter is None:
+                converter = self.connection.get_output_converter(desc[1])
+
+            # Last resort: try the WVARCHAR converter as a catch-all fallback
             if converter is None:
                 from mssql_python.constants import ConstantsDDBC
 
@@ -1052,6 +1068,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ddbc_sql_const.SQL_BINARY.value: bytes,
             ddbc_sql_const.SQL_VARBINARY.value: bytes,
             ddbc_sql_const.SQL_LONGVARBINARY.value: bytes,
+            ddbc_sql_const.SQL_SS_UDT.value: bytes,
             ddbc_sql_const.SQL_GUID.value: uuid.UUID,
             # Add more mappings as needed
         }

@@ -27,6 +27,7 @@
 #define MAX_DIGITS_IN_NUMERIC 64
 #define SQL_MAX_NUMERIC_LEN 16
 #define SQL_SS_XML (-152)
+#define SQL_SS_UDT (-151)
 
 #define STRINGIFY_FOR_CASE(x)                                                                      \
     case x:                                                                                        \
@@ -3285,6 +3286,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
+            case SQL_SS_UDT:
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY: {
@@ -3555,6 +3557,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_GUID, buffers.guidBuffers[col - 1].data(),
                                      sizeof(SQLGUID), buffers.indicators[col - 1].data());
                 break;
+            case SQL_SS_UDT:
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
@@ -3683,6 +3686,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             case SQL_WLONGVARCHAR:
                 columnProcessors[col] = ColumnProcessors::ProcessWChar;
                 break;
+            case SQL_SS_UDT:
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
@@ -3981,6 +3985,10 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_BIT:
                 rowSize += sizeof(SQLCHAR);
                 break;
+            case SQL_SS_UDT:
+                rowSize += (columnSize == SQL_NO_TOTAL || columnSize == 0)
+                               ? SQL_MAX_LOB_SIZE : columnSize;
+                break;
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
@@ -4043,7 +4051,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
+             dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
@@ -4177,7 +4186,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
+             dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
