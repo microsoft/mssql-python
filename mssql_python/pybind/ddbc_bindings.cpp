@@ -157,6 +157,127 @@ struct NumericData {
     }
 };
 
+struct Int128_t {
+    uint64_t low;
+    int64_t high;
+
+    Int128_t() : low(0), high(0) {}
+    Int128_t(uint64_t l, int64_t h) : low(l), high(h) {}
+
+    Int128_t multiply_by_10() const {
+        // value * 10 = (value * 8) + (value * 2)
+        Int128_t shift3 = *this << 3;
+        Int128_t shift1 = *this << 1;
+        return shift3 + shift1;
+    }
+
+    Int128_t operator<<(int shift) const {
+        // These would require special cases. We only shift by 1 and 3 for multiply_by_10.
+        assert(shift > 0);
+        assert(shift < 64);
+        uint64_t new_low = low << shift;
+        uint64_t new_high = (static_cast<uint64_t>(high) << shift) | (low >> (64 - shift));
+        return {new_low, static_cast<int64_t>(new_high)};
+    }
+
+    Int128_t operator+(const Int128_t& other) const {
+        uint64_t sum_low = low + other.low;
+        uint64_t carry = (sum_low < low) ? 1 : 0;
+        int64_t sum_high = high + other.high + carry;
+        return {sum_low, sum_high};
+    }
+
+    Int128_t operator+(uint64_t digit) const {
+        uint64_t sum_low = low + digit;
+        uint64_t carry = (sum_low < low) ? 1 : 0;
+        int64_t sum_high = high + carry;
+        return {sum_low, sum_high};
+    }
+
+    Int128_t operator-() const {
+        uint64_t new_low = ~low + 1;
+        uint64_t new_high = ~high + (new_low == 0 ? 1 : 0);
+        return {new_low, static_cast<int64_t>(new_high)};
+    }
+};
+
+struct ArrowArrayPrivateData {
+    std::unique_ptr<uint8_t[]> valid;
+
+    std::unique_ptr<uint8_t[]> uint8Val;
+    std::unique_ptr<int16_t[]> int16Val;
+    std::unique_ptr<int32_t[]> int32Val;
+    std::unique_ptr<int64_t[]> int64Val;
+    std::unique_ptr<double[]> float64Val;
+    std::unique_ptr<float[]> float32Val;
+    std::unique_ptr<uint8_t[]> bitVal;
+    std::unique_ptr<uint64_t[]> varVal;
+    std::unique_ptr<int32_t[]> dateVal;
+    std::unique_ptr<int64_t[]> tsMicroVal;
+    std::unique_ptr<int32_t[]> timeSecondVal;
+    std::unique_ptr<Int128_t[]> decimalVal;
+
+    std::vector<uint8_t> varData;
+
+    // first buffer will be the valid bitmap
+    // second buffer will be one of the value buffers above
+    // third buffer will be the varData buffer for variable length types
+    std::array<void*, 3> buffers;
+
+    // Points to one of the typed *Val buffers above. Since the buffer pointers
+    // don't change, this can be set once during batch initialization.
+    void* ptrValueBuffer;
+};
+
+struct ArrowSchemaPrivateData {
+    std::unique_ptr<char[]> name;
+    std::unique_ptr<char[]> format;
+};
+
+#ifndef ARROW_C_DATA_INTERFACE
+#define ARROW_C_DATA_INTERFACE
+
+#define ARROW_FLAG_DICTIONARY_ORDERED 1
+#define ARROW_FLAG_NULLABLE 2
+#define ARROW_FLAG_MAP_KEYS_SORTED 4
+
+struct ArrowSchema {
+  // Array type description
+  const char* format;
+  const char* name;
+  const char* metadata;
+  int64_t flags;
+  int64_t n_children;
+  struct ArrowSchema** children;
+  struct ArrowSchema* dictionary;
+
+  // Release callback
+  void (*release)(struct ArrowSchema*);
+  // Opaque producer-specific data
+  // Only our child-arrays will set this, so we can give it the correct type
+  ArrowSchemaPrivateData* private_data;
+};
+
+struct ArrowArray {
+  // Array data description
+  int64_t length;
+  int64_t null_count;
+  int64_t offset;
+  int64_t n_buffers;
+  int64_t n_children;
+  const void** buffers;
+  struct ArrowArray** children;
+  struct ArrowArray* dictionary;
+
+  // Release callback
+  void (*release)(struct ArrowArray*);
+  // Opaque producer-specific data
+  // Only our child-arrays will set this, so we can give it the correct type
+  ArrowArrayPrivateData* private_data;
+};
+
+#endif  // ARROW_C_DATA_INTERFACE
+
 //-------------------------------------------------------------------------------------------------
 // Function pointer initialization
 //-------------------------------------------------------------------------------------------------
@@ -4097,6 +4218,1041 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     return ret;
 }
 
+// GetDataVar - Progressively fetches variable-length column data using SQLGetData.
+//
+// Calls SQLGetData repeatedly, reallocating the buffer as needed, until all data is retrieved.
+// Handles both fixed-size and unknown-size (SQL_NO_TOTAL) responses from the driver.
+//
+// @param hStmt: Statement handle
+// @param colNumber: 1-based column index
+// @param cType: SQL C data type (SQL_C_CHAR, SQL_C_WCHAR, or SQL_C_BINARY)
+// @param dataVec: Reference to vector that will hold the fetched data (will be resized as needed)
+// @param indicator: Pointer to indicator value (SQL_NULL_DATA for NULL, or data length)
+//
+// @return SQLRETURN: SQL_SUCCESS on success, or error code on failure
+template<typename T>
+SQLRETURN GetDataVar(SQLHSTMT hStmt,
+                    SQLUSMALLINT colNumber,
+                    SQLSMALLINT cType,
+                    std::vector<T>& dataVec,
+                    SQLLEN* indicator) {
+    size_t start = 0;
+    size_t end = 0;
+    
+    // Determine null terminator size based on data type
+    size_t sizeNullTerminator = 0;
+    switch (cType) {
+        case SQL_C_WCHAR:
+        case SQL_C_CHAR:
+            sizeNullTerminator = 1;
+            break;
+        case SQL_C_BINARY:
+            sizeNullTerminator = 0;
+            break;
+        default:
+            ThrowStdException("GetDataVar only supports SQL_C_CHAR, SQL_C_WCHAR, and SQL_C_BINARY");
+    }
+    
+    // Ensure initial buffer has space for at least the null terminator
+    if (dataVec.size() < sizeNullTerminator) {
+        dataVec.resize(sizeNullTerminator);
+    }
+
+    while (true) {
+        SQLLEN localInd = 0;
+        SQLRETURN ret = SQLGetData_ptr(
+            hStmt,
+            colNumber,
+            cType,
+            reinterpret_cast<uint8_t*>(dataVec.data() + start),
+            sizeof(T) * (dataVec.size() - start),  // Available buffer size from start position
+            &localInd
+        );
+
+        // Handle NULL data
+        if (localInd == SQL_NULL_DATA) {
+            *indicator = SQL_NULL_DATA;
+            return SQL_SUCCESS;
+        }
+
+        // Check for errors (excluding SQL_SUCCESS_WITH_INFO which means more data available)
+        if (ret == SQL_ERROR || ret == SQL_INVALID_HANDLE) {
+            return ret;
+        }
+
+        // SQL_SUCCESS or SQL_NO_DATA means we got all the data
+        if (ret == SQL_SUCCESS || ret == SQL_NO_DATA) {
+            if (localInd >= 0) {
+                *indicator = static_cast<SQLLEN>(start) * sizeof(T) + localInd;
+            } else {
+                *indicator = localInd;  // Preserve SQL_NO_TOTAL or other negative values
+            }
+            break;
+        }
+
+        // SQL_SUCCESS_WITH_INFO means buffer was too small, need to continue fetching
+        if (ret == SQL_SUCCESS_WITH_INFO) {
+            // Determine how much more space we need
+            if (localInd < 0) {
+                // SQL_NO_TOTAL: driver doesn't know total size, double the buffer
+                end = dataVec.size() * 2;
+            } else {
+                // Driver returned total size: allocate exactly what we need
+                assert(localInd % sizeof(T) == 0);
+                end = start + static_cast<size_t>(localInd) / sizeof(T) + sizeNullTerminator;
+            }
+            
+            // The next read starts where the null terminator would have been placed
+            start = dataVec.size() - sizeNullTerminator;
+            
+            // Resize buffer for next iteration
+            dataVec.resize(end);
+        } else {
+            // Unexpected return code
+            return ret;
+        }
+    }
+
+    return SQL_SUCCESS;
+}
+
+int32_t days_from_civil(int y, int m, int d) {
+    // Implements the "days_from_civil" algorithm by Howard Hinnant
+    // Returns number of days since Unix epoch (1970-01-01)
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(y - era * 400);           // [0, 399]
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1; // [0, 365]
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;          // [0, 146096]
+    return era * 146097 + static_cast<int>(doe) - 719468;
+}
+
+SQLRETURN FetchArrowBatch_wrap(
+    SqlHandlePtr StatementHandle,
+    py::list& capsules,
+    int arrowBatchSize
+) {
+    int fetchSize = arrowBatchSize;
+    SQLRETURN ret;
+    SQLHSTMT hStmt = StatementHandle->get();
+    // Retrieve column count
+    SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
+    if (numCols <= 0) {
+        ThrowStdException("No active result set. Cannot fetch Arrow batch.");
+    }
+
+    // Retrieve column metadata
+    py::list columnNames;
+    ret = SQLDescribeCol_wrap(StatementHandle, columnNames);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to get column descriptions");
+        return ret;
+    }
+
+    bool hasLobColumns = false;
+
+    std::vector<SQLSMALLINT> dataTypes(numCols);
+    std::vector<SQLULEN> columnSizes(numCols);
+    std::vector<bool> columnNullable(numCols);
+    std::vector<bool> columnVarLen(numCols, false);
+    std::vector<int64_t> nullCounts(numCols, 0);
+
+    std::vector<std::unique_ptr<ArrowArrayPrivateData>> arrowArrayPrivateData(numCols);
+    std::vector<std::unique_ptr<ArrowSchemaPrivateData>> arrowSchemaPrivateData(numCols);
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        arrowArrayPrivateData[i] = std::make_unique<ArrowArrayPrivateData>();
+        auto& arrowColumnProducer = arrowArrayPrivateData[i];
+        arrowSchemaPrivateData[i] = std::make_unique<ArrowSchemaPrivateData>();
+
+        auto colMeta = columnNames[i].cast<py::dict>();
+        SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
+        SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+        SQLSMALLINT nullable = colMeta["Nullable"].cast<SQLSMALLINT>();
+
+        dataTypes[i] = dataType;
+        columnSizes[i] = columnSize;
+        columnNullable[i] = (nullable != SQL_NO_NULLS);
+
+        if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
+             dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
+             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
+                hasLobColumns = true;
+                if (fetchSize > 1) {
+                    fetchSize = 1; // LOBs require row-by-row fetch
+                }
+        }
+
+        std::string columnName = colMeta["ColumnName"].cast<std::string>();
+        size_t nameLen = columnName.length() + 1;
+        arrowSchemaPrivateData[i]->name = std::make_unique<char[]>(nameLen);
+        std::memcpy(arrowSchemaPrivateData[i]->name.get(), columnName.c_str(), nameLen);
+
+        std::string format = "";
+        switch(dataType) {
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
+            case SQL_SS_XML:
+            case SQL_WCHAR:
+            case SQL_WVARCHAR:
+            case SQL_WLONGVARCHAR:
+            case SQL_GUID:
+                format = "U";
+                arrowColumnProducer->varVal = std::make_unique<uint64_t[]>(arrowBatchSize + 1);
+                arrowColumnProducer->varData.resize(arrowBatchSize * 42);
+                columnVarLen[i] = true;
+                // start at offset 0
+                arrowColumnProducer->varVal[0] = 0;
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->varVal.get();
+                break;
+            case SQL_BINARY:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY:
+                format = "Z";
+                arrowColumnProducer->varVal = std::make_unique<uint64_t[]>(arrowBatchSize + 1);
+                arrowColumnProducer->varData.resize(arrowBatchSize * 42);
+                columnVarLen[i] = true;
+                // start at offset 0
+                arrowColumnProducer->varVal[0] = 0;
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->varVal.get();
+                break;
+            case SQL_TINYINT:
+                format = "C";
+                arrowColumnProducer->uint8Val = std::make_unique<uint8_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->uint8Val.get();
+                break;
+            case SQL_SMALLINT:
+                format = "s";
+                arrowColumnProducer->int16Val = std::make_unique<int16_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int16Val.get();
+                break;
+            case SQL_INTEGER:
+                format = "i";
+                arrowColumnProducer->int32Val = std::make_unique<int32_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int32Val.get();
+                break;
+            case SQL_BIGINT:
+                format = "l";
+                arrowColumnProducer->int64Val = std::make_unique<int64_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int64Val.get();
+                break;
+            case SQL_REAL:
+                format = "f";
+                arrowColumnProducer->float32Val = std::make_unique<float[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->float32Val.get();
+                break;
+            case SQL_FLOAT:
+            case SQL_DOUBLE:
+                format = "g";
+                arrowColumnProducer->float64Val = std::make_unique<double[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->float64Val.get();
+                break;
+            case SQL_DECIMAL:
+            case SQL_NUMERIC: {
+                std::ostringstream formatStream;
+                formatStream << "d:" << columnSize << "," << colMeta["DecimalDigits"].cast<SQLSMALLINT>();
+                std::string formatStr = formatStream.str();
+                size_t formatLen = formatStr.length() + 1;
+                arrowSchemaPrivateData[i]->format = std::make_unique<char[]>(formatLen);
+                std::memcpy(arrowSchemaPrivateData[i]->format.get(), formatStr.c_str(), formatLen);
+                format = arrowSchemaPrivateData[i]->format.get();
+                arrowColumnProducer->decimalVal = std::make_unique<Int128_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->decimalVal.get();
+                break;
+            }
+            case SQL_TIMESTAMP:
+            case SQL_TYPE_TIMESTAMP:
+            case SQL_DATETIME:
+                format = "tsu:";
+                arrowColumnProducer->tsMicroVal = std::make_unique<int64_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->tsMicroVal.get();
+                break;
+            case SQL_SS_TIMESTAMPOFFSET:
+                format = "tsu:+00:00";
+                arrowColumnProducer->tsMicroVal = std::make_unique<int64_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->tsMicroVal.get();
+                break;
+            case SQL_TYPE_DATE:
+                format = "tdD";
+                arrowColumnProducer->dateVal = std::make_unique<int32_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->dateVal.get();
+                break;
+            case SQL_TIME:
+            case SQL_TYPE_TIME:
+            case SQL_SS_TIME2:
+                format = "tts";
+                arrowColumnProducer->timeSecondVal = std::make_unique<int32_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->timeSecondVal.get();
+                break;
+            case SQL_BIT:
+                format = "b";
+                arrowColumnProducer->bitVal = std::make_unique<uint8_t[]>((arrowBatchSize + 7) / 8);
+                std::memset(arrowColumnProducer->bitVal.get(), 0, (arrowBatchSize + 7) / 8);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->bitVal.get();
+                break;
+            default:
+                std::ostringstream errorString;
+                errorString << "Unsupported data type for Arrow batch fetch for column - " << columnName.c_str()
+                            << ", Type - " << dataType << ", column ID - " << (i + 1);
+                LOG(errorString.str().c_str());
+                ThrowStdException(errorString.str());
+                break;
+        }
+        
+        // Store format string if not already stored.
+        // For non-decimal types, format is now a static string.
+        if (!arrowSchemaPrivateData[i]->format) {
+            size_t formatLen = format.length() + 1;
+            arrowSchemaPrivateData[i]->format = std::make_unique<char[]>(formatLen);
+            std::memcpy(arrowSchemaPrivateData[i]->format.get(), format.c_str(), formatLen);
+        }
+
+        arrowColumnProducer->valid = std::make_unique<uint8_t[]>((arrowBatchSize + 7) / 8);
+        // Initialize validity bitmap to all valid
+        std::memset(arrowColumnProducer->valid.get(), 0xFF, (arrowBatchSize + 7) / 8);
+    }
+
+    if (fetchSize > 1) {
+        // An overly large fetch size doesn't seem to help performance
+        SQLSMALLINT searchStart = 64;
+        if (arrowBatchSize < 64) {
+            searchStart = static_cast<SQLSMALLINT>(arrowBatchSize);
+        }
+        for (SQLSMALLINT maybeNewSize = searchStart; maybeNewSize >= 1; maybeNewSize -= 1) {
+            if (arrowBatchSize % maybeNewSize == 0) {
+                fetchSize = maybeNewSize;
+                break;
+            }
+        }
+    }
+
+    // Initialize column buffers
+    ColumnBuffers buffers(numCols, fetchSize);
+
+    if (!hasLobColumns && fetchSize > 0) {
+        // Bind columns
+        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("Error when binding columns");
+            return ret;
+        }
+    }
+    
+    SQLULEN numRowsFetched;
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
+
+    size_t idxRowArrow = 0;
+    // arrowBatchSize % fetchSize == 0 ensures that any followup (even non-arrow) fetches
+    // start with a fresh batch
+    assert(fetchSize == 0 || arrowBatchSize % fetchSize == 0);
+    assert(fetchSize <= arrowBatchSize);
+
+    while (idxRowArrow < arrowBatchSize) {
+        ret = SQLFetch_ptr(hStmt);
+        if (ret == SQL_NO_DATA) {
+            ret = SQL_SUCCESS; // Normal completion
+            break;
+        }
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("Error while fetching rows in batches");
+            return ret;
+        }
+        // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute.
+        // It'll be populated by SQLFetch
+        assert(numRowsFetched + idxRowArrow <= static_cast<SQLULEN>(arrowBatchSize));
+        for (SQLULEN idxRowSql = 0; idxRowSql < numRowsFetched; idxRowSql++) {
+            for (SQLUSMALLINT idxCol = 0; idxCol < numCols; idxCol++) {
+                auto& arrowColumnProducer = arrowArrayPrivateData[idxCol];
+                auto dataType = dataTypes[idxCol];
+                auto columnSize = columnSizes[idxCol];
+
+                if (hasLobColumns) {
+                    assert(idxRowSql == 0 && "GetData only works one row at a time");
+
+                    switch(dataType) {
+                        case SQL_BINARY:
+                        case SQL_VARBINARY:
+                        case SQL_LONGVARBINARY: {
+                            ret = GetDataVar(
+                                hStmt,
+                                idxCol + 1,
+                                SQL_C_BINARY,
+                                buffers.charBuffers[idxCol],
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching LOB for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_CHAR:
+                        case SQL_VARCHAR:
+                        case SQL_LONGVARCHAR: {
+                            ret = GetDataVar(
+                                hStmt,
+                                idxCol + 1,
+                                SQL_C_CHAR,
+                                buffers.charBuffers[idxCol],
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching LOB for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_SS_XML:
+                        case SQL_WCHAR:
+                        case SQL_WVARCHAR:
+                        case SQL_WLONGVARCHAR: {
+                            ret = GetDataVar(
+                                hStmt,
+                                idxCol + 1,
+                                SQL_C_WCHAR,
+                                buffers.wcharBuffers[idxCol],
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching binary data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_INTEGER: {
+                            buffers.intBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_SLONG,
+                                buffers.intBuffers[idxCol].data(),
+                                sizeof(SQLINTEGER),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching SLONG data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_SMALLINT: {
+                            buffers.smallIntBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_SSHORT,
+                                buffers.smallIntBuffers[idxCol].data(),
+                                sizeof(SQLSMALLINT),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching SSHORT data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_TINYINT: {
+                            buffers.charBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_TINYINT,
+                                buffers.charBuffers[idxCol].data(),
+                                sizeof(SQLCHAR),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching TINYINT data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_BIT: {
+                            buffers.charBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_BIT,
+                                buffers.charBuffers[idxCol].data(),
+                                sizeof(SQLCHAR),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching BIT data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_REAL: {
+                            buffers.realBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_FLOAT,
+                                buffers.realBuffers[idxCol].data(),
+                                sizeof(SQLREAL),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching FLOAT data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_DECIMAL:
+                        case SQL_NUMERIC: {
+                            buffers.charBuffers[idxCol].resize(MAX_DIGITS_IN_NUMERIC);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_CHAR,
+                                buffers.charBuffers[idxCol].data(),
+                                MAX_DIGITS_IN_NUMERIC * sizeof(SQLCHAR),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching CHAR data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_DOUBLE:
+                        case SQL_FLOAT: {
+                            buffers.doubleBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_DOUBLE,
+                                buffers.doubleBuffers[idxCol].data(),
+                                sizeof(SQLDOUBLE),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching DOUBLE data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_TIMESTAMP:
+                        case SQL_TYPE_TIMESTAMP:
+                        case SQL_DATETIME: {
+                            buffers.timestampBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_TYPE_TIMESTAMP,
+                                buffers.timestampBuffers[idxCol].data(),
+                                sizeof(SQL_TIMESTAMP_STRUCT),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching TYPE_TIMESTAMP data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_BIGINT: {
+                            buffers.bigIntBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_SBIGINT,
+                                buffers.bigIntBuffers[idxCol].data(),
+                                sizeof(SQLBIGINT),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching SBIGINT data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_TYPE_DATE: {
+                            buffers.dateBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_TYPE_DATE,
+                                buffers.dateBuffers[idxCol].data(),
+                                sizeof(SQL_DATE_STRUCT),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching TYPE_DATE data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_TIME:
+                        case SQL_TYPE_TIME:
+                        case SQL_SS_TIME2: {
+                            buffers.timeBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_TYPE_TIME,
+                                buffers.timeBuffers[idxCol].data(),
+                                sizeof(SQL_TIME_STRUCT),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching TYPE_TIME data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_GUID: {
+                            buffers.guidBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_GUID,
+                                buffers.guidBuffers[idxCol].data(),
+                                sizeof(SQLGUID),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching GUID data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        case SQL_SS_TIMESTAMPOFFSET: {
+                            buffers.datetimeoffsetBuffers[idxCol].resize(1);
+                            ret = SQLGetData_ptr(
+                                hStmt, idxCol + 1, SQL_C_SS_TIMESTAMPOFFSET,
+                                buffers.datetimeoffsetBuffers[idxCol].data(),
+                                sizeof(DateTimeOffset),
+                                buffers.indicators[idxCol].data()
+                            );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching SS_TIMESTAMPOFFSET data for column %d", idxCol + 1);
+                                return ret;
+                            }
+                            break;
+                        }
+                        default: {
+                            std::ostringstream errorString;
+                            errorString << "Unsupported data type for column ID - " << (idxCol + 1)
+                                        << ", Type - " << dataType;
+                            LOG("SQLGetData: %s", errorString.str().c_str());
+                            ThrowStdException(errorString.str());
+                            break;
+                        }
+                    }
+                }
+
+                SQLLEN indicator = buffers.indicators[idxCol][idxRowSql];
+
+                if (indicator == SQL_NULL_DATA) {
+                    // Mark as null in validity bitmap
+                    size_t bytePos = idxRowArrow / 8;
+                    size_t bitPos = idxRowArrow % 8;
+                    arrowColumnProducer->valid[bytePos] &= ~(1 << bitPos);
+
+                    // Value buffer for variable length data types needs to be set appropriately
+                    // as it will be used by the next non null value
+                    switch (dataType)
+                    {
+                        case SQL_CHAR:
+                        case SQL_VARCHAR:
+                        case SQL_LONGVARCHAR:
+                        case SQL_SS_XML:
+                        case SQL_WCHAR:
+                        case SQL_WVARCHAR:
+                        case SQL_WLONGVARCHAR:
+                        case SQL_GUID:
+                        case SQL_BINARY:
+                        case SQL_VARBINARY:
+                        case SQL_LONGVARBINARY:
+                            arrowColumnProducer->varVal[idxRowArrow + 1] = arrowColumnProducer->varVal[idxRowArrow];
+                            break;
+                        default:
+                            break;
+                    }
+
+                    nullCounts[idxCol] += 1;
+                    continue;
+                } else if (indicator < 0) {
+                    // Negative value is unexpected, log column index, SQL type & raise exception
+                    LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", idxCol + 1, dataType, indicator);
+                    ThrowStdException("Unexpected negative data length.");
+                }
+                auto dataLen = static_cast<uint64_t>(indicator);
+
+                switch (dataType) {
+                    case SQL_BINARY:
+                    case SQL_VARBINARY:
+                    case SQL_LONGVARBINARY: {
+                        uint64_t fetchBufferSize = columnSize /* bytes are not null terminated */;
+                        auto target_vec = &arrowColumnProducer->varData;
+                        auto start = arrowColumnProducer->varVal[idxRowArrow];
+                        while (target_vec->size() < start + dataLen) {
+                            target_vec->resize(target_vec->size() * 2);
+                        }
+
+                        std::memcpy(&(*target_vec)[start], &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize], dataLen);
+                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
+                        break;
+                    }
+                    case SQL_CHAR:
+                    case SQL_VARCHAR:
+                    case SQL_LONGVARCHAR: {
+                        uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                        auto target_vec = &arrowColumnProducer->varData;
+                        auto start = arrowColumnProducer->varVal[idxRowArrow];
+                        while (target_vec->size() < start + dataLen) {
+                            target_vec->resize(target_vec->size() * 2);
+                        }
+
+                        std::memcpy(&(*target_vec)[start], &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize], dataLen);
+                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
+                        break;
+                    }
+                    case SQL_SS_XML:
+                    case SQL_WCHAR:
+                    case SQL_WVARCHAR:
+                    case SQL_WLONGVARCHAR: {
+                        assert(dataLen % sizeof(SQLWCHAR) == 0);
+                        auto dataLenW = dataLen / sizeof(SQLWCHAR);
+                        auto wcharSource = &buffers.wcharBuffers[idxCol][idxRowSql * (columnSize + 1)];
+                        auto start = arrowColumnProducer->varVal[idxRowArrow];
+                        auto target_vec = &arrowColumnProducer->varData;
+#if defined(_WIN32)
+                        // Convert wide string
+                        int dataLenConverted = WideCharToMultiByte(CP_UTF8, 0, wcharSource, static_cast<int>(dataLenW), NULL, 0, NULL, NULL);
+                        while (target_vec->size() < start + dataLenConverted) {
+                            target_vec->resize(target_vec->size() * 2);
+                        }
+                        WideCharToMultiByte(CP_UTF8, 0, wcharSource, static_cast<int>(dataLenW), reinterpret_cast<char*>(&(*target_vec)[start]), dataLenConverted, NULL, NULL);
+                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLenConverted;
+#else
+                        // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
+                        std::string utf8str = WideToUTF8(SQLWCHARToWString(wcharSource, dataLenW));
+                        while (target_vec->size() < start + utf8str.size()) {
+                            target_vec->resize(target_vec->size() * 2);
+                        }
+                        std::memcpy(&(*target_vec)[start], utf8str.data(), utf8str.size());
+                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + utf8str.size();
+#endif
+                        break;
+                    }
+                    case SQL_GUID: {
+                        // GUID is stored as a 36-character string in Arrow (e.g., "550e8400-e29b-41d4-a716-446655440000")
+                        // Each GUID is exactly 36 bytes in UTF-8
+                        auto target_vec = &arrowColumnProducer->varData;
+                        auto start = arrowColumnProducer->varVal[idxRowArrow];
+
+                        // Ensure buffer has space for the GUID string + null terminator
+                        while (target_vec->size() < start + 37) {
+                            target_vec->resize(target_vec->size() * 2);
+                        }
+
+                        // Get the GUID from the buffer
+                        const SQLGUID& guidValue = buffers.guidBuffers[idxCol][idxRowSql];
+
+                        // Convert GUID to string format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                        snprintf(reinterpret_cast<char*>(&target_vec->data()[start]), 37,
+                                "%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+                                guidValue.Data1,
+                                guidValue.Data2,
+                                guidValue.Data3,
+                                guidValue.Data4[0], guidValue.Data4[1],
+                                guidValue.Data4[2], guidValue.Data4[3],
+                                guidValue.Data4[4], guidValue.Data4[5],
+                                guidValue.Data4[6], guidValue.Data4[7]);
+
+                        // Update offset for next row, ignoring null terminator
+                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + 36;
+                        break;
+                    }
+                    case SQL_TINYINT:
+                        arrowColumnProducer->uint8Val[idxRowArrow] = buffers.charBuffers[idxCol][idxRowSql];
+                        break;
+                    case SQL_SMALLINT:
+                        arrowColumnProducer->int16Val[idxRowArrow] = buffers.smallIntBuffers[idxCol][idxRowSql];
+                        break;
+                    case SQL_INTEGER:
+                        arrowColumnProducer->int32Val[idxRowArrow] = buffers.intBuffers[idxCol][idxRowSql];
+                        break;
+                    case SQL_BIGINT:
+                        arrowColumnProducer->int64Val[idxRowArrow] = buffers.bigIntBuffers[idxCol][idxRowSql];
+                        break;
+                    case SQL_REAL:
+                        arrowColumnProducer->float32Val[idxRowArrow] = buffers.realBuffers[idxCol][idxRowSql];
+                        break;
+                    case SQL_FLOAT:
+                    case SQL_DOUBLE:
+                        arrowColumnProducer->float64Val[idxRowArrow] = buffers.doubleBuffers[idxCol][idxRowSql];
+                        break;
+                    case SQL_DECIMAL:
+                    case SQL_NUMERIC: {
+                        // Relies on overloaded operators defined in Int128_t struct
+                        assert(dataLen <= MAX_DIGITS_IN_NUMERIC);
+                        Int128_t decimalValue(0, 0);
+                        auto start = idxRowSql * MAX_DIGITS_IN_NUMERIC;
+                        int sign = 1;
+                        for (SQLULEN idx = start; idx < start + dataLen; idx++) {
+                            char digitChar = buffers.charBuffers[idxCol][idx];
+                            if (digitChar == '-') {
+                                sign = -1;
+                            } else if (digitChar >= '0' && digitChar <= '9') {
+                                decimalValue = decimalValue.multiply_by_10() + (uint64_t)(digitChar - '0');
+                            }
+                        }
+                        arrowColumnProducer->decimalVal[idxRowArrow] = (sign > 0) ? decimalValue : -decimalValue;
+                        break;
+                    }
+                    case SQL_TIMESTAMP:
+                    case SQL_TYPE_TIMESTAMP:
+                    case SQL_DATETIME: {
+                        SQL_TIMESTAMP_STRUCT sql_value = buffers.timestampBuffers[idxCol][idxRowSql];
+                        int64_t days = days_from_civil(
+                            sql_value.year,
+                            sql_value.month,
+                            sql_value.day
+                        );
+                        arrowColumnProducer->tsMicroVal[idxRowArrow] = 
+                            days * 86400 * 1000000 + 
+                            static_cast<int64_t>(sql_value.hour) * 3600 * 1000000 +
+                            static_cast<int64_t>(sql_value.minute) * 60 * 1000000 +
+                            static_cast<int64_t>(sql_value.second) * 1000000 +
+                            static_cast<int64_t>(sql_value.fraction) / 1000;
+                        break;
+                    }
+                    case SQL_SS_TIMESTAMPOFFSET: {
+                        DateTimeOffset sql_value = buffers.datetimeoffsetBuffers[idxCol][idxRowSql];
+                        int64_t days = days_from_civil(
+                            sql_value.year,
+                            sql_value.month,
+                            sql_value.day
+                        );
+                        arrowColumnProducer->tsMicroVal[idxRowArrow] = 
+                            days * 86400 * 1000000 + 
+                            (static_cast<int64_t>(sql_value.hour) - static_cast<int64_t>(sql_value.timezone_hour)) * 3600 * 1000000 +
+                            (static_cast<int64_t>(sql_value.minute) - static_cast<int64_t>(sql_value.timezone_minute)) * 60 * 1000000 +
+                            static_cast<int64_t>(sql_value.second) * 1000000 +
+                            static_cast<int64_t>(sql_value.fraction) / 1000;
+                        break;
+                    }
+                    case SQL_TYPE_DATE:
+                        arrowColumnProducer->dateVal[idxRowArrow] = days_from_civil(
+                            buffers.dateBuffers[idxCol][idxRowSql].year,
+                            buffers.dateBuffers[idxCol][idxRowSql].month,
+                            buffers.dateBuffers[idxCol][idxRowSql].day
+                        );
+                        break;
+                    case SQL_TIME:
+                    case SQL_TYPE_TIME:
+                    case SQL_SS_TIME2: {
+                        // NOTE: SQL_SS_TIME2 supports fractional seconds, but SQL_C_TYPE_TIME does not.
+                        // To fully support SQL_SS_TIME2, the corresponding c-type should be used.
+                        const SQL_TIME_STRUCT& timeValue = buffers.timeBuffers[idxCol][idxRowSql];
+                        arrowColumnProducer->timeSecondVal[idxRowArrow] = 
+                            static_cast<int32_t>(timeValue.hour) * 3600 +
+                            static_cast<int32_t>(timeValue.minute) * 60 +
+                            static_cast<int32_t>(timeValue.second);
+                        break;
+                    }
+                    case SQL_BIT: {
+                        // SQL_BIT is stored as a single bit in Arrow's bitmap format
+                        // Get the boolean value from the buffer
+                        bool bitValue = buffers.charBuffers[idxCol][idxRowSql] != 0;
+                        
+                        // Set the bit in the Arrow bitmap
+                        size_t byteIndex = idxRowArrow / 8;
+                        size_t bitIndex = idxRowArrow % 8;
+                        
+                        if (bitValue) {
+                            // Set bit to 1
+                            arrowColumnProducer->bitVal[byteIndex] |= (1 << bitIndex);
+                        } else {
+                            // Clear bit to 0
+                            arrowColumnProducer->bitVal[byteIndex] &= ~(1 << bitIndex);
+                        }
+                        break;
+                    }
+                    default: {
+                        std::ostringstream errorString;
+                        errorString << "Unsupported data type for column ID - " << (idxCol + 1)
+                                    << ", Type - " << dataType;
+                        LOG(errorString.str().c_str());
+                        ThrowStdException(errorString.str());
+                        break;
+                    }
+                }
+            }
+            idxRowArrow++;
+        }
+    }
+
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+
+    // Transfer ownership of buffers to batch ArrowSchema
+    // First, allocate memory for the necessary structures
+    auto arrowSchemaBatch = std::make_unique<ArrowSchema>();
+
+    auto arrowSchemaBatchChildren = std::make_unique<ArrowSchema*[]>(numCols);
+    auto arrowSchemaBatchChildPointers = std::make_unique<std::unique_ptr<ArrowSchema>[]>(numCols);
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        arrowSchemaBatchChildPointers[i] = std::make_unique<ArrowSchema>();
+    }
+
+    // Second, transfer ownership to arrowSchemaBatch
+    // No unhandled exceptions until the pycapsule owns the arrowSchemaBatch to avoid memory leaks
+    
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        *arrowSchemaBatchChildPointers[i] = {
+            arrowSchemaPrivateData[i]->format.get(),
+            arrowSchemaPrivateData[i]->name.get(),
+            nullptr,
+            static_cast<int64_t>(columnNullable[i] ? ARROW_FLAG_NULLABLE : 0),
+            0,
+            nullptr,
+            nullptr,
+            [](ArrowSchema* schema) {
+                assert(schema != nullptr);
+                assert(schema->release != nullptr);
+                assert(schema->private_data != nullptr);
+                assert(schema->children == nullptr && schema->n_children == 0);
+                delete schema->private_data; // Frees format and name
+                schema->release = nullptr;
+            },
+            arrowSchemaPrivateData[i].release(),
+        };
+    }
+
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        arrowSchemaBatchChildren[i] = arrowSchemaBatchChildPointers[i].release();
+    }
+
+    *arrowSchemaBatch = {
+        "+s",
+        "",
+        nullptr,
+        0,
+        numCols,
+        arrowSchemaBatchChildren.release(),
+        nullptr,
+        [](ArrowSchema* schema) {
+            // format and name are string literals, no need to free
+            assert(schema != nullptr);
+            assert(schema->release != nullptr);
+            assert(schema->private_data == nullptr);
+            assert(schema->children != nullptr);
+            assert(schema->n_children > 0);
+            for (int64_t i = 0; i < schema->n_children; ++i) {
+                if (schema->children[i]) {
+                    if (schema->children[i]->release) {
+                        schema->children[i]->release(schema->children[i]);
+                    }
+                    delete schema->children[i];
+                }
+            }
+            delete[] schema->children;
+            schema->release = nullptr;
+        },
+        nullptr,
+    };
+
+    // Finally, transfer ownership of arrowSchemaBatch and its pointer to pycapsule
+    py::capsule arrowSchemaBatchCapsule;
+    try {
+        arrowSchemaBatchCapsule = py::capsule(arrowSchemaBatch.get(), "arrow_schema", [](void* ptr) {
+            auto arrowSchema = static_cast<ArrowSchema*>(ptr);
+            if (arrowSchema->release) {
+                arrowSchema->release(arrowSchema);
+            }
+            delete arrowSchema;
+        });
+    } catch (...) {
+        arrowSchemaBatch->release(arrowSchemaBatch.get());
+        throw;
+    }
+    arrowSchemaBatch.release();
+    capsules.append(arrowSchemaBatchCapsule);
+
+    // Transfer ownership of buffers to batch ArrowArray
+    // First, allocate memory for the necessary structures
+    auto arrowArrayBatch = std::make_unique<ArrowArray>();
+
+    auto arrowArrayBatchBuffers = std::make_unique<const void*[]>(1);
+    arrowArrayBatchBuffers[0] = nullptr;
+
+    auto arrowArrayBatchChildren = std::make_unique<ArrowArray*[]>(numCols);
+    auto arrowArrayBatchChildPointers = std::make_unique<std::unique_ptr<ArrowArray>[]>(numCols);
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        arrowArrayBatchChildPointers[i] = std::make_unique<ArrowArray>();
+    }
+
+    // Second, transfer ownership to arrowArrayBatch
+    // No unhandled exceptions until the pycapsule owns the arrowArrayBatch to avoid memory leaks
+
+    for (SQLUSMALLINT col = 0; col < numCols; col++) {
+        arrowArrayPrivateData[col]->buffers[0] = arrowArrayPrivateData[col]->valid.get();
+        arrowArrayPrivateData[col]->buffers[1] = arrowArrayPrivateData[col]->ptrValueBuffer;
+        arrowArrayPrivateData[col]->buffers[2] = arrowArrayPrivateData[col]->varData.data();
+
+        *arrowArrayBatchChildPointers[col] = {
+            static_cast<int64_t>(idxRowArrow),
+            nullCounts[col],
+            0,
+            columnVarLen[col] ? 3 : 2,
+            0,
+            (const void**)arrowArrayPrivateData[col]->buffers.data(),
+            nullptr,
+            nullptr,
+            [](ArrowArray* array) {
+                assert(array != nullptr);
+                assert(array->private_data != nullptr);
+                assert(array->release != nullptr);
+                assert(array->children == nullptr);
+                assert(array->n_children == 0);
+                delete array->private_data; // Frees all buffer entries
+                assert(array->buffers != nullptr);
+                array->release = nullptr;
+            },
+            arrowArrayPrivateData[col].release(),
+        };
+    }
+
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        arrowArrayBatchChildren[i] = arrowArrayBatchChildPointers[i].release();
+    }
+
+    *arrowArrayBatch = {
+        static_cast<int64_t>(idxRowArrow),
+        0,
+        0,
+        1,
+        numCols,
+        arrowArrayBatchBuffers.release(),
+        arrowArrayBatchChildren.release(),
+        nullptr,
+        [](ArrowArray* array) {
+            assert(array != nullptr);
+            assert(array->private_data == nullptr);
+            assert(array->release != nullptr);
+            assert(array->children != nullptr);
+            assert(array->n_children > 0);
+            for (int64_t i = 0; i < array->n_children; ++i) {
+                if (array->children[i]) {
+                    if (array->children[i]->release) {
+                        array->children[i]->release(array->children[i]);
+                    }
+                    delete array->children[i];
+                }
+            }
+            delete[] array->children;
+            assert(array->buffers != nullptr);
+            assert(array->n_buffers == 1);
+            assert(array->buffers[0] == nullptr);
+            delete[] array->buffers;
+            array->release = nullptr;
+        },
+        nullptr,
+    };
+
+    // Finally, transfer ownership of arrowArrayBatch and its pointer to pycapsule
+    py::capsule arrowArrayBatchCapsule;
+    try {
+        arrowArrayBatchCapsule = py::capsule(arrowArrayBatch.get(), "arrow_array", [](void* ptr) {
+            auto arrowArray = static_cast<ArrowArray*>(ptr);
+            if (arrowArray->release) {
+                arrowArray->release(arrowArray);
+            }
+            delete arrowArray;
+        });
+    } catch (...) {
+        arrowArrayBatch->release(arrowArrayBatch.get());
+        throw;
+    }
+    arrowArrayBatch.release();
+    capsules.append(arrowArrayBatchCapsule);
+
+    return ret;
+}
+
 // FetchAll_wrap - Fetches all rows of data from the result set.
 //
 // @param StatementHandle: Handle to the statement from which data is to be
@@ -4416,6 +5572,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set",
           py::arg("StatementHandle"), py::arg("rows"), py::arg("charEncoding") = "utf-8",
           py::arg("wcharEncoding") = "utf-16le");
+    m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap, "Fetch an arrow batch of given length from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
