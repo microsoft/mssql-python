@@ -103,7 +103,7 @@ class MSSQLLogger:
         self._handlers_initialized = False
         self._handler_lock = threading.RLock()  # Reentrant lock for handler operations
         self._cleanup_registered = False  # Track if atexit cleanup is registered
-        
+
         # Cached level for fast checks (avoid repeated isEnabledFor calls)
         self._cached_level = logging.CRITICAL
         self._is_debug_enabled = False
@@ -150,7 +150,7 @@ class MSSQLLogger:
         class CSVFormatter(logging.Formatter):
             def format(self, record):
                 # Check if this is from py-core (via py_core_log method)
-                if hasattr(record, 'funcName') and record.funcName == "py-core":
+                if hasattr(record, "funcName") and record.funcName == "py-core":
                     source = "py-core"
                     message = record.getMessage()
                 else:
@@ -338,7 +338,7 @@ class MSSQLLogger:
     def py_core_log(self, level: int, msg: str, filename: str = "cursor.rs", lineno: int = 0):
         """
         Logging method for py-core (Rust/TDS) code with custom source location.
-        
+
         Args:
             level: Log level (DEBUG, INFO, WARNING, ERROR)
             msg: Message string (already formatted)
@@ -348,9 +348,10 @@ class MSSQLLogger:
         try:
             if not self._logger.isEnabledFor(level):
                 return
-            
+
             # Create a custom LogRecord with Rust source location
             import logging as log_module
+
             record = log_module.LogRecord(
                 name=self._logger.name,
                 level=level,
@@ -360,7 +361,7 @@ class MSSQLLogger:
                 args=(),
                 exc_info=None,
                 func="py-core",
-                sinfo=None
+                sinfo=None,
             )
             self._logger.handle(record)
         except Exception:
@@ -486,10 +487,10 @@ class MSSQLLogger:
 
         # Set level (atomic operation, no lock needed)
         self._logger.setLevel(level)
-        
+
         # Cache level for fast checks (avoid repeated isEnabledFor calls)
         self._cached_level = level
-        self._is_debug_enabled = (level <= logging.DEBUG)
+        self._is_debug_enabled = level <= logging.DEBUG
 
         # Notify C++ bridge of level change
         self._notify_cpp_level_change(level)
@@ -595,7 +596,7 @@ class MSSQLLogger:
     def level(self) -> int:
         """Get the current logging level"""
         return self._logger.level
-    
+
     @property
     def is_debug_enabled(self) -> bool:
         """Fast check if debug logging is enabled (cached for performance)"""

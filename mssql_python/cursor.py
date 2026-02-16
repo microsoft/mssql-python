@@ -2529,18 +2529,26 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         # Fast check if logging is enabled to avoid overhead
         is_logging = logger.is_debug_enabled
-        
+
         if is_logging:
             logger.debug(
                 "_bulkcopy: Starting bulk copy operation - table=%s, batch_size=%d, timeout=%d, "
                 "keep_identity=%s, check_constraints=%s, table_lock=%s, keep_nulls=%s, "
                 "fire_triggers=%s, use_internal_transaction=%s",
-                table_name, batch_size, timeout, keep_identity, check_constraints,
-                table_lock, keep_nulls, fire_triggers, use_internal_transaction
+                table_name,
+                batch_size,
+                timeout,
+                keep_identity,
+                check_constraints,
+                table_lock,
+                keep_nulls,
+                fire_triggers,
+                use_internal_transaction,
             )
-        
+
         try:
             import mssql_py_core
+
             if is_logging:
                 logger.debug("_bulkcopy: mssql_py_core module imported successfully")
         except ImportError as exc:
@@ -2566,7 +2574,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise TypeError("data must be an iterable of tuples or lists, got None")
         if isinstance(data, (str, bytes)):
             if is_logging:
-                logger.error("_bulkcopy: data parameter is string or bytes, not valid row collection")
+                logger.error(
+                    "_bulkcopy: data parameter is string or bytes, not valid row collection"
+                )
             raise TypeError(
                 f"data must be an iterable of tuples or lists, got {type(data).__name__}. "
                 "Strings and bytes are not valid row collections."
@@ -2630,11 +2640,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "DATABASE parameter is required in connection string for bulk copy. "
                 "Specify the target database explicitly to avoid accidentally writing to system databases."
             )
-        
+
         if is_logging:
             logger.debug(
                 "_bulkcopy: Connection parameters - server=%s, database=%s",
-                params.get("server"), params.get("database")
+                params.get("server"),
+                params.get("database"),
             )
 
         # Build connection context for bulk copy library
@@ -2657,11 +2668,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 encryption = encrypt_param
         else:
             encryption = "Optional"
-        
+
         if is_logging:
             logger.debug(
                 "_bulkcopy: Connection security - encryption=%s, trust_cert=%s",
-                encryption, trust_cert
+                encryption,
+                trust_cert,
             )
 
         context = {
@@ -2704,12 +2716,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if isinstance(column_mappings[0], tuple):
                     logger.debug(
                         "_bulkcopy: Using advanced column mappings with %d mapping(s)",
-                        len(column_mappings)
+                        len(column_mappings),
                     )
                 else:
                     logger.debug(
                         "_bulkcopy: Using simple column mappings with %d column(s)",
-                        len(column_mappings)
+                        len(column_mappings),
                     )
         elif is_logging:
             logger.debug("_bulkcopy: No column mappings provided, using ordinal position mapping")
@@ -2721,12 +2733,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 logger.debug("_bulkcopy: Creating PyCoreConnection")
             # Only pass logger to Rust if logging is enabled (performance optimization)
             pycore_connection = mssql_py_core.PyCoreConnection(
-                pycore_context, 
-                python_logger=logger if is_logging else None
+                pycore_context, python_logger=logger if is_logging else None
             )
             if is_logging:
                 logger.debug("_bulkcopy: PyCoreConnection created successfully")
-            
+
                 logger.debug("_bulkcopy: Creating PyCoreCursor")
             pycore_cursor = pycore_connection.cursor()
             if is_logging:
@@ -2735,10 +2746,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             if is_logging:
-                logger.info(
-                    "_bulkcopy: Executing bulk copy operation to table '%s'",
-                    table_name
-                )
+                logger.info("_bulkcopy: Executing bulk copy operation to table '%s'", table_name)
             result = pycore_cursor.bulkcopy(
                 table_name,
                 iter(data),
@@ -2753,13 +2761,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 use_internal_transaction=use_internal_transaction,
                 python_logger=logger if is_logging else None,  # Only pass logger if enabled
             )
-            
+
             if is_logging:
                 logger.info(
                     "_bulkcopy: Bulk copy completed successfully - rows_copied=%s, batch_count=%s, elapsed_time=%s",
-                    result.get('rows_copied', 'N/A'),
-                    result.get('batch_count', 'N/A'),
-                    result.get('elapsed_time', 'N/A')
+                    result.get("rows_copied", "N/A"),
+                    result.get("batch_count", "N/A"),
+                    result.get("elapsed_time", "N/A"),
                 )
 
             return result
@@ -2789,10 +2797,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if resource and hasattr(resource, "close"):
                     try:
                         if is_logging:
-                            logger.debug(
-                                "_bulkcopy: Closing resource %s",
-                                type(resource).__name__
-                            )
+                            logger.debug("_bulkcopy: Closing resource %s", type(resource).__name__)
                         resource.close()
                     except Exception as cleanup_error:
                         # Log cleanup errors at debug level to aid troubleshooting
