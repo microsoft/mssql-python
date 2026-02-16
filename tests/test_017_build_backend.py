@@ -12,7 +12,6 @@ import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
-
 # =============================================================================
 # platform_utils tests
 # =============================================================================
@@ -248,24 +247,29 @@ class TestIsTruthy:
 
     def test_bool_true(self):
         from build_backend.hooks import _is_truthy
+
         assert _is_truthy(True) is True
 
     def test_bool_false(self):
         from build_backend.hooks import _is_truthy
+
         assert _is_truthy(False) is False
 
     def test_string_true_variants(self):
         from build_backend.hooks import _is_truthy
+
         for val in ("true", "True", "TRUE", "1", "yes", "Yes", "YES"):
             assert _is_truthy(val) is True, f"Expected True for {val!r}"
 
     def test_string_false_variants(self):
         from build_backend.hooks import _is_truthy
+
         for val in ("false", "False", "0", "no", "No", "", "anything"):
             assert _is_truthy(val) is False, f"Expected False for {val!r}"
 
     def test_non_string_non_bool(self):
         from build_backend.hooks import _is_truthy
+
         assert _is_truthy(1) is True
         assert _is_truthy(0) is False
         assert _is_truthy([]) is False
@@ -358,9 +362,7 @@ class TestBuildEditable:
 
         mock_st_editable = MagicMock(return_value="fake-editable.whl")
         with patch("setuptools.build_meta.build_editable", mock_st_editable):
-            result = build_editable(
-                "/tmp/out", config_settings={"--skip-ddbc-compile": "true"}
-            )
+            result = build_editable("/tmp/out", config_settings={"--skip-ddbc-compile": "true"})
 
         mock_compile.assert_not_called()
         assert result == "fake-editable.whl"
@@ -457,7 +459,9 @@ class TestCLI:
     """Tests for build_backend CLI entry point."""
 
     @patch("build_backend.__main__.compile_ddbc")
-    @patch("build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64"))
+    @patch(
+        "build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64")
+    )
     def test_main_success(self, mock_plat, mock_compile):
         from build_backend.__main__ import main
 
@@ -466,7 +470,9 @@ class TestCLI:
         mock_compile.assert_called_once()
 
     @patch("build_backend.__main__.compile_ddbc", side_effect=FileNotFoundError("no build.sh"))
-    @patch("build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64"))
+    @patch(
+        "build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64")
+    )
     def test_main_file_not_found(self, mock_plat, mock_compile):
         from build_backend.__main__ import main
 
@@ -474,7 +480,9 @@ class TestCLI:
             assert main() == 1
 
     @patch("build_backend.__main__.compile_ddbc", side_effect=RuntimeError("failed"))
-    @patch("build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64"))
+    @patch(
+        "build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64")
+    )
     def test_main_runtime_error(self, mock_plat, mock_compile):
         from build_backend.__main__ import main
 
@@ -482,7 +490,9 @@ class TestCLI:
             assert main() == 1
 
     @patch("build_backend.__main__.compile_ddbc")
-    @patch("build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64"))
+    @patch(
+        "build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64")
+    )
     def test_main_quiet_suppresses_output(self, mock_plat, mock_compile, capsys):
         from build_backend.__main__ import main
 
@@ -492,7 +502,9 @@ class TestCLI:
         assert "[build_backend]" not in captured.out
 
     @patch("build_backend.__main__.compile_ddbc")
-    @patch("build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64"))
+    @patch(
+        "build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64")
+    )
     def test_main_passes_arch(self, mock_plat, mock_compile):
         from build_backend.__main__ import main
 
@@ -501,7 +513,9 @@ class TestCLI:
         mock_compile.assert_called_once_with(arch="arm64", coverage=False, verbose=False)
 
     @patch("build_backend.__main__.compile_ddbc")
-    @patch("build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64"))
+    @patch(
+        "build_backend.__main__.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64")
+    )
     def test_main_passes_coverage(self, mock_plat, mock_compile):
         from build_backend.__main__ import main
 
@@ -589,7 +603,9 @@ class TestCompileDdbc:
 
     @patch("build_backend.compiler._run_unix_build", return_value=True)
     @patch("build_backend.compiler.find_pybind_dir", return_value=Path("/fake/pybind"))
-    @patch("build_backend.compiler.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64"))
+    @patch(
+        "build_backend.compiler.get_platform_info", return_value=("x86_64", "manylinux_2_28_x86_64")
+    )
     def test_compile_ddbc_linux_default_arch(self, mock_plat, mock_find, mock_unix):
         """compile_ddbc uses get_platform_info when arch is None."""
         from build_backend.compiler import compile_ddbc

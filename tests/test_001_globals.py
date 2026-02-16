@@ -740,5 +740,3 @@ def test_decimal_separator_concurrent_db_operations(db_connection):
         # Always make sure to clean up
         stop_event.set()
         setDecimalSeparator(original_separator)
-
-
