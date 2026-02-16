@@ -48,9 +48,6 @@ Repository = "https://github.com/microsoft/mssql-python"
 Issues = "https://github.com/microsoft/mssql-python/issues"
 Changelog = "https://github.com/microsoft/mssql-python/blob/main/CHANGELOG.md"
 
-[project.scripts]
-build-ddbc = "build_backend.__main__:main"
-
 [project.optional-dependencies]
 dev = [
     "pytest",
