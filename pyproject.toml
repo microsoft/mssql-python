@@ -113,8 +113,12 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "stress: marks tests as stress tests (long-running, resource-intensive)",
+    "stress_threading: marks tests as multi-threaded stress tests (concurrent execution)",
+    "slow: marks tests as slow-running (may take several minutes)",
 ]
-addopts = "-m 'not stress'"
+# Default: skips stress tests. To run stress: pytest -m stress
+# To run ALL tests including stress: pytest -v -m ""
+addopts = "-m 'not stress and not stress_threading'"
 
 # =============================================================================
 # Code Formatting - Black
