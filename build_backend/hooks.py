@@ -7,7 +7,7 @@ ddbc_bindings compilation before building wheels.
 Usage in pyproject.toml:
     [build-system]
     requires = ["setuptools>=61.0", "wheel", "pybind11"]
-    build-backend = "build_ddbc.build_backend"
+    build-backend = "build_backend.hooks"
     backend-path = ["."]
 """
 
@@ -125,16 +125,30 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
     """
     print("[build_backend] Starting editable install...")
 
-    # Compile ddbc_bindings for editable installs too
-    print("[build_backend] Compiling ddbc_bindings for editable install...")
-    try:
-        compile_ddbc(verbose=True)
-        print("[build_backend] Compilation successful!")
-    except FileNotFoundError:
-        print("[build_backend] Build scripts not found, assuming pre-compiled binaries")
-    except (RuntimeError, OSError) as e:
-        print(f"[build_backend] Compilation failed: {e}")
-        raise
+    # Check if we should skip compilation
+    skip_compile = False
+    if config_settings:
+        skip_compile = _is_truthy(config_settings.get("--skip-ddbc-compile", False))
+
+    if not skip_compile:
+        arch = None
+        coverage = False
+
+        if config_settings:
+            arch = config_settings.get("--arch")
+            coverage = _is_truthy(config_settings.get("--coverage", False))
+
+        print("[build_backend] Compiling ddbc_bindings for editable install...")
+        try:
+            compile_ddbc(arch=arch, coverage=coverage, verbose=True)
+            print("[build_backend] Compilation successful!")
+        except FileNotFoundError:
+            print("[build_backend] Build scripts not found, assuming pre-compiled binaries")
+        except (RuntimeError, OSError) as e:
+            print(f"[build_backend] Compilation failed: {e}")
+            raise
+    else:
+        print("[build_backend] Skipping ddbc compilation (--skip-ddbc-compile)")
 
     # Import here and handle absence gracefully for older setuptools versions
     try:

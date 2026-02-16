@@ -9,14 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-# Import platform_utils directly without going through mssql_python.__init__
-# (which loads the native ddbc_bindings .so).
-_mssql_dir = str(Path(__file__).resolve().parent.parent / "mssql_python")
-sys.path.insert(0, _mssql_dir)
-import platform_utils as _platform_utils  # noqa: E402
-sys.path.remove(_mssql_dir)
-
-get_platform_info = _platform_utils.get_platform_info
+from .platform_utils import get_platform_info
 
 
 def find_pybind_dir() -> Path:
@@ -80,8 +73,8 @@ def _run_windows_build(pybind_dir: Path, arch: str, verbose: bool) -> bool:
     cmd = [str(build_script), arch]
 
     if verbose:
-        print(f"[build_ddbc] Running: {' '.join(cmd)}")
-        print(f"[build_ddbc] Working directory: {pybind_dir}")
+        print(f"[build_backend] Running: {' '.join(cmd)}")
+        print(f"[build_backend] Working directory: {pybind_dir}")
 
     result = subprocess.run(
         cmd,
@@ -99,7 +92,7 @@ def _run_windows_build(pybind_dir: Path, arch: str, verbose: bool) -> bool:
         raise RuntimeError(f"build.bat failed with exit code {result.returncode}")
 
     if verbose:
-        print("[build_ddbc] Windows build completed successfully!")
+        print("[build_backend] Windows build completed successfully!")
 
     return True
 
@@ -118,8 +111,8 @@ def _run_unix_build(pybind_dir: Path, coverage: bool, verbose: bool) -> bool:
         cmd.append("--coverage")
 
     if verbose:
-        print(f"[build_ddbc] Running: {' '.join(cmd)}")
-        print(f"[build_ddbc] Working directory: {pybind_dir}")
+        print(f"[build_backend] Running: {' '.join(cmd)}")
+        print(f"[build_backend] Working directory: {pybind_dir}")
 
     result = subprocess.run(
         cmd,
@@ -137,6 +130,6 @@ def _run_unix_build(pybind_dir: Path, coverage: bool, verbose: bool) -> bool:
         raise RuntimeError(f"build.sh failed with exit code {result.returncode}")
 
     if verbose:
-        print("[build_ddbc] Unix build completed successfully!")
+        print("[build_backend] Unix build completed successfully!")
 
     return True

@@ -1,8 +1,8 @@
 """
 Platform detection utilities for mssql-python.
 
-This module provides platform and architecture detection used by both
-the build system (setup.py, build_ddbc) and runtime code.
+This module provides platform and architecture detection used by
+the build system (setup.py, build_backend).
 """
 
 import glob

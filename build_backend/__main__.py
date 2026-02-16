@@ -1,32 +1,33 @@
 """
-CLI entry point for build_ddbc.
+CLI entry point for build_backend.
 
 Usage:
-    python -m build_ddbc              # Compile ddbc_bindings
-    python -m build_ddbc --arch arm64 # Specify architecture (Windows)
-    python -m build_ddbc --coverage   # Enable coverage (Linux)
-    python -m build_ddbc --help       # Show help
+    python -m build_backend              # Compile ddbc_bindings
+    python -m build_backend --arch arm64 # Specify architecture (Windows)
+    python -m build_backend --coverage   # Enable coverage (Linux)
+    python -m build_backend --help       # Show help
 """
 
 import argparse
 import sys
 
 from . import __version__
-from .compiler import compile_ddbc, get_platform_info
+from .compiler import compile_ddbc
+from .platform_utils import get_platform_info
 
 
 def main() -> int:
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
-        prog="python -m build_ddbc",
+        prog="python -m build_backend",
         description="Compile ddbc_bindings native extension for mssql-python",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python -m build_ddbc              # Build for current platform
-    python -m build_ddbc --arch arm64 # Build for ARM64 (Windows)
-    python -m build_ddbc --coverage   # Build with coverage (Linux)
-    python -m build_ddbc --quiet      # Build without output
+    python -m build_backend              # Build for current platform
+    python -m build_backend --arch arm64 # Build for ARM64 (Windows)
+    python -m build_backend --coverage   # Build with coverage (Linux)
+    python -m build_backend --quiet      # Build without output
         """,
     )
 
@@ -59,9 +60,9 @@ Examples:
     # Show platform info
     if not args.quiet:
         arch, platform_tag = get_platform_info()
-        print(f"[build_ddbc] Platform: {sys.platform}")
-        print(f"[build_ddbc] Architecture: {arch}")
-        print(f"[build_ddbc] Platform tag: {platform_tag}")
+        print(f"[build_backend] Platform: {sys.platform}")
+        print(f"[build_backend] Architecture: {arch}")
+        print(f"[build_backend] Platform tag: {platform_tag}")
         print()
 
     try:

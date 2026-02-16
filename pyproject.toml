@@ -3,7 +3,7 @@
 # =============================================================================
 [build-system]
 requires = ["setuptools>=64.0.0", "wheel", "pybind11"]
-build-backend = "build_ddbc.build_backend"
+build-backend = "build_backend.hooks"
 backend-path = ["."]
 
 # =============================================================================
@@ -48,6 +48,9 @@ Repository = "https://github.com/microsoft/mssql-python"
 Issues = "https://github.com/microsoft/mssql-python/issues"
 Changelog = "https://github.com/microsoft/mssql-python/blob/main/CHANGELOG.md"
 
+[project.scripts]
+build-ddbc = "build_backend.__main__:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest",
@@ -69,23 +72,8 @@ lint = [
     "types-setuptools",
 ]
 all = [
-    # Dev dependencies
-    "pytest",
-    "pytest-cov",
-    "coverage",
-    "unittest-xml-reporting",
-    "psutil",
-    "pybind11",
-    "setuptools",
-    "wheel",
-    "build",
-    # Lint dependencies
-    "black",
-    "autopep8",
-    "pylint",
-    "cpplint",
-    "mypy",
-    "types-setuptools",
+    "mssql-python[dev]",
+    "mssql-python[lint]",
 ]
 
 # =============================================================================
@@ -98,7 +86,7 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["mssql_python*"]
-exclude = ["build_ddbc*", "tests*", "benchmarks*"]
+exclude = ["build_backend*", "tests*", "benchmarks*"]
 
 [tool.setuptools.package-data]
 mssql_python = [

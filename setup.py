@@ -2,14 +2,14 @@
 Setup script for mssql-python.
 
 This script handles platform-specific wheel building with correct platform tags.
-The native extension compilation is handled by the build_ddbc package.
+The native extension compilation is handled by the build_backend package.
 
 Note: This file is still needed for:
 1. Platform-specific package discovery (libs/windows, libs/linux, libs/macos)
 2. Custom wheel platform tags (BinaryDistribution, CustomBdistWheel)
 
 For building:
-    python -m build_ddbc       # Compile ddbc_bindings only
+    python -m build_backend    # Compile ddbc_bindings only
     python -m build            # Compile + create wheel (recommended)
     pip install -e .           # Editable install with auto-compile
 """
@@ -20,7 +20,7 @@ from setuptools import setup, find_packages
 from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
 
-from mssql_python.platform_utils import get_platform_info
+from build_backend.platform_utils import get_platform_info
 
 # =============================================================================
 # Platform-Specific Package Discovery
