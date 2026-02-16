@@ -358,9 +358,7 @@ class TestBuildEditable:
         from build_backend.hooks import build_editable
 
         mock_st_editable = MagicMock(return_value="fake-editable.whl")
-        with patch(
-            "setuptools.build_meta.build_editable", mock_st_editable, create=True
-        ):
+        with patch("setuptools.build_meta.build_editable", mock_st_editable, create=True):
             result = build_editable("/tmp/out", config_settings={"--skip-ddbc-compile": "true"})
 
         mock_compile.assert_not_called()
@@ -371,9 +369,7 @@ class TestBuildEditable:
         from build_backend.hooks import build_editable
 
         mock_st_editable = MagicMock(return_value="fake-editable.whl")
-        with patch(
-            "setuptools.build_meta.build_editable", mock_st_editable, create=True
-        ):
+        with patch("setuptools.build_meta.build_editable", mock_st_editable, create=True):
             build_editable(
                 "/tmp/out",
                 config_settings={"--arch": "x64", "--coverage": "1"},
