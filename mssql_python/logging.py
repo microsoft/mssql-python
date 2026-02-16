@@ -103,6 +103,10 @@ class MSSQLLogger:
         self._handlers_initialized = False
         self._handler_lock = threading.RLock()  # Reentrant lock for handler operations
         self._cleanup_registered = False  # Track if atexit cleanup is registered
+        
+        # Cached level for fast checks (avoid repeated isEnabledFor calls)
+        self._cached_level = logging.CRITICAL
+        self._is_debug_enabled = False
 
         # Don't setup handlers yet - do it lazily when setLevel is called
         # This prevents creating log files when user changes output mode before enabling logging
@@ -145,9 +149,9 @@ class MSSQLLogger:
         # Custom formatter to extract source from message and format as CSV
         class CSVFormatter(logging.Formatter):
             def format(self, record):
-                # Check if this is from Rust (via rust_log method)
-                if hasattr(record, 'funcName') and record.funcName == "rust":
-                    source = "Rust"
+                # Check if this is from py-core (via py_core_log method)
+                if hasattr(record, 'funcName') and record.funcName == "py-core":
+                    source = "py-core"
                     message = record.getMessage()
                 else:
                     # Extract source from message (e.g., [Python] or [DDBC])
@@ -331,9 +335,9 @@ class MSSQLLogger:
                 pass  # Even stderr notification failed
             # Don't crash - logging continues without header
 
-    def rust_log(self, level: int, msg: str, filename: str = "cursor.rs", lineno: int = 0):
+    def py_core_log(self, level: int, msg: str, filename: str = "cursor.rs", lineno: int = 0):
         """
-        Logging method for Rust code with custom source location.
+        Logging method for py-core (Rust/TDS) code with custom source location.
         
         Args:
             level: Log level (DEBUG, INFO, WARNING, ERROR)
@@ -355,7 +359,7 @@ class MSSQLLogger:
                 msg=msg,
                 args=(),
                 exc_info=None,
-                func="rust",
+                func="py-core",
                 sinfo=None
             )
             self._logger.handle(record)
@@ -392,8 +396,9 @@ class MSSQLLogger:
             All other failures are silently ignored to prevent app crashes.
         """
         try:
-            # Fast level check (zero overhead if disabled)
-            if not self._logger.isEnabledFor(level):
+            # Fast level check using cached level (zero overhead if disabled)
+            # This avoids the overhead of isEnabledFor() method call
+            if level < self._cached_level:
                 return
 
             # Add prefix if requested (only after level check)
@@ -404,8 +409,9 @@ class MSSQLLogger:
             if args:
                 msg = msg % args
 
-            # Log the message (no args since already formatted)
-            self._logger.log(level, msg, **kwargs)
+            # Log the message with proper stack level to capture caller's location
+            # stacklevel=3 skips: _log -> debug/info/warning/error -> actual caller
+            self._logger.log(level, msg, stacklevel=3, **kwargs)
         except Exception:
             # Last resort: Try stderr fallback for any logging failure
             # This helps diagnose critical issues (disk full, permission denied, etc.)
@@ -480,6 +486,10 @@ class MSSQLLogger:
 
         # Set level (atomic operation, no lock needed)
         self._logger.setLevel(level)
+        
+        # Cache level for fast checks (avoid repeated isEnabledFor calls)
+        self._cached_level = level
+        self._is_debug_enabled = (level <= logging.DEBUG)
 
         # Notify C++ bridge of level change
         self._notify_cpp_level_change(level)
@@ -585,6 +595,11 @@ class MSSQLLogger:
     def level(self) -> int:
         """Get the current logging level"""
         return self._logger.level
+    
+    @property
+    def is_debug_enabled(self) -> bool:
+        """Fast check if debug logging is enabled (cached for performance)"""
+        return self._is_debug_enabled
 
 
 # ============================================================================
