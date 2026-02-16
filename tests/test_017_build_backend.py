@@ -341,17 +341,14 @@ class TestBuildEditable:
         from build_backend.hooks import build_editable
 
         mock_st_editable = MagicMock(return_value="fake-editable.whl")
+        # Patch the runtime import inside build_editable; create=True is
+        # needed because older setuptools (<64) lack build_editable.
         with patch(
-            "build_backend.hooks._setuptools_build_editable",
+            "setuptools.build_meta.build_editable",
             mock_st_editable,
             create=True,
         ):
-            # Patch the import inside build_editable
-            with patch(
-                "setuptools.build_meta.build_editable",
-                mock_st_editable,
-            ):
-                result = build_editable("/tmp/out")
+            result = build_editable("/tmp/out")
 
         mock_compile.assert_called_once_with(arch=None, coverage=False, verbose=True)
         assert result == "fake-editable.whl"
@@ -361,7 +358,9 @@ class TestBuildEditable:
         from build_backend.hooks import build_editable
 
         mock_st_editable = MagicMock(return_value="fake-editable.whl")
-        with patch("setuptools.build_meta.build_editable", mock_st_editable):
+        with patch(
+            "setuptools.build_meta.build_editable", mock_st_editable, create=True
+        ):
             result = build_editable("/tmp/out", config_settings={"--skip-ddbc-compile": "true"})
 
         mock_compile.assert_not_called()
@@ -372,7 +371,9 @@ class TestBuildEditable:
         from build_backend.hooks import build_editable
 
         mock_st_editable = MagicMock(return_value="fake-editable.whl")
-        with patch("setuptools.build_meta.build_editable", mock_st_editable):
+        with patch(
+            "setuptools.build_meta.build_editable", mock_st_editable, create=True
+        ):
             build_editable(
                 "/tmp/out",
                 config_settings={"--arch": "x64", "--coverage": "1"},
