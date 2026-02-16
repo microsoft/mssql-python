@@ -83,10 +83,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         try:
             compile_ddbc(arch=arch, coverage=coverage, verbose=True)
             print("[build_backend] Compilation successful!")
-        except FileNotFoundError:
-            # If build scripts don't exist, assume pre-compiled binaries
-            print("[build_backend] Build scripts not found, assuming pre-compiled binaries")
-        except (RuntimeError, OSError) as e:
+        except (FileNotFoundError, RuntimeError, OSError) as e:
             print(f"[build_backend] Compilation failed: {e}")
             raise
     else:
@@ -142,9 +139,7 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
         try:
             compile_ddbc(arch=arch, coverage=coverage, verbose=True)
             print("[build_backend] Compilation successful!")
-        except FileNotFoundError:
-            print("[build_backend] Build scripts not found, assuming pre-compiled binaries")
-        except (RuntimeError, OSError) as e:
+        except (FileNotFoundError, RuntimeError, OSError) as e:
             print(f"[build_backend] Compilation failed: {e}")
             raise
     else:
