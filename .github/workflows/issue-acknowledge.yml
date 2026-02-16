@@ -50,7 +50,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.issue.number,
-              body: `Hi @${context.payload.issue.user.login}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours and get back to you.\n\nIn case you've additional information to share please feel free to update the issue.\n\nThank you for your patience!`
+              body: `Hi @${context.payload.issue.user.login}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours and get back to you.\n\nIf you have additional information to share, please feel free to update the issue.\n\nThank you for your patience!`
             });
 
       # Step 4: Add "triage needed" label if no maintainer has responded
