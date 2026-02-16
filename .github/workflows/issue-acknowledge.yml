@@ -3,6 +3,11 @@ name: Auto Acknowledge GH Issues
 on:
   issues:
     types: [opened]
+  workflow_dispatch:  # Remove before merging - for testing only
+    inputs:
+      issue_number:
+        description: 'Issue number to test with'
+        required: true
 
 permissions:
   contents: read
@@ -11,7 +16,7 @@ jobs:
   acknowledge:
     runs-on: ubuntu-latest
     permissions:
-      issues: read
+      issues: write
     steps:
       # Step 1: Wait 15 minutes
       - name: Wait 15 minutes
@@ -25,11 +30,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const maintainers = ['sumitmsft','dlevy-msft-sql']; 
+            const issueNumber = context.payload.issue
+              ? context.payload.issue.number
+              : parseInt('${{ github.event.inputs.issue_number }}');
 
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.issue.number
+              issue_number: issueNumber
             });
 
             const maintainerReplied = comments.data.some(
@@ -46,9 +54,20 @@ jobs:
         with:
           github-token: ${{ secrets.SUMIT_PAT_FOR_AUTO_RESPONSE }}
           script: |
+            const issueNumber = context.payload.issue
+              ? context.payload.issue.number
+              : parseInt('${{ github.event.inputs.issue_number }}');
+
+            // Fetch the issue to get the author login (needed for workflow_dispatch)
+            const issue = context.payload.issue || (await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            })).data;
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              body: `Hi @${context.payload.issue.user.login}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours and get back to you.\n\nThank you for your patience!`
+              issue_number: issueNumber,
+              body: `Hi @${issue.user.login}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours and get back to you.\n\nThank you for your patience!`
             });
