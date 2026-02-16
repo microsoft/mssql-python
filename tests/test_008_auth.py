@@ -7,14 +7,16 @@ Tests for the auth module.
 import pytest
 import platform
 import sys
+from unittest.mock import patch, MagicMock
 from mssql_python.auth import (
     AADAuth,
     process_auth_parameters,
     remove_sensitive_params,
     get_auth_token,
     process_connection_string,
+    extract_auth_type,
 )
-from mssql_python.constants import AuthType
+from mssql_python.constants import AuthType, ConstantsDDBC
 import secrets
 
 SAMPLE_TOKEN = secrets.token_hex(44)
@@ -81,6 +83,11 @@ class TestAADAuth:
         token_struct = AADAuth.get_token_struct(SAMPLE_TOKEN)
         assert isinstance(token_struct, bytes)
         assert len(token_struct) > 4
+
+    def test_get_raw_token_default(self):
+        raw_token = AADAuth.get_raw_token("default")
+        assert isinstance(raw_token, str)
+        assert raw_token == SAMPLE_TOKEN
 
     def test_get_token_default(self):
         token_struct = AADAuth.get_token("default")
@@ -281,7 +288,7 @@ class TestProcessAuthParameters:
         params = ["Authentication=ActiveDirectoryInteractive", "Server=test"]
         modified_params, auth_type = process_auth_parameters(params)
         assert "Authentication=ActiveDirectoryInteractive" in modified_params
-        assert auth_type == None
+        assert auth_type is None
 
     def test_interactive_auth_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
@@ -326,34 +333,37 @@ class TestRemoveSensitiveParams:
 class TestProcessConnectionString:
     def test_process_connection_string_with_default_auth(self):
         conn_str = "Server=test;Authentication=ActiveDirectoryDefault;Database=testdb"
-        result_str, attrs = process_connection_string(conn_str)
+        result_str, attrs, auth_type = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
         assert attrs is not None
-        assert 1256 in attrs
-        assert isinstance(attrs[1256], bytes)
+        assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in attrs
+        assert isinstance(attrs[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value], bytes)
+        assert auth_type == "default"
 
     def test_process_connection_string_no_auth(self):
         conn_str = "Server=test;Database=testdb;UID=user;PWD=password"
-        result_str, attrs = process_connection_string(conn_str)
+        result_str, attrs, auth_type = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
         assert "UID=user" in result_str
         assert "PWD=password" in result_str
         assert attrs is None
+        assert auth_type is None
 
     def test_process_connection_string_interactive_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
         conn_str = "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
-        result_str, attrs = process_connection_string(conn_str)
+        result_str, attrs, auth_type = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
         assert attrs is not None
-        assert 1256 in attrs
-        assert isinstance(attrs[1256], bytes)
+        assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in attrs
+        assert isinstance(attrs[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value], bytes)
+        assert auth_type == "interactive"
 
 
 def test_error_handling():
@@ -368,3 +378,42 @@ def test_error_handling():
     # Test non-string input
     with pytest.raises(ValueError, match="Connection string must be a string"):
         process_connection_string(None)
+
+
+class TestExtractAuthType:
+    def test_interactive(self):
+        assert (
+            extract_auth_type("Server=test;Authentication=ActiveDirectoryInteractive;")
+            == "interactive"
+        )
+
+    def test_default(self):
+        assert extract_auth_type("Server=test;Authentication=ActiveDirectoryDefault;") == "default"
+
+    def test_devicecode(self):
+        assert (
+            extract_auth_type("Server=test;Authentication=ActiveDirectoryDeviceCode;")
+            == "devicecode"
+        )
+
+    def test_no_auth(self):
+        assert extract_auth_type("Server=test;Database=db;") is None
+
+    def test_unsupported_auth(self):
+        assert extract_auth_type("Server=test;Authentication=SqlPassword;") is None
+
+
+def test_acquire_token_unsupported_auth_type():
+    with pytest.raises(ValueError, match="Unsupported auth_type 'bogus'"):
+        AADAuth._acquire_token("bogus")
+
+
+class TestConnectionAuthType:
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_auth_type_stored_on_connection(self, mock_ddbc_conn):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
+        assert conn._auth_type == "default"
+        conn.close()
