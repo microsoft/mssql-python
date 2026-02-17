@@ -158,6 +158,9 @@ class ConstantsDDBC(Enum):
     SQL_ATTR_SERVER_NAME = 13
     SQL_ATTR_RESET_CONNECTION = 116
 
+    # SQL Server-specific connection option constants
+    SQL_COPT_SS_ACCESS_TOKEN = 1256
+
     # Transaction Isolation Level Constants
     SQL_TXN_READ_UNCOMMITTED = 1
     SQL_TXN_READ_COMMITTED = 2
