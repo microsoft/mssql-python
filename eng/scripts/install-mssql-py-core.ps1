@@ -107,9 +107,12 @@ if (-not (Test-Path $wheelsDir)) {
 
 $matchingWheel = Get-ChildItem $wheelsDir -Filter $wheelPattern | Select-Object -First 1
 if (-not $matchingWheel) {
+    Write-Host "##[warning]No wheel found matching pattern: $wheelPattern"
     Write-Host "Available wheels:"
     Get-ChildItem $wheelsDir -Filter *.whl | ForEach-Object { Write-Host "  $_" }
-    throw "No wheel found matching pattern: $wheelPattern"
+    Write-Host "Skipping mssql_py_core installation — no compatible wheel for this platform."
+    Remove-Item $OutputDir -Recurse -Force -ErrorAction SilentlyContinue
+    exit 0
 }
 
 Write-Host "Found matching wheel: $($matchingWheel.Name)"

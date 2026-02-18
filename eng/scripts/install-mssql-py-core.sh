@@ -46,11 +46,17 @@ ARCH=$(python3 -c "import platform; print(platform.machine().lower())")
 echo "Python: $PY_VERSION | Platform: $PLATFORM | Arch: $ARCH"
 
 # Map to wheel platform tags
+# Detect musl (Alpine) vs glibc for Linux
 case "$PLATFORM" in
     linux)
+        if ldd --version 2>&1 | grep -qi musl; then
+            LIBC="musllinux_1_2"
+        else
+            LIBC="manylinux_2_28"
+        fi
         case "$ARCH" in
-            x86_64|amd64) WHEEL_PLATFORM="manylinux_2_28_x86_64" ;;
-            aarch64|arm64) WHEEL_PLATFORM="manylinux_2_28_aarch64" ;;
+            x86_64|amd64) WHEEL_PLATFORM="${LIBC}_x86_64" ;;
+            aarch64|arm64) WHEEL_PLATFORM="${LIBC}_aarch64" ;;
             *) echo "Unsupported Linux architecture: $ARCH"; exit 1 ;;
         esac
         ;;
@@ -124,10 +130,12 @@ fi
 
 MATCHING_WHEEL=$(find "$WHEELS_DIR" -name "$WHEEL_PATTERN" | head -1)
 if [ -z "$MATCHING_WHEEL" ]; then
+    echo "##[warning]No wheel found matching pattern: $WHEEL_PATTERN"
     echo "Available wheels:"
     ls "$WHEELS_DIR"/*.whl 2>/dev/null || echo "  (none)"
-    echo "No wheel found matching pattern: $WHEEL_PATTERN"
-    exit 1
+    echo "Skipping mssql_py_core installation — no compatible wheel for this platform."
+    rm -rf "$OUTPUT_DIR"
+    exit 0
 fi
 
 echo "Found matching wheel: $(basename "$MATCHING_WHEEL")"
