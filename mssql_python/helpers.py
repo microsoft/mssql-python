@@ -255,14 +255,15 @@ def connstr_to_pycore_params(params: dict) -> dict:
 
     When ``cursor.bulkcopy()`` is called, mssql-python opens a *separate*
     connection through mssql-py-core.
-    py-core's ``connection.rs`` expects a Python dict with snake_case keys and native bool/int types —
+    py-core's ``connection.rs`` expects a Python dict with snake_case keys —
     different from the ODBC-style keys that ``_ConnectionStringParser._parse``
     returns.
 
     This function bridges that gap: it maps lowercase ODBC keys (e.g.
-    ``"trustservercertificate"``) to py-core keys (``"trust_server_certificate"``),
-    converts ``"Yes"``/``"True"``/``"1"`` strings to ``bool`` for boolean params,
+    ``"trustservercertificate"``) to py-core keys (``"trust_server_certificate"``)
     and converts numeric strings to ``int`` for timeout/size params.
+    Boolean params (TrustServerCertificate, MultiSubnetFailover) are passed as
+    strings — ``connection.rs`` validates Yes/No and rejects invalid values.
     Unrecognised keys are silently dropped.
     """
     # Only keys present in _ALLOWED_CONNECTION_STRING_PARAMS are mapped.
@@ -300,7 +301,6 @@ def connstr_to_pycore_params(params: dict) -> dict:
         "connectretrycount": "connect_retry_count",
         "connectretryinterval": "connect_retry_interval",
     }
-    bool_keys = {"trust_server_certificate", "multi_subnet_failover"}
     int_keys = {
         "packet_size",
         "connect_retry_count",
@@ -316,16 +316,11 @@ def connstr_to_pycore_params(params: dict) -> dict:
         if raw_value is None:
             continue
 
-        # ODBC values are always strings; py-core expects native types for some keys.
-        if pycore_key in bool_keys:
-            # TrustServerCertificate and MultiSubnetFailover only accept
-            # Yes/No (case-insensitive) in ODBC Driver 18.
-            # Encrypt is different — it takes Yes/No/True/False/Optional/
-            # Mandatory/Strict — but it's a string param, not in bool_keys.
-            pycore_params[pycore_key] = (
-                raw_value.lower() == "yes" if isinstance(raw_value, str) else bool(raw_value)
-            )
-        elif pycore_key in int_keys:
+        # ODBC values are always strings; py-core expects native types for int keys.
+        # Boolean params (trust_server_certificate, multi_subnet_failover) are passed
+        # as strings — all Yes/No validation is in connection.rs for single-location
+        # consistency with Encrypt, ApplicationIntent, IPAddressPreference, etc.
+        if pycore_key in int_keys:
             # Numeric params (timeouts, packet size, etc.) — skip on bad input
             try:
                 pycore_params[pycore_key] = int(raw_value)
