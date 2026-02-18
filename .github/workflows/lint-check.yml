@@ -12,7 +12,6 @@ on:
       - '**.hpp'
       - '.github/workflows/lint-check.yml'
       - 'pyproject.toml'
-      - '.flake8'
       - '.clang-format'
   push:
     branches:
@@ -39,7 +38,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install black flake8 pylint autopep8
+        pip install black pylint autopep8
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         
     - name: Check Python formatting with Black
@@ -50,15 +49,6 @@ jobs:
           exit 1
         }
         echo "::endgroup::"
-        
-    - name: Lint with Flake8
-      run: |
-        echo "::group::Flake8 Linting"
-        flake8 mssql_python/ tests/ --max-line-length=100 --extend-ignore=E203,W503,E501,E722,F401,F841,W293,W291,F541,F811,E402,E711,E712,E721,F821 --count --statistics || {
-          echo "::warning::Flake8 found linting issues (informational only, not blocking)"
-        }
-        echo "::endgroup::"
-      continue-on-error: true
         
     - name: Lint with Pylint
       run: |
@@ -159,7 +149,7 @@ jobs:
           echo "❌ **Python Formatting (Black):** FAILED - Please run Black formatter" >> $GITHUB_STEP_SUMMARY
         fi
         
-        echo "ℹ️ **Python Linting (Flake8, Pylint):** Informational only" >> $GITHUB_STEP_SUMMARY
+        echo "ℹ️ **Python Linting (Pylint):** Informational only" >> $GITHUB_STEP_SUMMARY
         echo "ℹ️ **C++ Linting (clang-format, cpplint):** Informational only" >> $GITHUB_STEP_SUMMARY
         
         echo "" >> $GITHUB_STEP_SUMMARY

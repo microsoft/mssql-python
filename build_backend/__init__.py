@@ -1,0 +1,19 @@
+"""
+build_backend - Build system for mssql-python native extensions.
+
+This package provides:
+1. A CLI tool: `python -m build_backend`
+2. A PEP 517 build backend that auto-compiles ddbc_bindings
+
+Usage:
+    python -m build_backend              # Compile ddbc_bindings only
+    python -m build_backend --arch arm64 # Specify architecture (Windows)
+    python -m build_backend --coverage   # Enable coverage (Linux)
+    python -m build                      # Compile + create wheel (automatic)
+"""
+
+from .compiler import compile_ddbc
+from .platform_utils import get_platform_info
+
+__all__ = ["compile_ddbc", "get_platform_info"]
+__version__ = "1.3.0"

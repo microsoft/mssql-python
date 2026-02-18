@@ -63,3 +63,4 @@ build/
 
 # learning files
 learnings/
+.coverage
