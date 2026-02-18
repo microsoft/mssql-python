@@ -265,7 +265,9 @@ def connstr_to_pycore_params(params: dict) -> dict:
     and converts numeric strings to ``int`` for timeout/size params.
     Unrecognised keys are silently dropped.
     """
-    # connstr key (lowercase) → py-core dict key
+    # Only keys present in _ALLOWED_CONNECTION_STRING_PARAMS are mapped.
+    # Reserved/unsupported keys (app, workstationid, language, connect_timeout,
+    # mars_connection) are intentionally excluded — the parser rejects them.
     key_map = {
         # auth / credentials
         "uid": "user_name",
@@ -278,10 +280,7 @@ def connstr_to_pycore_params(params: dict) -> dict:
         "address": "server",
         # database
         "database": "database",
-        "app": "application_name",
         "applicationintent": "application_intent",
-        "workstationid": "workstation_id",
-        "language": "language",
         # encryption / TLS (include snake_case alias the parser may emit)
         "encrypt": "encryption",
         "trustservercertificate": "trust_server_certificate",
@@ -298,15 +297,11 @@ def connstr_to_pycore_params(params: dict) -> dict:
         # sizing / limits ("packet size" with space is a common pyodbc-ism)
         "packetsize": "packet_size",
         "packet size": "packet_size",
-        "connect_timeout": "connect_timeout",
         "connectretrycount": "connect_retry_count",
         "connectretryinterval": "connect_retry_interval",
-        # MARS
-        "mars_connection": "mars_enabled",
     }
-    bool_keys = {"trust_server_certificate", "multi_subnet_failover", "mars_enabled"}
+    bool_keys = {"trust_server_certificate", "multi_subnet_failover"}
     int_keys = {
-        "connect_timeout",
         "packet_size",
         "connect_retry_count",
         "connect_retry_interval",

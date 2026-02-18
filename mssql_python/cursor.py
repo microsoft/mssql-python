@@ -2607,7 +2607,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.connection._auth_type,
             )
 
-
         pycore_connection = None
         pycore_cursor = None
         try:
