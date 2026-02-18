@@ -251,13 +251,19 @@ def validate_attribute_value(
 
 
 def connstr_to_pycore_params(params: dict) -> dict:
-    """Translate parsed connection-string params into the dict that py-core's
-    ``connection.rs`` expects.
+    """Translate parsed ODBC connection-string params for py-core's bulk copy path.
 
-    *params* uses the lowercase keys that ``_ConnectionStringParser._parse``
-    returns.  This function maps them to py-core's snake_case keys and
-    converts str values to bool/int where the Rust side expects native types.
-    Keys not recognised by py-core are silently dropped.
+    When ``cursor.bulkcopy()`` is called, mssql-python opens a *separate*
+    connection through mssql-py-core.
+    py-core's ``connection.rs`` expects a Python dict with snake_case keys and native bool/int types —
+    different from the ODBC-style keys that ``_ConnectionStringParser._parse``
+    returns.
+
+    This function bridges that gap: it maps lowercase ODBC keys (e.g.
+    ``"trustservercertificate"``) to py-core keys (``"trust_server_certificate"``),
+    converts ``"Yes"``/``"True"``/``"1"`` strings to ``bool`` for boolean params,
+    and converts numeric strings to ``int`` for timeout/size params.
+    Unrecognised keys are silently dropped.
     """
     # connstr key (lowercase) → py-core dict key
     key_map = {
@@ -308,22 +314,32 @@ def connstr_to_pycore_params(params: dict) -> dict:
         "keep_alive_interval",
     }
 
-    ctx: dict = {}
-    for src, dst in key_map.items():
-        val = params.get(src)
-        if val is None:
-            continue
-        if dst in bool_keys:
-            ctx[dst] = val.lower() in ("yes", "true", "1") if isinstance(val, str) else bool(val)
-        elif dst in int_keys:
-            try:
-                ctx[dst] = int(val)
-            except (ValueError, TypeError):
-                pass  # let py-core use its default
-        else:
-            ctx[dst] = val
+    pycore_params: dict = {}
 
-    return ctx
+    for connstr_key, pycore_key in key_map.items():
+        raw_value = params.get(connstr_key)
+        if raw_value is None:
+            continue
+
+        # ODBC values are always strings; py-core expects native types for some keys.
+        if pycore_key in bool_keys:
+            # ODBC uses "Yes"/"No", "True"/"False", "1"/"0" for booleans
+            pycore_params[pycore_key] = (
+                raw_value.lower() in ("yes", "true", "1")
+                if isinstance(raw_value, str)
+                else bool(raw_value)
+            )
+        elif pycore_key in int_keys:
+            # Numeric params (timeouts, packet size, etc.) — skip on bad input
+            try:
+                pycore_params[pycore_key] = int(raw_value)
+            except (ValueError, TypeError):
+                pass  # let py-core fall back to its compiled-in default
+        else:
+            # String params (server, database, encryption, etc.) — pass through
+            pycore_params[pycore_key] = raw_value
+
+    return pycore_params
 
 
 # Settings functionality moved here to avoid circular imports
