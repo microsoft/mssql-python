@@ -130,12 +130,10 @@ fi
 
 MATCHING_WHEEL=$(find "$WHEELS_DIR" -name "$WHEEL_PATTERN" | head -1)
 if [ -z "$MATCHING_WHEEL" ]; then
-    echo "##[warning]No wheel found matching pattern: $WHEEL_PATTERN"
     echo "Available wheels:"
     ls "$WHEELS_DIR"/*.whl 2>/dev/null || echo "  (none)"
-    echo "Skipping mssql_py_core installation — no compatible wheel for this platform."
-    rm -rf "$OUTPUT_DIR"
-    exit 0
+    echo "ERROR: No wheel found matching pattern: $WHEEL_PATTERN"
+    exit 1
 fi
 
 echo "Found matching wheel: $(basename "$MATCHING_WHEEL")"
