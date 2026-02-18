@@ -318,11 +318,12 @@ def connstr_to_pycore_params(params: dict) -> dict:
 
         # ODBC values are always strings; py-core expects native types for some keys.
         if pycore_key in bool_keys:
-            # ODBC uses "Yes"/"No", "True"/"False", "1"/"0" for booleans
+            # TrustServerCertificate and MultiSubnetFailover only accept
+            # Yes/No (case-insensitive) in ODBC Driver 18.
+            # Encrypt is different — it takes Yes/No/True/False/Optional/
+            # Mandatory/Strict — but it's a string param, not in bool_keys.
             pycore_params[pycore_key] = (
-                raw_value.lower() in ("yes", "true", "1")
-                if isinstance(raw_value, str)
-                else bool(raw_value)
+                raw_value.lower() == "yes" if isinstance(raw_value, str) else bool(raw_value)
             )
         elif pycore_key in int_keys:
             # Numeric params (timeouts, packet size, etc.) — skip on bad input
