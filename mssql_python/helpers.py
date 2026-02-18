@@ -250,6 +250,82 @@ def validate_attribute_value(
     return True, None, sanitized_attr, sanitized_val
 
 
+def connstr_to_pycore_params(params: dict) -> dict:
+    """Translate parsed connection-string params into the dict that py-core's
+    ``connection.rs`` expects.
+
+    *params* uses the lowercase keys that ``_ConnectionStringParser._parse``
+    returns.  This function maps them to py-core's snake_case keys and
+    converts str values to bool/int where the Rust side expects native types.
+    Keys not recognised by py-core are silently dropped.
+    """
+    # connstr key (lowercase) → py-core dict key
+    key_map = {
+        # auth / credentials
+        "uid": "user_name",
+        "pwd": "password",
+        "trusted_connection": "trusted_connection",
+        "authentication": "authentication",
+        # server (accept parser synonyms)
+        "server": "server",
+        "addr": "server",
+        "address": "server",
+        # database
+        "database": "database",
+        "app": "application_name",
+        "applicationintent": "application_intent",
+        "workstationid": "workstation_id",
+        "language": "language",
+        # encryption / TLS (include snake_case alias the parser may emit)
+        "encrypt": "encryption",
+        "trustservercertificate": "trust_server_certificate",
+        "trust_server_certificate": "trust_server_certificate",
+        "hostnameincertificate": "host_name_in_certificate",
+        "servercertificate": "server_certificate",
+        # Kerberos
+        "serverspn": "server_spn",
+        # network
+        "multisubnetfailover": "multi_subnet_failover",
+        "ipaddresspreference": "ip_address_preference",
+        "keepalive": "keep_alive",
+        "keepaliveinterval": "keep_alive_interval",
+        # sizing / limits ("packet size" with space is a common pyodbc-ism)
+        "packetsize": "packet_size",
+        "packet size": "packet_size",
+        "connect_timeout": "connect_timeout",
+        "connectretrycount": "connect_retry_count",
+        "connectretryinterval": "connect_retry_interval",
+        # MARS
+        "mars_connection": "mars_enabled",
+    }
+    bool_keys = {"trust_server_certificate", "multi_subnet_failover", "mars_enabled"}
+    int_keys = {
+        "connect_timeout",
+        "packet_size",
+        "connect_retry_count",
+        "connect_retry_interval",
+        "keep_alive",
+        "keep_alive_interval",
+    }
+
+    ctx: dict = {}
+    for src, dst in key_map.items():
+        val = params.get(src)
+        if val is None:
+            continue
+        if dst in bool_keys:
+            ctx[dst] = val.lower() in ("yes", "true", "1") if isinstance(val, str) else bool(val)
+        elif dst in int_keys:
+            try:
+                ctx[dst] = int(val)
+            except (ValueError, TypeError):
+                pass  # let py-core use its default
+        else:
+            ctx[dst] = val
+
+    return ctx
+
+
 # Settings functionality moved here to avoid circular imports
 
 # Initialize the locale setting only once at module import time
