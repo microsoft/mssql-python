@@ -49,7 +49,20 @@ echo "Python: $PY_VERSION | Platform: $PLATFORM | Arch: $ARCH"
 # Detect musl (Alpine) vs glibc for Linux
 case "$PLATFORM" in
     linux)
-        if ldd --version 2>&1 | grep -qi musl; then
+        # Detect musl libc (Alpine) vs glibc — multiple methods for robustness
+        # Note: ldd --version exits with code 1 on musl, which combined with
+        # pipefail causes the grep pipeline to fail. Use a variable instead.
+        IS_MUSL=false
+        LDD_OUTPUT=$(ldd --version 2>&1 || true)
+        if echo "$LDD_OUTPUT" | grep -qi musl; then
+            IS_MUSL=true
+        elif [ -f /etc/alpine-release ]; then
+            IS_MUSL=true
+        elif ls /lib/ld-musl-* >/dev/null 2>&1; then
+            IS_MUSL=true
+        fi
+
+        if $IS_MUSL; then
             LIBC="musllinux_1_2"
         else
             LIBC="manylinux_2_28"
@@ -132,6 +145,13 @@ MATCHING_WHEEL=$(find "$WHEELS_DIR" -name "$WHEEL_PATTERN" | head -1)
 if [ -z "$MATCHING_WHEEL" ]; then
     echo "Available wheels:"
     ls "$WHEELS_DIR"/*.whl 2>/dev/null || echo "  (none)"
+    # On musllinux (Alpine), no wheels may be available yet — skip gracefully
+    if echo "$WHEEL_PLATFORM" | grep -q "musllinux"; then
+        echo "WARNING: No musllinux wheel found matching pattern: $WHEEL_PATTERN"
+        echo "mssql_py_core is not yet available for musllinux — skipping installation."
+        rm -rf "$OUTPUT_DIR"
+        exit 0
+    fi
     echo "ERROR: No wheel found matching pattern: $WHEEL_PATTERN"
     exit 1
 fi
