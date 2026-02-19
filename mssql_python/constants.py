@@ -114,6 +114,7 @@ class ConstantsDDBC(Enum):
     SQL_FETCH_ABSOLUTE = 5
     SQL_FETCH_RELATIVE = 6
     SQL_FETCH_BOOKMARK = 8
+    SQL_SS_UDT = -151
     SQL_DATETIMEOFFSET = -155
     SQL_SS_TIME2 = -154
     SQL_SS_XML = -152
@@ -374,6 +375,7 @@ class SQLTypes:
             ConstantsDDBC.SQL_DATETIMEOFFSET.value,
             ConstantsDDBC.SQL_SS_XML.value,
             ConstantsDDBC.SQL_GUID.value,
+            ConstantsDDBC.SQL_SS_UDT.value,
         }
 
     # Could also add category methods for convenience
