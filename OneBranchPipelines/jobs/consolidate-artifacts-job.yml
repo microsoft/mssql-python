@@ -29,6 +29,20 @@ jobs:
       - checkout: self  # Need source for repackaging script and version file
         fetchDepth: 1
       
+      # Official builds must not use dev/nightly mssql-py-core versions
+      - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+        - bash: |
+            set -e
+            VERSION=$(cat $(Build.SourcesDirectory)/eng/versions/mssql-py-core.version | tr -d '[:space:]')
+            echo "mssql-py-core version: $VERSION"
+            if echo "$VERSION" | grep -qiE '(dev|nightly|alpha|beta|rc|preview)'; then
+              echo "##[error]Official builds cannot use pre-release mssql-py-core version: $VERSION"
+              echo "##[error]Update eng/versions/mssql-py-core.version to a stable release version."
+              exit 1
+            fi
+            echo "Version '$VERSION' is acceptable for Official builds."
+          displayName: 'Validate mssql-py-core version for Official build'
+      
       # Download ALL artifacts from current build
       # Matrix jobs publish as: Windows_<JobId>, macOS_<JobId>, Linux_<JobId>
       # This downloads all of them automatically (27 total artifacts)
