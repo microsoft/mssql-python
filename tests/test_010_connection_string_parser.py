@@ -440,3 +440,99 @@ class TestConnectionStringParserEdgeCases:
         # Should have error about incomplete 'Server'
         errors = exc_info.value.errors
         assert any("Server" in err and "Incomplete specification" in err for err in errors)
+
+
+class TestSynonymFirstWins:
+    """
+    Verify that _normalize_params uses first-wins for synonym keys.
+
+    ODBC Driver 18 behaviour (confirmed via live test against sqlcconn.cpp):
+      - Same key repeated   → first-wins  (fFromAttrOrProp guard)
+      - Addr vs Address     → same KEY_ADDR slot, first-wins
+      - Addr/Address vs Server → separate slots, Addr/Address takes priority
+
+    _ConnectionStringParser._parse() rejects exact duplicate keys outright.
+    These tests cover synonyms that map to the same canonical key during
+    normalization (e.g. addr/address/server → "Server").
+    """
+
+    @staticmethod
+    def _normalize(raw: dict) -> dict:
+        """Shorthand for calling _normalize_params with warnings suppressed."""
+        return _ConnectionStringParser._normalize_params(raw, warn_rejected=False)
+
+    # ---- server / addr / address synonyms --------------------------------
+
+    def test_server_then_addr_first_wins(self):
+        """Server=A;Addr=B → first-wins keeps A."""
+        result = self._normalize({"server": "hostA", "addr": "hostB"})
+        assert result["Server"] == "hostA"
+
+    def test_addr_then_server_first_wins(self):
+        """Addr=A;Server=B → first-wins keeps A."""
+        result = self._normalize({"addr": "hostA", "server": "hostB"})
+        assert result["Server"] == "hostA"
+
+    def test_address_then_server_first_wins(self):
+        """Address=A;Server=B → first-wins keeps A."""
+        result = self._normalize({"address": "hostA", "server": "hostB"})
+        assert result["Server"] == "hostA"
+
+    def test_addr_then_address_first_wins(self):
+        """Addr=A;Address=B → first-wins keeps A."""
+        result = self._normalize({"addr": "hostA", "address": "hostB"})
+        assert result["Server"] == "hostA"
+
+    def test_all_three_server_synonyms_first_wins(self):
+        """Addr=A;Address=B;Server=C → first-wins keeps A."""
+        result = self._normalize({"addr": "hostA", "address": "hostB", "server": "hostC"})
+        assert result["Server"] == "hostA"
+
+    def test_server_only_no_synonyms(self):
+        """Single key has no conflict."""
+        result = self._normalize({"server": "hostA"})
+        assert result["Server"] == "hostA"
+
+    # ---- trustservercertificate / trust_server_certificate synonyms ------
+
+    def test_trustservercertificate_then_snake_case_first_wins(self):
+        """trustservercertificate=Yes;trust_server_certificate=No → first-wins keeps Yes."""
+        result = self._normalize(
+            {"trustservercertificate": "Yes", "trust_server_certificate": "No"}
+        )
+        assert result["TrustServerCertificate"] == "Yes"
+
+    def test_snake_case_then_trustservercertificate_first_wins(self):
+        """trust_server_certificate=No;trustservercertificate=Yes → first-wins keeps No."""
+        result = self._normalize(
+            {"trust_server_certificate": "No", "trustservercertificate": "Yes"}
+        )
+        assert result["TrustServerCertificate"] == "No"
+
+    # ---- packetsize / "packet size" synonyms -----------------------------
+
+    def test_packetsize_then_packet_space_first_wins(self):
+        """packetsize=8192;packet size=4096 → first-wins keeps 8192."""
+        result = self._normalize({"packetsize": "8192", "packet size": "4096"})
+        assert result["PacketSize"] == "8192"
+
+    def test_packet_space_then_packetsize_first_wins(self):
+        """packet size=4096;packetsize=8192 → first-wins keeps 4096."""
+        result = self._normalize({"packet size": "4096", "packetsize": "8192"})
+        assert result["PacketSize"] == "4096"
+
+    # ---- non-synonym keys are unaffected ---------------------------------
+
+    def test_different_keys_both_kept(self):
+        """Non-synonym keys should both be present."""
+        result = self._normalize({"server": "host", "database": "mydb", "uid": "sa"})
+        assert result == {"Server": "host", "Database": "mydb", "UID": "sa"}
+
+    # ---- reserved keys filtered regardless of order ----------------------
+
+    def test_reserved_keys_always_filtered(self):
+        """Driver and APP are always stripped, even when first."""
+        result = self._normalize({"driver": "foo", "server": "host", "app": "bar"})
+        assert "Driver" not in result
+        assert "APP" not in result
+        assert result["Server"] == "host"

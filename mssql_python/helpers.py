@@ -266,9 +266,12 @@ def connstr_to_pycore_params(params: dict) -> dict:
     strings — ``connection.rs`` validates Yes/No and rejects invalid values.
     Unrecognised keys are silently dropped.
     """
-    # Only keys present in _ALLOWED_CONNECTION_STRING_PARAMS are mapped.
-    # Reserved/unsupported keys (app, workstationid, language, connect_timeout,
-    # mars_connection) are intentionally excluded — the parser rejects them.
+    # Only keys listed below are forwarded to py-core.
+    # Unknown/reserved keys (app, workstationid, language, connect_timeout,
+    # mars_connection) are silently dropped here.  In the normal connect()
+    # path the parser validates keywords first (validate_keywords=True),
+    # but bulkcopy parses with validation off, so this mapping is the
+    # authoritative filter in that path.
     key_map = {
         # auth / credentials
         "uid": "user_name",
@@ -314,6 +317,11 @@ def connstr_to_pycore_params(params: dict) -> dict:
     for connstr_key, pycore_key in key_map.items():
         raw_value = params.get(connstr_key)
         if raw_value is None:
+            continue
+
+        # First-wins: match ODBC behaviour — first synonym in the
+        # connection string takes precedence (e.g. Addr before Server).
+        if pycore_key in pycore_params:
             continue
 
         # ODBC values are always strings; py-core expects native types for int keys.
