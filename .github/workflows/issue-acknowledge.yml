@@ -11,11 +11,11 @@ jobs:
   acknowledge:
     runs-on: ubuntu-latest
     permissions:
-      issues: read
+      issues: write
     steps:
       # Step 1: Wait 15 minutes
       - name: Wait 15 minutes
-        run: sleep 10
+        run: sleep 900
 
       # Step 2: Check if a maintainer already responded
       - name: Check for existing maintainer response
@@ -24,7 +24,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const maintainers = ['sumitmsft','dlevy-msft-sql']; 
+            const maintainers = ['sumitmsft','dlevy-msft-sql','gargsaumya','bewithgaurav','subrata-ms','jahnvi480','saurabh500']; 
 
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -44,11 +44,25 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.SUMIT_PAT_FOR_AUTO_RESPONSE }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.issue.number,
-              body: `Hi @${context.payload.issue.user.login}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours and get back to you.\n\nThank you for your patience!`
+              body: `Hi @${context.payload.issue.user.login}, thank you for opening this issue!\n\nOur team will review it shortly. We aim to triage all new issues within 24-48 hours and get back to you.\n\nIf you have additional information to share, please feel free to update the issue.\n\nThank you for your patience!`
+            });
+
+      # Step 4: Add "triage needed" label if no maintainer has responded
+      - name: Add triage needed label
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              labels: ['triage needed']
             });
