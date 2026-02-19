@@ -35,9 +35,9 @@ stages:
         pool:
           type: linux
           isCustom: true
-          name: Django-1ES-pool
+          name: Python-1ES-pool
           demands:
-          - imageOverride -equals ADO-UB22-SQL22
+          - imageOverride -equals PYTHON-1ES-UB2404
         # Extended timeout for multi-version builds + testing (5 Python versions × build + test time)
         timeoutInMinutes: 120
         
@@ -65,12 +65,8 @@ stages:
           - checkout: self
             fetchDepth: 0
           
-          # Install Docker
-          - task: DockerInstaller@0
-            inputs:
-              dockerVersion: '20.10.21'
-            displayName: 'Install Docker'
-          
+          # Docker is pre-installed now
+          # Verify it's working and start the daemon
           - bash: |
               set -e
               echo "Verifying we're on Linux..."
@@ -82,9 +78,14 @@ stages:
               
               uname -a
               
-              # Start dockerd
-              sudo dockerd > docker.log 2>&1 &
-              sleep 10
+              # Check if Docker daemon is already running
+              if ! docker info > /dev/null 2>&1; then
+                echo "Docker daemon not running, starting it..."
+                sudo dockerd > docker.log 2>&1 &
+                sleep 10
+              else
+                echo "Docker daemon already running"
+              fi
               
               # Verify Docker works
               docker --version
