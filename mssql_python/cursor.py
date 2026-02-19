@@ -2577,129 +2577,72 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fast check if logging is enabled to avoid overhead
         is_logging = logger.is_debug_enabled
 
-        if is_logging:
-            logger.debug(
-                "_bulkcopy: Starting bulk copy operation - table=%s, batch_size=%d, timeout=%d, "
-                "keep_identity=%s, check_constraints=%s, table_lock=%s, keep_nulls=%s, "
-                "fire_triggers=%s, use_internal_transaction=%s",
-                table_name,
-                batch_size,
-                timeout,
-                keep_identity,
-                check_constraints,
-                table_lock,
-                keep_nulls,
-                fire_triggers,
-                use_internal_transaction,
-            )
-
         try:
             import mssql_py_core
-
-            if is_logging:
-                logger.debug("_bulkcopy: mssql_py_core module imported successfully")
         except ImportError as exc:
-            if is_logging:
-                logger.error("_bulkcopy: Failed to import mssql_py_core module")
+            logger.error("_bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
                 "Bulk copy requires the mssql_py_core library which is not installed. "
                 "To install, run: pip install mssql_py_core "
             ) from exc
 
         # Validate inputs
-        if is_logging:
-            logger.debug("_bulkcopy: Validating input parameters")
         if not table_name or not isinstance(table_name, str):
-            if is_logging:
-                logger.error("_bulkcopy: Invalid table_name parameter")
+            logger.error("_bulkcopy: Invalid table_name parameter")
             raise ValueError("table_name must be a non-empty string")
 
         # Validate that data is iterable (but not a string or bytes, which are technically iterable)
         if data is None:
-            if is_logging:
-                logger.error("_bulkcopy: data parameter is None")
             raise TypeError("data must be an iterable of tuples or lists, got None")
         if isinstance(data, (str, bytes)):
-            if is_logging:
-                logger.error(
-                    "_bulkcopy: data parameter is string or bytes, not valid row collection"
-                )
             raise TypeError(
                 f"data must be an iterable of tuples or lists, got {type(data).__name__}. "
                 "Strings and bytes are not valid row collections."
             )
         if not hasattr(data, "__iter__"):
-            if is_logging:
-                logger.error("_bulkcopy: data parameter is not iterable")
             raise TypeError(
                 f"data must be an iterable of tuples or lists, got non-iterable {type(data).__name__}"
             )
-        if is_logging:
-            logger.debug("_bulkcopy: Data parameter validation successful")
 
         # Validate batch_size type and value (0 means server optimal)
         if not isinstance(batch_size, int):
-            if is_logging:
-                logger.error("_bulkcopy: Invalid batch_size type: %s", type(batch_size).__name__)
             raise TypeError(
                 f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
             )
         if batch_size < 0:
-            if is_logging:
-                logger.error("_bulkcopy: Invalid batch_size value: %d", batch_size)
             raise ValueError(f"batch_size must be non-negative, got {batch_size}")
 
         # Validate timeout type and value
         if not isinstance(timeout, int):
-            if is_logging:
-                logger.error("_bulkcopy: Invalid timeout type: %s", type(timeout).__name__)
             raise TypeError(f"timeout must be a positive integer, got {type(timeout).__name__}")
         if timeout <= 0:
-            if is_logging:
-                logger.error("_bulkcopy: Invalid timeout value: %d", timeout)
             raise ValueError(f"timeout must be positive, got {timeout}")
 
         # Get and parse connection string
-        if is_logging:
-            logger.debug("_bulkcopy: Retrieving connection string")
         if not hasattr(self.connection, "connection_str"):
-            if is_logging:
-                logger.error("_bulkcopy: Connection string not available")
+            logger.error("_bulkcopy: Connection string not available")
             raise RuntimeError("Connection string not available for bulk copy")
 
         # Use the proper connection string parser that handles braced values
         from mssql_python.connection_string_parser import _ConnectionStringParser
 
-        if is_logging:
-            logger.debug("_bulkcopy: Parsing connection string")
         parser = _ConnectionStringParser(validate_keywords=False)
         params = parser._parse(self.connection.connection_str)
 
         if not params.get("server"):
-            if is_logging:
-                logger.error("_bulkcopy: SERVER parameter missing in connection string")
+            logger.error("_bulkcopy: SERVER parameter missing in connection string")
             raise ValueError("SERVER parameter is required in connection string")
 
         if not params.get("database"):
-            if is_logging:
-                logger.error("_bulkcopy: DATABASE parameter missing in connection string")
+            logger.error("_bulkcopy: DATABASE parameter missing in connection string")
             raise ValueError(
                 "DATABASE parameter is required in connection string for bulk copy. "
                 "Specify the target database explicitly to avoid accidentally writing to system databases."
             )
 
-        if is_logging:
-            logger.debug(
-                "_bulkcopy: Connection parameters - server=%s, database=%s",
-                params.get("server"),
-                params.get("database"),
-            )
-
         # Build connection context for bulk copy library
         # Note: Password is extracted separately to avoid storing it in the main context
         # dict that could be accidentally logged or exposed in error messages.
-        if is_logging:
-            logger.debug("_bulkcopy: Building connection context")
         trust_cert = params.get("trustservercertificate", "yes").lower() in ("yes", "true")
 
         # Parse encryption setting from connection string
@@ -2715,13 +2658,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 encryption = encrypt_param
         else:
             encryption = "Optional"
-
-        if is_logging:
-            logger.debug(
-                "_bulkcopy: Connection security - encryption=%s, trust_cert=%s",
-                encryption,
-                trust_cert,
-            )
 
         context = {
             "server": params.get("server"),
@@ -2757,43 +2693,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             pycore_context["user_name"] = params.get("uid", "")
             pycore_context["password"] = params.get("pwd", "")
 
-        # Log column mappings if provided (only when logging is enabled)
-        if is_logging and column_mappings:
-            if isinstance(column_mappings, list) and column_mappings:
-                if isinstance(column_mappings[0], tuple):
-                    logger.debug(
-                        "_bulkcopy: Using advanced column mappings with %d mapping(s)",
-                        len(column_mappings),
-                    )
-                else:
-                    logger.debug(
-                        "_bulkcopy: Using simple column mappings with %d column(s)",
-                        len(column_mappings),
-                    )
-        elif is_logging:
-            logger.debug("_bulkcopy: No column mappings provided, using ordinal position mapping")
-
         pycore_connection = None
         pycore_cursor = None
         try:
-            if is_logging:
-                logger.debug("_bulkcopy: Creating PyCoreConnection")
             # Only pass logger to Rust if logging is enabled (performance optimization)
             pycore_connection = mssql_py_core.PyCoreConnection(
                 pycore_context, python_logger=logger if is_logging else None
             )
-            if is_logging:
-                logger.debug("_bulkcopy: PyCoreConnection created successfully")
-
-                logger.debug("_bulkcopy: Creating PyCoreCursor")
             pycore_cursor = pycore_connection.cursor()
-            if is_logging:
-                logger.debug("_bulkcopy: PyCoreCursor created successfully")
 
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
-            if is_logging:
-                logger.info("_bulkcopy: Executing bulk copy operation to table '%s'", table_name)
             result = pycore_cursor.bulkcopy(
                 table_name,
                 iter(data),
@@ -2832,8 +2742,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise type(e)(str(e)) from None
 
         finally:
-            if is_logging:
-                logger.debug("_bulkcopy: Starting cleanup")
             # Clear sensitive data to minimize memory exposure
             if pycore_context:
                 pycore_context.pop("password", None)
@@ -2843,20 +2751,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             for resource in (pycore_cursor, pycore_connection):
                 if resource and hasattr(resource, "close"):
                     try:
-                        if is_logging:
-                            logger.debug("_bulkcopy: Closing resource %s", type(resource).__name__)
                         resource.close()
                     except Exception as cleanup_error:
-                        # Log cleanup errors at debug level to aid troubleshooting
-                        # without masking the original exception
-                        if is_logging:
-                            logger.debug(
-                                "Failed to close bulk copy resource %s: %s",
-                                type(resource).__name__,
-                                cleanup_error,
-                            )
-            if is_logging:
-                logger.debug("_bulkcopy: Cleanup completed")
+                        # Log cleanup errors only - aids troubleshooting without masking original exception
+                        logger.debug(
+                            "Failed to close bulk copy resource %s: %s",
+                            type(resource).__name__,
+                            cleanup_error,
+                        )
 
     def __enter__(self):
         """
