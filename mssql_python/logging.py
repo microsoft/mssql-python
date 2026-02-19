@@ -88,7 +88,7 @@ class MSSQLLogger:
 
         # Create the underlying Python logger
         self._logger = logging.getLogger("mssql_python")
-        self._logger.setLevel(logging.CRITICAL)  # Disabled by default
+        self._logger.setLevel(logging.WARNING)  # Allow WARNING and ERROR by default
         self._logger.propagate = False  # Don't propagate to root logger
 
         # Add trace ID filter (injects thread_id into every log record)
@@ -105,10 +105,21 @@ class MSSQLLogger:
         self._cleanup_registered = False  # Track if atexit cleanup is registered
 
         # Cached level for fast checks (avoid repeated isEnabledFor calls)
-        self._cached_level = logging.CRITICAL
+        self._cached_level = logging.WARNING
         self._is_debug_enabled = False
 
-        # Don't setup handlers yet - do it lazily when setLevel is called
+        # Set up default stderr handler for WARNING and ERROR messages
+        # This ensures warnings are always visible even when logging is not enabled
+        import sys
+
+        default_handler = logging.StreamHandler(sys.stderr)
+        default_handler.setLevel(logging.WARNING)
+        # Simple format for warnings - no CSV formatting needed
+        default_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+        self._logger.addHandler(default_handler)
+        self._default_handler = default_handler  # Keep reference for later removal
+
+        # Don't setup full handlers yet - do it lazily when setLevel is called
         # This prevents creating log files when user changes output mode before enabling logging
 
     def _setup_handlers(self):
@@ -399,7 +410,8 @@ class MSSQLLogger:
         try:
             # Fast level check using cached level (zero overhead if disabled)
             # This avoids the overhead of isEnabledFor() method call
-            if level < self._cached_level:
+            # Exception: Always allow WARNING and ERROR messages through
+            if level < self._cached_level and level < logging.WARNING:
                 return
 
             # Add prefix if requested (only after level check)
