@@ -357,7 +357,9 @@ class MSSQLLogger:
             lineno: Line number in source file
         """
         try:
-            if not self._logger.isEnabledFor(level):
+            # Fast level check using cached level (same optimization as _log method)
+            # Exception: Always allow WARNING and ERROR messages through
+            if level < self._cached_level and level < logging.WARNING:
                 return
 
             # Create a custom LogRecord with Rust source location
@@ -501,6 +503,13 @@ class MSSQLLogger:
         self._logger.setLevel(level)
 
         # Cache level for fast checks (avoid repeated isEnabledFor calls)
+        # Note: These updates are not atomic across both variables, creating a brief
+        # window where reads might see inconsistent state (e.g., updated _cached_level
+        # but old _is_debug_enabled). This is an acceptable benign race condition:
+        # - Worst case: one log statement might be incorrectly allowed/blocked
+        # - Duration: nanoseconds (single Python bytecode instruction gap)
+        # - Impact: negligible - next check will see consistent state
+        # - Alternative (locking) would add overhead to every log call
         self._cached_level = level
         self._is_debug_enabled = level <= logging.DEBUG
 
