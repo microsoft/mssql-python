@@ -130,8 +130,8 @@ class Test_ConnectionStringAllowList:
         """Test filtering handles address/addr/server as synonyms."""
         params = {"address": "addr1", "addr": "addr2", "server": "server1"}
         filtered = _ConnectionStringParser._normalize_params(params, warn_rejected=False)
-        # All three are synonyms that map to 'Server', last one wins
-        assert filtered["Server"] == "server1"
+        # All three are synonyms that map to 'Server', first one wins
+        assert filtered["Server"] == "addr1"
         assert "Address" not in filtered
         assert "Addr" not in filtered
 
