@@ -108,8 +108,10 @@ class _ConnectionStringParser:
                 if normalized_key in _RESERVED_PARAMETERS:
                     continue
 
-                # Parameter is allowed
-                filtered[normalized_key] = value
+                # First-wins: match ODBC behaviour where the first
+                # occurrence of a synonym group takes precedence.
+                if normalized_key not in filtered:
+                    filtered[normalized_key] = value
             else:
                 # Parameter is not in allow-list
                 # Note: In normal flow, this should be empty since parser validates first
