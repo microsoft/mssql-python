@@ -75,15 +75,22 @@ case "$PLATFORM" in
         fi
 
         if $IS_MUSL; then
-            LIBC="musllinux_1_2"
+            # musllinux wheels keep the musllinux_1_2 platform tag
+            case "$ARCH" in
+                x86_64|amd64) WHEEL_PLATFORM="musllinux_1_2_x86_64" ;;
+                aarch64|arm64) WHEEL_PLATFORM="musllinux_1_2_aarch64" ;;
+                *) echo "Unsupported Linux architecture: $ARCH"; exit 1 ;;
+            esac
         else
-            LIBC="manylinux_2_28"
+            # auditwheel=skip in pyproject.toml means manylinux wheels are
+            # tagged linux_* (not manylinux_2_28_*) because auditwheel repair
+            # — which renames the tag — is skipped.
+            case "$ARCH" in
+                x86_64|amd64) WHEEL_PLATFORM="linux_x86_64" ;;
+                aarch64|arm64) WHEEL_PLATFORM="linux_aarch64" ;;
+                *) echo "Unsupported Linux architecture: $ARCH"; exit 1 ;;
+            esac
         fi
-        case "$ARCH" in
-            x86_64|amd64) WHEEL_PLATFORM="${LIBC}_x86_64" ;;
-            aarch64|arm64) WHEEL_PLATFORM="${LIBC}_aarch64" ;;
-            *) echo "Unsupported Linux architecture: $ARCH"; exit 1 ;;
-        esac
         ;;
     darwin)
         WHEEL_PLATFORM="macosx_15_0_universal2"

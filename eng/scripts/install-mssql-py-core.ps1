@@ -63,9 +63,11 @@ switch ($platform) {
         }
     }
     'linux' {
+        # auditwheel=skip in pyproject.toml means glibc wheels are tagged
+        # linux_* (not manylinux_2_28_*) because auditwheel repair is skipped.
         switch -Regex ($arch) {
-            'x86_64|amd64' { $wheelPlatform = "manylinux_2_28_x86_64" }
-            'aarch64|arm64' { $wheelPlatform = "manylinux_2_28_aarch64" }
+            'x86_64|amd64' { $wheelPlatform = "linux_x86_64" }
+            'aarch64|arm64' { $wheelPlatform = "linux_aarch64" }
             default { throw "Unsupported Linux architecture: $arch" }
         }
     }
