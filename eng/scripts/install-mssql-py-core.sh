@@ -83,7 +83,7 @@ case "$PLATFORM" in
             esac
         else
             # auditwheel=skip in pyproject.toml means manylinux wheels are
-            # tagged linux_* (not manylinux_2_28_*) because auditwheel repair
+            # tagged linux_* (not manylinux_2_34_*) because auditwheel repair
             # — which renames the tag — is skipped.
             case "$ARCH" in
                 x86_64|amd64) WHEEL_PLATFORM="linux_x86_64" ;;
