@@ -311,6 +311,13 @@ def connstr_to_pycore_params(params: dict) -> dict:
         "keep_alive",
         "keep_alive_interval",
     }
+    # connection.rs extracts these with .extract::<bool>() — Python bool required,
+    # not the "Yes"/"No" strings that ODBC connection strings use.
+    bool_keys = {
+        "trust_server_certificate",
+        "multi_subnet_failover",
+        "mars_enabled",
+    }
 
     pycore_params: dict = {}
 
@@ -324,16 +331,16 @@ def connstr_to_pycore_params(params: dict) -> dict:
         if pycore_key in pycore_params:
             continue
 
-        # ODBC values are always strings; py-core expects native types for int keys.
-        # Boolean params (trust_server_certificate, multi_subnet_failover) are passed
-        # as strings — all Yes/No validation is in connection.rs for single-location
-        # consistency with Encrypt, ApplicationIntent, IPAddressPreference, etc.
+        # ODBC values are always strings; py-core expects native Python types.
         if pycore_key in int_keys:
             # Numeric params (timeouts, packet size, etc.) — skip on bad input
             try:
                 pycore_params[pycore_key] = int(raw_value)
             except (ValueError, TypeError):
                 pass  # let py-core fall back to its compiled-in default
+        elif pycore_key in bool_keys:
+            # Boolean params — connection.rs uses .extract::<bool>()
+            pycore_params[pycore_key] = raw_value.lower() in ("yes", "true", "1")
         else:
             # String params (server, database, encryption, etc.) — pass through
             pycore_params[pycore_key] = raw_value
