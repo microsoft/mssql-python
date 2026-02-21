@@ -128,7 +128,9 @@ Write-Host "Found matching wheel: $($matchingWheel.Name)"
 # Extract mssql_py_core/ from the wheel into the repository root.
 # The wheel is a ZIP file containing mssql_py_core/__init__.py and
 # mssql_py_core/mssql_py_core.<cpython-tag>.<pyd|so>.
-# We skip .dist-info/ and mssql_py_core.libs/ (system deps expected).
+# We skip .dist-info/ metadata.
+# mssql_py_core.libs/ won't exist because auditwheel=skip is set in pyproject.toml,
+# but we skip it defensively in case an older wheel is used.
 $targetDir = $repoRoot
 $coreDir = Join-Path $targetDir "mssql_py_core"
 
@@ -154,7 +156,8 @@ with zipfile.ZipFile(wheel_path, 'r') as zf:
         # Skip dist-info metadata
         if '.dist-info/' in entry:
             continue
-        # Skip vendored shared libraries (system deps expected)
+        # Skip vendored shared libraries if present (auditwheel=skip means
+        # they won't be in the wheel; system OpenSSL is used at runtime)
         if entry.startswith('mssql_py_core.libs/'):
             continue
         if entry.startswith('mssql_py_core/'):

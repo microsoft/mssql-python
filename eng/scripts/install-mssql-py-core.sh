@@ -5,7 +5,7 @@
 #
 # The extracted files are placed at <repo-root>/mssql_py_core/ which contains:
 #   - __init__.py
-#   - mssql_py_core.<cpython-tag>.so  (native extension)
+#   - mssql_py_core.<cpython-tag>.so  (native extension — links system OpenSSL)
 #
 # This script is used identically for:
 #   - Local development (dev runs it after build.sh)
@@ -171,7 +171,9 @@ fi
 echo "Found matching wheel: $(basename "$MATCHING_WHEEL")"
 
 # Extract mssql_py_core/ from the wheel into the repository root.
-# The wheel is a ZIP file. We skip .dist-info/ and mssql_py_core.libs/.
+# The wheel is a ZIP file. We skip .dist-info/ metadata.
+# mssql_py_core.libs/ won't exist because auditwheel=skip is set in pyproject.toml,
+# but we skip it defensively in case an older wheel is used.
 TARGET_DIR="$REPO_ROOT"
 CORE_DIR="$TARGET_DIR/mssql_py_core"
 
@@ -195,7 +197,8 @@ with zipfile.ZipFile(wheel_path, 'r') as zf:
         # Skip dist-info metadata
         if '.dist-info/' in entry:
             continue
-        # Skip vendored shared libraries (system deps expected)
+        # Skip vendored shared libraries if present (auditwheel=skip means
+        # they won't be in the wheel; system OpenSSL is used at runtime)
         if entry.startswith('mssql_py_core.libs/'):
             continue
         if entry.startswith('mssql_py_core/'):
