@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # Downloads the mssql-py-core-wheels NuGet package from a public Azure Artifacts
-# feed and installs the appropriate wheel for the current platform so that
-# 'import mssql_py_core' works. No authentication required (public feed).
+# feed and extracts the matching mssql_py_core binary into the repository root
+# so that 'import mssql_py_core' works when running from the source tree.
+#
+# The extracted files are placed at <repo-root>/mssql_py_core/ which contains:
+#   - __init__.py
+#   - mssql_py_core.<cpython-tag>.so  (native extension)
+#
+# This script is used identically for:
+#   - Local development (dev runs it after build.sh)
+#   - PR validation pipelines
+#   - Official build pipelines (before setup.py bdist_wheel)
 #
 # The package version is read from eng/versions/mssql-py-core.version (required).
 #
@@ -23,9 +32,12 @@ done
 
 echo "=== Install mssql_py_core from NuGet wheel package ==="
 
-# Read version from pinned version file (required)
+# Determine repository root (two levels up from this script)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION_FILE="$SCRIPT_DIR/../../eng/versions/mssql-py-core.version"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Read version from pinned version file (required)
+VERSION_FILE="$REPO_ROOT/eng/versions/mssql-py-core.version"
 if [ ! -f "$VERSION_FILE" ]; then
     echo "ERROR: Version file not found: $VERSION_FILE"
     echo "This file must exist and contain the mssql-py-core-wheels NuGet package version."
@@ -158,15 +170,59 @@ fi
 
 echo "Found matching wheel: $(basename "$MATCHING_WHEEL")"
 
-# Install with pip
-echo "Installing wheel with pip..."
-python3 -m pip install "$MATCHING_WHEEL" --force-reinstall --no-deps
+# Extract mssql_py_core/ from the wheel into the repository root.
+# The wheel is a ZIP file. We skip .dist-info/ and mssql_py_core.libs/.
+TARGET_DIR="$REPO_ROOT"
+CORE_DIR="$TARGET_DIR/mssql_py_core"
 
-# Verify import
+# Clean previous extraction
+if [ -d "$CORE_DIR" ]; then
+    rm -rf "$CORE_DIR"
+    echo "Cleaned previous mssql_py_core/ directory"
+fi
+
+echo "Extracting mssql_py_core from wheel into: $TARGET_DIR"
+
+python3 -c "
+import zipfile, os, sys
+
+wheel_path = '$MATCHING_WHEEL'
+target_dir = '$TARGET_DIR'
+extracted = 0
+
+with zipfile.ZipFile(wheel_path, 'r') as zf:
+    for entry in zf.namelist():
+        # Skip dist-info metadata
+        if '.dist-info/' in entry:
+            continue
+        # Skip vendored shared libraries (system deps expected)
+        if entry.startswith('mssql_py_core.libs/'):
+            continue
+        if entry.startswith('mssql_py_core/'):
+            out_path = os.path.join(target_dir, entry)
+            if entry.endswith('/'):
+                os.makedirs(out_path, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            with open(out_path, 'wb') as f:
+                f.write(zf.read(entry))
+            extracted += 1
+            print(f'  Extracted: {entry}')
+
+if extracted == 0:
+    print('ERROR: No mssql_py_core files found in wheel', file=sys.stderr)
+    sys.exit(1)
+
+print(f'Extracted {extracted} file(s) into {target_dir}')
+"
+
+# Verify import works (from repo root so mssql_py_core/ is on sys.path)
 echo "Verifying mssql_py_core import..."
+pushd "$REPO_ROOT" > /dev/null
 python3 -c "import mssql_py_core; print(f'mssql_py_core loaded successfully: {dir(mssql_py_core)}')"
+popd > /dev/null
 
 # Cleanup
 rm -rf "$OUTPUT_DIR"
 
-echo "=== mssql_py_core installed successfully ==="
+echo "=== mssql_py_core extracted successfully ==="
