@@ -287,6 +287,13 @@ stages:
               TargetFolder: '$(Build.SourcesDirectory)\apiScan\pdbs\windows\py$(shortPyVer)\$(targetArch)'
             displayName: 'Copy PDB to ApiScan directory'
 
+          # Extract mssql_py_core from NuGet into repo root before building the wheel
+          - task: PowerShell@2
+            displayName: 'Install mssql_py_core from NuGet'
+            inputs:
+              targetType: 'filePath'
+              filePath: '$(Build.SourcesDirectory)\eng\scripts\install-mssql-py-core.ps1'
+
           # Build Python wheel package from source distribution
           # ARCHITECTURE environment variable controls target platform tagging
           - script: |

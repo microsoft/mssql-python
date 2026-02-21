@@ -91,21 +91,6 @@ jobs:
           fi
         displayName: 'Consolidate wheels from all platforms'
       
-      # Repackage wheels: inject mssql_py_core binaries from NuGet into each mssql-python wheel
-      - task: UsePythonVersion@0
-        inputs:
-          versionSpec: '3.12'
-          addToPath: true
-        displayName: 'Use Python 3.12 for repackaging'
-      
-      - bash: |
-          set -e
-          echo "Repackaging mssql-python wheels with mssql_py_core binaries..."
-          python $(Build.SourcesDirectory)/eng/scripts/repackage-with-mssql-py-core.py \
-            --wheel-dir $(ob_outputDirectory)/dist \
-            --version-file $(Build.SourcesDirectory)/eng/versions/mssql-py-core.version
-        displayName: 'Inject mssql_py_core into wheels'
-      
       # Optional: Consolidate native bindings for reference
       - bash: |
           set -e
