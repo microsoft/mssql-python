@@ -170,6 +170,15 @@ stages:
               DB_PASSWORD: $(DB_PASSWORD)
           
           # =========================
+          # MSSQL_PY_CORE INSTALLATION
+          # =========================
+          # Extract mssql_py_core from NuGet into repo root BEFORE testing
+          # Required for bulkcopy tests which use mssql_py_core native bindings
+          - script: |
+              bash $(Build.SourcesDirectory)/eng/scripts/install-mssql-py-core.sh
+            displayName: 'Install mssql_py_core from NuGet'
+          
+          # =========================
           # TESTING
           # =========================
           # Run pytest against SQL Server container
@@ -186,10 +195,6 @@ stages:
           # =========================
           # WHEEL BUILD
           # =========================
-          # Extract mssql_py_core from NuGet into repo root before building the wheel
-          - script: |
-              bash $(Build.SourcesDirectory)/eng/scripts/install-mssql-py-core.sh
-            displayName: 'Install mssql_py_core from NuGet'
 
           # Build wheel package from setup.py
           # Wheel filename: mssql_python-X.Y.Z-cp3XX-cp3XX-macosx_XX_X_universal2.whl

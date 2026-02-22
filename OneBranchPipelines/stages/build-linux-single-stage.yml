@@ -104,10 +104,12 @@ stages:
           
           - script: |
               # Determine image based on LINUX_TAG and ARCH
+              # manylinux_2_34 = AlmaLinux 9 (glibc 2.34, OpenSSL 3.x)
+              # Required because mssql_py_core is linked against libssl.so.3
               if [[ "$(LINUX_TAG)" == "musllinux" ]]; then
                 IMAGE="quay.io/pypa/musllinux_1_2_$(ARCH)"
               else
-                IMAGE="quay.io/pypa/manylinux_2_28_$(ARCH)"
+                IMAGE="quay.io/pypa/manylinux_2_34_$(ARCH)"
               fi
               
               docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
@@ -138,7 +140,7 @@ stages:
                 docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
                   set -euxo pipefail
                   apk update || true
-                  apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache curl || true
+                  apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache curl openssl openssl-dev || true
                   gcc --version || true
                   cmake --version || true
                 '
