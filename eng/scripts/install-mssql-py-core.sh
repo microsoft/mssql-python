@@ -86,10 +86,7 @@ download_nupkg() {
     mkdir -p "$output_dir"
 
     echo "Resolving feed: $feed_url"
-    local feed_index
-    feed_index=$(curl -sS "$feed_url")
-
-    PACKAGE_BASE_URL=$(echo "$feed_index" | python "$SCRIPT_DIR/resolve_nuget_feed.py")
+    PACKAGE_BASE_URL=$(python "$SCRIPT_DIR/resolve_nuget_feed.py" "$feed_url")
     if [ -z "$PACKAGE_BASE_URL" ]; then
         echo "ERROR: Could not resolve PackageBaseAddress from feed"
         exit 1

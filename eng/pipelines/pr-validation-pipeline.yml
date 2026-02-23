@@ -230,12 +230,9 @@ jobs:
       build.bat x64
     displayName: 'Build .pyd file'
 
-  # Install mssql_py_core from NuGet wheel package (enables _bulkcopy tests)
-  - task: PowerShell@2
-    displayName: 'Install mssql_py_core from NuGet wheels'
-    inputs:
-      targetType: 'filePath'
-      filePath: 'eng/scripts/install-mssql-py-core.ps1'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: windows
 
   # Run tests for LocalDB
   - script: |
@@ -504,11 +501,9 @@ jobs:
       ./build.sh
     displayName: 'Build pybind bindings (.so)'
 
-  # Install mssql_py_core from NuGet wheel package (enables _bulkcopy tests)
-  - script: |
-      chmod +x eng/scripts/install-mssql-py-core.sh
-      ./eng/scripts/install-mssql-py-core.sh
-    displayName: 'Install mssql_py_core from NuGet wheels'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: unix
 
   - script: |
       echo "Build successful, running tests now"
@@ -682,14 +677,11 @@ jobs:
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
 
-  # Install mssql_py_core from NuGet wheel package inside container
-  - script: |
-      docker exec test-container-$(distroName) bash -c "
-        source /opt/venv/bin/activate
-        chmod +x eng/scripts/install-mssql-py-core.sh
-        ./eng/scripts/install-mssql-py-core.sh
-      "
-    displayName: 'Install mssql_py_core in $(distroName) container'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-$(distroName)
+      venvActivate: 'source /opt/venv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1006,14 +998,11 @@ jobs:
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
     retryCountOnTaskFailure: 2
 
-  # Install mssql_py_core from NuGet wheel package inside ARM64 container
-  - script: |
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        source /opt/venv/bin/activate
-        chmod +x eng/scripts/install-mssql-py-core.sh
-        ./eng/scripts/install-mssql-py-core.sh
-      "
-    displayName: 'Install mssql_py_core in $(distroName) ARM64 container'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-$(distroName)-$(archName)
+      venvActivate: 'source /opt/venv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1223,14 +1212,11 @@ jobs:
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 container'
 
-  # Install mssql_py_core from NuGet wheel package inside RHEL 9 container
-  - script: |
-      docker exec test-container-rhel9 bash -c "
-        source myvenv/bin/activate
-        chmod +x eng/scripts/install-mssql-py-core.sh
-        ./eng/scripts/install-mssql-py-core.sh
-      "
-    displayName: 'Install mssql_py_core in RHEL 9 container'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-rhel9
+      venvActivate: 'source myvenv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1451,14 +1437,11 @@ jobs:
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
     retryCountOnTaskFailure: 2
 
-  # Install mssql_py_core from NuGet wheel package inside RHEL 9 ARM64 container
-  - script: |
-      docker exec test-container-rhel9-arm64 bash -c "
-        source myvenv/bin/activate
-        chmod +x eng/scripts/install-mssql-py-core.sh
-        ./eng/scripts/install-mssql-py-core.sh
-      "
-    displayName: 'Install mssql_py_core in RHEL 9 ARM64 container'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-rhel9-arm64
+      venvActivate: 'source myvenv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1687,14 +1670,11 @@ jobs:
       "
     displayName: 'Build pybind bindings (.so) in Alpine x86_64 container'
 
-  # Install mssql_py_core from NuGet wheel package inside Alpine container
-  - script: |
-      docker exec test-container-alpine bash -c "
-        source /workspace/venv/bin/activate
-        chmod +x eng/scripts/install-mssql-py-core.sh
-        ./eng/scripts/install-mssql-py-core.sh
-      "
-    displayName: 'Install mssql_py_core in Alpine x86_64 container'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-alpine
+      venvActivate: 'source /workspace/venv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
@@ -1941,14 +1921,11 @@ jobs:
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
     retryCountOnTaskFailure: 2
 
-  # Install mssql_py_core from NuGet wheel package inside Alpine ARM64 container
-  - script: |
-      docker exec test-container-alpine-arm64 bash -c "
-        source /workspace/venv/bin/activate
-        chmod +x eng/scripts/install-mssql-py-core.sh
-        ./eng/scripts/install-mssql-py-core.sh
-      "
-    displayName: 'Install mssql_py_core in Alpine ARM64 container'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-alpine-arm64
+      venvActivate: 'source /workspace/venv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
@@ -2072,12 +2049,9 @@ jobs:
       build.bat x64
     displayName: 'Build .pyd file'
 
-  # Install mssql_py_core from NuGet wheel package (enables _bulkcopy tests)
-  - task: PowerShell@2
-    displayName: 'Install mssql_py_core from NuGet wheels'
-    inputs:
-      targetType: 'filePath'
-      filePath: 'eng/scripts/install-mssql-py-core.ps1'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: windows
 
   - script: |
       python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
@@ -2121,11 +2095,9 @@ jobs:
       ./build.sh
     displayName: 'Build pybind bindings (.so)'
 
-  # Install mssql_py_core from NuGet wheel package (enables _bulkcopy tests)
-  - script: |
-      chmod +x eng/scripts/install-mssql-py-core.sh
-      ./eng/scripts/install-mssql-py-core.sh
-    displayName: 'Install mssql_py_core from NuGet wheels'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: unix
 
   - script: |
       python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
@@ -2198,14 +2170,11 @@ jobs:
       "
     displayName: 'Build pybind bindings (.so) in Ubuntu container'
 
-  # Install mssql_py_core from NuGet wheel package inside Ubuntu container
-  - script: |
-      docker exec test-container-ubuntu-azuresql bash -c "
-        source /opt/venv/bin/activate
-        chmod +x eng/scripts/install-mssql-py-core.sh
-        ./eng/scripts/install-mssql-py-core.sh
-      "
-    displayName: 'Install mssql_py_core in Ubuntu container'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-ubuntu-azuresql
+      venvActivate: 'source /opt/venv/bin/activate'
 
   - script: |
       docker exec test-container-ubuntu-azuresql bash -c "
@@ -2301,11 +2270,9 @@ jobs:
       ./build.sh codecov
     displayName: 'Build pybind bindings with coverage'
 
-  # Install mssql_py_core from NuGet wheel package (enables _bulkcopy tests)
-  - script: |
-      chmod +x eng/scripts/install-mssql-py-core.sh
-      ./eng/scripts/install-mssql-py-core.sh
-    displayName: 'Install mssql_py_core from NuGet wheels'
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: unix
 
   - script: |
       # Generate unified coverage (Python + C++)
