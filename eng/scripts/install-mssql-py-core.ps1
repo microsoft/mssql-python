@@ -40,8 +40,8 @@ function Get-PlatformInfo {
 
     $parts = $info -split ' '
     $script:PyVersion = $parts[0]
-    $script:Platform  = $parts[1]
-    $script:Arch      = $parts[2]
+    $script:Platform = $parts[1]
+    $script:Arch = $parts[2]
 
     Write-Host "Python: $script:PyVersion | Platform: $script:Platform | Arch: $script:Arch"
 
@@ -54,9 +54,9 @@ function Get-PlatformInfo {
 
     $script:WheelPlatform = switch ($script:Platform) {
         'windows' { "win_$($archTag -replace 'x86_64','amd64')" }
-        'linux'   { "linux_$archTag" }
-        'darwin'  { 'macosx_15_0_universal2' }
-        default   { throw "Unsupported platform: $script:Platform" }
+        'linux' { "linux_$archTag" }
+        'darwin' { 'macosx_15_0_universal2' }
+        default { throw "Unsupported platform: $script:Platform" }
     }
 
     $script:WheelPattern = "mssql_py_core-*-$script:PyVersion-$script:PyVersion-$script:WheelPlatform.whl"
@@ -70,12 +70,15 @@ function Get-NupkgFromFeed {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
     Write-Host "Resolving feed: $FeedUrl"
+    # Fetch the NuGet v3 service index and extract the PackageBaseAddress URL.
+    # See resolve_nuget_feed.py for the JSON schema and detailed explanation.
     $feedIndex = Invoke-RestMethod -Uri $FeedUrl
     $packageBaseUrl = ($feedIndex.resources | Where-Object { $_.'@type' -like 'PackageBaseAddress*' }).'@id'
     if (-not $packageBaseUrl) { throw "Could not resolve PackageBaseAddress from feed" }
 
     $packageId = "mssql-py-core-wheels"
     $versionLower = $script:PackageVersion.ToLower()
+    # e.g. https://pkgs.dev.azure.com/.../nuget/v3/flat2/mssql-py-core-wheels/0.1.0-dev.20260222.140833/mssql-py-core-wheels.0.1.0-dev.20260222.140833.nupkg
     $nupkgUrl = "${packageBaseUrl}${packageId}/${versionLower}/${packageId}.${versionLower}.nupkg"
     $script:NupkgPath = Join-Path $OutputDir "${packageId}.${versionLower}.nupkg"
 
@@ -125,7 +128,8 @@ function Install-AndVerify {
     try {
         & python -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
         if ($LASTEXITCODE -ne 0) { throw "Failed to import mssql_py_core" }
-    } finally {
+    }
+    finally {
         Pop-Location
     }
 }

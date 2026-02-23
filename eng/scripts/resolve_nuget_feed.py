@@ -16,8 +16,25 @@ def resolve(feed_url: str) -> str:
     """Fetch the feed index and return the PackageBaseAddress URL.
 
     NuGet v3 feeds expose a service index (index.json) listing available
-    API resources. The PackageBaseAddress resource provides a flat
-    container URL for downloading .nupkg files by convention:
+    API resources. The JSON looks like:
+
+        {
+          "version": "3.0.0",
+          "resources": [
+            {
+              "@id": "https://pkgs.dev.azure.com/.../nuget/v3/flat2/",
+              "@type": "PackageBaseAddress/3.0.0"
+            },
+            {
+              "@id": "https://pkgs.dev.azure.com/.../query",
+              "@type": "SearchQueryService"
+            }
+            ...
+          ]
+        }
+
+    The PackageBaseAddress resource provides a flat container URL for
+    downloading .nupkg files by convention:
         {base}/{id}/{version}/{id}.{version}.nupkg
 
     We need this base URL because we download the mssql-py-core-wheels

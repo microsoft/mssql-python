@@ -96,6 +96,7 @@ download_nupkg() {
     local version_lower
     version_lower=$(echo "$PACKAGE_VERSION" | tr '[:upper:]' '[:lower:]')
 
+    # e.g. https://pkgs.dev.azure.com/.../nuget/v3/flat2/mssql-py-core-wheels/0.1.0-dev.20260222.140833/mssql-py-core-wheels.0.1.0-dev.20260222.140833.nupkg
     NUPKG_URL="${PACKAGE_BASE_URL}${package_id}/${version_lower}/${package_id}.${version_lower}.nupkg"
     NUPKG_PATH="$output_dir/${package_id}.${version_lower}.nupkg"
 
