@@ -168,13 +168,6 @@ jobs:
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pdbs'
       displayName: 'Place PDB file into artifacts directory'
 
-    # Extract mssql_py_core from NuGet into repo root before building the wheel
-    - task: PowerShell@2
-      displayName: 'Install mssql_py_core from NuGet'
-      inputs:
-        targetType: 'filePath'
-        filePath: '$(Build.SourcesDirectory)\eng\scripts\install-mssql-py-core.ps1'
-
     # Build wheel package for the current architecture
     - script: |
         python -m pip install --upgrade pip
@@ -189,7 +182,7 @@ jobs:
         SourceFolder: '$(Build.SourcesDirectory)\dist'
         Contents: '*.whl'
         TargetFolder: '$(Build.ArtifactStagingDirectory)\dist'
-      displayName: 'Collect wheel package'
+      displayName: 'Collect wheel package'    
 
     # Publish the collected .pyd file(s) as build artifacts
     - task: PublishBuildArtifacts@1
@@ -349,11 +342,6 @@ jobs:
       env:
         DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-    # Extract mssql_py_core from NuGet into repo root before building the wheel
-    - script: |
-        bash $(Build.SourcesDirectory)/eng/scripts/install-mssql-py-core.sh
-      displayName: 'Install mssql_py_core from NuGet'
-
     # Build wheel package for universal2
     - script: |
         python -m pip install --upgrade pip
@@ -368,7 +356,7 @@ jobs:
         Contents: '*.whl'
         TargetFolder: '$(Build.ArtifactStagingDirectory)/dist'
       displayName: 'Collect wheel package'
-
+    
     # Publish the collected .so file(s) as build artifacts
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
@@ -456,10 +444,10 @@ jobs:
             if command -v dnf >/dev/null 2>&1; then
               dnf -y update || true
               # Toolchain + CMake + unixODBC headers + Kerberos + keyutils + ccache
-              dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache curl || true
+              dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
             elif command -v yum >/dev/null 2>&1; then
               yum -y update || true
-              yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache curl || true
+              yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
             else
               echo "No dnf/yum found in manylinux image" >&2
             fi
@@ -475,7 +463,7 @@ jobs:
             set -euxo pipefail
             apk update || true
             # Toolchain + CMake + unixODBC headers + Kerberos + keyutils + ccache
-            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache curl || true
+            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache || true
 
             # Quick visibility for logs
             echo "---- tool versions ----"
@@ -502,15 +490,11 @@ jobs:
               PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
               test -x \$PY || { echo 'Python \$PY missing'; exit 0; }  # skip if not present
               ln -sf \$PY /usr/local/bin/python;
-              ln -sf \$PY /usr/local/bin/python3;
               python -m pip install -U pip setuptools wheel pybind11;
               echo 'python:' \$(python -V); which python;
               # 👉 run from the directory that has CMakeLists.txt
               cd /workspace/mssql_python/pybind;
               bash build.sh;
-
-              # Extract mssql_py_core from NuGet for this Python version
-              bash /workspace/eng/scripts/install-mssql-py-core.sh;
 
               # back to repo root to build the wheel
               cd /workspace;
@@ -526,15 +510,11 @@ jobs:
               PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
               test -x \$PY || { echo 'Python \$PY missing'; exit 0; }  # skip if not present
               ln -sf \$PY /usr/local/bin/python;
-              ln -sf \$PY /usr/local/bin/python3;
               python -m pip install -U pip setuptools wheel pybind11;
               echo 'python:' \$(python -V); which python;
               # 👉 run from the directory that has CMakeLists.txt
               cd /workspace/mssql_python/pybind;
               bash build.sh;
-
-              # Extract mssql_py_core from NuGet for this Python version
-              bash /workspace/eng/scripts/install-mssql-py-core.sh;
 
               # back to repo root to build the wheel
               cd /workspace;
