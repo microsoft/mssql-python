@@ -250,6 +250,97 @@ def validate_attribute_value(
     return True, None, sanitized_attr, sanitized_val
 
 
+def connstr_to_pycore_params(params: dict) -> dict:
+    """Translate parsed ODBC connection-string params for py-core's bulk copy path.
+
+    When ``cursor.bulkcopy()`` is called, mssql-python opens a *separate*
+    connection through mssql-py-core.
+    py-core's ``connection.rs`` expects a Python dict with snake_case keys —
+    different from the ODBC-style keys that ``_ConnectionStringParser._parse``
+    returns.
+
+    This function bridges that gap: it maps lowercase ODBC keys (e.g.
+    ``"trustservercertificate"``) to py-core keys (``"trust_server_certificate"``)
+    and converts numeric strings to ``int`` for timeout/size params.
+    Boolean params (TrustServerCertificate, MultiSubnetFailover) are passed as
+    strings — ``connection.rs`` validates Yes/No and rejects invalid values.
+    Unrecognised keys are silently dropped.
+    """
+    # Only keys listed below are forwarded to py-core.
+    # Unknown/reserved keys (app, workstationid, language, connect_timeout,
+    # mars_connection) are silently dropped here.  In the normal connect()
+    # path the parser validates keywords first (validate_keywords=True),
+    # but bulkcopy parses with validation off, so this mapping is the
+    # authoritative filter in that path.
+    key_map = {
+        # auth / credentials
+        "uid": "user_name",
+        "pwd": "password",
+        "trusted_connection": "trusted_connection",
+        "authentication": "authentication",
+        # server (accept parser synonyms)
+        "server": "server",
+        "addr": "server",
+        "address": "server",
+        # database
+        "database": "database",
+        "applicationintent": "application_intent",
+        # encryption / TLS (include snake_case alias the parser may emit)
+        "encrypt": "encryption",
+        "trustservercertificate": "trust_server_certificate",
+        "trust_server_certificate": "trust_server_certificate",
+        "hostnameincertificate": "host_name_in_certificate",
+        "servercertificate": "server_certificate",
+        # Kerberos
+        "serverspn": "server_spn",
+        # network
+        "multisubnetfailover": "multi_subnet_failover",
+        "ipaddresspreference": "ip_address_preference",
+        "keepalive": "keep_alive",
+        "keepaliveinterval": "keep_alive_interval",
+        # sizing / limits ("packet size" with space is a common pyodbc-ism)
+        "packetsize": "packet_size",
+        "packet size": "packet_size",
+        "connectretrycount": "connect_retry_count",
+        "connectretryinterval": "connect_retry_interval",
+    }
+    int_keys = {
+        "packet_size",
+        "connect_retry_count",
+        "connect_retry_interval",
+        "keep_alive",
+        "keep_alive_interval",
+    }
+
+    pycore_params: dict = {}
+
+    for connstr_key, pycore_key in key_map.items():
+        raw_value = params.get(connstr_key)
+        if raw_value is None:
+            continue
+
+        # First-wins: match ODBC behaviour — first synonym in the
+        # connection string takes precedence (e.g. Addr before Server).
+        if pycore_key in pycore_params:
+            continue
+
+        # ODBC values are always strings; py-core expects native types for int keys.
+        # Boolean params (trust_server_certificate, multi_subnet_failover) are passed
+        # as strings — all Yes/No validation is in connection.rs for single-location
+        # consistency with Encrypt, ApplicationIntent, IPAddressPreference, etc.
+        if pycore_key in int_keys:
+            # Numeric params (timeouts, packet size, etc.) — skip on bad input
+            try:
+                pycore_params[pycore_key] = int(raw_value)
+            except (ValueError, TypeError):
+                pass  # let py-core fall back to its compiled-in default
+        else:
+            # String params (server, database, encryption, etc.) — pass through
+            pycore_params[pycore_key] = raw_value
+
+    return pycore_params
+
+
 # Settings functionality moved here to avoid circular imports
 
 # Initialize the locale setting only once at module import time

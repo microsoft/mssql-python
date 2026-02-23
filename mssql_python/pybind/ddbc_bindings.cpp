@@ -4141,6 +4141,10 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     // Reset attributes before returning to avoid using stack pointers later
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+    
+    // Unbind columns to allow subsequent fetchone() calls to use SQLGetData
+    SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+    
     return ret;
 }
 
@@ -4275,6 +4279,9 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     // Reset attributes before returning to avoid using stack pointers later
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+    
+    // Unbind columns to allow subsequent fetchone() calls to use SQLGetData
+    SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
     return ret;
 }
@@ -4301,12 +4308,21 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
 
+    // Unbind any columns from previous fetch operations (e.g., fetchmany)
+    // to avoid conflicts with SQLGetData. SQLGetData cannot be used on
+    // columns that are already bound.
+    SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+
     // Assume hStmt is already allocated and a query has been executed
     ret = SQLFetch_ptr(hStmt);
     if (SQL_SUCCEEDED(ret)) {
         // Retrieve column count
         SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
         ret = SQLGetData_wrap(StatementHandle, colCount, row, charEncoding, wcharEncoding);
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("FetchOne_wrap: Error retrieving data with SQLGetData - SQLRETURN=%d", ret);
+            return ret;
+        }
     } else if (ret != SQL_NO_DATA) {
         LOG("FetchOne_wrap: Error when fetching data - SQLRETURN=%d", ret);
     }
