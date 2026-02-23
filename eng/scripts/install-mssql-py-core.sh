@@ -38,7 +38,7 @@ read_version() {
 }
 
 detect_platform() {
-    read -r PY_VERSION PLATFORM ARCH <<< "$(python -c "
+    read -r PY_VERSION PLATFORM ARCH <<< "$("$PYTHON" -c "
 import sys, platform
 v = sys.version_info
 print(f'cp{v.major}{v.minor} {platform.system().lower()} {platform.machine().lower()}')"
@@ -86,7 +86,7 @@ download_nupkg() {
     mkdir -p "$output_dir"
 
     echo "Resolving feed: $feed_url"
-    PACKAGE_BASE_URL=$(python "$SCRIPT_DIR/resolve_nuget_feed.py" "$feed_url")
+    PACKAGE_BASE_URL=$("$PYTHON" "$SCRIPT_DIR/resolve_nuget_feed.py" "$feed_url")
     if [ -z "$PACKAGE_BASE_URL" ]; then
         echo "ERROR: Could not resolve PackageBaseAddress from feed"
         exit 1
@@ -121,7 +121,7 @@ find_matching_wheel() {
     if command -v unzip &>/dev/null; then
         unzip -q "$NUPKG_PATH" -d "$extract_dir"
     else
-        python -c "import zipfile; zipfile.ZipFile('$NUPKG_PATH').extractall('$extract_dir')"
+        "$PYTHON" -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$NUPKG_PATH" "$extract_dir"
     fi
 
     local wheels_dir="$extract_dir/wheels"
@@ -135,13 +135,6 @@ find_matching_wheel() {
     if [ -z "$MATCHING_WHEEL" ]; then
         echo "Available wheels:"
         ls "$wheels_dir"/*.whl 2>/dev/null || echo "  (none)"
-        # On musllinux (Alpine), no wheels may be available yet
-        if echo "$WHEEL_PLATFORM" | grep -q "musllinux"; then
-            echo "WARNING: No musllinux wheel found for: $WHEEL_PATTERN"
-            echo "mssql_py_core is not yet available for musllinux -- skipping."
-            rm -rf "$output_dir"
-            exit 0
-        fi
         echo "ERROR: No wheel found matching: $WHEEL_PATTERN"
         exit 1
     fi
@@ -186,14 +179,14 @@ extract_and_verify() {
         echo "Cleaned previous mssql_py_core/"
     fi
 
-    python "$SCRIPT_DIR/extract_wheel.py" "$MATCHING_WHEEL" "$target_dir"
+    "$PYTHON" "$SCRIPT_DIR/extract_wheel.py" "$MATCHING_WHEEL" "$target_dir"
 
     # Skip import verification when glibc is older than what the .so requires
     # (e.g. manylinux_2_28 build containers with glibc 2.28, but .so needs 2.34).
     if can_verify_import; then
         echo "Verifying import..."
         pushd "$target_dir" > /dev/null
-        python -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
+        "$PYTHON" -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
         popd > /dev/null
     else
         echo "Skipping import verification (glibc too old for runtime load)"

@@ -25,12 +25,15 @@ def extract(wheel_path: str, target_dir: str) -> int:
                 continue
 
             out_path = os.path.join(target_dir, entry)
+            real_out = os.path.realpath(out_path)
+            if not real_out.startswith(os.path.realpath(target_dir) + os.sep):
+                raise ValueError(f"Path traversal blocked: {entry}")
             if entry.endswith("/"):
-                os.makedirs(out_path, exist_ok=True)
+                os.makedirs(real_out, exist_ok=True)
                 continue
 
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            with open(out_path, "wb") as f:
+            os.makedirs(os.path.dirname(real_out), exist_ok=True)
+            with open(real_out, "wb") as f:
                 f.write(zf.read(entry))
             extracted += 1
             print(f"  Extracted: {entry}")

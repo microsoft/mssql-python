@@ -9,7 +9,10 @@ Usage:
 """
 import json
 import sys
+import urllib.parse
 import urllib.request
+
+_REQUEST_TIMEOUT_SECS = 120
 
 
 def resolve(feed_url: str) -> str:
@@ -40,7 +43,10 @@ def resolve(feed_url: str) -> str:
     We need this base URL because we download the mssql-py-core-wheels
     nupkg directly via HTTP rather than using the NuGet CLI.
     """
-    with urllib.request.urlopen(feed_url) as resp:
+    parsed = urllib.parse.urlparse(feed_url)
+    if parsed.scheme != "https":
+        raise ValueError(f"Only https:// URLs are allowed, got {parsed.scheme}://")
+    with urllib.request.urlopen(feed_url, timeout=_REQUEST_TIMEOUT_SECS) as resp:
         data = json.loads(resp.read())
     for resource in data["resources"]:
         if "PackageBaseAddress" in resource.get("@type", ""):
