@@ -39,6 +39,19 @@
 #define DAE_CHUNK_SIZE 8192
 #define SQL_MAX_LOB_SIZE 8000
 
+// Returns the effective character decoding encoding for SQL_C_CHAR data.
+// On Linux/macOS, the ODBC driver always returns UTF-8 for SQL_C_CHAR,
+// having already converted from the server's encoding (e.g., CP1252).
+// On Windows, the driver returns bytes in the server's native encoding.
+inline std::string GetEffectiveCharDecoding(const std::string& userEncoding) {
+#if defined(__APPLE__) || defined(__linux__)
+    (void)userEncoding;
+    return "utf-8";
+#else
+    return userEncoding;
+#endif
+}
+
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
 // Logging Infrastructure:
@@ -1153,7 +1166,8 @@ void SqlHandle::markImplicitlyFreed() {
         // Log error but don't throw - we're likely in cleanup/destructor path
         LOG_ERROR("SAFETY VIOLATION: Attempted to mark non-STMT handle as implicitly freed. "
                   "Handle type=%d. This will cause handle leak. Only STMT handles are "
-                  "automatically freed by parent DBC handles.", _type);
+                  "automatically freed by parent DBC handles.",
+                  _type);
         return;  // Refuse to mark - let normal free() handle it
     }
     _implicitly_freed = true;
@@ -2875,17 +2889,18 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         return py::bytes(buffer.data(), buffer.size());
     }
 
-    // For SQL_C_CHAR data, decode using the specified encoding
+    // For SQL_C_CHAR data, decode using the appropriate encoding.
+    const std::string effectiveCharEncoding = GetEffectiveCharDecoding(charEncoding);
     py::bytes raw_bytes(buffer.data(), buffer.size());
     try {
-        py::object decoded = raw_bytes.attr("decode")(charEncoding, "strict");
+        py::object decoded = raw_bytes.attr("decode")(effectiveCharEncoding, "strict");
         LOG("FetchLobColumnData: Decoded narrow string with '%s' - %zu bytes -> %zu chars for "
             "column %d",
-            charEncoding.c_str(), buffer.size(), py::len(decoded), colIndex);
+            effectiveCharEncoding.c_str(), buffer.size(), py::len(decoded), colIndex);
         return decoded;
     } catch (const py::error_already_set& e) {
         LOG_ERROR("FetchLobColumnData: Failed to decode with '%s' for column %d: %s",
-                  charEncoding.c_str(), colIndex, e.what());
+                  effectiveCharEncoding.c_str(), colIndex, e.what());
         // Return raw bytes as fallback
         return raw_bytes;
     }
@@ -2941,7 +2956,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     row.append(
                         FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
                 } else {
-                    uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                    // Use columnSize * 4 + 1 to accommodate worst-case UTF-8 expansion.
+                    // columnSize is in characters, but on Linux the ODBC driver returns
+                    // UTF-8 encoded bytes where each character can be up to 4 bytes.
+                    // Without this, data at exact column boundary with multi-byte chars
+                    // (e.g., CP1252 é in VARCHAR(10)) causes truncation and corruption.
+                    uint64_t fetchBufferSize = columnSize * 4 + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
@@ -2952,20 +2972,23 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
                             if (numCharsInData < dataBuffer.size()) {
                                 // SQLGetData will null-terminate the data
-                                // Use Python's codec system to decode bytes with specified encoding
+                                // Use Python's codec system to decode bytes.
+                                const std::string decodeEncoding =
+                                    GetEffectiveCharDecoding(charEncoding);
                                 py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
                                                     static_cast<size_t>(dataLen));
                                 try {
                                     py::object decoded =
-                                        raw_bytes.attr("decode")(charEncoding, "strict");
+                                        raw_bytes.attr("decode")(decodeEncoding, "strict");
                                     row.append(decoded);
                                     LOG("SQLGetData: CHAR column %d decoded with '%s', %zu bytes "
                                         "-> %zu chars",
-                                        i, charEncoding.c_str(), (size_t)dataLen, py::len(decoded));
+                                        i, decodeEncoding.c_str(), (size_t)dataLen,
+                                        py::len(decoded));
                                 } catch (const py::error_already_set& e) {
                                     LOG_ERROR(
                                         "SQLGetData: Failed to decode CHAR column %d with '%s': %s",
-                                        i, charEncoding.c_str(), e.what());
+                                        i, decodeEncoding.c_str(), e.what());
                                     // Return raw bytes as fallback
                                     row.append(raw_bytes);
                                 }
@@ -3451,7 +3474,14 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
+                // Use columnSize * 4 + 1 on Linux/macOS to accommodate UTF-8
+                // expansion. The ODBC driver returns UTF-8 for SQL_C_CHAR where
+                // each character can be up to 4 bytes.
+#if defined(__APPLE__) || defined(__linux__)
+                uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
+#else
                 uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+#endif
                 // TODO: For LONGVARCHAR/BINARY types, columnSize is returned as
                 // 2GB-1 by SQLDescribeCol. So fetchBufferSize = 2GB.
                 // fetchSize=1 if columnSize>1GB. So we'll allocate a vector of
@@ -3598,7 +3628,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
-                         const std::vector<SQLUSMALLINT>& lobColumns) {
+                         const std::vector<SQLUSMALLINT>& lobColumns,
+                         const std::string& charEncoding = "utf-8") {
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     if (ret == SQL_NO_DATA) {
@@ -3628,8 +3659,22 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
         columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
         HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
+        // On Linux/macOS, the ODBC driver returns UTF-8 for SQL_C_CHAR where
+        // each character can be up to 4 bytes. Must match SQLBindColums buffer.
+        SQLSMALLINT dt = columnInfos[col].dataType;
+        bool isCharType = (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR);
+#if defined(__APPLE__) || defined(__linux__)
+        if (isCharType) {
+            columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize * 4 +
+                                               1;  // *4 for UTF-8, +1 for null terminator
+        } else {
+            columnInfos[col].fetchBufferSize =
+                columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
+        }
+#else
         columnInfos[col].fetchBufferSize =
             columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
+#endif
     }
 
     // Performance: Build function pointer dispatch table (once per batch)
@@ -3646,6 +3691,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         columnInfosExt[col].processedColumnSize = columnInfos[col].processedColumnSize;
         columnInfosExt[col].fetchBufferSize = columnInfos[col].fetchBufferSize;
         columnInfosExt[col].isLob = columnInfos[col].isLob;
+        columnInfosExt[col].charEncoding = GetEffectiveCharDecoding(charEncoding);
 
         // Map data type to processor function (switch executed once per column,
         // not per cell)
@@ -4085,7 +4131,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
-    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
+    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
+                         charEncoding);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("FetchMany_wrap: Error when fetching data - SQLRETURN=%d", ret);
         return ret;
@@ -4217,8 +4264,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
     while (ret != SQL_NO_DATA) {
-        ret =
-            FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
+        ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
+                             charEncoding);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             LOG("FetchAll_wrap: Error when fetching data - SQLRETURN=%d", ret);
             return ret;
