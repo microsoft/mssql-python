@@ -51,9 +51,9 @@ fi
 echo "Using version from $VERSION_FILE: $PACKAGE_VERSION"
 
 # Determine platform info
-PY_VERSION=$(python3 -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-PLATFORM=$(python3 -c "import platform; print(platform.system().lower())")
-ARCH=$(python3 -c "import platform; print(platform.machine().lower())")
+PY_VERSION=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+PLATFORM=$(python -c "import platform; print(platform.system().lower())")
+ARCH=$(python -c "import platform; print(platform.machine().lower())")
 
 echo "Python: $PY_VERSION | Platform: $PLATFORM | Arch: $ARCH"
 
@@ -112,7 +112,7 @@ mkdir -p "$OUTPUT_DIR"
 echo "Resolving feed: $FEED_URL"
 FEED_INDEX=$(curl -sS "$FEED_URL")
 
-PACKAGE_BASE_URL=$(echo "$FEED_INDEX" | python3 -c "
+PACKAGE_BASE_URL=$(echo "$FEED_INDEX" | python -c "
 import json, sys
 data = json.load(sys.stdin)
 for r in data['resources']:
@@ -149,7 +149,7 @@ mkdir -p "$EXTRACT_DIR"
 if command -v unzip &>/dev/null; then
     unzip -q "$NUPKG_PATH" -d "$EXTRACT_DIR"
 else
-    python3 -c "import zipfile; zipfile.ZipFile('$NUPKG_PATH').extractall('$EXTRACT_DIR')"
+    python -c "import zipfile; zipfile.ZipFile('$NUPKG_PATH').extractall('$EXTRACT_DIR')"
 fi
 
 # Find matching wheel
@@ -192,7 +192,7 @@ fi
 
 echo "Extracting mssql_py_core from wheel into: $TARGET_DIR"
 
-python3 -c "
+python -c "
 import zipfile, os, sys
 
 wheel_path = '$MATCHING_WHEEL'
@@ -229,7 +229,7 @@ print(f'Extracted {extracted} file(s) into {target_dir}')
 # Verify import works (from repo root so mssql_py_core/ is on sys.path)
 echo "Verifying mssql_py_core import..."
 pushd "$REPO_ROOT" > /dev/null
-python3 -c "import mssql_py_core; print(f'mssql_py_core loaded successfully: {dir(mssql_py_core)}')"
+python -c "import mssql_py_core; print(f'mssql_py_core loaded successfully: {dir(mssql_py_core)}')"
 popd > /dev/null
 
 # Cleanup

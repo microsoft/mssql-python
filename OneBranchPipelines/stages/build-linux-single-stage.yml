@@ -140,7 +140,7 @@ stages:
                 docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
                   set -euxo pipefail
                   apk update || true
-                  apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache curl openssl openssl-dev || true
+                  apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache curl || true
                   gcc --version || true
                   cmake --version || true
                 '
@@ -200,7 +200,6 @@ stages:
                     PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
                     test -x $PY || { echo "Python $PY missing - skipping"; exit 0; };
                     ln -sf $PY /usr/local/bin/python;
-                    ln -sf $PY /usr/local/bin/python3;
                     echo "Using: $(python --version)";
                     
                     # Step 2: Install build dependencies
@@ -269,7 +268,6 @@ stages:
                     PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
                     test -x $PY || { echo "Python $PY missing - skipping"; exit 0; };
                     ln -sf $PY /usr/local/bin/python;
-                    ln -sf $PY /usr/local/bin/python3;
                     echo "Using: $(python --version)";
                     
                     # Step 2: Install build dependencies
