@@ -110,6 +110,10 @@ class CustomBdistWheel(bdist_wheel):
         self.plat_name = platform_tag
         print(f"Setting wheel platform tag to: {self.plat_name} (arch: {arch})")
 
+    def run(self):
+        validate_mssql_py_core()
+        bdist_wheel.run(self)
+
 
 # ---------------------------------------------------------------------------
 # Package discovery
@@ -122,10 +126,10 @@ packages = find_packages()
 arch, platform_tag = get_platform_info()
 print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
 
-# Validate that mssql_py_core has been pre-extracted into <repo>/mssql_py_core/.
-# Extraction is done by eng/scripts/install-mssql-py-core before running setup.py.
-validate_mssql_py_core()
-packages.append("mssql_py_core")
+# mssql_py_core is validated inside CustomBdistWheel.run() so that editable
+# installs (pip install -e .) and other setup.py commands are not blocked.
+if (PROJECT_ROOT / "mssql_py_core").is_dir():
+    packages.append("mssql_py_core")
 
 # Add platform-specific packages
 if sys.platform.startswith("win"):
