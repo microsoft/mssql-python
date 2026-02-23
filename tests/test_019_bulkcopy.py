@@ -7,7 +7,9 @@ import pytest
 
 # Skip the entire module when mssql_py_core can't be loaded at runtime
 # (e.g. manylinux_2_28 build containers where glibc is too old for the .so).
-mssql_py_core = pytest.importorskip("mssql_py_core", reason="mssql_py_core not loadable (glibc too old?)")
+mssql_py_core = pytest.importorskip(
+    "mssql_py_core", reason="mssql_py_core not loadable (glibc too old?)"
+)
 
 
 def test_connection_and_cursor(cursor):

@@ -401,7 +401,7 @@ extends:
       # - musllinux: musl-based (Alpine Linux)
       # Architectures: x86_64 (AMD/Intel), aarch64 (ARM64)
       # Each stage:
-      # 1. Starts PyPA Docker container (manylinux_2_34 or musllinux_1_2)
+      # 1. Starts PyPA Docker container (manylinux_2_28 or musllinux_1_2)
       # 2. Starts SQL Server Docker container
       # 3. For each Python version (cp310-cp314):
       #    a. Builds .so native extension
