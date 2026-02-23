@@ -21,6 +21,27 @@ jobs:
       targetPath: '$(Build.SourcesDirectory)\dist'
     displayName: 'Download release wheel files artifact from latest successful run on main branch'
 
+  # Download the mssql-py-core version file from the same build
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: 2162
+      buildVersionToDownload: 'latest'
+      branchName: '$(Build.SourceBranch)'
+      artifactName: 'mssql-python-wheels-dist'
+      itemPattern: 'mssql-py-core.version'
+      targetPath: '$(Build.SourcesDirectory)\versions'
+    displayName: 'Download mssql-py-core version file'
+
+  # Validate that mssql-py-core version is a stable release (no dev/alpha/beta/rc)
+  - task: PowerShell@2
+    displayName: 'Validate mssql-py-core is a stable version'
+    inputs:
+      targetType: 'filePath'
+      filePath: '$(Build.SourcesDirectory)\eng\scripts\validate-release-versions.ps1'
+      arguments: '-VersionFile "$(Build.SourcesDirectory)\versions\mssql-py-core.version"'
+
   # Show content of the downloaded artifact
   - script: |
       echo "Contents of the dist directory:"

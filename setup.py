@@ -9,17 +9,12 @@ from wheel.bdist_wheel import bdist_wheel
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
-# ---------------------------------------------------------------------------
 # Custom distribution to force platform-specific wheel
-# ---------------------------------------------------------------------------
 class BinaryDistribution(Distribution):
     def has_ext_modules(self):
         return True
 
 
-# ---------------------------------------------------------------------------
-# Platform / Python tag helpers
-# ---------------------------------------------------------------------------
 def get_platform_info():
     """Get platform-specific architecture and platform tag information."""
     if sys.platform.startswith("win"):
@@ -105,9 +100,6 @@ def validate_mssql_py_core():
     print("mssql_py_core validation: OK")
 
 
-# ---------------------------------------------------------------------------
-# Custom bdist_wheel – sets platform tag
-# ---------------------------------------------------------------------------
 class CustomBdistWheel(bdist_wheel):
     def finalize_options(self):
         # Call the original finalize_options first to initialize self.bdist_dir
