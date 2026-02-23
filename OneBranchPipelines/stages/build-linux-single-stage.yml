@@ -104,12 +104,13 @@ stages:
           
           - script: |
               # Determine image based on LINUX_TAG and ARCH
-              # manylinux_2_34 = AlmaLinux 9 (glibc 2.34, OpenSSL 3.x)
-              # Required because mssql_py_core is linked against libssl.so.3
+              # manylinux_2_28 = AlmaLinux 8 (glibc 2.28)
+              # Note: mssql_py_core (built in mssql-rs) requires OpenSSL 3 / glibc 2.34,
+              # but it is pre-built and downloaded from NuGet — not compiled here.
               if [[ "$(LINUX_TAG)" == "musllinux" ]]; then
                 IMAGE="quay.io/pypa/musllinux_1_2_$(ARCH)"
               else
-                IMAGE="quay.io/pypa/manylinux_2_34_$(ARCH)"
+                IMAGE="quay.io/pypa/manylinux_2_28_$(ARCH)"
               fi
               
               docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
