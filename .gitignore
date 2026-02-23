@@ -61,5 +61,8 @@ build/
 *venv*/
 **/*venv*/
 
+# Extracted mssql_py_core (from eng/scripts/install-mssql-py-core)
+mssql_py_core/
+
 # learning files
 learnings/
