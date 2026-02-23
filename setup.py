@@ -76,37 +76,33 @@ def validate_mssql_py_core():
     (Windows) or ``eng/scripts/install-mssql-py-core.sh`` (Linux/macOS)
     and must be run before ``setup.py bdist_wheel``.
 
-    Returns True if mssql_py_core is present and valid, False otherwise.
+    Raises SystemExit if mssql_py_core is missing or invalid.
     """
     core_dir = PROJECT_ROOT / "mssql_py_core"
 
     if not core_dir.is_dir():
-        print(
-            "NOTE: mssql_py_core/ directory not found in project root. "
+        sys.exit(
+            "ERROR: mssql_py_core/ directory not found in project root. "
             "Run eng/scripts/install-mssql-py-core to extract it before building."
         )
-        return False
 
     # Check for __init__.py
     if not (core_dir / "__init__.py").is_file():
-        print("WARNING: mssql_py_core/__init__.py not found.")
-        return False
+        sys.exit("ERROR: mssql_py_core/__init__.py not found.")
 
     # Check for native extension (.pyd on Windows, .so on Linux/macOS)
     ext = ".pyd" if sys.platform.startswith("win") else ".so"
     native_files = list(core_dir.glob(f"mssql_py_core*{ext}"))
     if not native_files:
-        print(
-            f"WARNING: No mssql_py_core native extension ({ext}) found "
+        sys.exit(
+            f"ERROR: No mssql_py_core native extension ({ext}) found "
             f"in mssql_py_core/. Run eng/scripts/install-mssql-py-core to extract it."
         )
-        return False
 
     for f in native_files:
         print(f"  Found mssql_py_core native extension: {f.name}")
 
     print("mssql_py_core validation: OK")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +132,8 @@ print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
 
 # Validate that mssql_py_core has been pre-extracted into <repo>/mssql_py_core/.
 # Extraction is done by eng/scripts/install-mssql-py-core before running setup.py.
-core_extracted = validate_mssql_py_core()
-
-if core_extracted:
-    packages.append("mssql_py_core")
+validate_mssql_py_core()
+packages.append("mssql_py_core")
 
 # Add platform-specific packages
 if sys.platform.startswith("win"):
@@ -167,23 +161,19 @@ elif sys.platform.startswith("linux"):
 # package_data – binaries to include in the wheel
 # ---------------------------------------------------------------------------
 package_data = {
-    # Include PYD and DLL files inside mssql_python, exclude YML files
     "mssql_python": [
-        "py.typed",  # Marker file for PEP 561 typing support
-        "ddbc_bindings.cp*.pyd",  # Include all PYD files
-        "ddbc_bindings.cp*.so",  # Include all SO files
+        "py.typed",
+        "ddbc_bindings.cp*.pyd",
+        "ddbc_bindings.cp*.so",
         "libs/*",
         "libs/**/*",
         "*.dll",
     ],
-}
-
-if core_extracted:
-    # Include the native extension (.pyd on Windows, .so on Linux/macOS)
-    package_data["mssql_py_core"] = [
+    "mssql_py_core": [
         "mssql_py_core.cp*.pyd",
         "mssql_py_core.cp*.so",
-    ]
+    ],
+}
 
 setup(
     name="mssql-python",
