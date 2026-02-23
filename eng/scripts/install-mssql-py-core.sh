@@ -5,7 +5,7 @@
 #
 # The extracted files are placed at <repo-root>/mssql_py_core/ which contains:
 #   - __init__.py
-#   - mssql_py_core.<cpython-tag>.so  (native extension — links system OpenSSL)
+#   - mssql_py_core.<cpython-tag>.so  (native extension)
 #
 # This script is used identically for:
 #   - Local development (dev runs it after build.sh)
@@ -19,10 +19,160 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PYTHON="${PYTHON:-$(command -v python || command -v python3)}"
+
+read_version() {
+    local version_file="$REPO_ROOT/eng/versions/mssql-py-core.version"
+    if [ ! -f "$version_file" ]; then
+        echo "ERROR: Version file not found: $version_file"
+        exit 1
+    fi
+    PACKAGE_VERSION=$(tr -d '[:space:]' < "$version_file")
+    if [ -z "$PACKAGE_VERSION" ]; then
+        echo "ERROR: Version file is empty: $version_file"
+        exit 1
+    fi
+    echo "Version: $PACKAGE_VERSION"
+}
+
+detect_platform() {
+    read -r PY_VERSION PLATFORM ARCH <<< "$(python -c "
+import sys, platform
+v = sys.version_info
+print(f'cp{v.major}{v.minor} {platform.system().lower()} {platform.machine().lower()}')"
+    )"
+
+    echo "Python: $PY_VERSION | Platform: $PLATFORM | Arch: $ARCH"
+
+    case "$PLATFORM" in
+        linux)
+            case "$ARCH" in
+                x86_64|amd64) ARCH_TAG="x86_64" ;;
+                aarch64|arm64) ARCH_TAG="aarch64" ;;
+                *) echo "Unsupported Linux architecture: $ARCH"; exit 1 ;;
+            esac
+
+            # Detect musl libc (Alpine) vs glibc.
+            # ldd --version exits 1 on musl, so capture output instead of piping.
+            local ldd_output
+            ldd_output=$(ldd --version 2>&1 || true)
+            if echo "$ldd_output" | grep -qi musl || [ -f /etc/alpine-release ]; then
+                WHEEL_PLATFORM="musllinux_1_2_${ARCH_TAG}"
+            else
+                # auditwheel=skip: wheels are tagged linux_* not manylinux_2_34_*
+                WHEEL_PLATFORM="linux_${ARCH_TAG}"
+            fi
+            ;;
+        darwin)
+            WHEEL_PLATFORM="macosx_15_0_universal2"
+            ;;
+        *)
+            echo "Unsupported platform: $PLATFORM"
+            exit 1
+            ;;
+    esac
+
+    WHEEL_PATTERN="mssql_py_core-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
+    echo "Wheel pattern: $WHEEL_PATTERN"
+}
+
+download_nupkg() {
+    local feed_url="$1"
+    local output_dir="$2"
+
+    rm -rf "$output_dir"
+    mkdir -p "$output_dir"
+
+    echo "Resolving feed: $feed_url"
+    local feed_index
+    feed_index=$(curl -sS "$feed_url")
+
+    PACKAGE_BASE_URL=$(echo "$feed_index" | python "$SCRIPT_DIR/resolve_nuget_feed.py")
+    if [ -z "$PACKAGE_BASE_URL" ]; then
+        echo "ERROR: Could not resolve PackageBaseAddress from feed"
+        exit 1
+    fi
+
+    local package_id="mssql-py-core-wheels"
+    local version_lower
+    version_lower=$(echo "$PACKAGE_VERSION" | tr '[:upper:]' '[:lower:]')
+
+    NUPKG_URL="${PACKAGE_BASE_URL}${package_id}/${version_lower}/${package_id}.${version_lower}.nupkg"
+    NUPKG_PATH="$output_dir/${package_id}.${version_lower}.nupkg"
+
+    echo "Downloading: $NUPKG_URL"
+    curl -sSL -o "$NUPKG_PATH" "$NUPKG_URL"
+
+    local filesize
+    filesize=$(wc -c < "$NUPKG_PATH")
+    echo "Downloaded: $NUPKG_PATH ($filesize bytes)"
+
+    if [ "$filesize" -eq 0 ]; then
+        echo "ERROR: Downloaded file is empty"
+        exit 1
+    fi
+}
+
+find_matching_wheel() {
+    local output_dir="$1"
+    local extract_dir="$output_dir/extracted"
+
+    mkdir -p "$extract_dir"
+    if command -v unzip &>/dev/null; then
+        unzip -q "$NUPKG_PATH" -d "$extract_dir"
+    else
+        python -c "import zipfile; zipfile.ZipFile('$NUPKG_PATH').extractall('$extract_dir')"
+    fi
+
+    local wheels_dir="$extract_dir/wheels"
+    if [ ! -d "$wheels_dir" ]; then
+        echo "ERROR: No 'wheels' directory found in NuGet package"
+        ls -la "$extract_dir"
+        exit 1
+    fi
+
+    MATCHING_WHEEL=$(find "$wheels_dir" -name "$WHEEL_PATTERN" | head -1)
+    if [ -z "$MATCHING_WHEEL" ]; then
+        echo "Available wheels:"
+        ls "$wheels_dir"/*.whl 2>/dev/null || echo "  (none)"
+        # On musllinux (Alpine), no wheels may be available yet
+        if echo "$WHEEL_PLATFORM" | grep -q "musllinux"; then
+            echo "WARNING: No musllinux wheel found for: $WHEEL_PATTERN"
+            echo "mssql_py_core is not yet available for musllinux -- skipping."
+            rm -rf "$output_dir"
+            exit 0
+        fi
+        echo "ERROR: No wheel found matching: $WHEEL_PATTERN"
+        exit 1
+    fi
+
+    echo "Found: $(basename "$MATCHING_WHEEL")"
+}
+
+extract_and_verify() {
+    local target_dir="$REPO_ROOT"
+    local core_dir="$target_dir/mssql_py_core"
+
+    if [ -d "$core_dir" ]; then
+        rm -rf "$core_dir"
+        echo "Cleaned previous mssql_py_core/"
+    fi
+
+    python "$SCRIPT_DIR/extract_wheel.py" "$MATCHING_WHEEL" "$target_dir"
+
+    echo "Verifying import..."
+    pushd "$target_dir" > /dev/null
+    python -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
+    popd > /dev/null
+}
+
+# --- main ---
+
 FEED_URL="${FEED_URL:-https://pkgs.dev.azure.com/sqlclientdrivers/public/_packaging/mssql-rs_Public/nuget/v3/index.json}"
 OUTPUT_DIR="${TMPDIR:-/tmp}/mssql-py-core-wheels"
 
-# Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --feed-url) FEED_URL="$2"; shift 2 ;;
@@ -32,207 +182,11 @@ done
 
 echo "=== Install mssql_py_core from NuGet wheel package ==="
 
-# Determine repository root (two levels up from this script)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+read_version
+detect_platform
+download_nupkg "$FEED_URL" "$OUTPUT_DIR"
+find_matching_wheel "$OUTPUT_DIR"
+extract_and_verify
 
-# Read version from pinned version file (required)
-VERSION_FILE="$REPO_ROOT/eng/versions/mssql-py-core.version"
-if [ ! -f "$VERSION_FILE" ]; then
-    echo "ERROR: Version file not found: $VERSION_FILE"
-    echo "This file must exist and contain the mssql-py-core-wheels NuGet package version."
-    exit 1
-fi
-PACKAGE_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
-if [ -z "$PACKAGE_VERSION" ]; then
-    echo "ERROR: Version file is empty: $VERSION_FILE"
-    exit 1
-fi
-echo "Using version from $VERSION_FILE: $PACKAGE_VERSION"
-
-# Determine platform info
-PY_VERSION=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-PLATFORM=$(python -c "import platform; print(platform.system().lower())")
-ARCH=$(python -c "import platform; print(platform.machine().lower())")
-
-echo "Python: $PY_VERSION | Platform: $PLATFORM | Arch: $ARCH"
-
-# Map to wheel platform tags
-# Detect musl (Alpine) vs glibc for Linux
-case "$PLATFORM" in
-    linux)
-        # Detect musl libc (Alpine) vs glibc — multiple methods for robustness
-        # Note: ldd --version exits with code 1 on musl, which combined with
-        # pipefail causes the grep pipeline to fail. Use a variable instead.
-        IS_MUSL=false
-        LDD_OUTPUT=$(ldd --version 2>&1 || true)
-        if echo "$LDD_OUTPUT" | grep -qi musl; then
-            IS_MUSL=true
-        elif [ -f /etc/alpine-release ]; then
-            IS_MUSL=true
-        elif ls /lib/ld-musl-* >/dev/null 2>&1; then
-            IS_MUSL=true
-        fi
-
-        if $IS_MUSL; then
-            # musllinux wheels keep the musllinux_1_2 platform tag
-            case "$ARCH" in
-                x86_64|amd64) WHEEL_PLATFORM="musllinux_1_2_x86_64" ;;
-                aarch64|arm64) WHEEL_PLATFORM="musllinux_1_2_aarch64" ;;
-                *) echo "Unsupported Linux architecture: $ARCH"; exit 1 ;;
-            esac
-        else
-            # auditwheel=skip in pyproject.toml means manylinux wheels are
-            # tagged linux_* (not manylinux_2_34_*) because auditwheel repair
-            # — which renames the tag — is skipped.
-            case "$ARCH" in
-                x86_64|amd64) WHEEL_PLATFORM="linux_x86_64" ;;
-                aarch64|arm64) WHEEL_PLATFORM="linux_aarch64" ;;
-                *) echo "Unsupported Linux architecture: $ARCH"; exit 1 ;;
-            esac
-        fi
-        ;;
-    darwin)
-        WHEEL_PLATFORM="macosx_15_0_universal2"
-        ;;
-    *)
-        echo "Unsupported platform: $PLATFORM"
-        exit 1
-        ;;
-esac
-
-WHEEL_PATTERN="mssql_py_core-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
-echo "Looking for wheel matching: $WHEEL_PATTERN"
-
-# Setup temp directory
 rm -rf "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR"
-
-# Resolve NuGet v3 feed
-echo "Resolving feed: $FEED_URL"
-FEED_INDEX=$(curl -sS "$FEED_URL")
-
-PACKAGE_BASE_URL=$(echo "$FEED_INDEX" | python -c "
-import json, sys
-data = json.load(sys.stdin)
-for r in data['resources']:
-    if 'PackageBaseAddress' in r.get('@type', ''):
-        print(r['@id'])
-        break
-")
-
-if [ -z "$PACKAGE_BASE_URL" ]; then
-    echo "Could not resolve PackageBaseAddress from feed"
-    exit 1
-fi
-echo "Package base: $PACKAGE_BASE_URL"
-
-PACKAGE_ID="mssql-py-core-wheels"
-
-VERSION_LOWER=$(echo "$PACKAGE_VERSION" | tr '[:upper:]' '[:lower:]')
-NUPKG_URL="${PACKAGE_BASE_URL}${PACKAGE_ID}/${VERSION_LOWER}/${PACKAGE_ID}.${VERSION_LOWER}.nupkg"
-NUPKG_PATH="$OUTPUT_DIR/${PACKAGE_ID}.${VERSION_LOWER}.nupkg"
-
-echo "Downloading: $NUPKG_URL"
-curl -sSL -o "$NUPKG_PATH" "$NUPKG_URL"
-FILESIZE=$(stat -c%s "$NUPKG_PATH" 2>/dev/null || stat -f%z "$NUPKG_PATH" 2>/dev/null || echo "unknown")
-echo "Downloaded: $NUPKG_PATH ($FILESIZE bytes)"
-
-if [ "$FILESIZE" = "0" ] || [ "$FILESIZE" = "unknown" ]; then
-    echo "ERROR: Downloaded file is empty or could not determine size"
-    exit 1
-fi
-
-# Extract NuGet (ZIP format) — use python if unzip is not available
-EXTRACT_DIR="$OUTPUT_DIR/extracted"
-mkdir -p "$EXTRACT_DIR"
-if command -v unzip &>/dev/null; then
-    unzip -q "$NUPKG_PATH" -d "$EXTRACT_DIR"
-else
-    python -c "import zipfile; zipfile.ZipFile('$NUPKG_PATH').extractall('$EXTRACT_DIR')"
-fi
-
-# Find matching wheel
-WHEELS_DIR="$EXTRACT_DIR/wheels"
-if [ ! -d "$WHEELS_DIR" ]; then
-    echo "No 'wheels' directory found in NuGet package"
-    ls -la "$EXTRACT_DIR"
-    exit 1
-fi
-
-MATCHING_WHEEL=$(find "$WHEELS_DIR" -name "$WHEEL_PATTERN" | head -1)
-if [ -z "$MATCHING_WHEEL" ]; then
-    echo "Available wheels:"
-    ls "$WHEELS_DIR"/*.whl 2>/dev/null || echo "  (none)"
-    # On musllinux (Alpine), no wheels may be available yet — skip gracefully
-    if echo "$WHEEL_PLATFORM" | grep -q "musllinux"; then
-        echo "WARNING: No musllinux wheel found matching pattern: $WHEEL_PATTERN"
-        echo "mssql_py_core is not yet available for musllinux — skipping installation."
-        rm -rf "$OUTPUT_DIR"
-        exit 0
-    fi
-    echo "ERROR: No wheel found matching pattern: $WHEEL_PATTERN"
-    exit 1
-fi
-
-echo "Found matching wheel: $(basename "$MATCHING_WHEEL")"
-
-# Extract mssql_py_core/ from the wheel into the repository root.
-# The wheel is a ZIP file. We skip .dist-info/ metadata.
-# mssql_py_core.libs/ won't exist because auditwheel=skip is set in pyproject.toml,
-# but we skip it defensively in case an older wheel is used.
-TARGET_DIR="$REPO_ROOT"
-CORE_DIR="$TARGET_DIR/mssql_py_core"
-
-# Clean previous extraction
-if [ -d "$CORE_DIR" ]; then
-    rm -rf "$CORE_DIR"
-    echo "Cleaned previous mssql_py_core/ directory"
-fi
-
-echo "Extracting mssql_py_core from wheel into: $TARGET_DIR"
-
-python -c "
-import zipfile, os, sys
-
-wheel_path = '$MATCHING_WHEEL'
-target_dir = '$TARGET_DIR'
-extracted = 0
-
-with zipfile.ZipFile(wheel_path, 'r') as zf:
-    for entry in zf.namelist():
-        # Skip dist-info metadata
-        if '.dist-info/' in entry:
-            continue
-        # Skip vendored shared libraries if present (auditwheel=skip means
-        # they won't be in the wheel; system OpenSSL is used at runtime)
-        if entry.startswith('mssql_py_core.libs/'):
-            continue
-        if entry.startswith('mssql_py_core/'):
-            out_path = os.path.join(target_dir, entry)
-            if entry.endswith('/'):
-                os.makedirs(out_path, exist_ok=True)
-                continue
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            with open(out_path, 'wb') as f:
-                f.write(zf.read(entry))
-            extracted += 1
-            print(f'  Extracted: {entry}')
-
-if extracted == 0:
-    print('ERROR: No mssql_py_core files found in wheel', file=sys.stderr)
-    sys.exit(1)
-
-print(f'Extracted {extracted} file(s) into {target_dir}')
-"
-
-# Verify import works (from repo root so mssql_py_core/ is on sys.path)
-echo "Verifying mssql_py_core import..."
-pushd "$REPO_ROOT" > /dev/null
-python -c "import mssql_py_core; print(f'mssql_py_core loaded successfully: {dir(mssql_py_core)}')"
-popd > /dev/null
-
-# Cleanup
-rm -rf "$OUTPUT_DIR"
-
 echo "=== mssql_py_core extracted successfully ==="
