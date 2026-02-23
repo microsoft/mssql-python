@@ -3661,9 +3661,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
         // On Linux/macOS, the ODBC driver returns UTF-8 for SQL_C_CHAR where
         // each character can be up to 4 bytes. Must match SQLBindColums buffer.
+#if defined(__APPLE__) || defined(__linux__)
         SQLSMALLINT dt = columnInfos[col].dataType;
         bool isCharType = (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR);
-#if defined(__APPLE__) || defined(__linux__)
         if (isCharType) {
             columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize * 4 +
                                                1;  // *4 for UTF-8, +1 for null terminator
@@ -4141,10 +4141,10 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     // Reset attributes before returning to avoid using stack pointers later
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
-    
+
     // Unbind columns to allow subsequent fetchone() calls to use SQLGetData
     SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
-    
+
     return ret;
 }
 
@@ -4279,7 +4279,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     // Reset attributes before returning to avoid using stack pointers later
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
-    
+
     // Unbind columns to allow subsequent fetchone() calls to use SQLGetData
     SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
