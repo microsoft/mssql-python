@@ -149,6 +149,34 @@ find_matching_wheel() {
     echo "Found: $(basename "$MATCHING_WHEEL")"
 }
 
+# Returns 0 (true) if the runtime glibc is new enough to load the .so.
+# The mssql_py_core native extension is built on manylinux_2_34 (glibc 2.34).
+# Build containers running manylinux_2_28 have glibc 2.28 — too old to dlopen it.
+# On musl (Alpine) or macOS we always attempt the import.
+can_verify_import() {
+    case "$PLATFORM" in
+        linux)
+            # musl doesn't use glibc versioning — always try
+            if echo "$WHEEL_PLATFORM" | grep -q musl; then
+                return 0
+            fi
+            local glibc_version
+            glibc_version=$(ldd --version 2>&1 | head -1 | grep -oP '[0-9]+\.[0-9]+$' || echo "0.0")
+            local major minor
+            major=$(echo "$glibc_version" | cut -d. -f1)
+            minor=$(echo "$glibc_version" | cut -d. -f2)
+            # Require glibc >= 2.34
+            if [ "$major" -gt 2 ] 2>/dev/null || { [ "$major" -eq 2 ] && [ "$minor" -ge 34 ]; } 2>/dev/null; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 extract_and_verify() {
     local target_dir="$REPO_ROOT"
     local core_dir="$target_dir/mssql_py_core"
@@ -160,10 +188,16 @@ extract_and_verify() {
 
     python "$SCRIPT_DIR/extract_wheel.py" "$MATCHING_WHEEL" "$target_dir"
 
-    echo "Verifying import..."
-    pushd "$target_dir" > /dev/null
-    python -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
-    popd > /dev/null
+    # Skip import verification when glibc is older than what the .so requires
+    # (e.g. manylinux_2_28 build containers with glibc 2.28, but .so needs 2.34).
+    if can_verify_import; then
+        echo "Verifying import..."
+        pushd "$target_dir" > /dev/null
+        python -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
+        popd > /dev/null
+    else
+        echo "Skipping import verification (glibc too old for runtime load)"
+    fi
 }
 
 # --- main ---
