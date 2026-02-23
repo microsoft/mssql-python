@@ -18,8 +18,7 @@ def test_varchar_cp1252_exact_length_boundary(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_cp1252_boundary (
                 id INT PRIMARY KEY,
                 varchar_10 VARCHAR(10),
@@ -27,8 +26,7 @@ def test_varchar_cp1252_exact_length_boundary(db_connection):
                 varchar_50 VARCHAR(50),
                 varchar_100 VARCHAR(100)
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         # Set encoding to CP1252 for VARCHAR columns
@@ -139,14 +137,12 @@ def test_varchar_cp1252_length_variations(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_cp1252_variations (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(20)
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -202,14 +198,12 @@ def test_varchar_cp1252_mixed_ascii_nonascii(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_cp1252_mixed (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(15)
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -252,14 +246,12 @@ def test_varchar_cp1252_empty_and_null(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_cp1252_edge (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(10)
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -298,15 +290,13 @@ def test_varchar_cp1252_parameterized_query(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_cp1252_params (
                 id INT PRIMARY KEY,
                 varchar_10 VARCHAR(10),
                 varchar_20 VARCHAR(20)
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
