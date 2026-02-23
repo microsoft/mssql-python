@@ -820,9 +820,16 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         // expects UTF-8, so this is correct and fast.
         pyStr = PyUnicode_FromStringAndSize(dataPtr, numCharsInData);
 #else
-        // On Windows, ODBC driver returns bytes in the server's native encoding
-        // (e.g., CP1252). Must decode using the user's configured encoding.
-        pyStr = PyUnicode_Decode(dataPtr, numCharsInData, colInfo->charEncoding.c_str(), "strict");
+        // On Windows, ODBC driver returns bytes in the server's native encoding.
+        // For UTF-8, use the direct C API (PyUnicode_FromStringAndSize) which
+        // bypasses the codec registry for maximum reliability. For non-UTF-8
+        // encodings (e.g., CP1252), use PyUnicode_Decode with the codec registry.
+        if (colInfo->charEncoding == "utf-8") {
+            pyStr = PyUnicode_FromStringAndSize(dataPtr, numCharsInData);
+        } else {
+            pyStr =
+                PyUnicode_Decode(dataPtr, numCharsInData, colInfo->charEncoding.c_str(), "strict");
+        }
 #endif
         if (!pyStr) {
             PyErr_Clear();
