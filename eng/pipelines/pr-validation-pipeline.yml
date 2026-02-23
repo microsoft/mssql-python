@@ -2301,6 +2301,12 @@ jobs:
       ./build.sh codecov
     displayName: 'Build pybind bindings with coverage'
 
+  # Install mssql_py_core from NuGet wheel package (enables _bulkcopy tests)
+  - script: |
+      chmod +x eng/scripts/install-mssql-py-core.sh
+      ./eng/scripts/install-mssql-py-core.sh
+    displayName: 'Install mssql_py_core from NuGet wheels'
+
   - script: |
       # Generate unified coverage (Python + C++)
       chmod +x ./generate_codecov.sh
