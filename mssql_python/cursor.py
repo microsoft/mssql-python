@@ -2624,14 +2624,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         parser = _ConnectionStringParser(validate_keywords=False)
         params = parser._parse(self.connection.connection_str)
 
-        if not params.get("server"):
+        # Check for server parameter (accepts synonyms: server, addr, address)
+        if not (params.get("server") or params.get("addr") or params.get("address")):
             raise ValueError("SERVER parameter is required in connection string")
-
-        if not params.get("database"):
-            raise ValueError(
-                "DATABASE parameter is required in connection string for bulk copy. "
-                "Specify the target database explicitly to avoid accidentally writing to system databases."
-            )
 
         # Translate parsed connection string into the dict py-core expects.
         pycore_context = connstr_to_pycore_params(params)
