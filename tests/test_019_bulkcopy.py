@@ -137,7 +137,12 @@ def test_bulkcopy_without_database_parameter(conn_str):
         ]
 
         # Perform bulkcopy - this should NOT raise ValueError about missing DATABASE
-        result = cursor._bulkcopy(table_name, data, timeout=60)
+        # Note: bulkcopy creates its own connection, so we need to use fully qualified table name
+        # if we had a database in the original connection string
+        bulkcopy_table_name = (
+            f"[{original_database}].[dbo].{table_name}" if original_database else table_name
+        )
+        result = cursor._bulkcopy(bulkcopy_table_name, data, timeout=60)
 
         # Verify result
         assert result is not None
