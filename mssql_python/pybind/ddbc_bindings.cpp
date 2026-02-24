@@ -29,10 +29,7 @@
 #define SQL_SS_XML (-152)
 #define SQL_SS_UDT (-151)
 #define SQL_SS_VARIANT (-150)
-#define SQL_CA_SS_BASE 1200
-#define SQL_CA_SS_VARIANT_TYPE (SQL_CA_SS_BASE + 15)
-#define SQL_CA_SS_VARIANT_SQL_TYPE (SQL_CA_SS_BASE + 16)
-#define SQL_CA_SS_VARIANT_SERVER_TYPE (SQL_CA_SS_BASE + 17)
+#define SQL_CA_SS_VARIANT_TYPE (1215)
 
 #define STRINGIFY_FOR_CASE(x)                                                                      \
     case x:                                                                                        \
@@ -2941,16 +2938,15 @@ SQLSMALLINT MapVariantCTypeToSQLType(SQLLEN variantCType) {
             return SQL_VARCHAR;
         case SQL_C_WCHAR:
             return SQL_WVARCHAR;
-        // Date/time types - handle both old-style (9, 10, 11) and new-style (91, 92, 93) codes
-        case 9:                // SQL_C_DATE (old style)
-        case SQL_C_TYPE_DATE:  // 91 (new style)
+        case 9:
+        case SQL_C_TYPE_DATE:
             return SQL_TYPE_DATE;
-        case 10:               // SQL_C_TIME (old style)
-        case SQL_C_TYPE_TIME:  // 92 (new style)
-        case 16384:            // SQL Server variant TIME type (observed value)
+        case 10:
+        case SQL_C_TYPE_TIME:
+        case 16384:
             return SQL_TYPE_TIME;
-        case 11:                    // SQL_C_TIMESTAMP (old style)
-        case SQL_C_TYPE_TIMESTAMP:  // 93 (new style)
+        case 11:
+        case SQL_C_TYPE_TIMESTAMP:
             return SQL_TYPE_TIMESTAMP;
         case SQL_C_BINARY:
             return SQL_VARBINARY;
@@ -2963,7 +2959,6 @@ SQLSMALLINT MapVariantCTypeToSQLType(SQLLEN variantCType) {
         case SQL_C_STINYINT:
             return SQL_TINYINT;
         default:
-            // Unknown type, fallback to WVARCHAR for string conversion
             return SQL_WVARCHAR;
     }
 }
@@ -3006,37 +3001,24 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             continue;
         }
 
-        printf("[DEBUG] SQLGetData_wrap: Column %d - dataType=%d, columnSize=%lu\n", i, dataType,
-               (unsigned long)columnSize);
-
         // Preprocess sql_variant: detect underlying type and handle NULL
-        // This allows reuse of existing fetch logic instead of duplicating code
         SQLSMALLINT effectiveDataType = dataType;
         if (dataType == SQL_SS_VARIANT) {
-            // Step 1: Check for NULL using header read
             SQLLEN indicator;
             ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, NULL, 0, &indicator);
             if (indicator == SQL_NULL_DATA) {
                 row.append(py::none());
-                continue;  // Skip to next column
+                continue;
             }
-
-            // Step 2: Get the variant's underlying C data type
             SQLLEN variantCType = 0;
             ret =
                 SQLColAttribute_ptr(hStmt, i, SQL_CA_SS_VARIANT_TYPE, NULL, 0, NULL, &variantCType);
             if (!SQL_SUCCEEDED(ret)) {
                 LOG("SQLGetData: Failed to get sql_variant underlying type for column %d", i);
                 row.append(py::none());
-                continue;  // Skip to next column
+                continue;
             }
-
-            printf("[DEBUG] SQLGetData_wrap: sql_variant column %d has variantCType=%ld\n", i,
-                   (long)variantCType);
-
-            // Step 3: Map C type to SQL type so existing code can handle it
             effectiveDataType = MapVariantCTypeToSQLType(variantCType);
-            printf("[DEBUG] SQLGetData_wrap: Mapped to effectiveDataType=%d\n", effectiveDataType);
         }
 
         switch (effectiveDataType) {
@@ -4207,14 +4189,11 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
         // Detect LOB columns that need SQLGetData streaming
         // sql_variant always uses SQLGetData for native type preservation
-        if (dataType == SQL_SS_VARIANT) {
-            lobColumns.push_back(i + 1);  // 1-based
-        } else if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR ||
-                    dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
-                    dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY ||
-                    dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
-                   (columnSize == 0 || columnSize == SQL_NO_TOTAL ||
-                    columnSize > SQL_MAX_LOB_SIZE)) {
+        if (dataType == SQL_SS_VARIANT ||
+            ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
+              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
+              dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
+             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE))) {
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
@@ -4304,8 +4283,6 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         return ret;
     }
 
-    // Detect LOB columns FIRST (before calculateRowSize)
-    // This allows sql_variant to skip the binding path entirely
     std::vector<SQLUSMALLINT> lobColumns;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto colMeta = columnNames[i].cast<py::dict>();
@@ -4317,14 +4294,11 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
         // Detect LOB columns that need SQLGetData streaming
         // sql_variant always uses SQLGetData for native type preservation
-        if (dataType == SQL_SS_VARIANT) {
-            lobColumns.push_back(i + 1);  // 1-based
-        } else if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR ||
-                    dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
-                    dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY ||
-                    dataType == SQL_SS_XML) &&
-                   (columnSize == 0 || columnSize == SQL_NO_TOTAL ||
-                    columnSize > SQL_MAX_LOB_SIZE)) {
+        if (dataType == SQL_SS_VARIANT ||
+            ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
+              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
+              dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE))) {
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
