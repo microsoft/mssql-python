@@ -1,8 +1,12 @@
 import os
 import sys
+from pathlib import Path
+
 from setuptools import setup, find_packages
 from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 # Custom distribution to force platform-specific wheel
@@ -53,7 +57,49 @@ def get_platform_info():
             )
 
 
-# Custom bdist_wheel command to override platform tag
+# ---------------------------------------------------------------------------
+# mssql_py_core validation
+# ---------------------------------------------------------------------------
+def validate_mssql_py_core():
+    """Validate that mssql_py_core has been extracted into the project root.
+
+    Expects ``<project_root>/mssql_py_core/`` to contain:
+      - ``__init__.py``
+      - At least one native extension (``.pyd`` on Windows, ``.so`` on Linux/macOS)
+
+    The extraction is performed by ``eng/scripts/install-mssql-py-core.ps1``
+    (Windows) or ``eng/scripts/install-mssql-py-core.sh`` (Linux/macOS)
+    and must be run before ``setup.py bdist_wheel``.
+
+    Raises SystemExit if mssql_py_core is missing or invalid.
+    """
+    core_dir = PROJECT_ROOT / "mssql_py_core"
+
+    if not core_dir.is_dir():
+        sys.exit(
+            "ERROR: mssql_py_core/ directory not found in project root. "
+            "Run eng/scripts/install-mssql-py-core to extract it before building."
+        )
+
+    # Check for __init__.py
+    if not (core_dir / "__init__.py").is_file():
+        sys.exit("ERROR: mssql_py_core/__init__.py not found.")
+
+    # Check for native extension (.pyd on Windows, .so on Linux/macOS)
+    ext = ".pyd" if sys.platform.startswith("win") else ".so"
+    native_files = list(core_dir.glob(f"mssql_py_core*{ext}"))
+    if not native_files:
+        sys.exit(
+            f"ERROR: No mssql_py_core native extension ({ext}) found "
+            f"in mssql_py_core/. Run eng/scripts/install-mssql-py-core to extract it."
+        )
+
+    for f in native_files:
+        print(f"  Found mssql_py_core native extension: {f.name}")
+
+    print("mssql_py_core validation: OK")
+
+
 class CustomBdistWheel(bdist_wheel):
     def finalize_options(self):
         # Call the original finalize_options first to initialize self.bdist_dir
@@ -64,6 +110,14 @@ class CustomBdistWheel(bdist_wheel):
         self.plat_name = platform_tag
         print(f"Setting wheel platform tag to: {self.plat_name} (arch: {arch})")
 
+    def run(self):
+        validate_mssql_py_core()
+        bdist_wheel.run(self)
+
+
+# ---------------------------------------------------------------------------
+# Package discovery
+# ---------------------------------------------------------------------------
 
 # Find all packages in the current directory
 packages = find_packages()
@@ -71,6 +125,11 @@ packages = find_packages()
 # Get platform info using consolidated function
 arch, platform_tag = get_platform_info()
 print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
+
+# mssql_py_core is validated inside CustomBdistWheel.run() so that editable
+# installs (pip install -e .) and other setup.py commands are not blocked.
+if (PROJECT_ROOT / "mssql_py_core").is_dir():
+    packages.append("mssql_py_core")
 
 # Add platform-specific packages
 if sys.platform.startswith("win"):
@@ -94,6 +153,24 @@ elif sys.platform.startswith("linux"):
         ]
     )
 
+# ---------------------------------------------------------------------------
+# package_data – binaries to include in the wheel
+# ---------------------------------------------------------------------------
+package_data = {
+    "mssql_python": [
+        "py.typed",
+        "ddbc_bindings.cp*.pyd",
+        "ddbc_bindings.cp*.so",
+        "libs/*",
+        "libs/**/*",
+        "*.dll",
+    ],
+    "mssql_py_core": [
+        "mssql_py_core.cp*.pyd",
+        "mssql_py_core.cp*.so",
+    ],
+}
+
 setup(
     name="mssql-python",
     version="1.3.0",
@@ -104,17 +181,7 @@ setup(
     author_email="mssql-python@microsoft.com",
     url="https://github.com/microsoft/mssql-python",
     packages=packages,
-    package_data={
-        # Include PYD and DLL files inside mssql_python, exclude YML files
-        "mssql_python": [
-            "py.typed",  # Marker file for PEP 561 typing support
-            "ddbc_bindings.cp*.pyd",  # Include all PYD files
-            "ddbc_bindings.cp*.so",  # Include all SO files
-            "libs/*",
-            "libs/**/*",
-            "*.dll",
-        ]
-    },
+    package_data=package_data,
     include_package_data=True,
     # Requires >= Python 3.10
     python_requires=">=3.10",

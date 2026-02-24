@@ -230,6 +230,10 @@ jobs:
       build.bat x64
     displayName: 'Build .pyd file'
 
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: windows
+
   # Run tests for LocalDB
   - script: |
       python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
@@ -497,6 +501,10 @@ jobs:
       ./build.sh
     displayName: 'Build pybind bindings (.so)'
 
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: unix
+
   - script: |
       echo "Build successful, running tests now"
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
@@ -668,6 +676,12 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
+
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-$(distroName)
+      venvActivate: 'source /opt/venv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -984,6 +998,12 @@ jobs:
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
     retryCountOnTaskFailure: 2
 
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-$(distroName)-$(archName)
+      venvActivate: 'source /opt/venv/bin/activate'
+
   - script: |
       # Uninstall ODBC Driver before running tests
       docker exec test-container-$(distroName)-$(archName) bash -c "
@@ -1191,6 +1211,12 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 container'
+
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-rhel9
+      venvActivate: 'source myvenv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1410,6 +1436,12 @@ jobs:
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
     retryCountOnTaskFailure: 2
+
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-rhel9-arm64
+      venvActivate: 'source myvenv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1637,6 +1669,12 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine x86_64 container'
+
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-alpine
+      venvActivate: 'source /workspace/venv/bin/activate'
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
@@ -1883,6 +1921,12 @@ jobs:
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
     retryCountOnTaskFailure: 2
 
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-alpine-arm64
+      venvActivate: 'source /workspace/venv/bin/activate'
+
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
       docker exec test-container-alpine-arm64 bash -c "
@@ -2005,6 +2049,10 @@ jobs:
       build.bat x64
     displayName: 'Build .pyd file'
 
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: windows
+
   - script: |
       python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests on Azure SQL Database'
@@ -2046,6 +2094,10 @@ jobs:
       cd mssql_python/pybind
       ./build.sh
     displayName: 'Build pybind bindings (.so)'
+
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: unix
 
   - script: |
       python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
@@ -2117,6 +2169,12 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Ubuntu container'
+
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-ubuntu-azuresql
+      venvActivate: 'source /opt/venv/bin/activate'
 
   - script: |
       docker exec test-container-ubuntu-azuresql bash -c "
@@ -2211,6 +2269,10 @@ jobs:
       cd mssql_python/pybind
       ./build.sh codecov
     displayName: 'Build pybind bindings with coverage'
+
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: unix
 
   - script: |
       # Generate unified coverage (Python + C++)
