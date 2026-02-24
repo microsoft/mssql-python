@@ -104,6 +104,9 @@ stages:
           
           - script: |
               # Determine image based on LINUX_TAG and ARCH
+              # manylinux_2_28 = AlmaLinux 8 (glibc 2.28)
+              # Note: mssql_py_core (built in mssql-rs) requires OpenSSL 3 / glibc 2.34,
+              # but it is pre-built and downloaded from NuGet — not compiled here.
               if [[ "$(LINUX_TAG)" == "musllinux" ]]; then
                 IMAGE="quay.io/pypa/musllinux_1_2_$(ARCH)"
               else
@@ -126,10 +129,10 @@ stages:
                   set -euxo pipefail
                   if command -v dnf >/dev/null 2>&1; then
                     dnf -y update || true
-                    dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
+                    dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache curl || true
                   elif command -v yum >/dev/null 2>&1; then
                     yum -y update || true
-                    yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
+                    yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache curl || true
                   fi
                   gcc --version || true
                   cmake --version || true
@@ -138,7 +141,7 @@ stages:
                 docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
                   set -euxo pipefail
                   apk update || true
-                  apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache || true
+                  apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache curl || true
                   gcc --version || true
                   cmake --version || true
                 '
@@ -208,6 +211,9 @@ stages:
                     cd /workspace/mssql_python/pybind;
                     bash build.sh;
                     
+                    # Step 3.5: Extract mssql_py_core from NuGet for this Python version
+                    bash /workspace/eng/scripts/install-mssql-py-core.sh;
+                    
                     # Step 4: Build wheel
                     echo "Building wheel package...";
                     cd /workspace;
@@ -272,6 +278,9 @@ stages:
                     echo "Building native extension...";
                     cd /workspace/mssql_python/pybind;
                     bash build.sh;
+                    
+                    # Step 3.5: Extract mssql_py_core from NuGet for this Python version
+                    bash /workspace/eng/scripts/install-mssql-py-core.sh;
                     
                     # Step 4: Build wheel
                     echo "Building wheel package...";

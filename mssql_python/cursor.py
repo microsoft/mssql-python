@@ -17,7 +17,7 @@ import datetime
 import warnings
 from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
-from mssql_python.helpers import check_error
+from mssql_python.helpers import check_error, connstr_to_pycore_params
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import (
@@ -2498,6 +2498,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
         return True
 
+    # ── Mapping from ODBC connection-string keywords (lowercase, as _parse returns)
     def _bulkcopy(
         self,
         table_name: str,
@@ -2640,38 +2641,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "Specify the target database explicitly to avoid accidentally writing to system databases."
             )
 
-        # Build connection context for bulk copy library
-        # Note: Password is extracted separately to avoid storing it in the main context
-        # dict that could be accidentally logged or exposed in error messages.
-        trust_cert = params.get("trustservercertificate", "yes").lower() in ("yes", "true")
+        # Translate parsed connection string into the dict py-core expects.
+        pycore_context = connstr_to_pycore_params(params)
 
-        # Parse encryption setting from connection string
-        encrypt_param = params.get("encrypt")
-        if encrypt_param is not None:
-            encrypt_value = encrypt_param.strip().lower()
-            if encrypt_value in ("yes", "true", "mandatory", "required"):
-                encryption = "Required"
-            elif encrypt_value in ("no", "false", "optional"):
-                encryption = "Optional"
-            else:
-                # Pass through unrecognized values (e.g., "Strict") to the underlying driver
-                encryption = encrypt_param
-        else:
-            encryption = "Optional"
-
-        context = {
-            "server": params.get("server"),
-            "database": params.get("database"),
-            "trust_server_certificate": trust_cert,
-            "encryption": encryption,
-        }
-
-        # Build pycore_context with appropriate authentication.
-        # For Azure AD: acquire a FRESH token right now instead of reusing
-        # the one from connect() time — avoids expired-token errors when
-        # bulkcopy() is called long after the original connection.
-        pycore_context = dict(context)
-
+        # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
         if self.connection._auth_type:
             # Fresh token acquisition for mssql-py-core connection
             from mssql_python.auth import AADAuth
@@ -2688,10 +2661,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
                 self.connection._auth_type,
             )
-        else:
-            # SQL Server authentication — use uid/password from connection string
-            pycore_context["user_name"] = params.get("uid", "")
-            pycore_context["password"] = params.get("pwd", "")
 
         pycore_connection = None
         pycore_cursor = None
@@ -2744,9 +2713,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         finally:
             # Clear sensitive data to minimize memory exposure
             if pycore_context:
-                pycore_context.pop("password", None)
-                pycore_context.pop("user_name", None)
-                pycore_context.pop("access_token", None)
+                for key in ("password", "user_name", "access_token"):
+                    pycore_context.pop(key, None)
             # Clean up bulk copy resources
             for resource in (pycore_cursor, pycore_connection):
                 if resource and hasattr(resource, "close"):
