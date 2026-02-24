@@ -49,14 +49,16 @@ def variant_test_table(cursor, db_connection):
     table_name = "#pytest_sql_variant"
     drop_table_if_exists(cursor, table_name)
 
-    cursor.execute(f"""
+    cursor.execute(
+        f"""
         CREATE TABLE {table_name} (
             id INT PRIMARY KEY,
             variant_col SQL_VARIANT,
             base_type NVARCHAR(50),  -- What SQL type is stored in variant
             description NVARCHAR(100)
         )
-    """)
+    """
+    )
     db_connection.commit()
 
     # Insert test data with explicit CAST for each SQL base type
@@ -102,10 +104,12 @@ def variant_test_table(cursor, db_connection):
     ]
 
     for row in test_data:
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             INSERT INTO {table_name} (id, variant_col, base_type, description)
             VALUES ({row[0]}, {row[1]}, '{row[2]}', '{row[3]}')
-        """)
+        """
+        )
 
     # Also test implicit type conversion (what SQL Server chooses)
     cursor.execute(f"INSERT INTO {table_name} VALUES (20, 123, 'int', 'Implicit int literal')")
@@ -205,7 +209,7 @@ def test_sql_variant_float(cursor, variant_test_table):
 
 
 def test_sql_variant_decimal(cursor, variant_test_table):
-    """Test sql_vari with DECIMAL base type returns Python Decimal"""
+    """Test sql_variant with DECIMAL base type returns Python Decimal"""
     cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 7")
     row = cursor.fetchone()
 
@@ -496,12 +500,14 @@ def test_sql_variant_large_dataset(cursor, db_connection):
     table_name = "#pytest_sql_variant_large"
     drop_table_if_exists(cursor, table_name)
 
-    cursor.execute(f"""
+    cursor.execute(
+        f"""
         CREATE TABLE {table_name} (
             id INT PRIMARY KEY,
             variant_col SQL_VARIANT
         )
-    """)
+    """
+    )
     db_connection.commit()
 
     # Insert 100 rows with explicit CAST for each type

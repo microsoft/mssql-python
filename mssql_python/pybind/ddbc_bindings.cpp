@@ -2970,6 +2970,11 @@ SQLSMALLINT MapVariantCTypeToSQLType(SQLLEN variantCType) {
         case SQL_C_STINYINT:
             return SQL_TINYINT;
         default:
+            // Unknown C type code - fallback to WVARCHAR for string conversion
+            // Note: SQL Server enforces sql_variant restrictions at INSERT time, preventing
+            // invalid types (text, ntext, image, timestamp, xml, MAX types, nested variants,
+            // spatial types, hierarchyid, UDTs) from being stored. By the time we fetch data,
+            // only valid base types exist. This default handles unmapped/future type codes.
             return SQL_WVARCHAR;
     }
 }
@@ -3012,15 +3017,27 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             continue;
         }
 
-        // Preprocess sql_variant: detect underlying type and handle NULL
+        // Preprocess sql_variant: detect underlying type to route to correct conversion logic
         SQLSMALLINT effectiveDataType = dataType;
         if (dataType == SQL_SS_VARIANT) {
+            // For sql_variant, we MUST call SQLGetData with SQL_C_BINARY (NULL buffer, len=0)
+            // first. This serves two purposes:
+            // 1. Detects NULL values via the indicator parameter
+            // 2. Initializes the variant metadata in the ODBC driver, which is required for
+            //    SQLColAttribute(SQL_CA_SS_VARIANT_TYPE) to return the correct underlying C type.
+            //    Without this probe call, SQLColAttribute returns incorrect type codes.
             SQLLEN indicator;
             ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, NULL, 0, &indicator);
+            if (!SQL_SUCCEEDED(ret)) {
+                LOG("SQLGetData: Failed to probe sql_variant column %d - SQLRETURN=%d", i, ret);
+                row.append(py::none());
+                continue;
+            }
             if (indicator == SQL_NULL_DATA) {
                 row.append(py::none());
                 continue;
             }
+            // Now retrieve the underlying C type
             SQLLEN variantCType = 0;
             ret =
                 SQLColAttribute_ptr(hStmt, i, SQL_CA_SS_VARIANT_TYPE, NULL, 0, NULL, &variantCType);
@@ -3030,6 +3047,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 continue;
             }
             effectiveDataType = MapVariantCTypeToSQLType(variantCType);
+            LOG("SQLGetData: sql_variant column %d has variantCType=%ld, mapped to SQL type %d", i,
+                (long)variantCType, effectiveDataType);
         }
 
         switch (effectiveDataType) {
