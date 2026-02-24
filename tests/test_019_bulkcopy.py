@@ -91,18 +91,20 @@ def test_bulkcopy_without_database_parameter(conn_str):
     the client sends an empty database name and the server responds with
     the default database the client was connected to.
     """
-    import re
     from mssql_python import connect
+    from mssql_python.connection_string_parser import _ConnectionStringParser
+    from mssql_python.connection_string_builder import _ConnectionStringBuilder
 
-    # Remove DATABASE parameter from connection string if present
-    # Handle various formats: Database=...; database=...; DATABASE=...;
-    conn_str_no_db = re.sub(
-        r";?\s*database\s*=\s*[^;]+(;|$)", r"\1", conn_str, flags=re.IGNORECASE
-    ).strip()
-    # Clean up any double semicolons
-    conn_str_no_db = re.sub(r";+", ";", conn_str_no_db)
-    # Remove leading/trailing semicolons
-    conn_str_no_db = re.sub(r"^;+|;+$", "", conn_str_no_db)
+    # Parse the connection string using the proper parser
+    parser = _ConnectionStringParser(validate_keywords=False)
+    params = parser._parse(conn_str)
+
+    # Remove DATABASE parameter if present (case-insensitive, handles all synonyms)
+    params.pop("database", None)
+
+    # Rebuild the connection string using the builder to preserve braced values
+    builder = _ConnectionStringBuilder(params)
+    conn_str_no_db = builder.build()
 
     # Create connection without DATABASE parameter
     conn = connect(conn_str_no_db)
@@ -152,11 +154,22 @@ def test_bulkcopy_without_database_parameter(conn_str):
 
 def test_bulkcopy_with_server_synonyms(conn_str):
     """Test that bulkcopy works with all SERVER parameter synonyms: server, addr, address."""
-    import re
     from mssql_python import connect
+    from mssql_python.connection_string_parser import _ConnectionStringParser
+    from mssql_python.connection_string_builder import _ConnectionStringBuilder
 
-    # Test with 'Addr' synonym
-    conn_string_addr = re.sub(r"(?i)\bserver\s*=", "Addr=", conn_str, count=1)
+    # Parse the connection string using the proper parser
+    parser = _ConnectionStringParser(validate_keywords=False)
+    params = parser._parse(conn_str)
+
+    # Test with 'Addr' synonym - replace 'server' with 'addr'
+    server_value = (
+        params.pop("server", None) or params.pop("addr", None) or params.pop("address", None)
+    )
+    params["addr"] = server_value
+    builder = _ConnectionStringBuilder(params)
+    conn_string_addr = builder.build()
+
     conn = connect(conn_string_addr)
     try:
         cursor = conn.cursor()
@@ -195,8 +208,15 @@ def test_bulkcopy_with_server_synonyms(conn_str):
     finally:
         conn.close()
 
-    # Test with 'Address' synonym
-    conn_string_address = re.sub(r"(?i)\bserver\s*=", "Address=", conn_str, count=1)
+    # Test with 'Address' synonym - replace with 'address'
+    params = parser._parse(conn_str)
+    server_value = (
+        params.pop("server", None) or params.pop("addr", None) or params.pop("address", None)
+    )
+    params["address"] = server_value
+    builder = _ConnectionStringBuilder(params)
+    conn_string_address = builder.build()
+
     conn = connect(conn_string_address)
     try:
         cursor = conn.cursor()
@@ -236,7 +256,14 @@ def test_bulkcopy_with_server_synonyms(conn_str):
         conn.close()
 
     # Test that bulkcopy fails when SERVER parameter is missing entirely
-    conn_string_no_server = re.sub(r"(?i);?\s*(server|addr|address)\s*=\s*[^;]+;?", ";", conn_str)
+    params = parser._parse(conn_str)
+    # Remove all server synonyms
+    params.pop("server", None)
+    params.pop("addr", None)
+    params.pop("address", None)
+    builder = _ConnectionStringBuilder(params)
+    conn_string_no_server = builder.build()
+
     # Ensure we have a valid connection string for the main connection
     conn = connect(conn_str)
     try:
