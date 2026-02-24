@@ -2,7 +2,7 @@
 Multi-threaded stress tests for mssql-python driver.
 
 These tests verify the driver's behavior under multi-threaded conditions:
-- Concurrent connections with 2, 5, 10, 50, 100, and 1000 threads
+- Concurrent connections with 2, 5, 10, 50, 100 threads, and 2x CPU cores
 - Connection pooling under stress
 - Thread safety of query execution
 - Memory and resource usage under load
@@ -502,13 +502,15 @@ def test_50_threads_data_integrity(stress_conn_str):
             table_name = f"#stress_t{thread_id}"
             drop_table_if_exists(cursor, table_name)
 
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 CREATE TABLE {table_name} (
                     id INT PRIMARY KEY,
                     thread_id INT,
                     data NVARCHAR(100)
                 )
-            """)
+            """
+            )
             conn.commit()
 
             # Perform iterations
@@ -572,7 +574,71 @@ def test_50_threads_data_integrity(stress_conn_str):
 
 
 # ============================================================================
-# High Load Tests (100, 1000 threads)
+# Normal/Realistic Load Test (CPU core count)
+# ============================================================================
+
+
+@pytest.mark.stress_threading
+def test_normal_load_cpu_cores(stress_conn_str):
+    """
+    Test with normal/realistic thread count matching CPU core count.
+
+    Uses thread count equal to processor cores (typical for CPU-bound workloads)
+    with longer-running queries to keep each thread busy and stress the driver
+    under normal production-like conditions.
+    """
+    cpu_cores = os.cpu_count() or 4  # Default to 4 if unable to detect
+    num_threads = cpu_cores
+    iterations = 50  # Higher iteration count to keep threads busy longer
+
+    # Query that returns more data and takes longer to process
+    query = """
+        SELECT 
+            o.name,
+            o.object_id,
+            o.type,
+            o.type_desc,
+            o.create_date,
+            o.modify_date,
+            s.name as schema_name
+        FROM sys.objects o
+        INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+        WHERE o.type IN ('U', 'V', 'P', 'FN')
+        ORDER BY o.create_date
+    """
+
+    runner = MultiThreadedQueryRunner(
+        conn_str=stress_conn_str,
+        query=query,
+        enable_pooling=True,
+        timeout_seconds=300,
+    )
+
+    result = runner.run_parallel(num_threads=num_threads, iterations_per_thread=iterations)
+
+    assert not result.hung, f"Test hung with {num_threads} threads (CPU cores)"
+
+    # For normal load, expect high reliability
+    completion_rate = result.total_iterations / (num_threads * iterations)
+    error_rate = result.total_errors / result.total_iterations if result.total_iterations > 0 else 1
+
+    print(f"\nNormal load test (CPU cores = {cpu_cores}) results:")
+    print(f"  Threads: {num_threads}")
+    print(f"  Iterations per thread: {iterations}")
+    print(f"  Completion rate: {completion_rate*100:.1f}%")
+    print(f"  Error rate: {error_rate*100:.1f}%")
+    print(f"  Throughput: {result.throughput_qps:.1f} qps")
+    print(f"  Avg latency: {result.avg_latency_ms:.1f}ms")
+
+    assert (
+        completion_rate >= 0.95
+    ), f"Completion rate too low for normal load: {completion_rate*100:.1f}%"
+    assert error_rate < 0.05, f"Error rate too high for normal load: {error_rate*100:.1f}%"
+    print(f"[PASSED] Normal load test with {num_threads} threads (CPU cores)")
+
+
+# ============================================================================
+# High Load Tests (100 threads, 2x CPU cores)
 # ============================================================================
 
 
@@ -612,39 +678,42 @@ def test_high_load_100_threads(stress_conn_str, num_threads, iterations):
 
 @pytest.mark.stress_threading
 @pytest.mark.slow
-def test_extreme_load_1000_threads(stress_conn_str):
+def test_extreme_load_2x_cpu_cores(stress_conn_str):
     """
-    Test extreme load with 1000 concurrent threads.
+    Test extreme load with 2x CPU core count threads.
 
-    This is an extreme stress test to find the breaking point.
-    Expects some failures but tests for graceful degradation.
+    This uses a pragmatic thread count (2x processor cores) rather than
+    an unrealistically high count. Tests graceful degradation under high load.
     """
-    num_threads = 1000
-    iterations = 2  # Keep iterations low for 1000 threads
+    cpu_cores = os.cpu_count() or 4  # Default to 4 if unable to detect
+    num_threads = cpu_cores * 2
+    iterations = 10  # Higher iterations now that thread count is reasonable
 
     runner = MultiThreadedQueryRunner(
         conn_str=stress_conn_str,
         query="SELECT 1",
         enable_pooling=True,
-        timeout_seconds=600,  # 10 minutes for 1000 threads
+        timeout_seconds=300,  # 5 minutes
     )
 
     result = runner.run_parallel(num_threads=num_threads, iterations_per_thread=iterations)
 
-    # For 1000 threads, we just check it doesn't completely hang
-    assert not result.hung, "Test completely hung with 1000 threads"
+    assert not result.hung, f"Test hung with {num_threads} threads (2x {cpu_cores} cores)"
 
     completion_rate = result.total_iterations / (num_threads * iterations)
     error_rate = result.total_errors / result.total_iterations if result.total_iterations > 0 else 1
 
-    print(f"\n1000-thread stress test results:")
+    print(f"\n2x CPU cores ({num_threads} threads) stress test results:")
+    print(f"  CPU cores: {cpu_cores}")
+    print(f"  Threads: {num_threads}")
     print(f"  Completion rate: {completion_rate*100:.1f}%")
     print(f"  Error rate: {error_rate*100:.1f}%")
     print(f"  Throughput: {result.throughput_qps:.1f} qps")
 
-    # Very lenient assertions for extreme load
-    assert completion_rate >= 0.5, f"Less than 50% of queries completed: {completion_rate*100:.1f}%"
-    print(f"[PASSED] 1000 threads extreme stress test completed")
+    # Reasonable expectations for 2x CPU count
+    assert completion_rate >= 0.85, f"Completion rate too low: {completion_rate*100:.1f}%"
+    assert error_rate < 0.15, f"Error rate too high: {error_rate*100:.1f}%"
+    print(f"[PASSED] 2x CPU cores ({num_threads} threads) extreme stress test completed")
 
 
 # ============================================================================
@@ -814,18 +883,18 @@ def test_sustained_load_5_minutes(stress_conn_str):
     if len(memory_samples) >= 2:
         initial_mem = memory_samples[0]["rss_mb"]
         final_mem = memory_samples[-1]["rss_mb"]
-        mem_growth = final_mem - initial_mem
+        mem_growth_mb = final_mem - initial_mem
 
         print(f"\nSustained load test results:")
         print(f"  Duration: {elapsed:.1f}s")
         print(f"  Total iterations: {total_iterations}")
         print(f"  Total errors: {total_errors}")
         print(f"  Throughput: {total_iterations/elapsed:.1f} qps")
-        print(f"  Memory: {initial_mem:.1f}MB -> {final_mem:.1f}MB (delta: {mem_growth:+.1f}MB)")
+        print(f"  Memory: {initial_mem:.1f}MB -> {final_mem:.1f}MB (delta: {mem_growth_mb:+.1f}MB)")
 
         # Check for excessive memory growth (potential leak)
         # Allow up to 100MB growth for long test
-        assert mem_growth < 100, f"Potential memory leak: {mem_growth:.1f}MB growth"
+        assert mem_growth_mb < 100, f"Potential memory leak: {mem_growth_mb:.1f}MB growth"
 
     error_rate = total_errors / total_iterations if total_iterations > 0 else 1
     assert error_rate < 0.05, f"Error rate too high in sustained test: {error_rate*100:.1f}%"
@@ -844,9 +913,10 @@ def test_complex_queries_multithreaded(stress_conn_str):
     Test multi-threaded execution with complex queries.
 
     Tests with JOINs, aggregations, and larger result sets.
+    Each thread processes all results to keep the driver busy.
     """
     complex_query = """
-        SELECT TOP 50
+        SELECT
             o.name as object_name,
             o.type_desc,
             s.name as schema_name,
@@ -904,11 +974,11 @@ def test_resource_cleanup_after_stress(stress_conn_str):
     after = get_resource_usage()
     print(f"After stress RSS: {after['rss_mb']} MB")
 
-    mem_delta = after["rss_mb"] - baseline["rss_mb"]
-    print(f"Memory delta: {mem_delta:+.1f} MB")
+    mem_delta_mb = after["rss_mb"] - baseline["rss_mb"]
+    print(f"Memory delta: {mem_delta_mb:+.1f} MB")
 
     # Allow some memory growth but not excessive
-    assert mem_delta < 50, f"Memory not properly released: {mem_delta:.1f}MB retained"
+    assert mem_delta_mb < 50, f"Memory not properly released: {mem_delta_mb:.1f}MB retained"
     print(f"[PASSED] Resource cleanup test")
 
 
@@ -948,6 +1018,11 @@ def test_comprehensive_thread_scaling(stress_conn_str, num_threads, iterations, 
     assert not result.hung, f"Test hung: {num_threads} threads, pooling={pooling}"
 
     # Adaptive expectations based on thread count
+    # Lower thread counts (<=10) should have near-perfect reliability (95%+ completion, <5% errors)
+    # Medium loads (11-50 threads) may see some contention (90%+ completion, <10% errors)
+    # Higher loads (>50 threads) can experience resource pressure and timing issues,
+    # so we allow more graceful degradation (80%+ completion, <20% errors)
+    # This approach validates that the driver handles load proportionally without brittleness.
     if num_threads <= 10:
         min_completion = 0.95
         max_error_rate = 0.05
