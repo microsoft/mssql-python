@@ -2957,10 +2957,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
                 } else {
                     // Use columnSize * 4 + 1 to accommodate worst-case UTF-8 expansion.
-                    // columnSize is in characters, but on Linux the ODBC driver returns
-                    // UTF-8 encoded bytes where each character can be up to 4 bytes.
-                    // Without this, data at exact column boundary with multi-byte chars
-                    // (e.g., CP1252 é in VARCHAR(10)) causes truncation and corruption.
+                    // columnSize is in characters, but the ODBC driver may return UTF-8
+                    // encoded bytes where each character can be up to 4 bytes. This
+                    // applies on Linux/macOS (driver always returns UTF-8 for SQL_C_CHAR)
+                    // and on Windows when the database uses a UTF-8 collation. Without
+                    // this, data at exact column boundary with multi-byte chars (e.g.,
+                    // CP1252 é in VARCHAR(10)) causes truncation and corruption.
                     uint64_t fetchBufferSize = columnSize * 4 + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
@@ -3684,6 +3686,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     std::vector<ColumnProcessor> columnProcessors(numCols);
     std::vector<ColumnInfoExt> columnInfosExt(numCols);
 
+    // Compute effective char encoding once for the batch (same for all columns)
+    const std::string effectiveCharEnc = GetEffectiveCharDecoding(charEncoding);
+
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
         // Populate extended column info for processors that need it
         columnInfosExt[col].dataType = columnInfos[col].dataType;
@@ -3691,7 +3696,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         columnInfosExt[col].processedColumnSize = columnInfos[col].processedColumnSize;
         columnInfosExt[col].fetchBufferSize = columnInfos[col].fetchBufferSize;
         columnInfosExt[col].isLob = columnInfos[col].isLob;
-        columnInfosExt[col].charEncoding = GetEffectiveCharDecoding(charEncoding);
+        columnInfosExt[col].charEncoding = effectiveCharEnc;
 
         // Map data type to processor function (switch executed once per column,
         // not per cell)

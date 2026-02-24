@@ -21,10 +21,10 @@ def test_varchar_cp1252_exact_length_boundary(db_connection):
         cursor.execute("""
             CREATE TABLE #test_cp1252_boundary (
                 id INT PRIMARY KEY,
-                varchar_10 VARCHAR(10),
-                varchar_20 VARCHAR(20),
-                varchar_50 VARCHAR(50),
-                varchar_100 VARCHAR(100)
+                varchar_10 VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS,
+                varchar_20 VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS,
+                varchar_50 VARCHAR(50) COLLATE SQL_Latin1_General_CP1_CI_AS,
+                varchar_100 VARCHAR(100) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
         """)
         db_connection.commit()
@@ -140,7 +140,7 @@ def test_varchar_cp1252_length_variations(db_connection):
         cursor.execute("""
             CREATE TABLE #test_cp1252_variations (
                 id INT PRIMARY KEY,
-                varchar_col VARCHAR(20)
+                varchar_col VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
         """)
         db_connection.commit()
@@ -201,7 +201,7 @@ def test_varchar_cp1252_mixed_ascii_nonascii(db_connection):
         cursor.execute("""
             CREATE TABLE #test_cp1252_mixed (
                 id INT PRIMARY KEY,
-                varchar_col VARCHAR(15)
+                varchar_col VARCHAR(15) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
         """)
         db_connection.commit()
@@ -249,7 +249,7 @@ def test_varchar_cp1252_empty_and_null(db_connection):
         cursor.execute("""
             CREATE TABLE #test_cp1252_edge (
                 id INT PRIMARY KEY,
-                varchar_col VARCHAR(10)
+                varchar_col VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
         """)
         db_connection.commit()
@@ -293,8 +293,8 @@ def test_varchar_cp1252_parameterized_query(db_connection):
         cursor.execute("""
             CREATE TABLE #test_cp1252_params (
                 id INT PRIMARY KEY,
-                varchar_10 VARCHAR(10),
-                varchar_20 VARCHAR(20)
+                varchar_10 VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS,
+                varchar_20 VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
         """)
         db_connection.commit()

@@ -832,9 +832,18 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         }
 #endif
         if (!pyStr) {
+            // Decode failed — fall back to returning raw bytes (consistent with
+            // FetchLobColumnData and SQLGetData_wrap which also return raw bytes
+            // on decode failure instead of silently converting to None).
             PyErr_Clear();
-            Py_INCREF(Py_None);
-            PyList_SET_ITEM(row, col - 1, Py_None);
+            PyObject* pyBytes = PyBytes_FromStringAndSize(dataPtr, numCharsInData);
+            if (pyBytes) {
+                PyList_SET_ITEM(row, col - 1, pyBytes);
+            } else {
+                PyErr_Clear();
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
+            }
         } else {
             PyList_SET_ITEM(row, col - 1, pyStr);
         }
