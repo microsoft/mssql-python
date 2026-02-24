@@ -99,6 +99,9 @@ def test_bulkcopy_without_database_parameter(conn_str):
     parser = _ConnectionStringParser(validate_keywords=False)
     params = parser._parse(conn_str)
 
+    # Save the original database name to use it explicitly in our operations
+    original_database = params.get("database")
+
     # Remove DATABASE parameter if present (case-insensitive, handles all synonyms)
     params.pop("database", None)
 
@@ -115,6 +118,10 @@ def test_bulkcopy_without_database_parameter(conn_str):
         cursor.execute("SELECT DB_NAME() AS current_db")
         current_db = cursor.fetchone()[0]
         assert current_db is not None, "Should be connected to a database"
+
+        # If original database was specified, switch to it to ensure we have permissions
+        if original_database:
+            cursor.execute(f"USE [{original_database}]")
 
         # Create test table in the current database
         table_name = "mssql_python_bulkcopy_no_db_test"
