@@ -148,3 +148,112 @@ def test_bulkcopy_without_database_parameter(conn_str):
         cursor.close()
     finally:
         conn.close()
+
+
+def test_bulkcopy_with_server_synonyms(conn_str):
+    """Test that bulkcopy works with all SERVER parameter synonyms: server, addr, address."""
+    import re
+    from mssql_python import connect
+
+    # Test with 'Addr' synonym
+    conn_string_addr = re.sub(r"(?i)\bserver\s*=", "Addr=", conn_str, count=1)
+    conn = connect(conn_string_addr)
+    try:
+        cursor = conn.cursor()
+        table_name = "test_bulkcopy_addr_synonym"
+
+        # Create table
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id INT,
+                name NVARCHAR(50),
+                value FLOAT
+            )
+        """)
+        conn.commit()
+
+        # Test data
+        test_data = [(1, "Test1", 1.5), (2, "Test2", 2.5), (3, "Test3", 3.5)]
+
+        # Perform bulkcopy with connection using Addr parameter
+        result = cursor._bulkcopy(table_name, test_data)
+
+        # Verify result
+        assert result is not None
+        assert "rows_copied" in result
+        assert result["rows_copied"] == 3
+
+        # Verify data
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        count = cursor.fetchone()[0]
+        assert count == 3
+
+        # Cleanup
+        cursor.execute(f"DROP TABLE {table_name}")
+        cursor.close()
+    finally:
+        conn.close()
+
+    # Test with 'Address' synonym
+    conn_string_address = re.sub(r"(?i)\bserver\s*=", "Address=", conn_str, count=1)
+    conn = connect(conn_string_address)
+    try:
+        cursor = conn.cursor()
+        table_name = "test_bulkcopy_address_synonym"
+
+        # Create table
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id INT,
+                name NVARCHAR(50),
+                value FLOAT
+            )
+        """)
+        conn.commit()
+
+        # Test data
+        test_data = [(1, "Test1", 1.5), (2, "Test2", 2.5), (3, "Test3", 3.5)]
+
+        # Perform bulkcopy with connection using Address parameter
+        result = cursor._bulkcopy(table_name, test_data)
+
+        # Verify result
+        assert result is not None
+        assert "rows_copied" in result
+        assert result["rows_copied"] == 3
+
+        # Verify data
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        count = cursor.fetchone()[0]
+        assert count == 3
+
+        # Cleanup
+        cursor.execute(f"DROP TABLE {table_name}")
+        cursor.close()
+    finally:
+        conn.close()
+
+    # Test that bulkcopy fails when SERVER parameter is missing entirely
+    conn_string_no_server = re.sub(r"(?i);?\s*(server|addr|address)\s*=\s*[^;]+;?", ";", conn_str)
+    # Ensure we have a valid connection string for the main connection
+    conn = connect(conn_str)
+    try:
+        cursor = conn.cursor()
+        # Manually override the connection string to one without server
+        cursor.connection.connection_str = conn_string_no_server
+
+        table_name = "test_bulkcopy_no_server"
+        test_data = [(1, "Test1", 1.5)]
+
+        # This should raise ValueError due to missing SERVER parameter
+        try:
+            cursor._bulkcopy(table_name, test_data)
+            assert False, "Expected ValueError for missing SERVER parameter"
+        except ValueError as e:
+            assert "SERVER parameter is required" in str(e)
+
+        cursor.close()
+    finally:
+        conn.close()
