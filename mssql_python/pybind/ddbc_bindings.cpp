@@ -30,6 +30,17 @@
 #define SQL_SS_UDT (-151)
 #define SQL_SS_VARIANT (-150)
 #define SQL_CA_SS_VARIANT_TYPE (1215)
+#ifndef SQL_C_DATE
+#define SQL_C_DATE (9)
+#endif
+#ifndef SQL_C_TIME
+#define SQL_C_TIME (10)
+#endif
+#ifndef SQL_C_TIMESTAMP
+#define SQL_C_TIMESTAMP (11)
+#endif
+// SQL Server-specific variant TIME type code
+#define SQL_SS_VARIANT_TIME (16384)
 
 #define STRINGIFY_FOR_CASE(x)                                                                      \
     case x:                                                                                        \
@@ -2938,14 +2949,14 @@ SQLSMALLINT MapVariantCTypeToSQLType(SQLLEN variantCType) {
             return SQL_VARCHAR;
         case SQL_C_WCHAR:
             return SQL_WVARCHAR;
-        case 9:
+        case SQL_C_DATE:
         case SQL_C_TYPE_DATE:
             return SQL_TYPE_DATE;
-        case 10:
+        case SQL_C_TIME:
         case SQL_C_TYPE_TIME:
-        case 16384:
+        case SQL_SS_VARIANT_TIME:
             return SQL_TYPE_TIME;
-        case 11:
+        case SQL_C_TIMESTAMP:
         case SQL_C_TYPE_TIMESTAMP:
             return SQL_TYPE_TIMESTAMP;
         case SQL_C_BINARY:
@@ -4288,9 +4299,6 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         auto colMeta = columnNames[i].cast<py::dict>();
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
         SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
-
-        printf("[DEBUG] FetchAll_wrap: Column %d - dataType=%d, columnSize=%lu\n", i + 1, dataType,
-               (unsigned long)columnSize);
 
         // Detect LOB columns that need SQLGetData streaming
         // sql_variant always uses SQLGetData for native type preservation
