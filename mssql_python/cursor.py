@@ -2576,7 +2576,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             RuntimeError: If connection string is not available
         """
         # Fast check if logging is enabled to avoid overhead
-        is_logging = logger.is_debug_enabled
+        is_logging_enabled = logger.is_debug_enabled
 
         try:
             import mssql_py_core
@@ -2667,7 +2667,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         try:
             # Only pass logger to Rust if logging is enabled (performance optimization)
             pycore_connection = mssql_py_core.PyCoreConnection(
-                pycore_context, python_logger=logger if is_logging else None
+                pycore_context, python_logger=logger if is_logging_enabled else None
             )
             pycore_cursor = pycore_connection.cursor()
 
@@ -2685,16 +2685,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 keep_nulls=keep_nulls,
                 fire_triggers=fire_triggers,
                 use_internal_transaction=use_internal_transaction,
-                python_logger=logger if is_logging else None,  # Only pass logger if enabled
+                python_logger=logger if is_logging_enabled else None,  # Only pass logger if enabled
             )
 
-            if is_logging:
-                logger.info(
-                    "_bulkcopy: Bulk copy completed successfully - rows_copied=%s, batch_count=%s, elapsed_time=%s",
-                    result.get("rows_copied", "N/A"),
-                    result.get("batch_count", "N/A"),
-                    result.get("elapsed_time", "N/A"),
-                )
+            logger.info(
+                "_bulkcopy: Bulk copy completed successfully - rows_copied=%s, batch_count=%s, elapsed_time=%s",
+                result.get("rows_copied", "N/A"),
+                result.get("batch_count", "N/A"),
+                result.get("elapsed_time", "N/A"),
+            )
 
             return result
 

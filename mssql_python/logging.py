@@ -88,7 +88,7 @@ class MSSQLLogger:
 
         # Create the underlying Python logger
         self._logger = logging.getLogger("mssql_python")
-        self._logger.setLevel(logging.WARNING)  # Allow WARNING and ERROR by default
+        self._logger.setLevel(logging.CRITICAL)  # Disabled by default
         self._logger.propagate = False  # Don't propagate to root logger
 
         # Add trace ID filter (injects thread_id into every log record)
