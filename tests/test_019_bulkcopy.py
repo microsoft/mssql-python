@@ -142,7 +142,7 @@ def test_bulkcopy_without_database_parameter(conn_str):
         bulkcopy_table_name = (
             f"[{original_database}].[dbo].{table_name}" if original_database else table_name
         )
-        result = cursor._bulkcopy(bulkcopy_table_name, data, timeout=60)
+        result = cursor.bulkcopy(bulkcopy_table_name, data, timeout=60)
 
         # Verify result
         assert result is not None
@@ -202,7 +202,7 @@ def test_bulkcopy_with_server_synonyms(conn_str):
         test_data = [(1, "Test1", 1.5), (2, "Test2", 2.5), (3, "Test3", 3.5)]
 
         # Perform bulkcopy with connection using Addr parameter
-        result = cursor._bulkcopy(table_name, test_data)
+        result = cursor.bulkcopy(table_name, test_data)
 
         # Verify result
         assert result is not None
@@ -249,7 +249,7 @@ def test_bulkcopy_with_server_synonyms(conn_str):
         test_data = [(1, "Test1", 1.5), (2, "Test2", 2.5), (3, "Test3", 3.5)]
 
         # Perform bulkcopy with connection using Address parameter
-        result = cursor._bulkcopy(table_name, test_data)
+        result = cursor.bulkcopy(table_name, test_data)
 
         # Verify result
         assert result is not None
@@ -288,7 +288,7 @@ def test_bulkcopy_with_server_synonyms(conn_str):
 
         # This should raise ValueError due to missing SERVER parameter
         try:
-            cursor._bulkcopy(table_name, test_data)
+            cursor.bulkcopy(table_name, test_data)
             assert False, "Expected ValueError for missing SERVER parameter"
         except ValueError as e:
             assert "SERVER parameter is required" in str(e)
