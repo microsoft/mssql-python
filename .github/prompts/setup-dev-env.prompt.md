@@ -134,13 +134,34 @@ pip install black flake8 autopep8
 pip install -e .
 ```
 
-### 3.5 Verify Python Dependencies
+### 3.5 Install mssql_py_core from NuGet (Required for Bulkcopy)
+
+The `bulkcopy` feature requires `mssql_py_core`, a Rust-based native module distributed as a NuGet package. It must be installed separately from pip packages.
+
+**macOS / Linux:**
+
+```bash
+# From repository root - downloads and extracts the wheel matching your Python/platform
+bash eng/scripts/install-mssql-py-core.sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+# From repository root
+.\eng\scripts\install-mssql-py-core.ps1
+```
+
+> ℹ️ The script reads the version from `eng/versions/mssql-py-core.version`, downloads the NuGet package from the public Azure Artifacts feed, and extracts the `mssql_py_core/` directory to the repository root.
+
+### 3.6 Verify Python Dependencies
 
 ```bash
 # Check critical packages
 python -c "import pybind11; print('✅ pybind11:', pybind11.get_include())"
 python -c "import pytest; print('✅ pytest:', pytest.__version__)"
 python -c "import mssql_python; print('✅ mssql_python installed')"
+python -c "import mssql_py_core; print('✅ mssql_py_core installed (bulkcopy support)')" 2>/dev/null || echo "⚠️  mssql_py_core not installed (bulkcopy unavailable)"
 ```
 
 ---
@@ -585,6 +606,7 @@ echo "3. Key Packages:" && \
 python -c "import pybind11; print('   ✅ pybind11:', pybind11.__version__)" 2>/dev/null || echo "   ❌ pybind11 not installed" && \
 python -c "import pytest; print('   ✅ pytest:', pytest.__version__)" 2>/dev/null || echo "   ❌ pytest not installed" && \
 python -c "import mssql_python; print('   ✅ mssql_python installed')" 2>/dev/null || echo "   ❌ mssql_python not installed" && \
+python -c "import mssql_py_core; print('   ✅ mssql_py_core installed (bulkcopy support)')" 2>/dev/null || echo "   ⚠️  mssql_py_core not installed (bulkcopy unavailable - run: bash eng/scripts/install-mssql-py-core.sh)" && \
 echo "" && \
 echo "4. Build Tools:" && \
 cmake --version 2>/dev/null | head -1 | sed 's/^/   ✅ /' || echo "   ❌ cmake not found" && \
@@ -714,6 +736,19 @@ pip install -r requirements.txt -v
 pip install <package-name>
 ```
 
+### ❌ "No module named 'mssql_py_core'" when using bulkcopy
+
+**Cause:** The `mssql_py_core` NuGet package has not been installed yet.
+
+**Fix:**
+```bash
+# macOS/Linux - from repository root
+bash eng/scripts/install-mssql-py-core.sh
+
+# Windows (PowerShell) - from repository root
+.\eng\scripts\install-mssql-py-core.ps1
+```
+
 ### ❌ PowerShell: "Activate.ps1 cannot be loaded because running scripts is disabled"
 
 **Cause:** PowerShell execution policy
@@ -741,6 +776,7 @@ pip install --upgrade pip && \
 pip install -r requirements.txt && \
 pip install pybind11 pytest pytest-cov && \
 pip install -e . && \
+bash eng/scripts/install-mssql-py-core.sh && \
 echo "✅ Setup complete!"
 ```
 
@@ -752,6 +788,7 @@ echo "✅ Setup complete!"
 | `pytest` | Testing | Running tests |
 | `pytest-cov` | Coverage | Coverage reports |
 | `azure-identity` | Azure auth | Runtime (in requirements.txt) |
+| `mssql_py_core` | Rust/TDS bulkcopy core | Bulkcopy feature (via NuGet script) |
 
 ---
 
@@ -759,7 +796,7 @@ echo "✅ Setup complete!"
 
 Once setup is complete, you can:
 
-1. **Build DDBC extensions** → Use `#build-ddbc`
+1. **Build DDBC extensions** → Use `#build-ddbc` (also installs `mssql_py_core` for bulkcopy)
 2. **Run tests** → Use `#run-tests`
 
 > 💡 You typically only need to run this setup prompt **once** per machine or after major changes.

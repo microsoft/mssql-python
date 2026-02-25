@@ -247,17 +247,23 @@ tests/test_004_cursor.py:25: DatabaseError
 
 ### Test Files and What They Cover
 
-| File | Purpose | Requires DB? |
-|------|---------|--------------|
-| `test_000_dependencies.py` | Dependency checks | No |
-| `test_001_globals.py` | Global state | No |
-| `test_002_types.py` | Type conversions | No |
-| `test_003_connection.py` | Connection lifecycle | **Yes** |
-| `test_004_cursor.py` | Cursor operations | **Yes** |
-| `test_005_connection_cursor_lifecycle.py` | Lifecycle management | **Yes** |
-| `test_006_exceptions.py` | Error handling | Mixed |
-| `test_007_logging.py` | Logging functionality | No |
-| `test_008_auth.py` | Authentication | **Yes** |
+| File | Purpose | Requires DB? | Requires mssql_py_core? |
+|------|---------|--------------|--------------------------|
+| `test_000_dependencies.py` | Dependency checks | No | No |
+| `test_001_globals.py` | Global state | No | No |
+| `test_002_types.py` | Type conversions | No | No |
+| `test_003_connection.py` | Connection lifecycle | **Yes** | No |
+| `test_004_cursor.py` | Cursor operations | **Yes** | No |
+| `test_005_connection_cursor_lifecycle.py` | Lifecycle management | **Yes** | No |
+| `test_006_exceptions.py` | Error handling | Mixed | No |
+| `test_007_logging.py` | Logging functionality | No | No |
+| `test_008_auth.py` | Authentication | **Yes** | No |
+| `test_019_bulkcopy.py` | Bulk copy operations | **Yes** | **Yes** |
+
+> ⚠️ **Bulkcopy tests** require `mssql_py_core` to be installed. If not installed, the module is automatically skipped. To install it:
+> ```bash
+> bash eng/scripts/install-mssql-py-core.sh
+> ```
 
 ---
 
@@ -337,6 +343,22 @@ Use `#build-ddbc` to rebuild the extension:
 ```bash
 cd mssql_python/pybind && ./build.sh && cd ../..
 python -c "from mssql_python import connect; print('OK')"
+```
+
+### ❌ Bulkcopy tests are skipped ("module not available")
+
+**Cause:** `mssql_py_core` is not installed — the bulkcopy tests skip automatically when it can't be imported.
+
+**Fix:**
+```bash
+# macOS/Linux - from repository root
+bash eng/scripts/install-mssql-py-core.sh
+
+# Windows (PowerShell) - from repository root
+.\eng\scripts\install-mssql-py-core.ps1
+
+# Verify
+python -c "import mssql_py_core; print('✅ mssql_py_core loaded')"
 ```
 
 ### ❌ Tests pass locally but fail in CI
