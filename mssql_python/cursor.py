@@ -2499,7 +2499,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return True
 
     # ── Mapping from ODBC connection-string keywords (lowercase, as _parse returns)
-    def _bulkcopy(
+    def bulkcopy(
         self,
         table_name: str,
         data: Iterable[Union[Tuple, List]],
@@ -2583,8 +2583,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except ImportError as exc:
             logger.error("_bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
-                "Bulk copy requires the mssql_py_core library which is not installed. "
-                "To install, run: pip install mssql_py_core "
+                "Bulk copy requires the mssql_py_core library which is not available. "
+                "This is an unexpected error. "
             ) from exc
 
         # Validate inputs
