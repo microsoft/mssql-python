@@ -65,7 +65,7 @@ def test_bulkcopy_basic(cursor):
 
     # Perform bulkcopy with auto-mapping (no column_mappings specified)
     # Using explicit timeout parameter instead of kwargs
-    result = cursor._bulkcopy(table_name, data, timeout=60)
+    result = cursor.bulkcopy(table_name, data, timeout=60)
 
     # Verify result
     assert result is not None
