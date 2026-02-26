@@ -31,6 +31,8 @@ def cleanup_logger():
 
     # Disable logging and clear handlers
     logger._logger.setLevel(logging.CRITICAL)
+    logger._cached_level = logging.CRITICAL  # Update cached level
+    logger._is_debug_enabled = False  # Update cached debug flag
     for handler in logger._logger.handlers[:]:
         handler.close()
         logger._logger.removeHandler(handler)
@@ -46,6 +48,8 @@ def cleanup_logger():
 
     # Restore state and cleanup
     logger._logger.setLevel(logging.CRITICAL)
+    logger._cached_level = logging.CRITICAL  # Update cached level
+    logger._is_debug_enabled = False  # Update cached debug flag
     for handler in logger._logger.handlers[:]:
         handler.close()
         logger._logger.removeHandler(handler)
@@ -843,3 +847,190 @@ class TestExceptionSafety:
 
         # Application should still be running
         assert True
+
+
+class TestDebugEnabledProperty:
+    """Test is_debug_enabled property for performance-optimized level checks"""
+
+    def test_is_debug_enabled_false_by_default(self, cleanup_logger):
+        """is_debug_enabled should be False when logger is at CRITICAL level (cleanup default)"""
+        # cleanup_logger sets level to CRITICAL
+        assert logger.getLevel() == logging.CRITICAL
+        assert not logger.is_debug_enabled
+
+    def test_is_debug_enabled_true_when_debug_set(self, cleanup_logger):
+        """is_debug_enabled should be True when DEBUG level is set"""
+        setup_logging()
+        assert logger.getLevel() == logging.DEBUG
+        assert logger.is_debug_enabled
+
+    def test_is_debug_enabled_false_when_info_set(self, cleanup_logger):
+        """is_debug_enabled should be False when INFO level is set"""
+        # Set to INFO level (above DEBUG)
+        logger._setLevel(logging.INFO)
+        assert logger.getLevel() == logging.INFO
+        assert not logger.is_debug_enabled
+
+    def test_is_debug_enabled_updates_with_level_change(self, cleanup_logger):
+        """is_debug_enabled should update when logging level changes"""
+        # Start disabled
+        assert not logger.is_debug_enabled
+
+        # Enable debug
+        setup_logging()
+        assert logger.is_debug_enabled
+
+        # Disable again
+        logger._setLevel(logging.WARNING)
+        assert not logger.is_debug_enabled
+
+        # Re-enable
+        logger._setLevel(logging.DEBUG)
+        assert logger.is_debug_enabled
+
+    def test_is_debug_enabled_matches_cached_level(self, cleanup_logger):
+        """is_debug_enabled should match the cached level check"""
+        # Test at various levels
+        test_levels = [
+            logging.DEBUG,
+            logging.INFO,
+            logging.WARNING,
+            logging.ERROR,
+            logging.CRITICAL,
+        ]
+
+        for level in test_levels:
+            logger._setLevel(level)
+            expected = level <= logging.DEBUG
+            assert logger.is_debug_enabled == expected, f"Failed at level {level}"
+
+
+class TestPyCoreLog:
+    """Test py_core_log method for Rust/py-core integration"""
+
+    def test_py_core_log_with_custom_location(self, cleanup_logger, temp_log_dir):
+        """py_core_log should create log record with custom source location"""
+        log_file = os.path.join(temp_log_dir, "pycore_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+
+        # Log from "Rust" code
+        logger.py_core_log(
+            logging.INFO, "Bulkcopy operation started", filename="cursor.rs", lineno=270
+        )
+
+        # Verify log file contains custom source location
+        with open(log_file, "r") as f:
+            content = f.read()
+            assert "cursor.rs:270" in content
+            assert "py-core" in content
+            assert "Bulkcopy operation started" in content
+
+    def test_py_core_log_respects_level(self, cleanup_logger, temp_log_dir):
+        """py_core_log should respect cached level check"""
+        log_file = os.path.join(temp_log_dir, "pycore_level_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+
+        # Log at DEBUG level (should appear)
+        logger.py_core_log(logging.DEBUG, "Debug message", "test.rs", 1)
+
+        # Disable debug logging
+        logger._setLevel(logging.WARNING)
+
+        # Log at DEBUG level (should NOT appear)
+        logger.py_core_log(logging.DEBUG, "Hidden debug message", "test.rs", 2)
+
+        # Log at WARNING level (should appear)
+        logger.py_core_log(logging.WARNING, "Warning message", "test.rs", 3)
+
+        # Verify file content
+        with open(log_file, "r") as f:
+            content = f.read()
+            assert "Debug message" in content
+            assert "Hidden debug message" not in content
+            assert "Warning message" in content
+
+    def test_py_core_log_allows_warnings_when_disabled(self, cleanup_logger, temp_log_dir):
+        """py_core_log should allow WARNING/ERROR even when logging disabled"""
+        log_file = os.path.join(temp_log_dir, "pycore_warning_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+
+        # Disable debug logging (but WARNING should still work)
+        logger._setLevel(logging.CRITICAL)
+
+        # These should NOT appear
+        logger.py_core_log(logging.DEBUG, "Debug blocked", "test.rs", 1)
+        logger.py_core_log(logging.INFO, "Info blocked", "test.rs", 2)
+
+        # These SHOULD appear (WARNING and ERROR always allowed)
+        logger.py_core_log(logging.WARNING, "Warning allowed", "test.rs", 3)
+        logger.py_core_log(logging.ERROR, "Error allowed", "test.rs", 4)
+
+        # Verify file content
+        with open(log_file, "r") as f:
+            content = f.read()
+            assert "Debug blocked" not in content
+            assert "Info blocked" not in content
+            assert "Warning allowed" in content
+            assert "Error allowed" in content
+
+    def test_py_core_log_fallback_on_error(self, cleanup_logger, temp_log_dir):
+        """py_core_log should fallback gracefully on errors"""
+        log_file = os.path.join(temp_log_dir, "pycore_fallback_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+
+        # Should not crash even with invalid parameters
+        logger.py_core_log(logging.INFO, "Test message", None, None)  # None filename/lineno
+        logger.py_core_log(logging.INFO, "Test 2", "", -1)  # Empty filename, negative line
+
+        # Application should still be running
+        assert True
+
+        # Verify something was logged (fallback worked)
+        with open(log_file, "r") as f:
+            content = f.read()
+            # At least one message should have been logged
+            assert len(content) > 0
+
+    def test_py_core_log_formats_as_csv(self, cleanup_logger, temp_log_dir):
+        """py_core_log output should follow CSV format"""
+        log_file = os.path.join(temp_log_dir, "pycore_csv_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+
+        logger.py_core_log(logging.INFO, "Test message with commas, quotes", "connection.rs", 42)
+
+        # Read and verify CSV format
+        with open(log_file, "r") as f:
+            lines = f.readlines()
+            # Skip header lines (starts with #)
+            data_lines = [line for line in lines if not line.startswith("#")]
+
+            # Should have at least 2 lines: CSV header + data
+            assert len(data_lines) >= 2
+
+            # Check data line format: timestamp, thread_id, level, location, source, message
+            data_line = data_lines[-1]  # Get last logged line
+            parts = [p.strip() for p in data_line.split(",")]
+
+            # Should have 6 parts: timestamp, thread_id, level, location, source, message
+            assert len(parts) >= 6
+            assert "connection.rs:42" in data_line
+            assert "py-core" in data_line
+            assert "INFO" in data_line
+
+    def test_py_core_log_with_different_rust_files(self, cleanup_logger, temp_log_dir):
+        """py_core_log should handle different Rust source files"""
+        log_file = os.path.join(temp_log_dir, "pycore_files_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+
+        # Log from different Rust files
+        logger.py_core_log(logging.INFO, "Connection msg", "connection.rs", 100)
+        logger.py_core_log(logging.INFO, "Cursor msg", "cursor.rs", 200)
+        logger.py_core_log(logging.INFO, "Auth msg", "auth.rs", 300)
+
+        # Verify all source files appear in log
+        with open(log_file, "r") as f:
+            content = f.read()
+            assert "connection.rs:100" in content
+            assert "cursor.rs:200" in content
+            assert "auth.rs:300" in content
+            assert content.count("py-core") == 3  # Three entries from py-core

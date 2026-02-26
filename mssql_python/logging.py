@@ -104,7 +104,22 @@ class MSSQLLogger:
         self._handler_lock = threading.RLock()  # Reentrant lock for handler operations
         self._cleanup_registered = False  # Track if atexit cleanup is registered
 
-        # Don't setup handlers yet - do it lazily when setLevel is called
+        # Cached level for fast checks (avoid repeated isEnabledFor calls)
+        self._cached_level = logging.WARNING
+        self._is_debug_enabled = False
+
+        # Set up default stderr handler for WARNING and ERROR messages
+        # This ensures warnings are always visible even when logging is not enabled
+        import sys
+
+        default_handler = logging.StreamHandler(sys.stderr)
+        default_handler.setLevel(logging.WARNING)
+        # Simple format for warnings - no CSV formatting needed
+        default_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+        self._logger.addHandler(default_handler)
+        self._default_handler = default_handler  # Keep reference for later removal
+
+        # Don't setup full handlers yet - do it lazily when setLevel is called
         # This prevents creating log files when user changes output mode before enabling logging
 
     def _setup_handlers(self):
@@ -145,15 +160,20 @@ class MSSQLLogger:
         # Custom formatter to extract source from message and format as CSV
         class CSVFormatter(logging.Formatter):
             def format(self, record):
-                # Extract source from message (e.g., [Python] or [DDBC])
-                msg = record.getMessage()
-                if msg.startswith("[") and "]" in msg:
-                    end_bracket = msg.index("]")
-                    source = msg[1:end_bracket]
-                    message = msg[end_bracket + 2 :].strip()  # Skip '] '
+                # Check if this is from py-core (via py_core_log method)
+                if hasattr(record, "funcName") and record.funcName == "py-core":
+                    source = "py-core"
+                    message = record.getMessage()
                 else:
-                    source = "Unknown"
-                    message = msg
+                    # Extract source from message (e.g., [Python] or [DDBC])
+                    msg = record.getMessage()
+                    if msg.startswith("[") and "]" in msg:
+                        end_bracket = msg.index("]")
+                        source = msg[1:end_bracket]
+                        message = msg[end_bracket + 2 :].strip()  # Skip '] '
+                    else:
+                        source = "Unknown"
+                        message = msg
 
                 # Format timestamp with milliseconds using period separator
                 timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
@@ -326,6 +346,44 @@ class MSSQLLogger:
                 pass  # Even stderr notification failed
             # Don't crash - logging continues without header
 
+    def py_core_log(self, level: int, msg: str, filename: str = "cursor.rs", lineno: int = 0):
+        """
+        Logging method for py-core (Rust/TDS) code with custom source location.
+
+        Args:
+            level: Log level (DEBUG, INFO, WARNING, ERROR)
+            msg: Message string (already formatted)
+            filename: Source filename (e.g., 'cursor.rs')
+            lineno: Line number in source file
+        """
+        try:
+            # Fast level check using cached level (same optimization as _log method)
+            # Exception: Always allow WARNING and ERROR messages through
+            if level < self._cached_level and level < logging.WARNING:
+                return
+
+            # Create a custom LogRecord with Rust source location
+            import logging as log_module
+
+            record = log_module.LogRecord(
+                name=self._logger.name,
+                level=level,
+                pathname=filename,
+                lineno=lineno,
+                msg=msg,
+                args=(),
+                exc_info=None,
+                func="py-core",
+                sinfo=None,
+            )
+            self._logger.handle(record)
+        except Exception:
+            # Fallback - use regular logging
+            try:
+                self._logger.log(level, msg)
+            except:
+                pass
+
     def _log(self, level: int, msg: str, add_prefix: bool = True, *args, **kwargs):
         """
         Internal logging method with exception safety.
@@ -352,8 +410,10 @@ class MSSQLLogger:
             All other failures are silently ignored to prevent app crashes.
         """
         try:
-            # Fast level check (zero overhead if disabled)
-            if not self._logger.isEnabledFor(level):
+            # Fast level check using cached level (zero overhead if disabled)
+            # This avoids the overhead of isEnabledFor() method call
+            # Exception: Always allow WARNING and ERROR messages through
+            if level < self._cached_level and level < logging.WARNING:
                 return
 
             # Add prefix if requested (only after level check)
@@ -364,8 +424,9 @@ class MSSQLLogger:
             if args:
                 msg = msg % args
 
-            # Log the message (no args since already formatted)
-            self._logger.log(level, msg, **kwargs)
+            # Log the message with proper stack level to capture caller's location
+            # stacklevel=3 skips: _log -> debug/info/warning/error -> actual caller
+            self._logger.log(level, msg, stacklevel=3, **kwargs)
         except Exception:
             # Last resort: Try stderr fallback for any logging failure
             # This helps diagnose critical issues (disk full, permission denied, etc.)
@@ -440,6 +501,17 @@ class MSSQLLogger:
 
         # Set level (atomic operation, no lock needed)
         self._logger.setLevel(level)
+
+        # Cache level for fast checks (avoid repeated isEnabledFor calls)
+        # Note: These updates are not atomic across both variables, creating a brief
+        # window where reads might see inconsistent state (e.g., updated _cached_level
+        # but old _is_debug_enabled). This is an acceptable benign race condition:
+        # - Worst case: one log statement might be incorrectly allowed/blocked
+        # - Duration: nanoseconds (single Python bytecode instruction gap)
+        # - Impact: negligible - next check will see consistent state
+        # - Alternative (locking) would add overhead to every log call
+        self._cached_level = level
+        self._is_debug_enabled = level <= logging.DEBUG
 
         # Notify C++ bridge of level change
         self._notify_cpp_level_change(level)
@@ -545,6 +617,11 @@ class MSSQLLogger:
     def level(self) -> int:
         """Get the current logging level"""
         return self._logger.level
+
+    @property
+    def is_debug_enabled(self) -> bool:
+        """Fast check if debug logging is enabled (cached for performance)"""
+        return self._is_debug_enabled
 
 
 # ============================================================================
