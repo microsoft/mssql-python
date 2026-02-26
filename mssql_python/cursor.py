@@ -2499,7 +2499,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return True
 
     # ── Mapping from ODBC connection-string keywords (lowercase, as _parse returns)
-    def _bulkcopy(
+    def bulkcopy(
         self,
         table_name: str,
         data: Iterable[Union[Tuple, List]],
@@ -2575,16 +2575,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ValueError: If table_name is empty or parameters are invalid
             RuntimeError: If connection string is not available
         """
+        # Fast check if logging is enabled to avoid overhead
+        is_logging_enabled = logger.is_debug_enabled
+
         try:
             import mssql_py_core
         except ImportError as exc:
+            logger.error("_bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
-                "Bulk copy requires the mssql_py_core library which is not installed. "
-                "To install, run: pip install mssql_py_core "
+                "Bulk copy requires the mssql_py_core library which is not available. "
+                "This is an unexpected error. "
             ) from exc
 
         # Validate inputs
         if not table_name or not isinstance(table_name, str):
+            logger.error("_bulkcopy: Invalid table_name parameter")
             raise ValueError("table_name must be a non-empty string")
 
         # Validate that data is iterable (but not a string or bytes, which are technically iterable)
@@ -2616,6 +2621,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Get and parse connection string
         if not hasattr(self.connection, "connection_str"):
+            logger.error("_bulkcopy: Connection string not available")
             raise RuntimeError("Connection string not available for bulk copy")
 
         # Use the proper connection string parser that handles braced values
@@ -2624,14 +2630,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         parser = _ConnectionStringParser(validate_keywords=False)
         params = parser._parse(self.connection.connection_str)
 
-        if not params.get("server"):
+        # Check for server parameter (accepts synonyms: server, addr, address)
+        if not (params.get("server") or params.get("addr") or params.get("address")):
             raise ValueError("SERVER parameter is required in connection string")
-
-        if not params.get("database"):
-            raise ValueError(
-                "DATABASE parameter is required in connection string for bulk copy. "
-                "Specify the target database explicitly to avoid accidentally writing to system databases."
-            )
 
         # Translate parsed connection string into the dict py-core expects.
         pycore_context = connstr_to_pycore_params(params)
@@ -2657,9 +2658,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         pycore_connection = None
         pycore_cursor = None
         try:
-            pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
+            # Only pass logger to Rust if logging is enabled (performance optimization)
+            pycore_connection = mssql_py_core.PyCoreConnection(
+                pycore_context, python_logger=logger if is_logging_enabled else None
+            )
             pycore_cursor = pycore_connection.cursor()
 
+            # Call bulkcopy with explicit keyword arguments
+            # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             result = pycore_cursor.bulkcopy(
                 table_name,
                 iter(data),
@@ -2672,6 +2678,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 keep_nulls=keep_nulls,
                 fire_triggers=fire_triggers,
                 use_internal_transaction=use_internal_transaction,
+                python_logger=logger if is_logging_enabled else None,  # Only pass logger if enabled
+            )
+
+            logger.info(
+                "_bulkcopy: Bulk copy completed successfully - rows_copied=%s, batch_count=%s, elapsed_time=%s",
+                result.get("rows_copied", "N/A"),
+                result.get("batch_count", "N/A"),
+                result.get("elapsed_time", "N/A"),
             )
 
             return result
@@ -2699,8 +2713,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     try:
                         resource.close()
                     except Exception as cleanup_error:
-                        # Log cleanup errors at debug level to aid troubleshooting
-                        # without masking the original exception
+                        # Log cleanup errors only - aids troubleshooting without masking original exception
                         logger.debug(
                             "Failed to close bulk copy resource %s: %s",
                             type(resource).__name__,
