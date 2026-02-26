@@ -84,7 +84,12 @@ def variant_test_table(cursor, db_connection):
         (15, "CAST('2024-05-20' AS DATE)", "date", "Date (DATE)"),
         (16, "CAST('12:34:56' AS TIME)", "time", "Time (TIME)"),
         (17, "CAST('2024-05-20 12:34:56.123' AS DATETIME)", "datetime", "DateTime (DATETIME)"),
-        (18, "CAST('2024-05-20 12:34:00' AS SMALLDATETIME)", "smalldatetime", "SmallDateTime (SMALLDATETIME)"),
+        (
+            18,
+            "CAST('2024-05-20 12:34:00' AS SMALLDATETIME)",
+            "smalldatetime",
+            "SmallDateTime (SMALLDATETIME)",
+        ),
         (
             19,
             "CAST('2024-05-20 12:34:56.1234567' AS DATETIME2)",
