@@ -2956,13 +2956,22 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     row.append(
                         FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
                 } else {
-                    // Use columnSize * 4 + 1 to accommodate worst-case UTF-8 expansion.
-                    // columnSize is in characters, but the ODBC driver may return UTF-8
-                    // encoded bytes where each character can be up to 4 bytes. This
-                    // applies on Linux/macOS (driver always returns UTF-8 for SQL_C_CHAR)
-                    // and on Windows when the database uses a UTF-8 collation. Without
-                    // this, data at exact column boundary with multi-byte chars (e.g.,
-                    // CP1252 é in VARCHAR(10)) causes truncation and corruption.
+                    // Allocate columnSize * 4 + 1 on ALL platforms (no #if guard).
+                    //
+                    // Why this differs from SQLBindColums / FetchBatchData:
+                    // Those two functions use #if to apply *4 only on Linux/macOS,
+                    // because on Windows with a non-UTF-8 collation (e.g. CP1252)
+                    // each character occupies exactly 1 byte, so *1 suffices and
+                    // saves memory across the entire batch (fetchSize × numCols
+                    // buffers).
+                    //
+                    // SQLGetData_wrap allocates a single temporary buffer per
+                    // column per row, so the over-allocation cost is negligible.
+                    // Using *4 unconditionally here keeps the code simple and
+                    // correct on every platform—including Windows with a UTF-8
+                    // collation where multi-byte chars could otherwise cause
+                    // truncation at the exact column boundary (e.g. CP1252 é in
+                    // VARCHAR(10)).
                     uint64_t fetchBufferSize = columnSize * 4 + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
@@ -3697,6 +3706,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         columnInfosExt[col].fetchBufferSize = columnInfos[col].fetchBufferSize;
         columnInfosExt[col].isLob = columnInfos[col].isLob;
         columnInfosExt[col].charEncoding = effectiveCharEnc;
+        columnInfosExt[col].isUtf8 = (effectiveCharEnc == "utf-8");
 
         // Map data type to processor function (switch executed once per column,
         // not per cell)

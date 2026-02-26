@@ -667,6 +667,7 @@ struct ColumnInfoExt {
     SQLULEN processedColumnSize;
     uint64_t fetchBufferSize;
     bool isLob;
+    bool isUtf8;               // Pre-computed from charEncoding (avoids string compare per cell)
     std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
 };
 
@@ -824,7 +825,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         // For UTF-8, use the direct C API (PyUnicode_FromStringAndSize) which
         // bypasses the codec registry for maximum reliability. For non-UTF-8
         // encodings (e.g., CP1252), use PyUnicode_Decode with the codec registry.
-        if (colInfo->charEncoding == "utf-8") {
+        if (colInfo->isUtf8) {
             pyStr = PyUnicode_FromStringAndSize(dataPtr, numCharsInData);
         } else {
             pyStr =
