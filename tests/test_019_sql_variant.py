@@ -78,27 +78,31 @@ def variant_test_table(cursor, db_connection):
         # Character types
         (11, "CAST('Hello' AS VARCHAR(50))", "varchar", "Varchar (VARCHAR)"),
         (12, "CAST(N'World' AS NVARCHAR(50))", "nvarchar", "NVarchar (NVARCHAR)"),
+        (13, "CAST('Fixed' AS CHAR(10))", "char", "Fixed CHAR (CHAR)"),
+        (14, "CAST(N'Fixed' AS NCHAR(10))", "nchar", "Fixed NCHAR (NCHAR)"),
         # Date/Time types
-        (13, "CAST('2024-05-20' AS DATE)", "date", "Date (DATE)"),
-        (14, "CAST('12:34:56' AS TIME)", "time", "Time (TIME)"),
-        (15, "CAST('2024-05-20 12:34:56.123' AS DATETIME)", "datetime", "DateTime (DATETIME)"),
+        (15, "CAST('2024-05-20' AS DATE)", "date", "Date (DATE)"),
+        (16, "CAST('12:34:56' AS TIME)", "time", "Time (TIME)"),
+        (17, "CAST('2024-05-20 12:34:56.123' AS DATETIME)", "datetime", "DateTime (DATETIME)"),
+        (18, "CAST('2024-05-20 12:34:00' AS SMALLDATETIME)", "smalldatetime", "SmallDateTime (SMALLDATETIME)"),
         (
-            16,
+            19,
             "CAST('2024-05-20 12:34:56.1234567' AS DATETIME2)",
             "datetime2",
             "DateTime2 (DATETIME2)",
         ),
         # Binary type
-        (17, "CAST(0x48656C6C6F AS VARBINARY(50))", "varbinary", "VarBinary (VARBINARY)"),
+        (20, "CAST(0x48656C6C6F AS BINARY(10))", "binary", "Fixed BINARY (BINARY)"),
+        (21, "CAST(0x48656C6C6F AS VARBINARY(50))", "varbinary", "VarBinary (VARBINARY)"),
         # GUID type
         (
-            18,
+            22,
             "CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' AS UNIQUEIDENTIFIER)",
             "uniqueidentifier",
             "GUID (UNIQUEIDENTIFIER)",
         ),
         # NULL
-        (19, "NULL", "NULL", "NULL value"),
+        (23, "NULL", "NULL", "NULL value"),
     ]
 
     for row in test_data:
@@ -108,12 +112,12 @@ def variant_test_table(cursor, db_connection):
         """)
 
     # Also test implicit type conversion (what SQL Server chooses)
-    cursor.execute(f"INSERT INTO {table_name} VALUES (20, 123, 'int', 'Implicit int literal')")
+    cursor.execute(f"INSERT INTO {table_name} VALUES (24, 123, 'int', 'Implicit int literal')")
     cursor.execute(
-        f"INSERT INTO {table_name} VALUES (21, 45.67, 'numeric', 'Implicit decimal literal')"
+        f"INSERT INTO {table_name} VALUES (25, 45.67, 'numeric', 'Implicit decimal literal')"
     )
     cursor.execute(
-        f"INSERT INTO {table_name} VALUES (22, N'Test', 'nvarchar', 'Implicit nvarchar literal')"
+        f"INSERT INTO {table_name} VALUES (26, N'Test', 'nvarchar', 'Implicit nvarchar literal')"
     )
 
     db_connection.commit()
@@ -278,6 +282,28 @@ def test_sql_variant_nvarchar(cursor, variant_test_table):
     assert row[1] == "World", f"Expected 'World', got '{row[1]}'"
 
 
+def test_sql_variant_char(cursor, variant_test_table):
+    """Test sql_variant with CHAR base type returns Python str"""
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 13")
+    row = cursor.fetchone()
+
+    assert row is not None
+    assert isinstance(row[1], str), f"CHAR should return Python str, got {type(row[1])}"
+    # CHAR(10) pads with spaces, so strip for comparison
+    assert row[1].strip() == "Fixed", f"Expected 'Fixed', got '{row[1]}'"
+
+
+def test_sql_variant_nchar(cursor, variant_test_table):
+    """Test sql_variant with NCHAR base type returns Python str"""
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 14")
+    row = cursor.fetchone()
+
+    assert row is not None
+    assert isinstance(row[1], str), f"NCHAR should return Python str, got {type(row[1])}"
+    # NCHAR(10) pads with spaces, so strip for comparison
+    assert row[1].strip() == "Fixed", f"Expected 'Fixed', got '{row[1]}'"
+
+
 # ============================================================================
 # Tests for Date/Time Types
 # ============================================================================
@@ -285,7 +311,7 @@ def test_sql_variant_nvarchar(cursor, variant_test_table):
 
 def test_sql_variant_date(cursor, variant_test_table):
     """Test sql_variant with DATE base type returns Python date"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 13")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 15")
     row = cursor.fetchone()
 
     assert row is not None
@@ -295,7 +321,7 @@ def test_sql_variant_date(cursor, variant_test_table):
 
 def test_sql_variant_time(cursor, variant_test_table):
     """Test sql_variant with TIME base type returns Python time"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 14")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 16")
     row = cursor.fetchone()
 
     assert row is not None
@@ -305,7 +331,7 @@ def test_sql_variant_time(cursor, variant_test_table):
 
 def test_sql_variant_datetime(cursor, variant_test_table):
     """Test sql_variant with DATETIME base type returns Python datetime"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 15")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 17")
     row = cursor.fetchone()
 
     assert row is not None
@@ -317,7 +343,7 @@ def test_sql_variant_datetime(cursor, variant_test_table):
 
 def test_sql_variant_datetime2(cursor, variant_test_table):
     """Test sql_variant with DATETIME2 base type returns Python datetime"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 16")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 19")
     row = cursor.fetchone()
 
     assert row is not None
@@ -327,14 +353,42 @@ def test_sql_variant_datetime2(cursor, variant_test_table):
     assert row[1].year == 2024 and row[1].month == 5 and row[1].day == 20
 
 
+def test_sql_variant_smalldatetime(cursor, variant_test_table):
+    """Test sql_variant with SMALLDATETIME base type returns Python datetime"""
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 18")
+    row = cursor.fetchone()
+
+    assert row is not None
+    assert isinstance(
+        row[1], datetime
+    ), f"SMALLDATETIME should return Python datetime, got {type(row[1])}"
+    assert row[1].year == 2024 and row[1].month == 5 and row[1].day == 20
+    # SMALLDATETIME has minute precision, seconds should be 0
+    assert row[1].hour == 12 and row[1].minute == 34
+
+
 # ============================================================================
 # Tests for Binary and GUID Types
 # ============================================================================
 
 
+def test_sql_variant_binary(cursor, variant_test_table):
+    """Test sql_variant with BINARY base type returns Python bytes"""
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 20")
+    row = cursor.fetchone()
+
+    assert row is not None
+    assert isinstance(
+        row[1], (bytes, bytearray)
+    ), f"BINARY should return Python bytes, got {type(row[1])}"
+    # BINARY(10) pads with zeros, so check prefix
+    assert row[1][:5] == b"Hello", f"Expected b'Hello' prefix, got {row[1][:5]}"
+    assert len(row[1]) == 10, f"BINARY(10) should be 10 bytes, got {len(row[1])}"
+
+
 def test_sql_variant_varbinary(cursor, variant_test_table):
     """Test sql_variant with VARBINARY base type returns Python bytes"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 17")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 21")
     row = cursor.fetchone()
 
     assert row is not None
@@ -347,7 +401,7 @@ def test_sql_variant_varbinary(cursor, variant_test_table):
 
 def test_sql_variant_uniqueidentifier(cursor, variant_test_table):
     """Test sql_variant with UNIQUEIDENTIFIER base type returns UUID-compatible type"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 18")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 22")
     row = cursor.fetchone()
 
     assert row is not None
@@ -369,7 +423,7 @@ def test_sql_variant_uniqueidentifier(cursor, variant_test_table):
 
 def test_sql_variant_null(cursor, variant_test_table):
     """Test sql_variant with NULL value returns Python None"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 19")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 23")
     row = cursor.fetchone()
 
     assert row is not None
@@ -383,7 +437,7 @@ def test_sql_variant_null(cursor, variant_test_table):
 
 def test_sql_variant_implicit_int(cursor, variant_test_table):
     """Test that integer literal without CAST is stored as INT"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 20")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 24")
     row = cursor.fetchone()
 
     assert row is not None
@@ -396,7 +450,7 @@ def test_sql_variant_implicit_int(cursor, variant_test_table):
 
 def test_sql_variant_implicit_decimal(cursor, variant_test_table):
     """Test that decimal literal without CAST is stored as NUMERIC"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 21")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 25")
     row = cursor.fetchone()
 
     assert row is not None
@@ -409,7 +463,7 @@ def test_sql_variant_implicit_decimal(cursor, variant_test_table):
 
 def test_sql_variant_implicit_nvarchar(cursor, variant_test_table):
     """Test that string literal with N prefix is stored as NVARCHAR"""
-    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 22")
+    cursor.execute(f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id = 26")
     row = cursor.fetchone()
 
     assert row is not None
@@ -448,11 +502,11 @@ def test_sql_variant_fetchmany_mixed_types(cursor, variant_test_table):
 def test_sql_variant_fetchall_all_base_types(cursor, variant_test_table):
     """Test sql_variant with fetchall() validates all SQL base types"""
     cursor.execute(
-        f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id <= 19 ORDER BY id"
+        f"SELECT id, variant_col, base_type FROM {variant_test_table} WHERE id <= 23 ORDER BY id"
     )
     rows = cursor.fetchall()
 
-    assert len(rows) == 19
+    assert len(rows) == 23
 
     # Integer types (INT, TINYINT, SMALLINT, BIGINT)
     assert isinstance(rows[0][1], int)  # INT
@@ -472,23 +526,27 @@ def test_sql_variant_fetchall_all_base_types(cursor, variant_test_table):
     assert rows[8][1] in [True, 1, False, 0]  # BIT true
     assert rows[9][1] in [True, 1, False, 0]  # BIT false
 
-    # Character types (VARCHAR, NVARCHAR)
+    # Character types (VARCHAR, NVARCHAR, CHAR, NCHAR)
     assert isinstance(rows[10][1], str)  # VARCHAR
     assert isinstance(rows[11][1], str)  # NVARCHAR
+    assert isinstance(rows[12][1], str)  # CHAR
+    assert isinstance(rows[13][1], str)  # NCHAR
 
     # Date/time types
-    assert isinstance(rows[12][1], date)  # DATE
-    assert isinstance(rows[13][1], time)  # TIME
-    assert isinstance(rows[14][1], datetime)  # DATETIME
-    assert isinstance(rows[15][1], datetime)  # DATETIME2
+    assert isinstance(rows[14][1], date)  # DATE
+    assert isinstance(rows[15][1], time)  # TIME
+    assert isinstance(rows[16][1], datetime)  # DATETIME
+    assert isinstance(rows[17][1], datetime)  # SMALLDATETIME
+    assert isinstance(rows[18][1], datetime)  # DATETIME2
 
     # Binary and GUID
-    assert isinstance(rows[16][1], (bytes, bytearray))  # VARBINARY
+    assert isinstance(rows[19][1], (bytes, bytearray))  # BINARY
+    assert isinstance(rows[20][1], (bytes, bytearray))  # VARBINARY
     # GUID can be str or UUID
-    assert isinstance(rows[17][1], (str, uuid.UUID))  # UNIQUEIDENTIFIER
+    assert isinstance(rows[21][1], (str, uuid.UUID))  # UNIQUEIDENTIFIER
 
     # NULL
-    assert rows[18][1] is None  # NULL
+    assert rows[22][1] is None  # NULL
 
 
 def test_sql_variant_large_dataset(cursor, db_connection):

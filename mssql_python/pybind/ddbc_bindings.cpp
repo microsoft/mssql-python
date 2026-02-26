@@ -2979,6 +2979,15 @@ SQLSMALLINT MapVariantCTypeToSQLType(SQLLEN variantCType) {
     }
 }
 
+// Helper function to check if a column requires SQLGetData streaming (LOB or sql_variant)
+static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize) {
+    return dataType == SQL_SS_VARIANT ||
+           ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
+             dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE));
+}
+
 // Helper function to retrieve column data
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row,
                           const std::string& charEncoding = "utf-8",
@@ -3029,7 +3038,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             SQLLEN indicator;
             ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, NULL, 0, &indicator);
             if (!SQL_SUCCEEDED(ret)) {
-                LOG("SQLGetData: Failed to probe sql_variant column %d - SQLRETURN=%d", i, ret);
+                LOG_ERROR("SQLGetData: Failed to probe sql_variant column %d - SQLRETURN=%d", i,
+                          ret);
                 row.append(py::none());
                 continue;
             }
@@ -3042,7 +3052,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             ret =
                 SQLColAttribute_ptr(hStmt, i, SQL_CA_SS_VARIANT_TYPE, NULL, 0, NULL, &variantCType);
             if (!SQL_SUCCEEDED(ret)) {
-                LOG("SQLGetData: Failed to get sql_variant underlying type for column %d", i);
+                LOG_ERROR("SQLGetData: Failed to get sql_variant underlying type for column %d", i);
                 row.append(py::none());
                 continue;
             }
@@ -4217,13 +4227,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
         SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
 
-        // Detect LOB columns that need SQLGetData streaming
-        // sql_variant always uses SQLGetData for native type preservation
-        if (dataType == SQL_SS_VARIANT ||
-            ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
-              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-              dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
-             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE))) {
+        if (IsLobOrVariantColumn(dataType, columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
@@ -4321,11 +4325,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
         // Detect LOB columns that need SQLGetData streaming
         // sql_variant always uses SQLGetData for native type preservation
-        if (dataType == SQL_SS_VARIANT ||
-            ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
-              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-              dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
-             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE))) {
+        if (IsLobOrVariantColumn(dataType, columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
