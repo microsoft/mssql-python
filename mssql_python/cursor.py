@@ -865,6 +865,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ddbc_sql_const.SQL_BINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
             ddbc_sql_const.SQL_VARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
             ddbc_sql_const.SQL_LONGVARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+            ddbc_sql_const.SQL_SS_UDT.value: ddbc_sql_const.SQL_C_BINARY.value,
             # ODBC 3.x date/time types (reported by ODBC 18 driver)
             ddbc_sql_const.SQL_TYPE_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
             ddbc_sql_const.SQL_TYPE_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
@@ -1052,6 +1053,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             SQL_SS_TIME2(-154)  for time columns
             SQL_DATETIMEOFFSET(-155)  for datetimeoffset columns
             SQL_SS_XML(-152)  for xml columns
+            SQL_SS_UDT(-151)  for geography/geometry/hierarchyid columns
 
         ODBC 2.x aliases (9, 10, 11) are also accepted defensively.
 
@@ -1097,6 +1099,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ddbc_sql_const.SQL_BINARY.value: bytes,
             ddbc_sql_const.SQL_VARBINARY.value: bytes,
             ddbc_sql_const.SQL_LONGVARBINARY.value: bytes,
+            ddbc_sql_const.SQL_SS_UDT.value: bytes,
             # UUID
             ddbc_sql_const.SQL_GUID.value: uuid.UUID,
             # XML — driver reports SQL_SS_XML (-152), fetched as str
