@@ -143,10 +143,11 @@ A dictionary with operation metrics:
 | `rows_copied` | `int` | Total number of rows successfully inserted. |
 | `batch_count` | `int` | Number of batches processed. |
 | `elapsed_time` | `float` | Total elapsed time for the bulk copy operation in seconds. |
+| `rows_per_second` | `float` | Throughput in rows per second. |
 
 ```python
 result = cursor.bulkcopy("Products", data)
-# result == {'rows_copied': 3, 'batch_count': 1, 'elapsed_time': 0.12}
+# result == {'rows_copied': 3, 'batch_count': 1, 'elapsed_time': 0.12, 'rows_per_second': 25.0}
 ```
 
 ---
