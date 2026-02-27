@@ -4,18 +4,14 @@
 
 The `bulkcopy()` method on the `Cursor` object provides high-performance bulk data loading into SQL Server, Azure SQL Database, and Azure SQL Managed Instance. It is designed for ETL workloads and scenarios that require inserting large volumes of data far more efficiently than individual `INSERT` statements.
 
-Internally, `bulkcopy()` opens a dedicated connection through the native `mssql_py_core` library and streams data in configurable batches, leveraging the same TDS Bulk Insert protocol used by tools like `bcp` and `SqlBulkCopy`.
-
-> **Availability:** Requires the `mssql_py_core` native extension (bundled with the `mssql-python` wheel).
-
 ---
 ## Key Benefits
 
-•	High-Performance Batch Inserts
-•	Configurable Batch Sizes for Optimal Throughput
-•	Flexible Column Mapping (Ordinal or Explicit)
-•	Support for Identity Columns, Constraints, and Triggers
-•	Transaction Control per Batch
+-	High-Performance Batch Inserts
+-	Configurable Batch Sizes for Optimal Throughput
+-	Flexible Column Mapping (Ordinal or Explicit)
+-	Support for Identity Columns, Constraints, and Triggers
+-	Transaction Control per Batch
 
 ## Quick Start
 
@@ -23,11 +19,11 @@ Internally, `bulkcopy()` opens a dedicated connection through the native `mssql_
 import mssql_python
 
 conn = mssql_python.connect(
-    "SERVER=localhost;DATABASE=TestDB;UID=sa;PWD=YourPassword123;"
+    "SERVER=localhost;DATABASE=TestDB;UID=sa;PWD=<<PWD>>;"
 )
 cursor = conn.cursor()
 
-# Target table must already exist
+# bulkcopy() requires the target table to already exist; this CREATE TABLE is just for the example
 cursor.execute("""
     CREATE TABLE Products (
         id    INT,
@@ -87,11 +83,11 @@ Cursor.bulkcopy(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `batch_size` | `int` | `0` | Rows per batch. `0` lets the server choose the optimal size. |
-| `timeout` | `int` | `30` | Operation timeout in seconds. |
+| `timeout` | `int` | `30` | BCP Operation timeout in seconds. |
 | `column_mappings` | `List[str]` or `List[Tuple[int, str]]` | `None` | Column mapping specification (see [Column Mappings](#column-mappings) below). When `None`, columns are mapped by ordinal position. |
 | `keep_identity` | `bool` | `False` | When `True`, identity values from the source data are preserved. Requires `IDENTITY_INSERT` permission. |
 | `check_constraints` | `bool` | `False` | When `True`, CHECK and FOREIGN KEY constraints are enforced during the insert. |
-| `table_lock` | `bool` | `False` | When `True`, acquires a table-level `BULK UPDATE` lock instead of row-level locks. Improves throughput when the table has no concurrent readers. |
+| `table_lock` | `bool` | `False` | When table_lock=True, SQL Server acquires a table-level BULK UPDATE lock instead of row or page locks. This reduces locking overhead and can significantly improve bulk insert throughput, especially when the table is not being accessed concurrently. |
 | `keep_nulls` | `bool` | `False` | When `True`, source `NULL` values are inserted as-is. When `False`, the column's default value is used instead. |
 | `fire_triggers` | `bool` | `False` | When `True`, INSERT triggers defined on the target table are executed. |
 | `use_internal_transaction` | `bool` | `False` | When `True`, each batch is committed in its own transaction, enabling partial-success scenarios. |
@@ -143,7 +139,7 @@ A dictionary with operation metrics:
 |-----|------|-------------|
 | `rows_copied` | `int` | Total number of rows successfully inserted. |
 | `batch_count` | `int` | Number of batches processed. |
-| `elapsed_time` | `float` | Wall-clock time for the operation (seconds). |
+| `elapsed_time` | `float` | Total elapsed time for the bulk copy operation in seconds. |
 
 ```python
 result = cursor.bulkcopy("Products", data)
@@ -158,38 +154,8 @@ result = cursor.bulkcopy("Products", data)
 |-----------|------|
 | `ImportError` | `mssql_py_core` native library is not available. |
 | `TypeError` | `data` is `None`, not iterable, or is a `str`/`bytes`; `batch_size` or `timeout` is not `int`. |
-| `ValueError` | `table_name` is empty; `batch_size` is negative; `timeout` is not positive; `SERVER` parameter missing from connection string. |
+| `ValueError` | `table_name` is empty or not a string; `batch_size` is negative; `timeout` is not positive; `SERVER` parameter missing from connection string. |
 | `RuntimeError` | Connection string is unavailable; Azure AD token acquisition fails. |
-
----
-
-## Connection String Requirements
-
-`bulkcopy()` opens its own internal connection using the connection string from the parent `Connection` object. The following applies:
-
-| Keyword | Required | Notes |
-|---------|----------|-------|
-| `SERVER` (or synonyms `ADDR`, `ADDRESS`) | **Yes** | Target server. All three synonyms are accepted. |
-| `DATABASE` | No | Optional. When omitted the server's default database for the login is used. Use a fully qualified table name (e.g., `[MyDB].[dbo].[MyTable]`) to target a specific database. |
-
-All other supported connection-string keywords (encryption, authentication, keep-alive, etc.) are forwarded to the internal connection automatically.
-
-### Supported Connection-String Keywords
-
-Keywords forwarded to the internal bulk copy connection:
-
-| Category | Keywords |
-|----------|----------|
-| **Auth / Credentials** | `UID`, `PWD`, `Trusted_Connection`, `Authentication` |
-| **Server** | `Server`, `Addr`, `Address` |
-| **Database** | `Database` |
-| **Encryption / TLS** | `Encrypt`, `TrustServerCertificate`, `HostNameInCertificate`, `ServerCertificate` |
-| **Kerberos** | `ServerSPN` |
-| **Network** | `MultiSubnetFailover`, `IPAddressPreference`, `KeepAlive`, `KeepAliveInterval` |
-| **Sizing / Limits** | `PacketSize`, `ConnectRetryCount`, `ConnectRetryInterval` |
-| **Intent** | `ApplicationIntent` |
-
-> Keywords not in this list are silently ignored when constructing the internal bulk copy connection.
 
 ---
 
@@ -364,24 +330,3 @@ Key design points:
 | Use `use_internal_transaction=True` for partial-commit semantics | Each batch commits independently — useful when you want to keep rows already loaded even if a later batch fails. |
 
 ---
-
-## Requirements
-
-| Requirement | Detail |
-|-------------|--------|
-| Python | 3.10+ |
-| `mssql-python` | 1.3.0+ |
-| `mssql_py_core` | Bundled native extension |
-| SQL Server | 2012 or later, Azure SQL Database, Azure SQL Managed Instance, SQL in Fabric |
-| Permissions | `INSERT` on target table; `IDENTITY_INSERT` if `keep_identity=True` |
-
----
-
-## See Also
-
-- [Getting Started (README)](README.md)
-- [Roadmap](ROADMAP.md)
-- [Connection Wiki](https://github.com/microsoft/mssql-python/wiki/Connection)
-- [Microsoft Entra ID Support](https://github.com/microsoft/mssql-python/wiki/Microsoft-Entra-ID-support)
-- [SQL Server Bulk Import/Export](https://learn.microsoft.com/sql/relational-databases/import-export/bulk-import-and-export-of-data-sql-server)
-- [DB API 2.0 Specification](https://peps.python.org/pep-0249/)
