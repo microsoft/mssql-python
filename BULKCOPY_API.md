@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `bulkcopy()` method on the `Cursor` object provides high-performance bulk data loading into SQL Server, Azure SQL Database, and Azure SQL Managed Instance. It is designed for ETL workloads and scenarios that require inserting large volumes of data far more efficiently than individual `INSERT` statements.
+The `bulkcopy()` method on the `Cursor` object provides high-performance bulk data loading into SQL Server, Azure SQL Database, Azure SQL Managed Instance, SQL database in Fabric, and Microsoft Fabric. It is designed for ETL workloads and scenarios that require inserting large volumes of data far more efficiently than individual `INSERT` statements.
 
 ---
 ## Key Benefits
@@ -19,7 +19,10 @@ The `bulkcopy()` method on the `Cursor` object provides high-performance bulk da
 import mssql_python
 
 conn = mssql_python.connect(
-    "SERVER=localhost;DATABASE=TestDB;UID=sa;PWD=<<PWD>>;"
+   "Server=<server>.database.windows.net;"
+   "Database=<db>;"
+   "Authentication=ActiveDirectoryIntegrated;"
+   "Encrypt=yes;"
 )
 cursor = conn.cursor()
 
@@ -283,38 +286,6 @@ except ValueError as e:
 except RuntimeError as e:
     print(f"Connection / auth error: {e}")
 ```
-
----
-
-## Architecture Notes
-
-```
-┌──────────────────────┐
-│  cursor.bulkcopy()   │   Python layer — validates inputs, acquires AAD tokens
-└──────────┬───────────┘
-           │  connstr_to_pycore_params()
-           ▼
-┌──────────────────────┐
-│ mssql_py_core (Rust) │   Opens a SEPARATE connection via TDS Bulk Insert
-│ PyCoreConnection     │   Streams rows in batches
-│ PyCoreCursor         │
-└──────────┬───────────┘
-           │
-           ▼
-┌──────────────────────┐
-│  SQL Server / Azure  │
-└──────────────────────┘
-```
-
-Key design points:
-
-1. **Separate connection** — `bulkcopy()` creates its own connection through `mssql_py_core`. This means the bulk operation does not share the calling cursor's transaction or session state. Use fully qualified table names when the `DATABASE` keyword is absent from the connection string.
-
-2. **Credential isolation** — Sensitive keys (`password`, `user_name`, `access_token`) are cleared from the parameter dict in a `finally` block after the operation completes, minimising memory exposure.
-
-3. **Token refresh** — When Microsoft Entra ID (Azure AD) authentication is in use, a fresh token is acquired immediately before bulk copy to avoid expiration during long-running imports.
-
-4. **Keyword translation** — ODBC-style connection-string keywords are mapped to `mssql_py_core`'s snake_case equivalents by `connstr_to_pycore_params()`. Unrecognised keywords are silently dropped.
 
 ---
 
