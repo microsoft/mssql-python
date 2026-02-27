@@ -667,6 +667,8 @@ struct ColumnInfoExt {
     SQLULEN processedColumnSize;
     uint64_t fetchBufferSize;
     bool isLob;
+    bool isUtf8;               // Pre-computed from charEncoding (avoids string compare per cell)
+    std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
 };
 
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
@@ -811,21 +813,48 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
     if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
-        // Performance: Direct Python C API call - create string from buffer
-        PyObject* pyStr = PyUnicode_FromStringAndSize(
-            reinterpret_cast<char*>(
-                &buffers.charBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
-            numCharsInData);
+        const char* dataPtr = reinterpret_cast<char*>(
+            &buffers.charBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]);
+        PyObject* pyStr = nullptr;
+#if defined(__APPLE__) || defined(__linux__)
+        // On Linux/macOS, ODBC driver returns UTF-8 — PyUnicode_FromStringAndSize
+        // expects UTF-8, so this is correct and fast.
+        pyStr = PyUnicode_FromStringAndSize(dataPtr, numCharsInData);
+#else
+        // On Windows, ODBC driver returns bytes in the server's native encoding.
+        // For UTF-8, use the direct C API (PyUnicode_FromStringAndSize) which
+        // bypasses the codec registry for maximum reliability. For non-UTF-8
+        // encodings (e.g., CP1252), use PyUnicode_Decode with the codec registry.
+        if (colInfo->isUtf8) {
+            pyStr = PyUnicode_FromStringAndSize(dataPtr, numCharsInData);
+        } else {
+            pyStr =
+                PyUnicode_Decode(dataPtr, numCharsInData, colInfo->charEncoding.c_str(), "strict");
+        }
+#endif
         if (!pyStr) {
-            Py_INCREF(Py_None);
-            PyList_SET_ITEM(row, col - 1, Py_None);
+            // Decode failed — fall back to returning raw bytes (consistent with
+            // FetchLobColumnData and SQLGetData_wrap which also return raw bytes
+            // on decode failure instead of silently converting to None).
+            PyErr_Clear();
+            PyObject* pyBytes = PyBytes_FromStringAndSize(dataPtr, numCharsInData);
+            if (pyBytes) {
+                PyList_SET_ITEM(row, col - 1, pyBytes);
+            } else {
+                PyErr_Clear();
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
+            }
         } else {
             PyList_SET_ITEM(row, col - 1, pyStr);
         }
     } else {
         // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(row, col - 1,
-                        FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false).release().ptr());
+        PyList_SET_ITEM(
+            row, col - 1,
+            FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false, colInfo->charEncoding)
+                .release()
+                .ptr());
     }
 }
 
