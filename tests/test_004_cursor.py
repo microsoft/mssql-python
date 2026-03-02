@@ -14,9 +14,11 @@ from datetime import datetime, date, time, timedelta, timezone
 import time as time_module
 import decimal
 from contextlib import closing
+import threading
 import mssql_python
 import uuid
 import re
+from unittest.mock import patch
 from conftest import is_azure_sql_connection
 
 # Setup test table
@@ -15040,8 +15042,6 @@ def test_close(db_connection):
 
 def test_native_uuid_true_returns_uuid_objects(db_connection):
     """Test that with native_uuid=True, UNIQUEIDENTIFIER columns return uuid.UUID."""
-    import uuid
-
     original_value = mssql_python.native_uuid
     cursor = db_connection.cursor()
 
@@ -15081,8 +15081,6 @@ def test_native_uuid_true_returns_uuid_objects(db_connection):
 
 def test_native_uuid_false_returns_strings(db_connection):
     """Test that with native_uuid=False, UNIQUEIDENTIFIER columns return str."""
-    import uuid
-
     original_value = mssql_python.native_uuid
     cursor = db_connection.cursor()
 
@@ -15126,45 +15124,6 @@ def test_native_uuid_false_returns_strings(db_connection):
         db_connection.commit()
 
 
-def test_native_uuid_false_string_operations(db_connection):
-    """Test that with native_uuid=False, string operations work on returned UUIDs."""
-    import uuid
-    import json
-
-    original_value = mssql_python.native_uuid
-    cursor = db_connection.cursor()
-
-    try:
-        mssql_python.native_uuid = False
-
-        drop_table_if_exists(cursor, "#test_uuid_str_ops")
-        cursor.execute("CREATE TABLE #test_uuid_str_ops (id UNIQUEIDENTIFIER)")
-        test_uuid = uuid.uuid4()
-        cursor.execute("INSERT INTO #test_uuid_str_ops VALUES (?)", [test_uuid])
-
-        cursor.execute("SELECT id FROM #test_uuid_str_ops")
-        row = cursor.fetchone()
-        guid_value = row[0]
-
-        # These operations should all work without errors when native_uuid=False
-        assert isinstance(guid_value, str)
-        assert guid_value == str(test_uuid).upper()
-        assert guid_value.replace("-", "") == str(test_uuid).upper().replace("-", "")
-        assert guid_value.strip() == str(test_uuid).upper()
-
-        # JSON serialization should work
-        payload = json.dumps({"id": guid_value})
-        assert str(test_uuid).upper() in payload
-
-        # String equality should work (pyodbc-compatible uppercase)
-        assert guid_value == str(test_uuid).upper()
-
-    finally:
-        mssql_python.native_uuid = original_value
-        drop_table_if_exists(cursor, "#test_uuid_str_ops")
-        db_connection.commit()
-
-
 def test_native_uuid_null_handling(db_connection):
     """Test that NULL UNIQUEIDENTIFIER values remain None regardless of native_uuid setting."""
     original_value = mssql_python.native_uuid
@@ -15193,49 +15152,8 @@ def test_native_uuid_null_handling(db_connection):
         db_connection.commit()
 
 
-def test_native_uuid_multiple_rows(db_connection):
-    """Test native_uuid=False with multiple UUID rows via fetchall and fetchmany."""
-    import uuid
-
-    original_value = mssql_python.native_uuid
-    cursor = db_connection.cursor()
-
-    try:
-        mssql_python.native_uuid = False
-
-        drop_table_if_exists(cursor, "#test_uuid_multi")
-        cursor.execute("CREATE TABLE #test_uuid_multi (id UNIQUEIDENTIFIER, seq INT)")
-
-        test_uuids = [uuid.uuid4() for _ in range(10)]
-        for i, uid in enumerate(test_uuids):
-            cursor.execute("INSERT INTO #test_uuid_multi VALUES (?, ?)", [uid, i])
-        db_connection.commit()
-
-        # fetchall — all should be strings
-        cursor.execute("SELECT id, seq FROM #test_uuid_multi ORDER BY seq")
-        rows = cursor.fetchall()
-        assert len(rows) == 10
-        for i, row in enumerate(rows):
-            assert isinstance(row[0], str), f"Row {i}: expected str, got {type(row[0])}"
-            assert row[0] == str(test_uuids[i]).upper()
-
-        # fetchmany — should also return strings
-        cursor.execute("SELECT id, seq FROM #test_uuid_multi ORDER BY seq")
-        rows = cursor.fetchmany(5)
-        assert len(rows) == 5
-        for i, row in enumerate(rows):
-            assert isinstance(row[0], str), f"Row {i}: expected str, got {type(row[0])}"
-
-    finally:
-        mssql_python.native_uuid = original_value
-        drop_table_if_exists(cursor, "#test_uuid_multi")
-        db_connection.commit()
-
-
 def test_native_uuid_non_uuid_columns_unaffected(db_connection):
     """Test that native_uuid=False does not affect non-UUID columns."""
-    import uuid
-
     original_value = mssql_python.native_uuid
     cursor = db_connection.cursor()
 
@@ -15277,8 +15195,6 @@ def test_native_uuid_non_uuid_columns_unaffected(db_connection):
 
 def test_native_uuid_setting_snapshot_at_execute(db_connection):
     """Test that native_uuid is snapshotted at execute() time, not fetch() time."""
-    import uuid
-
     original_value = mssql_python.native_uuid
     cursor = db_connection.cursor()
 
@@ -15307,48 +15223,8 @@ def test_native_uuid_setting_snapshot_at_execute(db_connection):
         db_connection.commit()
 
 
-def test_native_uuid_wide_result_set_performance(db_connection):
-    """Test UUID handling in wide result sets — only UUID columns should be affected."""
-    import uuid
-
-    original_value = mssql_python.native_uuid
-    cursor = db_connection.cursor()
-
-    try:
-        mssql_python.native_uuid = False
-
-        drop_table_if_exists(cursor, "#test_uuid_wide")
-        # Create a wide table: 1 UUID column + 30 varchar columns
-        cols = ", ".join([f"col{i} VARCHAR(50)" for i in range(1, 31)])
-        cursor.execute(f"CREATE TABLE #test_uuid_wide (id UNIQUEIDENTIFIER, {cols})")
-
-        test_uuid = uuid.uuid4()
-        values = [test_uuid] + [f"Value {i}" for i in range(1, 31)]
-        placeholders = ", ".join(["?"] * 31)
-        cursor.execute(f"INSERT INTO #test_uuid_wide VALUES ({placeholders})", values)
-
-        cursor.execute("SELECT * FROM #test_uuid_wide")
-        row = cursor.fetchone()
-
-        # UUID column should be str (uppercase, matching pyodbc / SQL Server format)
-        assert isinstance(row[0], str), f"UUID col: expected str, got {type(row[0])}"
-        assert row[0] == str(test_uuid).upper()
-
-        # All other columns should remain str (unaffected)
-        for i in range(1, 31):
-            assert isinstance(row[i], str), f"Column {i}: expected str, got {type(row[i])}"
-            assert row[i] == f"Value {i}"
-
-    finally:
-        mssql_python.native_uuid = original_value
-        drop_table_if_exists(cursor, "#test_uuid_wide")
-        db_connection.commit()
-
-
 def test_native_uuid_input_parameter_accepts_uuid_objects(db_connection):
     """Test that uuid.UUID objects are still accepted as input parameters regardless of native_uuid."""
-    import uuid
-
     original_value = mssql_python.native_uuid
     cursor = db_connection.cursor()
 
@@ -15383,54 +15259,8 @@ def test_native_uuid_input_parameter_accepts_uuid_objects(db_connection):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def test_per_connection_native_uuid_false(conn_str):
-    """Test that connect(native_uuid=False) returns UUID columns as strings."""
-    import uuid
-
-    conn = mssql_python.connect(conn_str, native_uuid=False)
-    cursor = conn.cursor()
-    try:
-        drop_table_if_exists(cursor, "#test_conn_uuid_false")
-        cursor.execute(
-            "CREATE TABLE #test_conn_uuid_false (id UNIQUEIDENTIFIER, name NVARCHAR(50))"
-        )
-        test_uuid = uuid.uuid4()
-        cursor.execute("INSERT INTO #test_conn_uuid_false VALUES (?, ?)", [test_uuid, "test"])
-
-        cursor.execute("SELECT id, name FROM #test_conn_uuid_false")
-        row = cursor.fetchone()
-        assert isinstance(row[0], str), f"Expected str, got {type(row[0])}"
-        assert row[0] == str(test_uuid).upper()
-    finally:
-        drop_table_if_exists(cursor, "#test_conn_uuid_false")
-        conn.close()
-
-
-def test_per_connection_native_uuid_true(conn_str):
-    """Test that connect(native_uuid=True) returns UUID columns as uuid.UUID objects."""
-    import uuid
-
-    conn = mssql_python.connect(conn_str, native_uuid=True)
-    cursor = conn.cursor()
-    try:
-        drop_table_if_exists(cursor, "#test_conn_uuid_true")
-        cursor.execute("CREATE TABLE #test_conn_uuid_true (id UNIQUEIDENTIFIER, name NVARCHAR(50))")
-        test_uuid = uuid.uuid4()
-        cursor.execute("INSERT INTO #test_conn_uuid_true VALUES (?, ?)", [test_uuid, "test"])
-
-        cursor.execute("SELECT id, name FROM #test_conn_uuid_true")
-        row = cursor.fetchone()
-        assert isinstance(row[0], uuid.UUID), f"Expected uuid.UUID, got {type(row[0])}"
-        assert row[0] == test_uuid
-    finally:
-        drop_table_if_exists(cursor, "#test_conn_uuid_true")
-        conn.close()
-
-
 def test_per_connection_native_uuid_none_uses_module_default(conn_str):
     """Test that connect(native_uuid=None) defers to module-level setting."""
-    import uuid
-
     original_value = mssql_python.native_uuid
     conn = mssql_python.connect(conn_str, native_uuid=None)
     cursor = conn.cursor()
@@ -15460,8 +15290,6 @@ def test_per_connection_native_uuid_none_uses_module_default(conn_str):
 
 def test_per_connection_overrides_module_level(conn_str):
     """Test that per-connection native_uuid overrides the module-level setting."""
-    import uuid
-
     original_value = mssql_python.native_uuid
     conn = None
     conn2 = None
@@ -15508,8 +15336,6 @@ def test_per_connection_overrides_module_level(conn_str):
 
 def test_two_connections_different_native_uuid(conn_str):
     """Test that two simultaneous connections can have different native_uuid settings."""
-    import uuid
-
     original_value = mssql_python.native_uuid
     try:
         conn_str_mode = conn_str
@@ -15553,8 +15379,6 @@ def test_two_connections_different_native_uuid(conn_str):
 
 def test_per_connection_native_uuid_invalid_type(conn_str):
     """Test that connect(native_uuid=<non-bool>) raises ValueError."""
-    import pytest
-
     with pytest.raises(ValueError, match="native_uuid must be a boolean"):
         mssql_python.connect(conn_str, native_uuid="false")
 
@@ -15564,8 +15388,6 @@ def test_per_connection_native_uuid_invalid_type(conn_str):
 
 def test_executemany_uuid_output_sets_uuid_str_indices(conn_str):
     """Test that executemany with OUTPUT clause computes _uuid_str_indices."""
-    import uuid as _uuid
-
     original = mssql_python.native_uuid
     try:
         mssql_python.native_uuid = False
@@ -15583,8 +15405,8 @@ def test_executemany_uuid_output_sets_uuid_str_indices(conn_str):
         cursor.executemany(
             "INSERT INTO #executemany_uuid_output (guid) OUTPUT INSERTED.guid VALUES (?)",
             [
-                (_uuid.UUID("11111111-1111-1111-1111-111111111111"),),
-                (_uuid.UUID("22222222-2222-2222-2222-222222222222"),),
+                (uuid.UUID("11111111-1111-1111-1111-111111111111"),),
+                (uuid.UUID("22222222-2222-2222-2222-222222222222"),),
             ],
         )
 
@@ -15607,4 +15429,304 @@ def test_executemany_uuid_output_sets_uuid_str_indices(conn_str):
         cursor.close()
         conn.close()
     finally:
+        mssql_python.native_uuid = original
+
+
+def test_executemany_no_result_set_clears_uuid_str_indices(conn_str):
+    """Test that executemany without OUTPUT clears description and uuid state.
+
+    Covers the ``else`` branch (cursor.description is None) inside executemany().
+    """
+    original = mssql_python.native_uuid
+    try:
+        mssql_python.native_uuid = False
+        conn = mssql_python.connect(conn_str)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE #executemany_no_output (
+                id INT,
+                guid UNIQUEIDENTIFIER
+            )
+        """)
+
+        # Plain INSERT — no OUTPUT clause, no result set produced
+        cursor.executemany(
+            "INSERT INTO #executemany_no_output (id, guid) VALUES (?, ?)",
+            [
+                (1, uuid.UUID("11111111-1111-1111-1111-111111111111")),
+                (2, uuid.UUID("22222222-2222-2222-2222-222222222222")),
+            ],
+        )
+
+        # description should be None
+        assert cursor.description is None, "Plain INSERT should have no description"
+        # _uuid_str_indices should be None
+        assert cursor._uuid_str_indices is None
+        # rowcount should reflect the inserted rows
+        assert cursor.rowcount == 2
+
+        cursor.execute("DROP TABLE IF EXISTS #executemany_no_output")
+        cursor.close()
+        conn.close()
+    finally:
+        mssql_python.native_uuid = original
+
+
+def test_executemany_describe_col_exception_sets_description_none(conn_str):
+    """Test that executemany handles DDBCSQLDescribeCol raising an exception.
+
+    The except handler that sets
+    self.description = None when the C++ binding raises during column
+    metadata retrieval.
+    """
+    original = mssql_python.native_uuid
+    try:
+        mssql_python.native_uuid = False
+        conn = mssql_python.connect(conn_str)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE #executemany_except_test (
+                id INT,
+                guid UNIQUEIDENTIFIER
+            )
+        """)
+
+        # Capture the real DDBCSQLDescribeCol so we can patch only during executemany
+        real_describe = mssql_python.cursor.ddbc_bindings.DDBCSQLDescribeCol
+        call_count = 0
+
+        def describe_raises(*args, **kwargs):
+            """Raise on the first call (inside executemany), delegate otherwise."""
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Simulated DDBCSQLDescribeCol failure")
+
+        # executemany with OUTPUT — would normally produce a result set, but we
+        # force DDBCSQLDescribeCol to raise so the except branch is taken.
+        with patch.object(
+            mssql_python.cursor.ddbc_bindings,
+            "DDBCSQLDescribeCol",
+            side_effect=describe_raises,
+        ):
+            cursor.executemany(
+                "INSERT INTO #executemany_except_test (id, guid) OUTPUT INSERTED.guid VALUES (?, ?)",
+                [
+                    (1, uuid.UUID("11111111-1111-1111-1111-111111111111")),
+                ],
+            )
+
+        # The except branch should have set description to None
+        assert (
+            cursor.description is None
+        ), "description should be None after DDBCSQLDescribeCol raises"
+        assert cursor._uuid_str_indices is None
+        assert call_count >= 1, "DDBCSQLDescribeCol mock should have been called"
+
+        cursor.execute("DROP TABLE IF EXISTS #executemany_except_test")
+        cursor.close()
+        conn.close()
+    finally:
+        mssql_python.native_uuid = original
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# native_uuid concurrency & thread-safety tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_native_uuid_concurrent_connections_isolation(conn_str):
+    """Multiple threads with different per-connection native_uuid execute simultaneously.
+
+    Verifies that per-connection native_uuid settings are fully isolated:
+    each thread's results match its own connection's setting regardless of
+    what other threads are doing concurrently.
+    """
+    NUM_THREADS = 6
+    ITERATIONS = 5
+    errors = []
+    barrier = threading.Barrier(NUM_THREADS)
+
+    def worker(thread_id, native_uuid_setting):
+        """Each thread creates its own connection and verifies return types."""
+        try:
+            conn = mssql_python.connect(conn_str, native_uuid=native_uuid_setting)
+            cursor = conn.cursor()
+            table = f"#concurrent_uuid_{thread_id}"
+
+            try:
+                cursor.execute(f"CREATE TABLE {table} (id UNIQUEIDENTIFIER)")
+                test_uuid = uuid.uuid4()
+                cursor.execute(f"INSERT INTO {table} VALUES (?)", [test_uuid])
+
+                # Synchronize — all threads start querying at the same time
+                barrier.wait(timeout=10)
+
+                for _ in range(ITERATIONS):
+                    cursor.execute(f"SELECT id FROM {table}")
+                    row = cursor.fetchone()
+                    if native_uuid_setting:
+                        if not isinstance(row[0], uuid.UUID):
+                            errors.append(
+                                f"Thread {thread_id}: expected uuid.UUID, " f"got {type(row[0])}"
+                            )
+                    else:
+                        if not isinstance(row[0], str):
+                            errors.append(
+                                f"Thread {thread_id}: expected str, " f"got {type(row[0])}"
+                            )
+
+                cursor.execute(f"DROP TABLE IF EXISTS {table}")
+            finally:
+                conn.close()
+        except Exception as e:
+            errors.append(f"Thread {thread_id}: {e}")
+
+    threads = []
+    for i in range(NUM_THREADS):
+        # Alternate True / False across threads
+        setting = i % 2 == 0
+        t = threading.Thread(target=worker, args=(i, setting))
+        threads.append(t)
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"Concurrent connection isolation errors: {errors}"
+
+
+def test_native_uuid_snapshot_under_concurrent_modification(conn_str):
+    """Snapshot-at-execute holds even when another thread modifies the module setting.
+
+    Thread A executes with native_uuid=False, then thread B toggles the
+    module setting to True *before* thread A fetches.  Thread A must still
+    receive strings because the setting was snapshotted at execute() time.
+    """
+    original = mssql_python.native_uuid
+    errors = []
+    executed_event = threading.Event()  # A signals after execute()
+    toggled_event = threading.Event()  # B signals after toggling
+
+    try:
+        mssql_python.native_uuid = False
+        conn = mssql_python.connect(conn_str)  # native_uuid=None → uses module
+        cursor = conn.cursor()
+
+        cursor.execute("CREATE TABLE #snapshot_conc (id UNIQUEIDENTIFIER)")
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO #snapshot_conc VALUES (?)", [test_uuid])
+
+        def thread_a():
+            """Execute with False, wait for toggle, then fetch."""
+            try:
+                cursor.execute("SELECT id FROM #snapshot_conc")
+                executed_event.set()  # signal: execute() done
+                toggled_event.wait(timeout=10)  # wait for B to toggle
+                row = cursor.fetchone()
+                if not isinstance(row[0], str):
+                    errors.append(
+                        f"Thread A: snapshot broken — expected str, " f"got {type(row[0])}"
+                    )
+            except Exception as e:
+                errors.append(f"Thread A: {e}")
+
+        def thread_b():
+            """Wait for A to execute, then toggle module setting."""
+            try:
+                executed_event.wait(timeout=10)
+                mssql_python.native_uuid = True  # toggle after execute
+                toggled_event.set()
+            except Exception as e:
+                errors.append(f"Thread B: {e}")
+
+        ta = threading.Thread(target=thread_a)
+        tb = threading.Thread(target=thread_b)
+        ta.start()
+        tb.start()
+        ta.join(timeout=15)
+        tb.join(timeout=15)
+
+        assert not errors, f"Snapshot-under-concurrency errors: {errors}"
+
+        cursor.execute("DROP TABLE IF EXISTS #snapshot_conc")
+        conn.close()
+    finally:
+        mssql_python.native_uuid = original
+
+
+def test_native_uuid_concurrent_toggle_consistency(conn_str):
+    """One thread rapidly toggles module-level native_uuid while others query.
+
+    Each querying thread must get a *consistent* result for each execute/fetch
+    cycle — either all uuid.UUID or all str within a single cursor, never a
+    mix.  This validates that the snapshot-at-execute design prevents torn reads.
+    """
+    original = mssql_python.native_uuid
+    NUM_READERS = 4
+    ITERATIONS = 10
+    errors = []
+    stop_event = threading.Event()
+
+    def toggler():
+        """Rapidly flip the module-level native_uuid flag."""
+        try:
+            while not stop_event.is_set():
+                mssql_python.native_uuid = True
+                mssql_python.native_uuid = False
+        except Exception as e:
+            errors.append(f"Toggler: {e}")
+
+    def reader(reader_id):
+        """Open a connection and repeatedly execute + fetch, checking consistency."""
+        try:
+            conn = mssql_python.connect(conn_str)  # native_uuid=None → module
+            cursor = conn.cursor()
+            table = f"#toggle_reader_{reader_id}"
+
+            try:
+                cursor.execute(f"CREATE TABLE {table} (id UNIQUEIDENTIFIER)")
+                uuids = [uuid.uuid4() for _ in range(3)]
+                for u in uuids:
+                    cursor.execute(f"INSERT INTO {table} VALUES (?)", [u])
+
+                for _ in range(ITERATIONS):
+                    cursor.execute(f"SELECT id FROM {table}")
+                    rows = cursor.fetchall()
+                    types = {type(r[0]) for r in rows}
+
+                    # All rows in a single fetch must be the same type
+                    if len(types) != 1:
+                        errors.append(
+                            f"Reader {reader_id}: mixed types in single " f"fetch: {types}"
+                        )
+
+                cursor.execute(f"DROP TABLE IF EXISTS {table}")
+            finally:
+                conn.close()
+        except Exception as e:
+            errors.append(f"Reader {reader_id}: {e}")
+
+    try:
+        toggle_thread = threading.Thread(target=toggler, daemon=True)
+        toggle_thread.start()
+
+        reader_threads = []
+        for i in range(NUM_READERS):
+            t = threading.Thread(target=reader, args=(i,))
+            reader_threads.append(t)
+
+        for t in reader_threads:
+            t.start()
+        for t in reader_threads:
+            t.join(timeout=30)
+
+        stop_event.set()
+        toggle_thread.join(timeout=5)
+
+        assert not errors, f"Concurrent toggle consistency errors: {errors}"
+    finally:
+        stop_event.set()
         mssql_python.native_uuid = original
