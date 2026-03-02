@@ -78,8 +78,7 @@ class TestCursorDescriptionTypeCodes:
 
     def test_all_types_are_isclass(self, cursor):
         """Every type_code in cursor.description must pass inspect.isclass()."""
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT
                 CAST(1 AS INT) AS i,
                 CAST(1 AS SMALLINT) AS si,
@@ -104,8 +103,7 @@ class TestCursorDescriptionTypeCodes:
                 CAST(0x01 AS VARBINARY(10)) AS vbin,
                 NEWID() AS guid,
                 CAST('<r/>' AS XML) AS x
-            """
-        )
+            """)
         for desc in cursor.description:
             col_name = desc[0]
             type_code = desc[1]
@@ -174,22 +172,18 @@ class TestPolarsIntegration:
         cursor = db_connection.cursor()
         try:
             cursor.execute("DROP TABLE IF EXISTS #polars_null_test")
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE #polars_null_test (
                     id INT,
                     d DATE
                 )
-                """
-            )
-            cursor.execute(
-                """
+                """)
+            cursor.execute("""
                 INSERT INTO #polars_null_test VALUES
                 (1, '2024-01-15'),
                 (2, NULL),
                 (3, '2024-03-20')
-                """
-            )
+                """)
             db_connection.commit()
 
             df = pl.read_database(

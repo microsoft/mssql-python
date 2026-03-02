@@ -201,15 +201,13 @@ def test_geography_large_polygon_fetch(cursor, db_connection):
 
 
 def test_geography_mixed_with_other_types(cursor, db_connection):
-    cursor.execute(
-        """CREATE TABLE #geo_mixed (
+    cursor.execute("""CREATE TABLE #geo_mixed (
             id INT PRIMARY KEY IDENTITY(1,1),
             name NVARCHAR(100),
             geo_col GEOGRAPHY NULL,
             created_date DATETIME,
             score FLOAT
-        );"""
-    )
+        );""")
     db_connection.commit()
 
     cursor.execute(
@@ -332,13 +330,11 @@ def test_geography_description_metadata(cursor, db_connection):
 
 
 def test_geography_stdistance(cursor, db_connection):
-    cursor.execute(
-        """CREATE TABLE #geo_distance (
+    cursor.execute("""CREATE TABLE #geo_distance (
             id INT PRIMARY KEY IDENTITY(1,1),
             geo1 GEOGRAPHY NULL,
             geo2 GEOGRAPHY NULL
-        );"""
-    )
+        );""")
     db_connection.commit()
 
     point2 = "POINT(-73.98500 40.75800)"  # New York
@@ -350,10 +346,8 @@ def test_geography_stdistance(cursor, db_connection):
     )
     db_connection.commit()
 
-    row = cursor.execute(
-        """SELECT geo1.STDistance(geo2) as distance_meters
-           FROM #geo_distance;"""
-    ).fetchone()
+    row = cursor.execute("""SELECT geo1.STDistance(geo2) as distance_meters
+           FROM #geo_distance;""").fetchone()
 
     # Seattle to New York is approximately 3,870 km
     assert 3_500_000 < row[0] < 4_500_000
@@ -530,14 +524,12 @@ def test_geometry_description_metadata(cursor, db_connection):
 
 
 def test_geometry_mixed_with_other_types(cursor, db_connection):
-    cursor.execute(
-        """CREATE TABLE #geom_mixed (
+    cursor.execute("""CREATE TABLE #geom_mixed (
             id INT PRIMARY KEY IDENTITY(1,1),
             name NVARCHAR(100),
             geom_col GEOMETRY NULL,
             area FLOAT
-        );"""
-    )
+        );""")
     db_connection.commit()
 
     cursor.execute(
@@ -688,13 +680,11 @@ def test_hierarchyid_description_metadata(cursor, db_connection):
 
 
 def test_hierarchyid_tree_structure(cursor, db_connection):
-    cursor.execute(
-        """CREATE TABLE #hid_tree (
+    cursor.execute("""CREATE TABLE #hid_tree (
             id INT PRIMARY KEY IDENTITY(1,1),
             name NVARCHAR(100),
             node HIERARCHYID NULL
-        );"""
-    )
+        );""")
     db_connection.commit()
 
     org_data = [
@@ -715,24 +705,20 @@ def test_hierarchyid_tree_structure(cursor, db_connection):
     db_connection.commit()
 
     # All descendants of VP Engineering (including self)
-    rows = cursor.execute(
-        """SELECT name, node.ToString() as path
+    rows = cursor.execute("""SELECT name, node.ToString() as path
            FROM #hid_tree
            WHERE node.IsDescendantOf(hierarchyid::Parse('/1/')) = 1
-           ORDER BY node;"""
-    ).fetchall()
+           ORDER BY node;""").fetchall()
 
     assert len(rows) == 5
     names = [r[0] for r in rows]
     assert names == ["VP Engineering", "Dev Manager", "Senior Dev", "Junior Dev", "QA Manager"]
 
     # Direct reports of Dev Manager
-    rows = cursor.execute(
-        """SELECT name, node.ToString() as path
+    rows = cursor.execute("""SELECT name, node.ToString() as path
            FROM #hid_tree
            WHERE node.GetAncestor(1) = hierarchyid::Parse('/1/1/')
-           ORDER BY node;"""
-    ).fetchall()
+           ORDER BY node;""").fetchall()
 
     assert len(rows) == 2
     names = [r[0] for r in rows]
@@ -740,14 +726,12 @@ def test_hierarchyid_tree_structure(cursor, db_connection):
 
 
 def test_hierarchyid_mixed_with_other_types(cursor, db_connection):
-    cursor.execute(
-        """CREATE TABLE #hid_mixed (
+    cursor.execute("""CREATE TABLE #hid_mixed (
             id INT PRIMARY KEY IDENTITY(1,1),
             name NVARCHAR(100),
             node HIERARCHYID NULL,
             salary DECIMAL(10,2)
-        );"""
-    )
+        );""")
     db_connection.commit()
 
     cursor.execute(

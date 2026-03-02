@@ -992,16 +992,14 @@ def test_execute_with_large_parameters(db_connection, conn_str):
         pytest.skip("Skipping for Azure SQL - large parameter tests may cause timeouts")
 
     # Test with a temporary table for large data
-    cursor = db_connection.execute(
-        """
+    cursor = db_connection.execute("""
     DROP TABLE IF EXISTS #large_params_test;
     CREATE TABLE #large_params_test (
         id INT,
         large_text NVARCHAR(MAX),
         large_binary VARBINARY(MAX)
     )
-    """
-    )
+    """)
     cursor.close()
 
     try:
@@ -2126,12 +2124,10 @@ def test_timeout_long_query(db_connection):
                     while retry_count < max_retries:
                         start_time = time.perf_counter()
                         try:
-                            cursor.execute(
-                                """
+                            cursor.execute("""
                             SELECT COUNT(*) FROM sys.objects a, sys.objects b, sys.objects c
                             WHERE a.object_id = b.object_id * c.object_id
-                            """
-                            )
+                            """)
                             cursor.fetchall()
                             elapsed_time = time.perf_counter() - start_time
                             break  # Success, exit retry loop

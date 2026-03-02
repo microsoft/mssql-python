@@ -389,8 +389,7 @@ def test_decimal_separator_with_db_operations(db_connection):
     try:
         # Create a test table with decimal values
         cursor = db_connection.cursor()
-        cursor.execute(
-            """
+        cursor.execute("""
         DROP TABLE IF EXISTS #decimal_separator_test;
         CREATE TABLE #decimal_separator_test (
             id INT,
@@ -401,8 +400,7 @@ def test_decimal_separator_with_db_operations(db_connection):
             (2, 678.90),
             (3, 0.01),
             (4, 999.99);
-        """
-        )
+        """)
         cursor.close()
 
         # Test 1: Fetch with default separator
@@ -470,8 +468,7 @@ def test_decimal_separator_batch_operations(db_connection):
     try:
         # Create test data
         cursor = db_connection.cursor()
-        cursor.execute(
-            """
+        cursor.execute("""
         DROP TABLE IF EXISTS #decimal_batch_test;
         CREATE TABLE #decimal_batch_test (
             id INT,
@@ -482,8 +479,7 @@ def test_decimal_separator_batch_operations(db_connection):
             (1, 123.456, 12345.67890), 
             (2, 0.001, 0.00001),
             (3, 999.999, 9999.99999);
-        """
-        )
+        """)
         cursor.close()
 
         # Test 1: Fetch results with default separator

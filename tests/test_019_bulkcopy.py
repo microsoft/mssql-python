@@ -189,15 +189,13 @@ def test_bulkcopy_with_server_synonyms(conn_str):
 
         # Create table
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             CREATE TABLE {table_name} (
                 id INT,
                 name NVARCHAR(50),
                 value FLOAT
             )
-        """
-        )
+        """)
         conn.commit()
 
         # Test data
@@ -238,15 +236,13 @@ def test_bulkcopy_with_server_synonyms(conn_str):
 
         # Create table
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             CREATE TABLE {table_name} (
                 id INT,
                 name NVARCHAR(50),
                 value FLOAT
             )
-        """
-        )
+        """)
         conn.commit()
 
         # Test data
