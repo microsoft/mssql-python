@@ -15406,7 +15406,9 @@ def test_native_uuid_false_returns_strings(db_connection):
         cursor.execute("SELECT id, name FROM #test_native_uuid_false")
         row = cursor.fetchone()
         assert isinstance(row[0], str), f"With native_uuid=False, expected str, got {type(row[0])}"
-        assert row[0] == str(test_uuid).upper(), f"UUID string mismatch: {row[0]} != {str(test_uuid).upper()}"
+        assert (
+            row[0] == str(test_uuid).upper()
+        ), f"UUID string mismatch: {row[0]} != {str(test_uuid).upper()}"
 
         # fetchall
         cursor.execute("SELECT id, name FROM #test_native_uuid_false")
@@ -15845,7 +15847,9 @@ def test_two_connections_different_native_uuid(conn_str):
 
         assert isinstance(row_uuid[0], uuid.UUID), f"Expected uuid.UUID, got {type(row_uuid[0])}"
         assert isinstance(row_string[0], str), f"Expected str, got {type(row_string[0])}"
-        assert str(row_uuid[0]).upper() == row_string[0], "Values should be equal as uppercase strings"
+        assert (
+            str(row_uuid[0]).upper() == row_string[0]
+        ), "Values should be equal as uppercase strings"
 
         drop_table_if_exists(cursor_uuid, "#test_dual_conn")
         drop_table_if_exists(cursor_string, "##test_dual_conn_shared")

@@ -18,7 +18,8 @@ def test_varchar_cp1252_exact_length_boundary(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_boundary (
                 id INT PRIMARY KEY,
                 varchar_10 VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS,
@@ -26,7 +27,8 @@ def test_varchar_cp1252_exact_length_boundary(db_connection):
                 varchar_50 VARCHAR(50) COLLATE SQL_Latin1_General_CP1_CI_AS,
                 varchar_100 VARCHAR(100) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Set encoding to CP1252 for VARCHAR columns
@@ -137,12 +139,14 @@ def test_varchar_cp1252_length_variations(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_variations (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -198,12 +202,14 @@ def test_varchar_cp1252_mixed_ascii_nonascii(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_mixed (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(15) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -246,12 +252,14 @@ def test_varchar_cp1252_empty_and_null(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_edge (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -290,13 +298,15 @@ def test_varchar_cp1252_parameterized_query(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_params (
                 id INT PRIMARY KEY,
                 varchar_10 VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS,
                 varchar_20 VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -338,14 +348,16 @@ def test_varchar_cp1252_fetchall_multi_column_batch(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_multi_col (
                 id INT PRIMARY KEY,
                 col_a VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS,
                 col_b VARCHAR(15) COLLATE SQL_Latin1_General_CP1_CI_AS,
                 col_c VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -391,12 +403,14 @@ def test_varchar_cp1252_fetchmany_batch(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_fetchmany (
                 id INT PRIMARY KEY,
                 data VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -441,7 +455,8 @@ def test_varchar_cp1252_mixed_types_batch(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_mixed_types (
                 id INT PRIMARY KEY,
                 name VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS,
@@ -449,7 +464,8 @@ def test_varchar_cp1252_mixed_types_batch(db_connection):
                 city VARCHAR(15) COLLATE SQL_Latin1_General_CP1_CI_AS,
                 age SMALLINT
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -494,12 +510,14 @@ def test_varchar_cp1252_lob_with_collation(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_lob (
                 id INT PRIMARY KEY,
                 data VARCHAR(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -532,12 +550,14 @@ def test_varchar_cp1252_varying_lengths_per_row(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_varying (
                 id INT PRIMARY KEY,
                 data VARCHAR(50) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -583,12 +603,14 @@ def test_varchar_cp1252_null_interspersed_batch(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_nulls (
                 id INT PRIMARY KEY,
                 data VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
@@ -639,12 +661,14 @@ def test_varchar_cp1252_decode_fallback_returns_bytes(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_decode_fallback_bytes (
                 id INT PRIMARY KEY,
                 data VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert valid CP1252 data
@@ -687,12 +711,14 @@ def test_varchar_cp1252_fetchall_many_rows(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_cp1252_many (
                 id INT PRIMARY KEY,
                 data VARCHAR(30) COLLATE SQL_Latin1_General_CP1_CI_AS
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)

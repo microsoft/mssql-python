@@ -52,7 +52,8 @@ class TestHandleFreeShutdown:
         Expected with CURRENT CODE: May segfault (this is the bug we're testing for)
         Expected with FIXED CODE: No segfault
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             import gc
             from mssql_python import connect
@@ -82,7 +83,8 @@ class TestHandleFreeShutdown:
             
             # Force immediate exit - this triggers finalize_garbage
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -115,7 +117,8 @@ class TestHandleFreeShutdown:
         Expected with CURRENT CODE: Likely segfault
         Expected with FIXED CODE: No segfault
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             import atexit
             from mssql_python import connect
@@ -138,7 +141,8 @@ class TestHandleFreeShutdown:
             print("Python GC will finalize DBC during shutdown")
             print("If DBC cleanup isn't skipped, SQLFreeHandle will access freed ENV")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -163,7 +167,8 @@ class TestHandleFreeShutdown:
         Expected with CURRENT CODE: May segfault
         Expected with FIXED CODE: No segfault
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             import gc
             import weakref
@@ -202,7 +207,8 @@ class TestHandleFreeShutdown:
             print("Exiting - finalize_garbage will be called")
             print("If DBC handles aren't protected, segfault in SQLFreeHandle")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -228,7 +234,8 @@ class TestHandleFreeShutdown:
 
         Expected: No segfault, clean exit
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             from mssql_python import connect
             
@@ -244,7 +251,8 @@ class TestHandleFreeShutdown:
             # Type 3 (STMT) handle should be skipped when pythonShuttingDown=true
             print("STMT handle cleanup test: Exiting without explicit cleanup")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -267,7 +275,8 @@ class TestHandleFreeShutdown:
 
         Expected: No segfault, clean exit
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             from mssql_python import connect
             
@@ -287,7 +296,8 @@ class TestHandleFreeShutdown:
             # Type 2 (DBC) handles should be skipped when pythonShuttingDown=true
             print("DBC handle cleanup test: Exiting without explicit connection cleanup")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -316,7 +326,8 @@ class TestHandleFreeShutdown:
         Note: ENV handle is static and destructs via normal C++ mechanisms,
               not during Python GC. This test verifies the overall flow.
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             from mssql_python import connect
             
@@ -335,7 +346,8 @@ class TestHandleFreeShutdown:
             # It does NOT have pythonShuttingDown protection (Type 1 not in check)
             print("ENV handle cleanup test: All connections closed properly")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -362,7 +374,8 @@ class TestHandleFreeShutdown:
         Expected: No segfault, clean exit
         This tests the real-world scenario where cleanup is partial
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             from mssql_python import connect
             
@@ -407,7 +420,8 @@ class TestHandleFreeShutdown:
             # - Type 1 (ENV) handle: normal C++ static destruction
             print("Mixed handle cleanup test: Exiting with partial cleanup")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -432,7 +446,8 @@ class TestHandleFreeShutdown:
 
         Expected: No segfault, proper handle cleanup order
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             import gc
             from mssql_python import connect
@@ -460,7 +475,8 @@ class TestHandleFreeShutdown:
             # Their DBC and STMT handles will be skipped during shutdown
             print("Rapid churn test: Exiting with mixed cleanup")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -483,7 +499,8 @@ class TestHandleFreeShutdown:
 
         Expected: No segfault, graceful error handling
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             from mssql_python import connect, ProgrammingError
             
@@ -499,7 +516,8 @@ class TestHandleFreeShutdown:
             
             print("Exception test: Exiting after exception without cleanup")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -521,7 +539,8 @@ class TestHandleFreeShutdown:
 
         Expected: No segfault, proper weakref finalization
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             import weakref
             from mssql_python import connect
@@ -552,7 +571,8 @@ class TestHandleFreeShutdown:
             
             print("Weakref test: Exiting with weakrefs active")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -573,7 +593,8 @@ class TestHandleFreeShutdown:
 
         Expected: No segfault, proper cycle breaking
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             import gc
             from mssql_python import connect
@@ -610,7 +631,8 @@ class TestHandleFreeShutdown:
             
             print("Circular ref test: Exiting after GC with cycles")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -631,7 +653,8 @@ class TestHandleFreeShutdown:
 
         Expected: Clean shutdown with no segfaults
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import sys
             from mssql_python import connect
             
@@ -682,7 +705,8 @@ class TestHandleFreeShutdown:
             print("- Type 1 (ENV) handle: Normal C++ static destruction")
             print("=== Exiting ===")
             sys.exit(0)
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
@@ -926,7 +950,8 @@ class TestHandleFreeShutdown:
         - empty_list: No errors with empty set
         - mixed_scenario: Mixed connection states handled correctly
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import mssql_python
             
             # Verify cleanup infrastructure exists
@@ -937,7 +962,8 @@ class TestHandleFreeShutdown:
             {test_code}
             
             print("{expected_msg}")
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
@@ -957,7 +983,8 @@ class TestHandleFreeShutdown:
         - Cleanup can safely iterate while threads are registering
         - Lock prevents data corruption in WeakSet
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import mssql_python
             import threading
             import time
@@ -1026,7 +1053,8 @@ class TestHandleFreeShutdown:
                 assert conn._closed, f"Connection {{conn.conn_id}} was not closed"
             
             print("Thread safety test: PASSED")
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
@@ -1048,7 +1076,8 @@ class TestHandleFreeShutdown:
         3. WeakSet can be modified (e.g., connections removed by GC) without breaking iteration
         4. The copy prevents "Set changed size during iteration" RuntimeError
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import mssql_python
             import weakref
             import gc
@@ -1123,7 +1152,8 @@ class TestHandleFreeShutdown:
             
             print("List copy isolation: PASSED")
             print("[OK] connections_to_close = list(_active_connections) properly tested")
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
@@ -1147,7 +1177,8 @@ class TestHandleFreeShutdown:
         2. With the list copy, iteration is safe even if WeakSet shrinks due to GC
         3. The pattern prevents "dictionary changed size during iteration" type errors
         """
-        script = textwrap.dedent(f"""
+        script = textwrap.dedent(
+            f"""
             import mssql_python
             import weakref
             import gc
@@ -1213,7 +1244,8 @@ class TestHandleFreeShutdown:
             
             print("WeakSet modification during iteration: PASSED")
             print("[OK] list() copy prevents 'set changed size during iteration' errors")
-        """)
+        """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
