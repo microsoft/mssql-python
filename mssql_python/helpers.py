@@ -360,13 +360,17 @@ class Settings:
     Settings class for mssql_python package configuration.
 
     This class holds global settings that affect the behavior of the package,
-    including lowercase column names, decimal separator.
+    including lowercase column names, decimal separator, and UUID handling.
     """
 
     def __init__(self) -> None:
         self.lowercase: bool = False
         # Use the pre-determined separator - no locale access here
         self.decimal_separator: str = _default_decimal_separator
+        # Controls whether UNIQUEIDENTIFIER columns return uuid.UUID (True)
+        # or str (False). Default False matches pyodbc behavior for seamless migration.
+        # Set to True to return native uuid.UUID objects.
+        self.native_uuid: bool = False
 
 
 # Global settings instance

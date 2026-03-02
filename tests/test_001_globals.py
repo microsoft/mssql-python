@@ -21,6 +21,7 @@ from mssql_python import (
     lowercase,
     getDecimalSeparator,
     setDecimalSeparator,
+    native_uuid,
 )
 
 
@@ -388,7 +389,8 @@ def test_decimal_separator_with_db_operations(db_connection):
     try:
         # Create a test table with decimal values
         cursor = db_connection.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
         DROP TABLE IF EXISTS #decimal_separator_test;
         CREATE TABLE #decimal_separator_test (
             id INT,
@@ -399,7 +401,8 @@ def test_decimal_separator_with_db_operations(db_connection):
             (2, 678.90),
             (3, 0.01),
             (4, 999.99);
-        """)
+        """
+        )
         cursor.close()
 
         # Test 1: Fetch with default separator
@@ -467,7 +470,8 @@ def test_decimal_separator_batch_operations(db_connection):
     try:
         # Create test data
         cursor = db_connection.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
         DROP TABLE IF EXISTS #decimal_batch_test;
         CREATE TABLE #decimal_batch_test (
             id INT,
@@ -478,7 +482,8 @@ def test_decimal_separator_batch_operations(db_connection):
             (1, 123.456, 12345.67890), 
             (2, 0.001, 0.00001),
             (3, 999.999, 9999.99999);
-        """)
+        """
+        )
         cursor.close()
 
         # Test 1: Fetch results with default separator
@@ -740,3 +745,131 @@ def test_decimal_separator_concurrent_db_operations(db_connection):
         # Always make sure to clean up
         stop_event.set()
         setDecimalSeparator(original_separator)
+
+
+def test_native_uuid_default():
+    """Test that native_uuid defaults to False (matching pyodbc)."""
+    assert (
+        mssql_python.native_uuid is False
+    ), "native_uuid should default to False (matching pyodbc)"
+
+
+def test_native_uuid_type_validation():
+    """Test that native_uuid only accepts boolean values."""
+    original = mssql_python.native_uuid
+
+    try:
+        # Test valid boolean values
+        mssql_python.native_uuid = True
+        assert mssql_python.native_uuid is True
+
+        mssql_python.native_uuid = False
+        assert mssql_python.native_uuid is False
+
+        # Test invalid types — all should raise ValueError
+        invalid_values = [1, 0, "True", "False", None, [], {}, "yes", "no", "t", "f"]
+
+        for value in invalid_values:
+            with pytest.raises(ValueError, match="native_uuid must be a boolean value"):
+                mssql_python.native_uuid = value
+
+    finally:
+        # Always restore original value
+        mssql_python.native_uuid = original
+
+
+def test_native_uuid_settings_consistency():
+    """Test that native_uuid is consistent between module property and Settings object."""
+    from mssql_python import get_settings
+
+    original = mssql_python.native_uuid
+
+    try:
+        mssql_python.native_uuid = False
+        settings = get_settings()
+        assert settings.native_uuid is False, "Settings should reflect module-level change"
+
+        mssql_python.native_uuid = True
+        settings = get_settings()
+        assert settings.native_uuid is True, "Settings should reflect module-level change"
+
+    finally:
+        mssql_python.native_uuid = original
+
+
+def test_native_uuid_thread_safety():
+    """Test that native_uuid is thread-safe under concurrent access."""
+    import queue
+
+    original = mssql_python.native_uuid
+    results_queue = queue.Queue()
+    stop_event = threading.Event()
+    errors = []
+
+    def writer_thread():
+        """Toggle native_uuid between True and False."""
+        try:
+            while not stop_event.is_set():
+                mssql_python.native_uuid = True
+                mssql_python.native_uuid = False
+                results_queue.put(("write", True))
+        except Exception as e:
+            errors.append(str(e))
+
+    def reader_thread():
+        """Read native_uuid and verify it's a boolean."""
+        try:
+            while not stop_event.is_set():
+                val = mssql_python.native_uuid
+                assert isinstance(val, bool), f"Expected bool, got {type(val)}"
+                results_queue.put(("read", val))
+        except Exception as e:
+            errors.append(str(e))
+
+    threads = []
+    for _ in range(3):
+        threads.append(threading.Thread(target=writer_thread))
+        threads.append(threading.Thread(target=reader_thread))
+
+    for t in threads:
+        t.start()
+
+    try:
+        time.sleep(1)  # Let threads run for 1 second
+        stop_event.set()
+
+        for t in threads:
+            t.join(timeout=1)
+
+        assert not errors, f"Thread errors detected: {errors}"
+
+    finally:
+        stop_event.set()
+        mssql_python.native_uuid = original
+
+
+def test_connect_native_uuid_parameter_signature():
+    """Test that connect() accepts the native_uuid parameter without errors."""
+    import inspect
+
+    sig = inspect.signature(mssql_python.connect)
+    params = sig.parameters
+
+    assert "native_uuid" in params, "connect() should accept native_uuid parameter"
+    param = params["native_uuid"]
+    assert param.default is None, "native_uuid default should be None"
+
+
+def test_connection_native_uuid_attribute():
+    """Test that Connection class stores the _native_uuid attribute."""
+    from mssql_python.connection import Connection
+
+    # Connection.__init__ should accept native_uuid; we can't fully construct
+    # a Connection without a valid connection string, but we can verify the
+    # parameter is accepted by inspecting the signature.
+    import inspect
+
+    sig = inspect.signature(Connection.__init__)
+    params = sig.parameters
+    assert "native_uuid" in params, "Connection.__init__ should accept native_uuid parameter"
+    assert params["native_uuid"].default is None

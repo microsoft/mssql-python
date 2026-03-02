@@ -339,6 +339,24 @@ class _MSSQLModule(types.ModuleType):
         with _settings_lock:
             _settings.lowercase = value
 
+    @property
+    def native_uuid(self) -> bool:
+        """Get the native_uuid setting.
+
+        Controls whether UNIQUEIDENTIFIER columns return uuid.UUID objects (True)
+        or str (False). Default is False (matching pyodbc behavior).
+        Set to True to return native uuid.UUID objects.
+        """
+        return _settings.native_uuid
+
+    @native_uuid.setter
+    def native_uuid(self, value: bool) -> None:
+        """Set the native_uuid setting."""
+        if not isinstance(value, bool):
+            raise ValueError("native_uuid must be a boolean value")
+        with _settings_lock:
+            _settings.native_uuid = value
+
 
 # Replace the current module with our custom module class
 old_module: types.ModuleType = sys.modules[__name__]
@@ -357,3 +375,4 @@ sys.modules[__name__] = new_module
 
 # Initialize property values
 lowercase: bool = _settings.lowercase
+native_uuid: bool = _settings.native_uuid

@@ -203,6 +203,7 @@ class Connection:
         autocommit: bool = False,
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
+        native_uuid: Optional[bool] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -219,6 +220,9 @@ class Connection:
                                           connecting, such as SQL_ATTR_LOGIN_TIMEOUT,
                                           SQL_ATTR_ODBC_CURSORS, and SQL_ATTR_PACKET_SIZE.
             timeout (int): Login timeout in seconds. 0 means no timeout.
+            native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
+                uuid.UUID objects (True) or str (False) for cursors created from this connection.
+                None (default) defers to the module-level ``mssql_python.native_uuid`` setting.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
@@ -236,7 +240,16 @@ class Connection:
             >>> import mssql_python as ms
             >>> conn = ms.connect("Server=myserver;Database=mydb",
             ...                   attrs_before={ms.SQL_ATTR_LOGIN_TIMEOUT: 30})
+
+            >>> # Return native uuid.UUID objects instead of strings
+            >>> conn = ms.connect("Server=myserver;Database=mydb", native_uuid=True)
         """
+        # Store per-connection native_uuid override.
+        # None means "use module-level mssql_python.native_uuid".
+        if native_uuid is not None and not isinstance(native_uuid, bool):
+            raise ValueError("native_uuid must be a boolean value or None")
+        self._native_uuid = native_uuid
+
         self.connection_str = self._construct_connection_string(connection_str, **kwargs)
         self._attrs_before = attrs_before or {}
 
