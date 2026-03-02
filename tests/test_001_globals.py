@@ -869,3 +869,49 @@ def test_connection_native_uuid_attribute():
     params = sig.parameters
     assert "native_uuid" in params, "Connection.__init__ should accept native_uuid parameter"
     assert params["native_uuid"].default is None
+
+
+def test_compute_uuid_str_indices_no_description(db_connection):
+    """Test _compute_uuid_str_indices returns None when cursor has no description."""
+    cursor = db_connection.cursor()
+    try:
+        # Execute a statement that produces no result set
+        cursor.execute(
+            "CREATE TABLE #no_desc_uuid_test (id INT); " "INSERT INTO #no_desc_uuid_test VALUES (1)"
+        )
+        # description should be None after a non-SELECT statement
+        assert cursor.description is None
+
+        # Directly call the helper — should return None via the early guard
+        result = cursor._compute_uuid_str_indices()
+        assert (
+            result is None
+        ), "_compute_uuid_str_indices should return None when description is None"
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #no_desc_uuid_test")
+        cursor.close()
+
+
+def test_stringify_uuids_with_tuple_values():
+    """Test Row._stringify_uuids converts tuple values to list for in-place mutation."""
+    import uuid as _uuid
+    from mssql_python.row import Row
+
+    test_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+    # Pass values as a tuple (not a list) to trigger the isinstance guard
+    row = Row(
+        (42, test_uuid, "hello"),
+        {"id": 0, "guid": 1, "name": 2},
+        cursor=None,
+        converter_map=None,
+        uuid_str_indices=(1,),
+    )
+
+    # The UUID should have been stringified to uppercase
+    assert row[1] == "12345678-1234-5678-1234-567812345678".upper()
+    # Other values should be unaffected
+    assert row[0] == 42
+    assert row[2] == "hello"
+    # Internal storage should now be a list (converted from tuple)
+    assert isinstance(row._values, list)
