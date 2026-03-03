@@ -471,14 +471,19 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &describedType,
                         &describedSize, &describedDigits, &nullable);
                     if (!SQL_SUCCEEDED(rc)) {
+                        // SQLDescribeParam can fail for generic SELECT statements where
+                        // no table column is referenced. Fall back to SQL_VARCHAR as a safe default.
                         LOG("BindParameters: SQLDescribeParam failed for "
-                            "param[%d] (NULL parameter) - SQLRETURN=%d",
+                            "param[%d] (NULL parameter) - SQLRETURN=%d, falling back to SQL_VARCHAR",
                             paramIndex, rc);
-                        return rc;
+                        sqlType = SQL_VARCHAR;
+                        columnSize = 1;
+                        decimalDigits = 0;
+                    } else {
+                        sqlType = describedType;
+                        columnSize = describedSize;
+                        decimalDigits = describedDigits;
                     }
-                    sqlType = describedType;
-                    columnSize = describedSize;
-                    decimalDigits = describedDigits;
                 }
                 dataPtr = nullptr;
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
