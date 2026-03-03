@@ -16,6 +16,8 @@ from mssql_python.parameter_helper import (
     parse_pyformat_params,
     convert_pyformat_to_qmark,
     detect_and_convert_parameters,
+    _has_unquoted_question_marks,
+    _skip_quoted_context,
 )
 
 
@@ -332,6 +334,264 @@ class TestConvertPyformatToQmark:
         assert result_sql.count("?") == 50
         assert len(result_params) == 50
         assert result_params == tuple(range(50))
+
+
+class TestSkipQuotedContext:
+    """Test _skip_quoted_context() helper function."""
+
+    def test_no_quoted_context(self):
+        """Test returns -1 when position is not a quoted context."""
+        sql = "SELECT * FROM t"
+        assert _skip_quoted_context(sql, 0, len(sql)) == -1
+        assert _skip_quoted_context(sql, 7, len(sql)) == -1
+
+    def test_skip_single_line_comment(self):
+        """Test skipping -- comment to end of line."""
+        sql = "SELECT 1 -- comment\nFROM t"
+        result = _skip_quoted_context(sql, 9, len(sql))
+        assert result == 19  # position of \n
+
+    def test_skip_multi_line_comment(self):
+        """Test skipping /* ... */ block comment."""
+        sql = "SELECT /* block */ 1"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 18  # position after */
+
+    def test_skip_single_quoted_string(self):
+        """Test skipping '...' string literal."""
+        sql = "SELECT 'hello' FROM t"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 14  # position after closing '
+
+    def test_skip_single_quoted_with_escaped_quote(self):
+        """Test skipping string with '' escaped quote."""
+        sql = "SELECT 'it''s ok' FROM t"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 17  # position after closing '
+
+    def test_skip_double_quoted_identifier(self):
+        """Test skipping \"...\" identifier."""
+        sql = 'SELECT "col name" FROM t'
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 17  # position after closing "
+
+    def test_skip_bracketed_identifier(self):
+        """Test skipping [...] identifier."""
+        sql = "SELECT [col name] FROM t"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 17  # position after closing ]
+
+    def test_skip_bracketed_with_question_mark(self):
+        """Test skipping [col?name] — the core bug scenario."""
+        sql = "SELECT [q?marks] FROM t"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 16  # position after closing ]
+
+    def test_skip_bracketed_with_escaped_bracket(self):
+        """Test skipping [a]]?b] — ]] is an escaped ] inside bracket identifier."""
+        sql = "SELECT [a]]?b] FROM t"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 14  # position after the real closing ]
+
+    def test_skip_unterminated_block_comment(self):
+        """Test unterminated block comment returns length, not beyond it."""
+        sql = "SELECT /* unclosed"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == len(sql)  # should not exceed length
+
+
+class TestHasUnquotedQuestionMarks:
+    """Test _has_unquoted_question_marks() helper function."""
+
+    # --- Cases that SHOULD return True (real qmark placeholders) ---
+
+    def test_simple_qmark_placeholder(self):
+        """Test bare ? is detected as a real placeholder."""
+        assert _has_unquoted_question_marks("SELECT * FROM t WHERE id = ?") is True
+
+    def test_multiple_qmark_placeholders(self):
+        """Test multiple ? placeholders."""
+        assert _has_unquoted_question_marks("WHERE a = ? AND b = ?") is True
+
+    def test_qmark_at_start(self):
+        """Test ? at very start of SQL."""
+        assert _has_unquoted_question_marks("?") is True
+
+    def test_qmark_at_end(self):
+        """Test ? at very end of SQL."""
+        assert _has_unquoted_question_marks("SELECT ?") is True
+
+    def test_qmark_after_bracket_identifier(self):
+        """Test real ? placeholder after a bracketed identifier containing ?."""
+        assert _has_unquoted_question_marks("SELECT [q?marks] FROM t WHERE id = ?") is True
+
+    def test_qmark_after_string_literal(self):
+        """Test real ? placeholder after a string literal containing ?."""
+        assert _has_unquoted_question_marks("SELECT 'what?' AS q WHERE id = ?") is True
+
+    # --- Cases that SHOULD return False (? only inside quoted contexts) ---
+
+    def test_qmark_inside_brackets(self):
+        """Test ? inside bracketed identifier is NOT detected."""
+        assert _has_unquoted_question_marks("SELECT [q?marks] FROM t") is False
+
+    def test_qmark_inside_single_quotes(self):
+        """Test ? inside single-quoted string literal is NOT detected."""
+        assert _has_unquoted_question_marks("SELECT 'is this ok?' AS col") is False
+
+    def test_qmark_inside_double_quotes(self):
+        """Test ? inside double-quoted identifier is NOT detected."""
+        assert _has_unquoted_question_marks('SELECT "col?name" FROM t') is False
+
+    def test_qmark_inside_single_line_comment(self):
+        """Test ? inside single-line comment is NOT detected."""
+        assert _has_unquoted_question_marks("SELECT 1 -- is this ok?") is False
+
+    def test_qmark_inside_multi_line_comment(self):
+        """Test ? inside multi-line comment is NOT detected."""
+        assert _has_unquoted_question_marks("SELECT /* what? */ 1") is False
+
+    def test_no_question_marks_at_all(self):
+        """Test SQL with no ? at all."""
+        assert _has_unquoted_question_marks("SELECT * FROM users") is False
+
+    def test_empty_string(self):
+        """Test empty SQL string."""
+        assert _has_unquoted_question_marks("") is False
+
+    def test_multiple_bracketed_identifiers_with_qmark(self):
+        """Test multiple bracketed identifiers each containing ?."""
+        assert _has_unquoted_question_marks("SELECT [col?1], [col?2] FROM [tbl?x]") is False
+
+    def test_qmark_in_string_with_escaped_quote(self):
+        """Test ? in string literal that contains escaped single quotes."""
+        assert _has_unquoted_question_marks("SELECT 'it''s ok?' FROM t") is False
+
+    def test_qmark_in_multiline_comment_spanning_lines(self):
+        """Test ? inside multi-line comment spanning multiple lines."""
+        sql = """SELECT 1
+        /* this is a
+           multi-line comment with ?
+           in it */
+        FROM t"""
+        assert _has_unquoted_question_marks(sql) is False
+
+    def test_mixed_contexts_no_real_qmark(self):
+        """Test ? appearing in multiple quoted contexts but no real placeholder."""
+        sql = """SELECT [q?col], 'val?ue' AS x -- comment?
+        FROM t /* block? */"""
+        assert _has_unquoted_question_marks(sql) is False
+
+    def test_bracket_then_real_qmark(self):
+        """Test bracketed ? followed by a real ? placeholder."""
+        assert _has_unquoted_question_marks("SELECT [q?marks] FROM t WHERE x = ?") is True
+
+    def test_string_then_comment_then_real_qmark(self):
+        """Test ? in string, ? in comment, then a real ? placeholder."""
+        sql = "SELECT 'ok?' AS q -- comment?\nWHERE id = ?"
+        assert _has_unquoted_question_marks(sql) is True
+
+    def test_unclosed_bracket_treats_rest_as_identifier(self):
+        """Test behavior with unclosed bracket - ? after [ is inside bracket context."""
+        # Unclosed bracket: scanner will consume to end looking for ]
+        assert _has_unquoted_question_marks("SELECT [unclosed?col") is False
+
+    def test_unclosed_single_quote_treats_rest_as_string(self):
+        """Test behavior with unclosed quote - ? after ' is inside string context."""
+        assert _has_unquoted_question_marks("SELECT 'unclosed string?") is False
+
+    def test_escaped_bracket_inside_bracketed_identifier(self):
+        """Test ? after ]] escaped bracket inside [...] is NOT detected."""
+        # SQL Server escapes ] as ]] inside bracketed identifiers
+        # [a]]?b] is the identifier a]?b — the ? is inside the brackets
+        assert _has_unquoted_question_marks("SELECT [a]]?b] FROM t") is False
+
+    def test_unclosed_block_comment_treats_rest_as_comment(self):
+        """Test behavior with unclosed block comment - ? after /* is inside comment context."""
+        assert _has_unquoted_question_marks("SELECT /* unclosed?") is False
+
+
+class TestBracketedIdentifierIntegration:
+    """Integration tests for ? inside bracketed identifiers with detect_and_convert_parameters.
+
+    Reproduces the GitHub issue: question mark in bracketed column name
+    causes false positive 'Parameter style mismatch' error.
+    """
+
+    def test_bracketed_qmark_with_pyformat_params(self):
+        """Test ? inside brackets with correct pyformat params (the fix for the reported bug)."""
+        sql = "SELECT * FROM t WHERE [q?marks]=%(somename)s"
+        params = {"somename": "thename"}
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert "[q?marks]" in result_sql
+        assert result_params == ("thename",)
+        assert "%(somename)s" not in result_sql
+
+    def test_bracketed_qmark_with_empty_dict(self):
+        """Test ? inside brackets with empty dict should NOT raise TypeError."""
+        sql = "SELECT [q?marks] FROM t WHERE id = 1"
+        result_sql, result_params = detect_and_convert_parameters(sql, {})
+        assert result_sql == sql
+        assert result_params == ()
+
+    def test_bracketed_qmark_with_no_params(self):
+        """Test ? inside brackets with None params."""
+        sql = "SELECT [q?marks] FROM t"
+        result_sql, result_params = detect_and_convert_parameters(sql, None)
+        assert result_sql == sql
+        assert result_params is None
+
+    def test_qmark_in_string_literal_with_dict_params(self):
+        """Test ? inside string literal with dict params should NOT raise TypeError."""
+        sql = "SELECT 'is this ok?' AS col WHERE id = %(id)s"
+        params = {"id": 42}
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert result_params == (42,)
+
+    def test_qmark_in_comment_with_dict_params(self):
+        """Test ? inside comment with dict params should NOT raise TypeError."""
+        sql = "SELECT * FROM t -- filter by what?\nWHERE id = %(id)s"
+        params = {"id": 1}
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert result_params == (1,)
+
+    def test_real_qmark_with_dict_still_raises(self):
+        """Test that a genuine ? placeholder with dict params still raises TypeError."""
+        sql = "SELECT * FROM t WHERE id = ?"
+        with pytest.raises(TypeError) as exc_info:
+            detect_and_convert_parameters(sql, {"id": 1})
+        assert "positional placeholders" in str(exc_info.value)
+
+    def test_real_qmark_alongside_bracketed_qmark_with_dict_raises(self):
+        """Test real ? placeholder alongside bracketed ? with dict still raises."""
+        sql = "SELECT [q?marks] FROM t WHERE id = ?"
+        with pytest.raises(TypeError) as exc_info:
+            detect_and_convert_parameters(sql, {"id": 1})
+        assert "positional placeholders" in str(exc_info.value)
+
+    def test_bracketed_qmark_with_tuple_params(self):
+        """Test ? inside brackets with tuple params passes through fine."""
+        sql = "SELECT * FROM t WHERE [q?marks] = ?"
+        params = ("thename",)
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert result_sql == sql
+        assert result_params == params
+
+    def test_multiple_bracketed_columns_with_qmarks(self):
+        """Test multiple bracketed columns each containing ? with pyformat params."""
+        sql = "SELECT [col?1], [col?2] FROM t WHERE name = %(name)s"
+        params = {"name": "test"}
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert "[col?1]" in result_sql
+        assert "[col?2]" in result_sql
+        assert result_params == ("test",)
+
+    def test_create_table_with_bracketed_qmark_column(self):
+        """Test CREATE TABLE with ? in column name (no params)."""
+        sql = "CREATE TABLE t (id INT, [q?marks] VARCHAR(50))"
+        result_sql, result_params = detect_and_convert_parameters(sql, None)
+        assert result_sql == sql
+        assert result_params is None
 
 
 class TestDetectAndConvertParameters:
