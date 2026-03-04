@@ -5697,6 +5697,7 @@ def test_default_encoding_behavior_validation(conn_str):
 def test_encoding_with_bytes_and_bytearray_parameters(db_connection):
     """Test encoding with bytes and bytearray parameters (SQL_C_CHAR path)."""
     db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8")
 
     cursor = db_connection.cursor()
     try:

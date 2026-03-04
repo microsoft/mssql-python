@@ -26,7 +26,8 @@ jobs:
         value: '$(Build.ArtifactStagingDirectory)'
     
     steps:
-      - checkout: none  # No source code needed for consolidation
+      - checkout: self
+        fetchDepth: 1
       
       # Download ALL artifacts from current build
       # Matrix jobs publish as: Windows_<JobId>, macOS_<JobId>, Linux_<JobId>
@@ -111,6 +112,13 @@ jobs:
           fi
         displayName: 'Consolidate Windows symbols (optional)'
         continueOnError: true
+      
+      # Include mssql-py-core version file for traceability
+      - bash: |
+          set -e
+          cp $(Build.SourcesDirectory)/eng/versions/mssql-py-core.version $(ob_outputDirectory)/dist/
+          echo "mssql-py-core version: $(cat $(ob_outputDirectory)/dist/mssql-py-core.version)"
+        displayName: 'Include mssql-py-core version'
       
       # Verify consolidation
       - bash: |
