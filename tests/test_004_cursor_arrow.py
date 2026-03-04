@@ -323,34 +323,81 @@ def test_rownumber_arrow_batch_interleaved_fetchmany(cursor: mssql_python.Cursor
     unions = " union all ".join(f"select {i} as val" for i in range(1, N + 1))
     cursor.execute(f"select val from ({unions}) t order by val")
 
-    collected = []
-
     batch = cursor.arrow_batch(3)
     assert batch.num_rows == 3
     vals = batch.column(0).to_pylist()
     assert vals == [1, 2, 3]
     assert cursor.rownumber == 2  # 0-based: last row index = 2
-    collected.extend(vals)
 
     rows = cursor.fetchmany(5)
     assert len(rows) == 5
     vals = [r[0] for r in rows]
     assert vals == [4, 5, 6, 7, 8]
     assert cursor.rownumber == 7
-    collected.extend(vals)
 
     batch = cursor.arrow_batch(4)
     assert batch.num_rows == 4
     vals = batch.column(0).to_pylist()
     assert vals == [9, 10, 11, 12]
     assert cursor.rownumber == 11
-    collected.extend(vals)
 
     batch = cursor.arrow_batch(100)
     assert batch.num_rows == 8
     vals = batch.column(0).to_pylist()
     assert vals == [13, 14, 15, 16, 17, 18, 19, 20]
     assert cursor.rownumber == 19
-    collected.extend(vals)
 
-    assert collected == list(range(1, N + 1))
+
+def test_rownumber_interleaved_fetchmany_arrow_fetchone_arrow_fetchall(
+    cursor: mssql_python.Cursor,
+):
+    """Verify mixed fetch APIs can be interleaved on the same result set
+    with correct rownumber tracking and values."""
+    N = 20
+    unions = " union all ".join(f"select {i} as val" for i in range(1, N + 1))
+    cursor.execute(f"select val from ({unions}) t order by val")
+
+    rows = cursor.fetchmany(4)
+    assert len(rows) == 4
+    vals = [r[0] for r in rows]
+    assert vals == [1, 2, 3, 4]
+    assert cursor.rownumber == 3
+
+    batch = cursor.arrow_batch(3)
+    assert batch.num_rows == 3
+    vals = batch.column(0).to_pylist()
+    assert vals == [5, 6, 7]
+    assert cursor.rownumber == 6
+
+    row = cursor.fetchone()
+    assert row[0] == 8
+    assert cursor.rownumber == 7
+
+    batch = cursor.arrow_batch(5)
+    assert batch.num_rows == 5
+    vals = batch.column(0).to_pylist()
+    assert vals == [9, 10, 11, 12, 13]
+    assert cursor.rownumber == 12
+
+    rows = cursor.fetchall()
+    vals = [r[0] for r in rows]
+    assert vals == [14, 15, 16, 17, 18, 19, 20]
+    assert cursor.rownumber == 19
+
+
+def test_rownumber_interleaved_fetchone_arrow_batch(cursor: mssql_python.Cursor):
+    """Verify fetchone followed by arrow_batch returns the remaining rows
+    with correct rownumber tracking and values."""
+    N = 20
+    unions = " union all ".join(f"select {i} as val" for i in range(1, N + 1))
+    cursor.execute(f"select val from ({unions}) t order by val")
+
+    row = cursor.fetchone()
+    assert row[0] == 1
+    assert cursor.rownumber == 0
+
+    batch = cursor.arrow_batch(100)
+    assert batch.num_rows == 19
+    vals = batch.column(0).to_pylist()
+    assert vals == list(range(2, N + 1))
+    assert cursor.rownumber == 19

@@ -5143,6 +5143,9 @@ SQLRETURN FetchArrowBatch_wrap(
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
+    // Unbind columns to allow subsequent fetchone() calls to use SQLGetData
+    SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+
     // Transfer ownership of buffers to batch ArrowSchema
     // First, allocate memory for the necessary structures
     auto arrowSchemaBatch = std::make_unique<ArrowSchema>();
