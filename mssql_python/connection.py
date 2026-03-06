@@ -222,7 +222,7 @@ class Connection:
             timeout (int): Login timeout in seconds. 0 means no timeout.
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
-                None (default) defers to the module-level ``mssql_python.native_uuid`` setting.
+                None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:

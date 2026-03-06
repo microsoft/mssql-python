@@ -8445,10 +8445,7 @@ def test_executemany_uuid_insert_and_select(cursor, db_connection):
         for i, (retrieved_uuid, retrieved_desc) in enumerate(rows):
             expected_uuid, expected_desc = data_to_insert[i]
 
-            # Assert the type is correct
-            if isinstance(retrieved_uuid, str):
-                retrieved_uuid = uuid.UUID(retrieved_uuid)  # convert if driver returns str
-
+            # native_uuid defaults to True, so UUID columns return uuid.UUID directly
             assert isinstance(
                 retrieved_uuid, uuid.UUID
             ), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
@@ -8496,11 +8493,8 @@ def test_executemany_uuid_roundtrip_fixed_value(cursor, db_connection):
         row = cursor.fetchone()
         retrieved_uuid, retrieved_desc = row
 
-        # Ensure type and value are correct
-        if isinstance(retrieved_uuid, str):
-            retrieved_uuid = uuid.UUID(retrieved_uuid)
-
-        assert isinstance(retrieved_uuid, uuid.UUID)
+        # native_uuid defaults to True — UUID columns return uuid.UUID directly
+        assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
         assert retrieved_uuid == fixed_uuid
         assert str(retrieved_uuid) == str(fixed_uuid)
         assert retrieved_desc == description
@@ -12709,10 +12703,7 @@ def test_executemany_with_uuids(cursor, db_connection):
                     retrieved_uuid is None
                 ), f"Expected None for '{retrieved_desc}', got {retrieved_uuid}"
             else:
-                # Convert string to UUID if needed
-                if isinstance(retrieved_uuid, str):
-                    retrieved_uuid = uuid.UUID(retrieved_uuid)
-
+                # native_uuid defaults to True — UUID columns return uuid.UUID directly
                 assert isinstance(
                     retrieved_uuid, uuid.UUID
                 ), f"Expected UUID, got {type(retrieved_uuid)}"
@@ -15038,6 +15029,31 @@ def test_close(db_connection):
 # ─────────────────────────────────────────────────────────────────────
 # native_uuid tests
 # ─────────────────────────────────────────────────────────────────────
+
+
+def test_native_uuid_default_returns_uuid_objects(db_connection):
+    """Test that the default native_uuid=True returns uuid.UUID without explicit setting."""
+    cursor = db_connection.cursor()
+
+    try:
+        drop_table_if_exists(cursor, "#test_native_uuid_default")
+        cursor.execute(
+            "CREATE TABLE #test_native_uuid_default (id UNIQUEIDENTIFIER, name NVARCHAR(50))"
+        )
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO #test_native_uuid_default VALUES (?, ?)", [test_uuid, "test"])
+
+        # Without setting native_uuid at all, default (True) should return uuid.UUID
+        cursor.execute("SELECT id, name FROM #test_native_uuid_default")
+        row = cursor.fetchone()
+        assert isinstance(row[0], uuid.UUID), (
+            f"Default native_uuid=True should return uuid.UUID, got {type(row[0])}"
+        )
+        assert row[0] == test_uuid
+
+    finally:
+        drop_table_if_exists(cursor, "#test_native_uuid_default")
+        db_connection.commit()
 
 
 def test_native_uuid_true_returns_uuid_objects(db_connection):

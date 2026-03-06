@@ -368,9 +368,9 @@ class Settings:
         # Use the pre-determined separator - no locale access here
         self.decimal_separator: str = _default_decimal_separator
         # Controls whether UNIQUEIDENTIFIER columns return uuid.UUID (True)
-        # or str (False). Default False matches pyodbc behavior for seamless migration.
-        # Set to True to return native uuid.UUID objects.
-        self.native_uuid: bool = False
+        # or str (False). Default True returns native uuid.UUID objects.
+        # Set to False to return str for pyodbc-compatible migration.
+        self.native_uuid: bool = True
 
 
 # Global settings instance

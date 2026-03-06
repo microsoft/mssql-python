@@ -344,8 +344,8 @@ class _MSSQLModule(types.ModuleType):
         """Get the native_uuid setting.
 
         Controls whether UNIQUEIDENTIFIER columns return uuid.UUID objects (True)
-        or str (False). Default is False (matching pyodbc behavior).
-        Set to True to return native uuid.UUID objects.
+        or str (False). Default is True.
+        Set to False to return str for pyodbc-compatible migration.
         """
         return _settings.native_uuid
 

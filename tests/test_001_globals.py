@@ -744,10 +744,10 @@ def test_decimal_separator_concurrent_db_operations(db_connection):
 
 
 def test_native_uuid_default():
-    """Test that native_uuid defaults to False (matching pyodbc)."""
+    """Test that native_uuid defaults to True (returning native uuid.UUID objects)."""
     assert (
-        mssql_python.native_uuid is False
-    ), "native_uuid should default to False (matching pyodbc)"
+        mssql_python.native_uuid is True
+    ), "native_uuid should default to True (returning native uuid.UUID objects)"
 
 
 def test_native_uuid_type_validation():
@@ -781,13 +781,13 @@ def test_native_uuid_settings_consistency():
     original = mssql_python.native_uuid
 
     try:
-        mssql_python.native_uuid = False
-        settings = get_settings()
-        assert settings.native_uuid is False, "Settings should reflect module-level change"
-
         mssql_python.native_uuid = True
         settings = get_settings()
         assert settings.native_uuid is True, "Settings should reflect module-level change"
+
+        mssql_python.native_uuid = False
+        settings = get_settings()
+        assert settings.native_uuid is False, "Settings should reflect module-level change"
 
     finally:
         mssql_python.native_uuid = original

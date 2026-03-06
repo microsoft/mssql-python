@@ -30,11 +30,11 @@ def connect(
             uuid.UUID objects (True) or str (False) for this connection.
             - True: UNIQUEIDENTIFIER columns return uuid.UUID objects.
             - False: UNIQUEIDENTIFIER columns return str (pyodbc-compatible).
-            - None (default): Uses the module-level ``mssql_python.native_uuid`` setting (False).
+            - None (default): Uses the module-level ``mssql_python.native_uuid`` setting (True).
 
-            This per-connection override is useful for incremental adoption of native UUIDs:
-            connections that are ready can pass native_uuid=True, while the default (False)
-            preserves pyodbc-compatible string behavior.
+            This per-connection override is useful for migration from pyodbc:
+            connections that need string UUIDs can pass native_uuid=False, while the default (True)
+            returns native uuid.UUID objects.
     Keyword Args:
         **kwargs: Additional key/value pairs for the connection string.
     Below attributes are not implemented in the internal driver:

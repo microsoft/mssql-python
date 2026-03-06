@@ -36,10 +36,8 @@ class Row:
             cursor: Optional cursor reference (for backward compatibility and lowercase access)
             converter_map: Pre-computed converter map (shared across rows for performance)
             uuid_str_indices: Tuple of column indices whose uuid.UUID values should be
-                converted to uppercase str. Pre-computed once per result set when
-                native_uuid=False (the default). The uppercase format matches pyodbc
-                and SQL Server's native text representation.
-                None means no conversion (native_uuid=True).
+                converted to str. Pre-computed once per result set when native_uuid=False.
+                None means no conversion (native_uuid=True, the default).
         """
         # Apply output converters if available using pre-computed converter map
         if converter_map:
@@ -54,9 +52,9 @@ class Row:
         else:
             self._values = values
 
-        # Convert UUID columns to str when native_uuid=False (the default).
+        # Convert UUID columns to str when native_uuid=False.
         # uuid_str_indices is pre-computed once at execute() time, so this is
-        # O(num_uuid_columns) per row — zero cost when native_uuid=True.
+        # O(num_uuid_columns) per row — zero cost when native_uuid=True (the default).
         if uuid_str_indices:
             self._stringify_uuids(uuid_str_indices)
 
@@ -67,9 +65,7 @@ class Row:
         """
         Convert uuid.UUID values at the given column indices to uppercase str in-place.
 
-        This is only called when native_uuid=False. The uppercase format matches
-        the behavior of pyodbc and SQL Server's native UNIQUEIDENTIFIER text
-        representation, ensuring seamless migration. It operates directly on
+        This is only called when native_uuid=False. It operates directly on
         self._values to avoid creating an extra list copy.
         """
         vals = self._values
