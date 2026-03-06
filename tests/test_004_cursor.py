@@ -8494,7 +8494,9 @@ def test_executemany_uuid_roundtrip_fixed_value(cursor, db_connection):
         retrieved_uuid, retrieved_desc = row
 
         # native_uuid defaults to True — UUID columns return uuid.UUID directly
-        assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+        assert isinstance(
+            retrieved_uuid, uuid.UUID
+        ), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
         assert retrieved_uuid == fixed_uuid
         assert str(retrieved_uuid) == str(fixed_uuid)
         assert retrieved_desc == description
@@ -15046,9 +15048,9 @@ def test_native_uuid_default_returns_uuid_objects(db_connection):
         # Without setting native_uuid at all, default (True) should return uuid.UUID
         cursor.execute("SELECT id, name FROM #test_native_uuid_default")
         row = cursor.fetchone()
-        assert isinstance(row[0], uuid.UUID), (
-            f"Default native_uuid=True should return uuid.UUID, got {type(row[0])}"
-        )
+        assert isinstance(
+            row[0], uuid.UUID
+        ), f"Default native_uuid=True should return uuid.UUID, got {type(row[0])}"
         assert row[0] == test_uuid
 
     finally:
