@@ -38,8 +38,9 @@ stages:
         pool:
           type: windows
           isCustom: true
-          name: Django-1ES-pool
-          vmImage: WIN22-SQL22
+          name: Python-1ES-pool
+          demands:
+          - imageOverride -equals PYTHON-1ES-MMS2022
         # Extended timeout for downloads, builds, and testing
         timeoutInMinutes: 120
         
@@ -236,6 +237,17 @@ stages:
               cd ..\..
             displayName: 'Build PYD for $(targetArch)'
             continueOnError: false
+          
+          # =========================
+          # MSSQL_PY_CORE INSTALLATION
+          # =========================
+          # Extract mssql_py_core from NuGet into repo root BEFORE testing
+          # Required for bulkcopy tests which use mssql_py_core native bindings
+          - task: PowerShell@2
+            displayName: 'Install mssql_py_core from NuGet'
+            inputs:
+              targetType: 'filePath'
+              filePath: '$(Build.SourcesDirectory)\eng\scripts\install-mssql-py-core.ps1'
           
           # =========================
           # TESTING

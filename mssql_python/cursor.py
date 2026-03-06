@@ -17,7 +17,7 @@ import datetime
 import warnings
 from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
-from mssql_python.helpers import check_error
+from mssql_python.helpers import check_error, connstr_to_pycore_params
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import (
@@ -844,7 +844,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._inputsizes = None
 
     def _get_c_type_for_sql_type(self, sql_type: int) -> int:
-        """Map SQL type to appropriate C type for parameter binding"""
+        """Map SQL type to appropriate C type for parameter binding."""
         sql_to_c_type = {
             ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
             ddbc_sql_const.SQL_VARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
@@ -865,9 +865,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ddbc_sql_const.SQL_BINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
             ddbc_sql_const.SQL_VARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
             ddbc_sql_const.SQL_LONGVARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+            ddbc_sql_const.SQL_SS_UDT.value: ddbc_sql_const.SQL_C_BINARY.value,
+            # ODBC 3.x date/time types (reported by ODBC 18 driver)
+            ddbc_sql_const.SQL_TYPE_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
+            ddbc_sql_const.SQL_TYPE_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
+            ddbc_sql_const.SQL_TYPE_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+            ddbc_sql_const.SQL_SS_TIME2.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
+            ddbc_sql_const.SQL_DATETIMEOFFSET.value: ddbc_sql_const.SQL_C_SS_TIMESTAMPOFFSET.value,
+            # ODBC 2.x aliases (accepted by setinputsizes via SQLTypes)
             ddbc_sql_const.SQL_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
             ddbc_sql_const.SQL_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
             ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+            # Other types
+            ddbc_sql_const.SQL_GUID.value: ddbc_sql_const.SQL_C_GUID.value,
+            ddbc_sql_const.SQL_SS_XML.value: ddbc_sql_const.SQL_C_WCHAR.value,
         }
         return sql_to_c_type.get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
 
@@ -1026,34 +1037,73 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         Map SQL data type to Python data type.
 
+        Maps the ODBC SQL type code returned by SQLDescribeCol to the
+        corresponding Python type for cursor.description[i][1].
+
+        The ODBC 18 driver for SQL Server reports these type codes:
+          Standard ODBC 3.x types:
+            SQL_CHAR(1), SQL_VARCHAR(12), SQL_LONGVARCHAR(-1),
+            SQL_WCHAR(-8), SQL_WVARCHAR(-9), SQL_WLONGVARCHAR(-10),
+            SQL_INTEGER(4), SQL_SMALLINT(5), SQL_TINYINT(-6), SQL_BIGINT(-5),
+            SQL_BIT(-7), SQL_FLOAT(6), SQL_REAL(7), SQL_DOUBLE(8),
+            SQL_DECIMAL(3), SQL_NUMERIC(2),
+            SQL_BINARY(-2), SQL_VARBINARY(-3), SQL_LONGVARBINARY(-4),
+            SQL_TYPE_DATE(91), SQL_TYPE_TIME(92), SQL_TYPE_TIMESTAMP(93), SQL_GUID(-11)
+          SQL Server-specific types (from msodbcsql.h):
+            SQL_SS_TIME2(-154)  for time columns
+            SQL_DATETIMEOFFSET(-155)  for datetimeoffset columns
+            SQL_SS_XML(-152)  for xml columns
+            SQL_SS_UDT(-151)  for geography/geometry/hierarchyid columns
+
+        ODBC 2.x aliases (9, 10, 11) are also accepted defensively.
+
         Args:
-            sql_type: SQL data type.
+            sql_type: SQL data type code from SQLDescribeCol.
 
         Returns:
             Corresponding Python data type.
         """
         sql_to_python_type = {
-            ddbc_sql_const.SQL_INTEGER.value: int,
-            ddbc_sql_const.SQL_VARCHAR.value: str,
-            ddbc_sql_const.SQL_WVARCHAR.value: str,
+            # String types
             ddbc_sql_const.SQL_CHAR.value: str,
+            ddbc_sql_const.SQL_VARCHAR.value: str,
+            ddbc_sql_const.SQL_LONGVARCHAR.value: str,
             ddbc_sql_const.SQL_WCHAR.value: str,
+            ddbc_sql_const.SQL_WVARCHAR.value: str,
+            ddbc_sql_const.SQL_WLONGVARCHAR.value: str,
+            # Integer types
+            ddbc_sql_const.SQL_INTEGER.value: int,
+            ddbc_sql_const.SQL_SMALLINT.value: int,
+            ddbc_sql_const.SQL_TINYINT.value: int,
+            ddbc_sql_const.SQL_BIGINT.value: int,
+            # Floating-point types
             ddbc_sql_const.SQL_FLOAT.value: float,
             ddbc_sql_const.SQL_DOUBLE.value: float,
+            ddbc_sql_const.SQL_REAL.value: float,
+            # Exact numeric types
             ddbc_sql_const.SQL_DECIMAL.value: decimal.Decimal,
             ddbc_sql_const.SQL_NUMERIC.value: decimal.Decimal,
-            ddbc_sql_const.SQL_DATE.value: datetime.date,
-            ddbc_sql_const.SQL_TIMESTAMP.value: datetime.datetime,
-            ddbc_sql_const.SQL_TIME.value: datetime.time,
+            # Date/time types — values the ODBC 18 driver actually reports
+            ddbc_sql_const.SQL_TYPE_DATE.value: datetime.date,  # 91 — date
+            ddbc_sql_const.SQL_TYPE_TIME.value: datetime.time,  # 92 — time (ODBC 3.x)
+            ddbc_sql_const.SQL_TYPE_TIMESTAMP.value: datetime.datetime,  # 93 — datetime/datetime2/smalldatetime
+            ddbc_sql_const.SQL_SS_TIME2.value: datetime.time,  # -154 — time
+            ddbc_sql_const.SQL_DATETIMEOFFSET.value: datetime.datetime,  # -155 — datetimeoffset
+            # ODBC 2.x date/time aliases (defensive, in case any driver reports these)
+            ddbc_sql_const.SQL_DATE.value: datetime.date,  # 9
+            ddbc_sql_const.SQL_TIME.value: datetime.time,  # 10
+            ddbc_sql_const.SQL_TIMESTAMP.value: datetime.datetime,  # 11
+            # Boolean
             ddbc_sql_const.SQL_BIT.value: bool,
-            ddbc_sql_const.SQL_TINYINT.value: int,
-            ddbc_sql_const.SQL_SMALLINT.value: int,
-            ddbc_sql_const.SQL_BIGINT.value: int,
+            # Binary types
             ddbc_sql_const.SQL_BINARY.value: bytes,
             ddbc_sql_const.SQL_VARBINARY.value: bytes,
             ddbc_sql_const.SQL_LONGVARBINARY.value: bytes,
+            ddbc_sql_const.SQL_SS_UDT.value: bytes,
+            # UUID
             ddbc_sql_const.SQL_GUID.value: uuid.UUID,
-            # Add more mappings as needed
+            # XML — driver reports SQL_SS_XML (-152), fetched as str
+            ddbc_sql_const.SQL_SS_XML.value: str,
         }
         return sql_to_python_type.get(sql_type, str)
 
@@ -2451,7 +2501,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
         return True
 
-    def _bulkcopy(
+    # ── Mapping from ODBC connection-string keywords (lowercase, as _parse returns)
+    def bulkcopy(
         self,
         table_name: str,
         data: Iterable[Union[Tuple, List]],
@@ -2527,16 +2578,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ValueError: If table_name is empty or parameters are invalid
             RuntimeError: If connection string is not available
         """
+        # Fast check if logging is enabled to avoid overhead
+        is_logging_enabled = logger.is_debug_enabled
+
         try:
             import mssql_py_core
         except ImportError as exc:
+            logger.error("_bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
-                "Bulk copy requires the mssql_py_core library which is not installed. "
-                "To install, run: pip install mssql_py_core "
+                "Bulk copy requires the mssql_py_core library which is not available. "
+                "This is an unexpected error. "
             ) from exc
 
         # Validate inputs
         if not table_name or not isinstance(table_name, str):
+            logger.error("_bulkcopy: Invalid table_name parameter")
             raise ValueError("table_name must be a non-empty string")
 
         # Validate that data is iterable (but not a string or bytes, which are technically iterable)
@@ -2568,6 +2624,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Get and parse connection string
         if not hasattr(self.connection, "connection_str"):
+            logger.error("_bulkcopy: Connection string not available")
             raise RuntimeError("Connection string not available for bulk copy")
 
         # Use the proper connection string parser that handles braced values
@@ -2576,53 +2633,42 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         parser = _ConnectionStringParser(validate_keywords=False)
         params = parser._parse(self.connection.connection_str)
 
-        if not params.get("server"):
+        # Check for server parameter (accepts synonyms: server, addr, address)
+        if not (params.get("server") or params.get("addr") or params.get("address")):
             raise ValueError("SERVER parameter is required in connection string")
 
-        if not params.get("database"):
-            raise ValueError(
-                "DATABASE parameter is required in connection string for bulk copy. "
-                "Specify the target database explicitly to avoid accidentally writing to system databases."
+        # Translate parsed connection string into the dict py-core expects.
+        pycore_context = connstr_to_pycore_params(params)
+
+        # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
+        if self.connection._auth_type:
+            # Fresh token acquisition for mssql-py-core connection
+            from mssql_python.auth import AADAuth
+
+            try:
+                raw_token = AADAuth.get_raw_token(self.connection._auth_type)
+            except (RuntimeError, ValueError) as e:
+                raise RuntimeError(
+                    f"Bulk copy failed: unable to acquire Azure AD token "
+                    f"for auth_type '{self.connection._auth_type}': {e}"
+                ) from e
+            pycore_context["access_token"] = raw_token
+            logger.debug(
+                "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
+                self.connection._auth_type,
             )
-
-        # Build connection context for bulk copy library
-        # Note: Password is extracted separately to avoid storing it in the main context
-        # dict that could be accidentally logged or exposed in error messages.
-        trust_cert = params.get("trustservercertificate", "yes").lower() in ("yes", "true")
-
-        # Parse encryption setting from connection string
-        encrypt_param = params.get("encrypt")
-        if encrypt_param is not None:
-            encrypt_value = encrypt_param.strip().lower()
-            if encrypt_value in ("yes", "true", "mandatory", "required"):
-                encryption = "Required"
-            elif encrypt_value in ("no", "false", "optional"):
-                encryption = "Optional"
-            else:
-                # Pass through unrecognized values (e.g., "Strict") to the underlying driver
-                encryption = encrypt_param
-        else:
-            encryption = "Optional"
-
-        context = {
-            "server": params.get("server"),
-            "database": params.get("database"),
-            "user_name": params.get("uid", ""),
-            "trust_server_certificate": trust_cert,
-            "encryption": encryption,
-        }
-
-        # Extract password separately to avoid storing it in generic context that may be logged
-        password = params.get("pwd", "")
-        pycore_context = dict(context)
-        pycore_context["password"] = password
 
         pycore_connection = None
         pycore_cursor = None
         try:
-            pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
+            # Only pass logger to Rust if logging is enabled (performance optimization)
+            pycore_connection = mssql_py_core.PyCoreConnection(
+                pycore_context, python_logger=logger if is_logging_enabled else None
+            )
             pycore_cursor = pycore_connection.cursor()
 
+            # Call bulkcopy with explicit keyword arguments
+            # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             result = pycore_cursor.bulkcopy(
                 table_name,
                 iter(data),
@@ -2635,6 +2681,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 keep_nulls=keep_nulls,
                 fire_triggers=fire_triggers,
                 use_internal_transaction=use_internal_transaction,
+                python_logger=logger if is_logging_enabled else None,  # Only pass logger if enabled
+            )
+
+            logger.info(
+                "_bulkcopy: Bulk copy completed successfully - rows_copied=%s, batch_count=%s, elapsed_time=%s",
+                result.get("rows_copied", "N/A"),
+                result.get("batch_count", "N/A"),
+                result.get("elapsed_time", "N/A"),
             )
 
             return result
@@ -2653,18 +2707,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         finally:
             # Clear sensitive data to minimize memory exposure
-            password = ""
             if pycore_context:
-                pycore_context["password"] = ""
-                pycore_context["user_name"] = ""
+                for key in ("password", "user_name", "access_token"):
+                    pycore_context.pop(key, None)
             # Clean up bulk copy resources
             for resource in (pycore_cursor, pycore_connection):
                 if resource and hasattr(resource, "close"):
                     try:
                         resource.close()
                     except Exception as cleanup_error:
-                        # Log cleanup errors at debug level to aid troubleshooting
-                        # without masking the original exception
+                        # Log cleanup errors only - aids troubleshooting without masking original exception
                         logger.debug(
                             "Failed to close bulk copy resource %s: %s",
                             type(resource).__name__,

@@ -99,8 +99,9 @@ extends:
             pool:
               type: windows
               isCustom: true
-              name: Django-1ES-pool
-              vmImage: WIN22-SQL22
+              name: Python-1ES-pool
+              demands:
+              - imageOverride -equals PYTHON-1ES-MMS2022
             
             variables:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
@@ -176,6 +177,14 @@ extends:
                     Write-Host "Symbols: $(if ($symbols) { $symbols.Count } else { 0 }) files"
                     Write-Host "====================================="
               
+              # Step 3.5: Validate mssql-py-core is a stable version (no dev/alpha/beta/rc)
+              - task: PowerShell@2
+                displayName: 'Validate mssql-py-core is a stable version'
+                inputs:
+                  targetType: 'filePath'
+                  filePath: '$(Build.SourcesDirectory)\OneBranchPipelines\scripts\validate-release-versions.ps1'
+                  arguments: '-VersionFile "$(Build.SourcesDirectory)\artifacts\dist\mssql-py-core.version"'
+
               # Step 4: Verify wheel integrity
               - task: PowerShell@2
                 displayName: 'Verify Wheel Integrity'

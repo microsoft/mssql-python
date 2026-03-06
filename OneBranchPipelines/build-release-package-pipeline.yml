@@ -201,8 +201,8 @@ extends:
   parameters:
     # Pool Configuration
     # Different platforms use different agent pools:
-    # - Windows: Custom 1ES pool (Django-1ES-pool) with WIN22-SQL22 image (Windows Server 2022 + SQL Server 2022)
-    # - Linux: Custom 1ES pool (Django-1ES-pool) with ADO-UB22-SQL22 image (Ubuntu 22.04 + SQL Server 2022)
+    # - Windows: Custom 1ES pool (Python-1ES-pool) with PYTHON-1ES-MMS2022 image (Windows Server 2022 + SQL Server 2022)
+    # - Linux: Custom 1ES pool (Python-1ES-pool) with PYTHON-1ES-UB2404 image (Ubuntu 24.04 + SQL Server 2022)
     # - macOS: Microsoft-hosted pool (Azure Pipelines) with macOS-14 image (macOS Sonoma)
     # Note: Container definitions section present but unused (pools configured in individual stage templates)
     
