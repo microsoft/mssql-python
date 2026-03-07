@@ -85,8 +85,12 @@ void Connection::connect(const py::dict& attrs_before) {
 #else
     connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
 #endif
-    SQLRETURN ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
-                                         0, nullptr, SQL_DRIVER_NOPROMPT);
+    SQLRETURN ret;
+    {
+        py::gil_scoped_release release;
+        ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
+                                   0, nullptr, SQL_DRIVER_NOPROMPT);
+    }
     checkError(ret);
     updateLastUsed();
 }
@@ -135,7 +139,11 @@ void Connection::disconnect() {
             _allocationsSinceCompaction = 0;
         }  // Release lock before potentially slow SQLDisconnect call
 
-        SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
+        SQLRETURN ret;
+        {
+            py::gil_scoped_release release;
+            ret = SQLDisconnect_ptr(_dbcHandle->get());
+        }
         checkError(ret);
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
@@ -160,7 +168,11 @@ void Connection::commit() {
     }
     updateLastUsed();
     LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    SQLRETURN ret;
+    {
+        py::gil_scoped_release release;
+        ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    }
     checkError(ret);
 }
 
@@ -170,7 +182,11 @@ void Connection::rollback() {
     }
     updateLastUsed();
     LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    SQLRETURN ret;
+    {
+        py::gil_scoped_release release;
+        ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    }
     checkError(ret);
 }
 

@@ -321,6 +321,17 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
     endif()
 endif()
 
+# Multi-threading support
+if(NOT MSVC)
+    find_package(Threads REQUIRED)
+    target_link_libraries(ddbc_bindings PRIVATE Threads::Threads)
+endif()
+
+# Link dl on Linux
+if(UNIX AND NOT APPLE)
+    target_link_libraries(ddbc_bindings PRIVATE dl)
+endif()
+
 # Add macOS-specific string conversion fix
 if(APPLE)
     message(STATUS "Enabling macOS string conversion fix")

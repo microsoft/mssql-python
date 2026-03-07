@@ -39,6 +39,7 @@
 #endif
 #define DAE_CHUNK_SIZE 8192
 #define SQL_MAX_LOB_SIZE 8000
+#define SQL_LOB_FAST_PATH_LIMIT 65535
 
 // Returns the effective character decoding encoding for SQL_C_CHAR data.
 // On Linux/macOS, the ODBC driver always returns UTF-8 for SQL_C_CHAR,
@@ -1669,7 +1670,10 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         // is the fastest way to submit a SQL statement for one-time execution
         // according to DDBC documentation -
         // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
-        rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
+        {
+            py::gil_scoped_release release;
+            rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
+        }
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
             LOG("SQLExecute: Direct execution failed (non-parameterized query) "
                 "- SQLRETURN=%d",
@@ -1715,7 +1719,10 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             return rc;
         }
 
-        rc = SQLExecute_ptr(hStmt);
+        {
+            py::gil_scoped_release release;
+            rc = SQLExecute_ptr(hStmt);
+        }
         if (rc == SQL_NEED_DATA) {
             LOG("SQLExecute: SQL_NEED_DATA received - Starting DAE "
                 "(Data-At-Execution) loop for large parameter streaming");
@@ -2584,7 +2591,10 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
         }
         LOG("SQLExecuteMany: PARAMSET_SIZE set to %zu", paramSetSize);
 
-        rc = SQLExecute_ptr(hStmt);
+        {
+            py::gil_scoped_release release;
+            rc = SQLExecute_ptr(hStmt);
+        }
         LOG("SQLExecuteMany: SQLExecute completed - rc=%d", rc);
         return rc;
     } else {
@@ -2604,7 +2614,10 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
             }
             LOG("SQLExecuteMany: Parameters bound for row %zu", rowIndex);
 
-            rc = SQLExecute_ptr(hStmt);
+            {
+                py::gil_scoped_release release;
+                rc = SQLExecute_ptr(hStmt);
+            }
             LOG("SQLExecuteMany: SQLExecute for row %zu - initial_rc=%d", rowIndex, rc);
             size_t dae_chunk_count = 0;
             while (rc == SQL_NEED_DATA) {
@@ -3455,7 +3468,11 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
     SQLFreeStmt_ptr(StatementHandle->get(), SQL_UNBIND);
 
     // Perform scroll operation
-    SQLRETURN ret = SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset);
+    SQLRETURN ret;
+    {
+        py::gil_scoped_release release;
+        ret = SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset);
+    }
 
     // If successful and caller wants data, retrieve it
     if (SQL_SUCCEEDED(ret) && row_data.size() == 0) {
@@ -3645,7 +3662,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                          const std::vector<SQLUSMALLINT>& lobColumns,
                          const std::string& charEncoding = "utf-8") {
     LOG("FetchBatchData: Fetching data in batches");
-    SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    SQLRETURN ret;
+    {
+        py::gil_scoped_release release;
+        ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    }
     if (ret == SQL_NO_DATA) {
         LOG("FetchBatchData: No data to fetch");
         return ret;
@@ -4114,7 +4135,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
              dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
              dataType == SQL_SS_UDT) &&
-            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_LOB_FAST_PATH_LIMIT)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
@@ -4127,7 +4148,10 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             "SQLGetData path",
             lobColumns.size());
         while (numRowsFetched < (SQLULEN)fetchSize) {
-            ret = SQLFetch_ptr(hStmt);
+            {
+                py::gil_scoped_release release;
+                ret = SQLFetch_ptr(hStmt);
+            }
             if (ret == SQL_NO_DATA)
                 break;
             if (!SQL_SUCCEEDED(ret))
@@ -4254,7 +4278,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
              dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
              dataType == SQL_SS_UDT) &&
-            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_LOB_FAST_PATH_LIMIT)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
@@ -4265,7 +4289,10 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
             "SQLGetData path",
             lobColumns.size());
         while (true) {
-            ret = SQLFetch_ptr(hStmt);
+            {
+                py::gil_scoped_release release;
+                ret = SQLFetch_ptr(hStmt);
+            }
             if (ret == SQL_NO_DATA)
                 break;
             if (!SQL_SUCCEEDED(ret))
@@ -4339,7 +4366,10 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
     SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
     // Assume hStmt is already allocated and a query has been executed
-    ret = SQLFetch_ptr(hStmt);
+    {
+        py::gil_scoped_release release;
+        ret = SQLFetch_ptr(hStmt);
+    }
     if (SQL_SUCCEEDED(ret)) {
         // Retrieve column count
         SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
@@ -4479,7 +4509,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
-    m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
+    m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly",
+          py::call_guard<py::gil_scoped_release>());
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),
           py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
@@ -4487,14 +4518,18 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("statementHandle"), py::arg("query"), py::arg("columnwise_params"),
           py::arg("paramInfos"), py::arg("paramSetSize"), py::arg("encodingSettings"));
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
-          "Get the number of rows affected by the last statement");
-    m.def("DDBCSQLFetch", &SQLFetch_wrap, "Fetch the next row from the result set");
+          "Get the number of rows affected by the last statement",
+          py::call_guard<py::gil_scoped_release>());
+    m.def("DDBCSQLFetch", &SQLFetch_wrap, "Fetch the next row from the result set",
+          py::call_guard<py::gil_scoped_release>());
     m.def("DDBCSQLNumResultCols", &SQLNumResultCols_wrap,
-          "Get the number of columns in the result set");
+          "Get the number of columns in the result set",
+          py::call_guard<py::gil_scoped_release>());
     m.def("DDBCSQLDescribeCol", &SQLDescribeCol_wrap,
           "Get information about a column in the result set");
     m.def("DDBCSQLGetData", &SQLGetData_wrap, "Retrieve data from the result set");
-    m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
+    m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set",
+          py::call_guard<py::gil_scoped_release>());
     m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set",
           py::arg("StatementHandle"), py::arg("row"), py::arg("charEncoding") = "utf-8",
           py::arg("wcharEncoding") = "utf-16le");
@@ -4511,7 +4546,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLTables", &SQLTables_wrap, "Get table information using ODBC SQLTables",
           py::arg("StatementHandle"), py::arg("catalog") = std::wstring(),
           py::arg("schema") = std::wstring(), py::arg("table") = std::wstring(),
-          py::arg("tableType") = std::wstring());
+          py::arg("tableType") = std::wstring(),
+          py::call_guard<py::gil_scoped_release>());
     m.def("DDBCSQLFetchScroll", &SQLFetchScroll_wrap,
           "Scroll to a specific position in the result set and optionally "
           "fetch data");
@@ -4529,13 +4565,19 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                 // For pointer attributes
                 ptr_value = value.cast<SQLPOINTER>();
             }
-            return SQLSetStmtAttr_ptr(stmt->get(), attr, ptr_value, 0);
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetStmtAttr_ptr(stmt->get(), attr, ptr_value, 0);
+            }
+            return ret;
         },
         "Set statement attributes");
     m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper,
           "Returns information about the data types that are supported by the "
           "data source",
-          py::arg("StatementHandle"), py::arg("DataType"));
+          py::arg("StatementHandle"), py::arg("DataType"),
+          py::call_guard<py::gil_scoped_release>());
     m.def("DDBCSQLProcedures", [](SqlHandlePtr StatementHandle, const py::object& catalog,
                                   const py::object& schema, const py::object& procedure) {
         return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
