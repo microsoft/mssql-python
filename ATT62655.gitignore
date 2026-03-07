@@ -1,0 +1,68 @@
+# Ignore pycache files and folders
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Ignore pytest cache
+.pytest_cache/
+**/.pytest_cache/
+
+# Ignore log files
+*.log
+
+# Ignore Visual Studio files
+mssql_python/.vs
+.vs
+
+# Ignore test-*.xml files
+test-*.xml
+**/test-**.xml
+
+# Ignore the build & mssql_python.egg-info directories
+build/
+**/build/
+mssql_python.egg-info/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# C extensions
+*.so
+*.pyd
+*.pdb
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+
+# .DS_Store files
+.DS_Store
+
+# wheel files
+*.whl
+*.tar.gz
+*.zip
+
+# Dockerfiles and images (root only)
+/Dockerfile*
+/docker-compose.yml
+/docker-compose.override.yml
+/docker-compose.*.yml
+
+# Virtual environments
+*venv*/
+**/*venv*/
+
+# Extracted mssql_py_core (from eng/scripts/install-mssql-py-core)
+mssql_py_core/
+
+# learning files
+learnings/

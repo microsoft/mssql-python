@@ -2,9 +2,10 @@ import os
 import sys
 from pathlib import Path
 
-from setuptools import setup, find_packages
+from setuptools import setup, find_packages, Extension
 from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
+import pybind11
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -154,6 +155,55 @@ elif sys.platform.startswith("linux"):
     )
 
 # ---------------------------------------------------------------------------
+# Extension modules
+# ---------------------------------------------------------------------------
+ext_modules = []
+
+# Get platform info
+arch, platform_tag = get_platform_info()
+
+# Define include directories
+include_dirs = [
+    pybind11.get_include(),
+    str(PROJECT_ROOT / "mssql_python" / "pybind"),
+]
+
+# Define source files
+source_files = [
+    "mssql_python/pybind/ddbc_bindings.cpp",
+    "mssql_python/pybind/connection/connection.cpp",
+    "mssql_python/pybind/connection/connection_pool.cpp",
+    "mssql_python/pybind/logger_bridge.cpp",
+]
+
+# Platform-specific settings
+if sys.platform.startswith("win"):
+    # Windows-specific settings
+    extra_compile_args = ["/std:c++17", "/EHsc", "/DNOMINMAX", "/DWIN32_LEAN_AND_MEAN"]
+    extra_link_args = []
+elif sys.platform.startswith("darwin"):
+    # macOS-specific settings
+    source_files.append("mssql_python/pybind/unix_utils.cpp")
+    extra_compile_args = ["-std=c++17", "-stdlib=libc++"]
+    extra_link_args = ["-stdlib=libc++"]
+else:
+    # Linux-specific settings
+    source_files.append("mssql_python/pybind/unix_utils.cpp")
+    extra_compile_args = ["-std=c++17"]
+    extra_link_args = []
+
+ext_modules.append(
+    Extension(
+        "mssql_python.ddbc_bindings",
+        sources=source_files,
+        include_dirs=include_dirs,
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
+        language="c++",
+    )
+)
+
+# ---------------------------------------------------------------------------
 # package_data – binaries to include in the wheel
 # ---------------------------------------------------------------------------
 package_data = {
@@ -181,6 +231,7 @@ setup(
     author_email="mssql-python@microsoft.com",
     url="https://github.com/microsoft/mssql-python",
     packages=packages,
+    ext_modules=ext_modules,
     package_data=package_data,
     include_package_data=True,
     # Requires >= Python 3.10

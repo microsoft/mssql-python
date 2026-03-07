@@ -1,3 +1,7 @@
+--trusted-host dev-nexusrep.justice.gov.il
+--index-url http://dev-nexusrep.justice.gov.il:8081/repository/python-group/simple
+
+
 # Testing dependencies
 pytest
 pytest-cov
