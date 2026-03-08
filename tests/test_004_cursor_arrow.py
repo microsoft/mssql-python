@@ -401,3 +401,52 @@ def test_rownumber_interleaved_fetchone_arrow_batch(cursor: mssql_python.Cursor)
     vals = batch.column(0).to_pylist()
     assert vals == list(range(2, N + 1))
     assert cursor.rownumber == 19
+
+
+def test_arrow_sql_ss_udt_hierarchyid_fetch_bindcol(cursor: mssql_python.Cursor):
+    select_sql = """
+        SELECT node
+        FROM (
+            VALUES
+                (1, hierarchyid::Parse('/1/')),
+                (2, CAST(NULL AS HIERARCHYID)),
+                (3, hierarchyid::Parse('/1/2/3/'))
+        ) AS v(id, node)
+        ORDER BY id
+    """
+
+    expected_rows = cursor.execute(select_sql).fetchall()
+    batch = cursor.execute(select_sql).arrow_batch(10)
+    assert batch.num_rows == 3
+    assert batch.num_columns == 1
+    udt_col_index = 0
+    udt_column = batch.column(udt_col_index)
+    assert udt_column.type.equals(pa.large_binary())
+    assert udt_column.to_pylist() == [row[udt_col_index] for row in expected_rows]
+    assert udt_column.null_count == 1
+
+
+def test_arrow_sql_ss_udt_hierarchyid_fetch_getdata(cursor: mssql_python.Cursor):
+    select_sql = """
+        SELECT filler, node
+        FROM (
+            VALUES
+                (1, CONVERT(VARBINARY(MAX), REPLICATE(CAST('A' AS VARCHAR(MAX)), 9001)), hierarchyid::Parse('/1/')),
+                (2, CONVERT(VARBINARY(MAX), REPLICATE(CAST('B' AS VARCHAR(MAX)), 9002)), CAST(NULL AS HIERARCHYID)),
+                (3, CONVERT(VARBINARY(MAX), REPLICATE(CAST('C' AS VARCHAR(MAX)), 9003)), hierarchyid::Parse('/1/2/3/'))
+        ) AS v(id, filler, node)
+        ORDER BY id
+    """
+
+    expected_rows = cursor.execute(select_sql).fetchall()
+    batch = cursor.execute(select_sql).arrow_batch(10)
+
+    assert batch.num_rows == 3
+    assert batch.num_columns == 2
+    assert batch.column(0).type.equals(pa.large_binary())
+    assert batch.column(0).to_pylist() == [row[0] for row in expected_rows]
+    udt_col_index = 1
+    udt_column = batch.column(udt_col_index)
+    assert udt_column.type.equals(pa.large_binary())
+    assert udt_column.to_pylist() == [row[udt_col_index] for row in expected_rows]
+    assert udt_column.null_count == 1

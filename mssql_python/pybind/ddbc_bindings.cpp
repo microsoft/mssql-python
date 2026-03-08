@@ -4450,7 +4450,8 @@ SQLRETURN FetchArrowBatch_wrap(
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
-             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY ||
+             dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
                 hasLobColumns = true;
                 if (fetchSize > 1) {
@@ -4481,6 +4482,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 arrowColumnProducer->varVal[0] = 0;
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->varVal.get();
                 break;
+            case SQL_SS_UDT:
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
@@ -4647,6 +4649,7 @@ SQLRETURN FetchArrowBatch_wrap(
                     assert(idxRowSql == 0 && "GetData only works one row at a time");
 
                     switch(dataType) {
+                        case SQL_SS_UDT:
                         case SQL_BINARY:
                         case SQL_VARBINARY:
                         case SQL_LONGVARBINARY: {
@@ -4915,6 +4918,7 @@ SQLRETURN FetchArrowBatch_wrap(
                         case SQL_WVARCHAR:
                         case SQL_WLONGVARCHAR:
                         case SQL_GUID:
+                        case SQL_SS_UDT:
                         case SQL_BINARY:
                         case SQL_VARBINARY:
                         case SQL_LONGVARBINARY:
@@ -4934,6 +4938,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 auto dataLen = static_cast<uint64_t>(indicator);
 
                 switch (dataType) {
+                    case SQL_SS_UDT:
                     case SQL_BINARY:
                     case SQL_VARBINARY:
                     case SQL_LONGVARBINARY: {
