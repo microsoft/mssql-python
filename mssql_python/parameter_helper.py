@@ -49,11 +49,20 @@ def _skip_quoted_context(sql: str, i: int, length: int) -> int:
         return i
 
     # Multi-line comment: skip to closing */
+    # SQL Server supports nested block comments, so we track nesting depth.
     if ch == "/" and i + 1 < length and sql[i + 1] == "*":
         i += 2
-        while i + 1 < length and not (sql[i] == "*" and sql[i + 1] == "/"):
-            i += 1
-        return min(i + 2, length)  # skip past */, or to end if unterminated
+        depth = 1
+        while i < length and depth > 0:
+            if i + 1 < length and sql[i] == "/" and sql[i + 1] == "*":
+                depth += 1
+                i += 2
+            elif i + 1 < length and sql[i] == "*" and sql[i + 1] == "/":
+                depth -= 1
+                i += 2
+            else:
+                i += 1
+        return min(i, length)  # already past final */, or at end if unterminated
 
     # Single-quoted string literal: skip to closing '
     # Handles escaped quotes ('') inside strings

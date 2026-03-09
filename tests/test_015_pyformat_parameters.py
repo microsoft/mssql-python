@@ -399,6 +399,24 @@ class TestSkipQuotedContext:
         result = _skip_quoted_context(sql, 7, len(sql))
         assert result == len(sql)  # should not exceed length
 
+    def test_skip_nested_block_comment(self):
+        """Test skipping /* outer /* inner */ still comment */ with nesting."""
+        sql = "SELECT /* outer /* inner */ still comment */ 1"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 44  # position after the outer */
+
+    def test_skip_deeply_nested_block_comment(self):
+        """Test skipping three levels of nested block comments."""
+        sql = "SELECT /* a /* b /* c */ b */ a */ 1"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 34  # position after the outermost */
+
+    def test_skip_nested_block_comment_unterminated(self):
+        """Test unterminated nested block comment consumes to end."""
+        sql = "SELECT /* outer /* inner */ still open"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == len(sql)  # depth never reaches 0
+
 
 class TestHasUnquotedQuestionMarks:
     """Test _has_unquoted_question_marks() helper function."""
@@ -509,6 +527,24 @@ class TestHasUnquotedQuestionMarks:
     def test_unclosed_block_comment_treats_rest_as_comment(self):
         """Test behavior with unclosed block comment - ? after /* is inside comment context."""
         assert _has_unquoted_question_marks("SELECT /* unclosed?") is False
+
+    def test_qmark_inside_nested_block_comment(self):
+        """Test ? inside nested block comment is NOT detected (SQL Server supports nesting)."""
+        assert (
+            _has_unquoted_question_marks("SELECT /* outer /* inner */ still comment ? */ 1")
+            is False
+        )
+
+    def test_qmark_after_nested_block_comment(self):
+        """Test ? after a properly closed nested block comment IS detected."""
+        assert (
+            _has_unquoted_question_marks("SELECT /* outer /* inner */ outer */ FROM t WHERE id = ?")
+            is True
+        )
+
+    def test_qmark_inside_deeply_nested_block_comment(self):
+        """Test ? inside three levels of nesting is NOT detected."""
+        assert _has_unquoted_question_marks("SELECT /* a /* b /* c ? */ b */ a */ 1") is False
 
 
 class TestBracketedIdentifierIntegration:
