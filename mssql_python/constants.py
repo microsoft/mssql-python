@@ -597,10 +597,8 @@ for _name, _member in GetInfoConstants.__members__.items():
     _module_globals[_name] = _member.value
     _exported_names.append(_name)
 
-# Export all AuthType enum members as module-level constants
-for _name, _member in AuthType.__members__.items():
-    _module_globals[_name] = _member.value
-    _exported_names.append(_name)
+# AuthType enum is exported as a class only (not individual members)
+# to avoid polluting the namespace with generic names like DEFAULT
 
 # SQLTypes is not an Enum, it's a regular class - don't iterate it
 

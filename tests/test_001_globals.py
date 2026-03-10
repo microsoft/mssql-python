@@ -44,6 +44,57 @@ def test_lowercase():
     assert lowercase is False, "lowercase should default to False"
 
 
+def test_row_export():
+    """Test that Row class is exported from mssql_python and is the correct class."""
+    from mssql_python import Row
+    from mssql_python.row import Row as RowDirect
+
+    assert Row is RowDirect, "mssql_python.Row should be the same class as mssql_python.row.Row"
+
+
+def test_get_info_constants():
+    """Test that get_info_constants returns a valid dictionary of GetInfo constants."""
+    from mssql_python import get_info_constants
+
+    result = get_info_constants()
+    assert isinstance(result, dict), "get_info_constants should return a dict"
+    assert len(result) > 0, "get_info_constants should return at least one constant"
+    # Verify all values are integers
+    for name, value in result.items():
+        assert isinstance(name, str), f"Constant name '{name}' should be a string"
+        assert isinstance(value, int), f"Constant '{name}' value should be an int"
+    # Spot-check a known constant
+    assert "SQL_DRIVER_NAME" in result, "SQL_DRIVER_NAME should be in GetInfo constants"
+
+
+def test_decimal_config_import_error_fallback():
+    """Test that create_decimal_separator_functions works when ddbc_bindings is unavailable."""
+    from unittest.mock import patch, MagicMock
+    from importlib import reload
+    import mssql_python.decimal_config as dc_module
+
+    # Create a mock settings object
+    mock_settings = MagicMock()
+    mock_settings.decimal_separator = "."
+
+    # Patch the import of ddbc_bindings to raise ImportError
+    original_import = __import__
+
+    def mock_import(name, *args, **kwargs):
+        if "ddbc_bindings" in name:
+            raise ImportError("Mocked: ddbc_bindings not available")
+        return original_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=mock_import):
+        setter, getter = dc_module.create_decimal_separator_functions(mock_settings)
+
+    # The functions should still work without the C++ binding
+    assert getter() == "."
+    setter(",")
+    assert mock_settings.decimal_separator == ","
+    assert getter() == ","
+
+
 def test_decimal_separator():
     """Test decimal separator functionality"""
 

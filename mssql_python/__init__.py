@@ -9,7 +9,6 @@ import sys
 import threading
 import types
 import weakref
-from typing import Dict
 
 # Import settings from helpers module
 from .helpers import Settings, get_settings, _settings, _settings_lock

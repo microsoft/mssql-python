@@ -7,7 +7,7 @@ This module provides functions for managing decimal separator configuration.
 
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from mssql_python.helpers import Settings
 
 
@@ -39,15 +39,9 @@ def setDecimalSeparator(separator: str, settings: "Settings", set_in_cpp_func=No
     if len(separator) > 1:
         raise ValueError("Decimal separator must be a single character")
 
-    # Character validation
+    # Character validation (covers \t, \n, \r, \v, \f and all other whitespace)
     if separator.isspace():
         raise ValueError("Whitespace characters are not allowed as decimal separators")
-
-    # Check for specific disallowed characters
-    if separator in ["\t", "\n", "\r", "\v", "\f"]:
-        raise ValueError(
-            f"Control character '{repr(separator)}' is not allowed as a decimal separator"
-        )
 
     # Set in Python side settings
     settings.decimal_separator = separator
