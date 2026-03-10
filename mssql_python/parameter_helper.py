@@ -5,7 +5,9 @@ Licensed under the MIT license.
 Parameter style conversion helpers for mssql-python.
 
 Supports both qmark (?) and pyformat (%(name)s) parameter styles.
-Simple character scanning approach - does NOT parse SQL contexts.
+Includes context-aware scanning for qmark and pyformat detection,
+skipping characters inside bracketed identifiers, string literals,
+quoted identifiers, and SQL comments.
 
 Reference: https://www.python.org/dev/peps/pep-0249/#paramstyle
 """
@@ -75,14 +77,20 @@ def _skip_quoted_context(sql: str, i: int, length: int) -> int:
                     continue
                 break
             i += 1
-        return i + 1  # skip closing quote
+        return min(i + 1, length)  # skip closing quote
 
     # Double-quoted identifier: skip to closing "
+    # Handles escaped quotes ("") inside identifiers
     if ch == '"':
         i += 1
-        while i < length and sql[i] != '"':
+        while i < length:
+            if sql[i] == '"':
+                if i + 1 < length and sql[i + 1] == '"':
+                    i += 2  # skip escaped quote
+                    continue
+                break
             i += 1
-        return i + 1  # skip closing quote
+        return min(i + 1, length)  # skip closing quote
 
     # Bracketed identifier: skip to closing ]
     # Handles escaped brackets (]]) inside identifiers
@@ -146,9 +154,9 @@ def parse_pyformat_params(sql: str) -> List[str]:
     """
     Extract %(name)s parameter names from SQL string.
 
-    Uses simple character scanning approach - does NOT parse SQL contexts
-    (strings, comments, identifiers). This means %(name)s patterns inside SQL
-    string literals or comments WILL be detected as parameters.
+    Uses context-aware scanning to skip %(name)s patterns inside SQL
+    string literals, quoted identifiers, bracketed identifiers, and comments.
+    Only %(name)s patterns in executable SQL are detected as parameters.
 
     Args:
         sql: SQL query string with %(name)s placeholders
@@ -176,6 +184,12 @@ def parse_pyformat_params(sql: str) -> List[str]:
     length = len(sql)
 
     while i < length:
+        # Skip any quoted context (brackets, strings, comments)
+        skipped = _skip_quoted_context(sql, i, length)
+        if skipped >= 0:
+            i = skipped
+            continue
+
         # Look for %(
         if i + 2 < length and sql[i] == "%" and sql[i + 1] == "(":
             # Find the closing )

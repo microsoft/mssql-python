@@ -72,22 +72,22 @@ class TestParsePyformatParams:
         assert params == ["param1", "param2", "param3"]
 
     def test_parse_parameter_in_string_literal(self):
-        """Test that parameters in string literals are still detected"""
+        """Test that parameters in string literals are correctly skipped."""
         sql = "SELECT '%(example)s' AS literal, id FROM users WHERE id = %(id)s"
         params = parse_pyformat_params(sql)
-        # Simple scanner detects both - this is by design
-        assert params == ["example", "id"]
+        # Context-aware scanner skips %(example)s inside string literal
+        assert params == ["id"]
 
     def test_parse_parameter_in_comment(self):
-        """Test that parameters in comments are still detected"""
+        """Test that parameters in comments are correctly skipped."""
         sql = """
         SELECT * FROM users
         -- This comment has %(commented)s parameter
         WHERE id = %(id)s
         """
         params = parse_pyformat_params(sql)
-        # Simple scanner detects both - this is by design
-        assert params == ["commented", "id"]
+        # Context-aware scanner skips %(commented)s inside comment
+        assert params == ["id"]
 
     def test_parse_complex_query_with_cte(self):
         """Test parsing complex CTE query."""
@@ -297,7 +297,13 @@ class TestConvertPyformatToQmark:
         assert result_params == (42,)
 
     def test_convert_with_multiple_escaped_percent(self):
-        """Test multiple %% escapes."""
+        """Test multiple %% escapes with context-aware parsing.
+
+        The %(name)s inside the string literal '%%%(name)s%%' is correctly
+        skipped by context-aware scanning, so only %(id)s is treated as a
+        real parameter. After %% unescaping, the string literal becomes
+        '%%(name)s%' (literal percent + literal %(name)s + literal percent).
+        """
         sql = (
             "SELECT '%%test%%' AS txt, id FROM users WHERE id = %(id)s AND name LIKE '%%%(name)s%%'"
         )
@@ -305,8 +311,9 @@ class TestConvertPyformatToQmark:
         result_sql, result_params = convert_pyformat_to_qmark(sql, param_dict)
         assert "'%test%'" in result_sql
         assert "?" in result_sql
-        assert "%%(name)s" not in result_sql
-        assert result_params == (1, "alice")
+        # %(name)s inside string literal is preserved as literal text after %% unescaping
+        assert "'%%(name)s%'" in result_sql
+        assert result_params == (1,)
 
     def test_convert_only_escaped_percent_no_params(self):
         """Test SQL with only %% and no parameters."""
@@ -416,6 +423,66 @@ class TestSkipQuotedContext:
         sql = "SELECT /* outer /* inner */ still open"
         result = _skip_quoted_context(sql, 7, len(sql))
         assert result == len(sql)  # depth never reaches 0
+
+    def test_skip_unterminated_single_quote_does_not_exceed_length(self):
+        """Test unterminated single-quoted string returns length, not length+1."""
+        sql = "SELECT 'unterminated"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == len(sql)  # must not exceed length
+
+    def test_skip_unterminated_double_quote_does_not_exceed_length(self):
+        """Test unterminated double-quoted identifier returns length, not length+1."""
+        sql = 'SELECT "unterminated'
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == len(sql)  # must not exceed length
+
+    def test_skip_double_quoted_with_escaped_quote(self):
+        """Test skipping double-quoted identifier with escaped \"\" inside."""
+        # "col""?" is the identifier col"? — the ? is inside the identifier
+        sql = 'SELECT "col""?" FROM t'
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 15  # position after the real closing "
+
+    def test_skip_double_quoted_with_escaped_quote_no_qmark(self):
+        """Test skipping double-quoted identifier with escaped \"\" but no ?."""
+        sql = 'SELECT "col""name" FROM t'
+        result = _skip_quoted_context(sql, 7, len(sql))
+        assert result == 18  # position after the real closing "
+
+    def test_skip_double_quoted_with_escaped_quote_containing_qmark(self):
+        """Test skipping \"col\"\"?name\" — the ? is inside the identifier col\"?name."""
+        sql = 'SELECT "col""?name" FROM t'
+        result = _skip_quoted_context(sql, 7, len(sql))
+        # "col""?name" spans positions 7..18, return position after closing "
+        assert result == 19
+
+    def test_skip_double_quoted_just_escaped_quote(self):
+        """Test skipping \"\"\"\" — identifier content is \"\" representing a single \" char."""
+        sql = 'SELECT """" FROM t'
+        result = _skip_quoted_context(sql, 7, len(sql))
+        # """" spans positions 7..10, return position after closing " at 10
+        assert result == 11
+
+    def test_skip_empty_single_quoted_string(self):
+        """Test skipping '' — empty string literal."""
+        sql = "SELECT '' FROM t"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        # '' spans positions 7..8, return position after closing ' at 8
+        assert result == 9
+
+    def test_skip_empty_double_quoted_identifier(self):
+        """Test skipping \"\" — empty double-quoted identifier."""
+        sql = 'SELECT "" FROM t'
+        result = _skip_quoted_context(sql, 7, len(sql))
+        # "" spans positions 7..8, return position after closing " at 8
+        assert result == 9
+
+    def test_skip_empty_bracketed_identifier(self):
+        """Test skipping [] — empty bracketed identifier."""
+        sql = "SELECT [] FROM t"
+        result = _skip_quoted_context(sql, 7, len(sql))
+        # [] spans positions 7..8, return position after closing ] at 8
+        assert result == 9
 
 
 class TestHasUnquotedQuestionMarks:
@@ -546,6 +613,99 @@ class TestHasUnquotedQuestionMarks:
         """Test ? inside three levels of nesting is NOT detected."""
         assert _has_unquoted_question_marks("SELECT /* a /* b /* c ? */ b */ a */ 1") is False
 
+    def test_qmark_inside_double_quoted_with_escaped_quotes(self):
+        """Test ? inside double-quoted identifier with escaped \"\" is NOT detected."""
+        assert _has_unquoted_question_marks('SELECT "col""?" FROM t') is False
+
+    def test_real_qmark_after_double_quoted_escaped(self):
+        """Test real ? after double-quoted identifier with escaped \"\" IS detected."""
+        assert _has_unquoted_question_marks('SELECT "col""name" FROM t WHERE id = ?') is True
+
+    def test_qmark_inside_unterminated_double_quote(self):
+        """Test ? inside unterminated double-quoted identifier is NOT detected."""
+        assert _has_unquoted_question_marks('SELECT "unterminated?') is False
+
+    def test_qmark_inside_double_quoted_escaped_with_name(self):
+        """Test ? inside \"col\"\"?name\" is NOT detected — ? is within the identifier."""
+        assert _has_unquoted_question_marks('SELECT "col""?name" FROM t') is False
+
+    def test_real_qmark_after_double_quoted_escaped_with_qmark_inside(self):
+        """Test real ? after \"col\"\"?name\" IS detected."""
+        assert _has_unquoted_question_marks('SELECT "col""?name" FROM t WHERE id = ?') is True
+
+    def test_multiple_double_quote_escapes_no_qmark(self):
+        """Test multiple \"\" escapes with no ? anywhere."""
+        assert _has_unquoted_question_marks('SELECT "a""b""c" FROM t') is False
+
+    def test_qmark_sandwiched_between_double_quote_escapes(self):
+        """Test ? sandwiched between \"\" escapes inside identifier \"a\"\"?\"\"b\"."""
+        assert _has_unquoted_question_marks('SELECT "a""?""b" FROM t') is False
+
+    def test_qmark_immediately_after_closing_bracket(self):
+        """Test ? immediately after closing ] is a real unquoted placeholder."""
+        assert _has_unquoted_question_marks("SELECT [col]? FROM t") is True
+
+    def test_qmark_immediately_after_closing_single_quote(self):
+        """Test ? immediately after closing ' is a real unquoted placeholder."""
+        assert _has_unquoted_question_marks("SELECT 'str'? FROM t") is True
+
+    def test_only_whitespace_no_qmark(self):
+        """Test SQL with only whitespace characters — no ? at all."""
+        assert _has_unquoted_question_marks("   \n\t  ") is False
+
+    def test_qmark_between_two_block_comments(self):
+        """Test ? between two properly closed block comments is detected."""
+        assert _has_unquoted_question_marks("SELECT /* comment */ ? /* comment */") is True
+
+
+class TestParsePyformatParamsContextAware:
+    """Test that parse_pyformat_params skips quoted contexts."""
+
+    def test_pyformat_in_string_literal_is_skipped(self):
+        """Test %(name)s inside single-quoted string is not detected."""
+        sql = "SELECT '%(fake)s' FROM t WHERE id = %(id)s"
+        params = parse_pyformat_params(sql)
+        assert params == ["id"]
+
+    def test_pyformat_in_single_line_comment_is_skipped(self):
+        """Test %(name)s inside -- comment is not detected."""
+        sql = "SELECT 1 -- %(fake)s\nWHERE id = %(id)s"
+        params = parse_pyformat_params(sql)
+        assert params == ["id"]
+
+    def test_pyformat_in_block_comment_is_skipped(self):
+        """Test %(name)s inside /* ... */ comment is not detected."""
+        sql = "SELECT /* %(fake)s */ 1 WHERE id = %(id)s"
+        params = parse_pyformat_params(sql)
+        assert params == ["id"]
+
+    def test_pyformat_in_double_quoted_identifier_is_skipped(self):
+        """Test %(name)s inside double-quoted identifier is not detected."""
+        sql = 'SELECT "%(fake)s" FROM t WHERE id = %(id)s'
+        params = parse_pyformat_params(sql)
+        assert params == ["id"]
+
+    def test_pyformat_in_bracketed_identifier_is_skipped(self):
+        """Test %(name)s inside bracketed identifier is not detected."""
+        sql = "SELECT [%(fake)s] FROM t WHERE id = %(id)s"
+        params = parse_pyformat_params(sql)
+        assert params == ["id"]
+
+    def test_fake_pyformat_in_string_with_real_qmark(self):
+        """Test that fake %(name)s in string doesn't prevent qmark mismatch detection.
+
+        Reproduces: SELECT 'fake %(name)s' FROM t WHERE id = ? with {"id": 1}
+        The parse_pyformat_params should NOT find %(name)s inside the string,
+        so the mismatch check correctly raises TypeError for the real ? placeholder.
+        """
+        sql = "SELECT 'fake %(name)s' FROM t WHERE id = ?"
+        # parse_pyformat_params should return empty (%(name)s is in string literal)
+        assert parse_pyformat_params(sql) == []
+        # Therefore detect_and_convert_parameters should raise TypeError for dict + ?
+        with pytest.raises(TypeError) as exc_info:
+            detect_and_convert_parameters(sql, {"id": 1})
+        assert "positional placeholders" in str(exc_info.value)
+
 
 class TestBracketedIdentifierIntegration:
     """Integration tests for ? inside bracketed identifiers with detect_and_convert_parameters.
@@ -628,6 +788,45 @@ class TestBracketedIdentifierIntegration:
         result_sql, result_params = detect_and_convert_parameters(sql, None)
         assert result_sql == sql
         assert result_params is None
+
+    def test_double_quoted_escaped_qmark_with_pyformat_params(self):
+        """Test ? inside \"col\"\"?\" with pyformat params should NOT raise TypeError."""
+        sql = 'SELECT "col""?" FROM t WHERE id = %(id)s'
+        params = {"id": 1}
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert result_params == (1,)
+        assert "%(id)s" not in result_sql
+
+    def test_double_quoted_escaped_qmark_with_real_qmark_and_dict_raises(self):
+        """Test ? inside \"col\"\"?\" with real ? and dict raises TypeError."""
+        sql = 'SELECT "col""?" FROM t WHERE id = ?'
+        with pytest.raises(TypeError) as exc_info:
+            detect_and_convert_parameters(sql, {"id": 1})
+        assert "positional placeholders" in str(exc_info.value)
+
+    def test_qmark_in_block_comment_with_pyformat_params(self):
+        """Test ? inside block comment with pyformat params should NOT raise TypeError."""
+        sql = "SELECT /* hint? */ * FROM t WHERE id = %(id)s"
+        params = {"id": 1}
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert result_params == (1,)
+        assert "%(id)s" not in result_sql
+
+    def test_qmark_in_string_literal_alone_with_pyformat_params(self):
+        """Test '?' in string literal with pyformat params should NOT raise TypeError."""
+        sql = "SELECT '?' FROM t WHERE id = %(id)s"
+        params = {"id": 42}
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert result_params == (42,)
+        assert "%(id)s" not in result_sql
+
+    def test_qmark_in_single_line_comment_with_pyformat_params(self):
+        """Test ? inside single-line comment with pyformat params should NOT raise TypeError."""
+        sql = "SELECT -- comment?\nFROM t WHERE id = %(id)s"
+        params = {"id": 5}
+        result_sql, result_params = detect_and_convert_parameters(sql, params)
+        assert result_params == (5,)
+        assert "%(id)s" not in result_sql
 
 
 class TestDetectAndConvertParameters:
