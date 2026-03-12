@@ -21,6 +21,7 @@ from mssql_python import (
     lowercase,
     getDecimalSeparator,
     setDecimalSeparator,
+    native_uuid,
 )
 
 
@@ -42,6 +43,57 @@ def test_paramstyle():
 def test_lowercase():
     # Check if lowercase has the expected default value
     assert lowercase is False, "lowercase should default to False"
+
+
+def test_row_export():
+    """Test that Row class is exported from mssql_python and is the correct class."""
+    from mssql_python import Row
+    from mssql_python.row import Row as RowDirect
+
+    assert Row is RowDirect, "mssql_python.Row should be the same class as mssql_python.row.Row"
+
+
+def test_get_info_constants():
+    """Test that get_info_constants returns a valid dictionary of GetInfo constants."""
+    from mssql_python import get_info_constants
+
+    result = get_info_constants()
+    assert isinstance(result, dict), "get_info_constants should return a dict"
+    assert len(result) > 0, "get_info_constants should return at least one constant"
+    # Verify all values are integers
+    for name, value in result.items():
+        assert isinstance(name, str), f"Constant name '{name}' should be a string"
+        assert isinstance(value, int), f"Constant '{name}' value should be an int"
+    # Spot-check a known constant
+    assert "SQL_DRIVER_NAME" in result, "SQL_DRIVER_NAME should be in GetInfo constants"
+
+
+def test_decimal_config_import_error_fallback():
+    """Test that create_decimal_separator_functions works when ddbc_bindings is unavailable."""
+    from unittest.mock import patch, MagicMock
+    from importlib import reload
+    import mssql_python.decimal_config as dc_module
+
+    # Create a mock settings object
+    mock_settings = MagicMock()
+    mock_settings.decimal_separator = "."
+
+    # Patch the import of ddbc_bindings to raise ImportError
+    original_import = __import__
+
+    def mock_import(name, *args, **kwargs):
+        if "ddbc_bindings" in name:
+            raise ImportError("Mocked: ddbc_bindings not available")
+        return original_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=mock_import):
+        setter, getter = dc_module.create_decimal_separator_functions(mock_settings)
+
+    # The functions should still work without the C++ binding
+    assert getter() == "."
+    setter(",")
+    assert mock_settings.decimal_separator == ","
+    assert getter() == ","
 
 
 def test_decimal_separator():
@@ -740,3 +792,177 @@ def test_decimal_separator_concurrent_db_operations(db_connection):
         # Always make sure to clean up
         stop_event.set()
         setDecimalSeparator(original_separator)
+
+
+def test_native_uuid_default():
+    """Test that native_uuid defaults to True (returning native uuid.UUID objects)."""
+    assert (
+        mssql_python.native_uuid is True
+    ), "native_uuid should default to True (returning native uuid.UUID objects)"
+
+
+def test_native_uuid_type_validation():
+    """Test that native_uuid only accepts boolean values."""
+    original = mssql_python.native_uuid
+
+    try:
+        # Test valid boolean values
+        mssql_python.native_uuid = True
+        assert mssql_python.native_uuid is True
+
+        mssql_python.native_uuid = False
+        assert mssql_python.native_uuid is False
+
+        # Test invalid types — all should raise ValueError
+        invalid_values = [1, 0, "True", "False", None, [], {}, "yes", "no", "t", "f"]
+
+        for value in invalid_values:
+            with pytest.raises(ValueError, match="native_uuid must be a boolean value"):
+                mssql_python.native_uuid = value
+
+    finally:
+        # Always restore original value
+        mssql_python.native_uuid = original
+
+
+def test_native_uuid_settings_consistency():
+    """Test that native_uuid is consistent between module property and Settings object."""
+    from mssql_python import get_settings
+
+    original = mssql_python.native_uuid
+
+    try:
+        mssql_python.native_uuid = True
+        settings = get_settings()
+        assert settings.native_uuid is True, "Settings should reflect module-level change"
+
+        mssql_python.native_uuid = False
+        settings = get_settings()
+        assert settings.native_uuid is False, "Settings should reflect module-level change"
+
+    finally:
+        mssql_python.native_uuid = original
+
+
+def test_native_uuid_thread_safety():
+    """Test that native_uuid is thread-safe under concurrent access."""
+    import queue
+
+    original = mssql_python.native_uuid
+    results_queue = queue.Queue()
+    stop_event = threading.Event()
+    errors = []
+
+    def writer_thread():
+        """Toggle native_uuid between True and False."""
+        try:
+            while not stop_event.is_set():
+                mssql_python.native_uuid = True
+                mssql_python.native_uuid = False
+                results_queue.put(("write", True))
+        except Exception as e:
+            errors.append(str(e))
+
+    def reader_thread():
+        """Read native_uuid and verify it's a boolean."""
+        try:
+            while not stop_event.is_set():
+                val = mssql_python.native_uuid
+                assert isinstance(val, bool), f"Expected bool, got {type(val)}"
+                results_queue.put(("read", val))
+        except Exception as e:
+            errors.append(str(e))
+
+    threads = []
+    for _ in range(3):
+        threads.append(threading.Thread(target=writer_thread))
+        threads.append(threading.Thread(target=reader_thread))
+
+    for t in threads:
+        t.start()
+
+    try:
+        time.sleep(1)  # Let threads run for 1 second
+        stop_event.set()
+
+        for t in threads:
+            t.join(timeout=1)
+
+        assert not errors, f"Thread errors detected: {errors}"
+
+    finally:
+        stop_event.set()
+        mssql_python.native_uuid = original
+
+
+def test_connect_native_uuid_parameter_signature():
+    """Test that connect() accepts the native_uuid parameter without errors."""
+    import inspect
+
+    sig = inspect.signature(mssql_python.connect)
+    params = sig.parameters
+
+    assert "native_uuid" in params, "connect() should accept native_uuid parameter"
+    param = params["native_uuid"]
+    assert param.default is None, "native_uuid default should be None"
+
+
+def test_connection_native_uuid_attribute():
+    """Test that Connection class stores the _native_uuid attribute."""
+    from mssql_python.connection import Connection
+
+    # Connection.__init__ should accept native_uuid; we can't fully construct
+    # a Connection without a valid connection string, but we can verify the
+    # parameter is accepted by inspecting the signature.
+    import inspect
+
+    sig = inspect.signature(Connection.__init__)
+    params = sig.parameters
+    assert "native_uuid" in params, "Connection.__init__ should accept native_uuid parameter"
+    assert params["native_uuid"].default is None
+
+
+def test_compute_uuid_str_indices_no_description(db_connection):
+    """Test _compute_uuid_str_indices returns None when cursor has no description."""
+    cursor = db_connection.cursor()
+    try:
+        # Execute a statement that produces no result set
+        cursor.execute(
+            "CREATE TABLE #no_desc_uuid_test (id INT); " "INSERT INTO #no_desc_uuid_test VALUES (1)"
+        )
+        # description should be None after a non-SELECT statement
+        assert cursor.description is None
+
+        # Directly call the helper — should return None via the early guard
+        result = cursor._compute_uuid_str_indices()
+        assert (
+            result is None
+        ), "_compute_uuid_str_indices should return None when description is None"
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #no_desc_uuid_test")
+        cursor.close()
+
+
+def test_stringify_uuids_with_tuple_values():
+    """Test Row._stringify_uuids converts tuple values to list for in-place mutation."""
+    import uuid as _uuid
+    from mssql_python.row import Row
+
+    test_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+    # Pass values as a tuple (not a list) to trigger the isinstance guard
+    row = Row(
+        (42, test_uuid, "hello"),
+        {"id": 0, "guid": 1, "name": 2},
+        cursor=None,
+        converter_map=None,
+        uuid_str_indices=(1,),
+    )
+
+    # The UUID should have been stringified to uppercase
+    assert row[1] == "12345678-1234-5678-1234-567812345678".upper()
+    # Other values should be unaffected
+    assert row[0] == 42
+    assert row[2] == "hello"
+    # Internal storage should now be a list (converted from tuple)
+    assert isinstance(row._values, list)

@@ -129,21 +129,11 @@ class Row:
 
     def __init__(
         self,
-        cursor: "Cursor",
-        description: List[
-            Tuple[
-                str,
-                Any,
-                Optional[int],
-                Optional[int],
-                Optional[int],
-                Optional[int],
-                Optional[bool],
-            ]
-        ],
         values: List[Any],
-        column_map: Optional[Dict[str, int]] = None,
-        settings_snapshot: Optional[Dict[str, Any]] = None,
+        column_map: Dict[str, int],
+        cursor: Optional["Cursor"] = None,
+        converter_map: Optional[List[Any]] = None,
+        uuid_str_indices: Optional[Tuple[int, ...]] = None,
     ) -> None: ...
     def __getitem__(self, index: int) -> Any: ...
     def __getattr__(self, name: str) -> Any: ...
@@ -247,6 +237,7 @@ class Connection:
         autocommit: bool = False,
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
+        native_uuid: Optional[bool] = None,
         **kwargs: Any,
     ) -> None: ...
 
@@ -289,6 +280,7 @@ def connect(
     autocommit: bool = False,
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
+    native_uuid: Optional[bool] = None,
     **kwargs: Any,
 ) -> Connection: ...
 
