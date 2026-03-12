@@ -11,14 +11,12 @@ if TYPE_CHECKING:  # pragma: no cover
     from mssql_python.helpers import Settings
 
 
-def setDecimalSeparator(separator: str, settings: "Settings", set_in_cpp_func=None) -> None:
+def _setDecimalSeparator(separator: str, settings: "Settings", set_in_cpp_func=None) -> None:
     """
-    Sets the decimal separator character used when parsing NUMERIC/DECIMAL values
-    from the database, e.g. the "." in "1,234.56".
+    Internal implementation for setting the decimal separator.
 
-    The default is to use the current locale's "decimal_point" value when the module
-    was first imported, or "." if the locale is not available. This function overrides
-    the default.
+    Not intended for direct external use — the public API is exposed via
+    ``mssql_python.setDecimalSeparator`` (created by ``create_decimal_separator_functions``).
 
     Args:
         separator (str): The character to use as decimal separator
@@ -51,10 +49,12 @@ def setDecimalSeparator(separator: str, settings: "Settings", set_in_cpp_func=No
         set_in_cpp_func(separator)
 
 
-def getDecimalSeparator(settings: "Settings") -> str:
+def _getDecimalSeparator(settings: "Settings") -> str:
     """
-    Returns the decimal separator character used when parsing NUMERIC/DECIMAL values
-    from the database.
+    Internal implementation for getting the decimal separator.
+
+    Not intended for direct external use — the public API is exposed via
+    ``mssql_python.getDecimalSeparator`` (created by ``create_decimal_separator_functions``).
 
     Args:
         settings (Settings): The settings object to read from
@@ -99,7 +99,7 @@ def create_decimal_separator_functions(settings: "Settings"):
         Raises:
             ValueError: If the separator is not a single character string
         """
-        setDecimalSeparator(separator, settings, cpp_binding)
+        _setDecimalSeparator(separator, settings, cpp_binding)
 
     def getter() -> str:
         """
@@ -109,6 +109,6 @@ def create_decimal_separator_functions(settings: "Settings"):
         Returns:
             str: The current decimal separator character
         """
-        return getDecimalSeparator(settings)
+        return _getDecimalSeparator(settings)
 
     return setter, getter
