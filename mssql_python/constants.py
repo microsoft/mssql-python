@@ -376,11 +376,8 @@ class SQLTypes:
             ConstantsDDBC.SQL_DATETIMEOFFSET.value,
             ConstantsDDBC.SQL_SS_XML.value,
             ConstantsDDBC.SQL_GUID.value,
-<<<<<<< HEAD
             ConstantsDDBC.SQL_SS_UDT.value,
-=======
             ConstantsDDBC.SQL_SS_VARIANT.value,
->>>>>>> a7cc4c0d (Add SQL_VARIANT data type support with native Python type preservation)
         }
 
     # Could also add category methods for convenience
