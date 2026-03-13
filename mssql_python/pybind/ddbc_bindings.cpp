@@ -4391,37 +4391,6 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     }
     LOG("FetchAll_wrap: Fetching data in batch sizes of %d", fetchSize);
 
-    std::vector<SQLUSMALLINT> lobColumns;
-    for (SQLSMALLINT i = 0; i < numCols; i++) {
-        auto colMeta = columnNames[i].cast<py::dict>();
-        SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
-        SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
-
-        if (IsLobOrVariantColumn(dataType, columnSize)) {
-            lobColumns.push_back(i + 1);  // 1-based
-        }
-    }
-
-    // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
-    if (!lobColumns.empty()) {
-        LOG("FetchAll_wrap: LOB columns detected (%zu columns), using per-row "
-            "SQLGetData path",
-            lobColumns.size());
-        while (true) {
-            ret = SQLFetch_ptr(hStmt);
-            if (ret == SQL_NO_DATA)
-                break;
-            if (!SQL_SUCCEEDED(ret))
-                return ret;
-
-            py::list row;
-            SQLGetData_wrap(StatementHandle, numCols, row, charEncoding,
-                            wcharEncoding);  // <-- streams LOBs correctly
-            rows.append(row);
-        }
-        return SQL_SUCCESS;
-    }
-
     ColumnBuffers buffers(numCols, fetchSize);
 
     // Bind columns
