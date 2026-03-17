@@ -125,6 +125,7 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, i
         : severity === "high" ? "🟠"
             : severity === "medium" ? "🟡" : "🟢";
 
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     let codeAnalysisText = "N/A — classification did not require code analysis.";
     let engineerGuidanceText = "";
 
@@ -150,8 +151,7 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, i
             if (parsed.risk_assessment) parts.push(`<b>Risk Assessment:</b> ${escVal(parsed.risk_assessment)}`);
             codeAnalysisText = parts.join("<br><br>");
         } catch (e) {
-            // If JSON parsing fails, show raw text (truncated)
-            codeAnalysisText = codeAnalysis;
+            codeAnalysisText = esc(codeAnalysis);
             if (codeAnalysisText.length > 3000) {
                 codeAnalysisText = codeAnalysisText.slice(0, 3000) + "... (truncated)";
             }
@@ -183,8 +183,6 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, i
             }
         }
     }
-
-    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
     const htmlMessage = [
         `<h2>${emoji} mssql-python Issue Triage</h2>`,
