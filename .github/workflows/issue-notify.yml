@@ -69,7 +69,7 @@ jobs:
           INPUT_SUMMARY: ${{ inputs.summary_for_maintainers }}
           INPUT_CODE_ANALYSIS: ${{ inputs.code_analysis }}
           INPUT_ENGINEER_GUIDANCE: ${{ inputs.engineer_guidance }}
-          INPUT_ACTION_TEXT: ${{ inputs.justification }}
+          INPUT_JUSTIFICATION: ${{ inputs.justification }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           CATEGORY="$INPUT_CATEGORY"
@@ -110,21 +110,21 @@ jobs:
             # Try to parse as JSON and extract structured fields
             CODE_ANALYSIS=$(echo "$CODE_ANALYSIS_RAW" | jq -r '
               [
-                (if .is_bug then "Verdict: " + .is_bug else empty end),
-                (if .root_cause then "\nRoot Cause: " + .root_cause else empty end),
+                (if .is_bug then "<b>Verdict:</b> " + (.is_bug | @html) else empty end),
+                (if .root_cause then "<b>Root Cause:</b> " + (.root_cause | @html) else empty end),
                 (if .affected_components and (.affected_components | length) > 0
-                 then "\nAffected Components:\n" + ([.affected_components[] | "  • " + .] | join("\n"))
+                 then "<b>Affected Components:</b><br>" + ([.affected_components[] | "&nbsp;&nbsp;• " + (. | @html)] | join("<br>"))
                  else empty end),
-                (if .evidence_and_context then "\nEvidence & Context: " + .evidence_and_context else empty end),
+                (if .evidence_and_context then "<b>Evidence &amp; Context:</b> " + (.evidence_and_context | @html) else empty end),
                 (if .recommended_fixes and (.recommended_fixes | length) > 0
-                 then "\nRecommended Fixes:\n" + ([.recommended_fixes | to_entries[] | "  " + ((.key + 1) | tostring) + ". " + .value] | join("\n"))
+                 then "<b>Recommended Fixes:</b><br>" + ([.recommended_fixes | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". " + (.value | @html)] | join("<br>"))
                  else empty end),
                 (if .code_locations and (.code_locations | length) > 0
-                 then "\nCode Locations:\n" + ([.code_locations[] | "  • " + .] | join("\n"))
+                 then "<b>Code Locations:</b><br>" + ([.code_locations[] | "&nbsp;&nbsp;• " + (. | @html)] | join("<br>"))
                  else empty end),
-                (if .risk_assessment then "\nRisk Assessment: " + .risk_assessment else empty end)
-              ] | join("\n")
-            ' 2>/dev/null || echo "$CODE_ANALYSIS_RAW")
+                (if .risk_assessment then "<b>Risk Assessment:</b> " + (.risk_assessment | @html) else empty end)
+              ] | join("<br><br>")
+            ' 2>/dev/null || echo "$CODE_ANALYSIS_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           else
             CODE_ANALYSIS="N/A — classification did not require code analysis."
           fi
@@ -134,20 +134,20 @@ jobs:
           if [ -n "$ENGINEER_GUIDANCE_RAW" ]; then
             ENGINEER_GUIDANCE=$(echo "$ENGINEER_GUIDANCE_RAW" | jq -r '
               [
-                (if .technical_assessment then "<b>Technical Assessment:</b> " + .technical_assessment else empty end),
-                (if .verdict then "<b>Verdict:</b> " + .verdict else empty end),
-                (if .effort_estimate then "Effort Estimate: " + .effort_estimate else empty end),
+                (if .technical_assessment then "<b>Technical Assessment:</b> " + (.technical_assessment | @html) else empty end),
+                (if .verdict then "<b>Verdict:</b> " + (.verdict | @html) else empty end),
+                (if .effort_estimate then "Effort Estimate: " + (.effort_estimate | @html) else empty end),
                 (if .affected_files and (.affected_files | length) > 0
-                 then "<b>Affected Files:</b><br>" + ([.affected_files[] | "&nbsp;&nbsp;• " + .] | join("<br>"))
+                 then "<b>Affected Files:</b><br>" + ([.affected_files[] | "&nbsp;&nbsp;• " + (. | @html)] | join("<br>"))
                  else empty end),
-                (if .implementation_approach then "<b>Implementation Approach:</b> " + .implementation_approach else empty end),
-                (if .risks_and_tradeoffs then "<b>Risks &amp; Tradeoffs:</b> " + .risks_and_tradeoffs else empty end),
-                (if .suggested_response then "<b>Suggested Response to User:</b><br>" + .suggested_response else empty end),
+                (if .implementation_approach then "<b>Implementation Approach:</b> " + (.implementation_approach | @html) else empty end),
+                (if .risks_and_tradeoffs then "<b>Risks &amp; Tradeoffs:</b> " + (.risks_and_tradeoffs | @html) else empty end),
+                (if .suggested_response then "<b>Suggested Response to User:</b><br>" + (.suggested_response | @html) else empty end),
                 (if .related_considerations and (.related_considerations | length) > 0
-                 then "<b>Related Considerations:</b><br>" + ([.related_considerations | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". " + .value] | join("<br>"))
+                 then "<b>Related Considerations:</b><br>" + ([.related_considerations | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". " + (.value | @html)] | join("<br>"))
                  else empty end)
               ] | join("<br><br>")
-            ' 2>/dev/null || echo "$ENGINEER_GUIDANCE_RAW")
+            ' 2>/dev/null || echo "$ENGINEER_GUIDANCE_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           else
             ENGINEER_GUIDANCE=""
           fi
@@ -176,6 +176,7 @@ jobs:
             --arg summary "$INPUT_SUMMARY" \
             --arg code_analysis "$CODE_ANALYSIS" \
             --arg engineer_guidance "$ENGINEER_GUIDANCE" \
+            --arg justification "$INPUT_JUSTIFICATION" \
             --arg action "$ACTION" \
             --arg repo_url "https://github.com/microsoft/mssql-python" \
             '{
@@ -186,14 +187,15 @@ jobs:
                 "Confidence: <b>" + $confidence + "%</b></p>" +
                 "<hr>" +
                 "<p>" +
-                "📌 <b>Issue:</b> <a href=\"" + $issue_url + "\">#" + $issue_num + " — " + $issue_title + "</a><br>" +
-                "👤 <b>Author:</b> @" + $issue_author + "<br>" +
-                "🏷️ <b>Keywords:</b> " + $keywords + "<br>" +
-                "📂 <b>Relevant Files:</b> " + $relevant_files +
+                "📌 <b>Issue:</b> <a href=\"" + $issue_url + "\">#" + $issue_num + " — " + ($issue_title | @html) + "</a><br>" +
+                "👤 <b>Author:</b> @" + ($issue_author | @html) + "<br>" +
+                "🏷️ <b>Keywords:</b> " + ($keywords | @html) + "<br>" +
+                "📂 <b>Relevant Files:</b> " + ($relevant_files | @html) + "<br>" +
+                "💬 <b>Justification:</b> " + ($justification | @html) +
                 "</p>" +
                 "<hr>" +
                 "<h3>📝 Analysis</h3>" +
-                "<p>" + $summary + "</p>" +
+                "<p>" + ($summary | @html) + "</p>" +
                 "<h3>🔍 Code Analysis</h3>" +
                 "<p>" + $code_analysis + "</p>" +
                 (if $engineer_guidance != "" then
