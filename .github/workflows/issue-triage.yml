@@ -14,6 +14,7 @@ on:
 permissions:
   issues: read
   contents: read
+  models: read
 
 jobs:
   triage:
@@ -25,28 +26,22 @@ jobs:
       - name: Triage Analysis
         id: triage
         uses: actions/github-script@v7
-        env:
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-          AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
-          AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // --- Helper function for Azure OpenAI ---
-            async function callAzureOpenAI(prompt) {
-              const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-              const apiKey = process.env.AZURE_OPENAI_KEY;
-              const deployment = process.env.AZURE_OPENAI_DEPLOYMENT;
-
-              const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=2025-01-01-preview`;
+            // --- Helper function for GitHub Models ---
+            async function callGitHubModels(prompt) {
+              const token = process.env.GITHUB_TOKEN;
+              const url = 'https://models.inference.ai.azure.com/chat/completions';
 
               const response = await fetch(url, {
                 method: "POST",
                 headers: {
-                  "api-key": apiKey,
+                  "Authorization": `Bearer ${token}`,
                   "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
+                  model: "gpt-4.1",
                   messages: [{ role: "user", content: prompt }],
                   temperature: 0.1,
                   response_format: { type: "json_object" }
@@ -55,7 +50,7 @@ jobs:
 
               if (!response.ok) {
                 const errText = await response.text();
-                throw new Error(`Azure OpenAI error: ${response.status} - ${errText}`);
+                throw new Error(`GitHub Models error: ${response.status} - ${errText}`);
               }
 
               const data = await response.json();
@@ -87,7 +82,8 @@ jobs:
             // --- Classify the issue ---
             const classificationPrompt = `
             You are an expert triage system for the mssql-python repository — a Python driver for Microsoft SQL Server.
-            The driver uses ODBC under the hood with a Rust-based core (pybind) and Python wrappers.
+            The driver uses ODBC under the hood with a C++/pybind11 native extension layer and Python wrappers.
+            Note: The pybind/ directory contains C++/pybind11 code (NOT Rust). Only reference Rust if the issue is specifically about BCP (Bulk Copy Protocol).
 
             Key source files in the repo:
             - mssql_python/connection.py — Connection management, pooling integration
@@ -102,8 +98,8 @@ jobs:
             - mssql_python/logging.py — Logging infrastructure
             - mssql_python/row.py — Row objects
             - mssql_python/type.py — Type mappings
-            - mssql_python/ddbc_bindings.py — ODBC bindings
-            - mssql_python/pybind/ — Rust core bindings
+            - mssql_python/ddbc_bindings.py — Python/pybind11 ODBC bindings (C++ native extension, NOT Rust)
+            - mssql_python/pybind/ — C++/pybind11 native extension layer (NOT Rust)
 
             Classify the following GitHub issue into EXACTLY ONE category:
 
@@ -131,7 +127,7 @@ jobs:
 
             let analysis;
             try {
-              const classifyResult = await callAzureOpenAI(classificationPrompt);
+              const classifyResult = await callGitHubModels(classificationPrompt);
               analysis = JSON.parse(classifyResult);
             } catch (e) {
               core.setFailed(`Classification failed: ${e.message}`);
@@ -141,57 +137,107 @@ jobs:
             console.log(`Classification: ${analysis.category} (${analysis.confidence}%)`);
             console.log(`Severity: ${analysis.severity}`);
 
+            // --- Fetch relevant source files (for ALL categories) ---
+            console.log('Fetching relevant source files for code-grounded analysis...');
+            const fileContents = [];
+            for (const filePath of analysis.relevant_source_files.slice(0, 3)) {
+              try {
+                const file = await github.rest.repos.getContent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: filePath
+                });
+                const content = Buffer.from(file.data.content, 'base64').toString();
+                fileContents.push(`### File: ${filePath}\n\`\`\`python\n${content.slice(0, 3000)}\n\`\`\``);
+                console.log(`Fetched: ${filePath}`);
+              } catch (e) {
+                console.log(`Could not fetch ${filePath}: ${e.message}`);
+              }
+            }
+
+            const codeContext = fileContents.length > 0
+              ? `\n\nRelevant source files from the repository:\n${fileContents.join('\n\n')}`
+              : '';
+
             // --- For BUG/BREAK_FIX, analyze codebase ---
             let codeAnalysis = '';
 
-            if (['BUG', 'BREAK_FIX'].includes(analysis.category)) {
+            if (['BUG', 'BREAK_FIX'].includes(analysis.category) && fileContents.length > 0) {
               console.log('Bug/Break-fix detected — analyzing codebase...');
 
-              const fileContents = [];
-              for (const filePath of analysis.relevant_source_files.slice(0, 3)) {
-                try {
-                  const file = await github.rest.repos.getContent({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    path: filePath
-                  });
-                  const content = Buffer.from(file.data.content, 'base64').toString();
-                  fileContents.push(`### File: ${filePath}\n\`\`\`python\n${content.slice(0, 3000)}\n\`\`\``);
-                } catch (e) {
-                  console.log(`Could not fetch ${filePath}: ${e.message}`);
-                }
+              const codePrompt = `
+              You are a senior Python developer analyzing a potential
+              ${analysis.category === 'BREAK_FIX' ? 'regression/break-fix' : 'bug'}
+              in the mssql-python driver (Python + ODBC + C++/pybind11 native layer).
+              IMPORTANT: ddbc_bindings.py and the pybind/ directory are C++/pybind11 code, NOT Rust. Only mention Rust if the issue is specifically about BCP (Bulk Copy Protocol).
+              IMPORTANT: Base your analysis ONLY on the actual source code provided below. Do not speculate about code you haven't seen.
+
+              Bug Report:
+              Title: ${issueTitle}
+              Body: ${issueBody.slice(0, 2000)}
+              ${codeContext}
+
+              Provide analysis in JSON:
+              {
+                "is_bug": "Confirmed Bug|Likely Bug|Require More Analysis|Not a Bug",
+                "root_cause": "<detailed root cause analysis based on actual code above>",
+                "affected_components": ["<affected modules/functions from the code above>"],
+                "evidence_and_context": "<specific evidence from the codebase — cite exact functions, variables, line logic, or patterns that support your analysis>",
+                "recommended_fixes": ["<fix 1 — describe the approach referencing specific code>", "<fix 2>", "<fix 3>"],
+                "code_locations": ["<file:function or file:class where changes should be made>"],
+                "risk_assessment": "<risk to users>"
+              }
+              `;
+
+              try {
+                codeAnalysis = await callGitHubModels(codePrompt);
+                console.log('Code analysis complete');
+              } catch (e) {
+                console.log(`Code analysis failed: ${e.message}`);
+              }
+            }
+
+            // --- For FEATURE_REQUEST/DISCUSSION, provide code-grounded engineer guidance ---
+            let engineerGuidance = '';
+
+            if (['FEATURE_REQUEST', 'DISCUSSION'].includes(analysis.category)) {
+              console.log('Non-bug issue — generating code-grounded engineer guidance...');
+
+              const guidancePrompt = `
+              You are a senior engineer on the mssql-python team — a Python driver for Microsoft SQL Server
+              (ODBC + C++/pybind11 native extension + Python wrappers).
+              IMPORTANT: Base your analysis ONLY on the actual source code provided below. Do not speculate about code you haven't seen. If the code doesn't contain enough information, say so explicitly.
+
+              A user filed a GitHub issue classified as: ${analysis.category}
+
+              Issue Title: ${issueTitle}
+              Issue Body:
+              ${issueBody.slice(0, 3000)}
+              ${codeContext}
+
+              Based on the ACTUAL SOURCE CODE above, provide a detailed analysis to help the engineering team respond efficiently.
+              Respond in JSON:
+              {
+                "technical_assessment": "<detailed technical assessment grounded in the actual code above>",
+                "verdict": "Confirmed Bug|Likely Bug|Require More Analysis|Not a Bug",
+                "issue_identified": true/false,
+                "affected_files": ["<specific source files, modules, functions, or classes from the code above>"],
+                "current_behavior": "<describe what the current code actually does based on your reading>",
+                "implementation_approach": "<concrete implementation steps referencing specific functions/lines from the code — ONLY if issue_identified is true, otherwise empty string>",
+                "effort_estimate": "small|medium|large|epic",
+                "risks_and_tradeoffs": "<potential risks, backward compatibility concerns, or tradeoffs — ONLY if issue_identified is true, otherwise empty string>",
+                "suggested_response": "<a draft response the engineer could post on the issue. Always ask the user to share a minimal repro or code snippet that demonstrates the issue or desired behavior, if they haven't already provided one.>",
+                "related_considerations": ["<other things the team should think about — ONLY if issue_identified is true, otherwise empty array>"]
               }
 
-              if (fileContents.length > 0) {
-                const codePrompt = `
-                You are a senior Python developer analyzing a potential
-                ${analysis.category === 'BREAK_FIX' ? 'regression/break-fix' : 'bug'}
-                in the mssql-python driver (Python + ODBC + Rust core).
+              IMPORTANT: If your technical_assessment does not identify any actual issue or gap in the code, set issue_identified to false and leave implementation_approach, risks_and_tradeoffs, and related_considerations empty. Only populate those fields when a real problem or improvement opportunity is confirmed in the code.
+              `;
 
-                Bug Report:
-                Title: ${issueTitle}
-                Body: ${issueBody.slice(0, 2000)}
-
-                Relevant source files:
-                ${fileContents.join('\n\n')}
-
-                Provide analysis in JSON:
-                {
-                  "is_bug": "confirmed|likely|uncertain|not_a_bug",
-                  "root_cause": "<detailed root cause analysis>",
-                  "affected_components": ["<affected modules/functions>"],
-                  "suggested_fix": "<fix approach>",
-                  "risk_assessment": "<risk to users>",
-                  "recommended_solutions": ["<solution 1>", "<solution 2>", "<solution 3>"]
-                }
-                `;
-
-                try {
-                  codeAnalysis = await callAzureOpenAI(codePrompt);
-                  console.log('Code analysis complete');
-                } catch (e) {
-                  console.log(`Code analysis failed: ${e.message}`);
-                }
+              try {
+                engineerGuidance = await callGitHubModels(guidancePrompt);
+                console.log('Engineer guidance generated');
+              } catch (e) {
+                console.log(`Engineer guidance failed: ${e.message}`);
               }
             }
 
@@ -207,6 +253,7 @@ jobs:
             core.setOutput('relevant_files', analysis.relevant_source_files.join(', '));
             core.setOutput('keywords', analysis.keywords.join(', '));
             core.setOutput('code_analysis', codeAnalysis);
+            core.setOutput('engineer_guidance', engineerGuidance);
             core.setOutput('issue_number', issueNumber.toString());
             core.setOutput('issue_title', issueTitle);
             core.setOutput('issue_url', issue.html_url);
@@ -221,6 +268,7 @@ jobs:
       relevant_files: ${{ steps.triage.outputs.relevant_files }}
       keywords: ${{ steps.triage.outputs.keywords }}
       code_analysis: ${{ steps.triage.outputs.code_analysis }}
+      engineer_guidance: ${{ steps.triage.outputs.engineer_guidance }}
       issue_number: ${{ steps.triage.outputs.issue_number }}
       issue_title: ${{ steps.triage.outputs.issue_title }}
       issue_url: ${{ steps.triage.outputs.issue_url }}
@@ -238,6 +286,7 @@ jobs:
       relevant_files: ${{ needs.triage.outputs.relevant_files }}
       keywords: ${{ needs.triage.outputs.keywords }}
       code_analysis: ${{ needs.triage.outputs.code_analysis }}
+      engineer_guidance: ${{ needs.triage.outputs.engineer_guidance }}
       issue_number: ${{ needs.triage.outputs.issue_number }}
       issue_title: ${{ needs.triage.outputs.issue_title }}
       issue_url: ${{ needs.triage.outputs.issue_url }}

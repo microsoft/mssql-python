@@ -28,6 +28,10 @@ on:
         required: false
         type: string
         default: ''
+      engineer_guidance:
+        required: false
+        type: string
+        default: ''
       issue_number:
         required: true
         type: string
@@ -61,6 +65,7 @@ jobs:
           INPUT_RELEVANT_FILES: ${{ inputs.relevant_files }}
           INPUT_SUMMARY: ${{ inputs.summary_for_maintainers }}
           INPUT_CODE_ANALYSIS: ${{ inputs.code_analysis }}
+          INPUT_ENGINEER_GUIDANCE: ${{ inputs.engineer_guidance }}
           INPUT_ACTION_TEXT: ${{ inputs.justification }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
@@ -96,21 +101,68 @@ jobs:
               ;;
           esac
 
-          # Truncate code analysis if too long
-          CODE_ANALYSIS="$INPUT_CODE_ANALYSIS"
-          if [ ${#CODE_ANALYSIS} -gt 1500 ]; then
-            CODE_ANALYSIS="${CODE_ANALYSIS:0:1500}... (see Actions log for full analysis)"
-          fi
-          if [ -z "$CODE_ANALYSIS" ]; then
+          # Parse and format code analysis from JSON into readable text
+          CODE_ANALYSIS_RAW="$INPUT_CODE_ANALYSIS"
+          if [ -n "$CODE_ANALYSIS_RAW" ]; then
+            # Try to parse as JSON and extract structured fields
+            CODE_ANALYSIS=$(echo "$CODE_ANALYSIS_RAW" | jq -r '
+              [
+                (if .is_bug then "Verdict: " + .is_bug else empty end),
+                (if .root_cause then "\nRoot Cause: " + .root_cause else empty end),
+                (if .affected_components and (.affected_components | length) > 0
+                 then "\nAffected Components:\n" + ([.affected_components[] | "  • " + .] | join("\n"))
+                 else empty end),
+                (if .evidence_and_context then "\nEvidence & Context: " + .evidence_and_context else empty end),
+                (if .recommended_fixes and (.recommended_fixes | length) > 0
+                 then "\nRecommended Fixes:\n" + ([.recommended_fixes | to_entries[] | "  " + ((.key + 1) | tostring) + ". " + .value] | join("\n"))
+                 else empty end),
+                (if .code_locations and (.code_locations | length) > 0
+                 then "\nCode Locations:\n" + ([.code_locations[] | "  • " + .] | join("\n"))
+                 else empty end),
+                (if .risk_assessment then "\nRisk Assessment: " + .risk_assessment else empty end)
+              ] | join("\n")
+            ' 2>/dev/null || echo "$CODE_ANALYSIS_RAW")
+          else
             CODE_ANALYSIS="N/A — classification did not require code analysis."
           fi
 
-          # Build Adaptive Card payload using jq for proper JSON escaping
+          # Parse and format engineer guidance from JSON into readable text
+          ENGINEER_GUIDANCE_RAW="$INPUT_ENGINEER_GUIDANCE"
+          if [ -n "$ENGINEER_GUIDANCE_RAW" ]; then
+            ENGINEER_GUIDANCE=$(echo "$ENGINEER_GUIDANCE_RAW" | jq -r '
+              [
+                (if .technical_assessment then "<b>Technical Assessment:</b> " + .technical_assessment else empty end),
+                (if .verdict then "<b>Verdict:</b> " + .verdict else empty end),
+                (if .effort_estimate then "Effort Estimate: " + .effort_estimate else empty end),
+                (if .affected_files and (.affected_files | length) > 0
+                 then "<b>Affected Files:</b><br>" + ([.affected_files[] | "&nbsp;&nbsp;• " + .] | join("<br>"))
+                 else empty end),
+                (if .implementation_approach then "<b>Implementation Approach:</b> " + .implementation_approach else empty end),
+                (if .risks_and_tradeoffs then "<b>Risks &amp; Tradeoffs:</b> " + .risks_and_tradeoffs else empty end),
+                (if .suggested_response then "<b>Suggested Response to User:</b><br>" + .suggested_response else empty end),
+                (if .related_considerations and (.related_considerations | length) > 0
+                 then "<b>Related Considerations:</b><br>" + ([.related_considerations | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". " + .value] | join("<br>"))
+                 else empty end)
+              ] | join("<br><br>")
+            ' 2>/dev/null || echo "$ENGINEER_GUIDANCE_RAW")
+          else
+            ENGINEER_GUIDANCE=""
+          fi
+
+          # Set severity color indicator
+          case "$SEVERITY" in
+            critical) SEV_INDICATOR="🔴" ;;
+            high)     SEV_INDICATOR="🟠" ;;
+            medium)   SEV_INDICATOR="🟡" ;;
+            *)        SEV_INDICATOR="🟢" ;;
+          esac
+
+          # Build well-formatted HTML message using jq for proper JSON escaping
           jq -n \
             --arg emoji "$EMOJI" \
-            --arg category "$CATEGORY" \
             --arg category_display "$CATEGORY_DISPLAY" \
             --arg severity "$SEVERITY" \
+            --arg sev_indicator "$SEV_INDICATOR" \
             --arg confidence "$INPUT_CONFIDENCE" \
             --arg issue_num "$INPUT_ISSUE_NUMBER" \
             --arg issue_title "$INPUT_ISSUE_TITLE" \
@@ -120,131 +172,38 @@ jobs:
             --arg relevant_files "$INPUT_RELEVANT_FILES" \
             --arg summary "$INPUT_SUMMARY" \
             --arg code_analysis "$CODE_ANALYSIS" \
+            --arg engineer_guidance "$ENGINEER_GUIDANCE" \
             --arg action "$ACTION" \
+            --arg repo_url "https://github.com/microsoft/mssql-python" \
             '{
-              "type": "message",
-              "attachments": [
-                {
-                  "contentType": "application/vnd.microsoft.card.adaptive",
-                  "content": {
-                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                    "type": "AdaptiveCard",
-                    "version": "1.4",
-                    "body": [
-                      {
-                        "type": "TextBlock",
-                        "size": "large",
-                        "weight": "bolder",
-                        "text": ($emoji + " mssql-python Issue Triage"),
-                        "wrap": true,
-                        "style": "heading"
-                      },
-                      {
-                        "type": "ColumnSet",
-                        "columns": [
-                          {
-                            "type": "Column",
-                            "width": "auto",
-                            "items": [
-                              {
-                                "type": "TextBlock",
-                                "text": $category_display,
-                                "weight": "bolder",
-                                "color": (if $category == "BREAK_FIX" then "attention"
-                                          elif $category == "BUG" then "warning"
-                                          else "default" end),
-                                "size": "medium"
-                              }
-                            ]
-                          },
-                          {
-                            "type": "Column",
-                            "width": "auto",
-                            "items": [
-                              {
-                                "type": "TextBlock",
-                                "text": ("Severity: " + $severity),
-                                "size": "medium",
-                                "color": (if $severity == "critical" then "attention"
-                                          elif $severity == "high" then "warning"
-                                          else "default" end)
-                              }
-                            ]
-                          },
-                          {
-                            "type": "Column",
-                            "width": "auto",
-                            "items": [
-                              {
-                                "type": "TextBlock",
-                                "text": ("Confidence: " + $confidence + "%"),
-                                "size": "medium"
-                              }
-                            ]
-                          }
-                        ]
-                      },
-                      {
-                        "type": "FactSet",
-                        "separator": true,
-                        "facts": [
-                          { "title": "Issue", "value": ("#" + $issue_num + " — " + $issue_title) },
-                          { "title": "Author", "value": ("@" + $issue_author) },
-                          { "title": "Keywords", "value": $keywords },
-                          { "title": "Relevant Files", "value": $relevant_files }
-                        ]
-                      },
-                      {
-                        "type": "TextBlock",
-                        "text": "**📝 Analysis**",
-                        "weight": "bolder",
-                        "spacing": "medium",
-                        "wrap": true
-                      },
-                      {
-                        "type": "TextBlock",
-                        "text": $summary,
-                        "wrap": true
-                      },
-                      {
-                        "type": "TextBlock",
-                        "text": "**🔍 Code Analysis**",
-                        "weight": "bolder",
-                        "spacing": "medium",
-                        "wrap": true
-                      },
-                      {
-                        "type": "TextBlock",
-                        "text": $code_analysis,
-                        "wrap": true,
-                        "fontType": "monospace",
-                        "size": "small"
-                      },
-                      {
-                        "type": "TextBlock",
-                        "text": ("⚡ **Action Required:** " + $action),
-                        "weight": "bolder",
-                        "color": "attention",
-                        "spacing": "medium",
-                        "wrap": true,
-                        "separator": true
-                      }
-                    ],
-                    "actions": [
-                      {
-                        "type": "Action.OpenUrl",
-                        "title": "📋 View Issue",
-                        "url": $issue_url
-                      },
-                      {
-                        "type": "Action.OpenUrl",
-                        "title": "📂 View Repository",
-                        "url": "https://github.com/microsoft/mssql-python"
-                      }
-                    ]
-                  }
-                }
-              ]
+              "text": (
+                "<h2>" + $emoji + " mssql-python Issue Triage</h2>" +
+                "<p><b>" + $category_display + "</b> &nbsp;|&nbsp; " +
+                $sev_indicator + " Severity: <b>" + $severity + "</b> &nbsp;|&nbsp; " +
+                "Confidence: <b>" + $confidence + "%</b></p>" +
+                "<hr>" +
+                "<p>" +
+                "📌 <b>Issue:</b> <a href=\"" + $issue_url + "\">#" + $issue_num + " — " + $issue_title + "</a><br>" +
+                "👤 <b>Author:</b> @" + $issue_author + "<br>" +
+                "🏷️ <b>Keywords:</b> " + $keywords + "<br>" +
+                "📂 <b>Relevant Files:</b> " + $relevant_files +
+                "</p>" +
+                "<hr>" +
+                "<h3>📝 Analysis</h3>" +
+                "<p>" + $summary + "</p>" +
+                "<h3>🔍 Code Analysis</h3>" +
+                "<p>" + $code_analysis + "</p>" +
+                (if $engineer_guidance != "" then
+                  "<h3>💡 Engineer Guidance</h3>" +
+                  "<p>" + $engineer_guidance + "</p>"
+                else "" end) +
+                "<hr>" +
+                "<p>⚡ <b>Action Required:</b> " + $action + "</p>" +
+                "<p><i>⚠️ AI-generated analysis — verified against source code but may contain inaccuracies. Review before acting.</i></p>" +
+                "<p><a href=\"" + $issue_url + "\">📋 View Issue</a>" +
+                " &nbsp;|&nbsp; " +
+                "<a href=\"" + $repo_url + "\">📂 View Repository</a></p>"
+              )
             }' > /tmp/teams_payload.json
 
           echo "Sending notification to Teams Channel..."
