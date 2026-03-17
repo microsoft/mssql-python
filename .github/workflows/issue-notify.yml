@@ -48,6 +48,9 @@ on:
       TEAMS_WEBHOOK_URL:
         required: true
 
+permissions:
+  contents: read
+
 jobs:
   send-notification:
     runs-on: ubuntu-latest
