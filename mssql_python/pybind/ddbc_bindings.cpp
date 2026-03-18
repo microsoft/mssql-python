@@ -4956,7 +4956,11 @@ SQLRETURN FetchArrowBatch_wrap(
                     case SQL_CHAR:
                     case SQL_VARCHAR:
                     case SQL_LONGVARCHAR: {
-                        uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+#if defined(__APPLE__) || defined(__linux__)
+                        uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
+#else
+                        uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+#endif
                         auto target_vec = &arrowColumnProducer->varData;
                         auto start = arrowColumnProducer->varVal[idxRowArrow];
                         while (target_vec->size() < start + dataLen) {
