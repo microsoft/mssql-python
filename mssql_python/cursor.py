@@ -774,6 +774,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 ddbc_error="",
             )
 
+    def _ensure_pyarrow(self) -> Any:
+        """
+        Import and return pyarrow or raise ImportError accordingly.
+        """
+        try:
+            import pyarrow
+            return pyarrow
+        except ImportError as e:
+            raise ImportError(
+                "pyarrow is required for Arrow fetch methods. Please install pyarrow."
+            ) from e
+
     def setinputsizes(self, sizes: List[Union[int, tuple]]) -> None:
         """
         Sets the type information to be used for parameters in execute and executemany.
@@ -2462,13 +2474,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             A pyarrow RecordBatch object containing up to batch_size rows.
         """
         self._check_closed()  # Check if the cursor is closed
-
-        try:
-            import pyarrow
-        except ImportError as e:
-            raise ImportError(
-                "pyarrow is required for arrow_batch(). Please install pyarrow."
-            ) from e
+        pyarrow = self._ensure_pyarrow()
 
         if not self._has_result_set and self.description:
             self._reset_rownumber()
@@ -2507,11 +2513,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             A pyarrow Table containing all remaining rows from the result set.
         """
         self._check_closed()  # Check if the cursor is closed
-
-        try:
-            import pyarrow
-        except ImportError as e:
-            raise ImportError("pyarrow is required for arrow(). Please install pyarrow.") from e
+        pyarrow = self._ensure_pyarrow()
 
         batches: list["pyarrow.RecordBatch"] = []
         while True:
@@ -2536,13 +2538,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             A pyarrow RecordBatchReader for the result set.
         """
         self._check_closed()  # Check if the cursor is closed
-
-        try:
-            import pyarrow
-        except ImportError as e:
-            raise ImportError(
-                "pyarrow is required for arrow_reader(). Please install pyarrow."
-            ) from e
+        pyarrow = self._ensure_pyarrow()
 
         # Fetch schema without advancing cursor
         schema_batch = self.arrow_batch(0)
