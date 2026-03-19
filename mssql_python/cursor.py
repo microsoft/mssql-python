@@ -673,10 +673,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         if isinstance(param, datetime.time):
             return (
-                ddbc_sql_const.SQL_TIME.value,
-                ddbc_sql_const.SQL_C_TYPE_TIME.value,
-                8,
-                0,
+                ddbc_sql_const.SQL_TYPE_TIME.value,
+                ddbc_sql_const.SQL_C_CHAR.value,
+                16,
+                6,
                 False,
             )
 
@@ -940,6 +940,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
                 parameter, parameters_list, i, min_val=min_val, max_val=max_val
             )
+
+        # If TIME values are being bound via text C-types, normalize them to a
+        # textual representation expected by SQL_C_CHAR/SQL_C_WCHAR binding.
+        if isinstance(parameter, datetime.time) and c_type in (
+            ddbc_sql_const.SQL_C_CHAR.value,
+            ddbc_sql_const.SQL_C_WCHAR.value,
+        ):
+            time_text = parameter.isoformat(timespec="microseconds")
+            parameters_list[i] = time_text
+            column_size = max(column_size, len(time_text))
 
         paraminfo.paramCType = c_type
         paraminfo.paramSQLType = sql_type
@@ -2249,6 +2259,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             processed_row = list(row)
             for i, val in enumerate(processed_row):
                 if val is None:
+                    continue
+                if isinstance(val, datetime.time) and parameters_type[i].paramCType in (
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    ddbc_sql_const.SQL_C_WCHAR.value,
+                ):
+                    processed_row[i] = val.isoformat(timespec="microseconds")
                     continue
                 if (
                     isinstance(val, decimal.Decimal)

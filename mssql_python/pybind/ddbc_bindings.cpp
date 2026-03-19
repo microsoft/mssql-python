@@ -10,6 +10,7 @@
 #include "logger_bridge.hpp"
 
 #include <cstdint>
+#include <cctype>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iomanip>  // std::setw, std::setfill
@@ -28,6 +29,7 @@
 #define SQL_MAX_NUMERIC_LEN 16
 #define SQL_SS_XML (-152)
 #define SQL_SS_UDT (-151)
+#define SQL_TIME_TEXT_MAX_LEN 32
 
 #define STRINGIFY_FOR_CASE(x)                                                                      \
     case x:                                                                                        \
@@ -51,6 +53,69 @@ inline std::string GetEffectiveCharDecoding(const std::string& userEncoding) {
 #else
     return userEncoding;
 #endif
+}
+
+namespace PythonObjectCache {
+py::object get_time_class();
+}
+
+inline py::object ParseSqlTimeTextToPythonObject(const char* timeText, SQLLEN timeTextLen) {
+    if (!timeText || timeTextLen <= 0) {
+        return py::none();
+    }
+
+    size_t len = static_cast<size_t>(timeTextLen);
+    if (timeTextLen == SQL_NO_TOTAL) {
+        len = std::strlen(timeText);
+    }
+
+    std::string value(timeText, len);
+
+    size_t start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return py::none();
+    }
+    size_t end = value.find_last_not_of(" \t\r\n");
+    value = value.substr(start, end - start + 1);
+
+    size_t firstColon = value.find(':');
+    size_t secondColon = (firstColon == std::string::npos) ? std::string::npos
+                                                            : value.find(':', firstColon + 1);
+    if (firstColon == std::string::npos || secondColon == std::string::npos) {
+        ThrowStdException("Failed to parse TIME/TIME2 value: missing ':' separators");
+    }
+
+    int hour = std::stoi(value.substr(0, firstColon));
+    int minute = std::stoi(value.substr(firstColon + 1, secondColon - firstColon - 1));
+
+    size_t dotPos = value.find('.', secondColon + 1);
+    int second = 0;
+    int microsecond = 0;
+
+    if (dotPos == std::string::npos) {
+        second = std::stoi(value.substr(secondColon + 1));
+    } else {
+        second = std::stoi(value.substr(secondColon + 1, dotPos - secondColon - 1));
+        std::string frac = value.substr(dotPos + 1);
+
+        size_t digitCount = 0;
+        while (digitCount < frac.size() && std::isdigit(static_cast<unsigned char>(frac[digitCount]))) {
+            ++digitCount;
+        }
+        frac = frac.substr(0, digitCount);
+
+        if (frac.size() > 6) {
+            frac = frac.substr(0, 6);
+        }
+        while (frac.size() < 6) {
+            frac.push_back('0');
+        }
+        if (!frac.empty()) {
+            microsecond = std::stoi(frac);
+        }
+    }
+
+    return PythonObjectCache::get_time_class()(hour, minute, second, microsecond);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -3244,9 +3309,23 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
-            case SQL_TIME:
-            case SQL_TYPE_TIME:
             case SQL_SS_TIME2: {
+                char timeTextBuffer[SQL_TIME_TEXT_MAX_LEN] = {0};
+                SQLLEN timeDataLen = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, &timeTextBuffer, sizeof(timeTextBuffer),
+                                     &timeDataLen);
+                if (SQL_SUCCEEDED(ret) && timeDataLen != SQL_NULL_DATA) {
+                    row.append(ParseSqlTimeTextToPythonObject(timeTextBuffer, timeDataLen));
+                } else {
+                    LOG("SQLGetData: Error retrieving SQL_SS_TIME2 for column "
+                        "%d - SQLRETURN=%d",
+                        i, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_TIME:
+            case SQL_TYPE_TIME: {
                 SQL_TIME_STRUCT timeValue;
                 ret =
                     SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), NULL);
@@ -3587,11 +3666,15 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 break;
             case SQL_TIME:
             case SQL_TYPE_TIME:
-            case SQL_SS_TIME2:
                 buffers.timeBuffers[col - 1].resize(fetchSize);
                 ret =
                     SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_TIME, buffers.timeBuffers[col - 1].data(),
                                    sizeof(SQL_TIME_STRUCT), buffers.indicators[col - 1].data());
+                break;
+            case SQL_SS_TIME2:
+                buffers.charBuffers[col - 1].resize(fetchSize * SQL_TIME_TEXT_MAX_LEN);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
+                                     SQL_TIME_TEXT_MAX_LEN, buffers.indicators[col - 1].data());
                 break;
             case SQL_GUID:
                 buffers.guidBuffers[col - 1].resize(fetchSize);
@@ -3896,8 +3979,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_TIME:
-                case SQL_TYPE_TIME:
-                case SQL_SS_TIME2: {
+                case SQL_TYPE_TIME: {
                     PyObject* timeObj =
                         PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
                                                             buffers.timeBuffers[col - 1][i].minute,
@@ -3905,6 +3987,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             .release()
                             .ptr();
                     PyList_SET_ITEM(row, col - 1, timeObj);
+                    break;
+                }
+                case SQL_SS_TIME2: {
+                    const char* rawData = reinterpret_cast<const char*>(
+                        &buffers.charBuffers[col - 1][i * SQL_TIME_TEXT_MAX_LEN]);
+                    SQLLEN timeDataLen = buffers.indicators[col - 1][i];
+                    py::object timeObj = ParseSqlTimeTextToPythonObject(rawData, timeDataLen);
+                    PyList_SET_ITEM(row, col - 1, timeObj.release().ptr());
                     break;
                 }
                 case SQL_SS_TIMESTAMPOFFSET: {
@@ -4036,8 +4126,10 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 break;
             case SQL_TIME:
             case SQL_TYPE_TIME:
-            case SQL_SS_TIME2:
                 rowSize += sizeof(SQL_TIME_STRUCT);
+                break;
+            case SQL_SS_TIME2:
+                rowSize += SQL_TIME_TEXT_MAX_LEN;
                 break;
             case SQL_GUID:
                 rowSize += sizeof(SQLGUID);

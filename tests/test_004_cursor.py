@@ -184,13 +184,15 @@ def test_mixed_empty_and_null_values(cursor, db_connection):
     try:
         # Create test table
         drop_table_if_exists(cursor, "#pytest_empty_vs_null")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_empty_vs_null (
                 id INT,
                 text_col NVARCHAR(100),
                 binary_col VARBINARY(100)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert mix of empty and NULL values
@@ -327,6 +329,32 @@ def test_insert_time_column(cursor, db_connection):
         pytest.fail(f"Time column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE #pytest_single_column")
+        db_connection.commit()
+
+
+def test_insert_time_column_preserves_microseconds(cursor, db_connection):
+    """Test TIME fractional seconds round-trip for datetime.time values."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_microseconds")
+        cursor.execute("CREATE TABLE #pytest_time_microseconds (time_column TIME(6))")
+        db_connection.commit()
+
+        original_value = time(14, 30, 15, 234567)
+        cursor.execute(
+            "INSERT INTO #pytest_time_microseconds (time_column) VALUES (?)",
+            [original_value],
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_microseconds")
+        row = cursor.fetchone()
+        assert row is not None, "Expected one row"
+        assert row[0] == original_value, "TIME microseconds were not preserved"
+        assert row[0].microsecond == 234567, "Expected microseconds to round-trip"
+    except Exception as e:
+        pytest.fail(f"TIME microseconds round-trip failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_time_microseconds")
         db_connection.commit()
 
 
@@ -888,13 +916,15 @@ def test_rowcount(cursor, db_connection):
         cursor.execute("INSERT INTO #pytest_test_rowcount (name) VALUES ('JohnDoe3');")
         assert cursor.rowcount == 1, "Rowcount should be 1 after third insert"
 
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO #pytest_test_rowcount (name) 
             VALUES 
             ('JohnDoe4'), 
             ('JohnDoe5'), 
             ('JohnDoe6');
-        """)
+        """
+        )
         assert cursor.rowcount == 3, "Rowcount should be 3 after inserting multiple rows"
 
         cursor.execute("SELECT * FROM #pytest_test_rowcount;")
@@ -990,12 +1020,14 @@ def test_fetchmany_size_zero_lob(cursor, db_connection):
     """Test fetchmany with size=0 for LOB columns"""
     try:
         cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_fetchmany_lob (
                 id INT PRIMARY KEY,
                 lob_data NVARCHAR(MAX)
             )
-        """)
+        """
+        )
 
         # Insert test data
         test_data = [(1, "First LOB data"), (2, "Second LOB data"), (3, "Third LOB data")]
@@ -1020,12 +1052,14 @@ def test_fetchmany_more_than_exist_lob(cursor, db_connection):
     """Test fetchmany requesting more rows than exist with LOB columns"""
     try:
         cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob_more")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_fetchmany_lob_more (
                 id INT PRIMARY KEY,
                 lob_data NVARCHAR(MAX)
             )
-        """)
+        """
+        )
 
         # Insert only 3 rows
         test_data = [(1, "First LOB data"), (2, "Second LOB data"), (3, "Third LOB data")]
@@ -1059,12 +1093,14 @@ def test_fetchmany_empty_result_lob(cursor, db_connection):
     """Test fetchmany on empty result set with LOB columns"""
     try:
         cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob_empty")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_fetchmany_lob_empty (
                 id INT PRIMARY KEY,
                 lob_data NVARCHAR(MAX)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Query empty table
@@ -1087,12 +1123,14 @@ def test_fetchmany_very_large_lob(cursor, db_connection):
     """Test fetchmany with very large LOB column data"""
     try:
         cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_large_lob")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_fetchmany_large_lob (
                 id INT PRIMARY KEY,
                 large_lob NVARCHAR(MAX)
             )
-        """)
+        """
+        )
 
         # Create very large data (10000 characters)
         large_data = "x" * 10000
@@ -1142,12 +1180,14 @@ def test_fetchmany_mixed_lob_sizes(cursor, db_connection):
     """Test fetchmany with mixed LOB sizes including empty and NULL"""
     try:
         cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_mixed_lob")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_fetchmany_mixed_lob (
                 id INT PRIMARY KEY,
                 mixed_lob NVARCHAR(MAX)
             )
-        """)
+        """
+        )
 
         # Mix of sizes: empty, NULL, small, medium, large
         test_data = [
@@ -1275,12 +1315,14 @@ def test_executemany_empty_strings(cursor, db_connection):
     """Test executemany with empty strings - regression test for Unix UTF-16 conversion issue"""
     try:
         # Create test table for empty string testing
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_empty_batch (
                 id INT,
                 data NVARCHAR(50)
             )
-        """)
+        """
+        )
 
         # Clear any existing data
         cursor.execute("DELETE FROM #pytest_empty_batch")
@@ -1321,7 +1363,8 @@ def test_executemany_empty_strings_various_types(cursor, db_connection):
     """Test executemany with empty strings in different column types"""
     try:
         # Create test table with different string types
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_string_types (
                 id INT,
                 varchar_col VARCHAR(50),
@@ -1329,7 +1372,8 @@ def test_executemany_empty_strings_various_types(cursor, db_connection):
                 text_col TEXT,
                 ntext_col NTEXT
             )
-        """)
+        """
+        )
 
         # Clear any existing data
         cursor.execute("DELETE FROM #pytest_string_types")
@@ -1370,12 +1414,14 @@ def test_executemany_unicode_and_empty_strings(cursor, db_connection):
     """Test executemany with mix of Unicode characters and empty strings"""
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_unicode_test (
                 id INT,
                 data NVARCHAR(100)
             )
-        """)
+        """
+        )
 
         # Clear any existing data
         cursor.execute("DELETE FROM #pytest_unicode_test")
@@ -1420,12 +1466,14 @@ def test_executemany_large_batch_with_empty_strings(cursor, db_connection):
     """Test executemany with large batch containing empty strings"""
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_large_batch (
                 id INT,
                 data NVARCHAR(50)
             )
-        """)
+        """
+        )
 
         # Clear any existing data
         cursor.execute("DELETE FROM #pytest_large_batch")
@@ -1478,12 +1526,14 @@ def test_executemany_compare_with_execute(cursor, db_connection):
     """Test that executemany produces same results as individual execute calls"""
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_compare_test (
                 id INT,
                 data NVARCHAR(50)
             )
-        """)
+        """
+        )
 
         # Test data with empty strings
         test_data = [
@@ -1536,13 +1586,15 @@ def test_executemany_edge_cases_empty_strings(cursor, db_connection):
     """Test executemany edge cases with empty strings and special characters"""
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_edge_cases (
                 id INT,
                 varchar_data VARCHAR(100),
                 nvarchar_data NVARCHAR(100)
             )
-        """)
+        """
+        )
 
         # Clear any existing data
         cursor.execute("DELETE FROM #pytest_edge_cases")
@@ -1596,12 +1648,14 @@ def test_executemany_null_vs_empty_string(cursor, db_connection):
     """Test that executemany correctly distinguishes between NULL and empty string"""
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_null_vs_empty (
                 id INT,
                 data NVARCHAR(50)
             )
-        """)
+        """
+        )
 
         # Clear any existing data
         cursor.execute("DELETE FROM #pytest_null_vs_empty")
@@ -1666,12 +1720,14 @@ def test_executemany_binary_data_edge_cases(cursor, db_connection):
     """Test executemany with binary data and empty byte arrays"""
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_binary_test (
                 id INT,
                 binary_data VARBINARY(100)
             )
-        """)
+        """
+        )
 
         # Clear any existing data
         cursor.execute("DELETE FROM #pytest_binary_test")
@@ -1833,7 +1889,8 @@ def test_executemany_mixed_null_and_typed_values(cursor, db_connection):
     """Test executemany with randomly mixed NULL and non-NULL values across multiple columns and rows (50 rows, 10 columns)."""
     try:
         # Create table with 10 columns of various types
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_empty_params (
                 col1 INT,
                 col2 VARCHAR(50),
@@ -1846,7 +1903,8 @@ def test_executemany_mixed_null_and_typed_values(cursor, db_connection):
                 col9 DATE,
                 col10 REAL
             )
-        """)
+        """
+        )
 
         # Generate 50 rows with randomly mixed NULL and non-NULL values across 10 columns
         data = []
@@ -1910,7 +1968,8 @@ def test_executemany_multi_column_null_arrays(cursor, db_connection):
     """Test executemany with multi-column NULL arrays (50 records, 8 columns)."""
     try:
         # Create table with 8 columns of various types
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_null_arrays (
                 col1 INT,
                 col2 VARCHAR(100),
@@ -1921,7 +1980,8 @@ def test_executemany_multi_column_null_arrays(cursor, db_connection):
                 col7 BIGINT,
                 col8 DATE
             )
-        """)
+        """
+        )
 
         # Generate 50 rows with all NULL values across 8 columns
         data = [(None, None, None, None, None, None, None, None) for _ in range(50)]
@@ -1941,12 +2001,14 @@ def test_executemany_multi_column_null_arrays(cursor, db_connection):
             assert null_count == 50, f"Expected 50 NULLs in col{col_num}, got {null_count}"
 
         # Verify no non-NULL values exist
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT COUNT(*) FROM #pytest_null_arrays 
             WHERE col1 IS NOT NULL OR col2 IS NOT NULL OR col3 IS NOT NULL 
                OR col4 IS NOT NULL OR col5 IS NOT NULL OR col6 IS NOT NULL
                OR col7 IS NOT NULL OR col8 IS NOT NULL
-        """)
+        """
+        )
         non_null_count = cursor.fetchone()[0]
         assert non_null_count == 0, f"Expected 0 non-NULL values, got {non_null_count}"
 
@@ -1985,7 +2047,8 @@ def test_executemany_concurrent_null_parameters(db_connection):
 
     # Create table
     with db_connection.cursor() as cursor:
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             IF OBJECT_ID('{table_name}', 'U') IS NOT NULL
                 DROP TABLE {table_name}
             
@@ -1997,7 +2060,8 @@ def test_executemany_concurrent_null_parameters(db_connection):
                 col3 FLOAT,
                 col4 DATETIME
             )
-        """)
+        """
+        )
         db_connection.commit()
 
     # Execute multiple sequential insert operations
@@ -2252,12 +2316,14 @@ def test_insert_data_for_join(cursor, db_connection):
 def test_join_operations(cursor):
     """Test join operations"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT e.name, d.department_name, p.project_name
             FROM #pytest_employees e
             JOIN #pytest_departments d ON e.department_id = d.department_id
             JOIN #pytest_projects p ON e.employee_id = p.employee_id
-        """)
+        """
+        )
         rows = cursor.fetchall()
         assert len(rows) == 3, "Join operation returned incorrect number of rows"
         assert rows[0] == [
@@ -2347,10 +2413,12 @@ def test_execute_stored_procedure_with_parameters(cursor):
 def test_execute_stored_procedure_without_parameters(cursor):
     """Test executing stored procedure without parameters"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             DECLARE @EmployeeID INT = 2
             EXEC dbo.GetEmployeeProjects @EmployeeID
-        """)
+        """
+        )
         rows = cursor.fetchall()
         assert (
             len(rows) == 1
@@ -2570,21 +2638,25 @@ def test_row_attribute_access(cursor, db_connection):
     """Test accessing row values by column name as attributes"""
     try:
         # Create test table with multiple columns
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_row_attr_test (
                 id INT PRIMARY KEY,
                 name VARCHAR(50),
                 email VARCHAR(100),
                 age INT
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO #pytest_row_attr_test (id, name, email, age)
             VALUES (1, 'John Doe', 'john@example.com', 30)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test attribute access
@@ -2680,13 +2752,15 @@ def test_row_comparison_with_list(cursor, db_connection):
 def test_row_string_representation(cursor, db_connection):
     """Test Row string and repr representations"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_row_test (
             id INT PRIMARY KEY,
             text_col NVARCHAR(50),
             null_col INT
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         cursor.execute(
@@ -2719,13 +2793,15 @@ def test_row_string_representation(cursor, db_connection):
 def test_row_column_mapping(cursor, db_connection):
     """Test Row column name mapping"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_row_test (
             FirstColumn INT PRIMARY KEY,
             Second_Column NVARCHAR(50),
             [Complex Name!] INT
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         cursor.execute(
@@ -3208,10 +3284,12 @@ def test_execute_rowcount_chaining(cursor, db_connection):
         assert count == 1, "INSERT should affect 1 row"
 
         # Test multiple INSERT rowcount chaining
-        count = cursor.execute("""
+        count = cursor.execute(
+            """
             INSERT INTO #test_chaining (id, value) VALUES 
             (2, 'test2'), (3, 'test3'), (4, 'test4')
-        """).rowcount
+        """
+        ).rowcount
         assert count == 3, "Multiple INSERT should affect 3 rows"
 
         # Test UPDATE rowcount chaining
@@ -3446,7 +3524,8 @@ def test_cursor_next_with_different_data_types(cursor, db_connection):
     """Test next() functionality with various data types"""
     try:
         # Create test table with various data types
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_next_types (
                 id INT,
                 name NVARCHAR(50),
@@ -3455,7 +3534,8 @@ def test_cursor_next_with_different_data_types(cursor, db_connection):
                 created_date DATE,
                 created_time DATETIME
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data with different types
@@ -3647,14 +3727,16 @@ def test_execute_chaining_compatibility_examples(cursor, db_connection):
     """Test real-world chaining examples"""
     try:
         # Create users table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #users (
                 user_id INT IDENTITY(1,1) PRIMARY KEY,
                 user_name NVARCHAR(50),
                 last_logon DATETIME,
                 status NVARCHAR(20)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test users
@@ -4353,7 +4435,8 @@ def test_fetchval_different_data_types(cursor, db_connection):
     try:
         # Create test table with different data types
         drop_table_if_exists(cursor, "#pytest_fetchval_types")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_fetchval_types (
                 int_col INTEGER,
                 float_col FLOAT,
@@ -4365,14 +4448,17 @@ def test_fetchval_different_data_types(cursor, db_connection):
                 date_col DATE,
                 time_col TIME
             )
-        """)
+        """
+        )
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO #pytest_fetchval_types VALUES 
             (123, 45.67, 89.12, 'ASCII text', N'Unicode text', 1, 
              '2024-05-20 12:34:56', '2024-05-20', '12:34:56')
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test different data types
@@ -5670,21 +5756,25 @@ def test_cursor_rollback_data_consistency(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_rollback_orders")
         drop_table_if_exists(cursor, "#pytest_rollback_customers")
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_rollback_customers (
                 id INTEGER PRIMARY KEY, 
                 name VARCHAR(50)
             )
-        """)
+        """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_rollback_orders (
                 id INTEGER PRIMARY KEY, 
                 customer_id INTEGER, 
                 amount DECIMAL(10,2),
                 FOREIGN KEY (customer_id) REFERENCES #pytest_rollback_customers(id)
             )
-        """)
+        """
+        )
         cursor.commit()
 
         # Insert initial data
@@ -6166,26 +6256,32 @@ def test_tables_setup(cursor, db_connection):
         cursor.execute("DROP VIEW IF EXISTS pytest_tables_schema.test_view")
 
         # Create regular table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_tables_schema.regular_table (
             id INT PRIMARY KEY,
             name VARCHAR(100)
         )
-        """)
+        """
+        )
 
         # Create another table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_tables_schema.another_table (
             id INT PRIMARY KEY,
             description VARCHAR(200)
         )
-        """)
+        """
+        )
 
         # Create a view
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE VIEW pytest_tables_schema.test_view AS
         SELECT id, name FROM pytest_tables_schema.regular_table
-        """)
+        """
+        )
 
         db_connection.commit()
     except Exception as e:
@@ -6537,12 +6633,14 @@ def test_emoji_round_trip(cursor, db_connection):
         "1🚀' OR '1'='1",
     ]
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE #pytest_emoji_test (
             id INT IDENTITY PRIMARY KEY,
             content NVARCHAR(MAX)
         );
-    """)
+    """
+    )
     db_connection.commit()
 
     for text in test_inputs:
@@ -6694,14 +6792,16 @@ def test_empty_values_fetchmany(cursor, db_connection):
     try:
         # Create comprehensive test table
         drop_table_if_exists(cursor, "#pytest_fetchmany_empty")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_fetchmany_empty (
                 id INT,
                 varchar_col VARCHAR(50),
                 nvarchar_col NVARCHAR(50),
                 binary_col VARBINARY(50)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert multiple rows with empty values
@@ -6826,7 +6926,8 @@ def test_batch_fetch_empty_values_no_assertion_failure(cursor, db_connection):
     try:
         # Create comprehensive test table
         drop_table_if_exists(cursor, "#pytest_batch_empty_assertions")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_batch_empty_assertions (
                 id INT,
                 empty_varchar VARCHAR(100),
@@ -6836,24 +6937,29 @@ def test_batch_fetch_empty_values_no_assertion_failure(cursor, db_connection):
                 null_nvarchar NVARCHAR(100),
                 null_binary VARBINARY(100)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert rows with mix of empty and NULL values
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO #pytest_batch_empty_assertions VALUES 
             (1, '', '', 0x, NULL, NULL, NULL),
             (2, '', '', 0x, NULL, NULL, NULL),
             (3, '', '', 0x, NULL, NULL, NULL)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test fetchall - should not trigger any assertions about dataLen
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT empty_varchar, empty_nvarchar, empty_binary,
                    null_varchar, null_nvarchar, null_binary 
             FROM #pytest_batch_empty_assertions ORDER BY id
-        """)
+        """
+        )
 
         rows = cursor.fetchall()
         assert len(rows) == 3, "Should return 3 rows"
@@ -6870,10 +6976,12 @@ def test_batch_fetch_empty_values_no_assertion_failure(cursor, db_connection):
             assert row[5] is None, f"Row {i+1} null_binary should be None"
 
         # Test fetchmany - should also not trigger assertions
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT empty_nvarchar, empty_binary 
             FROM #pytest_batch_empty_assertions ORDER BY id
-        """)
+        """
+        )
 
         # Fetch in batches
         first_batch = cursor.fetchmany(2)
@@ -6913,13 +7021,15 @@ def test_executemany_utf16_length_validation(cursor, db_connection):
     try:
         # Create test table with small column size to trigger validation
         drop_table_if_exists(cursor, "#pytest_utf16_validation")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_utf16_validation (
                 id INT,
                 short_text NVARCHAR(5),  -- Small column to test length validation
                 medium_text NVARCHAR(10) -- Medium column for edge cases
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test 1: Valid strings that should work on all platforms
@@ -7065,12 +7175,14 @@ def test_binary_data_over_8000_bytes(cursor, db_connection):
     try:
         # Create test table with VARBINARY(MAX) to handle large data
         drop_table_if_exists(cursor, "#pytest_small_binary")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_small_binary (
                 id INT,
                 large_binary VARBINARY(MAX)
             )
-        """)
+        """
+        )
 
         # Test data that fits within both parameter and fetch limits (< 4096 bytes)
         medium_data = b"B" * 3000  # 3,000 bytes - under both limits
@@ -7104,12 +7216,14 @@ def test_varbinarymax_insert_fetch(cursor, db_connection):
     try:
         # Create test table
         drop_table_if_exists(cursor, "#pytest_varbinarymax")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_varbinarymax (
                 id INT,
                 binary_data VARBINARY(MAX)
             )
-        """)
+        """
+        )
 
         # Prepare test data - use moderate sizes to guarantee LOB fetch path (line 867-868) efficiently
         test_data = [
@@ -7176,12 +7290,14 @@ def test_all_empty_binaries(cursor, db_connection):
     try:
         # Create test table
         drop_table_if_exists(cursor, "#pytest_all_empty_binary")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_all_empty_binary (
                 id INT,
                 empty_binary VARBINARY(100)
             )
-        """)
+        """
+        )
 
         # Insert multiple rows with only empty binary data
         test_data = [
@@ -7220,12 +7336,14 @@ def test_mixed_bytes_and_bytearray_types(cursor, db_connection):
     try:
         # Create test table
         drop_table_if_exists(cursor, "#pytest_mixed_binary_types")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_mixed_binary_types (
                 id INT,
                 binary_data VARBINARY(100)
             )
-        """)
+        """
+        )
 
         # Test data mixing bytes and bytearray for the same column
         test_data = [
@@ -7280,12 +7398,14 @@ def test_binary_mostly_small_one_large(cursor, db_connection):
     try:
         # Create test table
         drop_table_if_exists(cursor, "#pytest_mixed_size_binary")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_mixed_size_binary (
                 id INT,
                 binary_data VARBINARY(MAX)
             )
-        """)
+        """
+        )
 
         # Create large binary value within both parameter and fetch limits (< 4096 bytes)
         large_binary = b"X" * 3500  # 3,500 bytes - under both limits
@@ -7345,12 +7465,14 @@ def test_varbinarymax_insert_fetch_null(cursor, db_connection):
     """Test insertion and retrieval of NULL value in VARBINARY(MAX) column."""
     try:
         drop_table_if_exists(cursor, "#pytest_varbinarymax_null")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_varbinarymax_null (
                 id INT,
                 binary_data VARBINARY(MAX)
             )
-        """)
+        """
+        )
 
         # Insert a row with NULL for binary_data
         cursor.execute(
@@ -7380,13 +7502,15 @@ def test_sql_double_type(cursor, db_connection):
     """Test SQL_DOUBLE type (FLOAT(53)) to cover line 3213 in dispatcher."""
     try:
         drop_table_if_exists(cursor, "#pytest_double_type")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_double_type (
                 id INT PRIMARY KEY,
                 double_col FLOAT(53),
                 float_col FLOAT
             )
-        """)
+        """
+        )
 
         # Insert test data with various double precision values
         test_data = [
@@ -7436,13 +7560,15 @@ def test_null_guid_type(cursor, db_connection):
     try:
         mssql_python.native_uuid = True
         drop_table_if_exists(cursor, "#pytest_null_guid")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_null_guid (
                 id INT PRIMARY KEY,
                 guid_col UNIQUEIDENTIFIER,
                 guid_nullable UNIQUEIDENTIFIER NULL
             )
-        """)
+        """
+        )
 
         # Insert test data with NULL and non-NULL GUIDs
         test_guid = uuid.uuid4()
@@ -7495,12 +7621,14 @@ def test_only_null_and_empty_binary(cursor, db_connection):
     try:
         # Create test table
         drop_table_if_exists(cursor, "#pytest_null_empty_binary")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_null_empty_binary (
                 id INT,
                 binary_data VARBINARY(100)
             )
-        """)
+        """
+        )
 
         # Test data with only NULL and empty values
         test_data = [
@@ -7823,7 +7951,8 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
     """Test inserting and retrieving valid MONEY and SMALLMONEY values including boundaries and typical data"""
     try:
         drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
@@ -7831,7 +7960,8 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
                 d DECIMAL(19,4),
                 n NUMERIC(10,4)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Max values
@@ -7921,13 +8051,15 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
 def test_money_smallmoney_null_handling(cursor, db_connection):
     """Test that NULL values for MONEY and SMALLMONEY are stored and retrieved correctly"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Row with both NULLs
@@ -7977,13 +8109,15 @@ def test_money_smallmoney_null_handling(cursor, db_connection):
 def test_money_smallmoney_roundtrip(cursor, db_connection):
     """Test inserting and retrieving MONEY and SMALLMONEY using decimal.Decimal roundtrip"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         values = (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543"))
@@ -8007,13 +8141,15 @@ def test_money_smallmoney_boundaries(cursor, db_connection):
     """Test boundary values for MONEY and SMALLMONEY types are handled correctly"""
     try:
         drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert max boundary
@@ -8053,13 +8189,15 @@ def test_money_smallmoney_boundaries(cursor, db_connection):
 def test_money_smallmoney_invalid_values(cursor, db_connection):
     """Test that invalid or out-of-range MONEY and SMALLMONEY values raise errors"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Out of range MONEY
@@ -8090,13 +8228,15 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
 def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
     """Test inserting and retrieving MONEY and SMALLMONEY using executemany with decimal.Decimal"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         test_data = [
@@ -8130,13 +8270,15 @@ def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
 def test_money_smallmoney_executemany_null_handling(cursor, db_connection):
     """Test inserting NULLs into MONEY and SMALLMONEY using executemany"""
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         rows = [
@@ -8194,12 +8336,14 @@ def test_uuid_insert_and_select_none(cursor, db_connection):
     table_name = "#pytest_uuid_nullable"
     try:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 id UNIQUEIDENTIFIER,
                 name NVARCHAR(50)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert a row with None for the UUID
@@ -8225,12 +8369,14 @@ def test_insert_multiple_uuids(cursor, db_connection):
     try:
         mssql_python.native_uuid = True
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 id UNIQUEIDENTIFIER PRIMARY KEY,
                 description NVARCHAR(50)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Prepare test data
@@ -8269,12 +8415,14 @@ def test_fetchmany_uuids(cursor, db_connection):
     try:
         mssql_python.native_uuid = True
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 id UNIQUEIDENTIFIER PRIMARY KEY,
                 description NVARCHAR(50)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         uuids_to_insert = {f"Item {i}": uuid.uuid4() for i in range(10)}
@@ -8311,12 +8459,14 @@ def test_uuid_insert_with_none(cursor, db_connection):
     table_name = "#pytest_uuid_none"
     try:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 id UNIQUEIDENTIFIER,
                 name NVARCHAR(50)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Alice"])
@@ -8415,12 +8565,14 @@ def test_executemany_uuid_insert_and_select(cursor, db_connection):
     try:
         # Drop and create a temporary table for the test
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 id UNIQUEIDENTIFIER PRIMARY KEY,
                 description NVARCHAR(50)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Generate data for insertion
@@ -8467,12 +8619,14 @@ def test_executemany_uuid_roundtrip_fixed_value(cursor, db_connection):
     table_name = "#pytest_uuid_fixed"
     try:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 id UNIQUEIDENTIFIER,
                 description NVARCHAR(50)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         fixed_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -8512,7 +8666,8 @@ def test_decimal_separator_with_multiple_values(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_multi_test (
             id INT PRIMARY KEY,
             positive_value DECIMAL(10, 2),
@@ -8520,13 +8675,16 @@ def test_decimal_separator_with_multiple_values(cursor, db_connection):
             zero_value DECIMAL(10, 2),
             small_value DECIMAL(10, 4)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_decimal_multi_test VALUES (1, 123.45, -67.89, 0.00, 0.0001)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with default separator first
@@ -8563,19 +8721,23 @@ def test_decimal_separator_calculations(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_calc_test (
             id INT PRIMARY KEY,
             value1 DECIMAL(10, 2),
             value2 DECIMAL(10, 2)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_decimal_calc_test VALUES (1, 10.25, 5.75)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with default separator
@@ -8614,12 +8776,14 @@ def test_decimal_separator_function(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_separator_test (
             id INT PRIMARY KEY,
             decimal_value DECIMAL(10, 2)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test values with default separator (.)
@@ -8704,21 +8868,25 @@ def test_lowercase_attribute(cursor, db_connection):
 
     try:
         # Create a test table with mixed-case column names
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_lowercase_test (
             ID INT PRIMARY KEY,
             UserName VARCHAR(50),
             EMAIL_ADDRESS VARCHAR(100),
             PhoneNumber VARCHAR(20)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_lowercase_test (ID, UserName, EMAIL_ADDRESS, PhoneNumber)
         VALUES (1, 'JohnDoe', 'john@example.com', '555-1234')
-        """)
+        """
+        )
         db_connection.commit()
 
         # First test with lowercase=False (default)
@@ -8773,12 +8941,14 @@ def test_decimal_separator_function(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_separator_test (
             id INT PRIMARY KEY,
             decimal_value DECIMAL(10, 2)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test values with default separator (.)
@@ -8860,7 +9030,8 @@ def test_decimal_separator_with_multiple_values(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_multi_test (
             id INT PRIMARY KEY,
             positive_value DECIMAL(10, 2),
@@ -8868,13 +9039,16 @@ def test_decimal_separator_with_multiple_values(cursor, db_connection):
             zero_value DECIMAL(10, 2),
             small_value DECIMAL(10, 4)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_decimal_multi_test VALUES (1, 123.45, -67.89, 0.00, 0.0001)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with default separator first
@@ -8911,19 +9085,23 @@ def test_decimal_separator_calculations(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_calc_test (
             id INT PRIMARY KEY,
             value1 DECIMAL(10, 2),
             value2 DECIMAL(10, 2)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_decimal_calc_test VALUES (1, 10.25, 5.75)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with default separator
@@ -9436,21 +9614,25 @@ def test_lowercase_attribute(cursor, db_connection):
 
     try:
         # Create a test table with mixed-case column names
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_lowercase_test (
             ID INT PRIMARY KEY,
             UserName VARCHAR(50),
             EMAIL_ADDRESS VARCHAR(100),
             PhoneNumber VARCHAR(20)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_lowercase_test (ID, UserName, EMAIL_ADDRESS, PhoneNumber)
         VALUES (1, 'JohnDoe', 'john@example.com', '555-1234')
-        """)
+        """
+        )
         db_connection.commit()
 
         # First test with lowercase=False (default)
@@ -9505,12 +9687,14 @@ def test_decimal_separator_function(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_separator_test (
             id INT PRIMARY KEY,
             decimal_value DECIMAL(10, 2)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test values with default separator (.)
@@ -9592,7 +9776,8 @@ def test_decimal_separator_with_multiple_values(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_multi_test (
             id INT PRIMARY KEY,
             positive_value DECIMAL(10, 2),
@@ -9600,13 +9785,16 @@ def test_decimal_separator_with_multiple_values(cursor, db_connection):
             zero_value DECIMAL(10, 2),
             small_value DECIMAL(10, 4)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_decimal_multi_test VALUES (1, 123.45, -67.89, 0.00, 0.0001)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with default separator first
@@ -9643,19 +9831,23 @@ def test_decimal_separator_calculations(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_calc_test (
             id INT PRIMARY KEY,
             value1 DECIMAL(10, 2),
             value2 DECIMAL(10, 2)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_decimal_calc_test VALUES (1, 10.25, 5.75)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with default separator
@@ -9694,12 +9886,14 @@ def test_cursor_setinputsizes_basic(db_connection):
 
     # Create a test table
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes")
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE #test_inputsizes (
         string_col NVARCHAR(100),
         int_col INT
     )
-    """)
+    """
+    )
 
     # Set input sizes for parameters
     cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 100, 0), (mssql_python.SQL_INTEGER, 0, 0)])
@@ -9725,13 +9919,15 @@ def test_cursor_setinputsizes_with_executemany_float(db_connection):
 
     # Create a test table
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_float")
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE #test_inputsizes_float (
         id INT,
         name NVARCHAR(50),
         price REAL  /* Use REAL instead of DECIMAL */
     )
-    """)
+    """
+    )
 
     # Prepare data with float values
     data = [(1, "Item 1", 10.99), (2, "Item 2", 20.50), (3, "Item 3", 30.75)]
@@ -9768,12 +9964,14 @@ def test_cursor_setinputsizes_reset(db_connection):
 
     # Create a test table
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_reset")
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE #test_inputsizes_reset (
         col1 NVARCHAR(100),
         col2 INT
     )
-    """)
+    """
+    )
 
     # Set input sizes for parameters
     cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 100, 0), (mssql_python.SQL_INTEGER, 0, 0)])
@@ -9808,12 +10006,14 @@ def test_cursor_setinputsizes_override_inference(db_connection):
 
     # Create a test table with specific types
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_override")
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE #test_inputsizes_override (
         small_int SMALLINT,
         big_text NVARCHAR(MAX)
     )
-    """)
+    """
+    )
 
     # Set input sizes that override the default inference
     # For SMALLINT, use a valid precision value (5 is typical for SMALLINT)
@@ -9869,13 +10069,15 @@ def test_setinputsizes_parameter_count_mismatch_fewer(db_connection):
 
     # Create a test table
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_mismatch")
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE #test_inputsizes_mismatch (
         col1 INT,
         col2 NVARCHAR(100),
         col3 FLOAT
     )
-    """)
+    """
+    )
 
     # Set fewer input sizes than parameters
     cursor.setinputsizes(
@@ -9918,12 +10120,14 @@ def test_setinputsizes_parameter_count_mismatch_more(db_connection):
 
     # Create a test table
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_mismatch")
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE #test_inputsizes_mismatch (
         col1 INT,
         col2 NVARCHAR(100)
     )
-    """)
+    """
+    )
 
     # Set more input sizes than parameters
     cursor.setinputsizes(
@@ -9958,7 +10162,8 @@ def test_setinputsizes_with_null_values(db_connection):
 
     # Create a test table with multiple data types
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_null")
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE #test_inputsizes_null (
         int_col INT,
         string_col NVARCHAR(100),
@@ -9966,7 +10171,8 @@ def test_setinputsizes_with_null_values(db_connection):
         date_col DATE,
         binary_col VARBINARY(100)
     )
-    """)
+    """
+    )
 
     # Set input sizes for all columns
     cursor.setinputsizes(
@@ -10269,15 +10475,18 @@ def test_procedures_setup(cursor, db_connection):
         )
 
         # Create test stored procedures
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE OR ALTER PROCEDURE pytest_proc_schema.test_proc1
         AS
         BEGIN
             SELECT 1 AS result
         END
-        """)
+        """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE OR ALTER PROCEDURE pytest_proc_schema.test_proc2 
             @param1 INT, 
             @param2 VARCHAR(50) OUTPUT
@@ -10286,7 +10495,8 @@ def test_procedures_setup(cursor, db_connection):
             SELECT @param2 = 'Output ' + CAST(@param1 AS VARCHAR(10))
             RETURN @param1
         END
-        """)
+        """
+        )
 
         db_connection.commit()
     except Exception as e:
@@ -10404,7 +10614,8 @@ def test_procedures_with_parameters(cursor, db_connection):
     """Test that procedures() correctly reports parameter information"""
     try:
         # Create a simpler procedure with basic parameters
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE OR ALTER PROCEDURE pytest_proc_schema.test_params_proc 
             @in1 INT, 
             @in2 VARCHAR(50)
@@ -10412,7 +10623,8 @@ def test_procedures_with_parameters(cursor, db_connection):
         BEGIN
             SELECT @in1 AS value1, @in2 AS value2
         END
-        """)
+        """
+        )
         db_connection.commit()
 
         # Get procedure info
@@ -10446,23 +10658,28 @@ def test_procedures_result_set_info(cursor, db_connection):
     """Test that procedures() reports information about result sets"""
     try:
         # Create procedures with different result set patterns
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE OR ALTER PROCEDURE pytest_proc_schema.test_no_results
         AS
         BEGIN
             DECLARE @x INT = 1
         END
-        """)
+        """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE OR ALTER PROCEDURE pytest_proc_schema.test_one_result
         AS
         BEGIN
             SELECT 1 AS col1, 'test' AS col2
         END
-        """)
+        """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE OR ALTER PROCEDURE pytest_proc_schema.test_multiple_results
         AS
         BEGIN
@@ -10470,7 +10687,8 @@ def test_procedures_result_set_info(cursor, db_connection):
             SELECT 'test' AS result2
             SELECT GETDATE() AS result3
         END
-        """)
+        """
+        )
         db_connection.commit()
 
         # Get procedure info for all test procedures
@@ -10552,15 +10770,18 @@ def test_foreignkeys_setup(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
 
         # Create parent table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_fk_schema.customers (
             customer_id INT PRIMARY KEY,
             customer_name VARCHAR(100) NOT NULL
         )
-        """)
+        """
+        )
 
         # Create child table with foreign key
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_fk_schema.orders (
             order_id INT PRIMARY KEY,
             order_date DATETIME NOT NULL,
@@ -10569,18 +10790,23 @@ def test_foreignkeys_setup(cursor, db_connection):
             CONSTRAINT FK_Orders_Customers FOREIGN KEY (customer_id)
                 REFERENCES pytest_fk_schema.customers (customer_id)
         )
-        """)
+        """
+        )
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO pytest_fk_schema.customers (customer_id, customer_name)
         VALUES (1, 'Test Customer 1'), (2, 'Test Customer 2')
-        """)
+        """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO pytest_fk_schema.orders (order_id, order_date, customer_id, total_amount)
         VALUES (101, GETDATE(), 1, 150.00), (102, GETDATE(), 2, 250.50)
-        """)
+        """
+        )
 
         db_connection.commit()
     except Exception as e:
@@ -10808,17 +11034,20 @@ def test_foreignkeys_multiple_column_fk(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.product_variants")
 
         # Create parent table with composite primary key
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_fk_schema.product_variants (
             product_id INT NOT NULL,
             variant_id INT NOT NULL,
             variant_name VARCHAR(100) NOT NULL,
             PRIMARY KEY (product_id, variant_id)
         )
-        """)
+        """
+        )
 
         # Create child table with composite foreign key
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_fk_schema.order_details (
             order_id INT NOT NULL,
             product_id INT NOT NULL,
@@ -10828,7 +11057,8 @@ def test_foreignkeys_multiple_column_fk(cursor, db_connection):
             CONSTRAINT FK_OrderDetails_ProductVariants FOREIGN KEY (product_id, variant_id)
                 REFERENCES pytest_fk_schema.product_variants (product_id, variant_id)
         )
-        """)
+        """
+        )
 
         db_connection.commit()
 
@@ -10893,23 +11123,27 @@ def test_primarykeys_setup(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS pytest_pk_schema.composite_pk_test")
 
         # Create table with simple primary key
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_pk_schema.single_pk_test (
             id INT PRIMARY KEY,
             name VARCHAR(100) NOT NULL,
             description VARCHAR(200) NULL
         )
-        """)
+        """
+        )
 
         # Create table with composite primary key
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_pk_schema.composite_pk_test (
             dept_id INT NOT NULL,
             emp_id INT NOT NULL,
             hire_date DATE NOT NULL,
             CONSTRAINT PK_composite_test PRIMARY KEY (dept_id, emp_id)
         )
-        """)
+        """
+        )
 
         db_connection.commit()
     except Exception as e:
@@ -11220,13 +11454,15 @@ def test_rowcount(cursor, db_connection):
         cursor.execute("INSERT INTO #pytest_test_rowcount (name) VALUES ('JohnDoe3');")
         assert cursor.rowcount == 1, "Rowcount should be 1 after third insert"
 
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO #pytest_test_rowcount (name) 
             VALUES 
             ('JohnDoe4'), 
             ('JohnDoe5'), 
             ('JohnDoe6');
-        """)
+        """
+        )
         assert cursor.rowcount == 3, "Rowcount should be 3 after inserting multiple rows"
 
         cursor.execute("SELECT * FROM #pytest_test_rowcount;")
@@ -11261,26 +11497,31 @@ def test_specialcolumns_setup(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.identity_test")
 
         # Create table with primary key (for rowIdColumns)
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_special_schema.rowid_test (
             id INT PRIMARY KEY,
             name NVARCHAR(100) NOT NULL,
             unique_col NVARCHAR(100) UNIQUE,
             non_unique_col NVARCHAR(100)
         )
-        """)
+        """
+        )
 
         # Create table with rowversion column (for rowVerColumns)
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_special_schema.timestamp_test (
             id INT PRIMARY KEY,
             name NVARCHAR(100) NOT NULL,
             last_updated ROWVERSION
         )
-        """)
+        """
+        )
 
         # Create table with multiple unique identifiers
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_special_schema.multiple_unique_test (
             id INT NOT NULL,
             code VARCHAR(10) NOT NULL,
@@ -11288,16 +11529,19 @@ def test_specialcolumns_setup(cursor, db_connection):
             order_number VARCHAR(20) UNIQUE,
             CONSTRAINT PK_multiple_unique_test PRIMARY KEY (id, code)
         )
-        """)
+        """
+        )
 
         # Create table with identity column
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_special_schema.identity_test (
             id INT IDENTITY(1,1) PRIMARY KEY,
             name NVARCHAR(100) NOT NULL,
             last_modified DATETIME DEFAULT GETDATE()
         )
-        """)
+        """
+        )
 
         db_connection.commit()
     except Exception as e:
@@ -11416,12 +11660,14 @@ def test_rowid_columns_nullable(cursor, db_connection):
     """Test rowIdColumns with nullable parameter"""
     try:
         # First create a table with nullable unique column and non-nullable PK
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_special_schema.nullable_test (
             id INT PRIMARY KEY, -- PK can't be nullable in SQL Server
             data NVARCHAR(100) NULL
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with nullable=True (default)
@@ -11514,12 +11760,14 @@ def test_rowver_columns_nullable(cursor, db_connection):
     """Test rowVerColumns with nullable parameter (not expected to have effect)"""
     try:
         # First create a table with rowversion column
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_special_schema.nullable_rowver_test (
             id INT PRIMARY KEY,
             ts ROWVERSION
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with nullable=True (default)
@@ -11628,7 +11876,8 @@ def test_statistics_setup(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS pytest_stats_schema.empty_stats_test")
 
         # Create test table with various indexes
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_stats_schema.stats_test (
             id INT PRIMARY KEY,
             name VARCHAR(100) NOT NULL,
@@ -11637,25 +11886,32 @@ def test_statistics_setup(cursor, db_connection):
             salary DECIMAL(10, 2) NULL,
             hire_date DATE NOT NULL
         )
-        """)
+        """
+        )
 
         # Create a non-unique index
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE INDEX IX_stats_test_dept_date ON pytest_stats_schema.stats_test (department, hire_date)
-        """)
+        """
+        )
 
         # Create a unique index on multiple columns
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE UNIQUE INDEX UX_stats_test_name_dept ON pytest_stats_schema.stats_test (name, department)
-        """)
+        """
+        )
 
         # Create an empty table for testing
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE pytest_stats_schema.empty_stats_test (
             id INT PRIMARY KEY,
             data VARCHAR(100) NULL
         )
-        """)
+        """
+        )
 
         db_connection.commit()
     except Exception as e:
@@ -11920,7 +12176,8 @@ def test_columns_setup(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS pytest_cols_schema.columns_special_test")
 
         # Create test table with various column types
-        cursor.execute(""" 
+        cursor.execute(
+            """ 
         CREATE TABLE pytest_cols_schema.columns_test (
             id INT PRIMARY KEY,
             name NVARCHAR(100) NOT NULL,
@@ -11932,10 +12189,12 @@ def test_columns_setup(cursor, db_connection):
             notes TEXT NULL,
             [computed_col] AS (name + ' - ' + CAST(id AS VARCHAR(10)))
         )
-        """)
+        """
+        )
 
         # Create table with special column names and edge cases - fix the problematic column name
-        cursor.execute(""" 
+        cursor.execute(
+            """ 
         CREATE TABLE pytest_cols_schema.columns_special_test (
             [ID] INT PRIMARY KEY,
             [User Name] NVARCHAR(100) NULL,
@@ -11947,7 +12206,8 @@ def test_columns_setup(cursor, db_connection):
             [Column/With/Slashes] VARCHAR(20) NULL,
             [Column_With_Underscores] VARCHAR(20) NULL  -- Changed from problematic nested brackets
         )
-        """)
+        """
+        )
 
         db_connection.commit()
     except Exception as e:
@@ -12411,21 +12671,25 @@ def test_lowercase_attribute(cursor, db_connection):
 
     try:
         # Create a test table with mixed-case column names
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_lowercase_test (
             ID INT PRIMARY KEY,
             UserName VARCHAR(50),
             EMAIL_ADDRESS VARCHAR(100),
             PhoneNumber VARCHAR(20)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_lowercase_test (ID, UserName, EMAIL_ADDRESS, PhoneNumber)
         VALUES (1, 'JohnDoe', 'john@example.com', '555-1234')
-        """)
+        """
+        )
         db_connection.commit()
 
         # First test with lowercase=False (default)
@@ -12480,12 +12744,14 @@ def test_decimal_separator_function(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_separator_test (
             id INT PRIMARY KEY,
             decimal_value DECIMAL(10, 2)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test values with default separator (.)
@@ -12567,7 +12833,8 @@ def test_decimal_separator_with_multiple_values(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_multi_test (
             id INT PRIMARY KEY,
             positive_value DECIMAL(10, 2),
@@ -12575,13 +12842,16 @@ def test_decimal_separator_with_multiple_values(cursor, db_connection):
             zero_value DECIMAL(10, 2),
             small_value DECIMAL(10, 4)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_decimal_multi_test VALUES (1, 123.45, -67.89, 0.00, 0.0001)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with default separator first
@@ -12618,19 +12888,23 @@ def test_decimal_separator_calculations(cursor, db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #pytest_decimal_calc_test (
             id INT PRIMARY KEY,
             value1 DECIMAL(10, 2),
             value2 DECIMAL(10, 2)
         )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("""
+        cursor.execute(
+            """
         INSERT INTO #pytest_decimal_calc_test VALUES (1, 10.25, 5.75)
-        """)
+        """
+        )
         db_connection.commit()
 
         # Test with default separator
@@ -12667,12 +12941,14 @@ def test_executemany_with_uuids(cursor, db_connection):
     table_name = "#pytest_uuid_batch"
     try:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 id UNIQUEIDENTIFIER,
                 description NVARCHAR(50)
             )
-        """)
+        """
+        )
         db_connection.commit()
 
         # Prepare test data: mix of UUIDs and None
@@ -12817,11 +13093,13 @@ def test_date_string_parameter_binding(cursor, db_connection):
     table_name = "#pytest_date_string"
     try:
         drop_table_if_exists(cursor, table_name)
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 a_column VARCHAR(20)
             )
-        """)
+        """
+        )
         cursor.execute(f"INSERT INTO {table_name} (a_column) VALUES ('string1'), ('string2')")
         db_connection.commit()
 
@@ -12848,11 +13126,13 @@ def test_time_string_parameter_binding(cursor, db_connection):
     table_name = "#pytest_time_string"
     try:
         drop_table_if_exists(cursor, table_name)
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 time_col VARCHAR(22)
             )
-        """)
+        """
+        )
         cursor.execute(f"INSERT INTO {table_name} (time_col) VALUES ('prefix_14:30:45_suffix')")
         db_connection.commit()
 
@@ -12877,11 +13157,13 @@ def test_datetime_string_parameter_binding(cursor, db_connection):
     table_name = "#pytest_datetime_string"
     try:
         drop_table_if_exists(cursor, table_name)
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 datetime_col VARCHAR(33)
             )
-        """)
+        """
+        )
         cursor.execute(
             f"INSERT INTO {table_name} (datetime_col) VALUES ('prefix_2025-08-12T14:30:45_suffix')"
         )
@@ -13745,12 +14027,14 @@ def test_column_metadata_error_handling(cursor):
     """Test column metadata retrieval error handling (Lines 1156-1167)."""
 
     # Execute a complex query that might stress metadata retrieval
-    cursor.execute("""
+    cursor.execute(
+        """
         SELECT 
             CAST(1 as INT) as int_col,
             CAST('test' as NVARCHAR(100)) as nvarchar_col,
             CAST(NEWID() as UNIQUEIDENTIFIER) as guid_col
-    """)
+    """
+    )
 
     # This should exercise the metadata retrieval code paths
     # If there are any errors, they should be logged but not crash
@@ -13866,12 +14150,14 @@ def test_row_uuid_processing_with_braces(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_uuid_braces")
 
         # Create table with UNIQUEIDENTIFIER column
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_uuid_braces (
                 id INT IDENTITY(1,1),
                 guid_col UNIQUEIDENTIFIER
             )
-        """)
+        """
+        )
 
         # Insert a GUID with braces (this is how SQL Server often returns them)
         test_guid = "12345678-1234-5678-9ABC-123456789ABC"
@@ -13915,12 +14201,14 @@ def test_row_uuid_processing_sql_guid_type(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_sql_guid_type")
 
         # Create table with UNIQUEIDENTIFIER column
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_sql_guid_type (
                 id INT,
                 guid_col UNIQUEIDENTIFIER
             )
-        """)
+        """
+        )
 
         # Insert test data
         test_guid = "ABCDEF12-3456-7890-ABCD-1234567890AB"
@@ -13966,12 +14254,14 @@ def test_row_output_converter_overflow_error(cursor, db_connection):
     try:
         # Create a table with integer column
         drop_table_if_exists(cursor, "#pytest_overflow_test")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_overflow_test (
                 id INT,
                 small_int TINYINT  -- TINYINT can only hold 0-255
             )
-        """)
+        """
+        )
 
         # Insert a valid value first
         cursor.execute("INSERT INTO #pytest_overflow_test (id, small_int) VALUES (?, ?)", [1, 100])
@@ -14021,12 +14311,14 @@ def test_row_output_converter_general_exception(cursor, db_connection):
     try:
         # Create a table with string column
         drop_table_if_exists(cursor, "#pytest_exception_test")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_exception_test (
                 id INT,
                 text_col VARCHAR(50)
             )
-        """)
+        """
+        )
 
         # Insert test data
         cursor.execute(
@@ -14077,12 +14369,14 @@ def test_row_cursor_log_method_availability(cursor, db_connection):
     try:
         # Create test data
         drop_table_if_exists(cursor, "#pytest_log_check")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_log_check (
                 id INT,
                 value_col INT
             )
-        """)
+        """
+        )
 
         cursor.execute("INSERT INTO #pytest_log_check (id, value_col) VALUES (?, ?)", [1, 42])
         db_connection.commit()
@@ -14110,7 +14404,8 @@ def test_all_numeric_types_with_nulls(cursor, db_connection):
     """Test NULL handling for all numeric types to ensure processor functions handle NULLs correctly"""
     try:
         drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_all_numeric_nulls (
                 int_col INT,
                 bigint_col BIGINT,
@@ -14120,7 +14415,8 @@ def test_all_numeric_types_with_nulls(cursor, db_connection):
                 real_col REAL,
                 float_col FLOAT
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert row with all NULLs
@@ -14162,14 +14458,16 @@ def test_lob_data_types(cursor, db_connection):
     """Test LOB (Large Object) data types to ensure LOB fallback paths are exercised"""
     try:
         drop_table_if_exists(cursor, "#pytest_lob_test")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_lob_test (
                 id INT,
                 text_lob VARCHAR(MAX),
                 ntext_lob NVARCHAR(MAX),
                 binary_lob VARBINARY(MAX)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Create large data that will trigger LOB handling
@@ -14202,12 +14500,14 @@ def test_lob_char_column_types(cursor, db_connection):
     """Test LOB fetching specifically for CHAR/VARCHAR columns (covers lines 3313-3314)"""
     try:
         drop_table_if_exists(cursor, "#pytest_lob_char")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_lob_char (
                 id INT,
                 char_lob VARCHAR(MAX)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Create data large enough to trigger LOB path (>8000 bytes)
@@ -14234,12 +14534,14 @@ def test_lob_wchar_column_types(cursor, db_connection):
     """Test LOB fetching specifically for WCHAR/NVARCHAR columns (covers lines 3358-3359)"""
     try:
         drop_table_if_exists(cursor, "#pytest_lob_wchar")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_lob_wchar (
                 id INT,
                 wchar_lob NVARCHAR(MAX)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Create unicode data large enough to trigger LOB path (>4000 characters for NVARCHAR)
@@ -14266,12 +14568,14 @@ def test_lob_binary_column_types(cursor, db_connection):
     """Test LOB fetching specifically for BINARY/VARBINARY columns (covers lines 3384-3385)"""
     try:
         drop_table_if_exists(cursor, "#pytest_lob_binary")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_lob_binary (
                 id INT,
                 binary_lob VARBINARY(MAX)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Create binary data large enough to trigger LOB path (>8000 bytes)
@@ -14298,14 +14602,16 @@ def test_zero_length_complex_types(cursor, db_connection):
     """Test zero-length data for complex types (covers lines 3531-3533)"""
     try:
         drop_table_if_exists(cursor, "#pytest_zero_length")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_zero_length (
                 id INT,
                 empty_varchar VARCHAR(100),
                 empty_nvarchar NVARCHAR(100),
                 empty_binary VARBINARY(100)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert empty (non-NULL) values
@@ -14333,12 +14639,14 @@ def test_guid_with_nulls(cursor, db_connection):
     """Test GUID type with NULL values"""
     try:
         drop_table_if_exists(cursor, "#pytest_guid_nulls")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_guid_nulls (
                 id INT,
                 guid_col UNIQUEIDENTIFIER
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert NULL GUID
@@ -14365,12 +14673,14 @@ def test_datetimeoffset_with_nulls(cursor, db_connection):
     """Test DATETIMEOFFSET type with NULL values"""
     try:
         drop_table_if_exists(cursor, "#pytest_dto_nulls")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_dto_nulls (
                 id INT,
                 dto_col DATETIMEOFFSET
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert NULL DATETIMEOFFSET
@@ -14397,12 +14707,14 @@ def test_decimal_conversion_edge_cases(cursor, db_connection):
     """Test DECIMAL/NUMERIC type conversion including edge cases"""
     try:
         drop_table_if_exists(cursor, "#pytest_decimal_edge")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_decimal_edge (
                 id INT,
                 dec_col DECIMAL(18, 4)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert various decimal values including edge cases
@@ -14523,7 +14835,8 @@ def test_all_numeric_types_with_nulls(cursor, db_connection):
     """Test NULL handling for all numeric types to ensure processor functions handle NULLs correctly"""
     try:
         drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_all_numeric_nulls (
                 int_col INT,
                 bigint_col BIGINT,
@@ -14533,7 +14846,8 @@ def test_all_numeric_types_with_nulls(cursor, db_connection):
                 real_col REAL,
                 float_col FLOAT
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert row with all NULLs
@@ -14575,14 +14889,16 @@ def test_lob_data_types(cursor, db_connection):
     """Test LOB (Large Object) data types to ensure LOB fallback paths are exercised"""
     try:
         drop_table_if_exists(cursor, "#pytest_lob_test")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_lob_test (
                 id INT,
                 text_lob VARCHAR(MAX),
                 ntext_lob NVARCHAR(MAX),
                 binary_lob VARBINARY(MAX)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Create large data that will trigger LOB handling
@@ -14615,12 +14931,14 @@ def test_lob_char_column_types(cursor, db_connection):
     """Test LOB fetching specifically for CHAR/VARCHAR columns (covers lines 3313-3314)"""
     try:
         drop_table_if_exists(cursor, "#pytest_lob_char")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_lob_char (
                 id INT,
                 char_lob VARCHAR(MAX)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Create data large enough to trigger LOB path (>8000 bytes)
@@ -14647,12 +14965,14 @@ def test_lob_wchar_column_types(cursor, db_connection):
     """Test LOB fetching specifically for WCHAR/NVARCHAR columns (covers lines 3358-3359)"""
     try:
         drop_table_if_exists(cursor, "#pytest_lob_wchar")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_lob_wchar (
                 id INT,
                 wchar_lob NVARCHAR(MAX)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Create unicode data large enough to trigger LOB path (>4000 characters for NVARCHAR)
@@ -14679,12 +14999,14 @@ def test_lob_binary_column_types(cursor, db_connection):
     """Test LOB fetching specifically for BINARY/VARBINARY columns (covers lines 3384-3385)"""
     try:
         drop_table_if_exists(cursor, "#pytest_lob_binary")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_lob_binary (
                 id INT,
                 binary_lob VARBINARY(MAX)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Create binary data large enough to trigger LOB path (>8000 bytes)
@@ -14711,14 +15033,16 @@ def test_zero_length_complex_types(cursor, db_connection):
     """Test zero-length data for complex types (covers lines 3531-3533)"""
     try:
         drop_table_if_exists(cursor, "#pytest_zero_length")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_zero_length (
                 id INT,
                 empty_varchar VARCHAR(100),
                 empty_nvarchar NVARCHAR(100),
                 empty_binary VARBINARY(100)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert empty (non-NULL) values
@@ -14746,12 +15070,14 @@ def test_guid_with_nulls(cursor, db_connection):
     """Test GUID type with NULL values"""
     try:
         drop_table_if_exists(cursor, "#pytest_guid_nulls")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_guid_nulls (
                 id INT,
                 guid_col UNIQUEIDENTIFIER
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert NULL GUID
@@ -14778,12 +15104,14 @@ def test_datetimeoffset_with_nulls(cursor, db_connection):
     """Test DATETIMEOFFSET type with NULL values"""
     try:
         drop_table_if_exists(cursor, "#pytest_dto_nulls")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_dto_nulls (
                 id INT,
                 dto_col DATETIMEOFFSET
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert NULL DATETIMEOFFSET
@@ -14810,12 +15138,14 @@ def test_decimal_conversion_edge_cases(cursor, db_connection):
     """Test DECIMAL/NUMERIC type conversion including edge cases"""
     try:
         drop_table_if_exists(cursor, "#pytest_decimal_edge")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_decimal_edge (
                 id INT,
                 dec_col DECIMAL(18, 4)
             )
-            """)
+            """
+        )
         db_connection.commit()
 
         # Insert various decimal values including edge cases
@@ -14936,14 +15266,16 @@ def test_fetchall_with_integrity_constraint(cursor, db_connection):
     try:
         # Setup table with unique constraint
         cursor.execute("DROP TABLE IF EXISTS #uniq_cons_test")
-        cursor.execute("""
+        cursor.execute(
+            """
         CREATE TABLE #uniq_cons_test (
             id INTEGER NOT NULL IDENTITY,
             data VARCHAR(50) NULL,
             PRIMARY KEY (id),
             UNIQUE (data)
         )
-        """)
+        """
+        )
 
         # Insert initial row - should work
         cursor.execute(
@@ -15179,7 +15511,8 @@ def test_native_uuid_non_uuid_columns_unaffected(db_connection):
         mssql_python.native_uuid = False
 
         drop_table_if_exists(cursor, "#test_uuid_other_cols")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_uuid_other_cols (
                 id UNIQUEIDENTIFIER,
                 int_col INT,
@@ -15187,7 +15520,8 @@ def test_native_uuid_non_uuid_columns_unaffected(db_connection):
                 float_col FLOAT,
                 bit_col BIT
             )
-        """)
+        """
+        )
         test_uuid = uuid.uuid4()
         cursor.execute(
             "INSERT INTO #test_uuid_other_cols VALUES (?, ?, ?, ?, ?)",
@@ -15412,12 +15746,14 @@ def test_executemany_uuid_output_sets_uuid_str_indices(conn_str):
         conn = mssql_python.connect(conn_str)
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #executemany_uuid_output (
                 id INT IDENTITY(1,1),
                 guid UNIQUEIDENTIFIER DEFAULT NEWID()
             )
-        """)
+        """
+        )
 
         # executemany with OUTPUT — produces a result set with a UUID column
         cursor.executemany(
@@ -15461,12 +15797,14 @@ def test_executemany_no_result_set_clears_uuid_str_indices(conn_str):
         conn = mssql_python.connect(conn_str)
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #executemany_no_output (
                 id INT,
                 guid UNIQUEIDENTIFIER
             )
-        """)
+        """
+        )
 
         # Plain INSERT — no OUTPUT clause, no result set produced
         cursor.executemany(
@@ -15504,12 +15842,14 @@ def test_executemany_describe_col_exception_sets_description_none(conn_str):
         conn = mssql_python.connect(conn_str)
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #executemany_except_test (
                 id INT,
                 guid UNIQUEIDENTIFIER
             )
-        """)
+        """
+        )
 
         # Capture the real DDBCSQLDescribeCol so we can patch only during executemany
         real_describe = mssql_python.cursor.ddbc_bindings.DDBCSQLDescribeCol
