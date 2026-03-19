@@ -358,6 +358,112 @@ def test_insert_time_column_preserves_microseconds(cursor, db_connection):
         db_connection.commit()
 
 
+def test_time_column_with_null(cursor, db_connection):
+    """Test TIME(2) column with NULL values — exercises NULL branch in SQLGetData path."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_null")
+        cursor.execute("CREATE TABLE #pytest_time_null (id INT, time_column TIME(2))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_time_null VALUES (1, '10:30:00.00')")
+        cursor.execute("INSERT INTO #pytest_time_null VALUES (2, NULL)")
+        cursor.execute("INSERT INTO #pytest_time_null VALUES (3, '23:59:59.99')")
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_null ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3
+        assert rows[0][0] == time(10, 30, 0)
+        assert rows[1][0] is None, "NULL TIME should be returned as None"
+        assert rows[2][0] == time(23, 59, 59, 990000)
+    except Exception as e:
+        pytest.fail(f"TIME with NULL test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_null")
+        db_connection.commit()
+
+
+def test_time_column_no_fractional_seconds(cursor, db_connection):
+    """Test TIME(0) column without fractional seconds — exercises dotPos==npos branch."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_nofrac")
+        cursor.execute("CREATE TABLE #pytest_time_nofrac (time_column TIME(0))")
+        db_connection.commit()
+        cursor.execute(
+            "INSERT INTO #pytest_time_nofrac (time_column) VALUES (?)", [time(8, 15, 30)]
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_nofrac")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == time(8, 15, 30)
+    except Exception as e:
+        pytest.fail(f"TIME(0) no fractional seconds test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_nofrac")
+        db_connection.commit()
+
+
+def test_time_column_batch_fetch(cursor, db_connection):
+    """Test fetching multiple TIME(6) rows via fetchall — exercises batch/column-bound path."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_batch")
+        cursor.execute("CREATE TABLE #pytest_time_batch (id INT, time_column TIME(6))")
+        db_connection.commit()
+
+        expected = [
+            time(0, 0, 0),
+            time(6, 30, 0, 123456),
+            time(12, 0, 0),
+            time(18, 45, 59, 999999),
+            time(23, 59, 59, 0),
+        ]
+        for i, t in enumerate(expected):
+            cursor.execute("INSERT INTO #pytest_time_batch (id, time_column) VALUES (?, ?)", [i, t])
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_batch ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == len(expected)
+        for i, row in enumerate(rows):
+            assert row[0] == expected[i], f"Row {i}: expected {expected[i]}, got {row[0]}"
+    except Exception as e:
+        pytest.fail(f"TIME batch fetch test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_batch")
+        db_connection.commit()
+
+
+def test_time_executemany(cursor, db_connection):
+    """Test executemany with TIME column — exercises cursor.py time→isoformat conversion."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_execmany")
+        cursor.execute("CREATE TABLE #pytest_time_execmany (id INT, time_column TIME(6))")
+        db_connection.commit()
+
+        values = [
+            (1, time(9, 0, 0)),
+            (2, time(14, 30, 15, 234567)),
+            (3, time(23, 59, 59, 999999)),
+        ]
+        cursor.executemany(
+            "INSERT INTO #pytest_time_execmany (id, time_column) VALUES (?, ?)", values
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, time_column FROM #pytest_time_execmany ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3
+        for (exp_id, exp_time), row in zip(values, rows):
+            assert row[0] == exp_id
+            assert row[1] == exp_time, f"id {exp_id}: expected {exp_time}, got {row[1]}"
+    except Exception as e:
+        pytest.fail(f"TIME executemany test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_execmany")
+        db_connection.commit()
+
+
 def test_insert_datetime_column(cursor, db_connection):
     """Test inserting data into the datetime_column"""
     try:
