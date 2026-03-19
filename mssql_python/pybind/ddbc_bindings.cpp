@@ -17,7 +17,6 @@
 #include <iostream>
 #include <utility>  // std::forward
 
-
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
 //-------------------------------------------------------------------------------------------------
@@ -69,7 +68,9 @@ inline py::object ParseSqlTimeTextToPythonObject(const char* timeText, SQLLEN ti
     if (timeTextLen == SQL_NO_TOTAL) {
         // When the driver reports SQL_NO_TOTAL, the buffer may not be null-terminated.
         // Bound the scan to the maximum expected TIME/TIME2 text length.
-        len = static_cast<size_t>(std::strnlen(timeText, SQL_TIME_TEXT_MAX_LEN - 1));
+        const void* nul = std::memchr(timeText, '\0', SQL_TIME_TEXT_MAX_LEN - 1);
+        len = nul ? static_cast<size_t>(static_cast<const char*>(nul) - timeText)
+                  : static_cast<size_t>(SQL_TIME_TEXT_MAX_LEN - 1);
     } else {
         len = static_cast<size_t>(timeTextLen);
         if (len > SQL_TIME_TEXT_MAX_LEN - 1) {
