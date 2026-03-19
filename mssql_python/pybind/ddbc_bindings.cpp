@@ -9,13 +9,14 @@
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
 
-#include <cstdint>
 #include <cctype>
+#include <cstdint>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
+
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
@@ -64,9 +65,16 @@ inline py::object ParseSqlTimeTextToPythonObject(const char* timeText, SQLLEN ti
         return py::none();
     }
 
-    size_t len = static_cast<size_t>(timeTextLen);
+    size_t len;
     if (timeTextLen == SQL_NO_TOTAL) {
-        len = std::strlen(timeText);
+        // When the driver reports SQL_NO_TOTAL, the buffer may not be null-terminated.
+        // Bound the scan to the maximum expected TIME/TIME2 text length.
+        len = static_cast<size_t>(std::strnlen(timeText, SQL_TIME_TEXT_MAX_LEN - 1));
+    } else {
+        len = static_cast<size_t>(timeTextLen);
+        if (len > SQL_TIME_TEXT_MAX_LEN - 1) {
+            len = SQL_TIME_TEXT_MAX_LEN - 1;
+        }
     }
 
     std::string value(timeText, len);
@@ -79,8 +87,8 @@ inline py::object ParseSqlTimeTextToPythonObject(const char* timeText, SQLLEN ti
     value = value.substr(start, end - start + 1);
 
     size_t firstColon = value.find(':');
-    size_t secondColon = (firstColon == std::string::npos) ? std::string::npos
-                                                            : value.find(':', firstColon + 1);
+    size_t secondColon =
+        (firstColon == std::string::npos) ? std::string::npos : value.find(':', firstColon + 1);
     if (firstColon == std::string::npos || secondColon == std::string::npos) {
         ThrowStdException("Failed to parse TIME/TIME2 value: missing ':' separators");
     }
@@ -99,7 +107,8 @@ inline py::object ParseSqlTimeTextToPythonObject(const char* timeText, SQLLEN ti
         std::string frac = value.substr(dotPos + 1);
 
         size_t digitCount = 0;
-        while (digitCount < frac.size() && std::isdigit(static_cast<unsigned char>(frac[digitCount]))) {
+        while (digitCount < frac.size() &&
+               std::isdigit(static_cast<unsigned char>(frac[digitCount]))) {
             ++digitCount;
         }
         frac = frac.substr(0, digitCount);
@@ -3312,10 +3321,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_SS_TIME2: {
                 char timeTextBuffer[SQL_TIME_TEXT_MAX_LEN] = {0};
                 SQLLEN timeDataLen = 0;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, &timeTextBuffer, sizeof(timeTextBuffer),
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, timeTextBuffer, sizeof(timeTextBuffer),
                                      &timeDataLen);
-                if (SQL_SUCCEEDED(ret) && timeDataLen != SQL_NULL_DATA) {
-                    row.append(ParseSqlTimeTextToPythonObject(timeTextBuffer, timeDataLen));
+                if (SQL_SUCCEEDED(ret)) {
+                    if (timeDataLen == SQL_NULL_DATA) {
+                        // Normal NULL value: append None without logging an error.
+                        row.append(py::none());
+                    } else {
+                        row.append(ParseSqlTimeTextToPythonObject(timeTextBuffer, timeDataLen));
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_SS_TIME2 for column "
                         "%d - SQLRETURN=%d",
@@ -4140,7 +4154,8 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 break;
             case SQL_SS_UDT:
                 rowSize += (static_cast<SQLLEN>(columnSize) == SQL_NO_TOTAL || columnSize == 0)
-                               ? SQL_MAX_LOB_SIZE : columnSize;
+                               ? SQL_MAX_LOB_SIZE
+                               : columnSize;
                 break;
             case SQL_BINARY:
             case SQL_VARBINARY:
@@ -4204,8 +4219,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
-             dataType == SQL_SS_UDT) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
@@ -4344,8 +4358,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
-             dataType == SQL_SS_UDT) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }

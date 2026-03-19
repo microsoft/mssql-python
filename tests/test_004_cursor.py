@@ -307,7 +307,7 @@ def test_insert_nvarchar_column(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Nvarchar column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE #pytest_single_column")
+        drop_table_if_exists(cursor, "#pytest_single_column")
         db_connection.commit()
 
 
@@ -328,7 +328,7 @@ def test_insert_time_column(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Time column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE #pytest_single_column")
+        drop_table_if_exists(cursor, "#pytest_single_column")
         db_connection.commit()
 
 
@@ -354,7 +354,7 @@ def test_insert_time_column_preserves_microseconds(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"TIME microseconds round-trip failed: {e}")
     finally:
-        cursor.execute("DROP TABLE #pytest_time_microseconds")
+        drop_table_if_exists(cursor, "#pytest_time_microseconds")
         db_connection.commit()
 
 
@@ -377,7 +377,7 @@ def test_insert_datetime_column(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Datetime column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE #pytest_single_column")
+        drop_table_if_exists(cursor, "#pytest_single_column")
         db_connection.commit()
 
 
