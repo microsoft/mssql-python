@@ -2914,6 +2914,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
     (void)wcharEncoding;  // Suppress unused parameter warning
+#if !defined(__APPLE__) && !defined(__linux__)
+    // On Windows, VARCHAR is fetched as SQL_C_WCHAR, so charEncoding is unused.
+    (void)charEncoding;
+#endif
 
     LOG("SQLGetData: Getting data from %d columns for statement_handle=%p", colCount,
         (void*)StatementHandle->get());
@@ -2949,6 +2953,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
+#if defined(__APPLE__) || defined(__linux__)
+                // On Linux/macOS, the ODBC driver returns UTF-8 for SQL_C_CHAR.
                 if (columnSize == SQL_NO_TOTAL || columnSize == 0 ||
                     columnSize > SQL_MAX_LOB_SIZE) {
                     LOG("SQLGetData: Streaming LOB for column %d (SQL_C_CHAR) "
@@ -2957,34 +2963,16 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     row.append(
                         FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
                 } else {
-                    // Allocate columnSize * 4 + 1 on ALL platforms (no #if guard).
-                    //
-                    // Why this differs from SQLBindColums / FetchBatchData:
-                    // Those two functions use #if to apply *4 only on Linux/macOS,
-                    // because on Windows with a non-UTF-8 collation (e.g. CP1252)
-                    // each character occupies exactly 1 byte, so *1 suffices and
-                    // saves memory across the entire batch (fetchSize × numCols
-                    // buffers).
-                    //
-                    // SQLGetData_wrap allocates a single temporary buffer per
-                    // column per row, so the over-allocation cost is negligible.
-                    // Using *4 unconditionally here keeps the code simple and
-                    // correct on every platform—including Windows with a UTF-8
-                    // collation where multi-byte chars could otherwise cause
-                    // truncation at the exact column boundary (e.g. CP1252 é in
-                    // VARCHAR(10)).
+                    // Allocate columnSize * 4 + 1 to accommodate UTF-8 expansion.
                     uint64_t fetchBufferSize = columnSize * 4 + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
                                          &dataLen);
                     if (SQL_SUCCEEDED(ret)) {
-                        // columnSize is in chars, dataLen is in bytes
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
                             if (numCharsInData < dataBuffer.size()) {
-                                // SQLGetData will null-terminate the data
-                                // Use Python's codec system to decode bytes.
                                 const std::string decodeEncoding =
                                     GetEffectiveCharDecoding(charEncoding);
                                 py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
@@ -3001,11 +2989,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                     LOG_ERROR(
                                         "SQLGetData: Failed to decode CHAR column %d with '%s': %s",
                                         i, decodeEncoding.c_str(), e.what());
-                                    // Return raw bytes as fallback
                                     row.append(raw_bytes);
                                 }
                             } else {
-                                // Buffer too small, fallback to streaming
                                 LOG("SQLGetData: CHAR column %d data truncated "
                                     "(buffer_size=%zu), using streaming LOB",
                                     i, dataBuffer.size());
@@ -3037,6 +3023,66 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         row.append(py::none());
                     }
                 }
+#else
+                // On Windows, request SQL_C_WCHAR so the ODBC driver converts
+                // from the server's native encoding (e.g. CP1252) to UTF-16.
+                // This avoids the need to guess the server's code page and
+                // eliminates the bytes-vs-str inconsistency.
+                if (columnSize == SQL_NO_TOTAL || columnSize == 0 ||
+                    columnSize > SQL_MAX_LOB_SIZE) {
+                    LOG("SQLGetData: Streaming LOB for column %d (VARCHAR as SQL_C_WCHAR) "
+                        "- columnSize=%lu",
+                        i, (unsigned long)columnSize);
+                    row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
+                } else {
+                    uint64_t fetchBufferSize =
+                        (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
+                    std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
+                    SQLLEN dataLen;
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize,
+                                         &dataLen);
+                    if (SQL_SUCCEEDED(ret)) {
+                        if (dataLen > 0) {
+                            uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+                            if (numCharsInData < dataBuffer.size()) {
+                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
+                                row.append(py::cast(wstr));
+                                LOG("SQLGetData: VARCHAR column %d decoded via SQL_C_WCHAR, "
+                                    "length=%lu",
+                                    i, (unsigned long)numCharsInData);
+                            } else {
+                                LOG("SQLGetData: VARCHAR column %d data truncated "
+                                    "(as WCHAR), using streaming LOB",
+                                    i);
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false,
+                                                              "utf-16le"));
+                            }
+                        } else if (dataLen == SQL_NULL_DATA) {
+                            LOG("SQLGetData: Column %d is NULL (VARCHAR via WCHAR)", i);
+                            row.append(py::none());
+                        } else if (dataLen == 0) {
+                            row.append(py::str(""));
+                        } else if (dataLen == SQL_NO_TOTAL) {
+                            LOG("SQLGetData: Cannot determine data length "
+                                "(SQL_NO_TOTAL) for column %d (VARCHAR via WCHAR), "
+                                "returning NULL",
+                                i);
+                            row.append(py::none());
+                        } else if (dataLen < 0) {
+                            LOG("SQLGetData: Unexpected negative data length "
+                                "for column %d (VARCHAR via WCHAR) - dataLen=%ld",
+                                i, (long)dataLen);
+                            ThrowStdException("SQLGetData returned an unexpected negative "
+                                              "data length");
+                        }
+                    } else {
+                        LOG("SQLGetData: Error retrieving data for column %d "
+                            "(VARCHAR via WCHAR) - SQLRETURN=%d, returning NULL",
+                            i, ret);
+                        row.append(py::none());
+                    }
+                }
+#endif
                 break;
             }
             case SQL_SS_XML: {
@@ -3487,29 +3533,26 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                // Use columnSize * 4 + 1 on Linux/macOS to accommodate UTF-8
-                // expansion. The ODBC driver returns UTF-8 for SQL_C_CHAR where
-                // each character can be up to 4 bytes.
 #if defined(__APPLE__) || defined(__linux__)
+                // On Linux/macOS, the ODBC driver returns UTF-8 for SQL_C_CHAR
+                // where each character can be up to 4 bytes.
                 uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
-#else
-                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-#endif
-                // TODO: For LONGVARCHAR/BINARY types, columnSize is returned as
-                // 2GB-1 by SQLDescribeCol. So fetchBufferSize = 2GB.
-                // fetchSize=1 if columnSize>1GB. So we'll allocate a vector of
-                // size 2GB. If a query fetches multiple (say N) LONG...
-                // columns, we will have allocated multiple (N) 2GB sized
-                // vectors. This will make driver very slow. And if the N is
-                // high enough, we could hit the OS limit for heap memory that
-                // we can allocate, & hence get a std::bad_alloc. The process
-                // could also be killed by OS for consuming too much memory.
-                // Hence this will be revisited in beta to not allocate 2GB+
-                // memory, & use streaming instead
                 buffers.charBuffers[col - 1].resize(fetchSize * fetchBufferSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
                                      fetchBufferSize * sizeof(SQLCHAR),
                                      buffers.indicators[col - 1].data());
+#else
+                // On Windows, the ODBC driver returns bytes in the server's
+                // native encoding (e.g., CP1252).  Rather than guessing the
+                // code page, we request SQL_C_WCHAR so the driver performs
+                // the conversion to UTF-16 — exactly matching how NVARCHAR
+                // columns are already handled.
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
+                                     fetchBufferSize * sizeof(SQLWCHAR),
+                                     buffers.indicators[col - 1].data());
+#endif
                 break;
             }
             case SQL_WCHAR:
@@ -3675,9 +3718,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
         // On Linux/macOS, the ODBC driver returns UTF-8 for SQL_C_CHAR where
         // each character can be up to 4 bytes. Must match SQLBindColums buffer.
-#if defined(__APPLE__) || defined(__linux__)
         SQLSMALLINT dt = columnInfos[col].dataType;
         bool isCharType = (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR);
+#if defined(__APPLE__) || defined(__linux__)
         if (isCharType) {
             columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize * 4 +
                                                1;  // *4 for UTF-8, +1 for null terminator
@@ -3686,6 +3729,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
         }
 #else
+        // On Windows, VARCHAR columns are fetched as SQL_C_WCHAR (see
+        // SQLBindColums).  The fetchBufferSize is in SQLWCHAR elements,
+        // matching the wcharBuffers layout.
+        (void)isCharType;  // same formula for all types on Windows
         columnInfos[col].fetchBufferSize =
             columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
 #endif
@@ -3740,7 +3787,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR:
+#if defined(__APPLE__) || defined(__linux__)
                 columnProcessors[col] = ColumnProcessors::ProcessChar;
+#else
+                // On Windows, VARCHAR columns are fetched as SQL_C_WCHAR
+                // (the driver converts from the server's native encoding to
+                // UTF-16), so we reuse the NVARCHAR processor.
+                columnProcessors[col] = ColumnProcessors::ProcessWChar;
+#endif
                 break;
             case SQL_WCHAR:
             case SQL_WVARCHAR:
@@ -4048,7 +4102,8 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 break;
             case SQL_SS_UDT:
                 rowSize += (static_cast<SQLLEN>(columnSize) == SQL_NO_TOTAL || columnSize == 0)
-                               ? SQL_MAX_LOB_SIZE : columnSize;
+                               ? SQL_MAX_LOB_SIZE
+                               : columnSize;
                 break;
             case SQL_BINARY:
             case SQL_VARBINARY:
@@ -4112,8 +4167,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
-             dataType == SQL_SS_UDT) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
@@ -4252,8 +4306,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
-             dataType == SQL_SS_UDT) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }

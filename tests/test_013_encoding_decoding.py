@@ -4,7 +4,7 @@ Comprehensive Encoding/Decoding Test Suite
 This consolidated module provides complete testing for encoding/decoding functionality
 in mssql-python, thread safety, and connection pooling support.
 
-Total Tests: 131
+Total Tests: 154
 
 Test Categories:
 ================
@@ -1078,13 +1078,15 @@ def test_setdecoding_with_unicode_data(db_connection):
 
     try:
         # Create test table with NVARCHAR columns for Unicode support
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_decoding_unicode (
                 id INT IDENTITY(1,1),
                 ascii_col VARCHAR(100),
                 unicode_col NVARCHAR(100)
             )
-        """)
+        """
+        )
 
         # Test ASCII strings in VARCHAR (safe)
         ascii_strings = [
@@ -1159,7 +1161,8 @@ def test_encoding_decoding_comprehensive_unicode_characters(db_connection):
 
     try:
         # Create test table with different column types - use NVARCHAR for better Unicode support
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_encoding_comprehensive (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(1000),
@@ -1167,7 +1170,8 @@ def test_encoding_decoding_comprehensive_unicode_characters(db_connection):
                 text_col TEXT,
                 ntext_col NTEXT
             )
-        """)
+        """
+        )
 
         # Test cases with different Unicode character categories
         test_cases = [
@@ -1329,7 +1333,8 @@ def test_encoding_decoding_edge_case_data_types(db_connection):
 
     try:
         # Create table with various data types
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_encoding_datatypes (
                 id INT PRIMARY KEY,
                 varchar_small VARCHAR(50),
@@ -1341,7 +1346,8 @@ def test_encoding_decoding_edge_case_data_types(db_connection):
                 text_type TEXT,
                 ntext_type NTEXT
             )
-        """)
+        """
+        )
 
         # Test different encoding configurations
         test_configs = [
@@ -1633,14 +1639,16 @@ def test_encoding_decoding_large_dataset_performance(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_large_encoding (
                 id INT PRIMARY KEY,
                 ascii_data VARCHAR(1000),
                 unicode_data NVARCHAR(1000),
                 mixed_data NVARCHAR(MAX)
             )
-        """)
+        """
+        )
 
         # Generate test data - ensure it fits in column sizes
         ascii_text = "This is ASCII text with numbers 12345." * 10  # ~400 chars
@@ -1809,13 +1817,15 @@ def test_encoding_decoding_metadata_columns(db_connection):
 
     try:
         # Create table with Unicode column names if supported
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_metadata (
                 [normal_col] NVARCHAR(100),
                 [column_with_unicode_测试] NVARCHAR(100),
                 [special_chars_ñáéíóú] INT
             )
-        """)
+        """
+        )
 
         # Test metadata decoding configuration
         db_connection.setdecoding(mssql_python.SQL_WMETADATA, encoding="utf-16le", ctype=SQL_WCHAR)
@@ -1889,7 +1899,8 @@ def test_encoding_decoding_stress_test_comprehensive(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #stress_test_encoding (
                 id INT IDENTITY(1,1) PRIMARY KEY,
                 ascii_text VARCHAR(500),
@@ -1897,7 +1908,8 @@ def test_encoding_decoding_stress_test_comprehensive(db_connection):
                 binary_data VARBINARY(500),
                 mixed_content NVARCHAR(MAX)
             )
-        """)
+        """
+        )
 
         # Generate diverse test data
         test_datasets = []
@@ -2018,13 +2030,15 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
 
     try:
         # Create test table with VARCHAR columns (SQL_CHAR type)
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_sql_char_encodings (
                 id INT PRIMARY KEY,
                 data_col VARCHAR(100),
                 description VARCHAR(200)
             )
-        """)
+        """
+        )
 
         # Define various encoding types to test with SQL_CHAR
         encoding_tests = [
@@ -2301,13 +2315,15 @@ def test_encoding_decoding_sql_char_with_unicode_fallback(db_connection):
 
     try:
         # Create test table with both VARCHAR and NVARCHAR
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_unicode_fallback (
                 id INT PRIMARY KEY,
                 varchar_data VARCHAR(100),
                 nvarchar_data NVARCHAR(100)
             )
-        """)
+        """
+        )
 
         # Test Unicode data
         unicode_test_cases = [
@@ -2378,13 +2394,15 @@ def test_encoding_decoding_sql_char_native_character_sets(db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_native_chars (
                 id INT PRIMARY KEY,
                 data VARCHAR(200),
                 encoding_used VARCHAR(50)
             )
-        """)
+        """
+        )
 
         # Test encoding-specific character sets that should work
         encoding_native_tests = [
@@ -2519,13 +2537,15 @@ def test_encoding_decoding_sql_char_boundary_encoding_cases(db_connection):
 
     try:
         # Create test table
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_encoding_boundaries (
                 id INT PRIMARY KEY,
                 test_data VARCHAR(500),
                 test_type VARCHAR(100)
             )
-        """)
+        """
+        )
 
         # Test boundary cases for different encodings
         boundary_tests = [
@@ -2626,14 +2646,16 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
 
     try:
         # Create test table with both VARCHAR and NVARCHAR for comparison
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_unicode_issue (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(100),
                 nvarchar_col NVARCHAR(100),
                 encoding_used VARCHAR(50)
             )
-        """)
+        """
+        )
 
         # Test Unicode strings that commonly cause issues
         test_strings = [
@@ -2679,9 +2701,11 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
                         )
 
                         # Retrieve results
-                        cursor.execute("""
+                        cursor.execute(
+                            """
                             SELECT varchar_col, nvarchar_col FROM #test_unicode_issue WHERE id = 1
-                        """)
+                        """
+                        )
                         result = cursor.fetchone()
 
                         if result:
@@ -2736,7 +2760,8 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
 
     try:
         # Create test table demonstrating different column types
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_best_practices (
                 id INT PRIMARY KEY,
                 -- ASCII-safe columns (VARCHAR with SQL_CHAR)
@@ -2750,7 +2775,8 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
                 -- Mixed approach column
                 safe_text VARCHAR(200)
             )
-        """)
+        """
+        )
 
         # Configure optimal settings
         db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)  # For ASCII data
@@ -4966,13 +4992,15 @@ def test_execute_executemany_encoding_consistency(db_connection):
 
     try:
         # Create test table that can handle both VARCHAR and NVARCHAR data
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #test_encoding_consistency (
                 id INT IDENTITY(1,1) PRIMARY KEY,
                 varchar_col VARCHAR(1000) COLLATE SQL_Latin1_General_CP1_CI_AS,
                 nvarchar_col NVARCHAR(1000)
             )
-        """)
+        """
+        )
 
         # Test data with various encoding challenges
         # Using ASCII-safe characters that work across different encodings
@@ -5025,11 +5053,13 @@ def test_execute_executemany_encoding_consistency(db_connection):
                 )
 
                 # Retrieve immediately to verify encoding worked
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT varchar_col, nvarchar_col 
                     FROM #test_encoding_consistency 
                     WHERE id = (SELECT MAX(id) FROM #test_encoding_consistency)
-                """)
+                """
+                )
                 result = cursor.fetchone()
                 execute_results.append((result[0], result[1]))
 
@@ -5054,11 +5084,13 @@ def test_execute_executemany_encoding_consistency(db_connection):
             )
 
             # Retrieve all results from executemany
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT varchar_col, nvarchar_col 
                 FROM #test_encoding_consistency 
                 ORDER BY id
-            """)
+            """
+            )
             executemany_results = cursor.fetchall()
 
             # Verify executemany results match execute results
@@ -5095,11 +5127,13 @@ def test_execute_executemany_encoding_consistency(db_connection):
                             test_string,
                         )
 
-                        cursor.execute("""
+                        cursor.execute(
+                            """
                             SELECT nvarchar_col 
                             FROM #test_encoding_consistency 
                             WHERE id = (SELECT MAX(id) FROM #test_encoding_consistency)
-                        """)
+                        """
+                        )
                         result = cursor.fetchone()
                         unicode_execute_results.append(result[0])
 
@@ -5126,11 +5160,13 @@ def test_execute_executemany_encoding_consistency(db_connection):
                             unicode_params,
                         )
 
-                        cursor.execute("""
+                        cursor.execute(
+                            """
                             SELECT nvarchar_col 
                             FROM #test_encoding_consistency 
                             ORDER BY id
-                        """)
+                        """
+                        )
                         unicode_executemany_results = cursor.fetchall()
 
                         # Compare Unicode results
@@ -7253,6 +7289,169 @@ def test_dae_encoding_large_string(db_connection):
             cursor.execute("DROP TABLE IF EXISTS test_dae_encoding")
         except:
             pass
+        cursor.close()
+
+
+# ====================================================================================
+# 11. VARCHAR CP1252 DECODING CONSISTENCY (23 tests)
+# ====================================================================================
+#
+# Verifies that VARCHAR columns using a CP1252 collation
+# (SQL_Latin1_General_CP1_CI_AS) always return ``str`` — not ``bytes`` —
+# regardless of platform or fetch method.
+#
+# Byte values that are valid in CP1252 but form invalid single-byte UTF-8
+# sequences (0x80-0x9F, 0xAD) historically caused a cross-platform
+# inconsistency:
+#   - Linux/macOS : unixODBC converts CP1252 → UTF-8 → ``str``.
+#   - Windows     : ODBC driver returned raw bytes; UTF-8 decode failed →
+#                   ``bytes`` fallback.
+# The fix (fetch VARCHAR as SQL_C_WCHAR on Windows) eliminates this.
+# ====================================================================================
+
+# All CP1252 byte values that are NOT valid as a single UTF-8 byte.
+# Each tuple: (byte_value, expected_unicode_char, human_readable_description)
+CP1252_PROBLEMATIC_BYTES = [
+    (128, "\u20ac", "Euro sign"),
+    (130, "\u201a", "Single low-9 quotation mark"),
+    (131, "\u0192", "Latin small f with hook"),
+    (132, "\u201e", "Double low-9 quotation mark"),
+    (133, "\u2026", "Horizontal ellipsis"),
+    (140, "\u0152", "Latin capital OE"),
+    (142, "\u017d", "Latin capital Z with caron"),
+    (145, "\u2018", "Left single quotation mark"),
+    (146, "\u2019", "Right single quotation mark"),
+    (147, "\u201c", "Left double quotation mark"),
+    (148, "\u201d", "Right double quotation mark"),
+    (150, "\u2013", "En dash"),
+    (151, "\u2014", "Em dash"),
+    (152, "\u02dc", "Small tilde"),
+    (153, "\u2122", "Trade mark sign"),
+    (156, "\u0153", "Latin small oe"),
+    (158, "\u017e", "Latin small z with caron"),
+    (159, "\u0178", "Latin capital Y with diaeresis"),
+    (173, "\u00ad", "Soft hyphen"),
+]
+
+
+@pytest.mark.parametrize(
+    "byte_val,expected_char,description",
+    CP1252_PROBLEMATIC_BYTES,
+    ids=[f"{bv}-{desc}" for bv, _, desc in CP1252_PROBLEMATIC_BYTES],
+)
+def test_cp1252_varchar_byte_returns_str_fetchone(
+    db_connection, byte_val, expected_char, description
+):
+    """Each problematic CP1252 byte in a VARCHAR column should decode to str via fetchone."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute(
+            f"CREATE TABLE #t_byte{byte_val} "
+            f"(val VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS)"
+        )
+        cursor.execute(f"INSERT INTO #t_byte{byte_val} VALUES (CHAR({byte_val}))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM #t_byte{byte_val}")
+        row = cursor.fetchone()
+        assert row is not None
+
+        value = row[0]
+        if value is None:
+            pytest.skip(
+                f"Server returned NULL for CHAR({byte_val}) — " f"collation may not map this byte"
+            )
+
+        assert isinstance(value, str), (
+            f"Expected str for CHAR({byte_val}) ({description}) but got "
+            f"{type(value).__name__}: {value!r} (platform={sys.platform})."
+        )
+    finally:
+        cursor.close()
+
+
+@pytest.mark.parametrize("fetch_method", ["fetchall", "fetchmany"])
+def test_cp1252_varchar_byte173_batch_fetch(db_connection, fetch_method):
+    """Byte 0xAD must decode to str via fetchall and fetchmany (batch paths)."""
+    table = f"#t_b173_{fetch_method}"
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute(
+            f"CREATE TABLE {table} " f"(val VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS)"
+        )
+        cursor.execute(f"INSERT INTO {table} VALUES (CHAR(173))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table}")
+        if fetch_method == "fetchall":
+            rows = cursor.fetchall()
+        else:
+            rows = cursor.fetchmany(1)
+
+        assert len(rows) == 1
+        value = rows[0][0]
+        assert isinstance(value, str), (
+            f"{fetch_method}: expected str but got {type(value).__name__}: "
+            f"{value!r} (platform={sys.platform})."
+        )
+    finally:
+        cursor.close()
+
+
+def test_cp1252_varchar_byte173_embedded_in_string(db_connection):
+    """Byte 0xAD embedded within a longer ASCII string should decode to str."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute(
+            "CREATE TABLE #t_b173_embed " "(val VARCHAR(50) COLLATE SQL_Latin1_General_CP1_CI_AS)"
+        )
+        cursor.execute("INSERT INTO #t_b173_embed VALUES ('hello' + CHAR(173) + 'world')")
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #t_b173_embed")
+        row = cursor.fetchone()
+        assert row is not None
+        value = row[0]
+
+        assert isinstance(value, str), (
+            f"Expected str but got {type(value).__name__}: {value!r}. "
+            f"Embedded byte 0xAD was not decoded (platform={sys.platform})."
+        )
+        assert "hello" in value and "world" in value
+    finally:
+        cursor.close()
+
+
+def test_cp1252_varchar_explicit_decoding(db_connection):
+    """Byte 0xAD with explicit CP1252 decoding returns the correct character (control group)."""
+    cursor = db_connection.cursor()
+    original_decoding = db_connection.getdecoding(SQL_CHAR)
+    try:
+        cursor.execute(
+            "CREATE TABLE #t_cp1252_explicit "
+            "(id INT PRIMARY KEY, val VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS)"
+        )
+        cursor.execute("INSERT INTO #t_cp1252_explicit VALUES (1, CHAR(173))")
+        cursor.execute("INSERT INTO #t_cp1252_explicit VALUES (2, 'abc' + CHAR(173) + 'def')")
+        db_connection.commit()
+
+        db_connection.setdecoding(SQL_CHAR, encoding="cp1252", ctype=SQL_CHAR)
+
+        cursor.execute("SELECT val FROM #t_cp1252_explicit ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 2
+        assert isinstance(rows[0][0], str)
+        assert isinstance(rows[1][0], str)
+        # CP1252 byte 0xAD → U+00AD SOFT HYPHEN
+        assert rows[0][0] == "\u00ad"
+        assert rows[1][0] == "abc\u00addef"
+    finally:
+        db_connection.setdecoding(
+            SQL_CHAR,
+            encoding=original_decoding["encoding"],
+            ctype=original_decoding["ctype"],
+        )
         cursor.close()
 
 
