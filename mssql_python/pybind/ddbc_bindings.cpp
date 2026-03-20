@@ -60,7 +60,7 @@ py::object get_time_class();
 }
 
 inline py::object ParseSqlTimeTextToPythonObject(const char* timeText, SQLLEN timeTextLen) {
-    if (!timeText || timeTextLen <= 0) {
+    if (!timeText || (timeTextLen <= 0 && timeTextLen != SQL_NO_TOTAL)) {
         return py::none();
     }
 
@@ -4537,6 +4537,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Expose architecture-specific constants
     m.attr("ARCHITECTURE") = ARCHITECTURE;
+
+    // Test helper: expose time-text parser for unit testing edge cases
+    m.def("_test_parse_time_text", &ParseSqlTimeTextToPythonObject,
+          "Parse a SQL TIME/TIME2 text buffer into a Python datetime.time object (test helper)",
+          py::arg("timeText"), py::arg("timeTextLen"));
+    m.attr("SQL_NO_TOTAL") = static_cast<int>(SQL_NO_TOTAL);
 
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
