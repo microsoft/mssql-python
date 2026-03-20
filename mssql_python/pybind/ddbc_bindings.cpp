@@ -3339,22 +3339,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
-            case SQL_TIME:
-            case SQL_TYPE_TIME: {
-                SQL_TIME_STRUCT timeValue;
-                ret =
-                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), NULL);
-                if (SQL_SUCCEEDED(ret)) {
-                    row.append(PythonObjectCache::get_time_class()(timeValue.hour, timeValue.minute,
-                                                                   timeValue.second));
-                } else {
-                    LOG("SQLGetData: Error retrieving SQL_TYPE_TIME for column "
-                        "%d - SQLRETURN=%d",
-                        i, ret);
-                    row.append(py::none());
-                }
-                break;
-            }
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME: {
@@ -3679,13 +3663,6 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                     SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_DATE, buffers.dateBuffers[col - 1].data(),
                                    sizeof(SQL_DATE_STRUCT), buffers.indicators[col - 1].data());
                 break;
-            case SQL_TIME:
-            case SQL_TYPE_TIME:
-                buffers.timeBuffers[col - 1].resize(fetchSize);
-                ret =
-                    SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_TIME, buffers.timeBuffers[col - 1].data(),
-                                   sizeof(SQL_TIME_STRUCT), buffers.indicators[col - 1].data());
-                break;
             case SQL_SS_TIME2:
                 buffers.charBuffers[col - 1].resize(fetchSize * SQL_TIME_TEXT_MAX_LEN);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
@@ -3993,17 +3970,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PyList_SET_ITEM(row, col - 1, dateObj);
                     break;
                 }
-                case SQL_TIME:
-                case SQL_TYPE_TIME: {
-                    PyObject* timeObj =
-                        PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
-                                                            buffers.timeBuffers[col - 1][i].minute,
-                                                            buffers.timeBuffers[col - 1][i].second)
-                            .release()
-                            .ptr();
-                    PyList_SET_ITEM(row, col - 1, timeObj);
-                    break;
-                }
                 case SQL_SS_TIME2: {
                     const char* rawData = reinterpret_cast<const char*>(
                         &buffers.charBuffers[col - 1][i * SQL_TIME_TEXT_MAX_LEN]);
@@ -4138,10 +4104,6 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 break;
             case SQL_TYPE_DATE:
                 rowSize += sizeof(SQL_DATE_STRUCT);
-                break;
-            case SQL_TIME:
-            case SQL_TYPE_TIME:
-                rowSize += sizeof(SQL_TIME_STRUCT);
                 break;
             case SQL_SS_TIME2:
                 rowSize += SQL_TIME_TEXT_MAX_LEN;
