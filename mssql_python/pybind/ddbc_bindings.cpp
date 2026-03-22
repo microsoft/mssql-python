@@ -4661,7 +4661,7 @@ SQLRETURN FetchArrowBatch_wrap(
                                 buffers.indicators[idxCol].data()
                             );
                             if (!SQL_SUCCEEDED(ret)) {
-                                LOG("Error fetching LOB for column %d", idxCol + 1);
+                                LOG("Error fetching BINARY LOB for column %d", idxCol + 1);
                                 return ret;
                             }
                             break;
@@ -4677,7 +4677,7 @@ SQLRETURN FetchArrowBatch_wrap(
                                 buffers.indicators[idxCol].data()
                             );
                             if (!SQL_SUCCEEDED(ret)) {
-                                LOG("Error fetching LOB for column %d", idxCol + 1);
+                                LOG("Error fetching CHAR LOB for column %d", idxCol + 1);
                                 return ret;
                             }
                             break;
@@ -4694,7 +4694,7 @@ SQLRETURN FetchArrowBatch_wrap(
                                 buffers.indicators[idxCol].data()
                             );
                             if (!SQL_SUCCEEDED(ret)) {
-                                LOG("Error fetching binary data for column %d", idxCol + 1);
+                                LOG("Error fetching WCHAR LOB data for column %d", idxCol + 1);
                                 return ret;
                             }
                             break;
@@ -4932,7 +4932,7 @@ SQLRETURN FetchArrowBatch_wrap(
                     continue;
                 } else if (indicator < 0) {
                     // Negative value is unexpected, log column index, SQL type & raise exception
-                    LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", idxCol + 1, dataType, indicator);
+                    LOG("Unexpected negative data length. Column ID - %d, SQL Type - %d, Data Length - %lld", idxCol + 1, dataType, (long long)indicator);
                     ThrowStdException("Unexpected negative data length.");
                 }
                 auto dataLen = static_cast<uint64_t>(indicator);
