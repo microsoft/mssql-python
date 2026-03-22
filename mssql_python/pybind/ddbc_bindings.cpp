@@ -4391,6 +4391,26 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt,
     return SQL_SUCCESS;
 }
 
+struct FetchStateGuard {
+    SQLHSTMT hStmt;
+
+    FetchStateGuard(SQLHSTMT stmtHandle, SQLULEN* numRowsFetched, SQLULEN rowArraySize)
+        : hStmt(stmtHandle) {
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)rowArraySize, 0);
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, numRowsFetched, 0);
+    }
+
+    ~FetchStateGuard() {
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+        SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+    }
+
+    void setRowArraySize(SQLULEN rowArraySize) const {
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)rowArraySize, 0);
+    }
+};
+
 int32_t days_from_civil(int y, int m, int d) {
     // Implements the "days_from_civil" algorithm by Howard Hinnant
     // Returns number of days since Unix epoch (1970-01-01)
@@ -4407,7 +4427,9 @@ SQLRETURN FetchArrowBatch_wrap(
     py::list& capsules,
     int arrowBatchSize
 ) {
-    int fetchSize = arrowBatchSize;
+    // An overly large fetch size doesn't seem to help performance
+    int fetchSize = 64;
+
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -4590,20 +4612,6 @@ SQLRETURN FetchArrowBatch_wrap(
         std::memset(arrowColumnProducer->valid.get(), 0xFF, (arrowBatchSize + 7) / 8);
     }
 
-    if (fetchSize > 1) {
-        // An overly large fetch size doesn't seem to help performance
-        SQLSMALLINT searchStart = 64;
-        if (arrowBatchSize < 64) {
-            searchStart = static_cast<SQLSMALLINT>(arrowBatchSize);
-        }
-        for (SQLSMALLINT maybeNewSize = searchStart; maybeNewSize >= 1; maybeNewSize -= 1) {
-            if (arrowBatchSize % maybeNewSize == 0) {
-                fetchSize = maybeNewSize;
-                break;
-            }
-        }
-    }
-
     // Initialize column buffers
     ColumnBuffers buffers(numCols, fetchSize);
 
@@ -4616,17 +4624,17 @@ SQLRETURN FetchArrowBatch_wrap(
         }
     }
     
-    SQLULEN numRowsFetched;
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
+    SQLULEN numRowsFetched = 0;
+    FetchStateGuard fetchStateGuard(hStmt, &numRowsFetched, fetchSize);
 
     size_t idxRowArrow = 0;
-    // arrowBatchSize % fetchSize == 0 ensures that any followup (even non-arrow) fetches
-    // start with a fresh batch
-    assert(fetchSize == 0 || arrowBatchSize % fetchSize == 0);
-    assert(fetchSize <= arrowBatchSize);
 
     while (idxRowArrow < arrowBatchSize) {
+        int spaceLeftInArrowBatch = arrowBatchSize - idxRowArrow;
+        if (fetchSize > spaceLeftInArrowBatch) {
+            // Adjust fetch size for final batch to avoid overfetching
+            fetchStateGuard.setRowArraySize(spaceLeftInArrowBatch);
+        }
         ret = SQLFetch_ptr(hStmt);
         if (ret == SQL_NO_DATA) {
             ret = SQL_SUCCESS; // Normal completion
@@ -5147,13 +5155,6 @@ SQLRETURN FetchArrowBatch_wrap(
             idxRowArrow++;
         }
     }
-
-    // Reset attributes before returning to avoid using stack pointers later
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
-
-    // Unbind columns to allow subsequent fetchone() calls to use SQLGetData
-    SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
     // Transfer ownership of buffers to batch ArrowSchema
     // First, allocate memory for the necessary structures
