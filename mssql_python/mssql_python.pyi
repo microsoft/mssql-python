@@ -7,6 +7,7 @@ Type stubs for mssql_python package - based on actual public API
 from typing import Any, Dict, List, Optional, Union, Tuple, Sequence, Callable, Iterator
 import datetime
 import logging
+import pyarrow
 
 # GLOBALS - DB-API 2.0 Required Module Globals
 # https://www.python.org/dev/peps/pep-0249/#module-interface
@@ -208,6 +209,11 @@ class Cursor:
     def nextset(self) -> Optional[bool]: ...
     def setinputsizes(self, sizes: List[Union[int, Tuple[Any, ...]]]) -> None: ...
     def setoutputsize(self, size: int, column: Optional[int] = None) -> None: ...
+
+    # Arrow Extension Methods (requires pyarrow)
+    def arrow_batch(self, batch_size: int = 8192) -> pyarrow.RecordBatch: ...
+    def arrow(self, batch_size: int = 8192) -> pyarrow.Table: ...
+    def arrow_reader(self, batch_size: int = 8192) -> pyarrow.RecordBatchReader: ...
 
 # DB-API 2.0 Connection Object
 # https://www.python.org/dev/peps/pep-0249/#connection-objects
