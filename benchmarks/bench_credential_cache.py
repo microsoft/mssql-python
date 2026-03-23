@@ -13,6 +13,8 @@ Usage:
   python benchmarks/bench_credential_cache.py
 """
 
+from __future__ import annotations
+
 import time
 import statistics
 
