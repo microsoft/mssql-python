@@ -15,6 +15,8 @@ from mssql_python.auth import (
     get_auth_token,
     process_connection_string,
     extract_auth_type,
+    _credential_cache,
+    _credential_cache_lock,
 )
 from mssql_python.constants import AuthType, ConstantsDDBC
 import secrets
@@ -69,6 +71,14 @@ def setup_azure_identity():
     for module in ["azure.identity", "azure.core", "azure.core.exceptions"]:
         if module in sys.modules:
             del sys.modules[module]
+
+
+@pytest.fixture(autouse=True)
+def clear_credential_cache():
+    """Clear the module-level credential cache between tests."""
+    _credential_cache.clear()
+    yield
+    _credential_cache.clear()
 
 
 class TestAuthType:
@@ -401,6 +411,150 @@ class TestExtractAuthType:
 
     def test_unsupported_auth(self):
         assert extract_auth_type("Server=test;Authentication=SqlPassword;") is None
+
+
+class TestCredentialInstanceCache:
+    """Tests for the credential instance caching behavior."""
+
+    def test_credential_reused_across_calls(self):
+        """The same credential instance should be returned for repeated calls."""
+        AADAuth.get_token("default")
+        assert "default" in _credential_cache
+        first_instance = _credential_cache["default"]
+
+        AADAuth.get_token("default")
+        assert _credential_cache["default"] is first_instance
+
+    def test_different_auth_types_get_separate_instances(self):
+        """Each auth type should have its own cached credential."""
+        AADAuth.get_token("default")
+        AADAuth.get_token("devicecode")
+
+        assert "default" in _credential_cache
+        assert "devicecode" in _credential_cache
+        assert _credential_cache["default"] is not _credential_cache["devicecode"]
+
+    def test_get_raw_token_uses_cached_credential(self):
+        """get_raw_token should also use the cached credential instance."""
+        AADAuth.get_token("default")
+        cached = _credential_cache["default"]
+
+        AADAuth.get_raw_token("default")
+        assert _credential_cache["default"] is cached
+
+    def test_cache_starts_empty(self):
+        """Cache should be empty at the start due to the clear_credential_cache fixture."""
+        assert len(_credential_cache) == 0
+
+
+class TestAcquireTokenImportError:
+    """Test the ImportError path when azure-identity is not installed."""
+
+    def test_import_error_raises_runtime_error(self):
+        """_acquire_token raises RuntimeError when azure.identity is missing."""
+        import sys
+
+        # Temporarily remove the mocked azure modules
+        saved = {}
+        for mod_name in list(sys.modules):
+            if mod_name == "azure" or mod_name.startswith("azure."):
+                saved[mod_name] = sys.modules.pop(mod_name)
+
+        # Make the import fail
+        import builtins
+
+        real_import = builtins.__import__
+
+        def blocked_import(name, *args, **kwargs):
+            if name.startswith("azure"):
+                raise ImportError("No module named 'azure'")
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = blocked_import
+        try:
+            with pytest.raises(
+                RuntimeError, match="Azure authentication libraries are not installed"
+            ):
+                AADAuth._acquire_token("default")
+        finally:
+            builtins.__import__ = real_import
+            sys.modules.update(saved)
+
+
+class TestAcquireTokenClientAuthError:
+    """Test the ClientAuthenticationError path inside _acquire_token."""
+
+    def test_client_auth_error_in_acquire_token(self):
+        """ClientAuthenticationError during get_token is wrapped in RuntimeError."""
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+
+        from azure.core.exceptions import ClientAuthenticationError
+
+        class FailingCredential:
+            def get_token(self, scope):
+                raise ClientAuthenticationError("token request denied")
+
+        try:
+            azure_identity.DefaultAzureCredential = FailingCredential
+            with pytest.raises(RuntimeError, match="Azure AD authentication failed"):
+                AADAuth._acquire_token("default")
+        finally:
+            azure_identity.DefaultAzureCredential = original
+
+
+class TestProcessAuthParametersEdgeCases:
+    """Cover empty-param and no-equals-sign branches."""
+
+    def test_empty_and_whitespace_params_skipped(self):
+        params = ["Server=test", "", "  ", "Database=db"]
+        modified, auth_type = process_auth_parameters(params)
+        assert "Server=test" in modified
+        assert "Database=db" in modified
+        assert auth_type is None
+
+    def test_param_without_equals_kept(self):
+        params = ["Server=test", "SomeFlag", "Database=db"]
+        modified, auth_type = process_auth_parameters(params)
+        assert "SomeFlag" in modified
+        assert "Server=test" in modified
+
+
+class TestGetAuthTokenEdgeCases:
+    """Cover the Windows-interactive and token-failure branches."""
+
+    def test_no_auth_type_returns_none(self):
+        result = get_auth_token(None)
+        assert result is None
+
+    def test_empty_auth_type_returns_none(self):
+        result = get_auth_token("")
+        assert result is None
+
+    def test_windows_interactive_returns_none(self, monkeypatch):
+        monkeypatch.setattr(platform, "system", lambda: "Windows")
+        result = get_auth_token("interactive")
+        assert result is None
+
+    def test_token_acquisition_failure_returns_none(self):
+        """When AADAuth.get_token raises, get_auth_token returns None."""
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+
+        class FailingCredential:
+            def __init__(self):
+                raise RuntimeError("credential creation exploded")
+
+        try:
+            azure_identity.DefaultAzureCredential = FailingCredential
+            result = get_auth_token("default")
+            assert result is None
+        finally:
+            azure_identity.DefaultAzureCredential = original
 
 
 def test_acquire_token_unsupported_auth_type():
