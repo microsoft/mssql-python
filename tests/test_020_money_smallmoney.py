@@ -19,300 +19,485 @@ SMALLMONEY_MIN = Decimal("-214748.3648")
 SMALLMONEY_MAX = Decimal("214748.3647")
 
 
-class TestMoneyDecimalBinding:
-    """Test Decimal -> MONEY column binding."""
+def drop_table_if_exists(cursor, table_name):
+    """Drop the table if it exists."""
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+    except Exception:
+        pass  # Ignore errors during cleanup
 
-    def test_money_positive_value(self, db_connection):
-        """Test positive Decimal value inserted into MONEY column."""
-        cursor = db_connection.cursor()
+
+# =============================================================================
+# MONEY Decimal Binding Tests
+# =============================================================================
+
+
+def test_money_positive_value(cursor, db_connection):
+    """Test positive Decimal value inserted into MONEY column."""
+    table_name = "#pytest_money_pos"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = Decimal("12345.6789")
-        cursor.execute("CREATE TABLE #t_money_pos (val MONEY)")
-        cursor.execute("INSERT INTO #t_money_pos VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_money_pos")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == val
-        cursor.execute("DROP TABLE #t_money_pos")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_money_negative_value(self, db_connection):
-        """Test negative Decimal value inserted into MONEY column."""
-        cursor = db_connection.cursor()
+
+def test_money_negative_value(cursor, db_connection):
+    """Test negative Decimal value inserted into MONEY column."""
+    table_name = "#pytest_money_neg"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = Decimal("-9999.9999")
-        cursor.execute("CREATE TABLE #t_money_neg (val MONEY)")
-        cursor.execute("INSERT INTO #t_money_neg VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_money_neg")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == val
-        cursor.execute("DROP TABLE #t_money_neg")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_money_zero(self, db_connection):
-        """Test zero value inserted into MONEY column."""
-        cursor = db_connection.cursor()
+
+def test_money_zero(cursor, db_connection):
+    """Test zero value inserted into MONEY column."""
+    table_name = "#pytest_money_zero"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = Decimal("0.0000")
-        cursor.execute("CREATE TABLE #t_money_zero (val MONEY)")
-        cursor.execute("INSERT INTO #t_money_zero VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_money_zero")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == Decimal("0.0000")
-        cursor.execute("DROP TABLE #t_money_zero")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_money_max_value(self, db_connection):
-        """Test maximum MONEY value."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_money_max (val MONEY)")
-        cursor.execute("INSERT INTO #t_money_max VALUES (?)", (MONEY_MAX,))
-        cursor.execute("SELECT val FROM #t_money_max")
+
+def test_money_max_value(cursor, db_connection):
+    """Test maximum MONEY value."""
+    table_name = "#pytest_money_max"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (MONEY_MAX,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == MONEY_MAX
-        cursor.execute("DROP TABLE #t_money_max")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_money_min_value(self, db_connection):
-        """Test minimum MONEY value."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_money_min (val MONEY)")
-        cursor.execute("INSERT INTO #t_money_min VALUES (?)", (MONEY_MIN,))
-        cursor.execute("SELECT val FROM #t_money_min")
+
+def test_money_min_value(cursor, db_connection):
+    """Test minimum MONEY value."""
+    table_name = "#pytest_money_min"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (MONEY_MIN,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == MONEY_MIN
-        cursor.execute("DROP TABLE #t_money_min")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_money_null(self, db_connection):
-        """Test NULL value inserted into MONEY column."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_money_null (val MONEY)")
-        cursor.execute("INSERT INTO #t_money_null VALUES (?)", (None,))
-        cursor.execute("SELECT val FROM #t_money_null")
+
+def test_money_null(cursor, db_connection):
+    """Test NULL value inserted into MONEY column."""
+    table_name = "#pytest_money_null"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (None,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result is None
-        cursor.execute("DROP TABLE #t_money_null")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 
-class TestSmallmoneyDecimalBinding:
-    """Test Decimal -> SMALLMONEY column binding."""
+# =============================================================================
+# SMALLMONEY Decimal Binding Tests
+# =============================================================================
 
-    def test_smallmoney_positive_value(self, db_connection):
-        """Test positive Decimal value inserted into SMALLMONEY column."""
-        cursor = db_connection.cursor()
+
+def test_smallmoney_positive_value(cursor, db_connection):
+    """Test positive Decimal value inserted into SMALLMONEY column."""
+    table_name = "#pytest_smallmoney_pos"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val SMALLMONEY)")
+        db_connection.commit()
+
         val = Decimal("1234.5678")
-        cursor.execute("CREATE TABLE #t_sm_pos (val SMALLMONEY)")
-        cursor.execute("INSERT INTO #t_sm_pos VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_sm_pos")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == val
-        cursor.execute("DROP TABLE #t_sm_pos")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_smallmoney_negative_value(self, db_connection):
-        """Test negative Decimal value inserted into SMALLMONEY column."""
-        cursor = db_connection.cursor()
+
+def test_smallmoney_negative_value(cursor, db_connection):
+    """Test negative Decimal value inserted into SMALLMONEY column."""
+    table_name = "#pytest_smallmoney_neg"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val SMALLMONEY)")
+        db_connection.commit()
+
         val = Decimal("-999.1234")
-        cursor.execute("CREATE TABLE #t_sm_neg (val SMALLMONEY)")
-        cursor.execute("INSERT INTO #t_sm_neg VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_sm_neg")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == val
-        cursor.execute("DROP TABLE #t_sm_neg")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_smallmoney_max_value(self, db_connection):
-        """Test maximum SMALLMONEY value."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_sm_max (val SMALLMONEY)")
-        cursor.execute("INSERT INTO #t_sm_max VALUES (?)", (SMALLMONEY_MAX,))
-        cursor.execute("SELECT val FROM #t_sm_max")
+
+def test_smallmoney_max_value(cursor, db_connection):
+    """Test maximum SMALLMONEY value."""
+    table_name = "#pytest_smallmoney_max"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val SMALLMONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (SMALLMONEY_MAX,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == SMALLMONEY_MAX
-        cursor.execute("DROP TABLE #t_sm_max")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_smallmoney_min_value(self, db_connection):
-        """Test minimum SMALLMONEY value."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_sm_min (val SMALLMONEY)")
-        cursor.execute("INSERT INTO #t_sm_min VALUES (?)", (SMALLMONEY_MIN,))
-        cursor.execute("SELECT val FROM #t_sm_min")
+
+def test_smallmoney_min_value(cursor, db_connection):
+    """Test minimum SMALLMONEY value."""
+    table_name = "#pytest_smallmoney_min"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val SMALLMONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (SMALLMONEY_MIN,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == SMALLMONEY_MIN
-        cursor.execute("DROP TABLE #t_sm_min")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_smallmoney_null(self, db_connection):
-        """Test NULL value inserted into SMALLMONEY column."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_sm_null (val SMALLMONEY)")
-        cursor.execute("INSERT INTO #t_sm_null VALUES (?)", (None,))
-        cursor.execute("SELECT val FROM #t_sm_null")
+
+def test_smallmoney_null(cursor, db_connection):
+    """Test NULL value inserted into SMALLMONEY column."""
+    table_name = "#pytest_smallmoney_null"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val SMALLMONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (None,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result is None
-        cursor.execute("DROP TABLE #t_sm_null")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 
-class TestDecimalColumnWithMoneyRangeValue:
-    """Test MONEY-range Decimal values -> DECIMAL column (uses string binding)."""
+# =============================================================================
+# DECIMAL Column with MONEY-range Values (String Binding Path)
+# =============================================================================
 
-    def test_decimal_column_money_range_value(self, db_connection):
-        """Test MONEY-range Decimal inserted into DECIMAL column preserves precision."""
-        cursor = db_connection.cursor()
+
+def test_decimal_column_money_range_value(cursor, db_connection):
+    """Test MONEY-range Decimal inserted into DECIMAL column preserves precision."""
+    table_name = "#pytest_money_dec_range"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val DECIMAL(38,20))")
+        db_connection.commit()
+
         # Value in MONEY range but with more than 4 decimal places
         val = Decimal("100.123456789012345678")
-        cursor.execute("CREATE TABLE #t_dec_range (val DECIMAL(38,20))")
-        cursor.execute("INSERT INTO #t_dec_range VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_dec_range")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         # String binding via format(param, "f") preserves all decimals
         assert result == val
-        cursor.execute("DROP TABLE #t_dec_range")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_decimal_column_truncation_by_sql_server(self, db_connection):
-        """Test that SQL Server truncates to column precision (not driver)."""
-        cursor = db_connection.cursor()
+
+def test_decimal_column_rounding_by_sql_server(cursor, db_connection):
+    """Test that SQL Server rounds to column precision (not driver)."""
+    table_name = "#pytest_money_dec_round"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val DECIMAL(10,4))")  # Only 4 decimal places
+        db_connection.commit()
+
         val = Decimal("100.123456789")  # 9 decimal places
-        cursor.execute("CREATE TABLE #t_dec_trunc (val DECIMAL(10,4))")  # Only 4 decimal places
-        cursor.execute("INSERT INTO #t_dec_trunc VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_dec_trunc")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
-        # SQL Server truncates to scale 4
-        assert result == Decimal("100.1235")  # Rounded by SQL Server
-        cursor.execute("DROP TABLE #t_dec_trunc")
-        cursor.close()
+        # SQL Server rounds to scale 4
+        assert result == Decimal("100.1235")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 
-class TestDecimalColumnOutsideMoneyRange:
-    """Test Decimal values outside MONEY range -> DECIMAL column (uses SQL_NUMERIC)."""
+# =============================================================================
+# DECIMAL Column Outside MONEY Range (SQL_NUMERIC Binding Path)
+# =============================================================================
 
-    def test_decimal_above_money_max(self, db_connection):
-        """Test Decimal larger than MONEY_MAX uses SQL_NUMERIC binding."""
-        cursor = db_connection.cursor()
+
+def test_decimal_above_money_max(cursor, db_connection):
+    """Test Decimal larger than MONEY_MAX uses SQL_NUMERIC binding."""
+    table_name = "#pytest_money_dec_above"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val DECIMAL(20,2))")
+        db_connection.commit()
+
         val = Decimal("999999999999999.99")  # Above MONEY_MAX
-        cursor.execute("CREATE TABLE #t_dec_above (val DECIMAL(20,2))")
-        cursor.execute("INSERT INTO #t_dec_above VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_dec_above")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == val
-        cursor.execute("DROP TABLE #t_dec_above")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_decimal_below_money_min(self, db_connection):
-        """Test Decimal smaller than MONEY_MIN uses SQL_NUMERIC binding."""
-        cursor = db_connection.cursor()
+
+def test_decimal_below_money_min(cursor, db_connection):
+    """Test Decimal smaller than MONEY_MIN uses SQL_NUMERIC binding."""
+    table_name = "#pytest_money_dec_below"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val DECIMAL(20,2))")
+        db_connection.commit()
+
         val = Decimal("-999999999999999.99")  # Below MONEY_MIN
-        cursor.execute("CREATE TABLE #t_dec_below (val DECIMAL(20,2))")
-        cursor.execute("INSERT INTO #t_dec_below VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_dec_below")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == val
-        cursor.execute("DROP TABLE #t_dec_below")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 
-class TestBoundaryEdgeCases:
-    """Test boundary cases between SMALLMONEY and MONEY ranges."""
+# =============================================================================
+# Boundary Edge Cases
+# =============================================================================
 
-    def test_just_outside_smallmoney_to_money(self, db_connection):
-        """Test value just outside SMALLMONEY range works in MONEY column."""
-        cursor = db_connection.cursor()
+
+def test_just_outside_smallmoney_to_money(cursor, db_connection):
+    """Test value just outside SMALLMONEY range works in MONEY column."""
+    table_name = "#pytest_money_bound_out"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = Decimal("214748.3648")  # Just above SMALLMONEY_MAX
-        cursor.execute("CREATE TABLE #t_bound_out (val MONEY)")
-        cursor.execute("INSERT INTO #t_bound_out VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_bound_out")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == val
-        cursor.execute("DROP TABLE #t_bound_out")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_outside_smallmoney_fails_for_smallmoney_column(self, db_connection):
-        """Test value outside SMALLMONEY range fails for SMALLMONEY column."""
-        cursor = db_connection.cursor()
+
+def test_outside_smallmoney_fails_for_smallmoney_column(cursor, db_connection):
+    """Test value outside SMALLMONEY range fails for SMALLMONEY column."""
+    table_name = "#pytest_money_bound_fail"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val SMALLMONEY)")
+        db_connection.commit()
+
         val = Decimal("214748.3648")  # Just above SMALLMONEY_MAX
-        cursor.execute("CREATE TABLE #t_bound_fail (val SMALLMONEY)")
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #t_bound_fail VALUES (?)", (val,))
-        cursor.execute("DROP TABLE IF EXISTS #t_bound_fail")
-        cursor.close()
+            cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_outside_money_fails_for_money_column(self, db_connection):
-        """Test value outside MONEY range fails for MONEY column."""
-        cursor = db_connection.cursor()
+
+def test_outside_money_fails_for_money_column(cursor, db_connection):
+    """Test value outside MONEY range fails for MONEY column."""
+    table_name = "#pytest_money_bound_mfail"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = Decimal("922337203685477.5808")  # Just above MONEY_MAX
-        cursor.execute("CREATE TABLE #t_bound_mfail (val MONEY)")
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #t_bound_mfail VALUES (?)", (val,))
-        cursor.execute("DROP TABLE IF EXISTS #t_bound_mfail")
-        cursor.close()
+            cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_large_money_value(self, db_connection):
-        """Test large value well within MONEY range but outside SMALLMONEY."""
-        cursor = db_connection.cursor()
+
+def test_large_money_value(cursor, db_connection):
+    """Test large value well within MONEY range but outside SMALLMONEY."""
+    table_name = "#pytest_money_large"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = Decimal("500000000000.1234")
-        cursor.execute("CREATE TABLE #t_large (val MONEY)")
-        cursor.execute("INSERT INTO #t_large VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_large")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == val
-        cursor.execute("DROP TABLE #t_large")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 
-class TestPythonNumericTypesToMoney:
-    """Test Python float and int -> MONEY column."""
+# =============================================================================
+# Python Numeric Types to MONEY
+# =============================================================================
 
-    def test_python_float_to_money(self, db_connection):
-        """Test Python float inserted into MONEY column."""
-        cursor = db_connection.cursor()
+
+def test_python_float_to_money(cursor, db_connection):
+    """Test Python float inserted into MONEY column."""
+    table_name = "#pytest_money_float"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = 123.4567
-        cursor.execute("CREATE TABLE #t_float (val MONEY)")
-        cursor.execute("INSERT INTO #t_float VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_float")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         # Float may have precision issues, compare as float
         assert float(result) == pytest.approx(val, rel=1e-4)
-        cursor.execute("DROP TABLE #t_float")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_python_int_to_money(self, db_connection):
-        """Test Python int inserted into MONEY column."""
-        cursor = db_connection.cursor()
+
+def test_python_int_to_money(cursor, db_connection):
+    """Test Python int inserted into MONEY column."""
+    table_name = "#pytest_money_int"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = 12345
-        cursor.execute("CREATE TABLE #t_int (val MONEY)")
-        cursor.execute("INSERT INTO #t_int VALUES (?)", (val,))
-        cursor.execute("SELECT val FROM #t_int")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
         result = cursor.fetchone()[0]
         assert result == Decimal("12345.0000")
-        cursor.execute("DROP TABLE #t_int")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 
-class TestStringBindingPreservesPrecision:
-    """Verify that string binding via format(param, 'f') preserves all decimal places."""
-
-    def test_format_preserves_20_decimals(self):
-        """Test that format(Decimal, 'f') preserves high precision."""
-        # This tests the implementation detail that string binding preserves precision
-        val = Decimal("100.12345678901234567890")
-        formatted = format(val, "f")
-        assert formatted == "100.12345678901234567890"
+# =============================================================================
+# String Binding Precision Verification
+# =============================================================================
 
 
-class TestExecutemanyMoneySmallmoney:
-    """Test executemany with MONEY and SMALLMONEY types."""
+def test_format_preserves_20_decimals():
+    """Test that format(Decimal, 'f') preserves high precision."""
+    # This tests the implementation detail that string binding preserves precision
+    val = Decimal("100.12345678901234567890")
+    formatted = format(val, "f")
+    assert formatted == "100.12345678901234567890"
 
-    def test_executemany_money_smallmoney(self, db_connection):
-        """Test inserting multiple rows with executemany."""
-        cursor = db_connection.cursor()
-        cursor.execute("""
-            CREATE TABLE #t_execmany (
+
+# =============================================================================
+# Executemany Tests
+# =============================================================================
+
+
+def test_executemany_money_smallmoney(cursor, db_connection):
+    """Test inserting multiple rows with executemany."""
+    table_name = "#pytest_money_execmany"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
             )
         """)
+        db_connection.commit()
 
         test_data = [
             (Decimal("12345.6789"), Decimal("987.6543")),
@@ -321,9 +506,10 @@ class TestExecutemanyMoneySmallmoney:
             (Decimal("-1000.9900"), None),
         ]
 
-        cursor.executemany("INSERT INTO #t_execmany (m, sm) VALUES (?, ?)", test_data)
+        cursor.executemany(f"INSERT INTO {table_name} (m, sm) VALUES (?, ?)", test_data)
+        db_connection.commit()
 
-        cursor.execute("SELECT m, sm FROM #t_execmany ORDER BY id")
+        cursor.execute(f"SELECT m, sm FROM {table_name} ORDER BY id")
         results = cursor.fetchall()
         assert len(results) == len(test_data)
 
@@ -334,79 +520,123 @@ class TestExecutemanyMoneySmallmoney:
                 else:
                     assert val == exp_val
                     assert isinstance(val, Decimal)
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-        cursor.execute("DROP TABLE #t_execmany")
-        cursor.close()
+
+# =============================================================================
+# Invalid Input Handling
+# =============================================================================
 
 
-class TestInvalidInputHandling:
-    """Test that invalid inputs raise appropriate errors."""
+def test_invalid_string_to_money(cursor, db_connection):
+    """Test that invalid string input raises error."""
+    table_name = "#pytest_money_invalid"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
 
-    def test_invalid_string_to_money(self, db_connection):
-        """Test that invalid string input raises error."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_invalid (val MONEY)")
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #t_invalid VALUES (?)", ("invalid_string",))
-        cursor.execute("DROP TABLE IF EXISTS #t_invalid")
-        cursor.close()
+            cursor.execute(f"INSERT INTO {table_name} VALUES (?)", ("invalid_string",))
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_below_money_min_fails(self, db_connection):
-        """Test value below MONEY_MIN raises error."""
-        cursor = db_connection.cursor()
+
+def test_below_money_min_fails(cursor, db_connection):
+    """Test value below MONEY_MIN raises error."""
+    table_name = "#pytest_money_below_min"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val MONEY)")
+        db_connection.commit()
+
         val = Decimal("-922337203685477.5809")  # Just below MONEY_MIN
-        cursor.execute("CREATE TABLE #t_below_min (val MONEY)")
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #t_below_min VALUES (?)", (val,))
-        cursor.execute("DROP TABLE IF EXISTS #t_below_min")
-        cursor.close()
+            cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_below_smallmoney_min_fails(self, db_connection):
-        """Test value below SMALLMONEY_MIN raises error."""
-        cursor = db_connection.cursor()
+
+def test_below_smallmoney_min_fails(cursor, db_connection):
+    """Test value below SMALLMONEY_MIN raises error."""
+    table_name = "#pytest_money_below_sm_min"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (val SMALLMONEY)")
+        db_connection.commit()
+
         val = Decimal("-214748.3649")  # Just below SMALLMONEY_MIN
-        cursor.execute("CREATE TABLE #t_below_sm_min (val SMALLMONEY)")
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #t_below_sm_min VALUES (?)", (val,))
-        cursor.execute("DROP TABLE IF EXISTS #t_below_sm_min")
-        cursor.close()
+            cursor.execute(f"INSERT INTO {table_name} VALUES (?)", (val,))
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 
-class TestMixedNullScenarios:
-    """Test mixed NULL scenarios for MONEY and SMALLMONEY."""
+# =============================================================================
+# Mixed NULL Scenarios
+# =============================================================================
 
-    def test_money_value_smallmoney_null(self, db_connection):
-        """Test MONEY has value while SMALLMONEY is NULL."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_mixed1 (m MONEY, sm SMALLMONEY)")
-        cursor.execute("INSERT INTO #t_mixed1 VALUES (?, ?)", (Decimal("123.4500"), None))
-        cursor.execute("SELECT m, sm FROM #t_mixed1")
+
+def test_money_value_smallmoney_null(cursor, db_connection):
+    """Test MONEY has value while SMALLMONEY is NULL."""
+    table_name = "#pytest_money_mixed1"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (m MONEY, sm SMALLMONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?, ?)", (Decimal("123.4500"), None))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT m, sm FROM {table_name}")
         row = cursor.fetchone()
         assert row[0] == Decimal("123.4500")
         assert row[1] is None
-        cursor.execute("DROP TABLE #t_mixed1")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_money_null_smallmoney_value(self, db_connection):
-        """Test MONEY is NULL while SMALLMONEY has value."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_mixed2 (m MONEY, sm SMALLMONEY)")
-        cursor.execute("INSERT INTO #t_mixed2 VALUES (?, ?)", (None, Decimal("67.8900")))
-        cursor.execute("SELECT m, sm FROM #t_mixed2")
+
+def test_money_null_smallmoney_value(cursor, db_connection):
+    """Test MONEY is NULL while SMALLMONEY has value."""
+    table_name = "#pytest_money_mixed2"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (m MONEY, sm SMALLMONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?, ?)", (None, Decimal("67.8900")))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT m, sm FROM {table_name}")
         row = cursor.fetchone()
         assert row[0] is None
         assert row[1] == Decimal("67.8900")
-        cursor.execute("DROP TABLE #t_mixed2")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
-    def test_both_null(self, db_connection):
-        """Test both MONEY and SMALLMONEY are NULL."""
-        cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #t_mixed3 (m MONEY, sm SMALLMONEY)")
-        cursor.execute("INSERT INTO #t_mixed3 VALUES (?, ?)", (None, None))
-        cursor.execute("SELECT m, sm FROM #t_mixed3")
+
+def test_both_null(cursor, db_connection):
+    """Test both MONEY and SMALLMONEY are NULL."""
+    table_name = "#pytest_money_mixed3"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (m MONEY, sm SMALLMONEY)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?, ?)", (None, None))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT m, sm FROM {table_name}")
         row = cursor.fetchone()
         assert row[0] is None
         assert row[1] is None
-        cursor.execute("DROP TABLE #t_mixed3")
-        cursor.close()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
