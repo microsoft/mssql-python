@@ -3435,6 +3435,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
+            case SQL_TYPE_TIME:
             case SQL_SS_TIME2: {
                 char timeTextBuffer[SQL_TIME_TEXT_MAX_LEN] = {0};
                 SQLLEN timeDataLen = 0;
@@ -3625,7 +3626,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             default:
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for column - " << columnName << ", Type - "
-                            << dataType << ", column ID - " << i;
+                            << effectiveDataType << ", column ID - " << i;
                 LOG("SQLGetData: %s", errorString.str().c_str());
                 ThrowStdException(errorString.str());
                 break;
