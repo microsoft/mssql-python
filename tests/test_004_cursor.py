@@ -871,6 +871,23 @@ def test_varbinary_full_capacity(cursor, db_connection):
         db_connection.commit()
 
 
+def test_execute_none_into_varbinary_column(cursor, db_connection):
+    from mssql_python.constants import ConstantsDDBC
+
+    drop_table_if_exists(cursor, "#test_varbinary_null")
+    try:
+        cursor.execute("CREATE TABLE #test_varbinary_null (data VARBINARY(100))")
+        db_connection.commit()
+        cursor.setinputsizes([(ConstantsDDBC.SQL_VARBINARY.value, 100, 0)])
+        cursor.execute("INSERT INTO #test_varbinary_null (data) VALUES (?)", None)
+        db_connection.commit()
+        cursor.execute("SELECT data FROM #test_varbinary_null")
+        row = cursor.fetchone()
+        assert row[0] is None
+    finally:
+        drop_table_if_exists(cursor, "#test_varbinary_null")
+
+
 def test_varbinary_max(cursor, db_connection):
     """Test SQL_VARBINARY with MAX length"""
     try:

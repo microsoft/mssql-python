@@ -396,7 +396,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if param is None:
             logger.debug("_map_sql_type: NULL parameter - index=%d", i)
             return (
-                ddbc_sql_const.SQL_VARCHAR.value,
+                ddbc_sql_const.SQL_UNKNOWN_TYPE.value,
                 ddbc_sql_const.SQL_C_DEFAULT.value,
                 1,
                 0,
@@ -2218,6 +2218,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     min_val=min_val,
                     max_val=max_val,
                 )
+
+                # For executemany with all-NULL columns, SQL_UNKNOWN_TYPE doesn't work
+                # with array binding. Fall back to SQL_VARCHAR as a safe default.
+                if (
+                    sample_value is None
+                    and paraminfo.paramSQLType == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
+                ):
+                    paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
+                    paraminfo.columnSize = 1
+
                 # Special handling for binary data in auto-detected types
                 if paraminfo.paramSQLType in (
                     ddbc_sql_const.SQL_BINARY.value,
