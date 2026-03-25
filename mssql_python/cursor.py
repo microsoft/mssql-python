@@ -883,6 +883,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Other types
             ddbc_sql_const.SQL_GUID.value: ddbc_sql_const.SQL_C_GUID.value,
             ddbc_sql_const.SQL_SS_XML.value: ddbc_sql_const.SQL_C_WCHAR.value,
+            ddbc_sql_const.SQL_SS_VARIANT.value: ddbc_sql_const.SQL_C_BINARY.value,
         }
         return sql_to_c_type.get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
 
