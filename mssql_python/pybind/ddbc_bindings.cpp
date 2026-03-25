@@ -471,14 +471,21 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &describedType,
                         &describedSize, &describedDigits, &nullable);
                     if (!SQL_SUCCEEDED(rc)) {
-                        LOG("BindParameters: SQLDescribeParam failed for "
-                            "param[%d] (NULL parameter) - SQLRETURN=%d",
-                            paramIndex, rc);
-                        return rc;
+                        // SQLDescribeParam can fail for generic SELECT statements where
+                        // no table column is referenced. Fall back to SQL_VARCHAR as a safe
+                        // default.
+                        LOG_WARNING("BindParameters: SQLDescribeParam failed for "
+                                    "param[%d] (NULL parameter) - SQLRETURN=%d, falling back to "
+                                    "SQL_VARCHAR",
+                                    paramIndex, rc);
+                        sqlType = SQL_VARCHAR;
+                        columnSize = 1;
+                        decimalDigits = 0;
+                    } else {
+                        sqlType = describedType;
+                        columnSize = describedSize;
+                        decimalDigits = describedDigits;
                     }
-                    sqlType = describedType;
-                    columnSize = describedSize;
-                    decimalDigits = describedDigits;
                 }
                 dataPtr = nullptr;
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -4048,7 +4055,8 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 break;
             case SQL_SS_UDT:
                 rowSize += (static_cast<SQLLEN>(columnSize) == SQL_NO_TOTAL || columnSize == 0)
-                               ? SQL_MAX_LOB_SIZE : columnSize;
+                               ? SQL_MAX_LOB_SIZE
+                               : columnSize;
                 break;
             case SQL_BINARY:
             case SQL_VARBINARY:
@@ -4112,8 +4120,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
-             dataType == SQL_SS_UDT) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
@@ -4252,8 +4259,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
-             dataType == SQL_SS_UDT) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
