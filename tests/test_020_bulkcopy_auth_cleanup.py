@@ -9,9 +9,8 @@ passing it to mssql_py_core.  The Rust validator rejects access_token
 combined with those fields (ODBC parity).
 """
 
-import pytest
 import secrets
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 SAMPLE_TOKEN = secrets.token_hex(44)
 
@@ -35,11 +34,9 @@ def _make_cursor(connection_str, auth_type):
 class TestBulkcopyAuthCleanup:
     """Verify cursor.bulkcopy strips stale auth fields after token acquisition."""
 
-    @patch("mssql_python.cursor.get_settings")
     @patch("mssql_python.cursor.logger")
-    def test_token_replaces_auth_fields(self, mock_logger, mock_settings):
+    def test_token_replaces_auth_fields(self, mock_logger):
         """access_token present ⇒ authentication, user_name, password removed."""
-        mock_settings.return_value = MagicMock(logging=False)
         mock_logger.is_debug_enabled = False
 
         cursor = _make_cursor(
@@ -77,11 +74,9 @@ class TestBulkcopyAuthCleanup:
         assert "user_name" not in captured_context
         assert "password" not in captured_context
 
-    @patch("mssql_python.cursor.get_settings")
     @patch("mssql_python.cursor.logger")
-    def test_no_auth_type_leaves_fields_intact(self, mock_logger, mock_settings):
+    def test_no_auth_type_leaves_fields_intact(self, mock_logger):
         """No _auth_type ⇒ credentials pass through unchanged (SQL auth path)."""
-        mock_settings.return_value = MagicMock(logging=False)
         mock_logger.is_debug_enabled = False
 
         cursor = _make_cursor(
