@@ -85,8 +85,7 @@ class TestBulkcopyAuthCleanup:
         mock_logger.is_debug_enabled = False
 
         cursor = _make_cursor(
-            "Server=tcp:test.database.windows.net;Database=testdb;"
-            "UID=sa;PWD=password123",
+            "Server=tcp:test.database.windows.net;Database=testdb;" "UID=sa;PWD=password123",
             None,  # no AD auth
         )
 
