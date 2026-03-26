@@ -118,6 +118,7 @@ class ConstantsDDBC(Enum):
     SQL_DATETIMEOFFSET = -155
     SQL_SS_TIME2 = -154
     SQL_SS_XML = -152
+    SQL_SS_VARIANT = -150
     SQL_C_SS_TIMESTAMPOFFSET = 0x4001
     SQL_SCOPE_CURROW = 0
     SQL_BEST_ROWID = 1
@@ -376,6 +377,7 @@ class SQLTypes:
             ConstantsDDBC.SQL_SS_XML.value,
             ConstantsDDBC.SQL_GUID.value,
             ConstantsDDBC.SQL_SS_UDT.value,
+            ConstantsDDBC.SQL_SS_VARIANT.value,
         }
 
     # Could also add category methods for convenience
