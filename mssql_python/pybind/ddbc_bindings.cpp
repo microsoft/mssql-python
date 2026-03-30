@@ -2995,7 +2995,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
     (void)wcharEncoding;  // Suppress unused parameter warning
-#if !defined(__APPLE__) && !defined(__linux__)
+#if defined(_WIN32)
     // On Windows, VARCHAR is fetched as SQL_C_WCHAR, so charEncoding is unused.
     (void)charEncoding;
 #endif
@@ -3120,11 +3120,17 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
+                            // SQL_NO_TOTAL means the driver has data but
+                            // cannot report its total length.  The buffer
+                            // may contain a truncated prefix — fall back to
+                            // the streaming LOB path to retrieve the full
+                            // value.
                             LOG("SQLGetData: Cannot determine data length "
                                 "(SQL_NO_TOTAL) for column %d (SQL_CHAR), "
-                                "returning NULL",
+                                "falling back to LOB streaming",
                                 i);
-                            row.append(py::none());
+                            row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
+                                                          charEncoding));
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d - dataType=%d, dataLen=%ld",
@@ -3179,11 +3185,17 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
+                            // SQL_NO_TOTAL means the driver has data but
+                            // cannot report its total length.  The buffer
+                            // may contain a truncated prefix — fall back to
+                            // the streaming LOB path to retrieve the full
+                            // value.
                             LOG("SQLGetData: Cannot determine data length "
                                 "(SQL_NO_TOTAL) for column %d (VARCHAR via WCHAR), "
-                                "returning NULL",
+                                "falling back to LOB streaming",
                                 i);
-                            row.append(py::none());
+                            row.append(
+                                FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d (VARCHAR via WCHAR) - dataLen=%ld",
@@ -3251,11 +3263,17 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
+                            // SQL_NO_TOTAL means the driver has data but
+                            // cannot report its total length.  The buffer
+                            // may contain a truncated prefix — fall back to
+                            // the streaming LOB path to retrieve the full
+                            // value.
                             LOG("SQLGetData: Cannot determine NVARCHAR data "
                                 "length (SQL_NO_TOTAL) for column %d, "
-                                "returning NULL",
+                                "falling back to LOB streaming",
                                 i);
-                            row.append(py::none());
+                            row.append(
+                                FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d (NVARCHAR) - dataLen=%ld",
@@ -3975,11 +3993,62 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 continue;
             }
             if (dataLen == SQL_NO_TOTAL) {
-                LOG("Cannot determine the length of the data. Returning NULL "
-                    "value instead. Column ID - {}",
-                    col);
-                Py_INCREF(Py_None);
-                PyList_SET_ITEM(row, col - 1, Py_None);
+                // SQL_NO_TOTAL means the driver has data but cannot report
+                // its total length (common for variable-length columns).
+                // The bound buffer may contain a truncated prefix — fall
+                // back to LOB streaming to retrieve the full value instead
+                // of silently returning NULL.
+                const ColumnInfoExt& noTotalColInfo = columnInfosExt[col - 1];
+                LOG("SQLGetData: SQL_NO_TOTAL for column %d (dataType=%d), "
+                    "falling back to LOB streaming",
+                    col, noTotalColInfo.dataType);
+                switch (noTotalColInfo.dataType) {
+                    case SQL_CHAR:
+                    case SQL_VARCHAR:
+                    case SQL_LONGVARCHAR:
+#if defined(__APPLE__) || defined(__linux__)
+                        PyList_SET_ITEM(row, col - 1,
+                                        FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false,
+                                                           noTotalColInfo.charEncoding)
+                                            .release()
+                                            .ptr());
+#else
+                        PyList_SET_ITEM(
+                            row, col - 1,
+                            FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-16le")
+                                .release()
+                                .ptr());
+#endif
+                        break;
+                    case SQL_WCHAR:
+                    case SQL_WVARCHAR:
+                    case SQL_WLONGVARCHAR:
+                    case SQL_SS_XML:
+                        PyList_SET_ITEM(
+                            row, col - 1,
+                            FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-16le")
+                                .release()
+                                .ptr());
+                        break;
+                    case SQL_BINARY:
+                    case SQL_VARBINARY:
+                    case SQL_LONGVARBINARY:
+                    case SQL_SS_UDT:
+                        PyList_SET_ITEM(row, col - 1,
+                                        FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true)
+                                            .release()
+                                            .ptr());
+                        break;
+                    default:
+                        // For fixed-length types SQL_NO_TOTAL should not
+                        // occur; treat as NULL to avoid undefined behaviour.
+                        LOG("SQL_NO_TOTAL for unexpected fixed-type column %d "
+                            "(dataType=%d), returning NULL",
+                            col, noTotalColInfo.dataType);
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
+                        break;
+                }
                 continue;
             }
 
@@ -4166,13 +4235,21 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR:
-                rowSize += columnSize;
+#if defined(_WIN32)
+                // Windows binds VARCHAR as SQL_C_WCHAR: buffer = (columnSize + 1) *
+                // sizeof(SQLWCHAR)
+                rowSize += (columnSize + 1) * sizeof(SQLWCHAR);
+#else
+                // Linux/macOS bind VARCHAR as SQL_C_CHAR with UTF-8 expansion: buffer = columnSize
+                // * 4 + 1
+                rowSize += columnSize * 4 + 1;
+#endif
                 break;
             case SQL_SS_XML:
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR:
-                rowSize += columnSize * sizeof(SQLWCHAR);
+                rowSize += (columnSize + 1) * sizeof(SQLWCHAR);
                 break;
             case SQL_INTEGER:
                 rowSize += sizeof(SQLINTEGER);

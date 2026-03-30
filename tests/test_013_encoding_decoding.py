@@ -7330,6 +7330,10 @@ def test_cp1252_varchar_byte_returns_str_fetchone(
             f"Expected str for CHAR({byte_val}) ({description}) but got "
             f"{type(value).__name__}: {value!r} (platform={sys.platform})."
         )
+        assert value == expected_char, (
+            f"CHAR({byte_val}) ({description}) decoded to {value!r} but expected "
+            f"{expected_char!r} (U+{ord(expected_char):04X}) (platform={sys.platform})."
+        )
     finally:
         cursor.close()
 
@@ -7358,6 +7362,10 @@ def test_cp1252_varchar_byte173_batch_fetch(db_connection, fetch_method):
             f"{fetch_method}: expected str but got {type(value).__name__}: "
             f"{value!r} (platform={sys.platform})."
         )
+        assert "\u00ad" in value, (
+            f"{fetch_method}: byte 0xAD must decode to U+00AD SOFT HYPHEN, "
+            f"but got {value!r} (platform={sys.platform})."
+        )
     finally:
         cursor.close()
 
@@ -7381,7 +7389,10 @@ def test_cp1252_varchar_byte173_embedded_in_string(db_connection):
             f"Expected str but got {type(value).__name__}: {value!r}. "
             f"Embedded byte 0xAD was not decoded (platform={sys.platform})."
         )
-        assert "hello" in value and "world" in value
+        assert value == "hello\u00adworld", (
+            f"Expected 'hello\\u00adworld' but got {value!r}. "
+            f"Byte 0xAD must decode to U+00AD SOFT HYPHEN (platform={sys.platform})."
+        )
     finally:
         cursor.close()
 
