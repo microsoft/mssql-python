@@ -780,6 +780,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         try:
             import pyarrow
+
             return pyarrow
         except ImportError as e:
             raise ImportError(
