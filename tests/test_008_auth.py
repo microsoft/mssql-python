@@ -446,6 +446,57 @@ class TestCredentialInstanceCache:
         """Cache should be empty at the start due to the clear_credential_cache fixture."""
         assert len(_credential_cache) == 0
 
+    def test_cached_credential_refreshes_token_after_expiry(self):
+        """Verify that the cached credential instance returns fresh tokens on each call.
+
+        This simulates what happens when Azure Identity SDK refreshes an expired
+        token internally: because we cache the credential (not the token), each
+        _acquire_token() call invokes get_token() on the same instance, giving
+        the SDK the opportunity to return a refreshed token when the old one has
+        expired.
+        """
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+
+        call_count = 0
+        tokens = ["initial_token_abc123", "refreshed_token_xyz789"]
+
+        class MockCredentialWithRefresh:
+            def get_token(self, scope):
+                nonlocal call_count
+                idx = min(call_count, len(tokens) - 1)
+                call_count += 1
+
+                class Token:
+                    token = tokens[idx]
+
+                return Token()
+
+        try:
+            azure_identity.DefaultAzureCredential = MockCredentialWithRefresh
+
+            # First call — gets initial token
+            _, raw_token_1 = AADAuth._acquire_token("default")
+            assert raw_token_1 == "initial_token_abc123"
+            assert call_count == 1
+
+            # Same credential instance is cached
+            cached = _credential_cache["default"]
+            assert isinstance(cached, MockCredentialWithRefresh)
+
+            # Second call — same credential instance, but SDK returns refreshed token
+            # (simulating post-expiry refresh)
+            _, raw_token_2 = AADAuth._acquire_token("default")
+            assert raw_token_2 == "refreshed_token_xyz789"
+            assert call_count == 2
+
+            # Credential instance is still the same (not recreated)
+            assert _credential_cache["default"] is cached
+        finally:
+            azure_identity.DefaultAzureCredential = original
+
 
 class TestAcquireTokenImportError:
     """Test the ImportError path when azure-identity is not installed."""
