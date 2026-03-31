@@ -3120,6 +3120,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
+                            // LCOV_EXCL_START — defensive: driver controls indicator values
                             // SQL_NO_TOTAL means the driver has data but
                             // cannot report its total length.  The buffer
                             // may contain a truncated prefix — fall back to
@@ -3131,6 +3132,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 i);
                             row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
                                                           charEncoding));
+                            // LCOV_EXCL_STOP
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d - dataType=%d, dataLen=%ld",
@@ -3185,6 +3187,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
+                            // LCOV_EXCL_START — defensive: driver controls indicator values
                             // SQL_NO_TOTAL means the driver has data but
                             // cannot report its total length.  The buffer
                             // may contain a truncated prefix — fall back to
@@ -3196,6 +3199,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 i);
                             row.append(
                                 FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
+                            // LCOV_EXCL_STOP
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d (VARCHAR via WCHAR) - dataLen=%ld",
@@ -3263,6 +3267,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
+                            // LCOV_EXCL_START — defensive: driver controls indicator values
                             // SQL_NO_TOTAL means the driver has data but
                             // cannot report its total length.  The buffer
                             // may contain a truncated prefix — fall back to
@@ -3274,6 +3279,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 i);
                             row.append(
                                 FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
+                            // LCOV_EXCL_STOP
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d (NVARCHAR) - dataLen=%ld",
@@ -3993,11 +3999,16 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 continue;
             }
             if (dataLen == SQL_NO_TOTAL) {
+                // LCOV_EXCL_START
                 // SQL_NO_TOTAL means the driver has data but cannot report
                 // its total length (common for variable-length columns).
                 // The bound buffer may contain a truncated prefix — fall
                 // back to LOB streaming to retrieve the full value instead
                 // of silently returning NULL.
+                //
+                // Coverage note: This branch is defensive — the ODBC driver
+                // controls indicator values in bound-column mode, so
+                // SQL_NO_TOTAL cannot be triggered from Python-level tests.
                 const ColumnInfoExt& noTotalColInfo = columnInfosExt[col - 1];
                 LOG("SQLGetData: SQL_NO_TOTAL for column %d (dataType=%d), "
                     "falling back to LOB streaming",
@@ -4049,6 +4060,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         PyList_SET_ITEM(row, col - 1, Py_None);
                         break;
                 }
+                // LCOV_EXCL_STOP
                 continue;
             }
 
