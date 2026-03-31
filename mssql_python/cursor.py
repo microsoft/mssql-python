@@ -138,6 +138,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         self._cached_column_map = None
         self._cached_converter_map = None
+        self._uuid_str_indices = None  # Pre-computed UUID column indices for str conversion
+        # Cache the effective native_uuid setting for this cursor's connection.
+        # Resolution order: connection._native_uuid (if not None) → module-level setting.
+        self._conn_native_uuid = getattr(self.connection, "_native_uuid", None)
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
         self._skip_increment_for_next_fetch = (
@@ -395,7 +399,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if param is None:
             logger.debug("_map_sql_type: NULL parameter - index=%d", i)
             return (
-                ddbc_sql_const.SQL_VARCHAR.value,
+                ddbc_sql_const.SQL_UNKNOWN_TYPE.value,
                 ddbc_sql_const.SQL_C_DEFAULT.value,
                 1,
                 0,
@@ -895,6 +899,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Other types
             ddbc_sql_const.SQL_GUID.value: ddbc_sql_const.SQL_C_GUID.value,
             ddbc_sql_const.SQL_SS_XML.value: ddbc_sql_const.SQL_C_WCHAR.value,
+            ddbc_sql_const.SQL_SS_VARIANT.value: ddbc_sql_const.SQL_C_BINARY.value,
         }
         return sql_to_c_type.get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
 
@@ -1024,6 +1029,32 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             converter_map.append(converter)
 
         return converter_map
+
+    def _compute_uuid_str_indices(self):
+        """
+        Compute the tuple of column indices whose uuid.UUID values should be
+        stringified (as uppercase), based on the effective native_uuid setting.
+
+        Resolution order: connection-level (if set) → module-level (fallback).
+
+        Returns:
+            tuple of int or None: Column indices to stringify, or None when
+            native_uuid is True — meaning zero per-row overhead.
+        """
+        if not self.description:
+            return None
+
+        effective_native_uuid = (
+            self._conn_native_uuid
+            if self._conn_native_uuid is not None
+            else get_settings().native_uuid
+        )
+        if not effective_native_uuid:
+            indices = tuple(
+                i for i, desc in enumerate(self.description) if desc and desc[1] is uuid.UUID
+            )
+            return indices if indices else None
+        return None
 
     def _get_column_and_converter_maps(self):
         """
@@ -1445,20 +1476,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 col_desc[0]: i for i, col_desc in enumerate(self.description)
             }
             self._cached_converter_map = self._build_converter_map()
+            self._uuid_str_indices = self._compute_uuid_str_indices()
         else:
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
             self._cached_column_map = None
             self._cached_converter_map = None
-
-        # After successful execution, initialize description if there are results
-        column_metadata = []
-        try:
-            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
-            self._initialize_description(column_metadata)
-        except Exception as e:
-            # If describe fails, it's likely there are no results (e.g., for INSERT)
-            self.description = None
+            self._uuid_str_indices = None
 
         self._reset_inputsizes()  # Reset input sizes after execution
         # Return self for method chaining
@@ -2201,6 +2225,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     min_val=min_val,
                     max_val=max_val,
                 )
+
+                # For executemany with all-NULL columns, SQL_UNKNOWN_TYPE doesn't work
+                # with array binding. Fall back to SQL_VARCHAR as a safe default.
+                if (
+                    sample_value is None
+                    and paraminfo.paramSQLType == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
+                ):
+                    paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
+                    paraminfo.columnSize = 1
+
                 # Special handling for binary data in auto-detected types
                 if paraminfo.paramSQLType in (
                     ddbc_sql_const.SQL_BINARY.value,
@@ -2289,14 +2323,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self.last_executed_stmt = operation
-            self._initialize_description()
+
+            # Fetch column metadata (e.g. for INSERT … OUTPUT)
+            column_metadata = []
+            try:
+                ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+                self._initialize_description(column_metadata)
+            except Exception:  # pylint: disable=broad-exception-caught
+                self.description = None
 
             if self.description:
                 self.rowcount = -1
                 self._reset_rownumber()
+                self._cached_column_map = {
+                    col_desc[0]: i for i, col_desc in enumerate(self.description)
+                }
+                self._cached_converter_map = self._build_converter_map()
+                self._uuid_str_indices = self._compute_uuid_str_indices()
             else:
                 self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
                 self._clear_rownumber()
+                self._cached_column_map = None
+                self._cached_converter_map = None
+                self._uuid_str_indices = None
         finally:
             # Reset input sizes after execution
             self._reset_inputsizes()
@@ -2344,7 +2393,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Get column and converter maps
             column_map, converter_map = self._get_column_and_converter_maps()
-            return Row(row_data, column_map, cursor=self, converter_map=converter_map)
+            return Row(
+                row_data,
+                column_map,
+                cursor=self,
+                converter_map=converter_map,
+                uuid_str_indices=self._uuid_str_indices,
+            )
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -2402,8 +2457,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             column_map, converter_map = self._get_column_and_converter_maps()
 
             # Convert raw data to Row objects
+            uuid_idx = self._uuid_str_indices
             return [
-                Row(row_data, column_map, cursor=self, converter_map=converter_map)
+                Row(
+                    row_data,
+                    column_map,
+                    cursor=self,
+                    converter_map=converter_map,
+                    uuid_str_indices=uuid_idx,
+                )
                 for row_data in rows_data
             ]
         except Exception as e:
@@ -2455,8 +2517,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             column_map, converter_map = self._get_column_and_converter_maps()
 
             # Convert raw data to Row objects
+            uuid_idx = self._uuid_str_indices
             return [
-                Row(row_data, column_map, cursor=self, converter_map=converter_map)
+                Row(
+                    row_data,
+                    column_map,
+                    cursor=self,
+                    converter_map=converter_map,
+                    uuid_str_indices=uuid_idx,
+                )
                 for row_data in rows_data
             ]
         except Exception as e:
@@ -2570,6 +2639,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Clear cached column and converter maps for the new result set
         self._cached_column_map = None
         self._cached_converter_map = None
+        self._uuid_str_indices = None
 
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
@@ -2595,6 +2665,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     col_desc[0]: i for i, col_desc in enumerate(self.description)
                 }
                 self._cached_converter_map = self._build_converter_map()
+                self._uuid_str_indices = self._compute_uuid_str_indices()
         except Exception as e:  # pylint: disable=broad-exception-caught
             # If describe fails, there might be no results in this result set
             self.description = None
