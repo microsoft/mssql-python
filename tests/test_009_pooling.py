@@ -278,30 +278,30 @@ def test_pool_capacity_limit_and_overflow(conn_str):
             c.close()
 
 
-@pytest.mark.skip("Flaky test - idle timeout behavior needs investigation")
 def test_pool_idle_timeout_removes_connections(conn_str):
     """Test that idle_timeout removes connections from the pool after the timeout."""
     pooling(max_size=2, idle_timeout=1)
     conn1 = connect(conn_str)
-    spid_list = []
     cursor1 = conn1.cursor()
-    cursor1.execute("SELECT @@SPID")
-    spid1 = cursor1.fetchone()[0]
-    spid_list.append(spid1)
+    # Use connection_id (a GUID unique per physical connection) instead of @@SPID,
+    # because SQL Server can reassign the same SPID to a new connection.
+    cursor1.execute("SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID")
+    conn_id1 = cursor1.fetchone()[0]
     conn1.close()
 
-    # Wait for longer than idle_timeout
-    time.sleep(3)
+    # Wait well beyond the idle_timeout to account for slow CI and integer-second granularity
+    time.sleep(5)
 
-    # Get a new connection, which should not reuse the previous SPID
+    # Get a new connection — the idle one should have been evicted during acquire()
     conn2 = connect(conn_str)
     cursor2 = conn2.cursor()
-    cursor2.execute("SELECT @@SPID")
-    spid2 = cursor2.fetchone()[0]
-    spid_list.append(spid2)
+    cursor2.execute("SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID")
+    conn_id2 = cursor2.fetchone()[0]
     conn2.close()
 
-    assert spid1 != spid2, "Idle timeout did not remove connection from pool"
+    assert (
+        conn_id1 != conn_id2
+    ), "Idle timeout did not remove connection from pool — same connection_id reused"
 
 
 # =============================================================================
@@ -309,50 +309,64 @@ def test_pool_idle_timeout_removes_connections(conn_str):
 # =============================================================================
 
 
-@pytest.mark.skip(
-    "Test causes fatal crash - forcibly closing underlying connection leads to undefined behavior"
-)
 def test_pool_removes_invalid_connections(conn_str):
-    """Test that the pool removes connections that become invalid (simulate by closing underlying connection)."""
+    """Test that the pool removes connections that become invalid and recovers gracefully.
+
+    This test simulates a connection being returned to the pool in a dirty state
+    (with an open transaction) by calling _conn.close() directly, bypassing the
+    normal Python close() which does a rollback. The pool's acquire() should detect
+    the bad connection during reset(), discard it, and create a fresh one.
+    """
     pooling(max_size=1, idle_timeout=30)
     conn = connect(conn_str)
     cursor = conn.cursor()
     cursor.execute("SELECT 1")
-    # Simulate invalidation by forcibly closing the connection at the driver level
-    try:
-        # Try to access a private attribute or method to forcibly close the underlying connection
-        # This is implementation-specific; if not possible, skip
-        if hasattr(conn, "_conn") and hasattr(conn._conn, "close"):
-            conn._conn.close()
-        else:
-            pytest.skip("Cannot forcibly close underlying connection for this driver")
-    except Exception:
-        pass
-    # Safely close the connection, ignoring errors due to forced invalidation
+    cursor.fetchone()
+
+    # Record the connection_id of the original connection
+    cursor.execute("SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID")
+    original_conn_id = cursor.fetchone()[0]
+
+    # Force-return the connection to the pool WITHOUT rollback.
+    # This leaves the pooled connection in a dirty state (open implicit transaction)
+    # which will cause reset() to fail on next acquire().
+    conn._conn.close()
+
+    # Python close() will fail since the underlying handle is already gone
     try:
         conn.close()
-    except RuntimeError as e:
-        if "not initialized" not in str(e):
-            raise
-    # Now, get a new connection from the pool and ensure it works
+    except RuntimeError:
+        pass
+
+    # Now get a new connection — the pool should discard the dirty one and create fresh
     new_conn = connect(conn_str)
     new_cursor = new_conn.cursor()
-    try:
-        new_cursor.execute("SELECT 1")
-        result = new_cursor.fetchone()
-        assert result is not None and result[0] == 1, "Pool did not remove invalid connection"
-    finally:
-        new_conn.close()
+    new_cursor.execute("SELECT 1")
+    result = new_cursor.fetchone()
+    assert result is not None and result[0] == 1, "Pool did not recover from invalid connection"
+
+    # Verify it's a different physical connection
+    new_cursor.execute(
+        "SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID"
+    )
+    new_conn_id = new_cursor.fetchone()[0]
+    assert (
+        original_conn_id != new_conn_id
+    ), "Expected a new physical connection after pool discarded the dirty one"
+
+    new_conn.close()
 
 
 def test_pool_recovery_after_failed_connection(conn_str):
     """Test that the pool recovers after a failed connection attempt."""
     pooling(max_size=1, idle_timeout=30)
     # First, try to connect with a bad password (should fail)
-    if "Pwd=" in conn_str:
-        bad_conn_str = conn_str.replace("Pwd=", "Pwd=wrongpassword")
-    elif "Password=" in conn_str:
-        bad_conn_str = conn_str.replace("Password=", "Password=wrongpassword")
+    import re
+
+    pwd_match = re.search(r"(Pwd|Password)=", conn_str, re.IGNORECASE)
+    if pwd_match:
+        key = pwd_match.group(0)  # e.g. "PWD=" or "Pwd=" or "Password="
+        bad_conn_str = conn_str.replace(key, key + "wrongpassword")
     else:
         pytest.skip("No password found in connection string to modify")
     with pytest.raises(Exception):
