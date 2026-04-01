@@ -32,8 +32,6 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
                     auto idle_time =
                         std::chrono::duration_cast<std::chrono::seconds>(now - conn->lastUsed())
                             .count();
-                    LOG("ConnectionPool::acquire: checking conn idle_time=%lld vs timeout=%d",
-                        (long long)idle_time, _idle_timeout_secs);
                     if (idle_time > _idle_timeout_secs) {
                         to_disconnect.push_back(conn);
                         return true;
