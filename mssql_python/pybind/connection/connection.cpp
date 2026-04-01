@@ -148,6 +148,17 @@ void Connection::disconnect() {
             // from destructors, reset() failure paths, and pool cleanup.
             // Throwing here during stack unwinding causes std::terminate().
             LOG_ERROR("SQLDisconnect failed (ret=%d), forcing handle cleanup", ret);
+
+            // Best-effort: retrieve and log ODBC diagnostics for debuggability.
+            // This must not throw, to keep disconnect noexcept-safe.
+            try {
+                ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
+                std::string diagMsg = WideToUTF8(err.ddbcErrorMsg);
+                LOG_ERROR("SQLDisconnect diagnostics: %s", diagMsg.c_str());
+            } catch (...) {
+                // Swallow all exceptions: cleanup paths must not throw.
+                LOG_ERROR("SQLDisconnect: failed to retrieve ODBC diagnostics");
+            }
         }
         // Always free the handle regardless of SQLDisconnect result
         _dbcHandle.reset();
