@@ -28,6 +28,19 @@
 #define SQL_MAX_NUMERIC_LEN 16
 #define SQL_SS_XML (-152)
 #define SQL_SS_UDT (-151)
+#define SQL_SS_VARIANT (-150)
+#define SQL_CA_SS_VARIANT_TYPE (1215)
+#ifndef SQL_C_DATE
+#define SQL_C_DATE (9)
+#endif
+#ifndef SQL_C_TIME
+#define SQL_C_TIME (10)
+#endif
+#ifndef SQL_C_TIMESTAMP
+#define SQL_C_TIMESTAMP (11)
+#endif
+// SQL Server-specific variant TIME type code
+#define SQL_SS_VARIANT_TIME (16384)
 
 #define STRINGIFY_FOR_CASE(x)                                                                      \
     case x:                                                                                        \
@@ -471,14 +484,21 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &describedType,
                         &describedSize, &describedDigits, &nullable);
                     if (!SQL_SUCCEEDED(rc)) {
-                        LOG("BindParameters: SQLDescribeParam failed for "
-                            "param[%d] (NULL parameter) - SQLRETURN=%d",
-                            paramIndex, rc);
-                        return rc;
+                        // SQLDescribeParam can fail for generic SELECT statements where
+                        // no table column is referenced. Fall back to SQL_VARCHAR as a safe
+                        // default.
+                        LOG_WARNING("BindParameters: SQLDescribeParam failed for "
+                                    "param[%d] (NULL parameter) - SQLRETURN=%d, falling back to "
+                                    "SQL_VARCHAR",
+                                    paramIndex, rc);
+                        sqlType = SQL_VARCHAR;
+                        columnSize = 1;
+                        decimalDigits = 0;
+                    } else {
+                        sqlType = describedType;
+                        columnSize = describedSize;
+                        decimalDigits = describedDigits;
                     }
-                    sqlType = describedType;
-                    columnSize = describedSize;
-                    decimalDigits = describedDigits;
                 }
                 dataPtr = nullptr;
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -2907,6 +2927,67 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
     }
 }
 
+// Helper function to map sql_variant's underlying C type to SQL data type
+// This allows sql_variant to reuse existing fetch logic for each data type
+SQLSMALLINT MapVariantCTypeToSQLType(SQLLEN variantCType) {
+    switch (variantCType) {
+        case SQL_C_SLONG:
+        case SQL_C_LONG:
+            return SQL_INTEGER;
+        case SQL_C_SSHORT:
+        case SQL_C_SHORT:
+            return SQL_SMALLINT;
+        case SQL_C_SBIGINT:
+            return SQL_BIGINT;
+        case SQL_C_FLOAT:
+            return SQL_REAL;
+        case SQL_C_DOUBLE:
+            return SQL_DOUBLE;
+        case SQL_C_BIT:
+            return SQL_BIT;
+        case SQL_C_CHAR:
+            return SQL_VARCHAR;
+        case SQL_C_WCHAR:
+            return SQL_WVARCHAR;
+        case SQL_C_DATE:
+        case SQL_C_TYPE_DATE:
+            return SQL_TYPE_DATE;
+        case SQL_C_TIME:
+        case SQL_C_TYPE_TIME:
+        case SQL_SS_VARIANT_TIME:
+            return SQL_TYPE_TIME;
+        case SQL_C_TIMESTAMP:
+        case SQL_C_TYPE_TIMESTAMP:
+            return SQL_TYPE_TIMESTAMP;
+        case SQL_C_BINARY:
+            return SQL_VARBINARY;
+        case SQL_C_GUID:
+            return SQL_GUID;
+        case SQL_C_NUMERIC:
+            return SQL_NUMERIC;
+        case SQL_C_TINYINT:
+        case SQL_C_UTINYINT:
+        case SQL_C_STINYINT:
+            return SQL_TINYINT;
+        default:
+            // Unknown C type code - fallback to WVARCHAR for string conversion
+            // Note: SQL Server enforces sql_variant restrictions at INSERT time, preventing
+            // invalid types (text, ntext, image, timestamp, xml, MAX types, nested variants,
+            // spatial types, hierarchyid, UDTs) from being stored. By the time we fetch data,
+            // only valid base types exist. This default handles unmapped/future type codes.
+            return SQL_WVARCHAR;
+    }
+}
+
+// Helper function to check if a column requires SQLGetData streaming (LOB or sql_variant)
+static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize) {
+    return dataType == SQL_SS_VARIANT ||
+           ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
+             dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE));
+}
+
 // Helper function to retrieve column data
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row,
                           const std::string& charEncoding = "utf-8",
@@ -2945,7 +3026,42 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             continue;
         }
 
-        switch (dataType) {
+        // Preprocess sql_variant: detect underlying type to route to correct conversion logic
+        SQLSMALLINT effectiveDataType = dataType;
+        if (dataType == SQL_SS_VARIANT) {
+            // For sql_variant, we MUST call SQLGetData with SQL_C_BINARY (NULL buffer, len=0)
+            // first. This serves two purposes:
+            // 1. Detects NULL values via the indicator parameter
+            // 2. Initializes the variant metadata in the ODBC driver, which is required for
+            //    SQLColAttribute(SQL_CA_SS_VARIANT_TYPE) to return the correct underlying C type.
+            //    Without this probe call, SQLColAttribute returns incorrect type codes.
+            SQLLEN indicator;
+            ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, NULL, 0, &indicator);
+            if (!SQL_SUCCEEDED(ret)) {
+                LOG_ERROR("SQLGetData: Failed to probe sql_variant column %d - SQLRETURN=%d", i,
+                          ret);
+                row.append(py::none());
+                continue;
+            }
+            if (indicator == SQL_NULL_DATA) {
+                row.append(py::none());
+                continue;
+            }
+            // Now retrieve the underlying C type
+            SQLLEN variantCType = 0;
+            ret =
+                SQLColAttribute_ptr(hStmt, i, SQL_CA_SS_VARIANT_TYPE, NULL, 0, NULL, &variantCType);
+            if (!SQL_SUCCEEDED(ret)) {
+                LOG_ERROR("SQLGetData: Failed to get sql_variant underlying type for column %d", i);
+                row.append(py::none());
+                continue;
+            }
+            effectiveDataType = MapVariantCTypeToSQLType(variantCType);
+            LOG("SQLGetData: sql_variant column %d has variantCType=%ld, mapped to SQL type %d", i,
+                (long)variantCType, effectiveDataType);
+        }
+
+        switch (effectiveDataType) {
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
@@ -4048,7 +4164,8 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 break;
             case SQL_SS_UDT:
                 rowSize += (static_cast<SQLLEN>(columnSize) == SQL_NO_TOTAL || columnSize == 0)
-                               ? SQL_MAX_LOB_SIZE : columnSize;
+                               ? SQL_MAX_LOB_SIZE
+                               : columnSize;
                 break;
             case SQL_BINARY:
             case SQL_VARBINARY:
@@ -4110,11 +4227,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
         SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
 
-        if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
-             dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
-             dataType == SQL_SS_UDT) &&
-            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
+        if (IsLobOrVariantColumn(dataType, columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
@@ -4204,6 +4317,40 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         return ret;
     }
 
+    std::vector<SQLUSMALLINT> lobColumns;
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        auto colMeta = columnNames[i].cast<py::dict>();
+        SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
+        SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+
+        // Detect LOB columns that need SQLGetData streaming
+        // sql_variant always uses SQLGetData for native type preservation
+        if (IsLobOrVariantColumn(dataType, columnSize)) {
+            lobColumns.push_back(i + 1);  // 1-based
+        }
+    }
+
+    // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
+    if (!lobColumns.empty()) {
+        LOG("FetchAll_wrap: LOB columns detected (%zu columns), using per-row "
+            "SQLGetData path",
+            lobColumns.size());
+        while (true) {
+            ret = SQLFetch_ptr(hStmt);
+            if (ret == SQL_NO_DATA)
+                break;
+            if (!SQL_SUCCEEDED(ret))
+                return ret;
+
+            py::list row;
+            SQLGetData_wrap(StatementHandle, numCols, row, charEncoding,
+                            wcharEncoding);  // <-- streams LOBs correctly
+            rows.append(row);
+        }
+        return SQL_SUCCESS;
+    }
+
+    // No LOBs detected - use binding path with batch fetching
     // Define a memory limit (1 GB)
     const size_t memoryLimit = 1ULL * 1024 * 1024 * 1024;
     size_t totalRowSize = calculateRowSize(columnNames, numCols);
@@ -4243,41 +4390,6 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         fetchSize = 1000;
     }
     LOG("FetchAll_wrap: Fetching data in batch sizes of %d", fetchSize);
-
-    std::vector<SQLUSMALLINT> lobColumns;
-    for (SQLSMALLINT i = 0; i < numCols; i++) {
-        auto colMeta = columnNames[i].cast<py::dict>();
-        SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
-        SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
-
-        if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
-             dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML ||
-             dataType == SQL_SS_UDT) &&
-            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
-            lobColumns.push_back(i + 1);  // 1-based
-        }
-    }
-
-    // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
-    if (!lobColumns.empty()) {
-        LOG("FetchAll_wrap: LOB columns detected (%zu columns), using per-row "
-            "SQLGetData path",
-            lobColumns.size());
-        while (true) {
-            ret = SQLFetch_ptr(hStmt);
-            if (ret == SQL_NO_DATA)
-                break;
-            if (!SQL_SUCCEEDED(ret))
-                return ret;
-
-            py::list row;
-            SQLGetData_wrap(StatementHandle, numCols, row, charEncoding,
-                            wcharEncoding);  // <-- streams LOBs correctly
-            rows.append(row);
-        }
-        return SQL_SUCCESS;
-    }
 
     ColumnBuffers buffers(numCols, fetchSize);
 
