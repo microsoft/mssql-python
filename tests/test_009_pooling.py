@@ -363,11 +363,10 @@ def test_pool_recovery_after_failed_connection(conn_str):
     # First, try to connect with a bad password (should fail)
     import re
 
-    pwd_match = re.search(r"(Pwd|Password)=", conn_str, re.IGNORECASE)
-    if pwd_match:
-        key = pwd_match.group(0)  # e.g. "PWD=" or "Pwd=" or "Password="
-        bad_conn_str = conn_str.replace(key, key + "wrongpassword")
-    else:
+    # Replace the value of the first Pwd/Password key-value pair with "wrongpassword"
+    pattern = re.compile(r"(?i)(Pwd|Password\s*=\s*)([^;]*)")
+    bad_conn_str, num_subs = pattern.subn(lambda m: m.group(1) + "wrongpassword", conn_str, count=1)
+    if num_subs == 0:
         pytest.skip("No password found in connection string to modify")
     with pytest.raises(Exception):
         connect(bad_conn_str)
