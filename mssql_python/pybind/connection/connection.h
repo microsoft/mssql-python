@@ -4,8 +4,8 @@
 #pragma once
 #include "../ddbc_bindings.h"
 #include <memory>
-#include <string>
 #include <mutex>
+#include <string>
 
 // Represents a single ODBC database connection.
 // Manages connection handles.
@@ -29,7 +29,11 @@ class Connection {
     void connect(const py::dict& attrs_before = py::dict());
 
     // Disconnect and free the connection handle.
+    // Throws on SQLDisconnect failure (use for user-facing close()).
     void disconnect();
+
+    // Disconnect without throwing — safe for destructors, pool cleanup, and reset() failure paths.
+    void disconnect_nothrow() noexcept;
 
     // Commit the current transaction.
     void commit();
@@ -63,6 +67,10 @@ class Connection {
     void checkError(SQLRETURN ret) const;
     void applyAttrsBefore(const py::dict& attrs_before);
 
+    // Shared disconnect logic: marks child handles, calls SQLDisconnect, frees handle.
+    // Returns the SQLRETURN from SQLDisconnect (or SQL_SUCCESS if no handle).
+    SQLRETURN disconnect_impl() noexcept;
+
     std::wstring _connStr;
     bool _fromPool = false;
     bool _autocommit = true;
@@ -75,13 +83,13 @@ class Connection {
     // Uses weak_ptr to avoid circular references and allow normal cleanup
     // THREAD-SAFETY: All accesses must be guarded by _childHandlesMutex
     std::vector<std::weak_ptr<SqlHandle>> _childStatementHandles;
-    
+
     // Counter for periodic compaction of expired weak_ptrs
     // Compact every N allocations to avoid O(n²) overhead in hot path
     // THREAD-SAFETY: Protected by _childHandlesMutex
     size_t _allocationsSinceCompaction = 0;
     static constexpr size_t COMPACTION_INTERVAL = 100;
-    
+
     // Mutex protecting _childStatementHandles and _allocationsSinceCompaction
     // Prevents data races between allocStatementHandle() and disconnect(),
     // or concurrent GC finalizers running from different threads

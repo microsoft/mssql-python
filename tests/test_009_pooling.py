@@ -353,7 +353,7 @@ def test_pool_recovery_after_failed_connection(conn_str):
     import re
 
     # Replace the value of the first Pwd/Password key-value pair with "wrongpassword"
-    pattern = re.compile(r"(?i)(Pwd|Password\s*=\s*)([^;]*)")
+    pattern = re.compile(r"(?i)((?:Pwd|Password)\s*=\s*)([^;]*)")
     bad_conn_str, num_subs = pattern.subn(lambda m: m.group(1) + "wrongpassword", conn_str, count=1)
     if num_subs == 0:
         pytest.skip("No password found in connection string to modify")
@@ -517,3 +517,51 @@ def test_pooling_state_consistency(conn_str):
     assert PoolingManager.is_initialized(), "Should remain initialized after disable call"
 
     print("Pooling state consistency verified")
+
+
+def test_pooling_reconfigure_while_enabled(conn_str):
+    """Test that calling pooling() with new parameters reconfigures the pool without disable/enable."""
+    pooling(max_size=50, idle_timeout=600)
+    assert PoolingManager.is_enabled(), "Pooling should be enabled"
+    assert PoolingManager._config["max_size"] == 50
+
+    # Reconfigure with smaller pool — should take effect immediately
+    pooling(max_size=10, idle_timeout=300)
+    assert PoolingManager.is_enabled(), "Pooling should still be enabled after reconfigure"
+    assert (
+        PoolingManager._config["max_size"] == 10
+    ), f"max_size not updated: expected 10, got {PoolingManager._config['max_size']}"
+    assert (
+        PoolingManager._config["idle_timeout"] == 300
+    ), f"idle_timeout not updated: expected 300, got {PoolingManager._config['idle_timeout']}"
+
+    # Verify connections still work after reconfiguration
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    assert cursor.fetchone()[0] == 1
+    conn.close()
+
+
+def test_pooling_disable_enable_cycle_state(conn_str):
+    """Test that disable >> enable properly resets _pools_closed so a second disable cleans up."""
+    pooling(max_size=5, idle_timeout=30)
+    conn = connect(conn_str)
+    conn.close()
+
+    # Disable — sets _pools_closed = True
+    pooling(enabled=False)
+    assert not PoolingManager.is_enabled()
+
+    # Re-enable — should reset _pools_closed so future disable works
+    pooling(max_size=5, idle_timeout=30)
+    assert PoolingManager.is_enabled()
+    assert not PoolingManager._pools_closed, "_pools_closed should be False after re-enable"
+
+    conn = connect(conn_str)
+    conn.close()
+
+    # Second disable should actually call close_pooling (not skip it)
+    pooling(enabled=False)
+    assert not PoolingManager.is_enabled()
+    assert PoolingManager._pools_closed

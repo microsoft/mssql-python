@@ -51,13 +51,7 @@ Connection::Connection(const std::wstring& conn_str, bool use_pool)
 }
 
 Connection::~Connection() {
-    try {
-        disconnect();  // fallback if user forgets to disconnect
-    } catch (...) {
-        // Never throw from a destructor — doing so during stack unwinding
-        // causes std::terminate().  Log and swallow.
-        LOG_ERROR("Exception suppressed in ~Connection destructor");
-    }
+    disconnect_nothrow();  // fallback if user forgets to disconnect
 }
 
 // Allocates connection handle
@@ -97,7 +91,7 @@ void Connection::connect(const py::dict& attrs_before) {
     updateLastUsed();
 }
 
-void Connection::disconnect() {
+SQLRETURN Connection::disconnect_impl() noexcept {
     if (_dbcHandle) {
         LOG("Disconnecting from database");
 
@@ -143,27 +137,30 @@ void Connection::disconnect() {
         }  // Release lock before potentially slow SQLDisconnect call
 
         SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
-        if (!SQL_SUCCEEDED(ret)) {
-            // Log the error but do NOT throw — disconnect must be safe to call
-            // from destructors, reset() failure paths, and pool cleanup.
-            // Throwing here during stack unwinding causes std::terminate().
-            LOG_ERROR("SQLDisconnect failed (ret=%d), forcing handle cleanup", ret);
-
-            // Best-effort: retrieve and log ODBC diagnostics for debuggability.
-            // This must not throw, to keep disconnect noexcept-safe.
-            try {
-                ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-                std::string diagMsg = WideToUTF8(err.ddbcErrorMsg);
-                LOG_ERROR("SQLDisconnect diagnostics: %s", diagMsg.c_str());
-            } catch (...) {
-                // Swallow all exceptions: cleanup paths must not throw.
-                LOG_ERROR("SQLDisconnect: failed to retrieve ODBC diagnostics");
-            }
-        }
         // Always free the handle regardless of SQLDisconnect result
         _dbcHandle.reset();
+        return ret;
     } else {
         LOG("No connection handle to disconnect");
+        return SQL_SUCCESS;
+    }
+}
+
+void Connection::disconnect() {
+    SQLRETURN ret = disconnect_impl();
+    if (!SQL_SUCCEEDED(ret)) {
+        // For user-facing disconnect, report the error.
+        // The handle is already freed by disconnect_impl(), so build the
+        // message from the saved return code.
+        std::string msg = "SQLDisconnect failed with return code " + std::to_string(ret);
+        ThrowStdException(msg.c_str());
+    }
+}
+
+void Connection::disconnect_nothrow() noexcept {
+    SQLRETURN ret = disconnect_impl();
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG_ERROR("SQLDisconnect failed (ret=%d), error suppressed (nothrow path)", ret);
     }
 }
 
@@ -397,7 +394,7 @@ bool Connection::reset() {
                                           (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
-        disconnect();
+        disconnect_nothrow();
         return false;
     }
 
@@ -409,7 +406,7 @@ bool Connection::reset() {
                                 (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
-        disconnect();
+        disconnect_nothrow();
         return false;
     }
 

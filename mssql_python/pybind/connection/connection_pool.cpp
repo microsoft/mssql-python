@@ -25,20 +25,19 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
             _max_size, _idle_timeout_secs);
 
         // Phase 1: Remove stale connections, collect for later disconnect
-        _pool.erase(
-            std::remove_if(
-                _pool.begin(), _pool.end(),
-                [&](const std::shared_ptr<Connection>& conn) {
-                    auto idle_time =
-                        std::chrono::duration_cast<std::chrono::seconds>(now - conn->lastUsed())
-                            .count();
-                    if (idle_time > _idle_timeout_secs) {
-                        to_disconnect.push_back(conn);
-                        return true;
-                    }
-                    return false;
-                }),
-            _pool.end());
+        _pool.erase(std::remove_if(_pool.begin(), _pool.end(),
+                                   [&](const std::shared_ptr<Connection>& conn) {
+                                       auto idle_time =
+                                           std::chrono::duration_cast<std::chrono::seconds>(
+                                               now - conn->lastUsed())
+                                               .count();
+                                       if (idle_time > _idle_timeout_secs) {
+                                           to_disconnect.push_back(conn);
+                                           return true;
+                                       }
+                                       return false;
+                                   }),
+                    _pool.end());
 
         size_t pruned = before - _pool.size();
         _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
@@ -73,11 +72,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
 
     // Phase 3: Disconnect expired/bad connections outside lock
     for (auto& conn : to_disconnect) {
-        try {
-            conn->disconnect();
-        } catch (const std::exception& ex) {
-            LOG("Disconnect bad/expired connections failed: %s", ex.what());
-        }
+        conn->disconnect_nothrow();
     }
     return valid_conn;
 }
@@ -88,7 +83,7 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
         conn->updateLastUsed();
         _pool.push_back(conn);
     } else {
-        conn->disconnect();
+        conn->disconnect_nothrow();
         if (_current_size > 0)
             --_current_size;
     }
@@ -105,11 +100,7 @@ void ConnectionPool::close() {
         _current_size = 0;
     }
     for (auto& conn : to_close) {
-        try {
-            conn->disconnect();
-        } catch (const std::exception& ex) {
-            LOG("ConnectionPool::close: disconnect failed: %s", ex.what());
-        }
+        conn->disconnect_nothrow();
     }
 }
 
