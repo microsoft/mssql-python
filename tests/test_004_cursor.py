@@ -542,6 +542,89 @@ class TestParseSqlTimeText:
         result = self._parse("23:59:59", 8)
         assert result == time(23, 59, 59)
 
+    # --- try-catch on std::stoi ---
+
+    def test_invalid_hour_raises(self):
+        """std::stoi fails on non-numeric hour → descriptive error."""
+        with pytest.raises(Exception, match="Failed to parse hour"):
+            self._parse("AB:00:00", 8)
+
+    def test_invalid_minute_raises(self):
+        """std::stoi fails on non-numeric minute → descriptive error."""
+        with pytest.raises(Exception, match="Failed to parse minute"):
+            self._parse("12:XY:00", 8)
+
+    def test_invalid_second_raises(self):
+        """std::stoi fails on non-numeric second → descriptive error."""
+        with pytest.raises(Exception, match="Failed to parse second"):
+            self._parse("12:00:ZZ", 8)
+
+    def test_invalid_microsecond_treated_as_zero(self):
+        """Non-digit fractional chars are stripped, resulting in microsecond=0."""
+        result = self._parse("12:00:00.ABCDEF", 15)
+        assert result == time(12, 0, 0, 0)
+
+    # --- range validation ---
+
+    def test_hour_out_of_range_raises(self):
+        """Hour > 23 → descriptive range error."""
+        with pytest.raises(Exception, match="Hour out of range"):
+            self._parse("25:00:00", 8)
+
+    def test_minute_out_of_range_raises(self):
+        """Minute > 59 → descriptive range error."""
+        with pytest.raises(Exception, match="Minute out of range"):
+            self._parse("12:60:00", 8)
+
+    def test_second_out_of_range_raises(self):
+        """Second > 59 → descriptive range error."""
+        with pytest.raises(Exception, match="Second out of range"):
+            self._parse("12:00:99", 8)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _normalize_time_param helper
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeTimeParam:
+    """Tests for the _normalize_time_param helper in cursor.py."""
+
+    @staticmethod
+    def _normalize(value, c_type):
+        from mssql_python.cursor import _normalize_time_param
+
+        return _normalize_time_param(value, c_type)
+
+    def test_time_with_sql_c_char_returns_isoformat(self):
+        """time + SQL_C_CHAR → isoformat string."""
+        from mssql_python.constants import ConstantsDDBC
+
+        result = self._normalize(time(14, 30, 0, 123456), ConstantsDDBC.SQL_C_CHAR.value)
+        assert result == "14:30:00.123456"
+
+    def test_time_with_sql_c_wchar_returns_isoformat(self):
+        """time + SQL_C_WCHAR → isoformat string."""
+        from mssql_python.constants import ConstantsDDBC
+
+        result = self._normalize(time(9, 5, 3), ConstantsDDBC.SQL_C_WCHAR.value)
+        assert result == "09:05:03.000000"
+
+    def test_time_with_non_text_ctype_returns_none(self):
+        """time + non-text C-type → None (no conversion)."""
+        from mssql_python.constants import ConstantsDDBC
+
+        result = self._normalize(time(12, 0, 0), ConstantsDDBC.SQL_C_TYPE_TIME.value)
+        assert result is None
+
+    def test_non_time_value_returns_none(self):
+        """Non-time value → None regardless of c_type."""
+        from mssql_python.constants import ConstantsDDBC
+
+        assert self._normalize("12:00:00", ConstantsDDBC.SQL_C_CHAR.value) is None
+        assert self._normalize(42, ConstantsDDBC.SQL_C_CHAR.value) is None
+        assert self._normalize(None, ConstantsDDBC.SQL_C_CHAR.value) is None
+
 
 def test_insert_datetime_column(cursor, db_connection):
     """Test inserting data into the datetime_column"""

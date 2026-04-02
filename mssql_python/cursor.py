@@ -48,6 +48,19 @@ MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
 
 
+def _normalize_time_param(value, c_type):
+    """Convert a datetime.time to its isoformat string when bound via text C-types.
+
+    Returns the isoformat string if conversion applies, otherwise *None*.
+    """
+    if isinstance(value, datetime.time) and c_type in (
+        ddbc_sql_const.SQL_C_CHAR.value,
+        ddbc_sql_const.SQL_C_WCHAR.value,
+    ):
+        return value.isoformat(timespec="microseconds")
+    return None
+
+
 class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """
     Represents a database cursor, which is used to manage the context of a fetch operation.
@@ -944,11 +957,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # If TIME values are being bound via text C-types, normalize them to a
         # textual representation expected by SQL_C_CHAR/SQL_C_WCHAR binding.
-        if isinstance(parameter, datetime.time) and c_type in (
-            ddbc_sql_const.SQL_C_CHAR.value,
-            ddbc_sql_const.SQL_C_WCHAR.value,
-        ):
-            time_text = parameter.isoformat(timespec="microseconds")
+        time_text = _normalize_time_param(parameter, c_type)
+        if time_text is not None:
             parameters_list[i] = time_text
             column_size = max(column_size, len(time_text))
 
@@ -2271,11 +2281,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             for i, val in enumerate(processed_row):
                 if val is None:
                     continue
-                if isinstance(val, datetime.time) and parameters_type[i].paramCType in (
-                    ddbc_sql_const.SQL_C_CHAR.value,
-                    ddbc_sql_const.SQL_C_WCHAR.value,
-                ):
-                    processed_row[i] = val.isoformat(timespec="microseconds")
+                time_text = _normalize_time_param(val, parameters_type[i].paramCType)
+                if time_text is not None:
+                    processed_row[i] = time_text
                     continue
                 if (
                     isinstance(val, decimal.Decimal)
