@@ -30,7 +30,6 @@
 #define SQL_MAX_NUMERIC_LEN 16
 #define SQL_SS_XML (-152)
 #define SQL_SS_UDT (-151)
-#define SQL_TIME_TEXT_MAX_LEN 32
 #define SQL_SS_VARIANT (-150)
 #define SQL_CA_SS_VARIANT_TYPE (1215)
 #ifndef SQL_C_DATE
@@ -71,121 +70,6 @@ inline std::string GetEffectiveCharDecoding(const std::string& userEncoding) {
 
 namespace PythonObjectCache {
 py::object get_time_class();
-}
-
-inline py::object ParseSqlTimeTextToPythonObject(const char* timeText, SQLLEN timeTextLen) {
-    if (!timeText || (timeTextLen <= 0 && timeTextLen != SQL_NO_TOTAL)) {
-        return py::none();
-    }
-
-    size_t len;
-    if (timeTextLen == SQL_NO_TOTAL) {
-        // When the driver reports SQL_NO_TOTAL, the buffer may not be null-terminated.
-        // Bound the scan to the maximum expected TIME/TIME2 text length.
-        const void* nul = std::memchr(timeText, '\0', SQL_TIME_TEXT_MAX_LEN - 1);
-        len = nul ? static_cast<size_t>(static_cast<const char*>(nul) - timeText)
-                  : static_cast<size_t>(SQL_TIME_TEXT_MAX_LEN - 1);
-    } else {
-        len = static_cast<size_t>(timeTextLen);
-        if (len > SQL_TIME_TEXT_MAX_LEN - 1) {
-            len = SQL_TIME_TEXT_MAX_LEN - 1;
-        }
-    }
-
-    std::string value(timeText, len);
-
-    size_t start = value.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) {
-        return py::none();
-    }
-    size_t end = value.find_last_not_of(" \t\r\n");
-    value = value.substr(start, end - start + 1);
-
-    size_t firstColon = value.find(':');
-    size_t secondColon =
-        (firstColon == std::string::npos) ? std::string::npos : value.find(':', firstColon + 1);
-    if (firstColon == std::string::npos || secondColon == std::string::npos) {
-        ThrowStdException("Failed to parse TIME/TIME2 value: missing ':' separators");
-    }
-
-    int hour, minute, second = 0, microsecond = 0;
-
-    try {
-        hour = std::stoi(value.substr(0, firstColon));
-    } catch (const std::exception& e) {
-        ThrowStdException(
-            ("Failed to parse hour from TIME/TIME2 value '" + value + "': " + e.what()).c_str());
-    }
-    try {
-        minute = std::stoi(value.substr(firstColon + 1, secondColon - firstColon - 1));
-    } catch (const std::exception& e) {
-        ThrowStdException(
-            ("Failed to parse minute from TIME/TIME2 value '" + value + "': " + e.what()).c_str());
-    }
-
-    size_t dotPos = value.find('.', secondColon + 1);
-
-    if (dotPos == std::string::npos) {
-        try {
-            second = std::stoi(value.substr(secondColon + 1));
-        } catch (const std::exception& e) {
-            ThrowStdException(
-                ("Failed to parse second from TIME/TIME2 value '" + value + "': " + e.what())
-                    .c_str());
-        }
-    } else {
-        try {
-            second = std::stoi(value.substr(secondColon + 1, dotPos - secondColon - 1));
-        } catch (const std::exception& e) {
-            ThrowStdException(
-                ("Failed to parse second from TIME/TIME2 value '" + value + "': " + e.what())
-                    .c_str());
-        }
-        std::string frac = value.substr(dotPos + 1);
-
-        size_t digitCount = 0;
-        while (digitCount < frac.size() &&
-               std::isdigit(static_cast<unsigned char>(frac[digitCount]))) {
-            ++digitCount;
-        }
-        frac = frac.substr(0, digitCount);
-
-        if (frac.size() > 6) {
-            frac = frac.substr(0, 6);
-        }
-        while (frac.size() < 6) {
-            frac.push_back('0');
-        }
-        if (!frac.empty()) {
-            try {
-                microsecond = std::stoi(frac);
-            } catch (const std::exception& e) {
-                ThrowStdException(("Failed to parse microseconds from TIME/TIME2 value '" + value +
-                                   "': " + e.what())
-                                      .c_str());
-            }
-        }
-    }
-
-    if (hour < 0 || hour > 23) {
-        ThrowStdException(
-            ("Hour out of range (0-23) in TIME/TIME2 value: " + std::to_string(hour)).c_str());
-    }
-    if (minute < 0 || minute > 59) {
-        ThrowStdException(
-            ("Minute out of range (0-59) in TIME/TIME2 value: " + std::to_string(minute)).c_str());
-    }
-    if (second < 0 || second > 59) {
-        ThrowStdException(
-            ("Second out of range (0-59) in TIME/TIME2 value: " + std::to_string(second)).c_str());
-    }
-    if (microsecond < 0 || microsecond > 999999) {
-        ThrowStdException(("Microsecond out of range (0-999999) in TIME/TIME2 value: " +
-                           std::to_string(microsecond))
-                              .c_str());
-    }
-
-    return PythonObjectCache::get_time_class()(hour, minute, second, microsecond);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -4661,10 +4545,6 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Expose architecture-specific constants
     m.attr("ARCHITECTURE") = ARCHITECTURE;
 
-    // Test helper: expose time-text parser for unit testing edge cases
-    m.def("_test_parse_time_text", &ParseSqlTimeTextToPythonObject,
-          "Parse a SQL TIME/TIME2 text buffer into a Python datetime.time object (test helper)",
-          py::arg("timeText"), py::arg("timeTextLen"));
     m.attr("SQL_NO_TOTAL") = static_cast<int>(SQL_NO_TOTAL);
 
     // Expose the C++ functions to Python
