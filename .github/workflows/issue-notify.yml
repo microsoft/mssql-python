@@ -1,0 +1,229 @@
+name: Issue Notification
+
+on:
+  workflow_call:
+    inputs:
+      category:
+        required: true
+        type: string
+      confidence:
+        required: true
+        type: string
+      severity:
+        required: true
+        type: string
+      justification:
+        required: true
+        type: string
+      summary_for_maintainers:
+        required: true
+        type: string
+      relevant_files:
+        required: true
+        type: string
+      keywords:
+        required: true
+        type: string
+      code_analysis:
+        required: false
+        type: string
+        default: ''
+      engineer_guidance:
+        required: false
+        type: string
+        default: ''
+      issue_number:
+        required: true
+        type: string
+      issue_title:
+        required: true
+        type: string
+      issue_url:
+        required: true
+        type: string
+      issue_author:
+        required: true
+        type: string
+    secrets:
+      TEAMS_WEBHOOK_URL:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  send-notification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Teams Channel notification
+        env:
+          INPUT_CATEGORY: ${{ inputs.category }}
+          INPUT_SEVERITY: ${{ inputs.severity }}
+          INPUT_CONFIDENCE: ${{ inputs.confidence }}
+          INPUT_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          INPUT_ISSUE_TITLE: ${{ inputs.issue_title }}
+          INPUT_ISSUE_AUTHOR: ${{ inputs.issue_author }}
+          INPUT_ISSUE_URL: ${{ inputs.issue_url }}
+          INPUT_KEYWORDS: ${{ inputs.keywords }}
+          INPUT_RELEVANT_FILES: ${{ inputs.relevant_files }}
+          INPUT_SUMMARY: ${{ inputs.summary_for_maintainers }}
+          INPUT_CODE_ANALYSIS: ${{ inputs.code_analysis }}
+          INPUT_ENGINEER_GUIDANCE: ${{ inputs.engineer_guidance }}
+          INPUT_JUSTIFICATION: ${{ inputs.justification }}
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          CATEGORY="$INPUT_CATEGORY"
+          SEVERITY="$INPUT_SEVERITY"
+
+          # Set emoji and action based on category
+          case "$CATEGORY" in
+            FEATURE_REQUEST)
+              EMOJI="💡"
+              CATEGORY_DISPLAY="Feature Request"
+              ACTION="Evaluate against roadmap. If approved, create ADO work item."
+              ;;
+            BUG)
+              EMOJI="🐛"
+              CATEGORY_DISPLAY="Bug"
+              ACTION="Validate bug, reproduce if possible, assign to developer."
+              ;;
+            DISCUSSION)
+              EMOJI="💬"
+              CATEGORY_DISPLAY="Discussion"
+              ACTION="Respond with guidance. Re-classify if needed."
+              ;;
+            BREAK_FIX)
+              EMOJI="🚨"
+              CATEGORY_DISPLAY="Break/Fix (Regression)"
+              ACTION="URGENT: Assign to senior dev, create P0/P1 ADO item."
+              ;;
+            *)
+              EMOJI="❓"
+              CATEGORY_DISPLAY="Unknown"
+              ACTION="Review and manually classify this issue."
+              ;;
+          esac
+
+          # Parse and format code analysis from JSON into readable text
+          CODE_ANALYSIS_RAW="$INPUT_CODE_ANALYSIS"
+          if [ -n "$CODE_ANALYSIS_RAW" ]; then
+            # Try to parse as JSON and extract structured fields
+            CODE_ANALYSIS=$(echo "$CODE_ANALYSIS_RAW" | jq -r '
+              [
+                (if .is_bug then "<b>Verdict:</b> " + (.is_bug | @html) else empty end),
+                (if .root_cause then "<b>Root Cause:</b> " + (.root_cause | @html) else empty end),
+                (if .affected_components and (.affected_components | length) > 0
+                 then "<b>Affected Components:</b><br>" + ([.affected_components[] | "&nbsp;&nbsp;• " + (. | @html)] | join("<br>"))
+                 else empty end),
+                (if .evidence_and_context then "<b>Evidence &amp; Context:</b> " + (.evidence_and_context | @html) else empty end),
+                (if .recommended_fixes and (.recommended_fixes | length) > 0
+                 then "<b>Recommended Fixes:</b><br>" + ([.recommended_fixes | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". " + (.value | @html)] | join("<br>"))
+                 else empty end),
+                (if .code_locations and (.code_locations | length) > 0
+                 then "<b>Code Locations:</b><br>" + ([.code_locations[] | "&nbsp;&nbsp;• " + (. | @html)] | join("<br>"))
+                 else empty end),
+                (if .risk_assessment then "<b>Risk Assessment:</b> " + (.risk_assessment | @html) else empty end)
+              ] | join("<br><br>")
+            ' 2>/dev/null || echo "$CODE_ANALYSIS_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+          else
+            CODE_ANALYSIS="N/A — classification did not require code analysis."
+          fi
+
+          # Parse and format engineer guidance from JSON into readable text
+          ENGINEER_GUIDANCE_RAW="$INPUT_ENGINEER_GUIDANCE"
+          if [ -n "$ENGINEER_GUIDANCE_RAW" ]; then
+            ENGINEER_GUIDANCE=$(echo "$ENGINEER_GUIDANCE_RAW" | jq -r '
+              [
+                (if .technical_assessment then "<b>Technical Assessment:</b> " + (.technical_assessment | @html) else empty end),
+                (if .verdict then "<b>Verdict:</b> " + (.verdict | @html) else empty end),
+                (if .effort_estimate then "Effort Estimate: " + (.effort_estimate | @html) else empty end),
+                (if .affected_files and (.affected_files | length) > 0
+                 then "<b>Affected Files:</b><br>" + ([.affected_files[] | "&nbsp;&nbsp;• " + (. | @html)] | join("<br>"))
+                 else empty end),
+                (if .implementation_approach then "<b>Implementation Approach:</b> " + (.implementation_approach | @html) else empty end),
+                (if .risks_and_tradeoffs then "<b>Risks &amp; Tradeoffs:</b> " + (.risks_and_tradeoffs | @html) else empty end),
+                (if .suggested_response then "<b>Suggested Response to User:</b><br>" + (.suggested_response | @html) else empty end),
+                (if .related_considerations and (.related_considerations | length) > 0
+                 then "<b>Related Considerations:</b><br>" + ([.related_considerations | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". " + (.value | @html)] | join("<br>"))
+                 else empty end)
+              ] | join("<br><br>")
+            ' 2>/dev/null || echo "$ENGINEER_GUIDANCE_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+          else
+            ENGINEER_GUIDANCE=""
+          fi
+
+          # Set severity color indicator
+          case "$SEVERITY" in
+            critical) SEV_INDICATOR="🔴" ;;
+            high)     SEV_INDICATOR="🟠" ;;
+            medium)   SEV_INDICATOR="🟡" ;;
+            *)        SEV_INDICATOR="🟢" ;;
+          esac
+
+          # Build well-formatted HTML message using jq for proper JSON escaping
+          jq -n \
+            --arg emoji "$EMOJI" \
+            --arg category_display "$CATEGORY_DISPLAY" \
+            --arg severity "$SEVERITY" \
+            --arg sev_indicator "$SEV_INDICATOR" \
+            --arg confidence "$INPUT_CONFIDENCE" \
+            --arg issue_num "$INPUT_ISSUE_NUMBER" \
+            --arg issue_title "$INPUT_ISSUE_TITLE" \
+            --arg issue_author "$INPUT_ISSUE_AUTHOR" \
+            --arg issue_url "$INPUT_ISSUE_URL" \
+            --arg keywords "$INPUT_KEYWORDS" \
+            --arg relevant_files "$INPUT_RELEVANT_FILES" \
+            --arg summary "$INPUT_SUMMARY" \
+            --arg code_analysis "$CODE_ANALYSIS" \
+            --arg engineer_guidance "$ENGINEER_GUIDANCE" \
+            --arg justification "$INPUT_JUSTIFICATION" \
+            --arg action "$ACTION" \
+            --arg repo_url "https://github.com/microsoft/mssql-python" \
+            '{
+              "text": (
+                "<h2>" + $emoji + " mssql-python Issue Triage</h2>" +
+                "<p><b>" + $category_display + "</b> &nbsp;|&nbsp; " +
+                $sev_indicator + " Severity: <b>" + $severity + "</b> &nbsp;|&nbsp; " +
+                "Confidence: <b>" + $confidence + "%</b></p>" +
+                "<hr>" +
+                "<p>" +
+                "📌 <b>Issue:</b> <a href=\"" + $issue_url + "\">#" + $issue_num + " — " + ($issue_title | @html) + "</a><br>" +
+                "👤 <b>Author:</b> @" + ($issue_author | @html) + "<br>" +
+                "🏷️ <b>Keywords:</b> " + ($keywords | @html) + "<br>" +
+                "📂 <b>Relevant Files:</b> " + ($relevant_files | @html) + "<br>" +
+                "💬 <b>Justification:</b> " + ($justification | @html) +
+                "</p>" +
+                "<hr>" +
+                "<h3>📝 Analysis</h3>" +
+                "<p>" + ($summary | @html) + "</p>" +
+                "<h3>🔍 Code Analysis</h3>" +
+                "<p>" + $code_analysis + "</p>" +
+                (if $engineer_guidance != "" then
+                  "<h3>💡 Engineer Guidance</h3>" +
+                  "<p>" + $engineer_guidance + "</p>"
+                else "" end) +
+                "<hr>" +
+                "<p>⚡ <b>Action Required:</b> " + $action + "</p>" +
+                "<p><i>⚠️ AI-generated analysis — verified against source code but may contain inaccuracies. Review before acting.</i></p>" +
+                "<p><a href=\"" + $issue_url + "\">📋 View Issue</a>" +
+                " &nbsp;|&nbsp; " +
+                "<a href=\"" + $repo_url + "\">📂 View Repository</a></p>"
+              )
+            }' > /tmp/teams_payload.json
+
+          echo "Sending notification to Teams Channel..."
+
+          HTTP_STATUS=$(curl -s -o /tmp/teams_response.txt -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/teams_payload.json \
+            "$TEAMS_WEBHOOK_URL")
+
+          echo "Teams API response: $HTTP_STATUS"
+          cat /tmp/teams_response.txt
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "::error::Failed to send Teams notification. HTTP status: $HTTP_STATUS"
+            exit 1
+          fi
+
+          echo "✅ Teams Channel notification sent successfully"
