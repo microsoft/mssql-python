@@ -7,6 +7,7 @@ Tests for the auth module.
 import pytest
 import platform
 import sys
+import threading
 from unittest.mock import patch, MagicMock
 from mssql_python.auth import (
     AADAuth,
@@ -622,3 +623,164 @@ class TestConnectionAuthType:
         conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
         assert conn._auth_type == "default"
         conn.close()
+
+
+class TestCredentialCacheThreadSafety:
+    """Verify thread-safe behavior of credential instance cache."""
+
+    def test_concurrent_access_creates_only_one_instance(self):
+        """Multiple threads calling get_token concurrently should result in
+        exactly one credential instance per auth type in the cache."""
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+
+        instances_created = []
+
+        class TrackingCredential:
+            def __init__(self):
+                instances_created.append(self)
+
+            def get_token(self, scope):
+                class Token:
+                    token = SAMPLE_TOKEN
+
+                return Token()
+
+        try:
+            azure_identity.DefaultAzureCredential = TrackingCredential
+
+            errors = []
+            barrier = threading.Barrier(10)
+
+            def worker():
+                try:
+                    barrier.wait(timeout=5)
+                    AADAuth.get_token("default")
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=worker) for _ in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+            assert not errors, f"Threads raised errors: {errors}"
+            # Only one credential instance should exist in the cache
+            assert "default" in _credential_cache
+            # All threads should use the same cached instance
+            cached = _credential_cache["default"]
+            assert isinstance(cached, TrackingCredential)
+            # Due to the lock, only one instance should have been created
+            assert len(instances_created) == 1
+        finally:
+            azure_identity.DefaultAzureCredential = original
+
+
+class TestCacheStateAfterErrors:
+    """Verify credential cache state after various error scenarios."""
+
+    def test_client_auth_error_leaves_credential_in_cache(self):
+        """When get_token raises ClientAuthenticationError, the credential
+        instance should still remain in the cache since it was created
+        successfully — only the token acquisition failed."""
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+        from azure.core.exceptions import ClientAuthenticationError
+
+        class CredentialThatFailsGetToken:
+            def get_token(self, scope):
+                raise ClientAuthenticationError("token denied")
+
+        try:
+            azure_identity.DefaultAzureCredential = CredentialThatFailsGetToken
+
+            with pytest.raises(RuntimeError, match="Azure AD authentication failed"):
+                AADAuth._acquire_token("default")
+
+            # Credential was created and cached before get_token failed
+            assert "default" in _credential_cache
+            assert isinstance(_credential_cache["default"], CredentialThatFailsGetToken)
+        finally:
+            azure_identity.DefaultAzureCredential = original
+
+    def test_init_error_does_not_leave_stale_entry_in_cache(self):
+        """When credential_class() raises during __init__, no entry should
+        be left in _credential_cache since the dict assignment never completes."""
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+
+        class CredentialThatFailsInit:
+            def __init__(self):
+                raise ValueError("init exploded")
+
+        try:
+            azure_identity.DefaultAzureCredential = CredentialThatFailsInit
+
+            with pytest.raises(RuntimeError, match="Failed to create"):
+                AADAuth.get_token("default")
+
+            # The cache should NOT contain a stale entry
+            assert "default" not in _credential_cache
+        finally:
+            azure_identity.DefaultAzureCredential = original
+
+
+class TestCacheOutputCorrectness:
+    """Verify the returned token bytes are correct on both cache-miss and cache-hit."""
+
+    def test_token_output_correct_on_cache_miss_and_hit(self):
+        """get_token should return correct token bytes on both
+        the initial (cache-miss) and subsequent (cache-hit) calls."""
+        # First call — cache miss
+        token_1 = AADAuth.get_token("default")
+        assert isinstance(token_1, bytes)
+        assert len(token_1) > 4
+        expected = AADAuth.get_token_struct(SAMPLE_TOKEN)
+        assert token_1 == expected
+
+        # Second call — cache hit
+        token_2 = AADAuth.get_token("default")
+        assert isinstance(token_2, bytes)
+        assert token_2 == expected
+
+        # Same credential instance for both
+        assert "default" in _credential_cache
+
+
+class TestProcessConnectionStringTokenFailureFallthrough:
+    """Cover the path where get_auth_token returns None and
+    process_connection_string falls through without attrs."""
+
+    def test_returns_none_attrs_when_token_acquisition_fails(self):
+        """When auth type is detected but token acquisition fails,
+        process_connection_string should return (conn_str, None, auth_type)."""
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+
+        class CredentialThatAlwaysFails:
+            def __init__(self):
+                raise RuntimeError("cannot create credential")
+
+        try:
+            azure_identity.DefaultAzureCredential = CredentialThatAlwaysFails
+            conn_str = "Server=test;Authentication=ActiveDirectoryDefault;Database=testdb"
+            result_str, attrs, auth_type = process_connection_string(conn_str)
+
+            # Auth type was detected
+            assert auth_type == "default"
+            # But token acquisition failed, so attrs is None
+            assert attrs is None
+            # Connection string is still returned (sensitive params removed)
+            assert "Server=test" in result_str
+            assert "Database=testdb" in result_str
+        finally:
+            azure_identity.DefaultAzureCredential = original
