@@ -189,6 +189,9 @@ setup(
     install_requires=[
         "azure-identity>=1.12.0",  # Azure authentication library
     ],
+    extras_require={
+        "pyarrow": ["pyarrow>=14.0.0"],
+    },
     classifiers=[
         "Operating System :: Microsoft :: Windows",
         "Operating System :: MacOS",
