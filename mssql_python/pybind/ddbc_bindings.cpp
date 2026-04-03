@@ -3193,7 +3193,24 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 // code page (e.g. CP-1252) that may fail to decode as UTF-8.
                 // When charCtype == SQL_C_CHAR, use the existing narrow-char
                 // path with Python codec decoding.
-                const bool useWideChar = (charCtype == SQL_C_WCHAR);
+                //
+                // Exception: sql_variant columns always use SQL_C_CHAR.
+                // The variant probe call (SQLGetData with SQL_C_BINARY) has
+                // already consumed the column header, and requesting
+                // SQL_C_WCHAR after the probe fails on some ODBC drivers
+                // (notably unixODBC on Linux).  SQL_C_CHAR works reliably
+                // because the Linux ODBC driver pre-converts to UTF-8.
+                const bool isSqlVariant = (dataType == SQL_SS_VARIANT);
+                const bool useWideChar = (charCtype == SQL_C_WCHAR) && !isSqlVariant;
+
+                // For sql_variant, the SQL_C_CHAR path returns raw bytes in
+                // the server's native encoding (Windows) or UTF-8
+                // (Linux/macOS, driver converts).  Force "utf-8" so
+                // GetEffectiveCharDecoding picks the right codec on each
+                // platform, avoiding mismatch with the default "utf-16le"
+                // encoding which is only valid for the SQL_C_WCHAR path.
+                const std::string& effectiveCharEnc =
+                    isSqlVariant ? std::string("utf-8") : charEncoding;
 
                 if (columnSize == SQL_NO_TOTAL || columnSize == 0 ||
                     columnSize > SQL_MAX_LOB_SIZE) {
@@ -3204,8 +3221,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         row.append(
                             FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
                     } else {
-                        row.append(
-                            FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
+                        row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
+                                                      effectiveCharEnc));
                     }
                 } else if (useWideChar) {
                     // Wide-char path: fetch VARCHAR data as SQL_C_WCHAR
@@ -3293,7 +3310,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // SQLGetData will null-terminate the data
                                 // Use Python's codec system to decode bytes.
                                 const std::string decodeEncoding =
-                                    GetEffectiveCharDecoding(charEncoding);
+                                    GetEffectiveCharDecoding(effectiveCharEnc);
                                 py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
                                                     static_cast<size_t>(dataLen));
                                 try {
@@ -3317,7 +3334,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                     "(buffer_size=%zu), using streaming LOB",
                                     i, dataBuffer.size());
                                 row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
-                                                              charEncoding));
+                                                              effectiveCharEnc));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("SQLGetData: Column %d is NULL (CHAR)", i);
