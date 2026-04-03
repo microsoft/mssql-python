@@ -668,6 +668,7 @@ struct ColumnInfoExt {
     uint64_t fetchBufferSize;
     bool isLob;
     bool isUtf8;               // Pre-computed from charEncoding (avoids string compare per cell)
+    bool useWideChar;          // True when charCtype == SQL_C_WCHAR (VARCHAR fetched as UTF-16)
     std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
 };
 
@@ -791,6 +792,10 @@ inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQ
 // Process SQL CHAR/VARCHAR (single-byte string) column into Python str
 // Performance: NULL/NO_TOTAL checks removed - handled centrally before
 // processor is called
+//
+// When useWideChar is true, the column was bound as SQL_C_WCHAR in
+// SQLBindColums and data lives in wcharBuffers (UTF-16). Otherwise,
+// charBuffers contain narrow data decoded with the configured codec.
 inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
@@ -808,6 +813,37 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         return;
     }
 
+    if (colInfo->useWideChar) {
+        // Wide-char path: data was bound as SQL_C_WCHAR, lives in wcharBuffers
+        uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+        if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
+            SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+#if defined(__APPLE__) || defined(__linux__)
+            PyObject* pyStr =
+                PyUnicode_DecodeUTF16(reinterpret_cast<const char*>(wcharData),
+                                      numCharsInData * sizeof(SQLWCHAR), nullptr, nullptr);
+#else
+            PyObject* pyStr =
+                PyUnicode_FromWideChar(reinterpret_cast<const wchar_t*>(wcharData), numCharsInData);
+#endif
+            if (!pyStr) {
+                PyErr_Clear();
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
+            } else {
+                PyList_SET_ITEM(row, col - 1, pyStr);
+            }
+        } else {
+            // LOB / truncated: stream with SQL_C_WCHAR
+            PyList_SET_ITEM(row, col - 1,
+                            FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-16le")
+                                .release()
+                                .ptr());
+        }
+        return;
+    }
+
+    // Original narrow-char path (charCtype == SQL_C_CHAR)
     uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
