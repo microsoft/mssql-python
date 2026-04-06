@@ -283,16 +283,23 @@ def test_pool_release_overflow_disconnects_outside_mutex(conn_str):
 
     When a connection is returned to a pool that is already at max_size,
     the connection must be disconnected. This exercises the overflow path in
-    ConnectionPool::release() (connection_pool.cpp lines 107-110) where
-    should_disconnect is set and disconnect happens outside the mutex.
-    """
-    pooling(max_size=1, idle_timeout=30)
+    ConnectionPool::release() (connection_pool.cpp) where should_disconnect
+    is set and disconnect happens outside the mutex.
 
-    # Open two connections — both succeed because the pool issues slots
+    With the current pool semantics, max_size limits total concurrent
+    connections, so we acquire two connections with max_size=2, then shrink
+    the pool to max_size=1 before returning them. The second close hits
+    the overflow path.
+    """
+    pooling(max_size=2, idle_timeout=30)
+
     conn1 = connect(conn_str)
     conn2 = connect(conn_str)
 
-    # Close conn1 first — returned to the pool (pool now has 1 idle entry)
+    # Shrink idle capacity so first close fills the pool and second overflows
+    pooling(max_size=1, idle_timeout=30)
+
+    # Close conn1 — returned to the pool (pool now has 1 idle entry)
     conn1.close()
 
     # Close conn2 — pool is full (1 idle already), so this connection

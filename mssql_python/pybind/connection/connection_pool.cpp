@@ -105,14 +105,19 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
             _pool.push_back(conn);
         } else {
             should_disconnect = true;
-            if (_current_size > 0)
-                --_current_size;
         }
     }
     // Disconnect outside the mutex to avoid holding it during the
     // blocking ODBC call (which releases the GIL).
     if (should_disconnect) {
-        conn->disconnect();
+        try {
+            conn->disconnect();
+        } catch (const std::exception& ex) {
+            LOG("ConnectionPool::release: disconnect failed: %s", ex.what());
+        }
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_current_size > 0)
+            --_current_size;
     }
 }
 
@@ -181,18 +186,14 @@ void ConnectionPoolManager::configure(int max_size, int idle_timeout_secs) {
 }
 
 void ConnectionPoolManager::closePools() {
-    std::vector<std::shared_ptr<ConnectionPool>> pools_to_close;
-    {
-        std::lock_guard<std::mutex> lock(_manager_mutex);
-        for (auto& [conn_str, pool] : _pools) {
-            if (pool) {
-                pools_to_close.push_back(pool);
-            }
+    std::lock_guard<std::mutex> lock(_manager_mutex);
+    // Keep _manager_mutex held for the full close operation so that
+    // acquireConnection()/returnConnection() cannot create or use pools
+    // while closePools() is in progress.
+    for (auto& [conn_str, pool] : _pools) {
+        if (pool) {
+            pool->close();
         }
-        _pools.clear();
     }
-    // Close pools outside _manager_mutex to avoid deadlock.
-    for (auto& pool : pools_to_close) {
-        pool->close();
-    }
+    _pools.clear();
 }

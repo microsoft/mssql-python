@@ -159,7 +159,13 @@ void Connection::disconnect() {
             // Destructor / shutdown path — GIL is not held, call directly.
             ret = SQLDisconnect_ptr(_dbcHandle->get());
         }
-        checkError(ret);
+        // In destructor/shutdown paths, suppress errors to avoid
+        // std::terminate() if this throws during stack unwinding.
+        if (hasGil) {
+            checkError(ret);
+        } else if (!SQL_SUCCEEDED(ret)) {
+            LOG("SQLDisconnect failed in destructor/shutdown path; ignoring error");
+        }
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
     } else {
