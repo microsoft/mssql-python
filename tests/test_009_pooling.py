@@ -278,6 +278,35 @@ def test_pool_capacity_limit_and_overflow(conn_str):
             c.close()
 
 
+def test_pool_release_overflow_disconnects_outside_mutex(conn_str):
+    """Test that releasing a connection when pool is full disconnects it correctly.
+
+    When a connection is returned to a pool that is already at max_size,
+    the connection must be disconnected. This exercises the overflow path in
+    ConnectionPool::release() (connection_pool.cpp lines 107-110) where
+    should_disconnect is set and disconnect happens outside the mutex.
+    """
+    pooling(max_size=1, idle_timeout=30)
+
+    # Open two connections — both succeed because the pool issues slots
+    conn1 = connect(conn_str)
+    conn2 = connect(conn_str)
+
+    # Close conn1 first — returned to the pool (pool now has 1 idle entry)
+    conn1.close()
+
+    # Close conn2 — pool is full (1 idle already), so this connection
+    # must be disconnected rather than pooled (overflow path).
+    conn2.close()
+
+    # Verify the pool is still functional
+    conn3 = connect(conn_str)
+    cursor = conn3.cursor()
+    cursor.execute("SELECT 1")
+    assert cursor.fetchone()[0] == 1
+    conn3.close()
+
+
 @pytest.mark.skip("Flaky test - idle timeout behavior needs investigation")
 def test_pool_idle_timeout_removes_connections(conn_str):
     """Test that idle_timeout removes connections from the pool after the timeout."""
