@@ -87,10 +87,7 @@ def test_concurrent_connection_gil_release(perf_conn_str):
         except Exception as exc:
             errors.append((idx, str(exc)))
 
-    threads = [
-        threading.Thread(target=worker, args=(i,), daemon=True)
-        for i in range(NUM_THREADS)
-    ]
+    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(NUM_THREADS)]
 
     wall_start = time.perf_counter()
     for t in threads:
@@ -233,7 +230,7 @@ def test_mixed_connect_disconnect_under_load(perf_conn_str):
             while not stop_event.is_set():
                 # Busy work that requires the GIL
                 total = sum(range(10000))
-                _ = [x ** 2 for x in range(100)]
+                _ = [x**2 for x in range(100)]
                 cpu_counts[idx] += 1
         except Exception as exc:
             errors.append((f"cpu-{idx}", str(exc)))
