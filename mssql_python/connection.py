@@ -261,10 +261,14 @@ class Connection:
         }
 
         # Initialize decoding settings with Python 3 defaults
+        # SQL_CHAR default uses SQL_WCHAR ctype so the ODBC driver returns
+        # UTF-16 data for VARCHAR columns. This avoids encoding mismatches on
+        # Windows where the driver returns raw bytes in the server's native
+        # code page (e.g. CP-1252) that may fail to decode as UTF-8.
         self._decoding_settings = {
             ConstantsDDBC.SQL_CHAR.value: {
-                "encoding": "utf-8",
-                "ctype": ConstantsDDBC.SQL_CHAR.value,
+                "encoding": "utf-16le",
+                "ctype": ConstantsDDBC.SQL_WCHAR.value,
             },
             ConstantsDDBC.SQL_WCHAR.value: {
                 "encoding": "utf-16le",
