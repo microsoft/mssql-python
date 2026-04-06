@@ -8,7 +8,7 @@ These tests verify the driver's behavior under multi-threaded conditions:
 - Memory and resource usage under load
 - Race condition detection
 
-Tests are marked with @pytest.mark.stress_threading and are designed to be run
+Tests are marked with @pytest.mark.stress and are designed to be run
 in a dedicated pipeline separate from regular CI tests.
 
 Inspired by: https://github.com/saurabh500/sqlclientrepros/tree/master/python/standalone
@@ -378,7 +378,7 @@ def stress_conn_str():
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 @pytest.mark.parametrize(
     "num_threads,iterations",
     [
@@ -409,7 +409,7 @@ def test_basic_multithreaded_queries(stress_conn_str, num_threads, iterations):
     )
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 @pytest.mark.parametrize(
     "num_threads,iterations",
     [
@@ -444,7 +444,7 @@ def test_basic_multithreaded_without_pooling(stress_conn_str, num_threads, itera
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 @pytest.mark.parametrize(
     "num_threads,iterations",
     [
@@ -478,7 +478,7 @@ def test_medium_load_multithreaded(stress_conn_str, num_threads, iterations):
     )
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 def test_50_threads_data_integrity(stress_conn_str):
     """
     Test data integrity with 50 concurrent threads.
@@ -576,7 +576,7 @@ def test_50_threads_data_integrity(stress_conn_str):
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 def test_normal_load_cpu_cores(stress_conn_str):
     """
     Test with normal/realistic thread count matching CPU core count.
@@ -640,7 +640,7 @@ def test_normal_load_cpu_cores(stress_conn_str):
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 @pytest.mark.parametrize(
     "num_threads,iterations",
     [
@@ -674,7 +674,7 @@ def test_high_load_100_threads(stress_conn_str, num_threads, iterations):
     print(f"[PASSED] 100 threads test: {result.throughput_qps:.1f} qps")
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 @pytest.mark.slow
 def test_extreme_load_2x_cpu_cores(stress_conn_str):
     """
@@ -719,7 +719,7 @@ def test_extreme_load_2x_cpu_cores(stress_conn_str):
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 def test_pool_exhaustion_recovery(stress_conn_str):
     """
     Test that the driver recovers gracefully when connection pool is exhausted.
@@ -753,7 +753,7 @@ def test_pool_exhaustion_recovery(stress_conn_str):
     )
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 def test_rapid_pool_enable_disable(stress_conn_str):
     """
     Test rapid enabling and disabling of connection pooling.
@@ -808,7 +808,7 @@ def test_rapid_pool_enable_disable(stress_conn_str):
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 @pytest.mark.slow
 def test_sustained_load_5_minutes(stress_conn_str):
     """
@@ -905,7 +905,7 @@ def test_sustained_load_5_minutes(stress_conn_str):
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 def test_complex_queries_multithreaded(stress_conn_str):
     """
     Test multi-threaded execution with complex queries.
@@ -942,7 +942,7 @@ def test_complex_queries_multithreaded(stress_conn_str):
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 def test_resource_cleanup_after_stress(stress_conn_str):
     """
     Test that resources are properly cleaned up after stress.
@@ -985,7 +985,7 @@ def test_resource_cleanup_after_stress(stress_conn_str):
 # ============================================================================
 
 
-@pytest.mark.stress_threading
+@pytest.mark.stress
 @pytest.mark.parametrize(
     "num_threads,iterations,pooling",
     [

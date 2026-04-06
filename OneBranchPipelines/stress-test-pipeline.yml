@@ -118,7 +118,7 @@ jobs:
 
       $xmlFile = "stress-test-results.xml"
       $gracePeriod = 30
-      $arguments = "-m pytest tests/test_020_multithreaded_stress.py -v -m stress_threading --junitxml=$xmlFile --timeout=3600 --capture=tee-sys"
+      $arguments = "-m pytest tests/test_020_multithreaded_stress.py -v -m stress --junitxml=$xmlFile --timeout=3600 --capture=tee-sys"
       $process = Start-Process -FilePath "python" -ArgumentList $arguments -NoNewWindow -PassThru
 
       # Poll: wait for process to exit or XML file to appear
@@ -305,7 +305,7 @@ jobs:
       cmd = [
           sys.executable, "-m", "pytest",
           "tests/test_020_multithreaded_stress.py",
-          "-v", "-m", "stress_threading",
+          "-v", "-m", "stress",
           "--junitxml=" + XML_FILE,
           "--timeout=3600",
           "--capture=tee-sys",
@@ -407,7 +407,7 @@ jobs:
       echo "Platform: Python-1ES-pool (PYTHON-1ES-MMS2022, PYTHON-1ES-UB2404)"
       echo ""
       echo "Tests executed:"
-      echo "  - test_020_multithreaded_stress.py (stress_threading marker)"
+      echo "  - test_020_multithreaded_stress.py (stress marker)"
       echo "  - test_011_singlethreaded_stress.py (stress marker)"
       echo ""
       echo "See individual job results for details."
