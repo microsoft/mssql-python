@@ -173,7 +173,7 @@ package_data = {
 
 setup(
     name="mssql-python",
-    version="1.3.0",
+    version="1.4.0",
     description="A Python library for interacting with Microsoft SQL Server",
     long_description=open("PyPI_Description.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
@@ -189,6 +189,9 @@ setup(
     install_requires=[
         "azure-identity>=1.12.0",  # Azure authentication library
     ],
+    extras_require={
+        "pyarrow": ["pyarrow>=14.0.0"],
+    },
     classifiers=[
         "Operating System :: Microsoft :: Windows",
         "Operating System :: MacOS",

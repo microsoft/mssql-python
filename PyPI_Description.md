@@ -35,11 +35,22 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.3.0
+## What's new in v1.4.0
+
+### Features
+
+- **Bulk Copy Support** - High-performance bulk data loading API is now publicly available with support for large-scale ETL workloads, configurable batch sizes, column mappings, and identity/constraint handling.
+- **Spatial Type Support** - Added support for geography, geometry, and hierarchyid spatial types.
+- **mssql-py-core Upgrade** - Upgraded to mssql-py-core version 0.1.0 with enhanced connection string parameter support.
+- **Type Annotations** - Added py.typed marker for improved type checking support.
+- **Azure SQL Database Testing** - Added Azure SQL Database to PR validation pipeline matrix.
 
 ### Bug Fixes
 
-- **Segmentation Fault Fix** - Fixed segmentation fault in libmsodbcsql-18.5 during SQLFreeHandle() (#415).
+- **VARCHAR Encoding Fix** - Fixed VARCHAR fetch failures when data length equals column size with non-ASCII CP1252 characters.
+- **Segmentation Fault Fix** - Fixed segmentation fault when interleaving fetchmany and fetchone calls.
+- **Date/Time Type Mappings** - Aligned date/time type code mappings with ODBC 18 driver source.
+- **Pipeline Updates** - Updated OneBranch pipelines for new 1ES images and pool selection.
  
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

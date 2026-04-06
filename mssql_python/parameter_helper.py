@@ -5,7 +5,9 @@ Licensed under the MIT license.
 Parameter style conversion helpers for mssql-python.
 
 Supports both qmark (?) and pyformat (%(name)s) parameter styles.
-Simple character scanning approach - does NOT parse SQL contexts.
+Includes context-aware scanning for qmark and pyformat detection,
+skipping characters inside bracketed identifiers, string literals,
+quoted identifiers, and SQL comments.
 
 Reference: https://www.python.org/dev/peps/pep-0249/#paramstyle
 """
@@ -18,13 +20,143 @@ from mssql_python.logging import logger
 _ESCAPED_PERCENT_MARKER = "__MSSQL_PYFORMAT_ESCAPED_PERCENT_PLACEHOLDER__"
 
 
+def _skip_quoted_context(sql: str, i: int, length: int) -> int:
+    """
+    If position i starts a SQL quoted context, skip past it and return the new position.
+    Returns -1 if no quoted context starts at position i.
+
+    Handles:
+    - Single-line comments: -- ... (to end of line)
+    - Multi-line comments: /* ... */ (to closing delimiter)
+    - Single-quoted string literals: '...' (with '' escape handling)
+    - Double-quoted identifiers: "..."
+    - Bracketed identifiers: [...]
+
+    Args:
+        sql: Full SQL query string
+        i: Current scan position
+        length: Length of sql (len(sql))
+
+    Returns:
+        New position after the quoted context, or -1 if position i
+        does not start a quoted context.
+    """
+    ch = sql[i]
+
+    # Single-line comment: skip to end of line
+    if ch == "-" and i + 1 < length and sql[i + 1] == "-":
+        i += 2
+        while i < length and sql[i] != "\n":
+            i += 1
+        return i
+
+    # Multi-line comment: skip to closing */
+    # SQL Server supports nested block comments, so we track nesting depth.
+    if ch == "/" and i + 1 < length and sql[i + 1] == "*":
+        i += 2
+        depth = 1
+        while i < length and depth > 0:
+            if i + 1 < length and sql[i] == "/" and sql[i + 1] == "*":
+                depth += 1
+                i += 2
+            elif i + 1 < length and sql[i] == "*" and sql[i + 1] == "/":
+                depth -= 1
+                i += 2
+            else:
+                i += 1
+        return min(i, length)  # already past final */, or at end if unterminated
+
+    # Single-quoted string literal: skip to closing '
+    # Handles escaped quotes ('') inside strings
+    if ch == "'":
+        i += 1
+        while i < length:
+            if sql[i] == "'":
+                if i + 1 < length and sql[i + 1] == "'":
+                    i += 2  # skip escaped quote
+                    continue
+                break
+            i += 1
+        return min(i + 1, length)  # skip closing quote
+
+    # Double-quoted identifier: skip to closing "
+    # Handles escaped quotes ("") inside identifiers
+    if ch == '"':
+        i += 1
+        while i < length:
+            if sql[i] == '"':
+                if i + 1 < length and sql[i + 1] == '"':
+                    i += 2  # skip escaped quote
+                    continue
+                break
+            i += 1
+        return min(i + 1, length)  # skip closing quote
+
+    # Bracketed identifier: skip to closing ]
+    # Handles escaped brackets (]]) inside identifiers
+    if ch == "[":
+        i += 1
+        while i < length:
+            if sql[i] == "]":
+                if i + 1 < length and sql[i + 1] == "]":
+                    i += 2  # skip escaped bracket
+                    continue
+                break
+            i += 1
+        return min(i + 1, length)  # skip closing bracket
+
+    return -1
+
+
+def _has_unquoted_question_marks(sql: str) -> bool:
+    """
+    Check if SQL contains ? characters that are actual qmark parameter placeholders.
+
+    Uses _skip_quoted_context to skip ? characters that appear inside
+    bracketed identifiers, string literals, quoted identifiers, and comments.
+
+    Args:
+        sql: SQL query string to check
+
+    Returns:
+        True if the SQL contains at least one unquoted/unbracketed ? character
+
+    Examples:
+        >>> _has_unquoted_question_marks("SELECT * FROM t WHERE id = ?")
+        True
+
+        >>> _has_unquoted_question_marks("SELECT [q?marks] FROM t")
+        False
+
+        >>> _has_unquoted_question_marks("SELECT 'what?' FROM t")
+        False
+    """
+    i = 0
+    length = len(sql)
+
+    while i < length:
+        # Skip any quoted context (brackets, strings, comments)
+        skipped = _skip_quoted_context(sql, i, length)
+        if skipped >= 0:
+            i = skipped
+            continue
+
+        # Unquoted question mark — this is a real placeholder
+        if sql[i] == "?":
+            return True
+
+        i += 1
+
+    return False
+
+
 def parse_pyformat_params(sql: str) -> List[str]:
     """
     Extract %(name)s parameter names from SQL string.
 
-    Uses simple character scanning approach - does NOT parse SQL contexts
-    (strings, comments, identifiers). This means %(name)s patterns inside SQL
-    string literals or comments WILL be detected as parameters.
+    Uses context-aware scanning to skip %(name)s patterns inside SQL
+    string literals, quoted identifiers, bracketed identifiers, and comments.
+    Only %(name)s patterns in executable SQL are detected as parameters.
 
     Args:
         sql: SQL query string with %(name)s placeholders
@@ -52,6 +184,12 @@ def parse_pyformat_params(sql: str) -> List[str]:
     length = len(sql)
 
     while i < length:
+        # Skip any quoted context (brackets, strings, comments)
+        skipped = _skip_quoted_context(sql, i, length)
+        if skipped >= 0:
+            i = skipped
+            continue
+
         # Look for %(
         if i + 2 < length and sql[i] == "%" and sql[i + 1] == "(":
             # Find the closing )
@@ -317,7 +455,9 @@ def detect_and_convert_parameters(
         )
 
         # Check if SQL appears to have qmark placeholders
-        if "?" in sql and not parse_pyformat_params(sql):
+        # Fast short-circuit: skip the O(n) context-aware scan if no ? exists at all
+        # Then use context-aware check that ignores ? inside brackets, quotes, and comments
+        if "?" in sql and _has_unquoted_question_marks(sql) and not parse_pyformat_params(sql):
             logger.error(
                 "detect_and_convert_parameters: Parameter style mismatch - SQL has ? placeholders but received dict"
             )
