@@ -16,6 +16,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
                                                     const py::dict& attrs_before) {
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
+    bool needs_connect = false;
     {
         std::lock_guard<std::mutex> lock(_mutex);
         auto now = std::chrono::steady_clock::now();
@@ -57,13 +58,30 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
             }
         }
 
-        // Create new connection if none reusable
+        // Reserve a slot for a new connection if none reusable.
+        // The actual connect() call happens outside the mutex to avoid
+        // holding the mutex during the blocking ODBC call (which releases
+        // the GIL and could otherwise cause a mutex/GIL deadlock).
         if (!valid_conn && _current_size < _max_size) {
             valid_conn = std::make_shared<Connection>(connStr, true);
-            valid_conn->connect(attrs_before);
             ++_current_size;
+            needs_connect = true;
         } else if (!valid_conn) {
             throw std::runtime_error("ConnectionPool::acquire: pool size limit reached");
+        }
+    }
+
+    // Phase 2.5: Connect the new connection outside the mutex.
+    if (needs_connect) {
+        try {
+            valid_conn->connect(attrs_before);
+        } catch (...) {
+            // Connect failed — release the reserved slot
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                if (_current_size > 0) --_current_size;
+            }
+            throw;
         }
     }
 
@@ -79,14 +97,22 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
 }
 
 void ConnectionPool::release(std::shared_ptr<Connection> conn) {
-    std::lock_guard<std::mutex> lock(_mutex);
-    if (_pool.size() < _max_size) {
-        conn->updateLastUsed();
-        _pool.push_back(conn);
-    } else {
+    bool should_disconnect = false;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_pool.size() < _max_size) {
+            conn->updateLastUsed();
+            _pool.push_back(conn);
+        } else {
+            should_disconnect = true;
+            if (_current_size > 0)
+                --_current_size;
+        }
+    }
+    // Disconnect outside the mutex to avoid holding it during the
+    // blocking ODBC call (which releases the GIL).
+    if (should_disconnect) {
         conn->disconnect();
-        if (_current_size > 0)
-            --_current_size;
     }
 }
 
@@ -116,21 +142,35 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
 
 std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::wstring& connStr,
                                                                      const py::dict& attrs_before) {
-    std::lock_guard<std::mutex> lock(_manager_mutex);
-
-    auto& pool = _pools[connStr];
-    if (!pool) {
-        LOG("Creating new connection pool");
-        pool = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+    std::shared_ptr<ConnectionPool> pool;
+    {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        auto& pool_ref = _pools[connStr];
+        if (!pool_ref) {
+            LOG("Creating new connection pool");
+            pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+        }
+        pool = pool_ref;
     }
+    // Call acquire() outside _manager_mutex.  acquire() may release the GIL
+    // during the ODBC connect call; holding _manager_mutex across that would
+    // create a mutex/GIL lock-ordering deadlock.
     return pool->acquire(connStr, attrs_before);
 }
 
 void ConnectionPoolManager::returnConnection(const std::wstring& conn_str,
                                              const std::shared_ptr<Connection> conn) {
-    std::lock_guard<std::mutex> lock(_manager_mutex);
-    if (_pools.find(conn_str) != _pools.end()) {
-        _pools[conn_str]->release((conn));
+    std::shared_ptr<ConnectionPool> pool;
+    {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        auto it = _pools.find(conn_str);
+        if (it != _pools.end()) {
+            pool = it->second;
+        }
+    }
+    // Call release() outside _manager_mutex to avoid deadlock.
+    if (pool) {
+        pool->release(conn);
     }
 }
 
@@ -141,11 +181,18 @@ void ConnectionPoolManager::configure(int max_size, int idle_timeout_secs) {
 }
 
 void ConnectionPoolManager::closePools() {
-    std::lock_guard<std::mutex> lock(_manager_mutex);
-    for (auto& [conn_str, pool] : _pools) {
-        if (pool) {
-            pool->close();
+    std::vector<std::shared_ptr<ConnectionPool>> pools_to_close;
+    {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        for (auto& [conn_str, pool] : _pools) {
+            if (pool) {
+                pools_to_close.push_back(pool);
+            }
         }
+        _pools.clear();
     }
-    _pools.clear();
+    // Close pools outside _manager_mutex to avoid deadlock.
+    for (auto& pool : pools_to_close) {
+        pool->close();
+    }
 }
