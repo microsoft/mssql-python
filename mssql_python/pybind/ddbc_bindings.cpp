@@ -4970,9 +4970,9 @@ SQLRETURN FetchArrowBatch_wrap(
                         case SQL_SS_TIME2: {
                             buffers.timeBuffers[idxCol].resize(1);
                             ret = SQLGetData_ptr(
-                                hStmt, idxCol + 1, SQL_C_TYPE_TIME,
+                                hStmt, idxCol + 1, SQL_C_SS_TIME2,
                                 buffers.timeBuffers[idxCol].data(),
-                                sizeof(SQL_TIME_STRUCT),
+                                sizeof(SQL_SS_TIME2_STRUCT),
                                 buffers.indicators[idxCol].data()
                             );
                             if (!SQL_SUCCEEDED(ret)) {
@@ -5229,9 +5229,7 @@ SQLRETURN FetchArrowBatch_wrap(
                     case SQL_TIME:
                     case SQL_TYPE_TIME:
                     case SQL_SS_TIME2: {
-                        // NOTE: SQL_SS_TIME2 supports fractional seconds, but SQL_C_TYPE_TIME does not.
-                        // To fully support SQL_SS_TIME2, the corresponding c-type should be used.
-                        const SQL_TIME_STRUCT& timeValue = buffers.timeBuffers[idxCol][idxRowSql];
+                        const SQL_SS_TIME2_STRUCT& timeValue = buffers.timeBuffers[idxCol][idxRowSql];
                         arrowColumnProducer->timeSecondVal[idxRowArrow] = 
                             static_cast<int32_t>(timeValue.hour) * 3600 +
                             static_cast<int32_t>(timeValue.minute) * 60 +
