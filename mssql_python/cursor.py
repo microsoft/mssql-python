@@ -2852,6 +2852,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     f"for auth_type '{self.connection._auth_type}': {e}"
                 ) from e
             pycore_context["access_token"] = raw_token
+            # Token replaces credential fields — py-core's validator rejects
+            # access_token combined with authentication/user_name/password.
+            for key in ("authentication", "user_name", "password"):
+                pycore_context.pop(key, None)
             logger.debug(
                 "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
                 self.connection._auth_type,
