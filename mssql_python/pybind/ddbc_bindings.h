@@ -618,6 +618,14 @@ void DDBCSetDecimalSeparator(const std::string& separator);
 // (Used internally by ddbc_bindings.cpp - not part of public API)
 //-------------------------------------------------------------------------------------------------
 
+// Struct to hold the SQL Server TIME2 structure (SQL_C_SS_TIME2)
+struct SQL_SS_TIME2_STRUCT {
+    SQLUSMALLINT hour;
+    SQLUSMALLINT minute;
+    SQLUSMALLINT second;
+    SQLUINTEGER fraction;  // Nanoseconds
+};
+
 // Struct to hold the DateTimeOffset structure
 struct DateTimeOffset {
     SQLSMALLINT year;
@@ -642,7 +650,7 @@ struct ColumnBuffers {
     std::vector<std::vector<SQL_TIMESTAMP_STRUCT>> timestampBuffers;
     std::vector<std::vector<SQLBIGINT>> bigIntBuffers;
     std::vector<std::vector<SQL_DATE_STRUCT>> dateBuffers;
-    std::vector<std::vector<SQL_TIME_STRUCT>> timeBuffers;
+    std::vector<std::vector<SQL_SS_TIME2_STRUCT>> timeBuffers;
     std::vector<std::vector<SQLGUID>> guidBuffers;
     std::vector<std::vector<SQLLEN>> indicators;
     std::vector<std::vector<DateTimeOffset>> datetimeoffsetBuffers;

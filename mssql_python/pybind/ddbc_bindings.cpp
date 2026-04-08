@@ -9,6 +9,7 @@
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
 
+#include <cctype>
 #include <cstdint>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
@@ -23,6 +24,7 @@
 // These constants are not exposed via sql.h, hence define them here
 #define SQL_SS_TIME2 (-154)
 #define SQL_SS_TIMESTAMPOFFSET (-155)
+#define SQL_C_SS_TIME2 (0x4000)
 #define SQL_C_SS_TIMESTAMPOFFSET (0x4001)
 #define MAX_DIGITS_IN_NUMERIC 64
 #define SQL_MAX_NUMERIC_LEN 16
@@ -64,6 +66,10 @@ inline std::string GetEffectiveCharDecoding(const std::string& userEncoding) {
 #else
     return userEncoding;
 #endif
+}
+
+namespace PythonObjectCache {
+py::object get_time_class();
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -3076,7 +3082,7 @@ SQLSMALLINT MapVariantCTypeToSQLType(SQLLEN variantCType) {
         case SQL_C_TIME:
         case SQL_C_TYPE_TIME:
         case SQL_SS_VARIANT_TIME:
-            return SQL_TYPE_TIME;
+            return SQL_SS_TIME2;
         case SQL_C_TIMESTAMP:
         case SQL_C_TYPE_TIMESTAMP:
             return SQL_TYPE_TIMESTAMP;
@@ -3481,19 +3487,20 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
-            case SQL_TIME:
             case SQL_TYPE_TIME:
             case SQL_SS_TIME2: {
-                SQL_TIME_STRUCT timeValue;
-                ret =
-                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), NULL);
-                if (SQL_SUCCEEDED(ret)) {
-                    row.append(PythonObjectCache::get_time_class()(timeValue.hour, timeValue.minute,
-                                                                   timeValue.second));
+                SQL_SS_TIME2_STRUCT t2 = {};
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SS_TIME2, &t2, sizeof(t2), &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                    row.append(PythonObjectCache::get_time_class()(
+                        t2.hour, t2.minute, t2.second, t2.fraction / 1000));  // ns to µs
                 } else {
-                    LOG("SQLGetData: Error retrieving SQL_TYPE_TIME for column "
-                        "%d - SQLRETURN=%d",
-                        i, ret);
+                    if (!SQL_SUCCEEDED(ret)) {
+                        LOG("SQLGetData: Error retrieving SQL_SS_TIME2 for column "
+                            "%d - SQLRETURN=%d",
+                            i, ret);
+                    }
                     row.append(py::none());
                 }
                 break;
@@ -3668,7 +3675,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             default:
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for column - " << columnName << ", Type - "
-                            << dataType << ", column ID - " << i;
+                            << effectiveDataType << ", column ID - " << i;
                 LOG("SQLGetData: %s", errorString.str().c_str());
                 ThrowStdException(errorString.str());
                 break;
@@ -3822,13 +3829,11 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                     SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_DATE, buffers.dateBuffers[col - 1].data(),
                                    sizeof(SQL_DATE_STRUCT), buffers.indicators[col - 1].data());
                 break;
-            case SQL_TIME:
-            case SQL_TYPE_TIME:
             case SQL_SS_TIME2:
                 buffers.timeBuffers[col - 1].resize(fetchSize);
                 ret =
-                    SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_TIME, buffers.timeBuffers[col - 1].data(),
-                                   sizeof(SQL_TIME_STRUCT), buffers.indicators[col - 1].data());
+                    SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIME2, buffers.timeBuffers[col - 1].data(),
+                                   sizeof(SQL_SS_TIME2_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_GUID:
                 buffers.guidBuffers[col - 1].resize(fetchSize);
@@ -4132,13 +4137,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PyList_SET_ITEM(row, col - 1, dateObj);
                     break;
                 }
-                case SQL_TIME:
-                case SQL_TYPE_TIME:
                 case SQL_SS_TIME2: {
+                    const SQL_SS_TIME2_STRUCT& t2 = buffers.timeBuffers[col - 1][i];
                     PyObject* timeObj =
-                        PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
-                                                            buffers.timeBuffers[col - 1][i].minute,
-                                                            buffers.timeBuffers[col - 1][i].second)
+                        PythonObjectCache::get_time_class()(t2.hour, t2.minute, t2.second,
+                                                            t2.fraction / 1000)  // ns to µs
                             .release()
                             .ptr();
                     PyList_SET_ITEM(row, col - 1, timeObj);
@@ -4271,10 +4274,8 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_TYPE_DATE:
                 rowSize += sizeof(SQL_DATE_STRUCT);
                 break;
-            case SQL_TIME:
-            case SQL_TYPE_TIME:
             case SQL_SS_TIME2:
-                rowSize += sizeof(SQL_TIME_STRUCT);
+                rowSize += sizeof(SQL_SS_TIME2_STRUCT);
                 break;
             case SQL_GUID:
                 rowSize += sizeof(SQLGUID);
@@ -4969,9 +4970,9 @@ SQLRETURN FetchArrowBatch_wrap(
                         case SQL_SS_TIME2: {
                             buffers.timeBuffers[idxCol].resize(1);
                             ret = SQLGetData_ptr(
-                                hStmt, idxCol + 1, SQL_C_TYPE_TIME,
+                                hStmt, idxCol + 1, SQL_C_SS_TIME2,
                                 buffers.timeBuffers[idxCol].data(),
-                                sizeof(SQL_TIME_STRUCT),
+                                sizeof(SQL_SS_TIME2_STRUCT),
                                 buffers.indicators[idxCol].data()
                             );
                             if (!SQL_SUCCEEDED(ret)) {
@@ -5228,9 +5229,7 @@ SQLRETURN FetchArrowBatch_wrap(
                     case SQL_TIME:
                     case SQL_TYPE_TIME:
                     case SQL_SS_TIME2: {
-                        // NOTE: SQL_SS_TIME2 supports fractional seconds, but SQL_C_TYPE_TIME does not.
-                        // To fully support SQL_SS_TIME2, the corresponding c-type should be used.
-                        const SQL_TIME_STRUCT& timeValue = buffers.timeBuffers[idxCol][idxRowSql];
+                        const SQL_SS_TIME2_STRUCT& timeValue = buffers.timeBuffers[idxCol][idxRowSql];
                         arrowColumnProducer->timeSecondVal[idxRowArrow] = 
                             static_cast<int32_t>(timeValue.hour) * 3600 +
                             static_cast<int32_t>(timeValue.minute) * 60 +
@@ -5712,6 +5711,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Expose architecture-specific constants
     m.attr("ARCHITECTURE") = ARCHITECTURE;
+
+    m.attr("SQL_NO_TOTAL") = static_cast<int>(SQL_NO_TOTAL);
 
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
