@@ -28,6 +28,7 @@ from mssql_python.exceptions import (
     DatabaseError,
 )
 from mssql_python.row import Row
+from mssql_python.perf_timer import perf_phase, perf_start, perf_stop
 from mssql_python import get_settings
 from mssql_python.parameter_helper import (
     detect_and_convert_parameters,
@@ -1381,26 +1382,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # it will be unwrapped for parameter binding. This means you cannot
         # pass a tuple as a single parameter value (but SQL Server doesn't
         # support tuple types as parameter values anyway).
-        if parameters:
-            # Check if single parameter is a nested container that should be unwrapped
-            # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
-            if isinstance(parameters, tuple) and len(parameters) == 1:
-                # Could be either (value,) for single param or ((tuple),) for nested
-                # Check if it's a nested container
-                if isinstance(parameters[0], (tuple, list, dict)):
-                    actual_params = parameters[0]
+        with perf_phase("py::execute::param_unpack"):
+            if parameters:
+                # Check if single parameter is a nested container that should be unwrapped
+                # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
+                if isinstance(parameters, tuple) and len(parameters) == 1:
+                    # Could be either (value,) for single param or ((tuple),) for nested
+                    # Check if it's a nested container
+                    if isinstance(parameters[0], (tuple, list, dict)):
+                        actual_params = parameters[0]
+                    else:
+                        actual_params = parameters
                 else:
                     actual_params = parameters
+
+                # Convert parameters based on detected style
+                operation, converted_params = detect_and_convert_parameters(
+                    operation, actual_params
+                )
+
+                # Convert back to list format expected by the binding code
+                parameters = list(converted_params)
             else:
-                actual_params = parameters
-
-            # Convert parameters based on detected style
-            operation, converted_params = detect_and_convert_parameters(operation, actual_params)
-
-            # Convert back to list format expected by the binding code
-            parameters = list(converted_params)
-        else:
-            parameters = []
+                parameters = []
 
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
@@ -1421,10 +1425,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     Warning,
                 )
 
-        if parameters:
-            for i, param in enumerate(parameters):
-                paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
-                parameters_type.append(paraminfo)
+        with perf_phase("py::execute::param_type_detection"):
+            if parameters:
+                for i, param in enumerate(parameters):
+                    paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
+                    parameters_type.append(paraminfo)
 
         # TODO: Use a more sophisticated string compare that handles redundant spaces etc.
         #       Also consider storing last query's hash instead of full query string. This will help
@@ -1448,15 +1453,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 parameters_type[i].inputOutputType,
             )
 
-        ret = ddbc_bindings.DDBCSQLExecute(
-            self.hstmt,
-            operation,
-            parameters,
-            parameters_type,
-            self.is_stmt_prepared,
-            use_prepare,
-            encoding_settings,
-        )
+        with perf_phase("py::execute::cpp_call"):
+            ret = ddbc_bindings.DDBCSQLExecute(
+                self.hstmt,
+                operation,
+                parameters,
+                parameters_type,
+                self.is_stmt_prepared,
+                use_prepare,
+                encoding_settings,
+            )
         # Check return code
         try:
 
@@ -1468,24 +1474,26 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise
 
         # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
-        if self.hstmt:
-            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+        with perf_phase("py::execute::diag_records"):
+            if self.hstmt:
+                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
         self.last_executed_stmt = operation
 
-        # Update rowcount after execution
-        # TODO: rowcount return code from SQL needs to be handled
-        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+        with perf_phase("py::execute::post_execute"):
+            # Update rowcount after execution
+            # TODO: rowcount return code from SQL needs to be handled
+            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
 
-        # Initialize description after execution
-        # After successful execution, initialize description if there are results
-        column_metadata = []
-        try:
-            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
-            self._initialize_description(column_metadata)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            # If describe fails, it's likely there are no results (e.g., for INSERT)
-            self.description = None
+            # Initialize description after execution
+            # After successful execution, initialize description if there are results
+            column_metadata = []
+            try:
+                ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+                self._initialize_description(column_metadata)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                # If describe fails, it's likely there are no results (e.g., for INSERT)
+                self.description = None
 
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
@@ -2159,6 +2167,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
 
         # Prepare parameter type information
+        _t0 = perf_start()
         for col_index in range(param_count):
             column = (
                 [row[col_index] for row in seq_of_parameters]
@@ -2280,6 +2289,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 parameters_type.append(paraminfo)
                 if paraminfo.isDAE:
                     any_dae = True
+        perf_stop("py::executemany::param_type_detection", _t0)
 
         if any_dae:
             logger.debug(
@@ -2320,7 +2330,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
-        columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
+        with perf_phase("py::executemany::param_processing"):
+            columnwise_params, row_count = self._transpose_rowwise_to_columnwise(
+                processed_parameters
+            )
 
         # Get encoding settings
         encoding_settings = self._get_encoding_settings()
@@ -2335,13 +2348,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ),  # Limit to first 5 rows for large batches
         )
 
-        ret = ddbc_bindings.SQLExecuteMany(
-            self.hstmt, operation, columnwise_params, parameters_type, row_count, encoding_settings
-        )
+        with perf_phase("py::executemany::cpp_call"):
+            ret = ddbc_bindings.SQLExecuteMany(
+                self.hstmt,
+                operation,
+                columnwise_params,
+                parameters_type,
+                row_count,
+                encoding_settings,
+            )
 
         # Capture any diagnostic messages after execution
-        if self.hstmt:
-            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+        with perf_phase("py::executemany::diag_records"):
+            if self.hstmt:
+                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
         try:
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
@@ -2389,15 +2409,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         row_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchOne(
-                self.hstmt,
-                row_data,
-                char_decoding.get("encoding", "utf-8"),
-                wchar_decoding.get("encoding", "utf-16le"),
-            )
+            with perf_phase("py::fetchone::cpp_call"):
+                ret = ddbc_bindings.DDBCSQLFetchOne(
+                    self.hstmt,
+                    row_data,
+                    char_decoding.get("encoding", "utf-8"),
+                    wchar_decoding.get("encoding", "utf-16le"),
+                )
 
-            if self.hstmt:
-                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            with perf_phase("py::fetchone::diag_records"):
+                if self.hstmt:
+                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
                 # No more data available
@@ -2417,13 +2439,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Get column and converter maps
             column_map, converter_map = self._get_column_and_converter_maps()
-            return Row(
-                row_data,
-                column_map,
-                cursor=self,
-                converter_map=converter_map,
-                uuid_str_indices=self._uuid_str_indices,
-            )
+            with perf_phase("py::fetchone::row_wrap"):
+                return Row(
+                    row_data,
+                    column_map,
+                    cursor=self,
+                    converter_map=converter_map,
+                    uuid_str_indices=self._uuid_str_indices,
+                )
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -2454,16 +2477,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchMany(
-                self.hstmt,
-                rows_data,
-                size,
-                char_decoding.get("encoding", "utf-8"),
-                wchar_decoding.get("encoding", "utf-16le"),
-            )
+            with perf_phase("py::fetchmany::cpp_call"):
+                ret = ddbc_bindings.DDBCSQLFetchMany(
+                    self.hstmt,
+                    rows_data,
+                    size,
+                    char_decoding.get("encoding", "utf-8"),
+                    wchar_decoding.get("encoding", "utf-16le"),
+                )
 
-            if self.hstmt:
-                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            with perf_phase("py::fetchmany::diag_records"):
+                if self.hstmt:
+                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -2482,16 +2507,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
-            return [
-                Row(
-                    row_data,
-                    column_map,
-                    cursor=self,
-                    converter_map=converter_map,
-                    uuid_str_indices=uuid_idx,
-                )
-                for row_data in rows_data
-            ]
+            with perf_phase("py::fetchmany::row_wrap"):
+                return [
+                    Row(
+                        row_data,
+                        column_map,
+                        cursor=self,
+                        converter_map=converter_map,
+                        uuid_str_indices=uuid_idx,
+                    )
+                    for row_data in rows_data
+                ]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -2513,18 +2539,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchAll(
-                self.hstmt,
-                rows_data,
-                char_decoding.get("encoding", "utf-8"),
-                wchar_decoding.get("encoding", "utf-16le"),
-            )
+            with perf_phase("py::fetchall::cpp_call"):
+                ret = ddbc_bindings.DDBCSQLFetchAll(
+                    self.hstmt,
+                    rows_data,
+                    char_decoding.get("encoding", "utf-8"),
+                    wchar_decoding.get("encoding", "utf-16le"),
+                )
 
             # Check for errors
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
-            if self.hstmt:
-                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            with perf_phase("py::fetchall::diag_records"):
+                if self.hstmt:
+                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -2542,16 +2570,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
-            return [
-                Row(
-                    row_data,
-                    column_map,
-                    cursor=self,
-                    converter_map=converter_map,
-                    uuid_str_indices=uuid_idx,
-                )
-                for row_data in rows_data
-            ]
+            with perf_phase("py::fetchall::row_wrap"):
+                return [
+                    Row(
+                        row_data,
+                        column_map,
+                        cursor=self,
+                        converter_map=converter_map,
+                        uuid_str_indices=uuid_idx,
+                    )
+                    for row_data in rows_data
+                ]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e

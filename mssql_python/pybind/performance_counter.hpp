@@ -7,9 +7,11 @@
 
 #include <chrono>
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include <mutex>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
 
@@ -33,11 +35,20 @@ struct PerfStats {
     int64_t max_time_us = 0;
 };
 
+struct TimelineEvent {
+    std::string name;
+    int64_t start_us;   // offset from epoch_
+    int64_t duration_us;
+};
+
 class PerformanceCounter {
 private:
     std::unordered_map<std::string, PerfStats> counters_;
+    std::vector<TimelineEvent> timeline_;
     std::mutex mutex_;
     bool enabled_ = false;
+    bool timeline_enabled_ = false;
+    std::chrono::time_point<std::chrono::high_resolution_clock> epoch_;
 
 public:
     static PerformanceCounter& instance() {
@@ -49,7 +60,15 @@ public:
     void disable() { enabled_ = false; }
     bool is_enabled() const { return enabled_; }
 
-    void record(const std::string& name, int64_t duration_us) {
+    void enable_timeline() {
+        timeline_enabled_ = true;
+        epoch_ = std::chrono::high_resolution_clock::now();
+    }
+    void disable_timeline() { timeline_enabled_ = false; }
+    bool is_timeline_enabled() const { return timeline_enabled_; }
+
+    void record(const std::string& name, int64_t duration_us,
+                std::chrono::time_point<std::chrono::high_resolution_clock> start) {
         if (!enabled_) return;
         
         std::lock_guard<std::mutex> lock(mutex_);
@@ -58,6 +77,11 @@ public:
         stats.call_count++;
         stats.min_time_us = std::min(stats.min_time_us, duration_us);
         stats.max_time_us = std::max(stats.max_time_us, duration_us);
+
+        if (timeline_enabled_) {
+            auto offset = std::chrono::duration_cast<std::chrono::microseconds>(start - epoch_).count();
+            timeline_.push_back({name, offset, duration_us});
+        }
     }
 
     py::dict get_stats() {
@@ -81,13 +105,32 @@ public:
     void reset() {
         std::lock_guard<std::mutex> lock(mutex_);
         counters_.clear();
+        timeline_.clear();
+    }
+
+    void reset_stats_only() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        counters_.clear();
+    }
+
+    py::list get_timeline() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        py::list result;
+        for (const auto& ev : timeline_) {
+            py::dict d;
+            d["name"] = ev.name;
+            d["start_us"] = ev.start_us;
+            d["duration_us"] = ev.duration_us;
+            result.append(d);
+        }
+        return result;
     }
 };
 
 // RAII timer - automatically records on destruction
 class ScopedTimer {
 private:
-    std::string name_;
+    const char* name_;
     std::chrono::time_point<std::chrono::high_resolution_clock> start_;
     
 public:
@@ -101,7 +144,7 @@ public:
         if (PerformanceCounter::instance().is_enabled()) {
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
-            PerformanceCounter::instance().record(name_, duration);
+            PerformanceCounter::instance().record(name_, duration, start_);
         }
     }
 };
@@ -114,7 +157,7 @@ public:
 #define PERF_TIMER_CONCAT(x, y) PERF_TIMER_CONCAT_IMPL(x, y)
 
 // PROFILING ENABLED - Creates actual timers
-// #define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)
+#define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)("ddbc::" name)
 
 // PROFILING DISABLED - Uncomment below and comment above to make PERF_TIMER a no-op
-#define PERF_TIMER(name) do {} while(0)
+// #define PERF_TIMER(name) do {} while(0)

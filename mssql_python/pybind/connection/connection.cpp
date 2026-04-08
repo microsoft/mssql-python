@@ -16,6 +16,7 @@
 
 // Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
@@ -47,6 +48,7 @@ static SqlHandlePtr getEnvHandle() {
 //-------------------------------------------------------------------------------------------------
 Connection::Connection(const std::wstring& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
+    PERF_TIMER("Connection::Connection");
     allocateDbcHandle();
 }
 
@@ -56,6 +58,7 @@ Connection::~Connection() {
 
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
+    PERF_TIMER("Connection::allocateDbcHandle");
     auto _envHandle = getEnvHandle();
     SQLHANDLE dbc = nullptr;
     LOG("Allocating SQL Connection Handle");
@@ -65,6 +68,7 @@ void Connection::allocateDbcHandle() {
 }
 
 void Connection::connect(const py::dict& attrs_before) {
+    PERF_TIMER("Connection::connect");
     LOG("Connecting to database");
     // Apply access token before connect
     if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
@@ -85,13 +89,18 @@ void Connection::connect(const py::dict& attrs_before) {
 #else
     connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
 #endif
-    SQLRETURN ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
+    SQLRETURN ret;
+    {
+        PERF_TIMER("Connection::connect::SQLDriverConnect_call");
+        ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
                                          0, nullptr, SQL_DRIVER_NOPROMPT);
+    }
     checkError(ret);
     updateLastUsed();
 }
 
 void Connection::disconnect() {
+    PERF_TIMER("Connection::disconnect");
     if (_dbcHandle) {
         LOG("Disconnecting from database");
 
@@ -155,6 +164,7 @@ void Connection::checkError(SQLRETURN ret) const {
 }
 
 void Connection::commit() {
+    PERF_TIMER("Connection::commit");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -165,6 +175,7 @@ void Connection::commit() {
 }
 
 void Connection::rollback() {
+    PERF_TIMER("Connection::rollback");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -175,6 +186,7 @@ void Connection::rollback() {
 }
 
 void Connection::setAutocommit(bool enable) {
+    PERF_TIMER("Connection::setAutocommit");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -206,6 +218,7 @@ bool Connection::getAutocommit() const {
 }
 
 SqlHandlePtr Connection::allocStatementHandle() {
+    PERF_TIMER("Connection::allocStatementHandle");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -406,6 +419,7 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
 ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool,
                                    const py::dict& attrsBefore)
     : _usePool(usePool) {
+    PERF_TIMER("ConnectionHandle::ConnectionHandle");
     _connStr = Utf8ToWString(connStr);
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
@@ -422,6 +436,7 @@ ConnectionHandle::~ConnectionHandle() {
 }
 
 void ConnectionHandle::close() {
+    PERF_TIMER("ConnectionHandle::close");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -434,6 +449,7 @@ void ConnectionHandle::close() {
 }
 
 void ConnectionHandle::commit() {
+    PERF_TIMER("ConnectionHandle::commit");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -441,6 +457,7 @@ void ConnectionHandle::commit() {
 }
 
 void ConnectionHandle::rollback() {
+    PERF_TIMER("ConnectionHandle::rollback");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -448,6 +465,7 @@ void ConnectionHandle::rollback() {
 }
 
 void ConnectionHandle::setAutocommit(bool enabled) {
+    PERF_TIMER("ConnectionHandle::setAutocommit");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -462,6 +480,7 @@ bool ConnectionHandle::getAutocommit() const {
 }
 
 SqlHandlePtr ConnectionHandle::allocStatementHandle() {
+    PERF_TIMER("ConnectionHandle::allocStatementHandle");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -526,6 +545,7 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
 }
 
 py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
+    PERF_TIMER("ConnectionHandle::getInfo");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -533,6 +553,7 @@ py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
 }
 
 void ConnectionHandle::setAttr(int attribute, py::object value) {
+    PERF_TIMER("ConnectionHandle::setAttr");
     if (!_conn) {
         ThrowStdException("Connection not established");
     }

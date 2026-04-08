@@ -8,12 +8,14 @@
 
 // Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
     : _max_size(max_size), _idle_timeout_secs(idle_timeout_secs), _current_size(0) {}
 
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
                                                     const py::dict& attrs_before) {
+    PERF_TIMER("ConnectionPool::acquire");
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
     {
@@ -79,6 +81,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
 }
 
 void ConnectionPool::release(std::shared_ptr<Connection> conn) {
+    PERF_TIMER("ConnectionPool::release");
     std::lock_guard<std::mutex> lock(_mutex);
     if (_pool.size() < _max_size) {
         conn->updateLastUsed();
@@ -91,6 +94,7 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
 }
 
 void ConnectionPool::close() {
+    PERF_TIMER("ConnectionPool::close");
     std::vector<std::shared_ptr<Connection>> to_close;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -116,6 +120,7 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
 
 std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::wstring& connStr,
                                                                      const py::dict& attrs_before) {
+    PERF_TIMER("ConnectionPoolManager::acquireConnection");
     std::lock_guard<std::mutex> lock(_manager_mutex);
 
     auto& pool = _pools[connStr];
