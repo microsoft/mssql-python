@@ -89,14 +89,19 @@ def get_arrow_test_data(include_lobs: bool, batch_length: int):
             ],
         ),
         (
-            pa.time32("s"),
+            pa.time64("ns"),
             "time(0)",
             [time(12, 0, 5, 0), None, time(23, 59, 59, 0), time(0, 0, 0, 0)],
         ),
         (
-            pa.time32("s"),
+            pa.time64("ns"),
             "time(7)",
             [time(12, 0, 5, 0), None, time(23, 59, 59, 0), time(0, 0, 0, 0)],
+        ),
+        (
+            pa.time64("ns"),
+            "time(7)",
+            [time(12, 0, 5, 123456), None, time(23, 59, 59, 123456), time(0, 0, 0, 0)],
         ),
         (
             pa.timestamp("us"),
@@ -187,14 +192,6 @@ def _test_arrow_test_data(cursor: mssql_python.Cursor, arrow_test_data, fetch_le
 
     # Validate that Parquet serialization/deserialization does not detect any issues
     tbl = pa.Table.from_batches([ret])
-    # for some reason parquet converts seconds to milliseconds in time32
-    for i_col, col in enumerate(tbl.columns):
-        if col.type == pa.time32("s"):
-            tbl = tbl.set_column(
-                i_col,
-                tbl.schema.field(i_col).name,
-                col.cast(pa.time32("ms")),
-            )
     buffer = io.BytesIO()
     pq.write_table(tbl, buffer)
     buffer.seek(0)
