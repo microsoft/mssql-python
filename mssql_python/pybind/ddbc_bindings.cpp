@@ -247,7 +247,7 @@ struct ArrowArrayPrivateData {
     std::unique_ptr<uint64_t[]> varVal;
     std::unique_ptr<int32_t[]> dateVal;
     std::unique_ptr<int64_t[]> tsMicroVal;
-    std::unique_ptr<int32_t[]> timeSecondVal;
+    std::unique_ptr<int64_t[]> timeNanoVal;
     std::unique_ptr<Int128_t[]> decimalVal;
 
     std::vector<uint8_t> varData;
@@ -4691,12 +4691,10 @@ SQLRETURN FetchArrowBatch_wrap(
                 arrowColumnProducer->dateVal = std::make_unique<int32_t[]>(arrowBatchSize);
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->dateVal.get();
                 break;
-            case SQL_TIME:
-            case SQL_TYPE_TIME:
             case SQL_SS_TIME2:
-                format = "tts";
-                arrowColumnProducer->timeSecondVal = std::make_unique<int32_t[]>(arrowBatchSize);
-                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->timeSecondVal.get();
+                format = "ttn";
+                arrowColumnProducer->timeNanoVal = std::make_unique<int64_t[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->timeNanoVal.get();
                 break;
             case SQL_BIT:
                 format = "b";
@@ -4965,8 +4963,6 @@ SQLRETURN FetchArrowBatch_wrap(
                             }
                             break;
                         }
-                        case SQL_TIME:
-                        case SQL_TYPE_TIME:
                         case SQL_SS_TIME2: {
                             buffers.timeBuffers[idxCol].resize(1);
                             ret = SQLGetData_ptr(
@@ -5226,14 +5222,13 @@ SQLRETURN FetchArrowBatch_wrap(
                             buffers.dateBuffers[idxCol][idxRowSql].day
                         );
                         break;
-                    case SQL_TIME:
-                    case SQL_TYPE_TIME:
                     case SQL_SS_TIME2: {
                         const SQL_SS_TIME2_STRUCT& timeValue = buffers.timeBuffers[idxCol][idxRowSql];
-                        arrowColumnProducer->timeSecondVal[idxRowArrow] = 
-                            static_cast<int32_t>(timeValue.hour) * 3600 +
-                            static_cast<int32_t>(timeValue.minute) * 60 +
-                            static_cast<int32_t>(timeValue.second);
+                        arrowColumnProducer->timeNanoVal[idxRowArrow] = 
+                            static_cast<int64_t>(timeValue.hour) * 3600 * 1000000000 +
+                            static_cast<int64_t>(timeValue.minute) * 60 * 1000000000 +
+                            static_cast<int64_t>(timeValue.second) * 1000000000 +
+                            static_cast<int64_t>(timeValue.fraction);
                         break;
                     }
                     case SQL_BIT: {
