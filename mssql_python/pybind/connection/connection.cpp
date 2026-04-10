@@ -164,7 +164,9 @@ void Connection::disconnect() {
         if (hasGil) {
             checkError(ret);
         } else if (!SQL_SUCCEEDED(ret)) {
-            LOG("SQLDisconnect failed in destructor/shutdown path; ignoring error");
+            // Intentionally no LOG() here: LOG() acquires the GIL internally
+            // via py::gil_scoped_acquire, which is unsafe during interpreter
+            // shutdown or stack unwinding (can deadlock or call std::terminate).
         }
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
