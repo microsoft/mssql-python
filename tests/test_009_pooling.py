@@ -104,20 +104,16 @@ def test_connection_pooling_isolation_level_reset(conn_str):
     # Set isolation level to SERIALIZABLE (non-default)
     conn1.set_attr(mssql_python.SQL_ATTR_TXN_ISOLATION, mssql_python.SQL_TXN_SERIALIZABLE)
 
-    # Verify the isolation level was set
+    # Verify the isolation level was set (use DBCC USEROPTIONS to avoid
+    # requiring VIEW SERVER PERFORMANCE STATE permission for sys.dm_exec_sessions)
     cursor1 = conn1.cursor()
-    cursor1.execute(
-        "SELECT CASE transaction_isolation_level "
-        "WHEN 0 THEN 'Unspecified' "
-        "WHEN 1 THEN 'ReadUncommitted' "
-        "WHEN 2 THEN 'ReadCommitted' "
-        "WHEN 3 THEN 'RepeatableRead' "
-        "WHEN 4 THEN 'Serializable' "
-        "WHEN 5 THEN 'Snapshot' END AS isolation_level "
-        "FROM sys.dm_exec_sessions WHERE session_id = @@SPID"
-    )
-    isolation_level_1 = cursor1.fetchone()[0]
-    assert isolation_level_1 == "Serializable", f"Expected Serializable, got {isolation_level_1}"
+    cursor1.execute("DBCC USEROPTIONS WITH NO_INFOMSGS")
+    isolation_level_1 = None
+    for row in cursor1.fetchall():
+        if row[0] == "isolation level":
+            isolation_level_1 = row[1]
+            break
+    assert isolation_level_1 == "serializable", f"Expected serializable, got {isolation_level_1}"
 
     # Get SPID for verification of connection reuse
     cursor1.execute("SELECT @@SPID")
@@ -138,24 +134,20 @@ def test_connection_pooling_isolation_level_reset(conn_str):
     # Verify connection was reused
     assert spid1 == spid2, "Connection was not reused from pool"
 
-    # Check if isolation level is reset to default
-    cursor2.execute(
-        "SELECT CASE transaction_isolation_level "
-        "WHEN 0 THEN 'Unspecified' "
-        "WHEN 1 THEN 'ReadUncommitted' "
-        "WHEN 2 THEN 'ReadCommitted' "
-        "WHEN 3 THEN 'RepeatableRead' "
-        "WHEN 4 THEN 'Serializable' "
-        "WHEN 5 THEN 'Snapshot' END AS isolation_level "
-        "FROM sys.dm_exec_sessions WHERE session_id = @@SPID"
-    )
-    isolation_level_2 = cursor2.fetchone()[0]
+    # Check if isolation level is reset to default (use DBCC USEROPTIONS to avoid
+    # requiring VIEW SERVER PERFORMANCE STATE permission for sys.dm_exec_sessions)
+    cursor2.execute("DBCC USEROPTIONS WITH NO_INFOMSGS")
+    isolation_level_2 = None
+    for row in cursor2.fetchall():
+        if row[0] == "isolation level":
+            isolation_level_2 = row[1]
+            break
 
     # Verify isolation level is reset to default (READ COMMITTED)
     # This is the CORRECT behavior for connection pooling - we should reset
     # session state to prevent settings from one usage affecting the next
-    assert isolation_level_2 == "ReadCommitted", (
-        f"Isolation level was not reset! Expected 'ReadCommitted', got '{isolation_level_2}'. "
+    assert isolation_level_2 == "read committed", (
+        f"Isolation level was not reset! Expected 'read committed', got '{isolation_level_2}'. "
         f"This indicates session state leaked from the previous connection usage."
     )
 
@@ -278,30 +270,28 @@ def test_pool_capacity_limit_and_overflow(conn_str):
             c.close()
 
 
-@pytest.mark.skip("Flaky test - idle timeout behavior needs investigation")
 def test_pool_idle_timeout_removes_connections(conn_str):
     """Test that idle_timeout removes connections from the pool after the timeout."""
     pooling(max_size=2, idle_timeout=1)
     conn1 = connect(conn_str)
-    spid_list = []
     cursor1 = conn1.cursor()
+    # Use @@SPID to identify the connection without requiring
+    # VIEW SERVER PERFORMANCE STATE permission for sys.dm_exec_connections.
     cursor1.execute("SELECT @@SPID")
     spid1 = cursor1.fetchone()[0]
-    spid_list.append(spid1)
     conn1.close()
 
-    # Wait for longer than idle_timeout
-    time.sleep(3)
+    # Wait well beyond the idle_timeout to account for slow CI and integer-second granularity
+    time.sleep(5)
 
-    # Get a new connection, which should not reuse the previous SPID
+    # Get a new connection — the idle one should have been evicted during acquire()
     conn2 = connect(conn_str)
     cursor2 = conn2.cursor()
     cursor2.execute("SELECT @@SPID")
     spid2 = cursor2.fetchone()[0]
-    spid_list.append(spid2)
     conn2.close()
 
-    assert spid1 != spid2, "Idle timeout did not remove connection from pool"
+    assert spid1 != spid2, "Idle timeout did not remove connection from pool — same SPID reused"
 
 
 # =============================================================================
@@ -309,51 +299,63 @@ def test_pool_idle_timeout_removes_connections(conn_str):
 # =============================================================================
 
 
-@pytest.mark.skip(
-    "Test causes fatal crash - forcibly closing underlying connection leads to undefined behavior"
-)
 def test_pool_removes_invalid_connections(conn_str):
-    """Test that the pool removes connections that become invalid (simulate by closing underlying connection)."""
+    """Test that the pool removes connections that become invalid and recovers gracefully.
+
+    This test simulates a connection being returned to the pool in a dirty state
+    (with an open transaction) by calling _conn.close() directly, bypassing the
+    normal Python close() which does a rollback. The pool's acquire() should detect
+    the bad connection during reset(), discard it, and create a fresh one.
+    """
     pooling(max_size=1, idle_timeout=30)
     conn = connect(conn_str)
     cursor = conn.cursor()
     cursor.execute("SELECT 1")
-    # Simulate invalidation by forcibly closing the connection at the driver level
-    try:
-        # Try to access a private attribute or method to forcibly close the underlying connection
-        # This is implementation-specific; if not possible, skip
-        if hasattr(conn, "_conn") and hasattr(conn._conn, "close"):
-            conn._conn.close()
-        else:
-            pytest.skip("Cannot forcibly close underlying connection for this driver")
-    except Exception:
-        pass
-    # Safely close the connection, ignoring errors due to forced invalidation
+    cursor.fetchone()
+
+    # Record the SPID of the original connection (avoids requiring
+    # VIEW SERVER PERFORMANCE STATE permission for sys.dm_exec_connections)
+    cursor.execute("SELECT @@SPID")
+    original_spid = cursor.fetchone()[0]
+
+    # Force-return the connection to the pool WITHOUT rollback.
+    # This leaves the pooled connection in a dirty state (open implicit transaction)
+    # which will cause reset() to fail on next acquire().
+    conn._conn.close()
+
+    # Python close() will fail since the underlying handle is already gone
     try:
         conn.close()
-    except RuntimeError as e:
-        if "not initialized" not in str(e):
-            raise
-    # Now, get a new connection from the pool and ensure it works
+    except RuntimeError:
+        pass
+
+    # Now get a new connection — the pool should discard the dirty one and create fresh
     new_conn = connect(conn_str)
     new_cursor = new_conn.cursor()
-    try:
-        new_cursor.execute("SELECT 1")
-        result = new_cursor.fetchone()
-        assert result is not None and result[0] == 1, "Pool did not remove invalid connection"
-    finally:
-        new_conn.close()
+    new_cursor.execute("SELECT 1")
+    result = new_cursor.fetchone()
+    assert result is not None and result[0] == 1, "Pool did not recover from invalid connection"
+
+    # Verify it's a different physical connection
+    new_cursor.execute("SELECT @@SPID")
+    new_spid = new_cursor.fetchone()[0]
+    assert (
+        original_spid != new_spid
+    ), "Expected a new physical connection after pool discarded the dirty one"
+
+    new_conn.close()
 
 
 def test_pool_recovery_after_failed_connection(conn_str):
     """Test that the pool recovers after a failed connection attempt."""
     pooling(max_size=1, idle_timeout=30)
     # First, try to connect with a bad password (should fail)
-    if "Pwd=" in conn_str:
-        bad_conn_str = conn_str.replace("Pwd=", "Pwd=wrongpassword")
-    elif "Password=" in conn_str:
-        bad_conn_str = conn_str.replace("Password=", "Password=wrongpassword")
-    else:
+    import re
+
+    # Replace the value of the first Pwd/Password key-value pair with "wrongpassword"
+    pattern = re.compile(r"(?i)((?:Pwd|Password)\s*=\s*)([^;]*)")
+    bad_conn_str, num_subs = pattern.subn(lambda m: m.group(1) + "wrongpassword", conn_str, count=1)
+    if num_subs == 0:
         pytest.skip("No password found in connection string to modify")
     with pytest.raises(Exception):
         connect(bad_conn_str)
@@ -515,3 +517,51 @@ def test_pooling_state_consistency(conn_str):
     assert PoolingManager.is_initialized(), "Should remain initialized after disable call"
 
     print("Pooling state consistency verified")
+
+
+def test_pooling_reconfigure_while_enabled(conn_str):
+    """Test that calling pooling() with new parameters reconfigures the pool without disable/enable."""
+    pooling(max_size=50, idle_timeout=600)
+    assert PoolingManager.is_enabled(), "Pooling should be enabled"
+    assert PoolingManager._config["max_size"] == 50
+
+    # Reconfigure with smaller pool — should take effect immediately
+    pooling(max_size=10, idle_timeout=300)
+    assert PoolingManager.is_enabled(), "Pooling should still be enabled after reconfigure"
+    assert (
+        PoolingManager._config["max_size"] == 10
+    ), f"max_size not updated: expected 10, got {PoolingManager._config['max_size']}"
+    assert (
+        PoolingManager._config["idle_timeout"] == 300
+    ), f"idle_timeout not updated: expected 300, got {PoolingManager._config['idle_timeout']}"
+
+    # Verify connections still work after reconfiguration
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    assert cursor.fetchone()[0] == 1
+    conn.close()
+
+
+def test_pooling_disable_enable_cycle_state(conn_str):
+    """Test that disable >> enable properly resets _pools_closed so a second disable cleans up."""
+    pooling(max_size=5, idle_timeout=30)
+    conn = connect(conn_str)
+    conn.close()
+
+    # Disable — sets _pools_closed = True
+    pooling(enabled=False)
+    assert not PoolingManager.is_enabled()
+
+    # Re-enable — should reset _pools_closed so future disable works
+    pooling(max_size=5, idle_timeout=30)
+    assert PoolingManager.is_enabled()
+    assert not PoolingManager._pools_closed, "_pools_closed should be False after re-enable"
+
+    conn = connect(conn_str)
+    conn.close()
+
+    # Second disable should actually call close_pooling (not skip it)
+    pooling(enabled=False)
+    assert not PoolingManager.is_enabled()
+    assert PoolingManager._pools_closed

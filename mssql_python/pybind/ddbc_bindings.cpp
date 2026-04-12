@@ -5677,10 +5677,8 @@ SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
     return rowCount;
 }
 
-static std::once_flag pooling_init_flag;
 void enable_pooling(int maxSize, int idleTimeout) {
-    std::call_once(pooling_init_flag,
-                   [&]() { ConnectionPoolManager::getInstance().configure(maxSize, idleTimeout); });
+    ConnectionPoolManager::getInstance().configure(maxSize, idleTimeout);
 }
 
 // Thread-safe decimal separator setting

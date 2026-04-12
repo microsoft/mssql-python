@@ -45,10 +45,6 @@ class PoolingManager:
             idle_timeout,
         )
         with cls._lock:
-            if cls._enabled:
-                logger.debug("PoolingManager.enable: Pooling already enabled, skipping")
-                return
-
             if max_size <= 0 or idle_timeout < 0:
                 logger.error(
                     "PoolingManager.enable: Invalid parameters - max_size=%d, idle_timeout=%d",
@@ -57,16 +53,34 @@ class PoolingManager:
                 )
                 raise ValueError("Invalid pooling parameters")
 
-            logger.info(
-                "PoolingManager.enable: Enabling connection pooling - max_size=%d, idle_timeout=%d seconds",
-                max_size,
-                idle_timeout,
-            )
+            if cls._enabled:
+                # Already enabled — reconfigure if parameters changed
+                if (
+                    cls._config["max_size"] == max_size
+                    and cls._config["idle_timeout"] == idle_timeout
+                ):
+                    logger.debug(
+                        "PoolingManager.enable: Pooling already enabled with same config, skipping"
+                    )
+                    return
+                logger.info(
+                    "PoolingManager.enable: Reconfiguring pooling - max_size=%d, idle_timeout=%d seconds",
+                    max_size,
+                    idle_timeout,
+                )
+            else:
+                logger.info(
+                    "PoolingManager.enable: Enabling connection pooling - max_size=%d, idle_timeout=%d seconds",
+                    max_size,
+                    idle_timeout,
+                )
+
             ddbc_bindings.enable_pooling(max_size, idle_timeout)
             cls._config["max_size"] = max_size
             cls._config["idle_timeout"] = idle_timeout
             cls._enabled = True
             cls._initialized = True
+            cls._pools_closed = False
             logger.info("PoolingManager.enable: Connection pooling enabled successfully")
 
     @classmethod

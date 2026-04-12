@@ -3049,17 +3049,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         even if close() was not called explicitly.
         If the cursor is already closed, it will not raise an exception during cleanup.
         """
+        import sys
+
+        # During interpreter shutdown, ODBC handles may already be invalid.
+        # Attempting to free them can cause segfaults (SIGSEGV).
+        # The OS will reclaim all resources when the process exits.
+        if sys is None or sys._is_finalizing():
+            return
+
         if "closed" not in self.__dict__ or not self.closed:
             try:
                 self.close()
             except Exception as e:  # pylint: disable=broad-exception-caught
                 # Don't raise an exception in __del__, just log it
-                # If interpreter is shutting down, we might not have logging set up
-                import sys
-
-                if sys and sys._is_finalizing():
-                    # Suppress logging during interpreter shutdown
-                    return
                 logger.debug("Exception during cursor cleanup in __del__: %s", e)
 
     def scroll(

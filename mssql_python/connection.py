@@ -1623,6 +1623,14 @@ class Connection:
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
         """
+        import sys
+
+        # During interpreter shutdown, ODBC handles may already be invalid.
+        # Attempting to free them can cause segfaults (SIGSEGV).
+        # The OS will reclaim all resources when the process exits.
+        if sys is None or sys._is_finalizing():
+            return
+
         if "_closed" not in self.__dict__ or not self._closed:
             try:
                 self.close()
