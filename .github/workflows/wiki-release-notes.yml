@@ -1,0 +1,85 @@
+name: Wiki Update PR
+
+on:
+  # Manual trigger — works for any repo
+  workflow_dispatch:
+    inputs:
+      since_tag:
+        description: "Release tag to diff from (leave empty for latest release)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Preview changes without creating PR"
+        type: boolean
+        required: false
+        default: false
+
+  # Auto-trigger when a new release is published
+  release:
+    types: [published]
+
+  # Sync wiki/ folder to wiki repo when PR is merged
+  push:
+    branches: [main, master]
+    paths: ['wiki/**']
+
+permissions:
+  contents: write
+  pull-requests: write
+  models: read
+
+jobs:
+  # --- Job 1: Analyze PRs and create a PR with wiki updates ---
+  update-wiki:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone wiki (to read current pages)
+        run: |
+          git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" _wiki || echo "No wiki repo found"
+
+      - name: Analyze PRs and create wiki update PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE_TAG: ${{ github.event.inputs.since_tag || '' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          WIKI_DIR: _wiki
+        run: python .github/scripts/generate_wiki_release_notes.py
+
+  # --- Job 2: Sync wiki/ folder → wiki repo (on merge) ---
+  sync-wiki:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sync wiki/ to wiki repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -d wiki ] || [ -z "$(ls wiki/*.md 2>/dev/null)" ]; then
+            echo "No wiki/ folder or no .md files. Skipping."
+            exit 0
+          fi
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.wiki.git" _wiki_sync
+          cp wiki/*.md _wiki_sync/
+          cd _wiki_sync
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to sync."
+          else
+            git commit -m "Sync wiki pages from main repo ($(date -u +%Y-%m-%d))"
+            git push origin master
+            echo "Wiki synced successfully."
+          fi
