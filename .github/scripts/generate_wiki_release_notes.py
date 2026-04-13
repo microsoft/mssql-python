@@ -1,13 +1,14 @@
 """
 Smart Wiki Updater — Analyzes merged PRs, matches changes to existing wiki
-pages, and pushes a branch with proposed wiki updates for review.
+pages, and generates proposed wiki updates for review in the main repo.
 
 Flow:
   1. Read existing wiki pages (from cloned .wiki.git)
   2. Fetch merged PRs since last release with diffs
   3. Use LLM to analyze which wiki pages need updates and generate new content
-  4. Push updated pages on a branch in the wiki repo
-  5. Open a tracking issue in the main repo for review
+  4. Write updated pages to wiki/ folder in the main repo
+  5. Open a PR in the main repo for review; a separate sync job pushes to the
+     wiki repo after the PR is merged
 
 Zero pip dependencies — uses gh CLI + Python stdlib + optional LLM API.
 Drop into any GitHub repo (mssql-python, mssql-jdbc, msoledbsql, etc.)
@@ -79,20 +80,27 @@ def truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + "\n... [truncated]"
 
 
-def llm_call(system_prompt: str, user_prompt: str) -> str | None:
+def llm_call(
+    system_prompt: str,
+    user_prompt: str,
+    response_format: dict[str, str] | None = None,
+) -> str | None:
     """Call GitHub Models (or any OpenAI-compatible API). Returns None on failure."""
     if not AI_API_KEY:
         return None
 
     url = f"{AI_API_BASE}/chat/completions"
-    body = json.dumps({
+    payload: dict = {
         "model": AI_MODEL,
         "temperature": 0.2,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-    }).encode()
+    }
+    if response_format is not None:
+        payload["response_format"] = response_format
+    body = json.dumps(payload).encode()
 
     req = urllib.request.Request(
         url,
@@ -372,7 +380,9 @@ def main() -> None:
         (wiki_pr_dir / page_name).write_text(new_content, encoding="utf-8")
 
     # Branch, commit, push in the main repo
-    branch = f"wiki/updates-since-{tag_name}"
+    # Include run ID to avoid collisions on re-runs for the same tag
+    run_id = os.environ.get("GITHUB_RUN_ID", datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"))
+    branch = f"wiki/updates-since-{tag_name}-{run_id}"
 
     git("config", "user.name", "github-actions[bot]")
     git("config", "user.email", "github-actions[bot]@users.noreply.github.com")
@@ -495,7 +505,11 @@ def llm_analyze(pr_details: list[dict], wiki_pages: dict[str, str]) -> list[dict
             parts.append(f"Diff (excerpt):\n{pr['diff'][:3000]}")
             parts.append("")
 
-        response = llm_call(SYSTEM_PROMPT_ANALYZE, "\n".join(parts))
+        response = llm_call(
+            SYSTEM_PROMPT_ANALYZE,
+            "\n".join(parts),
+            response_format={"type": "json_object"},
+        )
         if response:
             cleaned = re.sub(r'^```(?:json)?\s*', '', response.strip())
             cleaned = re.sub(r'\s*```$', '', cleaned)

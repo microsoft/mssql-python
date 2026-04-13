@@ -39,6 +39,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Clone wiki (to read current pages)
         run: |
           git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" _wiki || echo "No wiki repo found"
@@ -49,7 +54,7 @@ jobs:
           SINCE_TAG: ${{ github.event.inputs.since_tag || '' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           WIKI_DIR: _wiki
-        run: python .github/scripts/generate_wiki_release_notes.py
+        run: python3 .github/scripts/generate_wiki_release_notes.py
 
   # --- Job 2: Sync wiki/ folder → wiki repo (on merge) ---
   sync-wiki:
@@ -63,13 +68,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ ! -d wiki ] || [ -z "$(ls wiki/*.md 2>/dev/null)" ]; then
-            echo "No wiki/ folder or no .md files. Skipping."
+          if [ ! -d wiki ] || ! find wiki -type f -name '*.md' -print -quit | grep -q .; then
+            echo "No wiki/ folder or no .md files under wiki/. Skipping."
             exit 0
           fi
 
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.wiki.git" _wiki_sync
-          cp wiki/*.md _wiki_sync/
+          if ! git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.wiki.git" _wiki_sync; then
+            echo "Wiki repo not found or clone failed. Skipping sync."
+            exit 0
+          fi
+
+          # Mirror sync: copy all wiki content and remove deleted files
+          rsync -av --delete --include='*.md' --exclude='*' wiki/ _wiki_sync/
           cd _wiki_sync
 
           git config user.name "github-actions[bot]"
