@@ -8,6 +8,10 @@ on:
         description: "Release tag to diff from (leave empty for latest release)"
         required: false
         default: ""
+      new_version:
+        description: "New version number for release prep (e.g. 1.6.0). Leave empty to skip release artifacts."
+        required: false
+        default: ""
       dry_run:
         description: "Preview changes without creating PR"
         type: boolean
@@ -52,6 +56,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SINCE_TAG: ${{ github.event.inputs.since_tag || '' }}
+          NEW_VERSION: ${{ github.event.inputs.new_version || '' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           WIKI_DIR: _wiki
         run: python3 .github/scripts/generate_wiki_release_notes.py
