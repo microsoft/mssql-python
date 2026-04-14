@@ -1,4 +1,4 @@
-# Workflow for issue triage
+# Issue Triage Workflow
 
 name: Issue Triage
 
@@ -10,19 +10,23 @@ jobs:
   triage:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Check out code
         uses: actions/checkout@v2
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v2
+      - name: Set up Python
+        uses: actions/setup-python@v2
         with:
-          node-version: '14'
+          python-version: '3.8'
 
-      - name: Run issue triage
+      - name: Install dependencies
         run: |
-          const url = 'https://models.github.ai/inference/chat/completions';
-          const issue = context.issue;
-          // Your issue triage logic here
+          pip install --upgrade pip
+          pip install requests
 
-      - name: Complete
-        run: echo 'Issue triage completed!'
+      - name: Run Triage
+        run: |
+          python triage_script.py
+
+      - name: Call models service
+        run: |
+          curl -X POST -H 'Content-Type: application/json' -d '{"data": "input_data"}' 'https://models.github.ai/inference/chat/completions'
