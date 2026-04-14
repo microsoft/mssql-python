@@ -885,8 +885,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ddbc_sql_const.SQL_WCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
             ddbc_sql_const.SQL_WVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
             ddbc_sql_const.SQL_WLONGVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
-            ddbc_sql_const.SQL_DECIMAL.value: ddbc_sql_const.SQL_C_NUMERIC.value,
-            ddbc_sql_const.SQL_NUMERIC.value: ddbc_sql_const.SQL_C_NUMERIC.value,
+            ddbc_sql_const.SQL_DECIMAL.value: ddbc_sql_const.SQL_C_CHAR.value,
+            ddbc_sql_const.SQL_NUMERIC.value: ddbc_sql_const.SQL_C_CHAR.value,
             ddbc_sql_const.SQL_BIT.value: ddbc_sql_const.SQL_C_BIT.value,
             ddbc_sql_const.SQL_TINYINT.value: ddbc_sql_const.SQL_C_TINYINT.value,
             ddbc_sql_const.SQL_SMALLINT.value: ddbc_sql_const.SQL_C_SHORT.value,
@@ -948,6 +948,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             else:
                 # For non-NULL parameters, determine the appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
+
+                # Convert Decimal to string for SQL_C_CHAR binding (GH-503)
+                if (
+                    isinstance(parameter, decimal.Decimal)
+                    and sql_type in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    )
+                ):
+                    parameters_list[i] = format(parameter, "f")
 
                 # Check if this should be a DAE (data at execution) parameter
                 # For string types with large column sizes
@@ -2304,6 +2314,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if (
                     isinstance(val, decimal.Decimal)
                     and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
+                ):
+                    processed_row[i] = format(val, "f")
+                # Convert Decimal to string for SQL_C_CHAR binding (GH-503)
+                elif (
+                    isinstance(val, decimal.Decimal)
+                    and parameters_type[i].paramSQLType in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    )
                 ):
                     processed_row[i] = format(val, "f")
                 # Existing numeric conversion
