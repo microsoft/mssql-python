@@ -10065,6 +10065,33 @@ def test_setinputsizes_sql_numeric_with_executemany(db_connection):
         cursor.execute("DROP TABLE IF EXISTS #test_sis_numeric")
 
 
+def test_setinputsizes_sql_decimal_with_non_decimal_values(db_connection):
+    """Test setinputsizes with SQL_DECIMAL converts non-Decimal values (int/float) to string (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_nondec")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_nondc (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        # Pass int and float instead of Decimal — exercises the non-Decimal conversion branch
+        cursor.executemany(
+            "INSERT INTO #test_sis_dec_nondc (Price) VALUES (?)",
+            [(42,), (19.99,), (0,)],
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_nondc ORDER BY Price")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("0.00")
+        assert rows[1][0] == decimal.Decimal("19.99")
+        assert rows[2][0] == decimal.Decimal("42.00")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_nondc")
+
+
 def test_setinputsizes_sql_decimal_with_execute(db_connection):
     """Test setinputsizes with SQL_DECIMAL works with single execute() too (GH-503)."""
     cursor = db_connection.cursor()
