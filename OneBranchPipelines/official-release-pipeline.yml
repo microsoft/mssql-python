@@ -93,8 +93,9 @@ extends:
         displayName: 'Release Python Packages to PyPI'
         
         jobs:
-          - job: DownloadAndRelease
-            displayName: 'Download Artifacts and Release via ESRP'
+          # Job 1: Download, validate, and stage artifacts (custom pool)
+          - job: PrepAndValidate
+            displayName: 'Download and Validate Artifacts'
             
             pool:
               type: windows
@@ -119,7 +120,7 @@ extends:
                   artifactName: 'drop_Consolidate_ConsolidateArtifacts'  # Consolidated artifact with dist/ and symbols/
                   targetPath: '$(Build.SourcesDirectory)/artifacts'
               
-              # Step 3: List downloaded artifacts for verification
+              # Step 2: List downloaded artifacts for verification
               - task: PowerShell@2
                 displayName: 'List Downloaded Wheel and Symbol Files'
                 inputs:
@@ -139,11 +140,6 @@ extends:
                         $size = [math]::Round($wheel.Length / 1MB, 2)
                         Write-Host "  - $($wheel.Name) (${size} MB)"
                       }
-                      
-                      # Copy wheels to dist folder for ESRP
-                      Write-Host "`nCopying wheels to $(Build.SourcesDirectory)/dist..."
-                      New-Item -ItemType Directory -Force -Path "$(Build.SourcesDirectory)/dist" | Out-Null
-                      Copy-Item -Path "$wheelsPath/*.whl" -Destination "$(Build.SourcesDirectory)/dist/" -Force
                       
                     } else {
                       Write-Error "Wheel directory not found at: $wheelsPath"
@@ -177,7 +173,7 @@ extends:
                     Write-Host "Symbols: $(if ($symbols) { $symbols.Count } else { 0 }) files"
                     Write-Host "====================================="
               
-              # Step 3.5: Validate mssql-py-core is a stable version (no dev/alpha/beta/rc)
+              # Step 3: Validate mssql-py-core is a stable version (no dev/alpha/beta/rc)
               - task: PowerShell@2
                 displayName: 'Validate mssql-py-core is a stable version'
                 inputs:
@@ -193,7 +189,7 @@ extends:
                   script: |
                     Write-Host "Verifying wheel file integrity..."
                     
-                    $wheels = Get-ChildItem -Path "$(Build.SourcesDirectory)/dist" -Filter "*.whl"
+                    $wheels = Get-ChildItem -Path "$(Build.SourcesDirectory)/artifacts/dist" -Filter "*.whl"
                     $allValid = $true
                     
                     foreach ($wheel in $wheels) {
@@ -225,60 +221,7 @@ extends:
                     parameters:
                       SymbolsFolder: '$(Build.SourcesDirectory)/symbols'
               
-              # Step 6: Copy wheels to ob_outputDirectory for OneBranch artifact publishing
-              - task: CopyFiles@2
-                displayName: 'Stage Wheels for Release'
-                inputs:
-                  SourceFolder: '$(Build.SourcesDirectory)/dist'
-                  Contents: '*.whl'
-                  TargetFolder: '$(ob_outputDirectory)/release'
-                  flattenFolders: true
-              
-              # Step 7: ESRP Release Task (only if releaseToPyPI is true)
-              - ${{ if eq(parameters.releaseToPyPI, true) }}:
-                  - task: EsrpRelease@9
-                    displayName: 'ESRP Release to PyPI'
-                    inputs:
-                      connectedservicename: '$(ESRPConnectedServiceName)'
-                      usemanagedidentity: true
-                      keyvaultname: '$(AuthAKVName)'
-                      signcertname: '$(AuthSignCertName)'
-                      clientid: '$(EsrpClientId)'
-                      Intent: 'PackageDistribution'
-                      ContentType: 'PyPI'
-                      ContentSource: 'Folder'
-                      FolderLocation: '$(Build.SourcesDirectory)/dist'
-                      WaitForReleaseCompletion: true
-                      Owners: '$(owner)'
-                      Approvers: '$(approver)'
-                      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
-                      MainPublisher: 'ESRPRELPACMAN'
-                      DomainTenantId: '$(DomainTenantId)'
-              
-              # Step 8: Show release status
-              - ${{ if eq(parameters.releaseToPyPI, true) }}:
-                  - task: PowerShell@2
-                    displayName: 'Release Summary'
-                    inputs:
-                      targetType: 'inline'
-                      script: |
-                        Write-Host "===================================="
-                        Write-Host "ESRP Release Completed"
-                        Write-Host "===================================="
-                        Write-Host "Package: mssql-python"
-                        Write-Host "Target: PyPI"
-                        Write-Host "Owners: $(owner)"
-                        Write-Host "Approvers: $(approver)"
-                        Write-Host "Symbols Published: ${{ parameters.publishSymbols }}"
-                        Write-Host "====================================="
-                        Write-Host ""
-                        Write-Host "Next steps:"
-                        Write-Host "1. Verify release in ESRP portal"
-                        Write-Host "2. Wait for approval workflow completion"
-                        Write-Host "3. Verify package on PyPI: https://pypi.org/project/mssql-python/"
-                        Write-Host "4. Verify symbols in SqlClientDrivers org (if published)"
-                        Write-Host "====================================="
-              
+              # Dry run summary (when release is disabled)
               - ${{ if eq(parameters.releaseToPyPI, false) }}:
                   - task: PowerShell@2
                     displayName: 'Dry Run - Release Skipped'
@@ -292,6 +235,7 @@ extends:
                         Write-Host ""
                         Write-Host "Actions performed:"
                         Write-Host "- Downloaded wheels from build pipeline"
+                        Write-Host "- Verified wheel integrity"
                         Write-Host "- Downloaded symbols from build pipeline"
                         if ("${{ parameters.publishSymbols }}" -eq "True") {
                           Write-Host "- Published symbols to SqlClientDrivers org"
@@ -301,3 +245,74 @@ extends:
                         Write-Host "1. Set 'releaseToPyPI' parameter to true"
                         Write-Host "2. Re-run pipeline"
                         Write-Host "====================================="
+          
+          # Job 2: ESRP Release (releaseJob on 1ES hosted pool — required by OneBranch policy)
+          # EsrpRelease is not allowed in custom pools; must use templateContext.type: releaseJob
+          - ${{ if eq(parameters.releaseToPyPI, true) }}:
+            - job: PyPIRelease
+              displayName: 'ESRP Release to PyPI'
+              dependsOn: PrepAndValidate
+              
+              templateContext:
+                type: releaseJob
+                isProduction: true
+              
+              pool:
+                type: windows
+              
+              variables:
+                ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+                WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
+              
+              steps:
+                - task: DownloadPipelineArtifact@2
+                  displayName: 'Download Artifacts from Build Pipeline'
+                  inputs:
+                    buildType: 'specific'
+                    project: '$(System.TeamProject)'
+                    definition: 2199
+                    buildVersionToDownload: 'specific'
+                    buildId: $(resources.pipeline.buildPipeline.runID)
+                    artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+                    targetPath: '$(Build.SourcesDirectory)/artifacts'
+                
+                - task: EsrpRelease@9
+                  displayName: 'ESRP Release to PyPI'
+                  inputs:
+                    connectedservicename: '$(ESRPConnectedServiceName)'
+                    usemanagedidentity: true
+                    keyvaultname: '$(AuthAKVName)'
+                    signcertname: '$(AuthSignCertName)'
+                    clientid: '$(EsrpClientId)'
+                    Intent: 'PackageDistribution'
+                    ContentType: 'PyPI'
+                    ContentSource: 'Folder'
+                    FolderLocation: '$(Build.SourcesDirectory)/artifacts/dist'
+                    WaitForReleaseCompletion: true
+                    Owners: '$(owner)'
+                    Approvers: '$(approver)'
+                    ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+                    MainPublisher: 'ESRPRELPACMAN'
+                    DomainTenantId: '$(DomainTenantId)'
+                
+                - task: PowerShell@2
+                  displayName: 'Release Summary'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      Write-Host "===================================="
+                      Write-Host "ESRP Release Completed"
+                      Write-Host "===================================="
+                      Write-Host "Package: mssql-python"
+                      Write-Host "Target: PyPI"
+                      Write-Host "Owners: $(owner)"
+                      Write-Host "Approvers: $(approver)"
+                      Write-Host "Symbols Published: ${{ parameters.publishSymbols }}"
+                      Write-Host "====================================="
+                      Write-Host ""
+                      Write-Host "Next steps:"
+                      Write-Host "1. Verify release in ESRP portal"
+                      Write-Host "2. Wait for approval workflow completion"
+                      Write-Host "3. Verify package on PyPI: https://pypi.org/project/mssql-python/"
+                      Write-Host "4. Verify symbols in SqlClientDrivers org (if published)"
+                      Write-Host "====================================="
