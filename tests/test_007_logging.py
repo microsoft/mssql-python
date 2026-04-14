@@ -314,19 +314,83 @@ class TestPasswordSanitization:
         assert "secret123" not in sanitized
 
     def test_pwd_case_insensitive(self, cleanup_logger):
-        """PWD/Pwd/pwd should all be sanitized (case-insensitive)"""
+        """PWD/Pwd/pwd should all be sanitized to canonical PWD=***"""
         from mssql_python.helpers import sanitize_connection_string
 
         test_cases = [
-            ("Server=localhost;PWD=secret;Database=test", "PWD=***"),
-            ("Server=localhost;Pwd=secret;Database=test", "Pwd=***"),
-            ("Server=localhost;pwd=secret;Database=test", "pwd=***"),
+            "Server=localhost;PWD=secret;Database=test",
+            "Server=localhost;Pwd=secret;Database=test",
+            "Server=localhost;pwd=secret;Database=test",
         ]
 
-        for conn_str, expected in test_cases:
+        for conn_str in test_cases:
             sanitized = sanitize_connection_string(conn_str)
-            assert expected in sanitized
+            assert "PWD=***" in sanitized
             assert "secret" not in sanitized
+
+    def test_pwd_braced_value_with_semicolon(self, cleanup_logger):
+        """PWD with braced value containing semicolons must be fully masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;PWD={Top;Secret};Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "PWD=***" in sanitized
+        assert "Top" not in sanitized
+        assert "Secret" not in sanitized
+
+    def test_pwd_braced_value_with_escaped_braces(self, cleanup_logger):
+        """PWD with escaped closing braces (}}) must be fully masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;PWD={p}}w{{d};Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "PWD=***" in sanitized
+        assert "p}w{d" not in sanitized
+
+    def test_pwd_braced_value_multiple_semicolons(self, cleanup_logger):
+        """PWD with multiple semicolons inside braces must be fully masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;PWD={a;b;c;d};Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "PWD=***" in sanitized
+        for fragment in ("a;b;c;d", "{a;", "b;c", "c;d}"):
+            assert fragment not in sanitized
+
+    def test_pwd_at_end_of_string(self, cleanup_logger):
+        """PWD at end of connection string (no trailing semicolon) must be masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;Database=test;PWD=secret"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "PWD=***" in sanitized
+        assert "secret" not in sanitized
+
+    def test_no_pwd_unchanged(self, cleanup_logger):
+        """Connection string without PWD should be returned intact."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;Database=test;UID=user"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "Server=" in sanitized
+        assert "Database=" in sanitized
+        assert "UID=" in sanitized
+
+    def test_malformed_string_fully_redacted(self, cleanup_logger):
+        """Malformed connection string should be fully redacted, not partially leaked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "PWD={unclosed"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "unclosed" not in sanitized
+        assert "PWD" not in sanitized
+        assert "redacted" in sanitized.lower()
 
     def test_explicit_sanitization_in_logging(self, cleanup_logger):
         """Verify that explicit sanitization works when logging"""
