@@ -1638,6 +1638,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.fetchmany = fetchmany_with_mapping
                 self.fetchall = fetchall_with_mapping
 
+        # Initialize rownumber tracking so fetchone() and iteration work
+        self._reset_rownumber()
+
         # Return the cursor itself for method chaining
         return self
 
