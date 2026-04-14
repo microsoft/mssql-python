@@ -1351,6 +1351,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if reset_cursor:
             logger.debug("execute: Resetting cursor state")
             self._reset_cursor()
+        else:
+            # Close just the ODBC cursor (not the statement handle) so the
+            # prepared plan can be reused.  SQLFreeStmt(SQL_CLOSE) releases
+            # the cursor associated with hstmt without destroying the
+            # prepared statement, which is the standard ODBC pattern for
+            # re-executing a prepared query.
+            if self.hstmt:
+                logger.debug("execute: Closing cursor for re-execution (reset_cursor=False)")
+                self.hstmt.close_cursor()
+                self._clear_rownumber()
 
         # Clear any previous messages
         self.messages = []
