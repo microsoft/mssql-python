@@ -3,10 +3,11 @@ Multi-threaded stress tests for mssql-python driver.
 
 These tests verify the driver's behavior under multi-threaded conditions:
 - Concurrent connections with 2, 5, 10, 50, 100 threads, and 2x CPU cores
-- Connection pooling under stress
+- Connection pooling under stress (including pool exhaustion recovery)
 - Thread safety of query execution
 - Memory and resource usage under load
 - Race condition detection
+- Concurrent mixed read/write on a shared global temp table
 
 Tests are marked with @pytest.mark.stress and are designed to be run
 in a dedicated pipeline separate from regular CI tests.
@@ -112,12 +113,14 @@ class MultiThreadedQueryRunner:
         query: str = "SELECT 1 as num, 'test' as str, GETDATE() as dt",
         verbose: bool = False,
         enable_pooling: bool = True,
+        pool_max_size: Optional[int] = None,
         timeout_seconds: int = 120,
     ):
         self.conn_str = conn_str
         self.query = query
         self.verbose = verbose
         self.enable_pooling = enable_pooling
+        self.pool_max_size = pool_max_size
         self.timeout_seconds = timeout_seconds
 
         self.stats_lock = threading.Lock()
@@ -247,7 +250,8 @@ class MultiThreadedQueryRunner:
 
         # Configure pooling
         if self.enable_pooling:
-            mssql_python.pooling(enabled=True, max_size=max(100, num_threads * 2))
+            effective_max_size = self.pool_max_size if self.pool_max_size is not None else max(100, num_threads * 2)
+            mssql_python.pooling(enabled=True, max_size=effective_max_size)
         else:
             mssql_python.pooling(enabled=False)
 
@@ -726,16 +730,15 @@ def test_pool_exhaustion_recovery(stress_conn_str):
 
     Creates more threads than pool size to test queuing and recovery.
     """
-    # Set small pool size
-    mssql_python.pooling(enabled=True, max_size=10)
-
     num_threads = 50  # 5x the pool size
     iterations = 10
+    pool_size = 10
 
     runner = MultiThreadedQueryRunner(
         conn_str=stress_conn_str,
-        query="SELECT 1; WAITFOR DELAY '00:00:00.050'",  # 50ms delay
+        query="WAITFOR DELAY '00:00:00.050'",  # 50ms delay to hold connections
         enable_pooling=True,
+        pool_max_size=pool_size,  # Explicitly cap the pool to force exhaustion
         timeout_seconds=180,
     )
 
@@ -749,7 +752,7 @@ def test_pool_exhaustion_recovery(stress_conn_str):
     ), f"Too many queries failed under pool exhaustion: {completion_rate*100:.1f}%"
 
     print(
-        f"[PASSED] Pool exhaustion test: {completion_rate*100:.1f}% completion with pool_size=10, threads=50"
+        f"[PASSED] Pool exhaustion test: {completion_rate*100:.1f}% completion with pool_size={pool_size}, threads={num_threads}"
     )
 
 
@@ -1042,4 +1045,187 @@ def test_comprehensive_thread_scaling(stress_conn_str, num_threads, iterations, 
     print(
         f"[PASSED] {num_threads}T x {iterations}I, pooling={pooling}: "
         f"{result.throughput_qps:.1f} qps, {error_rate*100:.1f}% errors"
+    )
+
+
+# ============================================================================
+# Concurrent Read/Write Stress Test
+# ============================================================================
+
+
+@pytest.mark.stress
+def test_concurrent_read_write_no_corruption(stress_conn_str):
+    """
+    Test simultaneous INSERTs (writers) and SELECTs (readers) on a shared table.
+
+    5 writer threads continuously INSERT rows for 10 seconds.
+    5 reader threads continuously execute SELECT COUNT(*) during that same window.
+
+    Verifies:
+    - The driver does not crash under mixed concurrent load
+    - Readers never observe the row count decrease (no phantom rollback visible to readers)
+    - Every writer contributed at least one committed row (no silent write failure)
+    - No unexpected exceptions bubble out of driver internals
+
+    Uses a global temp table (##) so all sessions can see the same data.
+    A unique hex suffix prevents collisions when tests run in parallel pipelines.
+    """
+    import uuid
+
+    # Global temp table — visible across connections within the same SQL Server instance
+    table_name = f"##pytest_rw_{uuid.uuid4().hex[:12]}"
+
+    run_duration = 10  # seconds
+    num_writers = 5
+    num_readers = 5
+
+    stop_event = threading.Event()
+    errors: list = []
+    errors_lock = threading.Lock()
+    writer_committed: dict = {}  # writer_id -> committed row count
+
+    # --- Setup: create the shared table on a dedicated connection ---
+    setup_conn = connect(stress_conn_str)
+    setup_cursor = setup_conn.cursor()
+    try:
+        setup_cursor.execute(
+            f"""
+            CREATE TABLE {table_name} (
+                id        INT IDENTITY(1, 1) PRIMARY KEY,
+                writer_id INT NOT NULL,
+                val       INT NOT NULL
+            )
+            """
+        )
+        setup_conn.commit()
+    except Exception as e:
+        setup_cursor.close()
+        setup_conn.close()
+        pytest.fail(f"Failed to create shared table: {e}")
+
+    # --- Worker definitions ---
+
+    def writer(writer_id: int):
+        conn = None
+        cur = None
+        count = 0
+        try:
+            conn = connect(stress_conn_str)
+            cur = conn.cursor()
+            while not stop_event.is_set():
+                cur.execute(
+                    f"INSERT INTO {table_name} (writer_id, val) VALUES (?, ?)",
+                    (writer_id, count),
+                )
+                conn.commit()
+                count += 1
+                time.sleep(0.01)  # 10ms gap prevents thundering-herd on the IDENTITY page
+        except Exception as e:
+            with errors_lock:
+                errors.append(f"Writer {writer_id}: {e}")
+        finally:
+            if cur:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            writer_committed[writer_id] = count
+
+    def reader(reader_id: int):
+        conn = None
+        cur = None
+        prev_count = 0
+        try:
+            conn = connect(stress_conn_str)
+            cur = conn.cursor()
+            while not stop_event.is_set():
+                # NOLOCK avoids blocking on uncommitted writer rows under READ COMMITTED
+                cur.execute(f"SELECT COUNT(*) FROM {table_name} WITH (NOLOCK)")
+                row = cur.fetchone()
+                if row is not None:
+                    current_count = row[0]
+                    # Under READ COMMITTED the count must never decrease
+                    if current_count < prev_count:
+                        with errors_lock:
+                            errors.append(
+                                f"Reader {reader_id}: COUNT went DOWN "
+                                f"from {prev_count} to {current_count} — data anomaly"
+                            )
+                    prev_count = current_count
+        except Exception as e:
+            with errors_lock:
+                errors.append(f"Reader {reader_id}: {e}")
+        finally:
+            if cur:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    # --- Launch threads ---
+    all_threads = []
+    for i in range(num_writers):
+        t = threading.Thread(target=writer, args=(i,), daemon=True, name=f"Writer-{i}")
+        all_threads.append(t)
+        t.start()
+
+    for i in range(num_readers):
+        t = threading.Thread(target=reader, args=(i,), daemon=True, name=f"Reader-{i}")
+        all_threads.append(t)
+        t.start()
+
+    # Run for the specified duration, then signal stop
+    time.sleep(run_duration)
+    stop_event.set()
+
+    for t in all_threads:
+        t.join(timeout=30)
+
+    # --- Final verification via setup connection ---
+    try:
+        setup_cursor.execute(
+            f"SELECT COUNT(*), COUNT(DISTINCT writer_id) FROM {table_name}"
+        )
+        agg_row = setup_cursor.fetchone()
+        if agg_row is None:
+            pytest.fail("Aggregate query returned no row — shared table may have been dropped early")
+        total_rows = agg_row[0]
+        distinct_writers = agg_row[1]
+    finally:
+        setup_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        setup_conn.commit()
+        setup_cursor.close()
+        setup_conn.close()
+
+    print(
+        f"\nConcurrent read/write results: {total_rows} total rows, "
+        f"{distinct_writers}/{num_writers} distinct writers active"
+    )
+    for wid, cnt in sorted(writer_committed.items()):
+        print(f"  Writer {wid}: {cnt} committed rows")
+
+    # All data-anomaly and driver-crash errors must be zero
+    assert not errors, f"Concurrent read/write errors: {errors[:5]}"
+
+    # Every writer must have committed at least one row in 15 seconds
+    assert distinct_writers == num_writers, (
+        f"Expected {num_writers} distinct writers in final table, got {distinct_writers}"
+    )
+
+    # The table must contain rows (trivially true if writers worked)
+    assert total_rows > 0, "No rows found in shared table after 15s of writer threads"
+
+    print(
+        f"[PASSED] Concurrent read/write: {total_rows} rows, "
+        f"count never decreased (NOLOCK), no driver crashes"
     )
