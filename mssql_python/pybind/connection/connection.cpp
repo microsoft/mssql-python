@@ -45,7 +45,7 @@ static SqlHandlePtr getEnvHandle() {
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
-Connection::Connection(const std::wstring& conn_str, bool use_pool)
+Connection::Connection(const std::u16string& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
     allocateDbcHandle();
 }
@@ -74,17 +74,7 @@ void Connection::connect(const py::dict& attrs_before) {
             setAutocommit(_autocommit);
         }
     }
-    SQLWCHAR* connStrPtr;
-#if defined(__APPLE__) || defined(__linux__)  // macOS/Linux handling
-    LOG("Creating connection string buffer for macOS/Linux");
-    std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
-    // Ensure the buffer is null-terminated
-    LOG("Connection string buffer size=%zu", connStrBuffer.size());
-    connStrPtr = connStrBuffer.data();
-    LOG("Connection string buffer created");
-#else
-    connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
-#endif
+    SQLWCHAR* connStrPtr = const_cast<SQLWCHAR*>(reinterpretU16stringAsSqlWChar(_connStr));
     SQLRETURN ret;
     {
         // Release the GIL during the blocking ODBC connect call.
@@ -180,8 +170,7 @@ void Connection::disconnect() {
 void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
-        ThrowStdException(errorMsg);
+        ThrowStdException(err.ddbcErrorMsg);
     }
 }
 
@@ -298,39 +287,13 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return ret;
     } else if (py::isinstance<py::str>(value)) {
         try {
-            std::string utf8_str = value.cast<std::string>();
-
-            // Convert to wide string
-            std::wstring wstr = Utf8ToWString(utf8_str);
-            if (wstr.empty() && !utf8_str.empty()) {
-                LOG("Failed to convert string value to wide string for "
-                    "attribute=%d",
-                    attribute);
-                return SQL_ERROR;
-            }
-            this->wstrStringBuffer.clear();
-            this->wstrStringBuffer = std::move(wstr);
+            this->wstrStringBuffer = value.cast<std::u16string>();
 
             SQLPOINTER ptr;
             SQLINTEGER length;
-
-#if defined(__APPLE__) || defined(__linux__)
-            // For macOS/Linux, convert wstring to SQLWCHAR buffer
-            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(this->wstrStringBuffer);
-            if (sqlwcharBuffer.empty() && !this->wstrStringBuffer.empty()) {
-                LOG("Failed to convert wide string to SQLWCHAR buffer for "
-                    "attribute=%d",
-                    attribute);
-                return SQL_ERROR;
-            }
-
-            ptr = sqlwcharBuffer.data();
-            length = static_cast<SQLINTEGER>(sqlwcharBuffer.size() * sizeof(SQLWCHAR));
-#else
-            // On Windows, wchar_t and SQLWCHAR are the same size
-            ptr = const_cast<SQLWCHAR*>(this->wstrStringBuffer.c_str());
+            
+            ptr = const_cast<SQLWCHAR*>(reinterpretU16stringAsSqlWChar(this->wstrStringBuffer));
             length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
-#endif
 
             SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             if (!SQL_SUCCEEDED(ret)) {
@@ -432,10 +395,9 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
-ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool,
+ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
                                    const py::dict& attrsBefore)
-    : _usePool(usePool) {
-    _connStr = Utf8ToWString(connStr);
+    : _usePool(usePool), _connStr(connStr) {
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
     } else {
@@ -576,9 +538,7 @@ void ConnectionHandle::setAttr(int attribute, py::object value) {
             std::string errorMsg =
                 "Failed to set connection attribute " + std::to_string(attribute);
             if (!errorInfo.ddbcErrorMsg.empty()) {
-                // Convert wstring to string for concatenation
-                std::string ddbcErrorStr = WideToUTF8(errorInfo.ddbcErrorMsg);
-                errorMsg += ": " + ddbcErrorStr;
+                errorMsg += ": " + errorInfo.ddbcErrorMsg;
             }
 
             LOG("Connection setAttribute failed: %s", errorMsg.c_str());

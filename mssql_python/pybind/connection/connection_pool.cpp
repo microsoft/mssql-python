@@ -12,7 +12,7 @@
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
     : _max_size(max_size), _idle_timeout_secs(idle_timeout_secs), _current_size(0) {}
 
-std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
+std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
                                                     const py::dict& attrs_before) {
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
@@ -145,7 +145,7 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
     return manager;
 }
 
-std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::wstring& connStr,
+std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::u16string& connStr,
                                                                      const py::dict& attrs_before) {
     std::shared_ptr<ConnectionPool> pool;
     {
@@ -163,7 +163,7 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
     return pool->acquire(connStr, attrs_before);
 }
 
-void ConnectionPoolManager::returnConnection(const std::wstring& conn_str,
+void ConnectionPoolManager::returnConnection(const std::u16string& conn_str,
                                              const std::shared_ptr<Connection> conn) {
     std::shared_ptr<ConnectionPool> pool;
     {

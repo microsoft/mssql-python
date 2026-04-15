@@ -23,10 +23,6 @@ namespace py = pybind11;
 extern const char* kOdbcEncoding;  // ODBC uses UTF-16LE for SQLWCHAR
 extern const size_t kUcsLength;    // SQLWCHAR is 2 bytes on all platforms
 
-// Function to convert SQLWCHAR strings to std::wstring on macOS
-// Removed default argument to avoid redefinition conflict
-std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length);
-
 // Function to convert std::wstring to SQLWCHAR array on macOS
 std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str);
 
