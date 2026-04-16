@@ -14,6 +14,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
+#include <cstring>
 #include <simdutf.h>
 #include <string>
 #include <vector>
