@@ -219,12 +219,11 @@ find_package(simdutf CONFIG QUIET)
 
 if(NOT simdutf_FOUND)
     include(FetchContent)
-    message(STATUS "simdutf not found via find_package; fetching v8.2.0 with FetchContent")
+    message(STATUS "simdutf not found via find_package; downloading v8.2.0 source archive with FetchContent")
     FetchContent_Declare(
         simdutf
-        GIT_REPOSITORY https://github.com/simdutf/simdutf.git
-        GIT_TAG v8.2.0
-        GIT_SHALLOW TRUE
+        URL https://github.com/simdutf/simdutf/archive/refs/tags/v8.2.0.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP FALSE
     )
     set(SIMDUTF_TESTS OFF CACHE BOOL "Disable simdutf tests" FORCE)
     set(SIMDUTF_TOOLS OFF CACHE BOOL "Disable simdutf tools" FORCE)
