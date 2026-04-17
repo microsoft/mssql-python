@@ -383,12 +383,35 @@ jobs:
       pip install pyodbc
       
       Write-Host "`nRunning performance benchmarks..."
-      python benchmarks/perf-benchmarking.py
+      python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
     displayName: 'Run performance benchmarks on SQL Server 2022/2025'
     condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+  # Publish benchmark results as artifact (consumed as baseline by future PR runs)
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: benchmark_results.json
+      artifact: 'perf-baseline-$(sqlVersion)'
+    displayName: 'Publish benchmark baseline'
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    continueOnError: true
+
+  # Download baseline from latest main run (for PR comparison)
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      source: specific
+      project: $(System.TeamProjectId)
+      pipeline: $(System.DefinitionId)
+      runVersion: latestFromBranch
+      runBranch: refs/heads/main
+      artifact: 'perf-baseline-$(sqlVersion)'
+      path: $(Build.SourcesDirectory)
+    displayName: 'Download baseline from main'
+    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    continueOnError: true
 
   - task: CopyFiles@2
     inputs:
@@ -808,7 +831,7 @@ jobs:
           echo 'Installing pyodbc for benchmarking...'
           pip install pyodbc
           echo 'Running performance benchmarks on $(distroName)'
-          python benchmarks/perf-benchmarking.py || echo 'Performance benchmark failed or database not available'
+          python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json || echo 'Performance benchmark failed or database not available'
         "
       else
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
