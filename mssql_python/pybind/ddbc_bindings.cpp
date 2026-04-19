@@ -1373,32 +1373,19 @@ SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, const py::object& cat
         ThrowStdException("SQLProcedures function not loaded");
     }
 
-    std::wstring catalog =
-        py::isinstance<py::none>(catalogObj) ? L"" : catalogObj.cast<std::wstring>();
-    std::wstring schema =
-        py::isinstance<py::none>(schemaObj) ? L"" : schemaObj.cast<std::wstring>();
-    std::wstring procedure =
-        py::isinstance<py::none>(procedureObj) ? L"" : procedureObj.cast<std::wstring>();
-
-#if defined(__APPLE__) || defined(__linux__)
-    // Unix implementation
-    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
-    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
-    std::vector<SQLWCHAR> procedureBuf = WStringToSQLWCHAR(procedure);
+    std::u16string catalog = catalogObj.is_none() ? u"" : catalogObj.cast<std::u16string>();
+    std::u16string schema = schemaObj.is_none() ? u"" : schemaObj.cast<std::u16string>();
+    std::u16string procedure =
+        procedureObj.is_none() ? u"" : procedureObj.cast<std::u16string>();
 
     return SQLProcedures_ptr(
-        StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
-        catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : schemaBuf.data(),
-        schema.empty() ? 0 : SQL_NTS, procedure.empty() ? nullptr : procedureBuf.data(),
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+        schema.empty() ? 0 : SQL_NTS,
+        procedure.empty() ? nullptr : reinterpretU16stringAsSqlWChar(procedure),
         procedure.empty() ? 0 : SQL_NTS);
-#else
-    // Windows implementation
-    return SQLProcedures_ptr(
-        StatementHandle->get(), catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(),
-        catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(),
-        schema.empty() ? 0 : SQL_NTS, procedure.empty() ? nullptr : (SQLWCHAR*)procedure.c_str(),
-        procedure.empty() ? 0 : SQL_NTS);
-#endif
 }
 
 SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pkCatalogObj,
@@ -1409,110 +1396,66 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pk
         ThrowStdException("SQLForeignKeys function not loaded");
     }
 
-    std::wstring pkCatalog =
-        py::isinstance<py::none>(pkCatalogObj) ? L"" : pkCatalogObj.cast<std::wstring>();
-    std::wstring pkSchema =
-        py::isinstance<py::none>(pkSchemaObj) ? L"" : pkSchemaObj.cast<std::wstring>();
-    std::wstring pkTable =
-        py::isinstance<py::none>(pkTableObj) ? L"" : pkTableObj.cast<std::wstring>();
-    std::wstring fkCatalog =
-        py::isinstance<py::none>(fkCatalogObj) ? L"" : fkCatalogObj.cast<std::wstring>();
-    std::wstring fkSchema =
-        py::isinstance<py::none>(fkSchemaObj) ? L"" : fkSchemaObj.cast<std::wstring>();
-    std::wstring fkTable =
-        py::isinstance<py::none>(fkTableObj) ? L"" : fkTableObj.cast<std::wstring>();
-
-#if defined(__APPLE__) || defined(__linux__)
-    // Unix implementation
-    std::vector<SQLWCHAR> pkCatalogBuf = WStringToSQLWCHAR(pkCatalog);
-    std::vector<SQLWCHAR> pkSchemaBuf = WStringToSQLWCHAR(pkSchema);
-    std::vector<SQLWCHAR> pkTableBuf = WStringToSQLWCHAR(pkTable);
-    std::vector<SQLWCHAR> fkCatalogBuf = WStringToSQLWCHAR(fkCatalog);
-    std::vector<SQLWCHAR> fkSchemaBuf = WStringToSQLWCHAR(fkSchema);
-    std::vector<SQLWCHAR> fkTableBuf = WStringToSQLWCHAR(fkTable);
+    std::u16string pkCatalog = pkCatalogObj.is_none() ? u"" : pkCatalogObj.cast<std::u16string>();
+    std::u16string pkSchema = pkSchemaObj.is_none() ? u"" : pkSchemaObj.cast<std::u16string>();
+    std::u16string pkTable = pkTableObj.is_none() ? u"" : pkTableObj.cast<std::u16string>();
+    std::u16string fkCatalog = fkCatalogObj.is_none() ? u"" : fkCatalogObj.cast<std::u16string>();
+    std::u16string fkSchema = fkSchemaObj.is_none() ? u"" : fkSchemaObj.cast<std::u16string>();
+    std::u16string fkTable = fkTableObj.is_none() ? u"" : fkTableObj.cast<std::u16string>();
 
     return SQLForeignKeys_ptr(
-        StatementHandle->get(), pkCatalog.empty() ? nullptr : pkCatalogBuf.data(),
-        pkCatalog.empty() ? 0 : SQL_NTS, pkSchema.empty() ? nullptr : pkSchemaBuf.data(),
-        pkSchema.empty() ? 0 : SQL_NTS, pkTable.empty() ? nullptr : pkTableBuf.data(),
-        pkTable.empty() ? 0 : SQL_NTS, fkCatalog.empty() ? nullptr : fkCatalogBuf.data(),
-        fkCatalog.empty() ? 0 : SQL_NTS, fkSchema.empty() ? nullptr : fkSchemaBuf.data(),
-        fkSchema.empty() ? 0 : SQL_NTS, fkTable.empty() ? nullptr : fkTableBuf.data(),
+        StatementHandle->get(),
+        pkCatalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(pkCatalog),
+        pkCatalog.empty() ? 0 : SQL_NTS,
+        pkSchema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(pkSchema),
+        pkSchema.empty() ? 0 : SQL_NTS,
+        pkTable.empty() ? nullptr : reinterpretU16stringAsSqlWChar(pkTable),
+        pkTable.empty() ? 0 : SQL_NTS,
+        fkCatalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(fkCatalog),
+        fkCatalog.empty() ? 0 : SQL_NTS,
+        fkSchema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(fkSchema),
+        fkSchema.empty() ? 0 : SQL_NTS,
+        fkTable.empty() ? nullptr : reinterpretU16stringAsSqlWChar(fkTable),
         fkTable.empty() ? 0 : SQL_NTS);
-#else
-    // Windows implementation
-    return SQLForeignKeys_ptr(
-        StatementHandle->get(), pkCatalog.empty() ? nullptr : (SQLWCHAR*)pkCatalog.c_str(),
-        pkCatalog.empty() ? 0 : SQL_NTS, pkSchema.empty() ? nullptr : (SQLWCHAR*)pkSchema.c_str(),
-        pkSchema.empty() ? 0 : SQL_NTS, pkTable.empty() ? nullptr : (SQLWCHAR*)pkTable.c_str(),
-        pkTable.empty() ? 0 : SQL_NTS, fkCatalog.empty() ? nullptr : (SQLWCHAR*)fkCatalog.c_str(),
-        fkCatalog.empty() ? 0 : SQL_NTS, fkSchema.empty() ? nullptr : (SQLWCHAR*)fkSchema.c_str(),
-        fkSchema.empty() ? 0 : SQL_NTS, fkTable.empty() ? nullptr : (SQLWCHAR*)fkTable.c_str(),
-        fkTable.empty() ? 0 : SQL_NTS);
-#endif
 }
 
 SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
-                              const py::object& schemaObj, const std::wstring& table) {
+                              const py::object& schemaObj, const std::u16string& table) {
     if (!SQLPrimaryKeys_ptr) {
         ThrowStdException("SQLPrimaryKeys function not loaded");
     }
 
-    // Convert py::object to std::wstring, treating None as empty string
-    std::wstring catalog = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
-    std::wstring schema = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
-
-#if defined(__APPLE__) || defined(__linux__)
-    // Unix implementation
-    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
-    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
-    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
+    std::u16string catalog = catalogObj.is_none() ? u"" : catalogObj.cast<std::u16string>();
+    std::u16string schema = schemaObj.is_none() ? u"" : schemaObj.cast<std::u16string>();
 
     return SQLPrimaryKeys_ptr(
-        StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
-        catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : schemaBuf.data(),
-        schema.empty() ? 0 : SQL_NTS, table.empty() ? nullptr : tableBuf.data(),
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
         table.empty() ? 0 : SQL_NTS);
-#else
-    // Windows implementation
-    return SQLPrimaryKeys_ptr(
-        StatementHandle->get(), catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(),
-        catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(),
-        schema.empty() ? 0 : SQL_NTS, table.empty() ? nullptr : (SQLWCHAR*)table.c_str(),
-        table.empty() ? 0 : SQL_NTS);
-#endif
 }
 
 SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
-                             const py::object& schemaObj, const std::wstring& table,
+                             const py::object& schemaObj, const std::u16string& table,
                              SQLUSMALLINT unique, SQLUSMALLINT reserved) {
     if (!SQLStatistics_ptr) {
         ThrowStdException("SQLStatistics function not loaded");
     }
 
-    // Convert py::object to std::wstring, treating None as empty string
-    std::wstring catalog = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
-    std::wstring schema = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
-
-#if defined(__APPLE__) || defined(__linux__)
-    // Unix implementation
-    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
-    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
-    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
+    std::u16string catalog = catalogObj.is_none() ? u"" : catalogObj.cast<std::u16string>();
+    std::u16string schema = schemaObj.is_none() ? u"" : schemaObj.cast<std::u16string>();
 
     return SQLStatistics_ptr(
-        StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
-        catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : schemaBuf.data(),
-        schema.empty() ? 0 : SQL_NTS, table.empty() ? nullptr : tableBuf.data(),
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
         table.empty() ? 0 : SQL_NTS, unique, reserved);
-#else
-    // Windows implementation
-    return SQLStatistics_ptr(
-        StatementHandle->get(), catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(),
-        catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(),
-        schema.empty() ? 0 : SQL_NTS, table.empty() ? nullptr : (SQLWCHAR*)table.c_str(),
-        table.empty() ? 0 : SQL_NTS, unique, reserved);
-#endif
 }
 
 SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
@@ -1522,35 +1465,21 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
         ThrowStdException("SQLColumns function not loaded");
     }
 
-    // Convert py::object to std::wstring, treating None as empty string
-    std::wstring catalogStr = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
-    std::wstring schemaStr = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
-    std::wstring tableStr = tableObj.is_none() ? L"" : tableObj.cast<std::wstring>();
-    std::wstring columnStr = columnObj.is_none() ? L"" : columnObj.cast<std::wstring>();
-
-#if defined(__APPLE__) || defined(__linux__)
-    // Unix implementation
-    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalogStr);
-    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schemaStr);
-    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(tableStr);
-    std::vector<SQLWCHAR> columnBuf = WStringToSQLWCHAR(columnStr);
+    std::u16string catalog = catalogObj.is_none() ? u"" : catalogObj.cast<std::u16string>();
+    std::u16string schema = schemaObj.is_none() ? u"" : schemaObj.cast<std::u16string>();
+    std::u16string table = tableObj.is_none() ? u"" : tableObj.cast<std::u16string>();
+    std::u16string column = columnObj.is_none() ? u"" : columnObj.cast<std::u16string>();
 
     return SQLColumns_ptr(
-        StatementHandle->get(), catalogStr.empty() ? nullptr : catalogBuf.data(),
-        catalogStr.empty() ? 0 : SQL_NTS, schemaStr.empty() ? nullptr : schemaBuf.data(),
-        schemaStr.empty() ? 0 : SQL_NTS, tableStr.empty() ? nullptr : tableBuf.data(),
-        tableStr.empty() ? 0 : SQL_NTS, columnStr.empty() ? nullptr : columnBuf.data(),
-        columnStr.empty() ? 0 : SQL_NTS);
-#else
-    // Windows implementation
-    return SQLColumns_ptr(
-        StatementHandle->get(), catalogStr.empty() ? nullptr : (SQLWCHAR*)catalogStr.c_str(),
-        catalogStr.empty() ? 0 : SQL_NTS,
-        schemaStr.empty() ? nullptr : (SQLWCHAR*)schemaStr.c_str(), schemaStr.empty() ? 0 : SQL_NTS,
-        tableStr.empty() ? nullptr : (SQLWCHAR*)tableStr.c_str(), tableStr.empty() ? 0 : SQL_NTS,
-        columnStr.empty() ? nullptr : (SQLWCHAR*)columnStr.c_str(),
-        columnStr.empty() ? 0 : SQL_NTS);
-#endif
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+        table.empty() ? 0 : SQL_NTS,
+        column.empty() ? nullptr : reinterpretU16stringAsSqlWChar(column),
+        column.empty() ? 0 : SQL_NTS);
 }
 
 // Helper function to check for driver errors
@@ -1651,7 +1580,7 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::u16string&
                            (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
     }
 
-    SQLWCHAR* queryPtr = const_cast<SQLWCHAR*>(reinterpretU16stringAsSqlWChar(Query));
+    SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(Query);
     SQLRETURN ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLExecDirect: Query execution failed - SQLRETURN=%d", ret);
@@ -1660,72 +1589,24 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::u16string&
 }
 
 // Wrapper for SQLTables
-SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::wstring& catalog,
-                         const std::wstring& schema, const std::wstring& table,
-                         const std::wstring& tableType) {
+SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& catalog,
+                         const std::u16string& schema, const std::u16string& table,
+                         const std::u16string& tableType) {
     if (!SQLTables_ptr) {
         LOG("SQLTables: Function pointer not initialized, loading driver");
         DriverLoader::getInstance().loadDriver();
     }
 
-    SQLWCHAR* catalogPtr = nullptr;
-    SQLWCHAR* schemaPtr = nullptr;
-    SQLWCHAR* tablePtr = nullptr;
-    SQLWCHAR* tableTypePtr = nullptr;
-    SQLSMALLINT catalogLen = 0;
-    SQLSMALLINT schemaLen = 0;
-    SQLSMALLINT tableLen = 0;
-    SQLSMALLINT tableTypeLen = 0;
-
-    std::vector<SQLWCHAR> catalogBuffer;
-    std::vector<SQLWCHAR> schemaBuffer;
-    std::vector<SQLWCHAR> tableBuffer;
-    std::vector<SQLWCHAR> tableTypeBuffer;
-
-#if defined(__APPLE__) || defined(__linux__)
-    // On Unix platforms, convert wstring to SQLWCHAR array
-    if (!catalog.empty()) {
-        catalogBuffer = WStringToSQLWCHAR(catalog);
-        catalogPtr = catalogBuffer.data();
-        catalogLen = SQL_NTS;
-    }
-    if (!schema.empty()) {
-        schemaBuffer = WStringToSQLWCHAR(schema);
-        schemaPtr = schemaBuffer.data();
-        schemaLen = SQL_NTS;
-    }
-    if (!table.empty()) {
-        tableBuffer = WStringToSQLWCHAR(table);
-        tablePtr = tableBuffer.data();
-        tableLen = SQL_NTS;
-    }
-    if (!tableType.empty()) {
-        tableTypeBuffer = WStringToSQLWCHAR(tableType);
-        tableTypePtr = tableTypeBuffer.data();
-        tableTypeLen = SQL_NTS;
-    }
-#else
-    // On Windows, direct assignment works
-    if (!catalog.empty()) {
-        catalogPtr = const_cast<SQLWCHAR*>(catalog.c_str());
-        catalogLen = SQL_NTS;
-    }
-    if (!schema.empty()) {
-        schemaPtr = const_cast<SQLWCHAR*>(schema.c_str());
-        schemaLen = SQL_NTS;
-    }
-    if (!table.empty()) {
-        tablePtr = const_cast<SQLWCHAR*>(table.c_str());
-        tableLen = SQL_NTS;
-    }
-    if (!tableType.empty()) {
-        tableTypePtr = const_cast<SQLWCHAR*>(tableType.c_str());
-        tableTypeLen = SQL_NTS;
-    }
-#endif
-
-    SQLRETURN ret = SQLTables_ptr(StatementHandle->get(), catalogPtr, catalogLen, schemaPtr,
-                                  schemaLen, tablePtr, tableLen, tableTypePtr, tableTypeLen);
+    SQLRETURN ret = SQLTables_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+        table.empty() ? 0 : SQL_NTS,
+        tableType.empty() ? nullptr : reinterpretU16stringAsSqlWChar(tableType),
+        tableType.empty() ? 0 : SQL_NTS);
 
     LOG("SQLTables: Catalog metadata query %s - SQLRETURN=%d",
         SQL_SUCCEEDED(ret) ? "succeeded" : "failed", ret);
@@ -1770,7 +1651,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY, (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
     }
 
-    SQLWCHAR* queryPtr = const_cast<SQLWCHAR*>(reinterpretU16stringAsSqlWChar(query));
+    SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
     if (params.size() == 0) {
         // Execute statement directly if the statement is not parametrized. This
         // is the fastest way to submit a SQL statement for one-time execution
@@ -2606,7 +2487,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
         "param_set_size=%zu",
         columnwise_params.size(), paramSetSize);
     SQLHANDLE hStmt = statementHandle->get();
-    SQLWCHAR* queryPtr = const_cast<SQLWCHAR*>(reinterpretU16stringAsSqlWChar(query));
+    SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
     LOG("SQLExecuteMany: Using wide string query directly");
     RETCODE rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
     if (!SQL_SUCCEEDED(rc)) {
@@ -2799,36 +2680,23 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
 
 SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT identifierType,
                                  const py::object& catalogObj, const py::object& schemaObj,
-                                 const std::wstring& table, SQLSMALLINT scope,
+                                 const std::u16string& table, SQLSMALLINT scope,
                                  SQLSMALLINT nullable) {
     if (!SQLSpecialColumns_ptr) {
         ThrowStdException("SQLSpecialColumns function not loaded");
     }
 
-    // Convert py::object to std::wstring, treating None as empty string
-    std::wstring catalog = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
-    std::wstring schema = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
+    std::u16string catalog = catalogObj.is_none() ? u"" : catalogObj.cast<std::u16string>();
+    std::u16string schema = schemaObj.is_none() ? u"" : schemaObj.cast<std::u16string>();
 
-#if defined(__APPLE__) || defined(__linux__)
-    // Unix implementation
-    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
-    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
-    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
-
-    return SQLSpecialColumns_ptr(
-        StatementHandle->get(), identifierType, catalog.empty() ? nullptr : catalogBuf.data(),
-        catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : schemaBuf.data(),
-        schema.empty() ? 0 : SQL_NTS, table.empty() ? nullptr : tableBuf.data(),
-        table.empty() ? 0 : SQL_NTS, scope, nullable);
-#else
-    // Windows implementation
     return SQLSpecialColumns_ptr(
         StatementHandle->get(), identifierType,
-        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), catalog.empty() ? 0 : SQL_NTS,
-        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), schema.empty() ? 0 : SQL_NTS,
-        table.empty() ? nullptr : (SQLWCHAR*)table.c_str(), table.empty() ? 0 : SQL_NTS, scope,
-        nullable);
-#endif
+        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+        table.empty() ? 0 : SQL_NTS, scope, nullable);
 }
 
 // Wrap SQLFetch to retrieve rows
@@ -3757,7 +3625,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                                      buffers.indicators[col - 1].data());
                 break;
             default:
-                std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                std::string columnName = columnMeta["ColumnName"].cast<std::string>();
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for column - " << columnName.c_str()
                             << ", Type - " << dataType << ", column ID - " << col;
@@ -3766,7 +3634,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 break;
         }
         if (!SQL_SUCCEEDED(ret)) {
-            std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+            std::string columnName = columnMeta["ColumnName"].cast<std::string>();
             std::ostringstream errorString;
             errorString << "Failed to bind column - " << columnName.c_str() << ", Type - "
                         << dataType << ", column ID - " << col;
@@ -4094,7 +3962,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 default: {
                     const auto& columnMeta = columnNames[col - 1].cast<py::dict>();
-                    std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                    std::string columnName = columnMeta["ColumnName"].cast<std::string>();
                     std::ostringstream errorString;
                     errorString << "Unsupported data type for column - " << columnName.c_str()
                                 << ", Type - " << dataType << ", column ID - " << col;
@@ -4196,7 +4064,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 rowSize += sizeof(DateTimeOffset);
                 break;
             default:
-                std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                std::string columnName = columnMeta["ColumnName"].cast<std::string>();
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for column - " << columnName.c_str()
                             << ", Type - " << dataType << ", column ID - " << col;
@@ -5682,9 +5550,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle", py::arg("handle"));
     m.def("DDBCSQLTables", &SQLTables_wrap, "Get table information using ODBC SQLTables",
-          py::arg("StatementHandle"), py::arg("catalog") = std::wstring(),
-          py::arg("schema") = std::wstring(), py::arg("table") = std::wstring(),
-          py::arg("tableType") = std::wstring());
+          py::arg("StatementHandle"), py::arg("catalog") = std::u16string(),
+          py::arg("schema") = std::u16string(), py::arg("table") = std::u16string(),
+          py::arg("tableType") = std::u16string());
     m.def("DDBCSQLFetchScroll", &SQLFetchScroll_wrap,
           "Scroll to a specific position in the result set and optionally "
           "fetch data");
@@ -5722,19 +5590,19 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                                          fkSchema, fkTable);
           });
     m.def("DDBCSQLPrimaryKeys", [](SqlHandlePtr StatementHandle, const py::object& catalog,
-                                   const py::object& schema, const std::wstring& table) {
+                                   const py::object& schema, const std::u16string& table) {
         return SQLPrimaryKeys_wrap(StatementHandle, catalog, schema, table);
     });
     m.def("DDBCSQLSpecialColumns",
           [](SqlHandlePtr StatementHandle, SQLSMALLINT identifierType, const py::object& catalog,
-             const py::object& schema, const std::wstring& table, SQLSMALLINT scope,
+             const py::object& schema, const std::u16string& table, SQLSMALLINT scope,
              SQLSMALLINT nullable) {
               return SQLSpecialColumns_wrap(StatementHandle, identifierType, catalog, schema, table,
                                             scope, nullable);
           });
     m.def("DDBCSQLStatistics",
           [](SqlHandlePtr StatementHandle, const py::object& catalog, const py::object& schema,
-             const std::wstring& table, SQLUSMALLINT unique, SQLUSMALLINT reserved) {
+             const std::u16string& table, SQLUSMALLINT unique, SQLUSMALLINT reserved) {
               return SQLStatistics_wrap(StatementHandle, catalog, schema, table, unique, reserved);
           });
     m.def("DDBCSQLColumns",

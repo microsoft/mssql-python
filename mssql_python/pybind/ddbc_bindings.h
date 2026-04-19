@@ -38,68 +38,8 @@ using py::literals::operator""_a;
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
 
-#if defined(_WIN32)
-inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-    std::vector<SQLWCHAR> result(str.begin(), str.end());
-    result.push_back(0);
-    return result;
-}
-#endif
-
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
-
-// Unicode constants for surrogate ranges and max scalar value
-constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
-constexpr uint32_t UNICODE_SURROGATE_HIGH_END = 0xDBFF;
-constexpr uint32_t UNICODE_SURROGATE_LOW_START = 0xDC00;
-constexpr uint32_t UNICODE_SURROGATE_LOW_END = 0xDFFF;
-constexpr uint32_t UNICODE_MAX_CODEPOINT = 0x10FFFF;
-constexpr uint32_t UNICODE_REPLACEMENT_CHAR = 0xFFFD;
-
-// Validate whether a code point is a legal Unicode scalar value
-// (excludes surrogate halves and values beyond U+10FFFF)
-inline bool IsValidUnicodeScalar(uint32_t cp) {
-    return cp <= UNICODE_MAX_CODEPOINT &&
-           !(cp >= UNICODE_SURROGATE_HIGH_START && cp <= UNICODE_SURROGATE_LOW_END);
-}
-
-inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-    std::vector<SQLWCHAR> result;
-    result.reserve(str.size() + 2);
-    if constexpr (sizeof(SQLWCHAR) == 2) {
-        // Encode UTF-32 to UTF-16
-        for (wchar_t wc : str) {
-            uint32_t cp = static_cast<uint32_t>(wc);
-            if (!IsValidUnicodeScalar(cp)) {
-                cp = UNICODE_REPLACEMENT_CHAR;
-            }
-            if (cp <= 0xFFFF) {
-                // Fits in a single UTF-16 code unit
-                result.push_back(static_cast<SQLWCHAR>(cp));
-            } else {
-                // Encode as surrogate pair
-                cp -= 0x10000;
-                SQLWCHAR high = static_cast<SQLWCHAR>((cp >> 10) + UNICODE_SURROGATE_HIGH_START);
-                SQLWCHAR low = static_cast<SQLWCHAR>((cp & 0x3FF) + UNICODE_SURROGATE_LOW_START);
-                result.push_back(high);
-                result.push_back(low);
-            }
-        }
-    } else {
-        // Encode UTF-32 directly
-        for (wchar_t wc : str) {
-            uint32_t cp = static_cast<uint32_t>(wc);
-            if (IsValidUnicodeScalar(cp)) {
-                result.push_back(static_cast<SQLWCHAR>(cp));
-            } else {
-                result.push_back(static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
-            }
-        }
-    }
-    result.push_back(0);  // null terminator
-    return result;
-}
 #endif
 
 inline std::string utf16LeToUtf8Alloc(std::u16string utf16) {
@@ -125,12 +65,12 @@ inline std::u16string dupeSqlWCharAsUtf16Le(const SQLWCHAR* value, size_t length
     return utf16;
 }
 
-inline const SQLWCHAR* reinterpretU16stringAsSqlWChar(const std::u16string& utf16) {
+inline SQLWCHAR* reinterpretU16stringAsSqlWChar(const std::u16string& utf16) {
     static_assert(sizeof(std::u16string::value_type) == sizeof(SQLWCHAR),
         "SQLWCHAR must same as u16string");
     static_assert(alignof(std::u16string::value_type) == alignof(SQLWCHAR),
         "SQLWCHAR must same as u16string");
-    return reinterpret_cast<const SQLWCHAR*>(utf16.c_str());
+    return const_cast<SQLWCHAR*>(reinterpret_cast<const SQLWCHAR*>(utf16.c_str()));
 }
 
 //-------------------------------------------------------------------------------------------------

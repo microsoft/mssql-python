@@ -74,7 +74,7 @@ void Connection::connect(const py::dict& attrs_before) {
             setAutocommit(_autocommit);
         }
     }
-    SQLWCHAR* connStrPtr = const_cast<SQLWCHAR*>(reinterpretU16stringAsSqlWChar(_connStr));
+    SQLWCHAR* connStrPtr = reinterpretU16stringAsSqlWChar(_connStr);
     SQLRETURN ret;
     {
         // Release the GIL during the blocking ODBC connect call.
@@ -292,7 +292,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             SQLPOINTER ptr;
             SQLINTEGER length;
             
-            ptr = const_cast<SQLWCHAR*>(reinterpretU16stringAsSqlWChar(this->wstrStringBuffer));
+            ptr = reinterpretU16stringAsSqlWChar(this->wstrStringBuffer);
             length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
 
             SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
