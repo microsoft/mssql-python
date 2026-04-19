@@ -220,11 +220,13 @@ find_package(simdutf CONFIG QUIET)
 if(NOT simdutf_FOUND)
     include(FetchContent)
     message(STATUS "simdutf not found via find_package; downloading v8.2.0 source archive with FetchContent")
-    FetchContent_Declare(
-        simdutf
+    set(simdutf_fetchcontent_args
         URL https://github.com/simdutf/simdutf/archive/refs/tags/v8.2.0.tar.gz
-        DOWNLOAD_EXTRACT_TIMESTAMP FALSE
     )
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+        list(APPEND simdutf_fetchcontent_args DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+    endif()
+    FetchContent_Declare(simdutf ${simdutf_fetchcontent_args})
     set(SIMDUTF_TESTS OFF CACHE BOOL "Disable simdutf tests" FORCE)
     set(SIMDUTF_TOOLS OFF CACHE BOOL "Disable simdutf tools" FORCE)
     set(SIMDUTF_BENCHMARKS OFF CACHE BOOL "Disable simdutf benchmarks" FORCE)
