@@ -542,6 +542,68 @@ jobs:
       testResultsFiles: '**/test-results.xml'
       testRunTitle: 'Publish pytest results on macOS $(sqlVersion)'
 
+  # Download and restore AdventureWorks2022 database for benchmarking
+  - script: |
+      echo "Downloading AdventureWorks2022.bak..."
+      curl -sSL -o /tmp/AdventureWorks2022.bak \
+        https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak
+
+      echo "Copying backup into SQL Server container..."
+      docker cp /tmp/AdventureWorks2022.bak sqlserver:/tmp/AdventureWorks2022.bak
+
+      echo "Restoring AdventureWorks2022 database..."
+      docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -P "$DB_PASSWORD" -C \
+        -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
+
+      if [ $? -eq 0 ]; then
+        echo "AdventureWorks2022 database restored successfully"
+      else
+        echo "Failed to restore AdventureWorks2022 database"
+      fi
+
+      rm -f /tmp/AdventureWorks2022.bak
+      docker exec sqlserver rm -f /tmp/AdventureWorks2022.bak || true
+    displayName: 'Download and restore AdventureWorks2022 database on macOS'
+    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    continueOnError: true
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Run performance benchmarks on macOS
+  - script: |
+      pip install pyodbc
+      echo "Running performance benchmarks..."
+      python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
+    displayName: 'Run performance benchmarks on macOS $(sqlVersion)'
+    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    continueOnError: true
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+  # Publish benchmark results as artifact on main merges
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: benchmark_results.json
+      artifact: 'perf-baseline-macOS-$(sqlVersion)'
+    displayName: 'Publish macOS benchmark baseline'
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    continueOnError: true
+
+  # Download baseline from latest main run (for PR comparison)
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      source: specific
+      project: $(System.TeamProjectId)
+      pipeline: $(System.DefinitionId)
+      runVersion: latestFromBranch
+      runBranch: refs/heads/main
+      artifact: 'perf-baseline-macOS-$(sqlVersion)'
+      path: $(Build.SourcesDirectory)
+    displayName: 'Download macOS baseline from main'
+    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    continueOnError: true
+
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
   pool:
