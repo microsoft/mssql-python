@@ -315,7 +315,8 @@ def load_baseline(path: str) -> Optional[dict]:
     try:
         with open(path) as f:
             data = json.load(f)
-        return data.get("baseline", {})
+        baseline = data.get("baseline")
+        return baseline if baseline else None
     except (json.JSONDecodeError, KeyError) as e:
         print(f"  Warning: could not parse baseline {path}: {e}")
         return None
