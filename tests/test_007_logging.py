@@ -370,16 +370,18 @@ class TestPasswordSanitization:
         assert "PWD=***" in sanitized
         assert "secret" not in sanitized
 
-    def test_no_pwd_unchanged(self, cleanup_logger):
-        """Connection string without PWD should be returned intact."""
+    def test_no_pwd_preserves_non_sensitive_fields(self, cleanup_logger):
+        """Connection string without PWD should preserve non-sensitive fields, even if reformatted."""
         from mssql_python.helpers import sanitize_connection_string
 
         conn_str = "Server=localhost;Database=test;UID=user"
         sanitized = sanitize_connection_string(conn_str)
 
-        assert "Server=" in sanitized
-        assert "Database=" in sanitized
-        assert "UID=" in sanitized
+        assert "Server=localhost" in sanitized
+        assert "Database=test" in sanitized
+        assert "UID=user" in sanitized
+        assert "PWD=***" not in sanitized
+        assert "redacted" not in sanitized.lower()
 
     def test_malformed_string_fully_redacted(self, cleanup_logger):
         """Malformed connection string should be fully redacted, not partially leaked."""

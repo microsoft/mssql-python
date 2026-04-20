@@ -21,7 +21,7 @@ from mssql_python.constants import _ALLOWED_CONNECTION_STRING_PARAMS, _RESERVED_
 from mssql_python.helpers import sanitize_user_input
 from mssql_python.logging import logger
 
-_SENSITIVE_KEYS = frozenset({"pwd", "password"})
+_SENSITIVE_KEYS = frozenset({"pwd"})
 
 
 class _ConnectionStringParser:
