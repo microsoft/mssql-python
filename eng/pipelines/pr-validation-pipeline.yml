@@ -310,11 +310,12 @@ jobs:
     condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
-  # Rename downloaded baseline so the script finds it
+  # Rename downloaded baseline so the script finds it (artifact may be in a subfolder)
   - powershell: |
-      if (Test-Path "benchmark_results.json") {
-        Move-Item "benchmark_results.json" "benchmark_baseline.json" -Force
-        Write-Host "Baseline file ready: benchmark_baseline.json"
+      $found = Get-ChildItem -Path "$(Build.SourcesDirectory)" -Filter "benchmark_results.json" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($null -ne $found) {
+        Copy-Item $found.FullName "benchmark_baseline.json" -Force
+        Write-Host "Baseline file ready: benchmark_baseline.json (from $($found.FullName))"
       } else {
         Write-Host "No baseline file downloaded (first run or artifact missing)"
       }
@@ -597,9 +598,10 @@ jobs:
     continueOnError: true
 
   - script: |
-      if [ -f benchmark_results.json ]; then
-        mv benchmark_results.json benchmark_baseline.json
-        echo "Baseline file ready: benchmark_baseline.json"
+      found=$(find "$(Build.SourcesDirectory)" -name benchmark_results.json -type f 2>/dev/null | head -1)
+      if [ -n "$found" ]; then
+        cp "$found" benchmark_baseline.json
+        echo "Baseline file ready: benchmark_baseline.json (from $found)"
       else
         echo "No baseline file downloaded (first run or artifact missing)"
       fi
@@ -918,7 +920,11 @@ jobs:
           echo 'Installing pyodbc for benchmarking...'
           pip install pyodbc
           echo 'Running performance benchmarks on $(distroName)'
-          python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json || echo 'Performance benchmark failed or database not available'
+          if [ -f benchmark_baseline.json ]; then
+            python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json || echo 'Performance benchmark failed or database not available'
+          else
+            python benchmarks/perf-benchmarking.py --json benchmark_results.json || echo 'Performance benchmark failed or database not available'
+          fi
         "
       else
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"

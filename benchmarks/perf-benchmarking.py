@@ -96,6 +96,7 @@ class BenchmarkResult:
 def run_fetch_pyodbc(query: str, name: str, iterations: int) -> BenchmarkResult:
     result = BenchmarkResult(name)
     for _ in range(iterations):
+        conn = None
         try:
             conn = pyodbc.connect(CONN_STR_PYODBC)
             cursor = conn.cursor()
@@ -104,16 +105,21 @@ def run_fetch_pyodbc(query: str, name: str, iterations: int) -> BenchmarkResult:
             rows = cursor.fetchall()
             elapsed = time.perf_counter() - start
             result.add_time(elapsed, len(rows))
-            cursor.close()
-            conn.close()
         except Exception as e:
             print(f"    pyodbc error: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     return result
 
 
 def run_fetch_mssql(query: str, name: str, iterations: int) -> BenchmarkResult:
     result = BenchmarkResult(name)
     for _ in range(iterations):
+        conn = None
         try:
             conn = connect(CONN_STR)
             cursor = conn.cursor()
@@ -122,10 +128,14 @@ def run_fetch_mssql(query: str, name: str, iterations: int) -> BenchmarkResult:
             rows = cursor.fetchall()
             elapsed = time.perf_counter() - start
             result.add_time(elapsed, len(rows))
-            cursor.close()
-            conn.close()
         except Exception as e:
             print(f"    mssql-python error: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     return result
 
 
@@ -157,6 +167,7 @@ def _run_insertmany(conn_factory, conn_str, name: str, iterations: int) -> Bench
         batches.append(flat)
 
     for _ in range(iterations):
+        conn = None
         try:
             conn = conn_factory(conn_str)
             cursor = conn.cursor()
@@ -171,10 +182,14 @@ def _run_insertmany(conn_factory, conn_str, name: str, iterations: int) -> Bench
             elapsed = time.perf_counter() - start
 
             result.add_time(elapsed, INSERTMANY_ROWS)
-            cursor.close()
-            conn.close()
         except Exception as e:
             print(f"    {name} error: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     return result
 
 
