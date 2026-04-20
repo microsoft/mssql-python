@@ -612,6 +612,7 @@ jobs:
   # Run performance benchmarks on macOS
   - script: |
       echo "Installing ODBC Driver 18 for pyodbc..."
+      brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
       HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 || echo "ODBC Driver 18 install failed — pyodbc benchmarks will be skipped"
       pip install pyodbc
       echo "Running performance benchmarks..."
