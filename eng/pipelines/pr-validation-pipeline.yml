@@ -572,6 +572,8 @@ jobs:
 
   # Run performance benchmarks on macOS
   - script: |
+      echo "Installing ODBC Driver 18 for pyodbc..."
+      HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 || echo "ODBC Driver 18 install failed — pyodbc benchmarks will be skipped"
       pip install pyodbc
       echo "Running performance benchmarks..."
       python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
@@ -579,7 +581,7 @@ jobs:
     condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
     continueOnError: true
     env:
-      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
   # Publish benchmark results as artifact on main merges
   - task: PublishPipelineArtifact@1
