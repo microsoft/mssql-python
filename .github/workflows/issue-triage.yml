@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for acknowledgement
-        run: sleep 1
+        run: sleep 3600
 
       - name: Triage Analysis
         id: triage
