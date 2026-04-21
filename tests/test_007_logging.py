@@ -150,8 +150,9 @@ class TestLogFile:
         setup_logging(log_file_path=custom_path)
         logger.debug("Test message")
 
-        assert logger.log_file == custom_path
-        assert os.path.exists(custom_path)
+        resolved = os.path.realpath(os.path.abspath(custom_path))
+        assert logger.log_file == resolved
+        assert os.path.exists(resolved)
 
     def test_custom_log_file_path_creates_directory(self, cleanup_logger, temp_log_dir):
         """Custom log file path should create parent directories"""
@@ -178,6 +179,23 @@ class TestLogFile:
         custom_path = os.path.join(temp_log_dir, "test.json")
         with pytest.raises(ValueError, match="Invalid log file extension"):
             setup_logging(log_file_path=custom_path)
+
+    def test_path_traversal_rejected(self, cleanup_logger):
+        """Relative paths with traversal outside cwd should be rejected"""
+        with pytest.raises(ValueError, match="Path traversal is not permitted"):
+            setup_logging(log_file_path="../../etc/cron.d/evil.log")
+
+    def test_path_traversal_dot_dot_rejected(self, cleanup_logger):
+        """Relative paths using ../ to escape cwd should be rejected"""
+        with pytest.raises(ValueError, match="Path traversal is not permitted"):
+            setup_logging(log_file_path="../../../tmp/evil.log")
+
+    def test_absolute_path_allowed(self, cleanup_logger, temp_log_dir):
+        """Absolute paths should be allowed (developer-controlled)"""
+        custom_path = os.path.join(temp_log_dir, "absolute_test.log")
+        setup_logging(log_file_path=custom_path)
+        logger.debug("Test message")
+        assert os.path.exists(os.path.realpath(os.path.abspath(custom_path)))
 
 
 class TestCSVFormat:
