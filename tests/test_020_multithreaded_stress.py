@@ -738,7 +738,7 @@ def test_pool_exhaustion_recovery(stress_conn_str):
 
     runner = MultiThreadedQueryRunner(
         conn_str=stress_conn_str,
-        query="WAITFOR DELAY '00:00:00.050'",  # 50ms delay to hold connections
+        query="SELECT 1; WAITFOR DELAY '00:00:00.050'",  # return a row, then hold connections 50ms
         enable_pooling=True,
         pool_max_size=pool_size,  # Explicitly cap the pool to force exhaustion
         timeout_seconds=180,
@@ -1134,7 +1134,8 @@ def test_concurrent_read_write_no_corruption(stress_conn_str):
                     conn.close()
                 except Exception:
                     pass
-            writer_committed[writer_id] = count
+            with errors_lock:
+                writer_committed[writer_id] = count
 
     def reader(reader_id: int):
         conn = None
@@ -1144,18 +1145,14 @@ def test_concurrent_read_write_no_corruption(stress_conn_str):
             conn = connect(stress_conn_str)
             cur = conn.cursor()
             while not stop_event.is_set():
-                # NOLOCK avoids blocking on uncommitted writer rows under READ COMMITTED
+                # NOLOCK avoids blocking on uncommitted writer rows.
+                # Under READ UNCOMMITTED, COUNT(*) can fluctuate non-monotonically
+                # (dirty reads / allocation-order effects), so we only verify the
+                # query executes without errors — not that the count is monotonic.
                 cur.execute(f"SELECT COUNT(*) FROM {table_name} WITH (NOLOCK)")
                 row = cur.fetchone()
                 if row is not None:
                     current_count = row[0]
-                    # Under READ COMMITTED the count must never decrease
-                    if current_count < prev_count:
-                        with errors_lock:
-                            errors.append(
-                                f"Reader {reader_id}: COUNT went DOWN "
-                                f"from {prev_count} to {current_count} — data anomaly"
-                            )
                     prev_count = current_count
         except Exception as e:
             with errors_lock:
@@ -1190,6 +1187,10 @@ def test_concurrent_read_write_no_corruption(stress_conn_str):
 
     for t in all_threads:
         t.join(timeout=30)
+
+    still_alive = [t.name for t in all_threads if t.is_alive()]
+    if still_alive:
+        pytest.fail(f"Threads did not finish within timeout: {still_alive}")
 
     # --- Final verification via setup connection ---
     try:
