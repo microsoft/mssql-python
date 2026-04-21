@@ -508,13 +508,15 @@ def test_50_threads_data_integrity(stress_conn_str):
             table_name = f"#stress_t{thread_id}"
             drop_table_if_exists(cursor, table_name)
 
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 CREATE TABLE {table_name} (
                     id INT PRIMARY KEY,
                     thread_id INT,
                     data NVARCHAR(100)
                 )
-            """)
+            """
+            )
             conn.commit()
 
             # Perform iterations
@@ -1090,13 +1092,15 @@ def test_concurrent_read_write_no_corruption(stress_conn_str):
     setup_conn = connect(stress_conn_str)
     setup_cursor = setup_conn.cursor()
     try:
-        setup_cursor.execute(f"""
+        setup_cursor.execute(
+            f"""
             CREATE TABLE {table_name} (
                 id        INT IDENTITY(1, 1) PRIMARY KEY,
                 writer_id INT NOT NULL,
                 val       INT NOT NULL
             )
-            """)
+            """
+        )
         setup_conn.commit()
     except Exception as e:
         setup_cursor.close()
@@ -1146,9 +1150,6 @@ def test_concurrent_read_write_no_corruption(stress_conn_str):
             cur = conn.cursor()
             while not stop_event.is_set():
                 # NOLOCK avoids blocking on uncommitted writer rows.
-                # Under READ UNCOMMITTED, COUNT(*) can fluctuate non-monotonically
-                # (dirty reads / allocation-order effects), so we only verify the
-                # query executes without errors — not that the count is monotonic.
                 cur.execute(f"SELECT COUNT(*) FROM {table_name} WITH (NOLOCK)")
                 row = cur.fetchone()
                 if row is not None:
