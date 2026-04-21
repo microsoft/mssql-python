@@ -250,7 +250,9 @@ class MultiThreadedQueryRunner:
 
         # Configure pooling
         if self.enable_pooling:
-            effective_max_size = self.pool_max_size if self.pool_max_size is not None else max(100, num_threads * 2)
+            effective_max_size = (
+                self.pool_max_size if self.pool_max_size is not None else max(100, num_threads * 2)
+            )
             mssql_python.pooling(enabled=True, max_size=effective_max_size)
         else:
             mssql_python.pooling(enabled=False)
@@ -1088,15 +1090,13 @@ def test_concurrent_read_write_no_corruption(stress_conn_str):
     setup_conn = connect(stress_conn_str)
     setup_cursor = setup_conn.cursor()
     try:
-        setup_cursor.execute(
-            f"""
+        setup_cursor.execute(f"""
             CREATE TABLE {table_name} (
                 id        INT IDENTITY(1, 1) PRIMARY KEY,
                 writer_id INT NOT NULL,
                 val       INT NOT NULL
             )
-            """
-        )
+            """)
         setup_conn.commit()
     except Exception as e:
         setup_cursor.close()
@@ -1193,12 +1193,12 @@ def test_concurrent_read_write_no_corruption(stress_conn_str):
 
     # --- Final verification via setup connection ---
     try:
-        setup_cursor.execute(
-            f"SELECT COUNT(*), COUNT(DISTINCT writer_id) FROM {table_name}"
-        )
+        setup_cursor.execute(f"SELECT COUNT(*), COUNT(DISTINCT writer_id) FROM {table_name}")
         agg_row = setup_cursor.fetchone()
         if agg_row is None:
-            pytest.fail("Aggregate query returned no row — shared table may have been dropped early")
+            pytest.fail(
+                "Aggregate query returned no row — shared table may have been dropped early"
+            )
         total_rows = agg_row[0]
         distinct_writers = agg_row[1]
     finally:
@@ -1218,9 +1218,9 @@ def test_concurrent_read_write_no_corruption(stress_conn_str):
     assert not errors, f"Concurrent read/write errors: {errors[:5]}"
 
     # Every writer must have committed at least one row in 15 seconds
-    assert distinct_writers == num_writers, (
-        f"Expected {num_writers} distinct writers in final table, got {distinct_writers}"
-    )
+    assert (
+        distinct_writers == num_writers
+    ), f"Expected {num_writers} distinct writers in final table, got {distinct_writers}"
 
     # The table must contain rows (trivially true if writers worked)
     assert total_rows > 0, "No rows found in shared table after 15s of writer threads"

@@ -656,12 +656,14 @@ def test_executemany_large_batch_mixed_types(cursor, db_connection):
             assert row[3] == f"str_{idx}", f"Row {idx}: str_col mismatch"
             assert row[4] == bytes([idx % 256]) * 10, f"Row {idx}: bytes_col mismatch"
             expected_dec = decimal.Decimal(str(idx)) / decimal.Decimal("1000")
-            assert row[5] == expected_dec, (
-                f"Row {idx}: dec_col mismatch: got {row[5]}, expected {expected_dec}"
-            )
+            assert (
+                row[5] == expected_dec
+            ), f"Row {idx}: dec_col mismatch: got {row[5]}, expected {expected_dec}"
             assert row[6] is None, f"Row {idx}: null_col should be None, got {row[6]}"
 
-        print("[OK] executemany stress: all 5 spot-checks passed (int, float, str, bytes, decimal, NULL)")
+        print(
+            "[OK] executemany stress: all 5 spot-checks passed (int, float, str, bytes, decimal, NULL)"
+        )
 
     except Exception as e:
         pytest.fail(f"executemany large batch stress failed: {e}")
@@ -733,9 +735,9 @@ def test_null_heavy_large_result_set(cursor, db_connection):
             assert row[1] == f"ID_{i}", f"Row {i}: non_null_str mismatch (got {row[1]})"
             # Columns 2–7 must be Python None (SQL NULL)
             for col_idx in range(2, 8):
-                assert row[col_idx] is None, (
-                    f"Row {i} col {col_idx}: expected None, got {row[col_idx]!r}"
-                )
+                assert (
+                    row[col_idx] is None
+                ), f"Row {i} col {col_idx}: expected None, got {row[col_idx]!r}"
 
         print(
             f"[OK] NULL-heavy stress: {num_rows} rows, all 6 nullable cols are None, "
@@ -805,9 +807,9 @@ def test_cursor_reuse_high_iteration(db_connection):
         mem_growth_mb = final_rss_mb - baseline_rss_mb
 
         # 50MB growth limit across 5,000 iterations is generous but detects real leaks
-        assert mem_growth_mb < 50, (
-            f"Potential cursor memory leak: {mem_growth_mb:.1f}MB growth over {iterations} iterations"
-        )
+        assert (
+            mem_growth_mb < 50
+        ), f"Potential cursor memory leak: {mem_growth_mb:.1f}MB growth over {iterations} iterations"
 
         print(
             f"[OK] Cursor re-use stress: {iterations} iterations, "
@@ -847,20 +849,13 @@ def test_fetchone_loop_vs_fetchall_parity(cursor, db_connection):
 
         batch_size = 1000
         for start in range(0, num_rows, batch_size):
-            batch = [
-                (i, f"V_{i}", i * 3)
-                for i in range(start, min(start + batch_size, num_rows))
-            ]
-            cursor.executemany(
-                "INSERT INTO #pytest_fetch_parity VALUES (?, ?, ?)", batch
-            )
+            batch = [(i, f"V_{i}", i * 3) for i in range(start, min(start + batch_size, num_rows))]
+            cursor.executemany("INSERT INTO #pytest_fetch_parity VALUES (?, ?, ?)", batch)
         db_connection.commit()
         print(f"[OK] Inserted {num_rows} rows for parity test")
 
         # Path A: fetchone() loop
-        cursor.execute(
-            "SELECT id, val, num FROM #pytest_fetch_parity ORDER BY id"
-        )
+        cursor.execute("SELECT id, val, num FROM #pytest_fetch_parity ORDER BY id")
         fetchone_rows: List[Tuple] = []
         while True:
             row = cursor.fetchone()
@@ -868,39 +863,33 @@ def test_fetchone_loop_vs_fetchall_parity(cursor, db_connection):
                 break
             fetchone_rows.append(row)
 
-        assert len(fetchone_rows) == num_rows, (
-            f"fetchone loop got {len(fetchone_rows)} rows, expected {num_rows}"
-        )
+        assert (
+            len(fetchone_rows) == num_rows
+        ), f"fetchone loop got {len(fetchone_rows)} rows, expected {num_rows}"
         print(f"[OK] fetchone loop: {len(fetchone_rows)} rows collected")
 
         # Path B: fetchall()
-        cursor.execute(
-            "SELECT id, val, num FROM #pytest_fetch_parity ORDER BY id"
-        )
+        cursor.execute("SELECT id, val, num FROM #pytest_fetch_parity ORDER BY id")
         fetchall_rows = cursor.fetchall()
 
-        assert len(fetchall_rows) == num_rows, (
-            f"fetchall got {len(fetchall_rows)} rows, expected {num_rows}"
-        )
+        assert (
+            len(fetchall_rows) == num_rows
+        ), f"fetchall got {len(fetchall_rows)} rows, expected {num_rows}"
         print(f"[OK] fetchall: {len(fetchall_rows)} rows collected")
 
         # Row-by-row comparison
         for i in range(num_rows):
             fo = fetchone_rows[i]
             fa = fetchall_rows[i]
-            assert fo[0] == fa[0] == i, (
-                f"Row {i}: id mismatch (fetchone={fo[0]}, fetchall={fa[0]})"
-            )
-            assert fo[1] == fa[1] == f"V_{i}", (
-                f"Row {i}: val mismatch (fetchone={fo[1]!r}, fetchall={fa[1]!r})"
-            )
-            assert fo[2] == fa[2] == i * 3, (
-                f"Row {i}: num mismatch (fetchone={fo[2]}, fetchall={fa[2]})"
-            )
+            assert fo[0] == fa[0] == i, f"Row {i}: id mismatch (fetchone={fo[0]}, fetchall={fa[0]})"
+            assert (
+                fo[1] == fa[1] == f"V_{i}"
+            ), f"Row {i}: val mismatch (fetchone={fo[1]!r}, fetchall={fa[1]!r})"
+            assert (
+                fo[2] == fa[2] == i * 3
+            ), f"Row {i}: num mismatch (fetchone={fo[2]}, fetchall={fa[2]})"
 
-        print(
-            f"[OK] fetchone/fetchall parity: {num_rows} rows identical across both fetch paths"
-        )
+        print(f"[OK] fetchone/fetchall parity: {num_rows} rows identical across both fetch paths")
 
     except Exception as e:
         pytest.fail(f"fetchone vs fetchall parity test failed: {e}")
