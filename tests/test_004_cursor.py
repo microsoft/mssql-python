@@ -10206,10 +10206,12 @@ def test_setinputsizes_sql_decimal_mixed_null_executemany(db_connection):
     try:
         cursor.execute("CREATE TABLE #test_sis_dec_mix (Id INT, Price DECIMAL(18,2))")
 
-        cursor.setinputsizes([
-            (mssql_python.SQL_INTEGER, 0, 0),
-            (mssql_python.SQL_DECIMAL, 18, 2),
-        ])
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_INTEGER, 0, 0),
+                (mssql_python.SQL_DECIMAL, 18, 2),
+            ]
+        )
 
         cursor.executemany(
             "INSERT INTO #test_sis_dec_mix (Id, Price) VALUES (?, ?)",
