@@ -180,15 +180,28 @@ class TestLogFile:
         with pytest.raises(ValueError, match="Invalid log file extension"):
             setup_logging(log_file_path=custom_path)
 
-    def test_path_traversal_rejected(self, cleanup_logger):
-        """Relative paths with traversal outside cwd should be rejected"""
+    def test_path_traversal_rejected(self, cleanup_logger, monkeypatch, tmp_path):
+        """Relative paths with traversal outside a controlled cwd should be rejected"""
+        monkeypatch.chdir(tmp_path)
         with pytest.raises(ValueError, match="Path traversal is not permitted"):
-            setup_logging(log_file_path="../../etc/cron.d/evil.log")
+            setup_logging(log_file_path="../evil.log")
 
-    def test_path_traversal_dot_dot_rejected(self, cleanup_logger):
-        """Relative paths using ../ to escape cwd should be rejected"""
+    def test_path_traversal_dot_dot_rejected(self, cleanup_logger, monkeypatch, tmp_path):
+        """Relative paths using ../ to escape a controlled cwd should be rejected"""
+        monkeypatch.chdir(tmp_path)
         with pytest.raises(ValueError, match="Path traversal is not permitted"):
-            setup_logging(log_file_path="../../../tmp/evil.log")
+            setup_logging(log_file_path="../nested/evil.log")
+
+    def test_path_traversal_different_drive(self, cleanup_logger, monkeypatch, tmp_path):
+        """commonpath ValueError (e.g. different drives on Windows) should be rejected"""
+        monkeypatch.chdir(tmp_path)
+
+        def mock_commonpath(paths):
+            raise ValueError("Can't mix absolute and relative paths")
+
+        monkeypatch.setattr(os.path, "commonpath", mock_commonpath)
+        with pytest.raises(ValueError, match="Path traversal is not permitted"):
+            setup_logging(log_file_path="subdir/test.log")
 
     def test_absolute_path_allowed(self, cleanup_logger, temp_log_dir):
         """Absolute paths should be allowed (developer-controlled)"""
