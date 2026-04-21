@@ -36,7 +36,10 @@ from mssql_python.parameter_helper import (
 )
 
 if TYPE_CHECKING:
+    import pyarrow  # type: ignore
     from mssql_python.connection import Connection
+else:
+    pyarrow = None
 
 # Constants for string handling
 MAX_INLINE_CHAR: int = (
@@ -46,6 +49,19 @@ SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
+
+
+def _normalize_time_param(value, c_type):
+    """Convert a datetime.time to its isoformat string when bound via text C-types.
+
+    Returns the isoformat string if conversion applies, otherwise *None*.
+    """
+    if isinstance(value, datetime.time) and c_type in (
+        ddbc_sql_const.SQL_C_CHAR.value,
+        ddbc_sql_const.SQL_C_WCHAR.value,
+    ):
+        return value.isoformat(timespec="microseconds")
+    return None
 
 
 class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
@@ -673,10 +689,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         if isinstance(param, datetime.time):
             return (
-                ddbc_sql_const.SQL_TIME.value,
-                ddbc_sql_const.SQL_C_TYPE_TIME.value,
-                8,
-                0,
+                ddbc_sql_const.SQL_TYPE_TIME.value,
+                ddbc_sql_const.SQL_C_CHAR.value,
+                16,
+                6,
                 False,
             )
 
@@ -774,6 +790,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 driver_error="Operation cannot be performed: The cursor is closed.",
                 ddbc_error="",
             )
+
+    def _ensure_pyarrow(self) -> Any:
+        """
+        Import and return pyarrow or raise ImportError accordingly.
+        """
+        try:
+            import pyarrow
+
+            return pyarrow
+        except ImportError as e:
+            raise ImportError(
+                "pyarrow is required for Arrow fetch methods. Please install pyarrow."
+            ) from e
 
     def setinputsizes(self, sizes: List[Union[int, tuple]]) -> None:
         """
@@ -941,6 +970,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
                 parameter, parameters_list, i, min_val=min_val, max_val=max_val
             )
+
+        # If TIME values are being bound via text C-types, normalize them to a
+        # textual representation expected by SQL_C_CHAR/SQL_C_WCHAR binding.
+        time_text = _normalize_time_param(parameter, c_type)
+        if time_text is not None:
+            parameters_list[i] = time_text
+            column_size = max(column_size, len(time_text))
 
         paraminfo.paramCType = c_type
         paraminfo.paramSQLType = sql_type
@@ -2261,6 +2297,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             for i, val in enumerate(processed_row):
                 if val is None:
                     continue
+                time_text = _normalize_time_param(val, parameters_type[i].paramCType)
+                if time_text is not None:
+                    processed_row[i] = time_text
+                    continue
                 if (
                     isinstance(val, decimal.Decimal)
                     and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
@@ -2516,6 +2556,94 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # On error, don't increment rownumber - rethrow the error
             raise e
 
+    def arrow_batch(self, batch_size: int = 8192) -> "pyarrow.RecordBatch":
+        """
+        Fetch a single pyarrow Record Batch of the specified size from the
+        query result set.
+
+        Args:
+            batch_size: Maximum number of rows to fetch in the Record Batch.
+
+        Returns:
+            A pyarrow RecordBatch object containing up to batch_size rows.
+        """
+        self._check_closed()  # Check if the cursor is closed
+        pyarrow = self._ensure_pyarrow()
+
+        if not self._has_result_set and self.description:
+            self._reset_rownumber()
+
+        capsules = []
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, max(batch_size, 0))
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+        batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
+
+        if self.hstmt:
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+
+        # Update rownumber for the number of rows actually fetched
+        num_fetched = batch.num_rows
+        if num_fetched > 0 and self._has_result_set:
+            self._next_row_index += num_fetched
+            self._rownumber = self._next_row_index - 1
+
+        # Centralize rowcount assignment after fetch
+        if num_fetched == 0 and self._next_row_index == 0:
+            self.rowcount = 0
+        else:
+            self.rowcount = self._next_row_index
+
+        return batch
+
+    def arrow(self, batch_size: int = 8192) -> "pyarrow.Table":
+        """
+        Fetch the entire result as a pyarrow Table.
+
+        Args:
+            batch_size: Size of the Record Batches which make up the Table.
+
+        Returns:
+            A pyarrow Table containing all remaining rows from the result set.
+        """
+        self._check_closed()  # Check if the cursor is closed
+        pyarrow = self._ensure_pyarrow()
+
+        batches: list["pyarrow.RecordBatch"] = []
+        while True:
+            batch = self.arrow_batch(batch_size)
+            if batch.num_rows < batch_size or batch_size <= 0:
+                if not batches or batch.num_rows > 0:
+                    batches.append(batch)
+                break
+            batches.append(batch)
+        return pyarrow.Table.from_batches(batches, schema=batches[0].schema)
+
+    def arrow_reader(self, batch_size: int = 8192) -> "pyarrow.RecordBatchReader":
+        """
+        Fetch the result as a pyarrow RecordBatchReader, which yields Record
+        Batches of the specified size until the current result set is
+        exhausted.
+
+        Args:
+            batch_size: Size of the Record Batches produced by the reader.
+
+        Returns:
+            A pyarrow RecordBatchReader for the result set.
+        """
+        self._check_closed()  # Check if the cursor is closed
+        pyarrow = self._ensure_pyarrow()
+
+        # Fetch schema without advancing cursor
+        schema_batch = self.arrow_batch(0)
+        schema = schema_batch.schema
+
+        def batch_generator():
+            while (batch := self.arrow_batch(batch_size)).num_rows > 0:
+                yield batch
+
+        return pyarrow.RecordBatchReader.from_batches(schema, batch_generator())
+
     def nextset(self) -> Union[bool, None]:
         """
         Skip to the next available result set.
@@ -2724,6 +2852,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     f"for auth_type '{self.connection._auth_type}': {e}"
                 ) from e
             pycore_context["access_token"] = raw_token
+            # Token replaces credential fields — py-core's validator rejects
+            # access_token combined with authentication/user_name/password.
+            for key in ("authentication", "user_name", "password"):
+                pycore_context.pop(key, None)
             logger.debug(
                 "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
                 self.connection._auth_type,
