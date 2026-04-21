@@ -222,6 +222,7 @@ if(NOT simdutf_FOUND)
     message(STATUS "simdutf not found via find_package; downloading v8.2.0 source archive with FetchContent")
     set(simdutf_fetchcontent_args
         URL https://github.com/simdutf/simdutf/archive/refs/tags/v8.2.0.tar.gz
+        URL_HASH SHA256=033a91b1d7d1cb818c1eff49e61faaa1b64a3a530d59ef9efef0195e56bda8b1
     )
     if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
         list(APPEND simdutf_fetchcontent_args DOWNLOAD_EXTRACT_TIMESTAMP FALSE)

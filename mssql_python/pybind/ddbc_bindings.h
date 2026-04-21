@@ -42,7 +42,7 @@ using py::literals::operator""_a;
 #include <dlfcn.h>
 #endif
 
-inline std::string utf16LeToUtf8Alloc(std::u16string utf16) {
+inline std::string utf16LeToUtf8Alloc(const std::u16string& utf16) {
     if (utf16.empty()) {
         return {};
     }
