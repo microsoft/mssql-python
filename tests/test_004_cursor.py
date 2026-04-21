@@ -9604,6 +9604,298 @@ def test_cursor_setinputsizes_with_executemany_float(db_connection):
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_float")
 
 
+def test_setinputsizes_sql_decimal_with_executemany(db_connection):
+    """Test setinputsizes with SQL_DECIMAL accepts Python Decimal values (GH-503).
+
+    Without this fix, passing SQL_DECIMAL or SQL_NUMERIC via setinputsizes()
+    caused a RuntimeError because Decimal objects were not converted to
+    NumericData before the C binding validated the C type.
+    """
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_decimal")
+    try:
+        cursor.execute("""
+        CREATE TABLE #test_sis_decimal (
+            Name NVARCHAR(100),
+            CategoryID INT,
+            Price DECIMAL(18,2)
+        )
+        """)
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_WVARCHAR, 100, 0),
+                (mssql_python.SQL_INTEGER, 0, 0),
+                (mssql_python.SQL_DECIMAL, 18, 2),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_decimal (Name, CategoryID, Price) VALUES (?, ?, ?)",
+            [
+                ("Widget", 1, decimal.Decimal("19.99")),
+                ("Gadget", 2, decimal.Decimal("29.99")),
+                ("Gizmo", 3, decimal.Decimal("0.01")),
+            ],
+        )
+
+        cursor.execute("SELECT Name, CategoryID, Price FROM #test_sis_decimal ORDER BY CategoryID")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == "Widget"
+        assert rows[0][1] == 1
+        assert rows[0][2] == decimal.Decimal("19.99")
+        assert rows[1][0] == "Gadget"
+        assert rows[1][1] == 2
+        assert rows[1][2] == decimal.Decimal("29.99")
+        assert rows[2][0] == "Gizmo"
+        assert rows[2][1] == 3
+        assert rows[2][2] == decimal.Decimal("0.01")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_decimal")
+
+
+def test_setinputsizes_sql_numeric_with_executemany(db_connection):
+    """Test setinputsizes with SQL_NUMERIC accepts Python Decimal values (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_numeric")
+    try:
+        cursor.execute("""
+        CREATE TABLE #test_sis_numeric (
+            Value NUMERIC(10,4)
+        )
+        """)
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_NUMERIC, 10, 4),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_numeric (Value) VALUES (?)",
+            [
+                (decimal.Decimal("123.4567"),),
+                (decimal.Decimal("-99.0001"),),
+                (decimal.Decimal("0.0000"),),
+            ],
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_numeric ORDER BY Value")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("-99.0001")
+        assert rows[1][0] == decimal.Decimal("0.0000")
+        assert rows[2][0] == decimal.Decimal("123.4567")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_numeric")
+
+
+def test_setinputsizes_sql_decimal_with_non_decimal_values(db_connection):
+    """Test setinputsizes with SQL_DECIMAL converts non-Decimal values (int/float) to string (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_nondec")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_nondc (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        # Pass int and float instead of Decimal — exercises the non-Decimal conversion branch
+        cursor.executemany(
+            "INSERT INTO #test_sis_dec_nondc (Price) VALUES (?)",
+            [(42,), (19.99,), (0,)],
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_nondc ORDER BY Price")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("0.00")
+        assert rows[1][0] == decimal.Decimal("19.99")
+        assert rows[2][0] == decimal.Decimal("42.00")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_nondc")
+
+
+def test_setinputsizes_sql_decimal_with_execute(db_connection):
+    """Test setinputsizes with SQL_DECIMAL works with single execute() too (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_exec")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_exec (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_exec (Price) VALUES (?)",
+            decimal.Decimal("99.95"),
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_exec")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal("99.95")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_exec")
+
+
+def test_setinputsizes_sql_decimal_null(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles NULL values correctly (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_null")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_null (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_null (Price) VALUES (?)",
+            None,
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_null")
+        row = cursor.fetchone()
+        assert row[0] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_null")
+
+
+def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
+    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_bad (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError, match="Failed to convert parameter"):
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_bad (Price) VALUES (?)",
+                [("not_a_number",)],
+            )
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+
+
+def test_setinputsizes_sql_decimal_high_precision(db_connection):
+    """Test setinputsizes with SQL_DECIMAL preserves full DECIMAL(38,18) precision (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_hp")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_hp (Value DECIMAL(38,18))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 38, 18)])
+
+        high_prec = decimal.Decimal("12345678901234567890.123456789012345678")
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_hp (Value) VALUES (?)",
+            high_prec,
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_dec_hp")
+        row = cursor.fetchone()
+        assert row[0] == high_prec
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_hp")
+
+
+def test_setinputsizes_sql_decimal_negative_zero(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles Decimal('-0.00') correctly (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_negz")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_negz (Value DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_negz (Value) VALUES (?)",
+            decimal.Decimal("-0.00"),
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_dec_negz")
+        row = cursor.fetchone()
+        # SQL Server normalizes -0.00 to 0.00
+        assert row[0] == decimal.Decimal("0.00")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_negz")
+
+
+def test_setinputsizes_sql_decimal_mixed_null_executemany(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles mixed NULL/non-NULL in executemany (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mix")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_mix (Id INT, Price DECIMAL(18,2))")
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_INTEGER, 0, 0),
+                (mssql_python.SQL_DECIMAL, 18, 2),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_dec_mix (Id, Price) VALUES (?, ?)",
+            [
+                (1, decimal.Decimal("10.50")),
+                (2, None),
+                (3, decimal.Decimal("30.75")),
+                (4, None),
+            ],
+        )
+
+        cursor.execute("SELECT Id, Price FROM #test_sis_dec_mix ORDER BY Id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 4
+        assert rows[0][1] == decimal.Decimal("10.50")
+        assert rows[1][1] is None
+        assert rows[2][1] == decimal.Decimal("30.75")
+        assert rows[3][1] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mix")
+
+
+def test_decimal_without_setinputsizes_no_regression(db_connection):
+    """Verify plain Decimal binding without setinputsizes still works (GH-503 regression check)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_dec_noreg")
+    try:
+        cursor.execute("CREATE TABLE #test_dec_noreg (Price DECIMAL(18,2))")
+
+        # Single execute without setinputsizes
+        cursor.execute(
+            "INSERT INTO #test_dec_noreg (Price) VALUES (?)",
+            decimal.Decimal("49.99"),
+        )
+
+        # executemany without setinputsizes
+        cursor.executemany(
+            "INSERT INTO #test_dec_noreg (Price) VALUES (?)",
+            [(decimal.Decimal("99.99"),), (decimal.Decimal("0.01"),)],
+        )
+
+        cursor.execute("SELECT Price FROM #test_dec_noreg ORDER BY Price")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("0.01")
+        assert rows[1][0] == decimal.Decimal("49.99")
+        assert rows[2][0] == decimal.Decimal("99.99")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_dec_noreg")
+
+
 def test_cursor_setinputsizes_reset(db_connection):
     """Test that setinputsizes is reset after execution"""
 
