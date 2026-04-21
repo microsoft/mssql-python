@@ -16253,3 +16253,85 @@ def test_native_uuid_concurrent_toggle_consistency(conn_str):
     finally:
         stop_event.set()
         mssql_python.native_uuid = original
+
+
+def test_execute_reset_cursor_false_reuses_prepared_plan(db_connection):
+    """Test that reset_cursor=False reuses the prepared statement handle
+    and successfully re-executes after consuming the previous result set."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT 1 AS val WHERE 1 = ?", (1,))
+        row = cursor.fetchone()
+        assert row[0] == 1
+        _ = cursor.fetchall()  # consume remaining
+
+        # Re-execute with reset_cursor=False — this was raising
+        # ProgrammingError: Invalid cursor state before the fix.
+        cursor.execute("SELECT 1 AS val WHERE 1 = ?", (2,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row is None  # No match for WHERE 1 = 2
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_returns_new_results(db_connection):
+    """Test that reset_cursor=False correctly returns results from the
+    second execution with different parameter values."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT ? AS val", (42,))
+        row = cursor.fetchone()
+        assert row[0] == 42
+        _ = cursor.fetchall()
+
+        cursor.execute("SELECT ? AS val", (99,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 99
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_multiple_iterations(db_connection):
+    """Test that reset_cursor=False works across several consecutive
+    re-executions on the same cursor."""
+    cursor = db_connection.cursor()
+    try:
+        for i in range(5):
+            kwargs = {"reset_cursor": False} if i > 0 else {}
+            cursor.execute("SELECT ? AS iter", (i,), **kwargs)
+            row = cursor.fetchone()
+            assert row is not None, f"Expected row with value {i}, got None"
+            assert row[0] == i, f"Expected {i}, got {row[0]}"
+            _ = cursor.fetchall()
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_no_params(db_connection):
+    """Test that reset_cursor=False works for queries without parameters."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT 1 AS a")
+        _ = cursor.fetchall()
+
+        cursor.execute("SELECT 2 AS a", reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 2
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_after_fetchone_only(db_connection):
+    """Test reset_cursor=False when only fetchone() was called (result set
+    not fully consumed via fetchall)."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT ? AS val", (1,))
+        row = cursor.fetchone()
+        assert row[0] == 1
+        # Do NOT call fetchall — go straight to re-execute
+        cursor.execute("SELECT ? AS val", (2,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 2
+    finally:
+        cursor.close()
