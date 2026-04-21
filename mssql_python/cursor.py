@@ -885,8 +885,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ddbc_sql_const.SQL_WCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
             ddbc_sql_const.SQL_WVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
             ddbc_sql_const.SQL_WLONGVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
-            ddbc_sql_const.SQL_DECIMAL.value: ddbc_sql_const.SQL_C_CHAR.value,
-            ddbc_sql_const.SQL_NUMERIC.value: ddbc_sql_const.SQL_C_CHAR.value,
+            ddbc_sql_const.SQL_DECIMAL.value: ddbc_sql_const.SQL_C_NUMERIC.value,
+            ddbc_sql_const.SQL_NUMERIC.value: ddbc_sql_const.SQL_C_NUMERIC.value,
             ddbc_sql_const.SQL_BIT.value: ddbc_sql_const.SQL_C_BIT.value,
             ddbc_sql_const.SQL_TINYINT.value: ddbc_sql_const.SQL_C_TINYINT.value,
             ddbc_sql_const.SQL_SMALLINT.value: ddbc_sql_const.SQL_C_SHORT.value,
@@ -949,13 +949,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # For non-NULL parameters, determine the appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
 
-                # Convert Decimal to string for SQL_C_CHAR binding (GH-503)
-                if isinstance(parameter, decimal.Decimal) and sql_type in (
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503).
+                # The generic mapping returns SQL_C_NUMERIC which requires NumericData
+                # structs, but setinputsizes declares fixed precision/scale that may
+                # differ from per-value precision, causing misinterpretation. String
+                # binding lets ODBC convert using the declared columnSize/decimalDigits.
+                if sql_type in (
                     ddbc_sql_const.SQL_DECIMAL.value,
                     ddbc_sql_const.SQL_NUMERIC.value,
                 ):
-                    parameters_list[i] = format(parameter, "f")
-                    parameter = parameters_list[i]
+                    c_type = ddbc_sql_const.SQL_C_CHAR.value
+                    if isinstance(parameter, decimal.Decimal):
+                        parameters_list[i] = format(parameter, "f")
+                        parameter = parameters_list[i]
 
                 # Check if this should be a DAE (data at execution) parameter
                 # For string types with large column sizes
@@ -2184,6 +2190,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
                 # Determine appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
+
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
+                if sql_type in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    c_type = ddbc_sql_const.SQL_C_CHAR.value
 
                 # Check if this should be a DAE (data at execution) parameter based on column size
                 if sample_value is not None:
