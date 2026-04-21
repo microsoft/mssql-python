@@ -1359,7 +1359,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # re-executing a prepared query.
             if self.hstmt:
                 logger.debug("execute: Closing cursor for re-execution (reset_cursor=False)")
-                self.hstmt.close_cursor()
+                self.hstmt._close_cursor()
                 self._clear_rownumber()
 
         # Clear any previous messages

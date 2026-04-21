@@ -1363,8 +1363,18 @@ void SqlHandle::free() {
 }
 
 void SqlHandle::close_cursor() {
-    if (_handle && SQLFreeStmt_ptr && _type == SQL_HANDLE_STMT) {
-        SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    if (_type != SQL_HANDLE_STMT || !_handle) {
+        return;
+    }
+    if (_implicitly_freed) {
+        return;
+    }
+    if (!SQLFreeStmt_ptr) {
+        ThrowStdException("SQLFreeStmt function not loaded");
+    }
+    SQLRETURN ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
+        ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
     }
 }
 
@@ -5747,7 +5757,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")
-        .def("close_cursor", &SqlHandle::close_cursor, "Close the cursor on the statement handle without freeing the prepared statement");
+        .def("_close_cursor", &SqlHandle::close_cursor, "Internal: close the cursor without freeing the prepared statement");
 
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::string&, bool, const py::dict&>(), py::arg("conn_str"),

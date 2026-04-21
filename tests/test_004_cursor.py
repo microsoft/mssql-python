@@ -16008,6 +16008,7 @@ def test_execute_reset_cursor_false_multiple_iterations(db_connection):
             kwargs = {"reset_cursor": False} if i > 0 else {}
             cursor.execute("SELECT ? AS iter", (i,), **kwargs)
             row = cursor.fetchone()
+            assert row is not None, f"Expected row with value {i}, got None"
             assert row[0] == i, f"Expected {i}, got {row[0]}"
             _ = cursor.fetchall()
     finally:
