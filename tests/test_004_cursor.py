@@ -15963,38 +15963,52 @@ def test_native_uuid_concurrent_toggle_consistency(conn_str):
         mssql_python.native_uuid = original
 
 
-def test_catalog_fetchone_iteration_setup(cursor, db_connection):
-    """Create test objects for catalog fetchone/iteration testing"""
-    try:
-        cursor.execute(
-            "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_cat_fetch') "
-            "EXEC('CREATE SCHEMA pytest_cat_fetch')"
+@pytest.fixture(scope="module")
+def catalog_fetch_schema(cursor, db_connection):
+    """Create and tear down test objects for catalog fetchone/iteration testing."""
+    cursor.execute(
+        "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_cat_fetch') "
+        "EXEC('CREATE SCHEMA pytest_cat_fetch')"
+    )
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    cursor.execute("DROP PROCEDURE IF EXISTS pytest_cat_fetch.fetch_test_proc")
+
+    cursor.execute("""
+        CREATE TABLE pytest_cat_fetch.fetch_test (
+            id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            value DECIMAL(10,2),
+            ts DATETIME DEFAULT GETDATE()
         )
-        cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
-        cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    """)
+    cursor.execute("""
+        CREATE TABLE pytest_cat_fetch.fetch_test_child (
+            child_id INT PRIMARY KEY,
+            parent_id INT NOT NULL,
+            CONSTRAINT fk_parent FOREIGN KEY (parent_id)
+                REFERENCES pytest_cat_fetch.fetch_test(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE PROCEDURE pytest_cat_fetch.fetch_test_proc
+        AS
+        BEGIN
+            SELECT 1 AS result
+        END
+    """)
+    db_connection.commit()
 
-        cursor.execute("""
-            CREATE TABLE pytest_cat_fetch.fetch_test (
-                id INT PRIMARY KEY,
-                name VARCHAR(100) NOT NULL,
-                value DECIMAL(10,2),
-                ts DATETIME DEFAULT GETDATE()
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE pytest_cat_fetch.fetch_test_child (
-                child_id INT PRIMARY KEY,
-                parent_id INT NOT NULL,
-                CONSTRAINT fk_parent FOREIGN KEY (parent_id)
-                    REFERENCES pytest_cat_fetch.fetch_test(id)
-            )
-        """)
-        db_connection.commit()
-    except Exception as e:
-        pytest.fail(f"Catalog fetchone/iteration setup failed: {e}")
+    yield
+
+    cursor.execute("DROP PROCEDURE IF EXISTS pytest_cat_fetch.fetch_test_proc")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    cursor.execute("DROP SCHEMA IF EXISTS pytest_cat_fetch")
+    db_connection.commit()
 
 
-def test_tables_fetchone(cursor, db_connection):
+def test_tables_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on tables() result set (GH-505)"""
     cursor.tables(table="fetch_test", schema="pytest_cat_fetch")
     row = cursor.fetchone()
@@ -16004,14 +16018,14 @@ def test_tables_fetchone(cursor, db_connection):
     assert cursor.fetchone() is None
 
 
-def test_tables_iteration(cursor, db_connection):
+def test_tables_iteration(cursor, db_connection, catalog_fetch_schema):
     """Test that 'for row in cursor.tables()' works (GH-505)"""
     rows = list(cursor.tables(table="fetch_test", schema="pytest_cat_fetch"))
     assert len(rows) == 1, "Iteration should yield 1 row"
     assert rows[0].table_name.lower() == "fetch_test"
 
 
-def test_columns_fetchone(cursor, db_connection):
+def test_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on columns() result set (GH-505)"""
     cursor.columns(table="fetch_test", schema="pytest_cat_fetch")
     row = cursor.fetchone()
@@ -16020,7 +16034,7 @@ def test_columns_fetchone(cursor, db_connection):
     assert row.table_name.lower() == "fetch_test"
 
 
-def test_primarykeys_fetchone(cursor, db_connection):
+def test_primarykeys_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on primaryKeys() result set (GH-505)"""
     cursor.primaryKeys(table="fetch_test", schema="pytest_cat_fetch")
     row = cursor.fetchone()
@@ -16029,7 +16043,7 @@ def test_primarykeys_fetchone(cursor, db_connection):
     assert cursor.fetchone() is None
 
 
-def test_foreignkeys_fetchone(cursor, db_connection):
+def test_foreignkeys_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on foreignKeys() result set (GH-505)"""
     cursor.foreignKeys(
         table="fetch_test_child",
@@ -16042,7 +16056,7 @@ def test_foreignkeys_fetchone(cursor, db_connection):
     assert cursor.fetchone() is None
 
 
-def test_statistics_fetchone(cursor, db_connection):
+def test_statistics_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on statistics() result set (GH-505)"""
     cursor.statistics(table="fetch_test", schema="pytest_cat_fetch")
     row = cursor.fetchone()
@@ -16050,15 +16064,16 @@ def test_statistics_fetchone(cursor, db_connection):
     assert row.table_name.lower() == "fetch_test"
 
 
-def test_procedures_fetchone(cursor, db_connection):
+def test_procedures_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on procedures() result set (GH-505)"""
-    cursor.procedures()
+    cursor.procedures(procedure="fetch_test_proc", schema="pytest_cat_fetch")
     row = cursor.fetchone()
     assert row is not None, "fetchone() should return a row from procedures()"
-    assert hasattr(row, "procedure_name")
+    assert row.procedure_name.lower().startswith("fetch_test_proc")
+    assert cursor.fetchone() is None
 
 
-def test_rowid_columns_fetchone(cursor, db_connection):
+def test_rowid_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on rowIdColumns() result set (GH-505)"""
     cursor.rowIdColumns(table="fetch_test", schema="pytest_cat_fetch")
     # May or may not have rowid columns; just verify no InterfaceError
@@ -16067,7 +16082,7 @@ def test_rowid_columns_fetchone(cursor, db_connection):
         assert hasattr(row, "column_name")
 
 
-def test_rowver_columns_fetchone(cursor, db_connection):
+def test_rowver_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on rowVerColumns() result set (GH-505)"""
     cursor.rowVerColumns(table="fetch_test", schema="pytest_cat_fetch")
     # May or may not have rowver columns; just verify no InterfaceError
@@ -16076,7 +16091,7 @@ def test_rowver_columns_fetchone(cursor, db_connection):
         assert hasattr(row, "column_name")
 
 
-def test_gettypeinfo_fetchone(cursor, db_connection):
+def test_gettypeinfo_fetchone(cursor, db_connection, catalog_fetch_schema):
     """Test that fetchone() works on getTypeInfo() result set (GH-505)"""
     cursor.getTypeInfo()
     row = cursor.fetchone()
@@ -16084,7 +16099,7 @@ def test_gettypeinfo_fetchone(cursor, db_connection):
     assert hasattr(row, "type_name")
 
 
-def test_catalog_rownumber_increments_correctly(cursor, db_connection):
+def test_catalog_rownumber_increments_correctly(cursor, db_connection, catalog_fetch_schema):
     """Test that rownumber increments correctly during fetchone() on catalog results (GH-505)"""
     cursor.columns(table="fetch_test", schema="pytest_cat_fetch")
     assert cursor.rownumber == -1
@@ -16095,14 +16110,3 @@ def test_catalog_rownumber_increments_correctly(cursor, db_connection):
         assert cursor.rownumber == expected_idx
 
     assert cursor.fetchone() is None
-
-
-def test_catalog_fetchone_iteration_cleanup(cursor, db_connection):
-    """Clean up test objects for catalog fetchone/iteration testing"""
-    try:
-        cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
-        cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
-        cursor.execute("DROP SCHEMA IF EXISTS pytest_cat_fetch")
-        db_connection.commit()
-    except Exception as e:
-        pytest.fail(f"Catalog fetchone/iteration cleanup failed: {e}")
