@@ -31,7 +31,7 @@ if (!issueNumber) {
 // --- Helper: GitHub Models ---
 async function callGitHubModels(prompt) {
     const token = process.env.GH_TOKEN;
-    const url = "https://models.inference.ai.azure.com/chat/completions";
+    const url = "https://models.github.ai/inference/chat/completions";
 
     const response = await fetch(url, {
         method: "POST",
@@ -40,7 +40,7 @@ async function callGitHubModels(prompt) {
             "Content-Type": "application/json",
         },
         body: JSON.stringify({
-            model: "gpt-4.1",
+            model: "openai/gpt-4.1",
             messages: [
                 { role: "system", content: "You are an expert assistant. Always respond in valid json format." },
                 { role: "user", content: prompt },
