@@ -949,6 +949,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # For non-NULL parameters, determine the appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
 
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503).
+                # The generic mapping returns SQL_C_NUMERIC which requires NumericData
+                # structs, but setinputsizes declares fixed precision/scale that may
+                # differ from per-value precision, causing misinterpretation. String
+                # binding lets ODBC convert using the declared columnSize/decimalDigits.
+                if sql_type in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    c_type = ddbc_sql_const.SQL_C_CHAR.value
+                    if isinstance(parameter, decimal.Decimal):
+                        parameters_list[i] = format(parameter, "f")
+                        parameter = parameters_list[i]
+
                 # Check if this should be a DAE (data at execution) parameter
                 # For string types with large column sizes
                 if isinstance(parameter, str) and column_size > MAX_INLINE_CHAR:
@@ -1351,6 +1365,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if reset_cursor:
             logger.debug("execute: Resetting cursor state")
             self._reset_cursor()
+        else:
+            # Close just the ODBC cursor (not the statement handle) so the
+            # prepared plan can be reused.  SQLFreeStmt(SQL_CLOSE) releases
+            # the cursor associated with hstmt without destroying the
+            # prepared statement, which is the standard ODBC pattern for
+            # re-executing a prepared query.
+            if self.hstmt:
+                logger.debug("execute: Closing cursor for re-execution (reset_cursor=False)")
+                self.hstmt._close_cursor()
+                self._clear_rownumber()
 
         # Clear any previous messages
         self.messages = []
@@ -2177,6 +2201,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # Determine appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
 
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
+                if sql_type in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    c_type = ddbc_sql_const.SQL_C_CHAR.value
+
                 # Check if this should be a DAE (data at execution) parameter based on column size
                 if sample_value is not None:
                     if isinstance(sample_value, str) and column_size > MAX_INLINE_CHAR:
@@ -2306,17 +2337,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
                 ):
                     processed_row[i] = format(val, "f")
-                # Existing numeric conversion
+                # Convert all values to string for DECIMAL/NUMERIC columns (GH-503)
                 elif parameters_type[i].paramSQLType in (
                     ddbc_sql_const.SQL_DECIMAL.value,
                     ddbc_sql_const.SQL_NUMERIC.value,
-                ) and not isinstance(val, decimal.Decimal):
-                    try:
-                        processed_row[i] = decimal.Decimal(str(val))
-                    except Exception as e:  # pylint: disable=broad-exception-caught
-                        raise ValueError(
-                            f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
-                        ) from e
+                ):
+                    if isinstance(val, decimal.Decimal):
+                        processed_row[i] = format(val, "f")
+                    else:
+                        try:
+                            processed_row[i] = format(decimal.Decimal(str(val)), "f")
+                        except Exception as e:  # pylint: disable=broad-exception-caught
+                            raise ValueError(
+                                f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
+                            ) from e
             processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
