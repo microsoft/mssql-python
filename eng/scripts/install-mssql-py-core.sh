@@ -144,7 +144,7 @@ find_matching_wheel() {
 
 # Returns 0 (true) if the runtime glibc is new enough to load the .so.
 # The mssql_py_core native extension is built on manylinux_2_34 (glibc 2.34).
-# Build containers running manylinux_2_28 have glibc 2.28 — too old to dlopen it.
+# Build containers running manylinux_2_34 have glibc 2.34 — sufficient to dlopen it.
 # On musl (Alpine) or macOS we always attempt the import.
 can_verify_import() {
     case "$PLATFORM" in
@@ -182,7 +182,7 @@ extract_and_verify() {
     "$PYTHON" "$SCRIPT_DIR/extract_wheel.py" "$MATCHING_WHEEL" "$target_dir"
 
     # Skip import verification when glibc is older than what the .so requires
-    # (e.g. manylinux_2_28 build containers with glibc 2.28, but .so needs 2.34).
+    # (e.g. manylinux_2_34 build containers with glibc 2.34, matching .so requirements).
     if can_verify_import; then
         echo "Verifying import..."
         pushd "$target_dir" > /dev/null
