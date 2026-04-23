@@ -15,7 +15,7 @@ import decimal
 import uuid
 import datetime
 import warnings
-from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
+from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
 from mssql_python.logging import logger
@@ -2087,7 +2087,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return sample_value, None, None
 
     def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-        self, operation: str, seq_of_parameters: List[Sequence[Any]]
+        self, operation: str, seq_of_parameters: Union[List[Sequence[Any]], List[Mapping[str, Any]]]
     ) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
