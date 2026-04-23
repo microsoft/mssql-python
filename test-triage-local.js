@@ -192,13 +192,13 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, s
             const parts = [];
             if (parsed.summary) parts.push(`<b>Summary:</b> ${escVal(parsed.summary)}`);
             if (parsed.duplicate_issues && parsed.duplicate_issues.length > 0) {
-                parts.push(`<b>Similar/Duplicate Issues:</b><br>${parsed.duplicate_issues.map(d =>
-                    `&nbsp;&nbsp;• <a href="https://github.com/microsoft/mssql-python/issues/${d.issue_number}">#${d.issue_number}</a> ${escVal(d.title)} [${d.state}] — <i>${escVal(d.similarity)}:</i> ${escVal(d.explanation)}`
+                parts.push(`<b>Similar/Duplicate Issues:</b><br>${parsed.duplicate_issues.filter(d => /^\d+$/.test(String(d.issue_number))).map(d =>
+                    `&nbsp;&nbsp;• <a href="https://github.com/microsoft/mssql-python/issues/${Number(d.issue_number)}">#${Number(d.issue_number)}</a> ${escVal(d.title)} [${escVal(d.state)}] — <i>${escVal(d.similarity)}:</i> ${escVal(d.explanation)}`
                 ).join("<br>")}`);
             }
             if (parsed.recently_fixed && parsed.recently_fixed.length > 0) {
-                parts.push(`<b>Recently Fixed:</b><br>${parsed.recently_fixed.map(f =>
-                    `&nbsp;&nbsp;• <a href="https://github.com/microsoft/mssql-python/issues/${f.issue_number}">#${f.issue_number}</a> ${escVal(f.title)} (closed ${escVal(f.closed_at)}) — ${escVal(f.relevance)}`
+                parts.push(`<b>Recently Fixed:</b><br>${parsed.recently_fixed.filter(f => /^\d+$/.test(String(f.issue_number))).map(f =>
+                    `&nbsp;&nbsp;• <a href="https://github.com/microsoft/mssql-python/issues/${Number(f.issue_number)}">#${Number(f.issue_number)}</a> ${escVal(f.title)} (closed ${escVal(f.closed_at)}) — ${escVal(f.relevance)}`
                 ).join("<br>")}`);
             }
             similarIssuesText = parts.join("<br><br>");
@@ -217,7 +217,7 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, s
             if (parsed.summary) parts.push(`<b>Summary:</b> ${escVal(parsed.summary)}`);
             if (parsed.has_workaround && parsed.workarounds && parsed.workarounds.length > 0) {
                 parts.push(`<b>Workarounds:</b><br>${parsed.workarounds.map((w, i) =>
-                    `&nbsp;&nbsp;${i + 1}. <b>${escVal(w.description)}</b> [${w.confidence} confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: ${escVal(w.limitations)}${w.code_snippet ? `<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>${escVal(w.code_snippet)}</code>` : ''}`
+                    `&nbsp;&nbsp;${i + 1}. <b>${escVal(w.description)}</b> [${escVal(w.confidence)} confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: ${escVal(w.limitations)}${w.code_snippet ? `<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>${escVal(w.code_snippet)}</code>` : ''}`
                 ).join("<br>")}`);
             }
             if (parsed.can_downgrade && parsed.downgrade_version) {

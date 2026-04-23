@@ -181,10 +181,10 @@ jobs:
               [
                 (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
                 (if .duplicate_issues and (.duplicate_issues | length) > 0
-                 then "<b>Similar/Duplicate Issues:</b><br>" + ([.duplicate_issues[] | "&nbsp;&nbsp;• <a href=\"https://github.com/microsoft/mssql-python/issues/" + (.issue_number | tostring) + "\">#" + (.issue_number | tostring) + "</a> " + (.title | @html) + " [" + .state + "] — <i>" + (.similarity | @html) + ":</i> " + (.explanation | @html)] | join("<br>"))
+                 then "<b>Similar/Duplicate Issues:</b><br>" + ([.duplicate_issues[] | select(.issue_number | tostring | test("^[0-9]+$")) | "&nbsp;&nbsp;• <a href=\"https://github.com/microsoft/mssql-python/issues/" + (.issue_number | tostring) + "\">#" + (.issue_number | tostring) + "</a> " + (.title | @html) + " [" + (.state | @html) + "] — <i>" + (.similarity | @html) + ":</i> " + (.explanation | @html)] | join("<br>"))
                  else empty end),
                 (if .recently_fixed and (.recently_fixed | length) > 0
-                 then "<b>Recently Fixed:</b><br>" + ([.recently_fixed[] | "&nbsp;&nbsp;• <a href=\"https://github.com/microsoft/mssql-python/issues/" + (.issue_number | tostring) + "\">#" + (.issue_number | tostring) + "</a> " + (.title | @html) + " (closed " + (.closed_at | @html) + ") — " + (.relevance | @html)] | join("<br>"))
+                 then "<b>Recently Fixed:</b><br>" + ([.recently_fixed[] | select(.issue_number | tostring | test("^[0-9]+$")) | "&nbsp;&nbsp;• <a href=\"https://github.com/microsoft/mssql-python/issues/" + (.issue_number | tostring) + "\">#" + (.issue_number | tostring) + "</a> " + (.title | @html) + " (closed " + (.closed_at | @html) + ") — " + (.relevance | @html)] | join("<br>"))
                  else empty end)
               ] | join("<br><br>")
             ' 2>/dev/null || echo "$SIMILAR_ISSUES_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
@@ -199,7 +199,7 @@ jobs:
               [
                 (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
                 (if .has_workaround and .workarounds and (.workarounds | length) > 0
-                 then "<b>Workarounds:</b><br>" + ([.workarounds | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". <b>" + (.value.description | @html) + "</b> [" + .value.confidence + " confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: " + (.value.limitations | @html) + (if .value.code_snippet and (.value.code_snippet | length) > 0 then "<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>" + (.value.code_snippet | @html) + "</code>" else "" end)] | join("<br>"))
+                 then "<b>Workarounds:</b><br>" + ([.workarounds | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". <b>" + (.value.description | @html) + "</b> [" + (.value.confidence | @html) + " confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: " + (.value.limitations | @html) + (if .value.code_snippet and (.value.code_snippet | length) > 0 then "<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>" + (.value.code_snippet | @html) + "</code>" else "" end)] | join("<br>"))
                  else empty end),
                 (if .can_downgrade == true and .downgrade_version
                  then "⬇️ <b>Safe to downgrade to:</b> " + (.downgrade_version | @html)
