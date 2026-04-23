@@ -93,7 +93,7 @@ stages:
             displayName: 'Setup and start Docker daemon'
           
           - script: |
-              docker run --rm --privileged tonistiigi/binfmt --install all
+              sudo apt-get install -y qemu-user-static
             displayName: 'Enable QEMU (for aarch64)'
           
           - script: |
@@ -102,15 +102,24 @@ stages:
               mkdir -p $(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)
             displayName: 'Prepare artifact directories'
           
+          - task: AzureCLI@2
+            displayName: 'Login to ACR (tdslibrs)'
+            inputs:
+              azureSubscription: 'Magnitude Test-mssql-rs-mssql-python'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az acr login --name tdslibrs
+
           - script: |
               # Determine image based on LINUX_TAG and ARCH
-              # manylinux_2_28 = AlmaLinux 8 (glibc 2.28)
-              # Note: mssql_py_core (built in mssql-rs) requires OpenSSL 3 / glibc 2.34,
-              # but it is pre-built and downloaded from NuGet — not compiled here.
+              # Images are mirrored weekly from Quay.io into tdslibrs.azurecr.io
+              # manylinux_2_34 = AlmaLinux 9 (glibc 2.34)
+              # musllinux_1_2  = Alpine-based (musl libc)
               if [[ "$(LINUX_TAG)" == "musllinux" ]]; then
-                IMAGE="quay.io/pypa/musllinux_1_2_$(ARCH)"
+                IMAGE="tdslibrs.azurecr.io/import/python-build/musllinux_1_2_$(ARCH):latest"
               else
-                IMAGE="quay.io/pypa/manylinux_2_28_$(ARCH)"
+                IMAGE="tdslibrs.azurecr.io/import/python-build/manylinux_2_34_$(ARCH):latest"
               fi
               
               docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
