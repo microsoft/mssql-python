@@ -1662,6 +1662,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.fetchmany = fetchmany_with_mapping
                 self.fetchall = fetchall_with_mapping
 
+        # Initialize rownumber tracking so fetchone() and iteration work
+        self._reset_rownumber()
+
+        # Metadata methods produce a new result set, so rowcount is unknown
+        # until rows are fetched. Reset it to avoid exposing a stale value
+        # from a previous statement.
+        self.rowcount = -1
+
         # Return the cursor itself for method chaining
         return self
 
