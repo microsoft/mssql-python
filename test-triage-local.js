@@ -216,8 +216,9 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, s
             const parts = [];
             if (parsed.summary) parts.push(`<b>Summary:</b> ${escVal(parsed.summary)}`);
             if (parsed.has_workaround && parsed.workarounds && parsed.workarounds.length > 0) {
+                const validConfidence = ['high', 'medium', 'low'];
                 parts.push(`<b>Workarounds:</b><br>${parsed.workarounds.map((w, i) =>
-                    `&nbsp;&nbsp;${i + 1}. <b>${escVal(w.description)}</b> [${escVal(w.confidence)} confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: ${escVal(w.limitations)}${w.code_snippet ? `<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>${escVal(w.code_snippet)}</code>` : ''}`
+                    `&nbsp;&nbsp;${i + 1}. <b>${escVal(w.description)}</b> [${validConfidence.includes(w.confidence) ? w.confidence : 'unknown'} confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: ${escVal(w.limitations)}${w.code_snippet ? `<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>${escVal(w.code_snippet)}</code>` : ''}`
                 ).join("<br>")}`);
             }
             if (parsed.can_downgrade && parsed.downgrade_version) {

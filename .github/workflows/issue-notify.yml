@@ -199,7 +199,7 @@ jobs:
               [
                 (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
                 (if .has_workaround and .workarounds and (.workarounds | length) > 0
-                 then "<b>Workarounds:</b><br>" + ([.workarounds | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". <b>" + (.value.description | @html) + "</b> [" + (.value.confidence | @html) + " confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: " + (.value.limitations | @html) + (if .value.code_snippet and (.value.code_snippet | length) > 0 then "<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>" + (.value.code_snippet | @html) + "</code>" else "" end)] | join("<br>"))
+                 then "<b>Workarounds:</b><br>" + ([.workarounds | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". <b>" + (.value.description | @html) + "</b> [" + (if (.value.confidence | tostring) == "high" or (.value.confidence | tostring) == "medium" or (.value.confidence | tostring) == "low" then (.value.confidence | tostring) else "unknown" end) + " confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: " + (.value.limitations | @html) + (if .value.code_snippet and (.value.code_snippet | length) > 0 then "<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>" + (.value.code_snippet | @html) + "</code>" else "" end)] | join("<br>"))
                  else empty end),
                 (if .can_downgrade == true and .downgrade_version
                  then "⬇️ <b>Safe to downgrade to:</b> " + (.downgrade_version | @html)
