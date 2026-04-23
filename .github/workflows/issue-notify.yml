@@ -32,6 +32,18 @@ on:
         required: false
         type: string
         default: ''
+      suggested_response:
+        required: false
+        type: string
+        default: ''
+      similar_issues:
+        required: false
+        type: string
+        default: ''
+      workaround:
+        required: false
+        type: string
+        default: ''
       issue_number:
         required: true
         type: string
@@ -69,6 +81,9 @@ jobs:
           INPUT_SUMMARY: ${{ inputs.summary_for_maintainers }}
           INPUT_CODE_ANALYSIS: ${{ inputs.code_analysis }}
           INPUT_ENGINEER_GUIDANCE: ${{ inputs.engineer_guidance }}
+          INPUT_SUGGESTED_RESPONSE: ${{ inputs.suggested_response }}
+          INPUT_SIMILAR_ISSUES: ${{ inputs.similar_issues }}
+          INPUT_WORKAROUND: ${{ inputs.workaround }}
           INPUT_JUSTIFICATION: ${{ inputs.justification }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
@@ -142,7 +157,6 @@ jobs:
                  else empty end),
                 (if .implementation_approach then "<b>Implementation Approach:</b> " + (.implementation_approach | @html) else empty end),
                 (if .risks_and_tradeoffs then "<b>Risks &amp; Tradeoffs:</b> " + (.risks_and_tradeoffs | @html) else empty end),
-                (if .suggested_response then "<b>Suggested Response to User:</b><br>" + (.suggested_response | @html) else empty end),
                 (if .related_considerations and (.related_considerations | length) > 0
                  then "<b>Related Considerations:</b><br>" + ([.related_considerations | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". " + (.value | @html)] | join("<br>"))
                  else empty end)
@@ -150,6 +164,50 @@ jobs:
             ' 2>/dev/null || echo "$ENGINEER_GUIDANCE_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           else
             ENGINEER_GUIDANCE=""
+          fi
+
+          # Format suggested customer response
+          SUGGESTED_RESPONSE_RAW="$INPUT_SUGGESTED_RESPONSE"
+          if [ -n "$SUGGESTED_RESPONSE_RAW" ]; then
+            SUGGESTED_RESPONSE=$(echo "$SUGGESTED_RESPONSE_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/$/\<br\>/g')
+          else
+            SUGGESTED_RESPONSE=""
+          fi
+
+          # Parse and format similar issues analysis
+          SIMILAR_ISSUES_RAW="$INPUT_SIMILAR_ISSUES"
+          if [ -n "$SIMILAR_ISSUES_RAW" ]; then
+            SIMILAR_ISSUES=$(echo "$SIMILAR_ISSUES_RAW" | jq -r '
+              [
+                (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
+                (if .duplicate_issues and (.duplicate_issues | length) > 0
+                 then "<b>Similar/Duplicate Issues:</b><br>" + ([.duplicate_issues[] | "&nbsp;&nbsp;• <a href=\"https://github.com/microsoft/mssql-python/issues/" + (.issue_number | tostring) + "\">#" + (.issue_number | tostring) + "</a> " + (.title | @html) + " [" + .state + "] — <i>" + (.similarity | @html) + ":</i> " + (.explanation | @html)] | join("<br>"))
+                 else empty end),
+                (if .recently_fixed and (.recently_fixed | length) > 0
+                 then "<b>Recently Fixed:</b><br>" + ([.recently_fixed[] | "&nbsp;&nbsp;• <a href=\"https://github.com/microsoft/mssql-python/issues/" + (.issue_number | tostring) + "\">#" + (.issue_number | tostring) + "</a> " + (.title | @html) + " (closed " + (.closed_at | @html) + ") — " + (.relevance | @html)] | join("<br>"))
+                 else empty end)
+              ] | join("<br><br>")
+            ' 2>/dev/null || echo "$SIMILAR_ISSUES_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+          else
+            SIMILAR_ISSUES=""
+          fi
+
+          # Parse and format workaround analysis
+          WORKAROUND_RAW="$INPUT_WORKAROUND"
+          if [ -n "$WORKAROUND_RAW" ]; then
+            WORKAROUND=$(echo "$WORKAROUND_RAW" | jq -r '
+              [
+                (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
+                (if .has_workaround and .workarounds and (.workarounds | length) > 0
+                 then "<b>Workarounds:</b><br>" + ([.workarounds | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". <b>" + (.value.description | @html) + "</b> [" + .value.confidence + " confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: " + (.value.limitations | @html) + (if .value.code_snippet and (.value.code_snippet | length) > 0 then "<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>" + (.value.code_snippet | @html) + "</code>" else "" end)] | join("<br>"))
+                 else empty end),
+                (if .can_downgrade == true and .downgrade_version
+                 then "⬇️ <b>Safe to downgrade to:</b> " + (.downgrade_version | @html)
+                 else empty end)
+              ] | join("<br><br>")
+            ' 2>/dev/null || echo "$WORKAROUND_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+          else
+            WORKAROUND=""
           fi
 
           # Set severity color indicator
@@ -176,6 +234,9 @@ jobs:
             --arg summary "$INPUT_SUMMARY" \
             --arg code_analysis "$CODE_ANALYSIS" \
             --arg engineer_guidance "$ENGINEER_GUIDANCE" \
+            --arg suggested_response "$SUGGESTED_RESPONSE" \
+            --arg similar_issues "$SIMILAR_ISSUES" \
+            --arg workaround "$WORKAROUND" \
             --arg justification "$INPUT_JUSTIFICATION" \
             --arg action "$ACTION" \
             --arg repo_url "https://github.com/microsoft/mssql-python" \
@@ -198,9 +259,23 @@ jobs:
                 "<p>" + ($summary | @html) + "</p>" +
                 "<h3>🔍 Code Analysis</h3>" +
                 "<p>" + $code_analysis + "</p>" +
+                (if $similar_issues != "" then
+                  "<h3>🔄 Similar Issues &amp; Recent Fixes</h3>" +
+                  "<p>" + $similar_issues + "</p>"
+                else "" end) +
+                (if $workaround != "" then
+                  "<h3>🛠️ Workarounds</h3>" +
+                  "<p>" + $workaround + "</p>"
+                else "" end) +
                 (if $engineer_guidance != "" then
                   "<h3>💡 Engineer Guidance</h3>" +
                   "<p>" + $engineer_guidance + "</p>"
+                else "" end) +
+                (if $suggested_response != "" then
+                  "<hr>" +
+                  "<h3>✉️ Suggested Response to Customer</h3>" +
+                  "<p><i>Copy-paste or edit the response below and post it on the issue:</i></p>" +
+                  "<blockquote>" + $suggested_response + "</blockquote>"
                 else "" end) +
                 "<hr>" +
                 "<p>⚡ <b>Action Required:</b> " + $action + "</p>" +

@@ -94,7 +94,7 @@ async function fetchFileContent(filePath) {
 }
 
 // --- Helper: Send Teams notification ---
-async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, issue) {
+async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, suggestedResponse, similarIssuesAnalysis, workaroundAnalysis, issue) {
     const category = analysis.category;
     const severity = analysis.severity;
 
@@ -171,7 +171,6 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, i
             }
             if (parsed.implementation_approach) parts.push(`<b>Implementation Approach:</b> ${escVal(parsed.implementation_approach)}`);
             if (parsed.risks_and_tradeoffs) parts.push(`<b>Risks &amp; Tradeoffs:</b> ${escVal(parsed.risks_and_tradeoffs)}`);
-            if (parsed.suggested_response) parts.push(`<b>Suggested Response to User:</b><br>${escVal(parsed.suggested_response)}`);
             if (parsed.related_considerations && parsed.related_considerations.length > 0) {
                 parts.push(`<b>Related Considerations:</b><br>${parsed.related_considerations.map((s, i) => `&nbsp;&nbsp;${i + 1}. ${escVal(s)}`).join("<br>")}`);
             }
@@ -181,6 +180,52 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, i
             if (engineerGuidanceText.length > 3000) {
                 engineerGuidanceText = engineerGuidanceText.slice(0, 3000) + "... (truncated)";
             }
+        }
+    }
+
+    // Format similar issues analysis
+    let similarIssuesText = "";
+    if (similarIssuesAnalysis) {
+        try {
+            const parsed = JSON.parse(similarIssuesAnalysis);
+            const escVal = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const parts = [];
+            if (parsed.summary) parts.push(`<b>Summary:</b> ${escVal(parsed.summary)}`);
+            if (parsed.duplicate_issues && parsed.duplicate_issues.length > 0) {
+                parts.push(`<b>Similar/Duplicate Issues:</b><br>${parsed.duplicate_issues.map(d =>
+                    `&nbsp;&nbsp;• <a href="https://github.com/microsoft/mssql-python/issues/${d.issue_number}">#${d.issue_number}</a> ${escVal(d.title)} [${d.state}] — <i>${escVal(d.similarity)}:</i> ${escVal(d.explanation)}`
+                ).join("<br>")}`);
+            }
+            if (parsed.recently_fixed && parsed.recently_fixed.length > 0) {
+                parts.push(`<b>Recently Fixed:</b><br>${parsed.recently_fixed.map(f =>
+                    `&nbsp;&nbsp;• <a href="https://github.com/microsoft/mssql-python/issues/${f.issue_number}">#${f.issue_number}</a> ${escVal(f.title)} (closed ${escVal(f.closed_at)}) — ${escVal(f.relevance)}`
+                ).join("<br>")}`);
+            }
+            similarIssuesText = parts.join("<br><br>");
+        } catch (e) {
+            similarIssuesText = esc(similarIssuesAnalysis);
+        }
+    }
+
+    // Format workaround analysis
+    let workaroundText = "";
+    if (workaroundAnalysis) {
+        try {
+            const parsed = JSON.parse(workaroundAnalysis);
+            const escVal = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const parts = [];
+            if (parsed.summary) parts.push(`<b>Summary:</b> ${escVal(parsed.summary)}`);
+            if (parsed.has_workaround && parsed.workarounds && parsed.workarounds.length > 0) {
+                parts.push(`<b>Workarounds:</b><br>${parsed.workarounds.map((w, i) =>
+                    `&nbsp;&nbsp;${i + 1}. <b>${escVal(w.description)}</b> [${w.confidence} confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: ${escVal(w.limitations)}${w.code_snippet ? `<br>&nbsp;&nbsp;&nbsp;&nbsp;Code: <code>${escVal(w.code_snippet)}</code>` : ''}`
+                ).join("<br>")}`);
+            }
+            if (parsed.can_downgrade && parsed.downgrade_version) {
+                parts.push(`⬇️ <b>Safe to downgrade to:</b> ${escVal(parsed.downgrade_version)}`);
+            }
+            workaroundText = parts.join("<br><br>");
+        } catch (e) {
+            workaroundText = esc(workaroundAnalysis);
         }
     }
 
@@ -201,8 +246,16 @@ async function sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, i
         `<p>${esc(analysis.summary_for_maintainers)}</p>`,
         `<h3>🔍 Code Analysis</h3>`,
         `<p>${codeAnalysisText}</p>`,
+        similarIssuesText ? `<h3>🔄 Similar Issues &amp; Recent Fixes</h3>` : '',
+        similarIssuesText ? `<p>${similarIssuesText}</p>` : '',
+        workaroundText ? `<h3>🛠️ Workarounds</h3>` : '',
+        workaroundText ? `<p>${workaroundText}</p>` : '',
         engineerGuidanceText ? `<h3>💡 Engineer Guidance</h3>` : '',
         engineerGuidanceText ? `<p>${engineerGuidanceText}</p>` : '',
+        suggestedResponse ? `<hr>` : '',
+        suggestedResponse ? `<h3>✉️ Suggested Response to Customer</h3>` : '',
+        suggestedResponse ? `<p><i>Copy-paste or edit the response below and post it on the issue:</i></p>` : '',
+        suggestedResponse ? `<blockquote>${esc(suggestedResponse)}</blockquote>` : '',
         `<hr>`,
         `<p>⚡ <b>Action Required:</b> ${esc(action)}</p>`,
         `<p><i>⚠️ AI-generated analysis — verified against source code but may contain inaccuracies. Review before acting.</i></p>`,
@@ -393,7 +446,6 @@ Respond in JSON:
   "implementation_approach": "<concrete implementation steps referencing specific functions/lines from the code — ONLY if issue_identified is true, otherwise empty string>",
   "effort_estimate": "small|medium|large|epic",
   "risks_and_tradeoffs": "<potential risks, backward compatibility concerns, or tradeoffs — ONLY if issue_identified is true, otherwise empty string>",
-  "suggested_response": "<a draft response the engineer could post on the issue. Always ask the user to share a minimal repro or code snippet that demonstrates the issue or desired behavior, if they haven't already provided one.>",
   "related_considerations": ["<other things the team should think about — ONLY if issue_identified is true, otherwise empty array>"]
 }
 
@@ -415,10 +467,219 @@ IMPORTANT: If your technical_assessment does not identify any actual issue or ga
         }
     }
 
+    // --- Search for similar/duplicate issues and recent fixes ---
+    console.log(`\n🔄 Searching for similar issues and recent fixes...`);
+    let similarIssuesAnalysis = '';
+
+    try {
+        const headers = { "Accept": "application/vnd.github.v3+json", "User-Agent": "triage-test" };
+        if (process.env.GH_TOKEN) headers["Authorization"] = `token ${process.env.GH_TOKEN}`;
+
+        const openRes = await fetch(`https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues?state=open&per_page=30&sort=created&direction=desc`, { headers });
+        const openIssues = await openRes.json();
+
+        const closedRes = await fetch(`https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues?state=closed&per_page=30&sort=updated&direction=desc`, { headers });
+        const closedIssues = await closedRes.json();
+
+        const allIssues = [...openIssues, ...closedIssues]
+            .filter(i => i.number !== issueNumber && !i.pull_request)
+            .map(i => ({
+                number: i.number,
+                title: i.title,
+                state: i.state,
+                labels: i.labels.map(l => l.name).join(', '),
+                created_at: i.created_at,
+                closed_at: i.closed_at,
+                body_preview: (i.body || '').slice(0, 300)
+            }));
+
+        console.log(`   Found ${allIssues.length} issues to compare against`);
+
+        const similarPrompt = `
+You are an expert triage system for the mssql-python repository.
+A new issue has been filed. Your job is to check if any similar or duplicate issues
+already exist (open or recently closed/fixed).
+
+NEW ISSUE:
+Title: ${issue.title}
+Body: ${(issue.body || '').slice(0, 2000)}
+Keywords: ${analysis.keywords.join(', ')}
+
+EXISTING ISSUES (recent open + recently closed):
+${JSON.stringify(allIssues, null, 2).slice(0, 6000)}
+
+Analyze and respond in JSON:
+{
+  "has_duplicates": true/false,
+  "has_similar": true/false,
+  "duplicate_issues": [
+    {
+      "issue_number": <number>,
+      "title": "<title>",
+      "state": "open|closed",
+      "similarity": "duplicate|highly_similar|related",
+      "explanation": "<why this is a duplicate/similar>"
+    }
+  ],
+  "recently_fixed": [
+    {
+      "issue_number": <number>,
+      "title": "<title>",
+      "closed_at": "<date>",
+      "relevance": "<how this fix relates to the new issue>"
+    }
+  ],
+  "summary": "<1-3 sentence summary: are there duplicates? was this recently fixed? should the new issue be closed as duplicate?>"
+}
+
+IMPORTANT:
+- Only flag as duplicate if the core problem is truly the same, not just topically related
+- For recently_fixed, only include issues that were closed AND directly address the same problem
+- If no duplicates or similar issues exist, set has_duplicates and has_similar to false with empty arrays
+`;
+
+        similarIssuesAnalysis = await callGitHubModels(similarPrompt);
+        const parsed = JSON.parse(similarIssuesAnalysis);
+        console.log(`   Duplicates: ${parsed.has_duplicates}, Similar: ${parsed.has_similar}`);
+        console.log(`   Summary: ${parsed.summary}`);
+    } catch (e) {
+        console.log(`   ⚠️  Similar issues search failed: ${e.message}`);
+    }
+
+    // --- Generate workaround suggestions (BUG/BREAK_FIX only) ---
+    let workaroundAnalysis = '';
+
+    if (["BUG", "BREAK_FIX"].includes(analysis.category)) {
+        console.log(`\n🛠️  Generating workaround suggestions...`);
+
+        const workaroundCtx = codeAnalysis ? `Code Analysis:\n${codeAnalysis}` : '';
+
+        const workaroundPrompt = `
+You are a senior support engineer on the mssql-python team — Microsoft's Python driver for SQL Server.
+A user has reported a ${analysis.category === "BREAK_FIX" ? "regression/break-fix" : "bug"}.
+Your job is to suggest practical workarounds the user can apply RIGHT NOW while the team works on a proper fix.
+
+Issue Title: ${issue.title}
+Issue Body:
+${(issue.body || "").slice(0, 2000)}
+
+${workaroundCtx}
+${codeContext}
+
+Provide workaround suggestions in JSON:
+{
+  "has_workaround": true/false,
+  "workarounds": [
+    {
+      "description": "<clear description of the workaround>",
+      "code_snippet": "<Python code snippet showing the workaround, if applicable>",
+      "limitations": "<any limitations or caveats of this workaround>",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "can_downgrade": true/false,
+  "downgrade_version": "<safe version to downgrade to, if applicable>",
+  "summary": "<1-2 sentence summary of available workarounds>"
+}
+
+IMPORTANT:
+- Only suggest workarounds you are confident about based on the code and issue description
+- Workarounds should be practical and safe for production use
+- If no reliable workaround exists, set has_workaround to false
+- For BREAK_FIX issues, always consider if downgrading to a previous version is viable
+- Code snippets should be complete and copy-pasteable
+`;
+
+        try {
+            workaroundAnalysis = await callGitHubModels(workaroundPrompt);
+            const parsed = JSON.parse(workaroundAnalysis);
+            console.log(`   Has workaround: ${parsed.has_workaround}`);
+            console.log(`   Summary: ${parsed.summary}`);
+            if (parsed.workarounds && parsed.workarounds.length > 0) {
+                for (const w of parsed.workarounds) {
+                    console.log(`   • ${w.description} [${w.confidence}]`);
+                }
+            }
+        } catch (e) {
+            console.log(`   ⚠️  Workaround generation failed: ${e.message}`);
+        }
+    }
+
+    // --- Generate suggested customer response (all categories) ---
+    console.log(`\n✉️  Generating suggested customer response...`);
+    let suggestedResponse = '';
+
+    const analysisContext = codeAnalysis
+        ? `Code Analysis:\n${codeAnalysis}`
+        : engineerGuidance
+            ? `Engineer Guidance:\n${engineerGuidance}`
+            : '';
+
+    const workaroundResponseCtx = workaroundAnalysis
+        ? `Workaround Analysis:\n${workaroundAnalysis}`
+        : '';
+
+    const similarResponseCtx = similarIssuesAnalysis
+        ? `Similar Issues Analysis:\n${similarIssuesAnalysis}`
+        : '';
+
+    const responsePrompt = `
+You are a senior support engineer on the mssql-python team — Microsoft's Python driver for SQL Server.
+A customer filed a GitHub issue and you need to craft a helpful, professional, and empathetic response
+that an engineer can copy-paste (or lightly edit) and post on the issue.
+
+Issue Category: ${analysis.category}
+Severity: ${analysis.severity}
+Issue Title: ${issue.title}
+Issue Author: @${issue.user.login}
+Issue Body:
+${(issue.body || '').slice(0, 3000)}
+
+${analysisContext}
+
+${workaroundResponseCtx}
+
+${similarResponseCtx}
+
+Write a suggested response following these guidelines:
+- Address the author by their GitHub username (@username)
+- Thank them for filing the issue
+- Acknowledge the specific problem or request they described
+- For BUG/BREAK_FIX: Let them know the team is investigating; ask for OS, Python version,
+  mssql-python version, SQL Server version, and a minimal repro script if not already provided;
+  if workarounds are available, mention them briefly
+- For FEATURE_REQUEST: Acknowledge the value of the request; mention the team will evaluate it;
+  ask for use-case details or code examples showing desired behavior if not provided
+- For DISCUSSION: Provide helpful guidance or clarification based on the analysis;
+  point to relevant docs or code if applicable
+- If similar or duplicate issues were found, mention them (e.g., "This looks related to #123")
+- Always ask for a minimal reproduction script/code snippet if the user hasn't provided one
+- Keep the tone warm, professional, and collaborative
+- Use Markdown formatting suitable for GitHub comments
+- Do NOT promise timelines or specific fixes
+- Do NOT reveal internal triage details or AI involvement
+- Keep it concise (under 200 words)
+
+Respond in JSON:
+{
+  "suggested_response": "<the full Markdown response ready to post on GitHub>"
+}
+`;
+
+    try {
+        const responseResult = await callGitHubModels(responsePrompt);
+        const parsed = JSON.parse(responseResult);
+        suggestedResponse = parsed.suggested_response || '';
+        console.log(`   ✅ Suggested response generated`);
+        console.log(`\n✉️  Suggested Response:\n${suggestedResponse}`);
+    } catch (e) {
+        console.log(`   ⚠️  Suggested response generation failed: ${e.message}`);
+    }
+
     // --- Send Teams notification ---
     console.log(`\n📤 Sending Teams notification...`);
     try {
-        const status = await sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, issue);
+        const status = await sendTeamsNotification(analysis, codeAnalysis, engineerGuidance, suggestedResponse, similarIssuesAnalysis, workaroundAnalysis, issue);
         console.log(`   ✅ Teams notification sent (HTTP ${status})`);
     } catch (e) {
         console.error(`   ❌ Teams notification failed: ${e.message}`);

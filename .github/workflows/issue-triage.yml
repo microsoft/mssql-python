@@ -228,7 +228,6 @@ jobs:
                 "implementation_approach": "<concrete implementation steps referencing specific functions/lines from the code — ONLY if issue_identified is true, otherwise empty string>",
                 "effort_estimate": "small|medium|large|epic",
                 "risks_and_tradeoffs": "<potential risks, backward compatibility concerns, or tradeoffs — ONLY if issue_identified is true, otherwise empty string>",
-                "suggested_response": "<a draft response the engineer could post on the issue. Always ask the user to share a minimal repro or code snippet that demonstrates the issue or desired behavior, if they haven't already provided one.>",
                 "related_considerations": ["<other things the team should think about — ONLY if issue_identified is true, otherwise empty array>"]
               }
 
@@ -243,8 +242,226 @@ jobs:
               }
             }
 
+            // --- Search for similar/duplicate issues and recent fixes ---
+            console.log('Searching for similar issues and recent fixes...');
+            let similarIssuesAnalysis = '';
+
+            try {
+              // Fetch recent open issues (last 30)
+              const openIssues = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 30,
+                sort: 'created',
+                direction: 'desc'
+              });
+
+              // Fetch recently closed issues (last 30)
+              const closedIssues = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'closed',
+                per_page: 30,
+                sort: 'updated',
+                direction: 'desc'
+              });
+
+              const allIssues = [...openIssues.data, ...closedIssues.data]
+                .filter(i => i.number !== issueNumber && !i.pull_request)
+                .map(i => ({
+                  number: i.number,
+                  title: i.title,
+                  state: i.state,
+                  labels: i.labels.map(l => l.name).join(', '),
+                  created_at: i.created_at,
+                  closed_at: i.closed_at,
+                  body_preview: (i.body || '').slice(0, 300)
+                }));
+
+              console.log(`Found ${allIssues.length} issues to compare against`);
+
+              const similarPrompt = `
+              You are an expert triage system for the mssql-python repository.
+              A new issue has been filed. Your job is to check if any similar or duplicate issues
+              already exist (open or recently closed/fixed).
+
+              NEW ISSUE:
+              Title: ${issueTitle}
+              Body: ${issueBody.slice(0, 2000)}
+              Keywords: ${analysis.keywords.join(', ')}
+
+              EXISTING ISSUES (recent open + recently closed):
+              ${JSON.stringify(allIssues, null, 2).slice(0, 6000)}
+
+              Analyze and respond in JSON:
+              {
+                "has_duplicates": true/false,
+                "has_similar": true/false,
+                "duplicate_issues": [
+                  {
+                    "issue_number": <number>,
+                    "title": "<title>",
+                    "state": "open|closed",
+                    "similarity": "duplicate|highly_similar|related",
+                    "explanation": "<why this is a duplicate/similar>"
+                  }
+                ],
+                "recently_fixed": [
+                  {
+                    "issue_number": <number>,
+                    "title": "<title>",
+                    "closed_at": "<date>",
+                    "relevance": "<how this fix relates to the new issue>"
+                  }
+                ],
+                "summary": "<1-3 sentence summary: are there duplicates? was this recently fixed? should the new issue be closed as duplicate?>"
+              }
+
+              IMPORTANT:
+              - Only flag as duplicate if the core problem is truly the same, not just topically related
+              - For recently_fixed, only include issues that were closed AND directly address the same problem
+              - If no duplicates or similar issues exist, set has_duplicates and has_similar to false with empty arrays
+              `;
+
+              const similarResult = await callGitHubModels(similarPrompt);
+              similarIssuesAnalysis = similarResult;
+              const parsed = JSON.parse(similarResult);
+              console.log(`Similar issues check: duplicates=${parsed.has_duplicates}, similar=${parsed.has_similar}`);
+            } catch (e) {
+              console.log(`Similar issues search failed: ${e.message}`);
+              similarIssuesAnalysis = '';
+            }
+
+            // --- Generate workaround suggestions (BUG/BREAK_FIX only) ---
+            let workaroundAnalysis = '';
+
+            if (['BUG', 'BREAK_FIX'].includes(analysis.category)) {
+              console.log('Generating workaround suggestions...');
+
+              const workaroundContext = codeAnalysis
+                ? `Code Analysis:\n${codeAnalysis}`
+                : '';
+
+              const workaroundPrompt = `
+              You are a senior support engineer on the mssql-python team — Microsoft's Python driver for SQL Server.
+              A user has reported a ${analysis.category === 'BREAK_FIX' ? 'regression/break-fix' : 'bug'}.
+              Your job is to suggest practical workarounds the user can apply RIGHT NOW while the team works on a proper fix.
+
+              Issue Title: ${issueTitle}
+              Issue Body:
+              ${issueBody.slice(0, 2000)}
+
+              ${workaroundContext}
+              ${codeContext}
+
+              Provide workaround suggestions in JSON:
+              {
+                "has_workaround": true/false,
+                "workarounds": [
+                  {
+                    "description": "<clear description of the workaround>",
+                    "code_snippet": "<Python code snippet showing the workaround, if applicable>",
+                    "limitations": "<any limitations or caveats of this workaround>",
+                    "confidence": "high|medium|low"
+                  }
+                ],
+                "can_downgrade": true/false,
+                "downgrade_version": "<safe version to downgrade to, if applicable>",
+                "summary": "<1-2 sentence summary of available workarounds>"
+              }
+
+              IMPORTANT:
+              - Only suggest workarounds you are confident about based on the code and issue description
+              - Workarounds should be practical and safe for production use
+              - If no reliable workaround exists, set has_workaround to false
+              - For BREAK_FIX issues, always consider if downgrading to a previous version is viable
+              - Code snippets should be complete and copy-pasteable
+              `;
+
+              try {
+                workaroundAnalysis = await callGitHubModels(workaroundPrompt);
+                const parsed = JSON.parse(workaroundAnalysis);
+                console.log(`Workaround analysis: has_workaround=${parsed.has_workaround}`);
+              } catch (e) {
+                console.log(`Workaround generation failed: ${e.message}`);
+                workaroundAnalysis = '';
+              }
+            }
+
             // NO labels modified on the issue — label info sent to Teams only
             // NO comment posted to the issue
+
+            // --- Generate suggested customer response (all categories) ---
+            console.log('Generating suggested customer response...');
+            let suggestedResponse = '';
+
+            const analysisContext = codeAnalysis
+              ? `Code Analysis:\n${codeAnalysis}`
+              : engineerGuidance
+                ? `Engineer Guidance:\n${engineerGuidance}`
+                : '';
+
+            const workaroundContext = workaroundAnalysis
+              ? `Workaround Analysis:\n${workaroundAnalysis}`
+              : '';
+
+            const similarContext = similarIssuesAnalysis
+              ? `Similar Issues Analysis:\n${similarIssuesAnalysis}`
+              : '';
+
+            const responsePrompt = `
+            You are a senior support engineer on the mssql-python team — Microsoft's Python driver for SQL Server.
+            A customer filed a GitHub issue and you need to craft a helpful, professional, and empathetic response
+            that an engineer can copy-paste (or lightly edit) and post on the issue.
+
+            Issue Category: ${analysis.category}
+            Severity: ${analysis.severity}
+            Issue Title: ${issueTitle}
+            Issue Author: @${issueAuthor}
+            Issue Body:
+            ${issueBody.slice(0, 3000)}
+
+            ${analysisContext}
+
+            ${workaroundContext}
+
+            ${similarContext}
+
+            Write a suggested response following these guidelines:
+            - Address the author by their GitHub username (@username)
+            - Thank them for filing the issue
+            - Acknowledge the specific problem or request they described
+            - For BUG/BREAK_FIX: Let them know the team is investigating; ask for OS, Python version,
+              mssql-python version, SQL Server version, and a minimal repro script if not already provided;
+              if workarounds are available, mention them briefly
+            - For FEATURE_REQUEST: Acknowledge the value of the request; mention the team will evaluate it;
+              ask for use-case details or code examples showing desired behavior if not provided
+            - For DISCUSSION: Provide helpful guidance or clarification based on the analysis;
+              point to relevant docs or code if applicable
+            - If similar or duplicate issues were found, mention them (e.g., "This looks related to #123")
+            - Always ask for a minimal reproduction script/code snippet if the user hasn't provided one
+            - Keep the tone warm, professional, and collaborative
+            - Use Markdown formatting suitable for GitHub comments
+            - Do NOT promise timelines or specific fixes
+            - Do NOT reveal internal triage details or AI involvement
+            - Keep it concise (under 200 words)
+
+            Respond in JSON:
+            {
+              "suggested_response": "<the full Markdown response ready to post on GitHub>"
+            }
+            `;
+
+            try {
+              const responseResult = await callGitHubModels(responsePrompt);
+              const parsed = JSON.parse(responseResult);
+              suggestedResponse = parsed.suggested_response || '';
+              console.log('Suggested customer response generated');
+            } catch (e) {
+              console.log(`Suggested response generation failed: ${e.message}`);
+              suggestedResponse = '';
+            }
 
             // --- Store outputs ---
             core.setOutput('category', analysis.category);
@@ -256,6 +473,9 @@ jobs:
             core.setOutput('keywords', analysis.keywords.join(', '));
             core.setOutput('code_analysis', codeAnalysis);
             core.setOutput('engineer_guidance', engineerGuidance);
+            core.setOutput('suggested_response', suggestedResponse);
+            core.setOutput('similar_issues', similarIssuesAnalysis);
+            core.setOutput('workaround', workaroundAnalysis);
             core.setOutput('issue_number', issueNumber.toString());
             core.setOutput('issue_title', issueTitle);
             core.setOutput('issue_url', issue.html_url);
@@ -271,6 +491,9 @@ jobs:
       keywords: ${{ steps.triage.outputs.keywords }}
       code_analysis: ${{ steps.triage.outputs.code_analysis }}
       engineer_guidance: ${{ steps.triage.outputs.engineer_guidance }}
+      suggested_response: ${{ steps.triage.outputs.suggested_response }}
+      similar_issues: ${{ steps.triage.outputs.similar_issues }}
+      workaround: ${{ steps.triage.outputs.workaround }}
       issue_number: ${{ steps.triage.outputs.issue_number }}
       issue_title: ${{ steps.triage.outputs.issue_title }}
       issue_url: ${{ steps.triage.outputs.issue_url }}
@@ -289,6 +512,9 @@ jobs:
       keywords: ${{ needs.triage.outputs.keywords }}
       code_analysis: ${{ needs.triage.outputs.code_analysis }}
       engineer_guidance: ${{ needs.triage.outputs.engineer_guidance }}
+      suggested_response: ${{ needs.triage.outputs.suggested_response }}
+      similar_issues: ${{ needs.triage.outputs.similar_issues }}
+      workaround: ${{ needs.triage.outputs.workaround }}
       issue_number: ${{ needs.triage.outputs.issue_number }}
       issue_title: ${{ needs.triage.outputs.issue_title }}
       issue_url: ${{ needs.triage.outputs.issue_url }}
