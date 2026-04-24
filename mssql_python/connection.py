@@ -20,10 +20,10 @@ import threading
 import mssql_python
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
-    sanitize_connection_string,
     sanitize_user_input,
     validate_attribute_value,
 )
+from mssql_python.connection_string_parser import sanitize_connection_string
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager

@@ -150,8 +150,9 @@ class TestLogFile:
         setup_logging(log_file_path=custom_path)
         logger.debug("Test message")
 
-        assert logger.log_file == custom_path
-        assert os.path.exists(custom_path)
+        resolved = os.path.realpath(os.path.abspath(custom_path))
+        assert logger.log_file == resolved
+        assert os.path.exists(resolved)
 
     def test_custom_log_file_path_creates_directory(self, cleanup_logger, temp_log_dir):
         """Custom log file path should create parent directories"""
@@ -178,6 +179,36 @@ class TestLogFile:
         custom_path = os.path.join(temp_log_dir, "test.json")
         with pytest.raises(ValueError, match="Invalid log file extension"):
             setup_logging(log_file_path=custom_path)
+
+    def test_path_traversal_rejected(self, cleanup_logger, monkeypatch, tmp_path):
+        """Relative paths with traversal outside a controlled cwd should be rejected"""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError, match="Path traversal is not permitted"):
+            setup_logging(log_file_path="../evil.log")
+
+    def test_path_traversal_dot_dot_rejected(self, cleanup_logger, monkeypatch, tmp_path):
+        """Relative paths using ../ to escape a controlled cwd should be rejected"""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError, match="Path traversal is not permitted"):
+            setup_logging(log_file_path="../nested/evil.log")
+
+    def test_path_traversal_different_drive(self, cleanup_logger, monkeypatch, tmp_path):
+        """commonpath ValueError (e.g. different drives on Windows) should be rejected"""
+        monkeypatch.chdir(tmp_path)
+
+        def mock_commonpath(paths):
+            raise ValueError("Can't mix absolute and relative paths")
+
+        monkeypatch.setattr(os.path, "commonpath", mock_commonpath)
+        with pytest.raises(ValueError, match="Path traversal is not permitted"):
+            setup_logging(log_file_path="subdir/test.log")
+
+    def test_absolute_path_allowed(self, cleanup_logger, temp_log_dir):
+        """Absolute paths should be allowed (developer-controlled)"""
+        custom_path = os.path.join(temp_log_dir, "absolute_test.log")
+        setup_logging(log_file_path=custom_path)
+        logger.debug("Test message")
+        assert os.path.exists(os.path.realpath(os.path.abspath(custom_path)))
 
 
 class TestCSVFormat:
@@ -314,19 +345,85 @@ class TestPasswordSanitization:
         assert "secret123" not in sanitized
 
     def test_pwd_case_insensitive(self, cleanup_logger):
-        """PWD/Pwd/pwd should all be sanitized (case-insensitive)"""
+        """PWD/Pwd/pwd should all be sanitized to canonical PWD=***"""
         from mssql_python.helpers import sanitize_connection_string
 
         test_cases = [
-            ("Server=localhost;PWD=secret;Database=test", "PWD=***"),
-            ("Server=localhost;Pwd=secret;Database=test", "Pwd=***"),
-            ("Server=localhost;pwd=secret;Database=test", "pwd=***"),
+            "Server=localhost;PWD=secret;Database=test",
+            "Server=localhost;Pwd=secret;Database=test",
+            "Server=localhost;pwd=secret;Database=test",
         ]
 
-        for conn_str, expected in test_cases:
+        for conn_str in test_cases:
             sanitized = sanitize_connection_string(conn_str)
-            assert expected in sanitized
+            assert "PWD=***" in sanitized
             assert "secret" not in sanitized
+
+    def test_pwd_braced_value_with_semicolon(self, cleanup_logger):
+        """PWD with braced value containing semicolons must be fully masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;PWD={Top;Secret};Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "PWD=***" in sanitized
+        assert "Top" not in sanitized
+        assert "Secret" not in sanitized
+
+    def test_pwd_braced_value_with_escaped_braces(self, cleanup_logger):
+        """PWD with escaped closing braces (}}) must be fully masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;PWD={p}}w{{d};Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "PWD=***" in sanitized
+        assert "p}w{d" not in sanitized
+
+    def test_pwd_braced_value_multiple_semicolons(self, cleanup_logger):
+        """PWD with multiple semicolons inside braces must be fully masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;PWD={a;b;c;d};Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "PWD=***" in sanitized
+        for fragment in ("a;b;c;d", "{a;", "b;c", "c;d}"):
+            assert fragment not in sanitized
+
+    def test_pwd_at_end_of_string(self, cleanup_logger):
+        """PWD at end of connection string (no trailing semicolon) must be masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;Database=test;PWD=secret"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "PWD=***" in sanitized
+        assert "secret" not in sanitized
+
+    def test_no_pwd_preserves_non_sensitive_fields(self, cleanup_logger):
+        """Connection string without PWD should preserve non-sensitive fields, even if reformatted."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;Database=test;UID=user"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "Server=localhost" in sanitized
+        assert "Database=test" in sanitized
+        assert "UID=user" in sanitized
+        assert "PWD=***" not in sanitized
+        assert "redacted" not in sanitized.lower()
+
+    def test_malformed_string_fully_redacted(self, cleanup_logger):
+        """Malformed connection string should be fully redacted, not partially leaked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "PWD={unclosed"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "unclosed" not in sanitized
+        assert "PWD" not in sanitized
+        assert "redacted" in sanitized.lower()
 
     def test_explicit_sanitization_in_logging(self, cleanup_logger):
         """Verify that explicit sanitization works when logging"""
