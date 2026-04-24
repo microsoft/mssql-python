@@ -70,3 +70,6 @@ learnings/
 # Triage test output files
 triage-out*.txt
 triage-err*.txt
+
+# Local triage test script
+test-triage-local.js
