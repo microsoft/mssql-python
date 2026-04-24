@@ -35,24 +35,20 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.5.0
+## What's new in v1.6.0
 
-### Features
+### Enhancements
 
-- **Apache Arrow Fetch Support** - Added high-performance Arrow-based data fetching via `cursor.arrow()`, `cursor.arrow_batch()`, and `cursor.arrow_reader()`, enabling zero-copy integration with pandas, Polars, and other Arrow-native data frameworks.
-- **sql_variant Type Support** - Added support for the `sql_variant` complex SQL Server data type.
-- **Native UUID Support** - Added native support for fetching and binding UUID/GUID values without manual string conversion.
-- **Row Class Export** - `Row` class is now publicly exported from the top-level `mssql_python` module for easier use in type annotations and downstream code.
+- **Connection String Sanitization** - Connection string sanitization has been migrated from regex-based to parser-based logic, making it more robust and consistent with connection string parsing rules.
 
 ### Bug Fixes
 
-- **Qmark False Positive Fix** - Fixed false positive qmark (`?`) detection for `?` appearing inside bracketed identifiers, string literals, and SQL comments.
-- **NULL VARBINARY Parameter Fix** - Fixed NULL parameter type mapping for VARBINARY columns.
-- **Bulkcopy Auth Fix** - Fixed stale auth fields being retained in `pycore_context` after token acquisition during bulk copy operations.
-- **Explicit Module Exports** - Added explicit `__all__` exports from the main library module to prevent import resolution issues.
-- **Credential Cache Fix** - Fixed credential instance cache to correctly reuse and invalidate cached credential objects.
-- **datetime.time Microseconds Fix** - Fixed stored `datetime.time` values incorrectly having `microseconds` set to zero.
-- **Arrow Time Fractional Seconds Fix** - Fixed time handling in Arrow integration to correctly include fractional seconds.
+- **GIL Release During ODBC Connect/Disconnect** - The driver now releases the GIL during blocking ODBC connect and disconnect calls, improving concurrency for multi-threaded applications.
+- **setinputsizes() SQL_DECIMAL Crash Fix** - Fixed a crash in `cursor.setinputsizes()` when specifying `SQL_DECIMAL` type hints.
+- **ODBC Catalog fetchone() Fix** - Fixed an issue where `fetchone()` on ODBC catalog method results returned incorrect data.
+- **cursor.execute() Invalid Cursor State Fix** - Fixed `cursor.execute()` raising an Invalid cursor state error when called with `reset_cursor=False`.
+- **executemany Type Annotation Fix** - Corrected the type annotation for `executemany` `seq_of_parameters` parameter to accept `Mapping` types.
+- **setup_logging Path Traversal Guard** - Added path canonicalization and traversal guard to `setup_logging`'s `log_file_path` parameter to prevent path traversal issues.
  
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
