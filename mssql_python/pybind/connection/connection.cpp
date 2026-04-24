@@ -191,7 +191,12 @@ void Connection::commit() {
     }
     updateLastUsed();
     LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking SQLEndTran network round-trip.
+        py::gil_scoped_release release;
+        ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    }
     checkError(ret);
 }
 
@@ -201,7 +206,12 @@ void Connection::rollback() {
     }
     updateLastUsed();
     LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking SQLEndTran network round-trip.
+        py::gil_scoped_release release;
+        ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    }
     checkError(ret);
 }
 
