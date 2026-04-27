@@ -31,8 +31,10 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // --- Helper function for GitHub Models (with retry on transient errors) ---
-            async function callGitHubModels(prompt) {
+            // --- GitHub Models helper: retry on transient errors, fall back across model chain ---
+            const MODEL_CHAIN = ["openai/gpt-4.1", "openai/gpt-4.1-mini"];
+
+            async function callModelOnce(model, prompt) {
               const token = process.env.GITHUB_TOKEN;
               const url = 'https://models.github.ai/inference/chat/completions';
               const maxAttempts = 4;
@@ -49,7 +51,7 @@ jobs:
                       "Content-Type": "application/json"
                     },
                     body: JSON.stringify({
-                      model: "openai/gpt-4.1-mini",
+                      model,
                       messages: [{ role: "user", content: prompt }],
                       temperature: 0.1,
                       response_format: { type: "json_object" }
@@ -59,7 +61,7 @@ jobs:
                   lastErr = networkErr;
                   if (attempt < maxAttempts) {
                     const delay = Math.min(2000 * Math.pow(2, attempt - 1), 16000);
-                    console.log(`GitHub Models network error (attempt ${attempt}/${maxAttempts}): ${networkErr.message}. Retrying in ${delay}ms...`);
+                    console.log(`GitHub Models network error on ${model} (attempt ${attempt}/${maxAttempts}): ${networkErr.message}. Retrying in ${delay}ms...`);
                     await new Promise(r => setTimeout(r, delay));
                     continue;
                   }
@@ -72,16 +74,32 @@ jobs:
                 }
 
                 const errText = await response.text();
-                lastErr = new Error(`GitHub Models error: ${response.status} - ${errText}`);
+                lastErr = new Error(`GitHub Models error on ${model}: ${response.status} - ${errText}`);
 
                 if (retryableStatuses.has(response.status) && attempt < maxAttempts) {
                   const delay = Math.min(2000 * Math.pow(2, attempt - 1), 16000);
-                  console.log(`GitHub Models transient ${response.status} (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`);
+                  console.log(`GitHub Models transient ${response.status} on ${model} (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`);
                   await new Promise(r => setTimeout(r, delay));
                   continue;
                 }
 
                 throw lastErr;
+              }
+              throw lastErr;
+            }
+
+            async function callGitHubModels(prompt) {
+              let lastErr;
+              for (let i = 0; i < MODEL_CHAIN.length; i++) {
+                const model = MODEL_CHAIN[i];
+                try {
+                  return await callModelOnce(model, prompt);
+                } catch (e) {
+                  lastErr = e;
+                  if (i < MODEL_CHAIN.length - 1) {
+                    console.log(`Model ${model} unavailable after retries — falling back to ${MODEL_CHAIN[i + 1]}. Last error: ${e.message}`);
+                  }
+                }
               }
               throw lastErr;
             }
