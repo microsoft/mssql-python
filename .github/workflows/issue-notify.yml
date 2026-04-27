@@ -227,21 +227,25 @@ jobs:
           # Parse and format workaround analysis
           WORKAROUND_RAW="$INPUT_WORKAROUND"
           if [ -n "$WORKAROUND_RAW" ]; then
-            # Defensive: if the model emitted code_snippet as a single line (no real \n),
-            # insert newlines before common Python statement keywords so the rendered <pre>
-            # block shows readable, multi-line code.
+            # Defensive: code_snippet often arrives with multiple statements collapsed onto
+            # one line (or just two crowded lines). Always normalize: insert \n before every
+            # Python statement keyword so the rendered <code><br> output is one statement per line.
             WORKAROUND_RAW=$(printf '%s' "$WORKAROUND_RAW" | jq -c '
               def fixcode(s):
-                if (s | type) != "string" or (s | length) == 0 or (s | contains("\n")) then s
+                if (s | type) != "string" or (s | length) == 0 then s
                 else
                   s
-                  | gsub("(?<kw>\\bfrom\\s+[\\w\\.]+\\s+import\\b|\\bimport\\s+[\\w\\.]+|\\bdef\\s|\\bclass\\s|\\btry:|\\bexcept\\b|\\bfinally:|\\belse:|\\belif\\s|\\bif\\s|\\bfor\\s|\\bwhile\\s|\\bwith\\s|\\breturn\\b|\\braise\\b)"; "\n\(.kw)")
+                  | gsub("(?<kw>\\bfrom\\s+[\\w\\.]+\\s+import\\b|\\bimport\\s+[\\w\\.]+|\\bdef\\s|\\bclass\\s|\\btry:|\\bexcept\\b|\\bfinally:|\\belse:|\\belif\\s|\\bif\\s|\\bfor\\s|\\bwhile\\s|\\bwith\\s|\\breturn\\b|\\braise\\b|\\b#\\s)"; "\n\(.kw)")
+                  | gsub("\n+"; "\n")
                   | sub("^\n"; "")
                 end;
               if (.workarounds | type) == "array"
               then .workarounds |= map(.code_snippet = fixcode(.code_snippet // ""))
               else . end
             ' 2>/dev/null || printf '%s' "$WORKAROUND_RAW")
+            echo "----- DEBUG: normalized WORKAROUND_RAW -----"
+            printf '%s\n' "$WORKAROUND_RAW"
+            echo "--------------------------------------------"
             WORKAROUND=$(echo "$WORKAROUND_RAW" | jq -r '
               [
                 (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
@@ -332,6 +336,12 @@ jobs:
                 "<a href=\"" + $repo_url + "\">📂 View Repository</a></p>"
               )
             }' > /tmp/teams_payload.json
+
+          echo "----- DEBUG: WORKAROUND HTML -----"
+          printf '%s\n' "$WORKAROUND"
+          echo "----- DEBUG: teams_payload.json -----"
+          cat /tmp/teams_payload.json
+          echo "-------------------------------------"
 
           echo "Sending notification to Teams Channel..."
 
