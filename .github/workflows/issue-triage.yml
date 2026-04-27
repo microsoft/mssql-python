@@ -388,7 +388,8 @@ jobs:
                 "workarounds": [
                   {
                     "description": "<clear description of the workaround>",
-                    "code_snippet": "<Python code snippet showing the workaround, if applicable>",
+                    "code_snippet": "<code snippet showing the workaround, if applicable>",
+                    "language": "python|cpp|sql|shell|other",
                     "limitations": "<any limitations or caveats of this workaround>",
                     "confidence": "high|medium|low"
                   }
@@ -404,7 +405,8 @@ jobs:
               - If no reliable workaround exists, set has_workaround to false
               - For BREAK_FIX issues, always consider if downgrading to a previous version is viable
               - Code snippets should be complete and copy-pasteable
-              - CRITICAL: code_snippet MUST be a multi-line string with REAL newline characters (\n) between every Python statement. Do NOT collapse statements onto a single line. Every "import", "from ... import", "def", "class", "try:", "except", "if", "else:", "for", "while", "return", and assignment must start on its own line. Indent body lines with 4 spaces.
+              - CRITICAL: code_snippet MUST be a multi-line string with REAL newline characters (\n) between every statement. Do NOT collapse statements onto a single line. Indent body lines with 4 spaces (Python) or proper braces (C++).
+              - Set "language" to one of: "python" (default for mssql-python), "cpp" (for the pybind/native layer), "sql", "shell", or "other".
               `;
 
               try {

@@ -228,19 +228,41 @@ jobs:
           WORKAROUND_RAW="$INPUT_WORKAROUND"
           if [ -n "$WORKAROUND_RAW" ]; then
             # Defensive: code_snippet often arrives with multiple statements collapsed onto
-            # one line (or just two crowded lines). Always normalize: insert \n before every
-            # Python statement keyword so the rendered <code><br> output is one statement per line.
+            # one line. Always normalize: insert \n before every statement keyword (per language)
+            # so the rendered <code> block shows one statement per line.
+            # Also: if "language" is missing, infer it from the code via simple heuristics.
             WORKAROUND_RAW=$(printf '%s' "$WORKAROUND_RAW" | jq -c '
-              def fixcode(s):
+              def detect_lang(s):
+                if (s | type) != "string" or (s | length) == 0 then "other"
+                elif (s | test("(?m)^\\s*#\\s*include\\b")) or (s | test("\\bstd::")) or (s | test("\\bvoid\\s+\\w+\\s*\\(")) or (s | test("\\bint\\s+main\\s*\\(")) then "cpp"
+                elif (s | test("(?i)\\b(SELECT|INSERT|UPDATE|DELETE|CREATE\\s+TABLE)\\b")) and ((s | test("\\bdef\\s")) | not) then "sql"
+                elif (s | test("\\bdef\\s")) or (s | test("\\bimport\\s")) or (s | test("\\bfrom\\s+[\\w\\.]+\\s+import\\b")) or (s | test("\\bclass\\s+\\w+\\s*[:(]")) or (s | test("\\bprint\\s*\\(")) then "python"
+                else "other" end;
+              def split_python(s):
+                s
+                | gsub("(?<kw>\\bfrom\\s+[\\w\\.]+\\s+import\\b|\\bimport\\s+[\\w\\.]+|\\bdef\\s|\\bclass\\s|\\btry:|\\bexcept\\b|\\bfinally:|\\belse:|\\belif\\s|\\bif\\s|\\bfor\\s|\\bwhile\\s|\\bwith\\s|\\breturn\\b|\\braise\\b|\\b#\\s)"; "\n\(.kw)");
+              def split_cpp(s):
+                s
+                | gsub("(?<kw>\\b#include\\b|\\busing\\s+namespace\\b|\\bvoid\\s+\\w+\\s*\\(|\\bint\\s+\\w+\\s*\\(|\\breturn\\b|\\bif\\s*\\(|\\belse\\b|\\bfor\\s*\\(|\\bwhile\\s*\\(|\\btry\\s*\\{|\\bcatch\\s*\\(|\\bclass\\s+\\w+|\\bstruct\\s+\\w+|\\btemplate\\s*<)"; "\n\(.kw)")
+                | gsub(";\\s*"; ";\n");
+              def split_sql(s):
+                s
+                | gsub("(?i)(?<kw>\\bSELECT\\b|\\bFROM\\b|\\bWHERE\\b|\\bJOIN\\b|\\bINSERT\\s+INTO\\b|\\bUPDATE\\b|\\bDELETE\\b|\\bCREATE\\s+(TABLE|VIEW|INDEX)\\b|\\bGROUP\\s+BY\\b|\\bORDER\\s+BY\\b)"; "\n\(.kw)");
+              def fixcode(s; lang):
                 if (s | type) != "string" or (s | length) == 0 then s
                 else
-                  s
-                  | gsub("(?<kw>\\bfrom\\s+[\\w\\.]+\\s+import\\b|\\bimport\\s+[\\w\\.]+|\\bdef\\s|\\bclass\\s|\\btry:|\\bexcept\\b|\\bfinally:|\\belse:|\\belif\\s|\\bif\\s|\\bfor\\s|\\bwhile\\s|\\bwith\\s|\\breturn\\b|\\braise\\b|\\b#\\s)"; "\n\(.kw)")
+                  ( if   lang == "python" then split_python(s)
+                    elif lang == "cpp"    then split_cpp(s)
+                    elif lang == "sql"    then split_sql(s)
+                    else s end )
                   | gsub("\n+"; "\n")
                   | sub("^\n"; "")
                 end;
               if (.workarounds | type) == "array"
-              then .workarounds |= map(.code_snippet = fixcode(.code_snippet // ""))
+              then .workarounds |= map(
+                .language = ((.language // "") | ascii_downcase | if . == "" then detect_lang(.code_snippet // "") else . end)
+                | .code_snippet = fixcode(.code_snippet // ""; .language)
+              )
               else . end
             ' 2>/dev/null || printf '%s' "$WORKAROUND_RAW")
             echo "----- DEBUG: normalized WORKAROUND_RAW -----"
@@ -250,7 +272,7 @@ jobs:
               [
                 (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
                 (if .has_workaround and .workarounds and (.workarounds | length) > 0
-                 then "<b>Workarounds:</b><br>" + ([.workarounds | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". <b>" + (.value.description | @html) + "</b> [" + (if (.value.confidence | tostring) == "high" or (.value.confidence | tostring) == "medium" or (.value.confidence | tostring) == "low" then (.value.confidence | tostring) else "unknown" end) + " confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: " + (.value.limitations | @html) + (if .value.code_snippet and (.value.code_snippet | length) > 0 then "<br>&nbsp;&nbsp;&nbsp;&nbsp;Code:<br>" + (.value.code_snippet | @html | gsub("\t"; "    ") | gsub(" "; "&nbsp;") | split("\n") | map("&nbsp;&nbsp;&nbsp;&nbsp;<code>" + . + "</code>") | join("<br>")) else "" end)] | join("<br>"))
+                 then "<b>Workarounds:</b><br>" + ([.workarounds | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". <b>" + (.value.description | @html) + "</b> [" + (if (.value.confidence | tostring) == "high" or (.value.confidence | tostring) == "medium" or (.value.confidence | tostring) == "low" then (.value.confidence | tostring) else "unknown" end) + " confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: " + (.value.limitations | @html) + (if .value.code_snippet and (.value.code_snippet | length) > 0 then "<br>&nbsp;&nbsp;&nbsp;&nbsp;Code (" + ((.value.language // "other") | ascii_upcase | @html) + "):<br>&nbsp;&nbsp;&nbsp;&nbsp;<code>" + (.value.code_snippet | @html | gsub("\t"; "    ") | gsub(" "; "&nbsp;") | gsub("\n"; "<br>&nbsp;&nbsp;&nbsp;&nbsp;")) + "</code>" else "" end)] | join("<br>"))
                  else empty end),
                 (if .can_downgrade == true and .downgrade_version
                  then "⬇️ <b>Safe to downgrade to:</b> " + (.downgrade_version | @html)
