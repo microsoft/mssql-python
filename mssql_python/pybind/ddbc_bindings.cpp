@@ -1383,7 +1383,7 @@ SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataT
         ThrowStdException("SQLGetTypeInfo function not loaded");
     }
 
-    // Release the GIL during the blocking ODBC catalog call (issue #540).
+    // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
     return SQLGetTypeInfo_ptr(StatementHandle->get(), DataType);
 }
@@ -1407,7 +1407,7 @@ SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, const py::object& cat
     std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
     std::vector<SQLWCHAR> procedureBuf = WStringToSQLWCHAR(procedure);
 
-    // Release the GIL during the blocking ODBC catalog call (issue #540).
+    // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
     return SQLProcedures_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
@@ -1455,7 +1455,7 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pk
     std::vector<SQLWCHAR> fkSchemaBuf = WStringToSQLWCHAR(fkSchema);
     std::vector<SQLWCHAR> fkTableBuf = WStringToSQLWCHAR(fkTable);
 
-    // Release the GIL during the blocking ODBC catalog call (issue #540).
+    // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
     return SQLForeignKeys_ptr(
         StatementHandle->get(), pkCatalog.empty() ? nullptr : pkCatalogBuf.data(),
@@ -1495,7 +1495,7 @@ SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, const py::object& ca
     std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
     std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
 
-    // Release the GIL during the blocking ODBC catalog call (issue #540).
+    // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
     return SQLPrimaryKeys_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
@@ -1530,7 +1530,7 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& cat
     std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
     std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
 
-    // Release the GIL during the blocking ODBC catalog call (issue #540).
+    // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
     return SQLStatistics_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
@@ -1568,7 +1568,7 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
     std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(tableStr);
     std::vector<SQLWCHAR> columnBuf = WStringToSQLWCHAR(columnStr);
 
-    // Release the GIL during the blocking ODBC catalog call (issue #540).
+    // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
     return SQLColumns_ptr(
         StatementHandle->get(), catalogStr.empty() ? nullptr : catalogBuf.data(),
@@ -1800,7 +1800,7 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::wstring& catal
 
     SQLRETURN ret;
     {
-        // Release the GIL during the blocking ODBC catalog call (issue #540).
+        // Release the GIL during the blocking ODBC catalog call
         py::gil_scoped_release release;
         ret = SQLTables_ptr(StatementHandle->get(), catalogPtr, catalogLen, schemaPtr,
                             schemaLen, tablePtr, tableLen, tableTypePtr, tableTypeLen);
@@ -1862,7 +1862,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         // according to DDBC documentation -
         // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
         {
-            // Release the GIL during the blocking ODBC call (issue #540).
+            // Release the GIL during the blocking ODBC call
             py::gil_scoped_release release;
             rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
         }
@@ -2992,7 +2992,7 @@ SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT ident
     std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
     std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
 
-    // Release the GIL during the blocking ODBC catalog call (issue #540).
+    // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
     return SQLSpecialColumns_ptr(
         StatementHandle->get(), identifierType, catalog.empty() ? nullptr : catalogBuf.data(),
@@ -3019,7 +3019,7 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    // Release the GIL during the blocking ODBC call (issue #540).
+    // Release the GIL during the blocking ODBC call
     py::gil_scoped_release release;
     return SQLFetch_ptr(StatementHandle->get());
 }
@@ -3036,7 +3036,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         std::vector<char> chunk(DAE_CHUNK_SIZE, 0);
         SQLLEN actualRead = 0;
         {
-            // Release the GIL during blocking SQLGetData LOB streaming (issue #540).
+            // Release the GIL during blocking SQLGetData LOB streaming
             py::gil_scoped_release release;
             ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk.data(), DAE_CHUNK_SIZE, &actualRead);
         }
@@ -3801,7 +3801,7 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
     // Perform scroll operation
     SQLRETURN ret;
     {
-        // Release the GIL during the blocking ODBC fetch (issue #540).
+        // Release the GIL during the blocking ODBC fetch
         py::gil_scoped_release release;
         ret = SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset);
     }
@@ -3994,7 +3994,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
     {
-        // Release the GIL during the blocking ODBC fetch (issue #540).
+        // Release the GIL during the blocking ODBC fetch
         py::gil_scoped_release release;
         ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     }
@@ -4473,7 +4473,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             lobColumns.size());
         while (numRowsFetched < (SQLULEN)fetchSize) {
             {
-                // Release GIL during the blocking fetch (issue #540).
+                // Release GIL during the blocking fetch
                 py::gil_scoped_release release;
                 ret = SQLFetch_ptr(hStmt);
             }
@@ -4862,7 +4862,7 @@ SQLRETURN FetchArrowBatch_wrap(
             fetchStateGuard.setRowArraySize(spaceLeftInArrowBatch);
         }
         {
-            // Release GIL during the blocking ODBC fetch (issue #540).
+            // Release GIL during the blocking ODBC fetch
             py::gil_scoped_release release;
             ret = SQLFetch_ptr(hStmt);
         }
@@ -5618,7 +5618,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
             lobColumns.size());
         while (true) {
             {
-                // Release GIL during the blocking fetch (issue #540).
+                // Release GIL during the blocking fetch
                 py::gil_scoped_release release;
                 ret = SQLFetch_ptr(hStmt);
             }
@@ -5737,7 +5737,7 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
 
     // Assume hStmt is already allocated and a query has been executed
     {
-        // Release the GIL during the blocking ODBC fetch (issue #540).
+        // Release the GIL during the blocking ODBC fetch
         py::gil_scoped_release release;
         ret = SQLFetch_ptr(hStmt);
     }
@@ -5764,7 +5764,7 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    // Release the GIL during the blocking ODBC call (issue #540).
+    // Release the GIL during the blocking ODBC call
     py::gil_scoped_release release;
     return SQLMoreResults_ptr(StatementHandle->get());
 }
