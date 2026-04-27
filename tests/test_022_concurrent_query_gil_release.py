@@ -36,7 +36,6 @@ import pytest
 import mssql_python
 from mssql_python import connect
 
-
 WAITFOR_SECONDS = 2
 WAITFOR_SQL = f"WAITFOR DELAY '00:00:0{WAITFOR_SECONDS}'"
 
