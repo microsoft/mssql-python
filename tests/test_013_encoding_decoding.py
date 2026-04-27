@@ -7256,5 +7256,122 @@ def test_dae_encoding_large_string(db_connection):
         cursor.close()
 
 
+def test_varchar_utf8_collation_unicode_roundtrip(db_connection):
+    """Test that VARCHAR columns with UTF-8 collation properly round-trip Unicode data.
+
+    This tests the scenario where a VARCHAR column uses a UTF-8 collation
+    (e.g., Latin1_General_100_CI_AS_SC_UTF8) which enables storing full Unicode
+    in VARCHAR. The ODBC driver on Windows converts SQL_C_CHAR data to the
+    system ANSI code page (e.g., CP1252), which is lossy for non-Latin characters.
+    The fix fetches such columns as SQL_C_WCHAR (UTF-16LE) to preserve all Unicode.
+
+    Covers: fetchone, fetchall, fetchmany paths.
+    """
+    cursor = db_connection.cursor()
+
+    try:
+        # Create table with UTF-8 collation on VARCHAR column
+        cursor.execute("""
+            CREATE TABLE #test_varchar_utf8_collation (
+                id INT PRIMARY KEY,
+                varchar_utf8 VARCHAR(200) COLLATE Latin1_General_100_CI_AS_SC_UTF8,
+                nvarchar_ref NVARCHAR(200)
+            )
+        """)
+
+        # Configure UTF-8 decoding for SQL_CHAR (VARCHAR)
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8")
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le")
+
+        # Test cases covering BMP and supplementary plane characters
+        test_cases = [
+            (1, "Hello World"),           # ASCII baseline
+            (2, "Grüße"),                 # German - extended Latin (in CP1252 range)
+            (3, "你好世界"),               # Chinese - outside CP1252
+            (4, "こんにちは"),             # Japanese Hiragana - outside CP1252
+            (5, "Привет"),               # Russian Cyrillic - outside CP1252
+            (6, "Hello 世界"),             # Mixed ASCII + CJK
+            (7, "😀😃😄😁"),             # Emoji - supplementary plane (4-byte UTF-8)
+            (8, "Ελληνικά"),             # Greek
+            (9, "مرحبا"),                # Arabic
+            (10, "café résumé naïve"),    # French accented
+        ]
+
+        # Insert using parameterized queries
+        for id_val, text in test_cases:
+            cursor.execute(
+                "INSERT INTO #test_varchar_utf8_collation (id, varchar_utf8, nvarchar_ref) "
+                "VALUES (?, ?, ?)",
+                id_val, text, text,
+            )
+
+        # ---- Test fetchone path ----
+        for id_val, expected_text in test_cases:
+            cursor.execute(
+                "SELECT varchar_utf8, nvarchar_ref FROM #test_varchar_utf8_collation WHERE id = ?",
+                id_val,
+            )
+            row = cursor.fetchone()
+            assert row is not None, f"No row returned for id={id_val}"
+
+            varchar_result = row[0]
+            nvarchar_result = row[1]
+
+            # NVARCHAR should always work (baseline check)
+            assert nvarchar_result == expected_text, (
+                f"NVARCHAR mismatch for id={id_val}: "
+                f"expected {expected_text!r}, got {nvarchar_result!r}"
+            )
+
+            # VARCHAR with UTF-8 collation should also return correct str
+            assert isinstance(varchar_result, str), (
+                f"VARCHAR UTF-8 returned {type(varchar_result).__name__} instead of str "
+                f"for id={id_val} ({expected_text!r}): got {varchar_result!r}"
+            )
+            assert varchar_result == expected_text, (
+                f"VARCHAR UTF-8 mismatch for id={id_val}: "
+                f"expected {expected_text!r}, got {varchar_result!r}"
+            )
+
+        # ---- Test fetchall path ----
+        cursor.execute(
+            "SELECT id, varchar_utf8, nvarchar_ref "
+            "FROM #test_varchar_utf8_collation ORDER BY id"
+        )
+        all_rows = cursor.fetchall()
+        assert len(all_rows) == len(test_cases), (
+            f"fetchall row count mismatch: expected {len(test_cases)}, got {len(all_rows)}"
+        )
+        for row, (expected_id, expected_text) in zip(all_rows, test_cases):
+            assert row[1] == expected_text, (
+                f"fetchall VARCHAR UTF-8 mismatch for id={expected_id}: "
+                f"expected {expected_text!r}, got {row[1]!r}"
+            )
+            assert row[2] == expected_text, (
+                f"fetchall NVARCHAR mismatch for id={expected_id}: "
+                f"expected {expected_text!r}, got {row[2]!r}"
+            )
+
+        # ---- Test fetchmany path ----
+        cursor.execute(
+            "SELECT id, varchar_utf8, nvarchar_ref "
+            "FROM #test_varchar_utf8_collation ORDER BY id"
+        )
+        many_rows = cursor.fetchmany(5)
+        assert len(many_rows) == 5, f"fetchmany(5) returned {len(many_rows)} rows"
+        for row, (expected_id, expected_text) in zip(many_rows, test_cases[:5]):
+            assert row[1] == expected_text, (
+                f"fetchmany VARCHAR UTF-8 mismatch for id={expected_id}: "
+                f"expected {expected_text!r}, got {row[1]!r}"
+            )
+
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_varchar_utf8_collation")
+        except:
+            pass
+        cursor.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
