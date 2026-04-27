@@ -404,6 +404,7 @@ jobs:
               - If no reliable workaround exists, set has_workaround to false
               - For BREAK_FIX issues, always consider if downgrading to a previous version is viable
               - Code snippets should be complete and copy-pasteable
+              - CRITICAL: code_snippet MUST be a multi-line string with REAL newline characters (\n) between every Python statement. Do NOT collapse statements onto a single line. Every "import", "from ... import", "def", "class", "try:", "except", "if", "else:", "for", "while", "return", and assignment must start on its own line. Indent body lines with 4 spaces.
               `;
 
               try {
