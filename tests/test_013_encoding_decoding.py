@@ -7285,16 +7285,16 @@ def test_varchar_utf8_collation_unicode_roundtrip(db_connection):
 
         # Test cases covering BMP and supplementary plane characters
         test_cases = [
-            (1, "Hello World"),           # ASCII baseline
-            (2, "Grüße"),                 # German - extended Latin (in CP1252 range)
-            (3, "你好世界"),               # Chinese - outside CP1252
-            (4, "こんにちは"),             # Japanese Hiragana - outside CP1252
-            (5, "Привет"),               # Russian Cyrillic - outside CP1252
-            (6, "Hello 世界"),             # Mixed ASCII + CJK
-            (7, "😀😃😄😁"),             # Emoji - supplementary plane (4-byte UTF-8)
-            (8, "Ελληνικά"),             # Greek
-            (9, "مرحبا"),                # Arabic
-            (10, "café résumé naïve"),    # French accented
+            (1, "Hello World"),  # ASCII baseline
+            (2, "Grüße"),  # German - extended Latin (in CP1252 range)
+            (3, "你好世界"),  # Chinese - outside CP1252
+            (4, "こんにちは"),  # Japanese Hiragana - outside CP1252
+            (5, "Привет"),  # Russian Cyrillic - outside CP1252
+            (6, "Hello 世界"),  # Mixed ASCII + CJK
+            (7, "😀😃😄😁"),  # Emoji - supplementary plane (4-byte UTF-8)
+            (8, "Ελληνικά"),  # Greek
+            (9, "مرحبا"),  # Arabic
+            (10, "café résumé naïve"),  # French accented
         ]
 
         # Insert using parameterized queries
@@ -7302,7 +7302,9 @@ def test_varchar_utf8_collation_unicode_roundtrip(db_connection):
             cursor.execute(
                 "INSERT INTO #test_varchar_utf8_collation (id, varchar_utf8, nvarchar_ref) "
                 "VALUES (?, ?, ?)",
-                id_val, text, text,
+                id_val,
+                text,
+                text,
             )
 
         # ---- Test fetchone path ----
@@ -7335,13 +7337,12 @@ def test_varchar_utf8_collation_unicode_roundtrip(db_connection):
 
         # ---- Test fetchall path ----
         cursor.execute(
-            "SELECT id, varchar_utf8, nvarchar_ref "
-            "FROM #test_varchar_utf8_collation ORDER BY id"
+            "SELECT id, varchar_utf8, nvarchar_ref " "FROM #test_varchar_utf8_collation ORDER BY id"
         )
         all_rows = cursor.fetchall()
-        assert len(all_rows) == len(test_cases), (
-            f"fetchall row count mismatch: expected {len(test_cases)}, got {len(all_rows)}"
-        )
+        assert len(all_rows) == len(
+            test_cases
+        ), f"fetchall row count mismatch: expected {len(test_cases)}, got {len(all_rows)}"
         for row, (expected_id, expected_text) in zip(all_rows, test_cases):
             assert row[1] == expected_text, (
                 f"fetchall VARCHAR UTF-8 mismatch for id={expected_id}: "
@@ -7354,8 +7355,7 @@ def test_varchar_utf8_collation_unicode_roundtrip(db_connection):
 
         # ---- Test fetchmany path ----
         cursor.execute(
-            "SELECT id, varchar_utf8, nvarchar_ref "
-            "FROM #test_varchar_utf8_collation ORDER BY id"
+            "SELECT id, varchar_utf8, nvarchar_ref " "FROM #test_varchar_utf8_collation ORDER BY id"
         )
         many_rows = cursor.fetchmany(5)
         assert len(many_rows) == 5, f"fetchmany(5) returned {len(many_rows)} rows"
