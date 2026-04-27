@@ -102,12 +102,15 @@ def validate_mssql_py_core():
 
 class CustomBdistWheel(bdist_wheel):
     def finalize_options(self):
-        # Call the original finalize_options first to initialize self.bdist_dir
-        bdist_wheel.finalize_options(self)
-
-        # Get platform info using consolidated function
+        # Set plat_name BEFORE calling parent finalize_options() so that
+        # plat_name_supplied = bool(self.plat_name) evaluates to True.
+        # Without this, get_tag() ignores our plat_name on macOS and falls
+        # back to inspecting Mach-O binaries, which can downgrade
+        # universal2 → x86_64 if any bundled .so is single-arch.
         arch, platform_tag = get_platform_info()
         self.plat_name = platform_tag
+
+        bdist_wheel.finalize_options(self)
         print(f"Setting wheel platform tag to: {self.plat_name} (arch: {arch})")
 
     def run(self):
