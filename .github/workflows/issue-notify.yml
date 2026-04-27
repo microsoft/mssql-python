@@ -265,9 +265,6 @@ jobs:
               )
               else . end
             ' 2>/dev/null || printf '%s' "$WORKAROUND_RAW")
-            echo "----- DEBUG: normalized WORKAROUND_RAW -----"
-            printf '%s\n' "$WORKAROUND_RAW"
-            echo "--------------------------------------------"
             WORKAROUND=$(echo "$WORKAROUND_RAW" | jq -r '
               [
                 (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
@@ -358,12 +355,6 @@ jobs:
                 "<a href=\"" + $repo_url + "\">📂 View Repository</a></p>"
               )
             }' > /tmp/teams_payload.json
-
-          echo "----- DEBUG: WORKAROUND HTML -----"
-          printf '%s\n' "$WORKAROUND"
-          echo "----- DEBUG: teams_payload.json -----"
-          cat /tmp/teams_payload.json
-          echo "-------------------------------------"
 
           echo "Sending notification to Teams Channel..."
 
