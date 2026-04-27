@@ -166,10 +166,42 @@ jobs:
             ENGINEER_GUIDANCE=""
           fi
 
-          # Format suggested customer response
+          # Format suggested customer response (Markdown -> HTML, preserving code blocks)
           SUGGESTED_RESPONSE_RAW="$INPUT_SUGGESTED_RESPONSE"
           if [ -n "$SUGGESTED_RESPONSE_RAW" ]; then
-            SUGGESTED_RESPONSE=$(echo "$SUGGESTED_RESPONSE_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/$/\<br\>/g')
+            SUGGESTED_RESPONSE=$(printf '%s' "$SUGGESTED_RESPONSE_RAW" | awk '
+              function htmlesc(s) {
+                gsub(/&/, "\\&amp;", s)
+                gsub(/</, "\\&lt;", s)
+                gsub(/>/, "\\&gt;", s)
+                return s
+              }
+              BEGIN { in_code = 0 }
+              {
+                line = $0
+                # Toggle on fenced code block markers (```), allow optional language
+                if (line ~ /^[[:space:]]*```/) {
+                  if (in_code == 0) { printf "<pre><code>"; in_code = 1 }
+                  else              { printf "</code></pre>";  in_code = 0 }
+                  next
+                }
+                if (in_code) {
+                  # Inside a code block: HTML-escape and preserve newlines literally
+                  printf "%s\n", htmlesc(line)
+                } else {
+                  esc = htmlesc(line)
+                  # Convert inline `code` to <code>code</code>
+                  out = ""
+                  while (match(esc, /`[^`]+`/)) {
+                    out = out substr(esc, 1, RSTART-1) "<code>" substr(esc, RSTART+1, RLENGTH-2) "</code>"
+                    esc = substr(esc, RSTART+RLENGTH)
+                  }
+                  out = out esc
+                  printf "%s<br>", out
+                }
+              }
+              END { if (in_code) printf "</code></pre>" }
+            ')
           else
             SUGGESTED_RESPONSE=""
           fi
