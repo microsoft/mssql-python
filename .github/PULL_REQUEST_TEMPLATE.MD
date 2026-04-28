@@ -19,10 +19,12 @@ Only one reference is required - either GitHub issue OR ADO Work Item.
 <!--
 =============================================================================
 MSSQL-PY-CORE VERSION BUMP ONLY
-If this PR updates eng/versions/mssql-py-core.version, delete this comment
-block and fill in the section below. It is used to auto-generate Python
-release notes — every customer-facing change from the Rust side must be
-listed here so it is not lost at release time.
+If this PR updates eng/versions/mssql-py-core.version, remove only the
+<!-- and --> comment markers around this block (and optionally these
+instruction/separator lines), then fill in the `## Rust Changes ...` section
+below. It is used to auto-generate Python release notes — every
+customer-facing change from the Rust side must be listed here so it is not
+lost at release time.
 =============================================================================
 
 ## Rust Changes (mssql-py-core X.X.X → X.X.X)
