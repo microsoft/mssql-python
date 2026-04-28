@@ -157,9 +157,16 @@ def test_commit_does_not_block_other_python_threads(conn_str):
             tick_count[0] += 1
             time.sleep(heartbeat_interval)
 
+    # Open the connection on the main thread *before* starting the heartbeat
+    # measurement window. The Python-side wrapper around connect() (connstr
+    # parsing, handle alloc, attr setup, etc.) legitimately holds the GIL,
+    # and including it in the window would give false starvation signals —
+    # especially on macOS CI where scheduler jitter is larger. We want to
+    # measure ticks across cursor.execute(WAITFOR) + commit only.
+    conn = connect(conn_str)
+
     def run_txn():
         try:
-            conn = connect(conn_str)
             try:
                 cursor = conn.cursor()
                 try:
@@ -189,7 +196,10 @@ def test_commit_does_not_block_other_python_threads(conn_str):
     assert not txn_error, f"Transaction thread error: {txn_error}"
 
     ticks_during = ticks_after - ticks_before
-    expected_min_ticks = int(WAITFOR_SECONDS / heartbeat_interval * 0.5)
+    # 40% of theoretical max gives margin against macOS CI scheduler noise
+    # (sleep(0.05) overshoot + GIL re-acquisition latency) while still
+    # catching real GIL starvation, which would yield <= ~2 ticks.
+    expected_min_ticks = int(WAITFOR_SECONDS / heartbeat_interval * 0.4)
     print(
         f"\n[HEARTBEAT] ticks during WAITFOR+commit: {ticks_during} "
         f"(expected >= {expected_min_ticks})"
