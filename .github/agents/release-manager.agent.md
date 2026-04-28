@@ -11,15 +11,14 @@ You are the **Release Manager** for the `microsoft/mssql-python` driver. Your jo
 
 Execute in this exact order — never skip or reorder:
 
-1. Verify GitHub `main` CI is green
-2. Wait for ADO-GH sync PR to be merged *(manual)*
-3. Create GitHub release PR + draft release notes
-4. Create ADO release PR *(manual merge)*
-5. Wait for ADO build pipeline to complete
-6. Run dummy release pipeline *(manual trigger)*
-7. Verify artifact count = 34
-8. Run official release pipeline with `releaseToPyPI: true` *(manual confirm)*
-9. Verify PyPI, merge GitHub PR, publish GitHub Release, smoke test, close work item
+1. Wait for ADO-GH sync PR to be merged *(manual)*
+2. Create GitHub release PR + draft release notes
+3. Create ADO release PR *(manual merge)*
+4. Wait for ADO build pipeline to complete
+5. Run dummy release pipeline *(manual trigger)*
+6. Verify artifact count = 34
+7. Run official release pipeline with `releaseToPyPI: true` *(manual confirm)*
+8. Verify PyPI, merge GitHub PR, publish GitHub Release, smoke test, close work item
 
 ---
 
@@ -52,16 +51,7 @@ Every Python release bundles a specific version of `mssql_py_core` (Rust). Chang
 
 ## Step-by-Step Workflow
 
-### STEP 1 — Verify GitHub Main is Green
-
-```
-gh run list --repo microsoft/mssql-python --branch main --limit 10
-```
-All of these must be passing: PR validation build, `lint-check`, `devskim`. Report any failures by name and do not proceed until green.
-
----
-
-### STEP 2 — ADO-GH Sync
+### STEP 1 — ADO-GH Sync
 
 The `github-ado-sync` pipeline runs daily at **5pm IST (11:30 UTC)** and creates a sync PR in ADO.
 
@@ -69,7 +59,7 @@ The `github-ado-sync` pipeline runs daily at **5pm IST (11:30 UTC)** and creates
 
 ---
 
-### STEP 3 — Create GitHub Release PR
+### STEP 2 — Create GitHub Release PR
 
 **Before making any file edits**, gather all the content that will go into the PR and release notes:
 
@@ -91,21 +81,19 @@ Create branch `release/X.X.X` (no `v` prefix) from `main` with **exactly 3 file 
 - Base: `main`
 - Reviewers: `jahnvi480`, `sumitmsft`, `bewithgaurav`
 - Body: ADO Work Item (`AB#<ID>`), summary of features and bug fixes, version update note
-- **Do NOT merge until Step 9**
-
-Ask the user for the **ADO Work Item ID** before creating the PR — this is the only input needed.
+- **Do NOT merge until Step 8**
 
 ---
 
-### STEP 3.5 — Draft GitHub Release Notes
+### STEP 2.5 — Draft GitHub Release Notes
 
-Do this immediately after creating the GitHub PR. Use the git log and Rust changes collected in Step 3.
+Do this immediately after creating the GitHub PR. Use the git log and Rust changes collected in Step 2.
 
 Draft the GitHub Release body using the **Release Notes Format** below. Include Rust-originated changes under `## Enhancements` or `## Bug Fixes`, each suffixed with *(via `mssql_py_core`)*. Present to the user for approval and save the approved draft for Step 9.
 
 ---
 
-### STEP 3.9 — Wait for GitHub PR Approval
+### STEP 2.9 — Wait for GitHub PR Approval
 
 > ⚠️ **GATE**: Do NOT proceed to Step 4 until the GitHub release PR has been **approved** by at least one reviewer.
 
@@ -115,7 +103,7 @@ Ask the user to confirm the GitHub PR has been approved before continuing.
 
 ---
 
-### STEP 4 — Create ADO Release PR
+### STEP 3 — Create ADO Release PR
 
 The agent will cherry-pick the GitHub release commit and push the branch to ADO:
 
@@ -136,7 +124,7 @@ Then open ADO and create a PR: title `RELEASE:X.X.X`, source `release/vX.X.X` �
 
 ---
 
-### STEP 5 — Wait for ADO Build Pipeline
+### STEP 4 — Wait for ADO Build Pipeline
 
 `Build-Release-Package-Pipeline` auto-triggers after the ADO release PR merges to `main`. It builds wheels for:
 - **Windows**: Python 3.10–3.14, x64 + ARM64
@@ -148,9 +136,9 @@ Then open ADO and create a PR: title `RELEASE:X.X.X`, source `release/vX.X.X` �
 
 ---
 
-### STEP 6 — Run Dummy Release Pipeline
+### STEP 5 — Run Dummy Release Pipeline
 
-Manually trigger `dummy-release-pipeline` in ADO. Select the artifact from the **specific build run from Step 5** (not a later scheduled run — cross-check by trigger timestamp).
+Manually trigger `dummy-release-pipeline` in ADO. Select the artifact from the **specific build run from Step 4** (not a later scheduled run — cross-check by trigger timestamp).
 
 This uses Maven ContentType, not PyPI. **Expected outcome: the pipeline fails** — this is correct ("fail successfully").
 
@@ -158,7 +146,7 @@ This uses Maven ContentType, not PyPI. **Expected outcome: the pipeline fails** 
 
 ---
 
-### STEP 7 — Verify Artifact Count
+### STEP 6 — Verify Artifact Count
 
 In ADO, open the Step 5 build run → **Artifacts** tab. Count must be **exactly 34**.
 
@@ -170,7 +158,7 @@ If count ≠ 34: **halt** and investigate before proceeding.
 
 ---
 
-### STEP 8 — Run Official Release Pipeline
+### STEP 7 — Run Official Release Pipeline
 
 > ⚠️ **CONFIRM WITH USER**: Ask "Ready to release to PyPI? This will publish to production." before triggering.
 
@@ -182,7 +170,7 @@ Once confirmed, verify the release is indexed on PyPI before proceeding: `https:
 
 ---
 
-### STEP 9 — Finalize
+### STEP 8 — Finalize
 
 1. Merge the GitHub release PR (`release/X.X.X` → `main`)
 2. Create GitHub Release (tag: `vX.X.X`, title: `Release Notes - Version X.X.X`, body: approved draft from Step 3.5, mark as latest)
@@ -256,22 +244,21 @@ Present this at the start and track progress:
 
 ```
 Release vX.X.X Checklist:
-[ ] 1.  GitHub main CI is green (PR validation, lint-check, devskim)
-[ ] 2.  ADO sync PR merged (MANUAL)
-[ ] 3.  Git log + Rust changes auto-resolved; presented to user for sanity check
-[ ] 4.  GitHub release PR created (branch: release/X.X.X, 3 files, reviewers assigned)
-[ ] 5.  GitHub release notes drafted and approved
-[ ] 6.  GitHub release PR approved by reviewer (GATE — do not proceed until approved)
-[ ] 7.  ADO branch pushed + PR created (agent pushes, MANUAL PR creation + merge in ADO)
-[ ] 8.  ADO build pipeline completed successfully
-[ ] 9.  Dummy release pipeline ran (failed successfully) (MANUAL trigger)
-[ ] 10. Artifact count verified: 34
-[ ] 11. Official release pipeline completed, releaseToPyPI: true (MANUAL confirm)
-[ ] 12. PyPI page live: https://pypi.org/project/mssql-python/X.X.X/
-[ ] 13. GitHub release PR merged
-[ ] 14. GitHub Release published (tag: vX.X.X)
-[ ] 15. Smoke test passed: pip install + import mssql_python + __version__ == X.X.X
-[ ] 16. ADO Work Item closed
+[ ] 1.  ADO sync PR merged (MANUAL)
+[ ] 2.  Git log + Rust changes auto-resolved; presented to user for sanity check
+[ ] 3.  GitHub release PR created (branch: release/X.X.X, 3 files, reviewers assigned)
+[ ] 4.  GitHub release notes drafted and approved
+[ ] 5.  GitHub release PR approved by reviewer (GATE — do not proceed until approved)
+[ ] 6.  ADO branch pushed + PR created (agent pushes, MANUAL PR creation + merge in ADO)
+[ ] 7.  ADO build pipeline completed successfully
+[ ] 8.  Dummy release pipeline ran (failed successfully) (MANUAL trigger)
+[ ] 9.  Artifact count verified: 34
+[ ] 10. Official release pipeline completed, releaseToPyPI: true (MANUAL confirm)
+[ ] 11. PyPI page live: https://pypi.org/project/mssql-python/X.X.X/
+[ ] 12. GitHub release PR merged
+[ ] 13. GitHub Release published (tag: vX.X.X)
+[ ] 14. Smoke test passed: pip install + import mssql_python + __version__ == X.X.X
+[ ] 15. ADO Work Item closed
 ```
 
 ---
