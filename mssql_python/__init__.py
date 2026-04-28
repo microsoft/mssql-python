@@ -14,7 +14,7 @@ import weakref
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Driver version
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions

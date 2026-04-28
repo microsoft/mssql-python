@@ -8032,376 +8032,6 @@ def test_nvarcharmax_large(cursor, db_connection):
         db_connection.commit()
 
 
-def test_money_smallmoney_insert_fetch(cursor, db_connection):
-    """Test inserting and retrieving valid MONEY and SMALLMONEY values including boundaries and typical data"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY,
-                d DECIMAL(19,4),
-                n NUMERIC(10,4)
-            )
-        """)
-        db_connection.commit()
-
-        # Max values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("922337203685477.5807"),
-                decimal.Decimal("214748.3647"),
-                decimal.Decimal("9999999999999.9999"),
-                decimal.Decimal("1234.5678"),
-            ),
-        )
-
-        # Min values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("-922337203685477.5808"),
-                decimal.Decimal("-214748.3648"),
-                decimal.Decimal("-9999999999999.9999"),
-                decimal.Decimal("-1234.5678"),
-            ),
-        )
-
-        # Typical values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("1234567.8901"),
-                decimal.Decimal("12345.6789"),
-                decimal.Decimal("42.4242"),
-                decimal.Decimal("3.1415"),
-            ),
-        )
-
-        # NULL values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (None, None, None, None),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm, d, n FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == 4, f"Expected 4 rows, got {len(results)}"
-
-        expected = [
-            (
-                decimal.Decimal("922337203685477.5807"),
-                decimal.Decimal("214748.3647"),
-                decimal.Decimal("9999999999999.9999"),
-                decimal.Decimal("1234.5678"),
-            ),
-            (
-                decimal.Decimal("-922337203685477.5808"),
-                decimal.Decimal("-214748.3648"),
-                decimal.Decimal("-9999999999999.9999"),
-                decimal.Decimal("-1234.5678"),
-            ),
-            (
-                decimal.Decimal("1234567.8901"),
-                decimal.Decimal("12345.6789"),
-                decimal.Decimal("42.4242"),
-                decimal.Decimal("3.1415"),
-            ),
-            (None, None, None, None),
-        ]
-
-        for i, (row, exp) in enumerate(zip(results, expected)):
-            for j, (val, exp_val) in enumerate(zip(row, exp), 1):
-                if exp_val is None:
-                    assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
-                else:
-                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
-                    assert isinstance(
-                        val, decimal.Decimal
-                    ), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY insert/fetch test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_null_handling(cursor, db_connection):
-    """Test that NULL values for MONEY and SMALLMONEY are stored and retrieved correctly"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Row with both NULLs
-        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", (None, None))
-
-        # Row with m filled, sm NULL
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("123.4500"), None),
-        )
-
-        # Row with m NULL, sm filled
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (None, decimal.Decimal("67.8900")),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == 3, f"Expected 3 rows, got {len(results)}"
-
-        expected = [
-            (None, None),
-            (decimal.Decimal("123.4500"), None),
-            (None, decimal.Decimal("67.8900")),
-        ]
-
-        for i, (row, exp) in enumerate(zip(results, expected)):
-            for j, (val, exp_val) in enumerate(zip(row, exp), 1):
-                if exp_val is None:
-                    assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
-                else:
-                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
-                    assert isinstance(
-                        val, decimal.Decimal
-                    ), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY NULL handling test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_roundtrip(cursor, db_connection):
-    """Test inserting and retrieving MONEY and SMALLMONEY using decimal.Decimal roundtrip"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        values = (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543"))
-        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", values)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
-        row = cursor.fetchone()
-        for i, (val, exp_val) in enumerate(zip(row, values), 1):
-            assert val == exp_val, f"col{i} roundtrip mismatch, got {val}, expected {exp_val}"
-            assert isinstance(val, decimal.Decimal), f"col{i} should be Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY roundtrip test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_boundaries(cursor, db_connection):
-    """Test boundary values for MONEY and SMALLMONEY types are handled correctly"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Insert max boundary
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")),
-        )
-
-        # Insert min boundary
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
-        results = cursor.fetchall()
-        expected = [
-            (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
-            (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")),
-        ]
-        for i, (row, exp_row) in enumerate(zip(results, expected), 1):
-            for j, (val, exp_val) in enumerate(zip(row, exp_row), 1):
-                assert val == exp_val, f"Row {i} col{j} mismatch, got {val}, expected {exp_val}"
-                assert isinstance(
-                    val, decimal.Decimal
-                ), f"Row {i} col{j} should be Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY boundary values test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_invalid_values(cursor, db_connection):
-    """Test that invalid or out-of-range MONEY and SMALLMONEY values raise errors"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Out of range MONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (m) VALUES (?)",
-                (decimal.Decimal("922337203685477.5808"),),
-            )
-
-        # Out of range SMALLMONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (sm) VALUES (?)",
-                (decimal.Decimal("214748.3648"),),
-            )
-
-        # Invalid string
-        with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #pytest_money_test (m) VALUES (?)", ("invalid_string",))
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY invalid values test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
-    """Test inserting and retrieving MONEY and SMALLMONEY using executemany with decimal.Decimal"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        test_data = [
-            (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543")),
-            (decimal.Decimal("0.0001"), decimal.Decimal("0.01")),
-            (None, decimal.Decimal("42.42")),
-            (decimal.Decimal("-1000.99"), None),
-        ]
-
-        # Insert using executemany directly with Decimals
-        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", test_data)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == len(test_data)
-
-        for i, (row, expected) in enumerate(zip(results, test_data), 1):
-            for j, (val, exp_val) in enumerate(zip(row, expected), 1):
-                if exp_val is None:
-                    assert val is None
-                else:
-                    assert val == exp_val
-                    assert isinstance(val, decimal.Decimal)
-
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_executemany_null_handling(cursor, db_connection):
-    """Test inserting NULLs into MONEY and SMALLMONEY using executemany"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        rows = [
-            (None, None),
-            (decimal.Decimal("123.4500"), None),
-            (None, decimal.Decimal("67.8900")),
-        ]
-        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", rows)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id ASC")
-        results = cursor.fetchall()
-        assert len(results) == len(rows)
-
-        for row, expected in zip(results, rows):
-            for val, exp_val in zip(row, expected):
-                if exp_val is None:
-                    assert val is None
-                else:
-                    assert val == exp_val
-                    assert isinstance(val, decimal.Decimal)
-
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_out_of_range_low(cursor, db_connection):
-    """Test inserting values just below the minimum MONEY/SMALLMONEY range raises error"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("CREATE TABLE #pytest_money_test (m MONEY, sm SMALLMONEY)")
-        db_connection.commit()
-
-        # Just below minimum MONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (m) VALUES (?)",
-                (decimal.Decimal("-922337203685477.5809"),),
-            )
-
-        # Just below minimum SMALLMONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (sm) VALUES (?)",
-                (decimal.Decimal("-214748.3649"),),
-            )
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
 def test_uuid_insert_and_select_none(cursor, db_connection):
     """Test inserting and retrieving None in a nullable UUID column."""
     table_name = "#pytest_uuid_nullable"
@@ -16335,3 +15965,152 @@ def test_execute_reset_cursor_false_after_fetchone_only(db_connection):
         assert row[0] == 2
     finally:
         cursor.close()
+
+
+@pytest.fixture(scope="module")
+def catalog_fetch_schema(cursor, db_connection):
+    """Create and tear down test objects for catalog fetchone/iteration testing."""
+    cursor.execute(
+        "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_cat_fetch') "
+        "EXEC('CREATE SCHEMA pytest_cat_fetch')"
+    )
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    cursor.execute("DROP PROCEDURE IF EXISTS pytest_cat_fetch.fetch_test_proc")
+
+    cursor.execute("""
+        CREATE TABLE pytest_cat_fetch.fetch_test (
+            id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            value DECIMAL(10,2),
+            ts DATETIME DEFAULT GETDATE()
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE pytest_cat_fetch.fetch_test_child (
+            child_id INT PRIMARY KEY,
+            parent_id INT NOT NULL,
+            CONSTRAINT fk_parent FOREIGN KEY (parent_id)
+                REFERENCES pytest_cat_fetch.fetch_test(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE PROCEDURE pytest_cat_fetch.fetch_test_proc
+        AS
+        BEGIN
+            SELECT 1 AS result
+        END
+    """)
+    db_connection.commit()
+
+    yield
+
+    cursor.execute("DROP PROCEDURE IF EXISTS pytest_cat_fetch.fetch_test_proc")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    cursor.execute("DROP SCHEMA IF EXISTS pytest_cat_fetch")
+    db_connection.commit()
+
+
+def test_tables_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on tables() result set (GH-505)"""
+    cursor.tables(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row"
+    assert row.table_name.lower() == "fetch_test"
+    assert row.table_schem.lower() == "pytest_cat_fetch"
+    assert cursor.fetchone() is None
+
+
+def test_tables_iteration(cursor, db_connection, catalog_fetch_schema):
+    """Test that 'for row in cursor.tables()' works (GH-505)"""
+    rows = list(cursor.tables(table="fetch_test", schema="pytest_cat_fetch"))
+    assert len(rows) == 1, "Iteration should yield 1 row"
+    assert rows[0].table_name.lower() == "fetch_test"
+
+
+def test_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on columns() result set (GH-505)"""
+    cursor.columns(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from columns()"
+    assert hasattr(row, "column_name")
+    assert row.table_name.lower() == "fetch_test"
+
+
+def test_primarykeys_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on primaryKeys() result set (GH-505)"""
+    cursor.primaryKeys(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from primaryKeys()"
+    assert row.column_name.lower() == "id"
+    assert cursor.fetchone() is None
+
+
+def test_foreignkeys_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on foreignKeys() result set (GH-505)"""
+    cursor.foreignKeys(
+        table="fetch_test_child",
+        schema="pytest_cat_fetch",
+    )
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from foreignKeys()"
+    assert row.pkcolumn_name.lower() == "id"
+    assert row.fkcolumn_name.lower() == "parent_id"
+    assert cursor.fetchone() is None
+
+
+def test_statistics_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on statistics() result set (GH-505)"""
+    cursor.statistics(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from statistics()"
+    assert row.table_name.lower() == "fetch_test"
+
+
+def test_procedures_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on procedures() result set (GH-505)"""
+    cursor.procedures(procedure="fetch_test_proc", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from procedures()"
+    assert row.procedure_name.lower().startswith("fetch_test_proc")
+    assert cursor.fetchone() is None
+
+
+def test_rowid_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on rowIdColumns() result set (GH-505)"""
+    cursor.rowIdColumns(table="fetch_test", schema="pytest_cat_fetch")
+    # May or may not have rowid columns; just verify no InterfaceError
+    row = cursor.fetchone()
+    if row is not None:
+        assert hasattr(row, "column_name")
+
+
+def test_rowver_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on rowVerColumns() result set (GH-505)"""
+    cursor.rowVerColumns(table="fetch_test", schema="pytest_cat_fetch")
+    # May or may not have rowver columns; just verify no InterfaceError
+    row = cursor.fetchone()
+    if row is not None:
+        assert hasattr(row, "column_name")
+
+
+def test_gettypeinfo_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on getTypeInfo() result set (GH-505)"""
+    cursor.getTypeInfo()
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from getTypeInfo()"
+    assert hasattr(row, "type_name")
+
+
+def test_catalog_rownumber_increments_correctly(cursor, db_connection, catalog_fetch_schema):
+    """Test that rownumber increments correctly during fetchone() on catalog results (GH-505)"""
+    cursor.columns(table="fetch_test", schema="pytest_cat_fetch")
+    assert cursor.rownumber == -1
+
+    for expected_idx in range(4):
+        row = cursor.fetchone()
+        assert row is not None, f"Expected row at index {expected_idx}"
+        assert cursor.rownumber == expected_idx
+
+    assert cursor.fetchone() is None

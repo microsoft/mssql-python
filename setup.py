@@ -48,9 +48,9 @@ def get_platform_info():
         is_musl = libc_name == "" or "musl" in libc_name.lower()
 
         if target_arch == "x86_64":
-            return "x86_64", "musllinux_1_2_x86_64" if is_musl else "manylinux_2_28_x86_64"
+            return "x86_64", "musllinux_1_2_x86_64" if is_musl else "manylinux_2_34_x86_64"
         elif target_arch in ["aarch64", "arm64"]:
-            return "aarch64", "musllinux_1_2_aarch64" if is_musl else "manylinux_2_28_aarch64"
+            return "aarch64", "musllinux_1_2_aarch64" if is_musl else "manylinux_2_34_aarch64"
         else:
             raise OSError(
                 f"Unsupported architecture '{target_arch}' for Linux; expected 'x86_64' or 'aarch64'."
@@ -173,7 +173,7 @@ package_data = {
 
 setup(
     name="mssql-python",
-    version="1.5.0",
+    version="1.6.0",
     description="A Python library for interacting with Microsoft SQL Server",
     long_description=open("PyPI_Description.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",

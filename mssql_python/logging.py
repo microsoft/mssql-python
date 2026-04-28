@@ -273,17 +273,44 @@ class MSSQLLogger:
                     except:
                         pass
 
-    def _validate_log_file_extension(self, file_path: str) -> None:
+    def _validate_log_file_path(self, file_path: str) -> str:
         """
-        Validate that the log file has an allowed extension.
+        Validate and sanitize the log file path.
+
+        Resolves the path to its canonical form, checks for path traversal
+        outside the current working directory (for relative paths), and
+        validates the file extension.
 
         Args:
             file_path: Path to the log file
 
+        Returns:
+            The resolved canonical path.
+
         Raises:
-            ValueError: If the file extension is not allowed
+            ValueError: If the path contains traversal outside the allowed
+                        base directory, or if the file extension is not allowed
         """
-        _, ext = os.path.splitext(file_path)
+        resolved = os.path.realpath(os.path.abspath(file_path))
+
+        # For relative paths, ensure the resolved path stays under cwd
+        if not os.path.isabs(file_path):
+            base = os.path.realpath(os.path.abspath(os.getcwd()))
+            # os.path.commonpath raises ValueError if paths are on different drives
+            try:
+                common = os.path.commonpath([base, resolved])
+            except ValueError:
+                raise ValueError(
+                    "log_file_path resolves outside the current working directory. "
+                    "Path traversal is not permitted for relative paths."
+                )
+            if common != base:
+                raise ValueError(
+                    "log_file_path resolves outside the current working directory. "
+                    "Path traversal is not permitted for relative paths."
+                )
+
+        _, ext = os.path.splitext(resolved)
         ext_lower = ext.lower()
 
         if ext_lower not in ALLOWED_LOG_EXTENSIONS:
@@ -291,6 +318,8 @@ class MSSQLLogger:
             raise ValueError(
                 f"Invalid log file extension '{ext}'. " f"Allowed extensions: {allowed}"
             )
+
+        return resolved
 
     def _write_log_header(self):
         """
@@ -483,10 +512,9 @@ class MSSQLLogger:
                 )
             self._output_mode = output
 
-        # Store custom log file path if provided
+        # Store custom log file path if provided (sanitized)
         if log_file_path is not None:
-            self._validate_log_file_extension(log_file_path)
-            self._custom_log_path = log_file_path
+            self._custom_log_path = self._validate_log_file_path(log_file_path)
 
         # Setup handlers if not yet initialized or if output mode/path changed
         # Handler setup is protected by _handler_lock inside _setup_handlers()
