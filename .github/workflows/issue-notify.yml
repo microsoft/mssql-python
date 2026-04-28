@@ -32,6 +32,18 @@ on:
         required: false
         type: string
         default: ''
+      suggested_response:
+        required: false
+        type: string
+        default: ''
+      similar_issues:
+        required: false
+        type: string
+        default: ''
+      workaround:
+        required: false
+        type: string
+        default: ''
       issue_number:
         required: true
         type: string
@@ -69,6 +81,9 @@ jobs:
           INPUT_SUMMARY: ${{ inputs.summary_for_maintainers }}
           INPUT_CODE_ANALYSIS: ${{ inputs.code_analysis }}
           INPUT_ENGINEER_GUIDANCE: ${{ inputs.engineer_guidance }}
+          INPUT_SUGGESTED_RESPONSE: ${{ inputs.suggested_response }}
+          INPUT_SIMILAR_ISSUES: ${{ inputs.similar_issues }}
+          INPUT_WORKAROUND: ${{ inputs.workaround }}
           INPUT_JUSTIFICATION: ${{ inputs.justification }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
@@ -142,7 +157,6 @@ jobs:
                  else empty end),
                 (if .implementation_approach then "<b>Implementation Approach:</b> " + (.implementation_approach | @html) else empty end),
                 (if .risks_and_tradeoffs then "<b>Risks &amp; Tradeoffs:</b> " + (.risks_and_tradeoffs | @html) else empty end),
-                (if .suggested_response then "<b>Suggested Response to User:</b><br>" + (.suggested_response | @html) else empty end),
                 (if .related_considerations and (.related_considerations | length) > 0
                  then "<b>Related Considerations:</b><br>" + ([.related_considerations | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". " + (.value | @html)] | join("<br>"))
                  else empty end)
@@ -150,6 +164,120 @@ jobs:
             ' 2>/dev/null || echo "$ENGINEER_GUIDANCE_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           else
             ENGINEER_GUIDANCE=""
+          fi
+
+          # Format suggested customer response (Markdown -> HTML, preserving code blocks)
+          SUGGESTED_RESPONSE_RAW="$INPUT_SUGGESTED_RESPONSE"
+          if [ -n "$SUGGESTED_RESPONSE_RAW" ]; then
+            SUGGESTED_RESPONSE=$(printf '%s' "$SUGGESTED_RESPONSE_RAW" | awk '
+              function htmlesc(s) {
+                gsub(/&/, "\\&amp;", s)
+                gsub(/</, "\\&lt;", s)
+                gsub(/>/, "\\&gt;", s)
+                return s
+              }
+              BEGIN { in_code = 0 }
+              {
+                line = $0
+                # Toggle on fenced code block markers (```), allow optional language
+                if (line ~ /^[[:space:]]*```/) {
+                  if (in_code == 0) { printf "<pre><code>"; in_code = 1 }
+                  else              { printf "</code></pre>";  in_code = 0 }
+                  next
+                }
+                if (in_code) {
+                  # Inside a code block: HTML-escape and preserve newlines literally
+                  printf "%s\n", htmlesc(line)
+                } else {
+                  esc = htmlesc(line)
+                  # Convert inline `code` to <code>code</code>
+                  out = ""
+                  while (match(esc, /`[^`]+`/)) {
+                    out = out substr(esc, 1, RSTART-1) "<code>" substr(esc, RSTART+1, RLENGTH-2) "</code>"
+                    esc = substr(esc, RSTART+RLENGTH)
+                  }
+                  out = out esc
+                  printf "%s<br>", out
+                }
+              }
+              END { if (in_code) printf "</code></pre>" }
+            ')
+          else
+            SUGGESTED_RESPONSE=""
+          fi
+
+          # Parse and format similar issues analysis
+          SIMILAR_ISSUES_RAW="$INPUT_SIMILAR_ISSUES"
+          if [ -n "$SIMILAR_ISSUES_RAW" ]; then
+            SIMILAR_ISSUES=$(echo "$SIMILAR_ISSUES_RAW" | jq -r '
+              [
+                (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
+                (if .duplicate_issues and (.duplicate_issues | length) > 0
+                 then "<b>Similar/Duplicate Issues:</b><br>" + ([.duplicate_issues[] | select(.issue_number | tostring | test("^[0-9]+$")) | "&nbsp;&nbsp;• <a href=\"https://github.com/microsoft/mssql-python/issues/" + (.issue_number | tostring) + "\">#" + (.issue_number | tostring) + "</a> " + (.title | @html) + " [" + (.state | @html) + "] — <i>" + (.similarity | @html) + ":</i> " + (.explanation | @html)] | join("<br>"))
+                 else empty end),
+                (if .recently_fixed and (.recently_fixed | length) > 0
+                 then "<b>Recently Fixed:</b><br>" + ([.recently_fixed[] | select(.issue_number | tostring | test("^[0-9]+$")) | "&nbsp;&nbsp;• <a href=\"https://github.com/microsoft/mssql-python/issues/" + (.issue_number | tostring) + "\">#" + (.issue_number | tostring) + "</a> " + (.title | @html) + " (closed " + (.closed_at | @html) + ") — " + (.relevance | @html)] | join("<br>"))
+                 else empty end)
+              ] | join("<br><br>")
+            ' 2>/dev/null || echo "$SIMILAR_ISSUES_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+          else
+            SIMILAR_ISSUES=""
+          fi
+
+          # Parse and format workaround analysis
+          WORKAROUND_RAW="$INPUT_WORKAROUND"
+          if [ -n "$WORKAROUND_RAW" ]; then
+            # Defensive: code_snippet often arrives with multiple statements collapsed onto
+            # one line. Always normalize: insert \n before every statement keyword (per language)
+            # so the rendered <code> block shows one statement per line.
+            # Also: if "language" is missing, infer it from the code via simple heuristics.
+            WORKAROUND_RAW=$(printf '%s' "$WORKAROUND_RAW" | jq -c '
+              def detect_lang(s):
+                if (s | type) != "string" or (s | length) == 0 then "other"
+                elif (s | test("(?m)^\\s*#\\s*include\\b")) or (s | test("\\bstd::")) or (s | test("\\bvoid\\s+\\w+\\s*\\(")) or (s | test("\\bint\\s+main\\s*\\(")) then "cpp"
+                elif (s | test("(?i)\\b(SELECT|INSERT|UPDATE|DELETE|CREATE\\s+TABLE)\\b")) and ((s | test("\\bdef\\s")) | not) then "sql"
+                elif (s | test("\\bdef\\s")) or (s | test("\\bimport\\s")) or (s | test("\\bfrom\\s+[\\w\\.]+\\s+import\\b")) or (s | test("\\bclass\\s+\\w+\\s*[:(]")) or (s | test("\\bprint\\s*\\(")) then "python"
+                else "other" end;
+              def split_python(s):
+                s
+                | gsub("(?<kw>\\bfrom\\s+[\\w\\.]+\\s+import\\b|\\bimport\\s+[\\w\\.]+|\\bdef\\s|\\bclass\\s|\\btry:|\\bexcept\\b|\\bfinally:|\\belse:|\\belif\\s|\\bif\\s|\\bfor\\s|\\bwhile\\s|\\bwith\\s|\\breturn\\b|\\braise\\b|\\b#\\s)"; "\n\(.kw)");
+              def split_cpp(s):
+                s
+                | gsub("(?<kw>\\b#include\\b|\\busing\\s+namespace\\b|\\bvoid\\s+\\w+\\s*\\(|\\bint\\s+\\w+\\s*\\(|\\breturn\\b|\\bif\\s*\\(|\\belse\\b|\\bfor\\s*\\(|\\bwhile\\s*\\(|\\btry\\s*\\{|\\bcatch\\s*\\(|\\bclass\\s+\\w+|\\bstruct\\s+\\w+|\\btemplate\\s*<)"; "\n\(.kw)")
+                | gsub(";\\s*"; ";\n");
+              def split_sql(s):
+                s
+                | gsub("(?i)(?<kw>\\bSELECT\\b|\\bFROM\\b|\\bWHERE\\b|\\bJOIN\\b|\\bINSERT\\s+INTO\\b|\\bUPDATE\\b|\\bDELETE\\b|\\bCREATE\\s+(TABLE|VIEW|INDEX)\\b|\\bGROUP\\s+BY\\b|\\bORDER\\s+BY\\b)"; "\n\(.kw)");
+              def fixcode(s; lang):
+                if (s | type) != "string" or (s | length) == 0 then s
+                else
+                  ( if   lang == "python" then split_python(s)
+                    elif lang == "cpp"    then split_cpp(s)
+                    elif lang == "sql"    then split_sql(s)
+                    else s end )
+                  | gsub("\n+"; "\n")
+                  | sub("^\n"; "")
+                end;
+              if (.workarounds | type) == "array"
+              then .workarounds |= map(
+                .language = ((.language // "") | ascii_downcase | if . == "" then detect_lang(.code_snippet // "") else . end)
+                | .code_snippet = fixcode(.code_snippet // ""; .language)
+              )
+              else . end
+            ' 2>/dev/null || printf '%s' "$WORKAROUND_RAW")
+            WORKAROUND=$(echo "$WORKAROUND_RAW" | jq -r '
+              [
+                (if .summary then "<b>Summary:</b> " + (.summary | @html) else empty end),
+                (if .has_workaround and .workarounds and (.workarounds | length) > 0
+                 then "<b>Workarounds:</b><br>" + ([.workarounds | to_entries[] | "&nbsp;&nbsp;" + ((.key + 1) | tostring) + ". <b>" + (.value.description | @html) + "</b> [" + (if (.value.confidence | tostring) == "high" or (.value.confidence | tostring) == "medium" or (.value.confidence | tostring) == "low" then (.value.confidence | tostring) else "unknown" end) + " confidence]<br>&nbsp;&nbsp;&nbsp;&nbsp;Limitations: " + (.value.limitations | @html) + (if .value.code_snippet and (.value.code_snippet | length) > 0 then "<br>&nbsp;&nbsp;&nbsp;&nbsp;Code (" + ((.value.language // "other") | ascii_upcase | @html) + "):<br>&nbsp;&nbsp;&nbsp;&nbsp;<code>" + (.value.code_snippet | @html | gsub("\t"; "    ") | gsub(" "; "&nbsp;") | gsub("\n"; "<br>&nbsp;&nbsp;&nbsp;&nbsp;")) + "</code>" else "" end)] | join("<br>"))
+                 else empty end),
+                (if .can_downgrade == true and .downgrade_version
+                 then "⬇️ <b>Safe to downgrade to:</b> " + (.downgrade_version | @html)
+                 else empty end)
+              ] | join("<br><br>")
+            ' 2>/dev/null || echo "$WORKAROUND_RAW" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+          else
+            WORKAROUND=""
           fi
 
           # Set severity color indicator
@@ -176,6 +304,9 @@ jobs:
             --arg summary "$INPUT_SUMMARY" \
             --arg code_analysis "$CODE_ANALYSIS" \
             --arg engineer_guidance "$ENGINEER_GUIDANCE" \
+            --arg suggested_response "$SUGGESTED_RESPONSE" \
+            --arg similar_issues "$SIMILAR_ISSUES" \
+            --arg workaround "$WORKAROUND" \
             --arg justification "$INPUT_JUSTIFICATION" \
             --arg action "$ACTION" \
             --arg repo_url "https://github.com/microsoft/mssql-python" \
@@ -198,9 +329,23 @@ jobs:
                 "<p>" + ($summary | @html) + "</p>" +
                 "<h3>🔍 Code Analysis</h3>" +
                 "<p>" + $code_analysis + "</p>" +
+                (if $similar_issues != "" then
+                  "<h3>🔄 Similar Issues &amp; Recent Fixes</h3>" +
+                  "<p>" + $similar_issues + "</p>"
+                else "" end) +
+                (if $workaround != "" then
+                  "<h3>🛠️ Workarounds</h3>" +
+                  "<p>" + $workaround + "</p>"
+                else "" end) +
                 (if $engineer_guidance != "" then
                   "<h3>💡 Engineer Guidance</h3>" +
                   "<p>" + $engineer_guidance + "</p>"
+                else "" end) +
+                (if $suggested_response != "" then
+                  "<hr>" +
+                  "<h3>✉️ Suggested Response to Customer</h3>" +
+                  "<p><i>Copy-paste or edit the response below and post it on the issue:</i></p>" +
+                  "<blockquote>" + $suggested_response + "</blockquote>"
                 else "" end) +
                 "<hr>" +
                 "<p>⚡ <b>Action Required:</b> " + $action + "</p>" +
