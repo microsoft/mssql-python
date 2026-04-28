@@ -16,6 +16,31 @@ Only one reference is required - either GitHub issue OR ADO Work Item.
 ### Summary   
 <!-- Insert your summary of changes below. Minimum 10 characters required. -->  
 
+<!--
+=============================================================================
+MSSQL-PY-CORE VERSION BUMP ONLY
+If this PR updates eng/versions/mssql-py-core.version, delete this comment
+block and fill in the section below. It is used to auto-generate Python
+release notes — every customer-facing change from the Rust side must be
+listed here so it is not lost at release time.
+=============================================================================
+
+## Rust Changes (mssql-py-core X.X.X → X.X.X)
+
+### Features
+- **Feature name** — One sentence: what was added and why it matters to Python users.
+
+### Bug Fixes
+- **Fix name** — One sentence: what was broken and what is now correct.
+
+### Performance
+- **Improvement name** — One sentence: what got faster/lighter and in which scenario.
+
+> Tip: omit internal Rust refactors, CI-only changes, and test-only changes.
+> Link Rust PRs using full URL: https://github.com/microsoft/mssql-rs/pull/N
+=============================================================================
+-->
+
 
 <!-- 
 ### PR Title Guide
