@@ -10,7 +10,7 @@ parameters:
   - name: jobName
     type: string
     default: 'BuildWheels'
-  # Linux distribution type: 'manylinux' (glibc-based) or 'musllinux' (musl libc-based)
+  # Linux distribution type: 'manylinux_2_28' (glibc 2.28+) or 'musllinux' (musl libc-based)
   - name: linuxTag
     type: string
   # CPU architecture: 'x86_64' (AMD64) or 'aarch64' (ARM64)
@@ -114,15 +114,15 @@ stages:
           - script: |
               # Determine image based on LINUX_TAG and ARCH
               # Images are mirrored weekly from Quay.io into tdslibrs.azurecr.io
-              # manylinux_2_34   = AlmaLinux 9 (glibc 2.34)
-              # manylinux_2_28   = AlmaLinux 8 / RHEL 8 compatible (glibc 2.28)
-              # musllinux_1_2    = Alpine-based (musl libc)
-              if [[ "$(LINUX_TAG)" == "musllinux" ]]; then
-                IMAGE="tdslibrs.azurecr.io/import/python-build/musllinux_1_2_$(ARCH):latest"
-              elif [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
+              # manylinux_2_28 = AlmaLinux 8 / RHEL 8 compatible (glibc 2.28)
+              # musllinux_1_2  = Alpine-based (musl libc)
+              if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
                 IMAGE="tdslibrs.azurecr.io/import/python-build/manylinux_2_28_$(ARCH):latest"
+              elif [[ "$(LINUX_TAG)" == "musllinux" ]]; then
+                IMAGE="tdslibrs.azurecr.io/import/python-build/musllinux_1_2_$(ARCH):latest"
               else
-                IMAGE="tdslibrs.azurecr.io/import/python-build/manylinux_2_34_$(ARCH):latest"
+                echo "ERROR: Unsupported LINUX_TAG '$(LINUX_TAG)'. Expected: manylinux_2_28 or musllinux" >&2
+                exit 1
               fi
               
               docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
@@ -136,7 +136,7 @@ stages:
           - script: |
               set -euxo pipefail
               export PATH=$PATH:`pwd`/docker
-              if [[ "$(LINUX_TAG)" == "manylinux" || "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
+              if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
                 docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
                   set -euxo pipefail
                   if command -v dnf >/dev/null 2>&1; then
@@ -194,7 +194,7 @@ stages:
           # Build wheels for all Python versions (3.10-3.14) and test each one
           - script: |
               set -euxo pipefail
-              if [[ "$(LINUX_TAG)" == "manylinux" || "$(LINUX_TAG)" == "manylinux_2_28" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
+              if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
               docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
               
               # Loop through all Python versions: build wheel -> test wheel -> repeat
@@ -204,9 +204,9 @@ stages:
                 echo "Building and testing $PYBIN on $(LINUX_TAG)/$(ARCH)"
                 echo "====================================================="
                 
-                if [[ "$(LINUX_TAG)" == "manylinux" || "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
+                if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
                   # Manylinux (glibc-based) - use bash
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" build-$(LINUX_TAG)-$(ARCH) bash -lc '
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" build-$(LINUX_TAG)-$(ARCH) bash -lc '
                     set -euxo pipefail;
                     
                     # Step 1: Setup Python environment
@@ -274,7 +274,7 @@ stages:
                   '
                 else
                   # Musllinux (musl libc-based) - use sh
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" build-$(LINUX_TAG)-$(ARCH) sh -lc '
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" build-$(LINUX_TAG)-$(ARCH) sh -lc '
                     set -euxo pipefail;
                     
                     # Step 1: Setup Python environment
@@ -364,7 +364,7 @@ stages:
               # Copy native .so bindings for artifact archival
               echo "Copying .so bindings to host..."
               mkdir -p "$(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)"
-              docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" || "$(LINUX_TAG)" == "manylinux_2_28" ]] && echo bash -lc || echo sh -lc) '
+              docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux_2_28" ]] && echo bash -lc || echo sh -lc) '
                 OUT="/tmp/ddbc-out";
                 rm -rf "$OUT"; mkdir -p "$OUT";
                 find /workspace/mssql_python -maxdepth 1 -type f -name "*.so" -exec cp -v {} "$OUT"/ \; || true
