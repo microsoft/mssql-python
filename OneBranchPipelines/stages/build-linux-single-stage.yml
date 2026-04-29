@@ -3,7 +3,7 @@
 # Builds for Python 3.10, 3.11, 3.12, 3.13, 3.14 within single job
 # Tests each wheel after building with isolated pytest execution
 parameters:
-  # Stage identifier (e.g., 'Linux_manylinux_x86_64')
+  # Stage identifier (e.g., 'Linux_manylinux_2_28_x86_64')
   - name: stageName
     type: string
   # Job identifier within the stage
