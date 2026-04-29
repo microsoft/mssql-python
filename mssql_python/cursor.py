@@ -12,6 +12,7 @@ Resource Management:
 # pylint: disable=too-many-lines  # Large file due to comprehensive DB-API 2.0 implementation
 
 import decimal
+import logging
 import uuid
 import datetime
 import warnings
@@ -747,6 +748,24 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Reinitialize the statement handle
         self._initialize_cursor()
+        self.is_stmt_prepared = [False]
+
+    def _soft_reset_cursor(self) -> None:
+        """Lightweight reset: close cursor and unbind params without freeing the HSTMT.
+
+        Preserves the prepared statement plan on the server so repeated
+        executions of the same SQL skip SQLPrepare entirely.
+        """
+        if self.hstmt:
+            ret = ddbc_bindings.DDBCSQLResetStmt(self.hstmt)
+            try:
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+            except Exception:
+                logger.warning("_soft_reset_cursor failed; falling back to full reset")
+                self._reset_cursor()
+                self.last_executed_stmt = ""
+                return
+        self._clear_rownumber()
 
     def close(self) -> None:
         """
@@ -1363,8 +1382,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
-            logger.debug("execute: Resetting cursor state")
-            self._reset_cursor()
+            if self.hstmt:
+                self._soft_reset_cursor()
+            else:
+                self._reset_cursor()
         else:
             # Close just the ODBC cursor (not the statement handle) so the
             # prepared plan can be reused.  SQLFreeStmt(SQL_CLOSE) releases
@@ -1409,8 +1430,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Check if single parameter is a nested container that should be unwrapped
             # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
             if isinstance(parameters, tuple) and len(parameters) == 1:
-                # Could be either (value,) for single param or ((tuple),) for nested
-                # Check if it's a nested container
                 if isinstance(parameters[0], (tuple, list, dict)):
                     actual_params = parameters[0]
                 else:
@@ -1418,11 +1437,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             else:
                 actual_params = parameters
 
-            # Convert parameters based on detected style
-            operation, converted_params = detect_and_convert_parameters(operation, actual_params)
-
-            # Convert back to list format expected by the binding code
-            parameters = list(converted_params)
+            # Skip detect_and_convert_parameters when re-executing the same SQL —
+            # the parameter style (qmark vs pyformat) won't change between calls.
+            if operation == self.last_executed_stmt and isinstance(actual_params, (tuple, list)):
+                parameters = list(actual_params)
+            else:
+                operation, converted_params = detect_and_convert_parameters(
+                    operation, actual_params
+                )
+                parameters = list(converted_params)
         else:
             parameters = []
 
@@ -1450,27 +1473,28 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
                 parameters_type.append(paraminfo)
 
-        # TODO: Use a more sophisticated string compare that handles redundant spaces etc.
-        #       Also consider storing last query's hash instead of full query string. This will help
-        #       in low-memory conditions
-        #       (Ex: huge number of parallel queries with huge query string sizes)
-        if operation != self.last_executed_stmt:
-            # Executing a new statement. Reset is_stmt_prepared to false
+        # Prepare caching: skip SQLPrepare when re-executing the same SQL
+        # with parameters. The HSTMT is reused via _soft_reset_cursor, so the
+        # server-side plan from the previous SQLPrepare is still valid.
+        same_sql = parameters and operation == self.last_executed_stmt and self.is_stmt_prepared[0]
+        if not same_sql:
             self.is_stmt_prepared = [False]
+        effective_use_prepare = use_prepare and not same_sql
 
-        for i, param in enumerate(parameters):
-            logger.debug(
-                """Parameter number: %s, Parameter: %s,
-                Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                i + 1,
-                param,
-                str(type(param)),
-                parameters_type[i].paramSQLType,
-                parameters_type[i].paramCType,
-                parameters_type[i].columnSize,
-                parameters_type[i].decimalDigits,
-                parameters_type[i].inputOutputType,
-            )
+        if logger.isEnabledFor(logging.DEBUG):
+            for i, param in enumerate(parameters):
+                logger.debug(
+                    """Parameter number: %s, Parameter: %s,
+                    Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                    i + 1,
+                    param,
+                    str(type(param)),
+                    parameters_type[i].paramSQLType,
+                    parameters_type[i].paramCType,
+                    parameters_type[i].columnSize,
+                    parameters_type[i].decimalDigits,
+                    parameters_type[i].inputOutputType,
+                )
 
         ret = ddbc_bindings.DDBCSQLExecute(
             self.hstmt,
@@ -1478,7 +1502,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             parameters,
             parameters_type,
             self.is_stmt_prepared,
-            use_prepare,
+            effective_use_prepare,
             encoding_settings,
         )
         # Check return code
@@ -1491,8 +1515,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._reset_cursor()
             raise
 
-        # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
-        if self.hstmt:
+        # Capture diagnostic messages only on SQL_SUCCESS_WITH_INFO.
+        # SQL_SUCCESS has no records — calling DDBCSQLGetAllDiagRecords on it
+        # costs ~10ms/call (driver scans internal state to find nothing).
+        # SQL_ERROR is already handled by check_error() above which extracts
+        # diagnostics and raises.
+        if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
         self.last_executed_stmt = operation

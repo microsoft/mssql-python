@@ -1378,11 +1378,39 @@ void SqlHandle::close_cursor() {
     }
 }
 
+SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
+    if (!statementHandle || !statementHandle->get()) {
+        return SQL_INVALID_HANDLE;
+    }
+    if (statementHandle->isImplicitlyFreed()) {
+        return SQL_INVALID_HANDLE;
+    }
+    if (!SQLFreeStmt_ptr) {
+        DriverLoader::getInstance().loadDriver();
+    }
+    SQLHANDLE hStmt = statementHandle->get();
+
+    SQLRETURN rc;
+    {
+        py::gil_scoped_release release;
+        rc = SQLFreeStmt_ptr(hStmt, SQL_CLOSE);
+        if (SQL_SUCCEEDED(rc)) {
+            rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+        }
+        if (SQL_SUCCEEDED(rc) && SQLSetStmtAttr_ptr) {
+            rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0);
+        }
+    }
+    return rc;
+}
+
 SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataType) {
     if (!SQLGetTypeInfo_ptr) {
         ThrowStdException("SQLGetTypeInfo function not loaded");
     }
 
+    // Release the GIL during the blocking ODBC catalog call
+    py::gil_scoped_release release;
     return SQLGetTypeInfo_ptr(StatementHandle->get(), DataType);
 }
 
@@ -1405,6 +1433,8 @@ SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, const py::object& cat
     std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
     std::vector<SQLWCHAR> procedureBuf = WStringToSQLWCHAR(procedure);
 
+    // Release the GIL during the blocking ODBC catalog call
+    py::gil_scoped_release release;
     return SQLProcedures_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
         catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : schemaBuf.data(),
@@ -1412,6 +1442,7 @@ SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, const py::object& cat
         procedure.empty() ? 0 : SQL_NTS);
 #else
     // Windows implementation
+    py::gil_scoped_release release;
     return SQLProcedures_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(),
         catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(),
@@ -1450,6 +1481,8 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pk
     std::vector<SQLWCHAR> fkSchemaBuf = WStringToSQLWCHAR(fkSchema);
     std::vector<SQLWCHAR> fkTableBuf = WStringToSQLWCHAR(fkTable);
 
+    // Release the GIL during the blocking ODBC catalog call
+    py::gil_scoped_release release;
     return SQLForeignKeys_ptr(
         StatementHandle->get(), pkCatalog.empty() ? nullptr : pkCatalogBuf.data(),
         pkCatalog.empty() ? 0 : SQL_NTS, pkSchema.empty() ? nullptr : pkSchemaBuf.data(),
@@ -1460,6 +1493,7 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pk
         fkTable.empty() ? 0 : SQL_NTS);
 #else
     // Windows implementation
+    py::gil_scoped_release release;
     return SQLForeignKeys_ptr(
         StatementHandle->get(), pkCatalog.empty() ? nullptr : (SQLWCHAR*)pkCatalog.c_str(),
         pkCatalog.empty() ? 0 : SQL_NTS, pkSchema.empty() ? nullptr : (SQLWCHAR*)pkSchema.c_str(),
@@ -1487,6 +1521,8 @@ SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, const py::object& ca
     std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
     std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
 
+    // Release the GIL during the blocking ODBC catalog call
+    py::gil_scoped_release release;
     return SQLPrimaryKeys_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
         catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : schemaBuf.data(),
@@ -1494,6 +1530,7 @@ SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, const py::object& ca
         table.empty() ? 0 : SQL_NTS);
 #else
     // Windows implementation
+    py::gil_scoped_release release;
     return SQLPrimaryKeys_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(),
         catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(),
@@ -1519,6 +1556,8 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& cat
     std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
     std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
 
+    // Release the GIL during the blocking ODBC catalog call
+    py::gil_scoped_release release;
     return SQLStatistics_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : catalogBuf.data(),
         catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : schemaBuf.data(),
@@ -1526,6 +1565,7 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& cat
         table.empty() ? 0 : SQL_NTS, unique, reserved);
 #else
     // Windows implementation
+    py::gil_scoped_release release;
     return SQLStatistics_ptr(
         StatementHandle->get(), catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(),
         catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(),
@@ -1554,6 +1594,8 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
     std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(tableStr);
     std::vector<SQLWCHAR> columnBuf = WStringToSQLWCHAR(columnStr);
 
+    // Release the GIL during the blocking ODBC catalog call
+    py::gil_scoped_release release;
     return SQLColumns_ptr(
         StatementHandle->get(), catalogStr.empty() ? nullptr : catalogBuf.data(),
         catalogStr.empty() ? 0 : SQL_NTS, schemaStr.empty() ? nullptr : schemaBuf.data(),
@@ -1562,6 +1604,7 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
         columnStr.empty() ? 0 : SQL_NTS);
 #else
     // Windows implementation
+    py::gil_scoped_release release;
     return SQLColumns_ptr(
         StatementHandle->get(), catalogStr.empty() ? nullptr : (SQLWCHAR*)catalogStr.c_str(),
         catalogStr.empty() ? 0 : SQL_NTS,
@@ -1702,7 +1745,14 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
 #else
     queryPtr = const_cast<SQLWCHAR*>(Query.c_str());
 #endif
-    SQLRETURN ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC call so that other Python
+        // threads (e.g. asyncio event loop, heartbeat threads) can run while
+        // SQL Server executes the query. See issue #540.
+        py::gil_scoped_release release;
+        ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLExecDirect: Query execution failed - SQLRETURN=%d", ret);
     }
@@ -1774,8 +1824,13 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::wstring& catal
     }
 #endif
 
-    SQLRETURN ret = SQLTables_ptr(StatementHandle->get(), catalogPtr, catalogLen, schemaPtr,
-                                  schemaLen, tablePtr, tableLen, tableTypePtr, tableTypeLen);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC catalog call
+        py::gil_scoped_release release;
+        ret = SQLTables_ptr(StatementHandle->get(), catalogPtr, catalogLen, schemaPtr,
+                            schemaLen, tablePtr, tableLen, tableTypePtr, tableTypeLen);
+    }
 
     LOG("SQLTables: Catalog metadata query %s - SQLRETURN=%d",
         SQL_SUCCEEDED(ret) ? "succeeded" : "failed", ret);
@@ -1832,7 +1887,11 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         // is the fastest way to submit a SQL statement for one-time execution
         // according to DDBC documentation -
         // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
-        rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
+        {
+            // Release the GIL during the blocking ODBC call
+            py::gil_scoped_release release;
+            rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
+        }
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
             LOG("SQLExecute: Direct execution failed (non-parameterized query) "
                 "- SQLRETURN=%d",
@@ -1846,7 +1905,11 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         // element
         assert(isStmtPrepared.size() == 1);
         if (usePrepare) {
-            rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+            {
+                // Release the GIL during the blocking SQLPrepare network call.
+                py::gil_scoped_release release;
+                rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+            }
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecute: SQLPrepare failed - SQLRETURN=%d, "
                     "statement_handle=%p",
@@ -1878,12 +1941,27 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             return rc;
         }
 
-        rc = SQLExecute_ptr(hStmt);
+        {
+            // Release the GIL during the blocking SQLExecute network call.
+            py::gil_scoped_release release;
+            rc = SQLExecute_ptr(hStmt);
+        }
         if (rc == SQL_NEED_DATA) {
             LOG("SQLExecute: SQL_NEED_DATA received - Starting DAE "
                 "(Data-At-Execution) loop for large parameter streaming");
             SQLPOINTER paramToken = nullptr;
-            while ((rc = SQLParamData_ptr(hStmt, &paramToken)) == SQL_NEED_DATA) {
+            // For DAE, release the GIL only around individual ODBC calls;
+            // Python type inspection of the parameter happens between calls
+            // and requires the GIL.
+            auto paramData = [&](SQLPOINTER* tok) {
+                py::gil_scoped_release release;
+                return SQLParamData_ptr(hStmt, tok);
+            };
+            auto putData = [&](SQLPOINTER data, SQLLEN len) {
+                py::gil_scoped_release release;
+                return SQLPutData_ptr(hStmt, data, len);
+            };
+            while ((rc = paramData(&paramToken)) == SQL_NEED_DATA) {
                 // Finding the paramInfo that matches the returned token
                 const ParamInfo* matchedInfo = nullptr;
                 for (auto& info : paramInfos) {
@@ -1897,7 +1975,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 }
                 const py::object& pyObj = matchedInfo->dataPtr;
                 if (pyObj.is_none()) {
-                    SQLPutData_ptr(hStmt, nullptr, 0);
+                    putData(nullptr, 0);
                     continue;
                 }
                 if (py::isinstance<py::str>(pyObj)) {
@@ -1923,8 +2001,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                                 ThrowStdException("Chunk size exceeds maximum "
                                                   "allowed by SQLLEN");
                             }
-                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                                static_cast<SQLLEN>(lenBytes));
+                            rc = putData((SQLPOINTER)(dataPtr + offset),
+                                         static_cast<SQLLEN>(lenBytes));
                             if (!SQL_SUCCEEDED(rc)) {
                                 LOG("SQLExecute: SQLPutData failed for "
                                     "SQL_C_WCHAR chunk - offset=%zu",
@@ -1958,8 +2036,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                         while (offset < totalBytes) {
                             size_t len = std::min(chunkBytes, totalBytes - offset);
 
-                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                                static_cast<SQLLEN>(len));
+                            rc = putData((SQLPOINTER)(dataPtr + offset),
+                                         static_cast<SQLLEN>(len));
                             if (!SQL_SUCCEEDED(rc)) {
                                 LOG("SQLExecute: SQLPutData failed for "
                                     "SQL_C_CHAR chunk - offset=%zu",
@@ -1980,8 +2058,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     const size_t chunkSize = DAE_CHUNK_SIZE;
                     for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
                         size_t len = std::min(chunkSize, totalBytes - offset);
-                        rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                            static_cast<SQLLEN>(len));
+                        rc = putData((SQLPOINTER)(dataPtr + offset),
+                                     static_cast<SQLLEN>(len));
                         if (!SQL_SUCCEEDED(rc)) {
                             LOG("SQLExecute: SQLPutData failed for "
                                 "binary/bytes chunk - offset=%zu",
@@ -2706,7 +2784,12 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
     queryPtr = const_cast<SQLWCHAR*>(query.c_str());
     LOG("SQLExecuteMany: Using wide string query directly");
 #endif
-    RETCODE rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+    RETCODE rc;
+    {
+        // Release the GIL during the blocking SQLPrepare network call.
+        py::gil_scoped_release release;
+        rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+    }
     if (!SQL_SUCCEEDED(rc)) {
         LOG("SQLExecuteMany: SQLPrepare failed - rc=%d", rc);
         return rc;
@@ -2747,7 +2830,11 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
         }
         LOG("SQLExecuteMany: PARAMSET_SIZE set to %zu", paramSetSize);
 
-        rc = SQLExecute_ptr(hStmt);
+        {
+            // Release the GIL during the blocking SQLExecute network call.
+            py::gil_scoped_release release;
+            rc = SQLExecute_ptr(hStmt);
+        }
         LOG("SQLExecuteMany: SQLExecute completed - rc=%d", rc);
         return rc;
     } else {
@@ -2767,12 +2854,20 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
             }
             LOG("SQLExecuteMany: Parameters bound for row %zu", rowIndex);
 
-            rc = SQLExecute_ptr(hStmt);
+            {
+                // Release the GIL during the blocking SQLExecute network call.
+                py::gil_scoped_release release;
+                rc = SQLExecute_ptr(hStmt);
+            }
             LOG("SQLExecuteMany: SQLExecute for row %zu - initial_rc=%d", rowIndex, rc);
             size_t dae_chunk_count = 0;
             while (rc == SQL_NEED_DATA) {
                 SQLPOINTER token;
-                rc = SQLParamData_ptr(hStmt, &token);
+                {
+                    // Release the GIL around the blocking SQLParamData call.
+                    py::gil_scoped_release release;
+                    rc = SQLParamData_ptr(hStmt, &token);
+                }
                 LOG("SQLExecuteMany: SQLParamData called - chunk=%zu, rc=%d, "
                     "token=%p",
                     dae_chunk_count, rc, token);
@@ -2795,7 +2890,10 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
                     LOG("SQLExecuteMany: Sending string DAE data - chunk=%zu, "
                         "length=%lld",
                         dae_chunk_count, static_cast<long long>(data_len));
-                    rc = SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
+                    rc = [&] {
+                        py::gil_scoped_release release;
+                        return SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
+                    }();
                     if (!SQL_SUCCEEDED(rc) && rc != SQL_NEED_DATA) {
                         LOG("SQLExecuteMany: SQLPutData(string) failed - "
                             "chunk=%zu, rc=%d",
@@ -2808,7 +2906,10 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
                     LOG("SQLExecuteMany: Sending bytes/bytearray DAE data - "
                         "chunk=%zu, length=%lld",
                         dae_chunk_count, static_cast<long long>(data_len));
-                    rc = SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
+                    rc = [&] {
+                        py::gil_scoped_release release;
+                        return SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
+                    }();
                     if (!SQL_SUCCEEDED(rc) && rc != SQL_NEED_DATA) {
                         LOG("SQLExecuteMany: SQLPutData(bytes) failed - "
                             "chunk=%zu, rc=%d",
@@ -2917,6 +3018,8 @@ SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT ident
     std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
     std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
 
+    // Release the GIL during the blocking ODBC catalog call
+    py::gil_scoped_release release;
     return SQLSpecialColumns_ptr(
         StatementHandle->get(), identifierType, catalog.empty() ? nullptr : catalogBuf.data(),
         catalog.empty() ? 0 : SQL_NTS, schema.empty() ? nullptr : schemaBuf.data(),
@@ -2924,6 +3027,7 @@ SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT ident
         table.empty() ? 0 : SQL_NTS, scope, nullable);
 #else
     // Windows implementation
+    py::gil_scoped_release release;
     return SQLSpecialColumns_ptr(
         StatementHandle->get(), identifierType,
         catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), catalog.empty() ? 0 : SQL_NTS,
@@ -2941,6 +3045,8 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
+    // Release the GIL during the blocking ODBC call
+    py::gil_scoped_release release;
     return SQLFetch_ptr(StatementHandle->get());
 }
 
@@ -2955,7 +3061,11 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         ++loopCount;
         std::vector<char> chunk(DAE_CHUNK_SIZE, 0);
         SQLLEN actualRead = 0;
-        ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk.data(), DAE_CHUNK_SIZE, &actualRead);
+        {
+            // Release the GIL during blocking SQLGetData LOB streaming
+            py::gil_scoped_release release;
+            ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk.data(), DAE_CHUNK_SIZE, &actualRead);
+        }
 
         if (ret == SQL_ERROR || !SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
             std::ostringstream oss;
@@ -3715,7 +3825,12 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
     SQLFreeStmt_ptr(StatementHandle->get(), SQL_UNBIND);
 
     // Perform scroll operation
-    SQLRETURN ret = SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC fetch
+        py::gil_scoped_release release;
+        ret = SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset);
+    }
 
     // If successful and caller wants data, retrieve it
     if (SQL_SUCCEEDED(ret) && row_data.size() == 0) {
@@ -3903,7 +4018,12 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                          const std::vector<SQLUSMALLINT>& lobColumns,
                          const std::string& charEncoding = "utf-8") {
     LOG("FetchBatchData: Fetching data in batches");
-    SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC fetch
+        py::gil_scoped_release release;
+        ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    }
     if (ret == SQL_NO_DATA) {
         LOG("FetchBatchData: No data to fetch");
         return ret;
@@ -4378,7 +4498,11 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             "SQLGetData path",
             lobColumns.size());
         while (numRowsFetched < (SQLULEN)fetchSize) {
-            ret = SQLFetch_ptr(hStmt);
+            {
+                // Release GIL during the blocking fetch
+                py::gil_scoped_release release;
+                ret = SQLFetch_ptr(hStmt);
+            }
             if (ret == SQL_NO_DATA)
                 break;
             if (!SQL_SUCCEEDED(ret))
@@ -4763,7 +4887,11 @@ SQLRETURN FetchArrowBatch_wrap(
             // Adjust fetch size for final batch to avoid overfetching
             fetchStateGuard.setRowArraySize(spaceLeftInArrowBatch);
         }
-        ret = SQLFetch_ptr(hStmt);
+        {
+            // Release GIL during the blocking ODBC fetch
+            py::gil_scoped_release release;
+            ret = SQLFetch_ptr(hStmt);
+        }
         if (ret == SQL_NO_DATA) {
             ret = SQL_SUCCESS; // Normal completion
             break;
@@ -5515,7 +5643,11 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
             "SQLGetData path",
             lobColumns.size());
         while (true) {
-            ret = SQLFetch_ptr(hStmt);
+            {
+                // Release GIL during the blocking fetch
+                py::gil_scoped_release release;
+                ret = SQLFetch_ptr(hStmt);
+            }
             if (ret == SQL_NO_DATA)
                 break;
             if (!SQL_SUCCEEDED(ret))
@@ -5630,7 +5762,11 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
     SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
     // Assume hStmt is already allocated and a query has been executed
-    ret = SQLFetch_ptr(hStmt);
+    {
+        // Release the GIL during the blocking ODBC fetch
+        py::gil_scoped_release release;
+        ret = SQLFetch_ptr(hStmt);
+    }
     if (SQL_SUCCEEDED(ret)) {
         // Retrieve column count
         SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
@@ -5654,6 +5790,8 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
+    // Release the GIL during the blocking ODBC call
+    py::gil_scoped_release release;
     return SQLMoreResults_ptr(StatementHandle->get());
 }
 
@@ -5800,6 +5938,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("wcharEncoding") = "utf-16le");
     m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap, "Fetch an arrow batch of given length from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
+    m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap, "Close cursor and unbind params without freeing HSTMT");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle", py::arg("handle"));
