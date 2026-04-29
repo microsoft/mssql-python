@@ -1515,7 +1515,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._reset_cursor()
             raise
 
-        # Capture diagnostic messages only when the driver signalled info.
+        # Capture diagnostic messages only on SQL_SUCCESS_WITH_INFO.
+        # SQL_SUCCESS has no records — calling DDBCSQLGetAllDiagRecords on it
+        # costs ~10ms/call (driver scans internal state to find nothing).
+        # SQL_ERROR is already handled by check_error() above which extracts
+        # diagnostics and raises.
         if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
