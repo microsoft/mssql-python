@@ -49,6 +49,11 @@ def _init_conn_strings():
         CONN_STR_PYODBC = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
     else:
         CONN_STR_PYODBC = CONN_STR
+        # mssql-python manages its own driver and rejects Driver= in the
+        # connection string.  Strip it so both drivers can share one env var.
+        parts = [p for p in CONN_STR.split(";") if not p.strip().lower().startswith("driver=")]
+        CONN_STR = ";".join(parts)
+
 
 
 class BenchmarkResult:
