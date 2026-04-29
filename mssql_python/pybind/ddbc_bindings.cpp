@@ -588,15 +588,20 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
                                && PyUnicode_MAX_CHAR_VALUE(obj) > 127);
 
             if (utf16_len > MAX_INLINE_CHAR) {
+                // DAE path: match slow-path types exactly.
+                // Non-unicode → SQL_VARCHAR + SQL_C_CHAR (encoded via Python codec in DAE loop)
+                // Unicode → SQL_WVARCHAR + SQL_C_WCHAR (wide-char streaming in DAE loop)
                 info.isDAE = true;
                 info.columnSize = 0;
                 info.dataPtr = py::reinterpret_borrow<py::object>(py::handle(obj));
+                info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
+                info.paramCType = is_unicode ? SQL_C_WCHAR : SQL_C_CHAR;
             } else {
                 info.columnSize = is_unicode ? utf16_len : length;
                 info.utf16Len = utf16_len;
+                info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
+                info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             }
-            info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
-            info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             info.decimalDigits = 0;
 
             // Check geometry prefixes
@@ -720,7 +725,7 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             // SMALLMONEY/MONEY range — bind as formatted VARCHAR string
             // to match SQL Server's fixed-point money semantics.
             double dval = h.attr("__float__")().cast<double>();
-            if (dval >= SMALLMONEY_MIN && dval <= MONEY_MAX) {
+            if (dval >= MONEY_MIN && dval <= MONEY_MAX) {
                 py::str formatted = h.attr("__format__")(py::str("f"));
                 info.paramSQLType = SQL_VARCHAR;
                 info.paramCType = PARAM_C_TYPE_TEXT;
@@ -755,16 +760,9 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             continue;
         }
 
-        // --- Fallback: convert to string (matches Python _map_sql_type default) ---
-        py::str str_val = py::str(obj);
-        Py_ssize_t length = py::len(str_val);
-        info.paramSQLType = SQL_WVARCHAR;
-        info.paramCType = SQL_C_WCHAR;
-        info.columnSize = length;
-        info.utf16Len = length;
-        info.decimalDigits = 0;
-        // Replace param in-place (safe: execute() copies the caller's list)
-        PyList_SET_ITEM(params.ptr(), i, str_val.release().ptr());
+        // --- Unknown type: raise TypeError (matches Python _map_sql_type) ---
+        throw py::type_error(
+            "Unsupported parameter type: The driver cannot safely convert it to a SQL type.");
     }
 
     return infos;
@@ -2481,6 +2479,93 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
         py::gil_scoped_release release;
         rc = SQLExecute_ptr(hStmt);
     }
+
+    // DAE (Data-At-Execution) loop: when BindParameters marks a param as DAE
+    // (large str/bytes/binary), SQLExecute returns SQL_NEED_DATA. We must
+    // stream the data via SQLParamData/SQLPutData before execution completes.
+    if (rc == SQL_NEED_DATA) {
+        SQLPOINTER paramToken = nullptr;
+        while ((rc = SQLParamData_ptr(hStmt, &paramToken)) == SQL_NEED_DATA) {
+            const ParamInfo* matchedInfo = nullptr;
+            for (auto& info : paramInfos) {
+                if (reinterpret_cast<SQLPOINTER>(const_cast<ParamInfo*>(&info)) == paramToken) {
+                    matchedInfo = &info;
+                    break;
+                }
+            }
+            if (!matchedInfo) {
+                ThrowStdException("SQLExecuteFast: unrecognized paramToken from SQLParamData");
+            }
+            const py::object& pyObj = matchedInfo->dataPtr;
+            if (pyObj.is_none()) {
+                SQLPutData_ptr(hStmt, nullptr, 0);
+                continue;
+            }
+
+            if (py::isinstance<py::str>(pyObj)) {
+                if (matchedInfo->paramCType == SQL_C_WCHAR) {
+                    std::wstring wstr = pyObj.cast<std::wstring>();
+                    const SQLWCHAR* dataPtr = nullptr;
+                    size_t totalChars = 0;
+#if defined(__APPLE__) || defined(__linux__)
+                    std::vector<SQLWCHAR> sqlwStr = WStringToSQLWCHAR(wstr);
+                    totalChars = sqlwStr.size() - 1;
+                    dataPtr = sqlwStr.data();
+#else
+                    dataPtr = wstr.c_str();
+                    totalChars = wstr.size();
+#endif
+                    size_t chunkChars = DAE_CHUNK_SIZE / sizeof(SQLWCHAR);
+                    for (size_t offset = 0; offset < totalChars; offset += chunkChars) {
+                        size_t len = std::min(chunkChars, totalChars - offset);
+                        rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
+                                            static_cast<SQLLEN>(len * sizeof(SQLWCHAR)));
+                        if (!SQL_SUCCEEDED(rc)) return rc;
+                    }
+                } else if (matchedInfo->paramCType == SQL_C_CHAR) {
+                    std::string encodedStr;
+                    try {
+                        py::object encoded = pyObj.attr("encode")(charEncoding, "strict");
+                        encodedStr = encoded.cast<std::string>();
+                    } catch (const py::error_already_set& e) {
+                        throw;
+                    }
+                    const char* dataPtr = encodedStr.data();
+                    size_t totalBytes = encodedStr.size();
+                    for (size_t offset = 0; offset < totalBytes; offset += DAE_CHUNK_SIZE) {
+                        size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE),
+                                              totalBytes - offset);
+                        rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
+                                            static_cast<SQLLEN>(len));
+                        if (!SQL_SUCCEEDED(rc)) return rc;
+                    }
+                } else {
+                    ThrowStdException("SQLExecuteFast: unsupported C type for str in DAE");
+                }
+            } else if (py::isinstance<py::bytes>(pyObj) ||
+                       py::isinstance<py::bytearray>(pyObj)) {
+                py::bytes b = pyObj.cast<py::bytes>();
+                std::string s = b;
+                const char* dataPtr = s.data();
+                size_t totalBytes = s.size();
+                for (size_t offset = 0; offset < totalBytes; offset += DAE_CHUNK_SIZE) {
+                    size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE),
+                                          totalBytes - offset);
+                    rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
+                                        static_cast<SQLLEN>(len));
+                    if (!SQL_SUCCEEDED(rc)) return rc;
+                }
+            } else {
+                ThrowStdException("SQLExecuteFast: DAE only supported for str or bytes");
+            }
+        }
+        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
+    }
+
+    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
+
+    // Unbind params — buffers go out of scope after this
+    rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
     return rc;
 }
 
