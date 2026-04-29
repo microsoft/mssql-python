@@ -248,22 +248,11 @@ jobs:
         targetArch: 'universal2'
 
   steps:
-    # For Python 3.11+, UsePythonVersion@0 provides a universal2 interpreter.
-    # For Python 3.10, UsePythonVersion@0 only has darwin-x64 in the
-    # actions/python-versions manifest, producing x86_64-only wheels.
-    # We install universal2 Python 3.10 from python.org instead.
     - task: UsePythonVersion@0
       inputs:
         versionSpec: '$(pythonVersion)'
         addToPath: true
-      displayName: 'Use Python $(pythonVersion) (Universal2)'
-      condition: ne(variables['shortPyVer'], '310')
-
-    - script: |
-        chmod +x "$(Build.SourcesDirectory)/eng/scripts/install-python-310-macos.sh"
-        "$(Build.SourcesDirectory)/eng/scripts/install-python-310-macos.sh"
-      displayName: 'Install Python 3.10 Universal2 (NuGet feed)'
-      condition: eq(variables['shortPyVer'], '310')
+      displayName: 'Use Python $(pythonVersion)'
 
     # Install CMake on macOS
     - script: |
