@@ -1452,11 +1452,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
 
-        # Apply timeout if set (non-zero)
-        logger.debug("execute: Creating parameter type list")
-        param_info = ddbc_bindings.ParamInfo
-        parameters_type = []
-
         # Validate that inputsizes matches parameter count if both are present
         if parameters and self._inputsizes:
             if len(self._inputsizes) != len(parameters):
@@ -1468,11 +1463,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     Warning,
                 )
 
-        if parameters:
-            for i, param in enumerate(parameters):
-                paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
-                parameters_type.append(paraminfo)
-
         # Prepare caching: skip SQLPrepare when re-executing the same SQL
         # with parameters. The HSTMT is reused via _soft_reset_cursor, so the
         # server-side plan from the previous SQLPrepare is still valid.
@@ -1481,30 +1471,56 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        if logger.isEnabledFor(logging.DEBUG):
-            for i, param in enumerate(parameters):
-                logger.debug(
-                    """Parameter number: %s, Parameter: %s,
-                    Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                    i + 1,
-                    param,
-                    str(type(param)),
-                    parameters_type[i].paramSQLType,
-                    parameters_type[i].paramCType,
-                    parameters_type[i].columnSize,
-                    parameters_type[i].decimalDigits,
-                    parameters_type[i].inputOutputType,
-                )
-
-        ret = ddbc_bindings.DDBCSQLExecute(
-            self.hstmt,
-            operation,
-            parameters,
-            parameters_type,
-            self.is_stmt_prepared,
-            effective_use_prepare,
-            encoding_settings,
+        # Fast path: when no inputsizes override, do type detection + bind + execute
+        # entirely in C++. ParamInfo never crosses the pybind11 boundary.
+        use_fast_path = parameters and not (
+            self._inputsizes and any(s is not None for s in self._inputsizes)
         )
+
+        if use_fast_path:
+            ret = ddbc_bindings.DDBCSQLExecuteFast(
+                self.hstmt,
+                operation,
+                parameters,
+                self.is_stmt_prepared,
+                effective_use_prepare,
+                encoding_settings,
+            )
+        else:
+            # Slow path: Python-side type detection (used when setinputsizes overrides are present)
+            parameters_type = []
+            if parameters:
+                param_info = ddbc_bindings.ParamInfo
+                for i, param in enumerate(parameters):
+                    paraminfo = self._create_parameter_types_list(
+                        param, param_info, parameters, i
+                    )
+                    parameters_type.append(paraminfo)
+
+            if logger.isEnabledFor(logging.DEBUG):
+                for i, param in enumerate(parameters):
+                    logger.debug(
+                        """Parameter number: %s, Parameter: %s,
+                        Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                        i + 1,
+                        param,
+                        str(type(param)),
+                        parameters_type[i].paramSQLType,
+                        parameters_type[i].paramCType,
+                        parameters_type[i].columnSize,
+                        parameters_type[i].decimalDigits,
+                        parameters_type[i].inputOutputType,
+                    )
+
+            ret = ddbc_bindings.DDBCSQLExecute(
+                self.hstmt,
+                operation,
+                parameters,
+                parameters_type,
+                self.is_stmt_prepared,
+                effective_use_prepare,
+                encoding_settings,
+            )
         # Check return code
         try:
 
