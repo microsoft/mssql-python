@@ -152,20 +152,35 @@ def test_lowercase_thread_safety_no_db():
     mssql_python.lowercase = original_lowercase
 
 
-def test_lowercase_concurrent_access_with_db(db_connection):
+def test_lowercase_concurrent_access_with_db(conn_str, db_connection):
     """
     Tests concurrent modification of the 'lowercase' setting while simultaneously
     creating cursors and executing queries. This simulates a real-world race condition.
+
+    Each reader thread uses its own dedicated connection. Sharing a single ODBC
+    connection (HDBC) across threads is not supported by the driver without MARS
+    (the package advertises threadsafety=1 and cursor methods are documented as
+    not thread-safe), so the cross-thread parallelism we want to exercise here is
+    "one connection per thread" — not "many cursors on one connection".
     """
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING not set")
+
     original_lowercase = mssql_python.lowercase
     stop_event = threading.Event()
     errors = []
 
-    # Create a temporary table for the test
+    # Use a global temp table so each thread's own connection can see it.
+    # A unique suffix avoids collisions with parallel test runs.
+    table_name = f"##pytest_thread_test_{random.randint(0, 2**31 - 1)}"
+
+    # Create the global temp table on the shared db_connection. Because at least
+    # one connection (db_connection) keeps a reference to it for the whole test,
+    # the table persists for the duration of the reader threads' lifetimes.
     cursor = None
     try:
         cursor = db_connection.cursor()
-        cursor.execute("CREATE TABLE #pytest_thread_test (COLUMN_NAME INT)")
+        cursor.execute(f"CREATE TABLE {table_name} (COLUMN_NAME INT)")
         db_connection.commit()
     except Exception as e:
         pytest.fail(f"Failed to create test table: {e}")
@@ -186,25 +201,40 @@ def test_lowercase_concurrent_access_with_db(db_connection):
                 break
 
     def reader():
-        """Continuously creates cursors and checks for valid description casing."""
-        while not stop_event.is_set():
-            cursor = None
+        """Opens its own connection and continuously creates cursors and checks
+        for valid description casing."""
+        local_conn = None
+        try:
+            local_conn = mssql_python.connect(conn_str)
+        except Exception as e:
+            errors.append(f"Reader thread connect error: {e}")
+            return
+        try:
+            while not stop_event.is_set():
+                cursor = None
+                try:
+                    cursor = local_conn.cursor()
+                    cursor.execute(f"SELECT * FROM {table_name}")
+
+                    # The lock ensures the description is generated atomically.
+                    # We just need to check if the result is one of the two valid states.
+                    col_name = cursor.description[0][0]
+
+                    if col_name not in ("COLUMN_NAME", "column_name"):
+                        errors.append(
+                            f"Invalid column name '{col_name}' found. Race condition likely."
+                        )
+                except Exception as e:
+                    errors.append(f"Reader thread error: {e}")
+                    break
+                finally:
+                    if cursor:
+                        cursor.close()
+        finally:
             try:
-                cursor = db_connection.cursor()
-                cursor.execute("SELECT * FROM #pytest_thread_test")
-
-                # The lock ensures the description is generated atomically.
-                # We just need to check if the result is one of the two valid states.
-                col_name = cursor.description[0][0]
-
-                if col_name not in ("COLUMN_NAME", "column_name"):
-                    errors.append(f"Invalid column name '{col_name}' found. Race condition likely.")
-            except Exception as e:
-                errors.append(f"Reader thread error: {e}")
-                break
-            finally:
-                if cursor:
-                    cursor.close()
+                local_conn.close()
+            except Exception:
+                pass
 
     # Start threads
     writer_thread = threading.Thread(target=writer)
@@ -227,7 +257,7 @@ def test_lowercase_concurrent_access_with_db(db_connection):
     cursor = None
     try:
         cursor = db_connection.cursor()
-        cursor.execute("DROP TABLE #pytest_thread_test")
+        cursor.execute(f"DROP TABLE {table_name}")
         db_connection.commit()
     except Exception as e:
         # Log cleanup error but don't fail the test for it
