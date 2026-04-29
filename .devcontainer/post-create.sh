@@ -48,6 +48,18 @@ else
     exit 1
 fi
 
+# Install mssql_py_core from NuGet (required for bulkcopy functionality)
+echo ""
+echo "📦 Installing mssql_py_core from NuGet (required for bulkcopy)..."
+PYCORE_INSTALLED=false
+if bash eng/scripts/install-mssql-py-core.sh; then
+    echo "✅ mssql_py_core installed successfully"
+    PYCORE_INSTALLED=true
+else
+    echo "⚠️  mssql_py_core installation failed - bulkcopy functionality will not be available"
+    echo "   You can retry manually: bash eng/scripts/install-mssql-py-core.sh"
+fi
+
 # Generate random password for SQL Server
 echo ""
 echo "Generating SQL Server password..."
@@ -103,6 +115,11 @@ echo "=============================================="
 echo ""
 echo "📦 What's ready:"
 echo "  ✅ C++ extension built"
+if [ "$PYCORE_INSTALLED" = "true" ]; then
+    echo "  ✅ mssql_py_core installed (bulkcopy support)"
+else
+    echo "  ⚠️  mssql_py_core not installed (bulkcopy unavailable - retry: bash eng/scripts/install-mssql-py-core.sh)"
+fi
 echo "  ✅ SQL Server running (localhost:1433)"
 echo "  ✅ DB_CONNECTION_STRING set in environment"
 echo ""

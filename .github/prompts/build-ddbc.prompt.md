@@ -113,11 +113,49 @@ cd mssql_python\pybind && build.bat && cd ..\..
 
 ---
 
-## STEP 2: Verify the Build
+## STEP 2: Install mssql_py_core from NuGet (Required for Bulkcopy)
+
+The `bulkcopy` method requires the `mssql_py_core` native module, which is distributed as a NuGet package and must be installed separately.
+
+### 2.1 Run the Install Script
+
+**macOS / Linux:**
+
+```bash
+# From repository root - downloads and extracts the matching wheel from NuGet
+bash eng/scripts/install-mssql-py-core.sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+# From repository root
+.\eng\scripts\install-mssql-py-core.ps1
+```
+
+### 2.2 What the Script Does
+
+1. **Reads** the required version from `eng/versions/mssql-py-core.version`
+2. **Downloads** the `mssql-py-core-wheels` NuGet package from the public Azure Artifacts feed
+3. **Extracts** the platform-matching wheel (e.g., `mssql_py_core-*-cp313-cp313-linux_x86_64.whl`)
+4. **Installs** the `mssql_py_core/` directory at the repository root
+
+### 2.3 Verify Installation
+
+```bash
+# From repository root
+python -c "import mssql_py_core; print('✅ mssql_py_core loaded:', dir(mssql_py_core))"
+```
+
+> ⚠️ **Note:** On Linux build containers with glibc older than 2.34, the import verification is skipped automatically (the `.so` requires glibc 2.34+). The file is still installed correctly.
+
+---
+
+## STEP 3: Verify the Build
 
 **These commands assume you're at the repository root** (which you should be after Step 1).
 
-### 2.1 Check Output File Exists
+### 3.1 Check Output File Exists
 
 ```bash
 # macOS/Linux
@@ -127,7 +165,7 @@ ls -la mssql_python/ddbc_bindings.*.so
 dir mssql_python\ddbc_bindings.*.pyd
 ```
 
-### 2.2 Verify Import Works
+### 3.2 Verify Import Works
 
 ```bash
 python -c "from mssql_python import connect; print('✅ Import successful')"
@@ -135,7 +173,7 @@ python -c "from mssql_python import connect; print('✅ Import successful')"
 
 ---
 
-## STEP 3: Clean Build (If Needed)
+## STEP 4: Clean Build (If Needed)
 
 If you need a completely fresh build:
 
@@ -280,6 +318,34 @@ rm -rf build/
 ./build.sh
 ```
 
+### ❌ "No module named 'mssql_py_core'" when using bulkcopy
+
+**Cause:** The `mssql_py_core` NuGet package has not been installed yet.
+
+**Fix:**
+```bash
+# macOS/Linux - from repository root
+bash eng/scripts/install-mssql-py-core.sh
+
+# Windows (PowerShell) - from repository root
+.\eng\scripts\install-mssql-py-core.ps1
+```
+
+### ❌ "ERROR: No wheel found matching: ..." when running install-mssql-py-core.sh
+
+**Cause:** The NuGet package doesn't contain a wheel for your Python version or platform.
+
+**Fix:**
+```bash
+# Check the version file
+cat eng/versions/mssql-py-core.version
+
+# Check your Python version and platform
+python -c "import sys, platform; v=sys.version_info; print(f'cp{v.major}{v.minor}', platform.system(), platform.machine())"
+
+# Contact the team if the combination is unsupported
+```
+
 ---
 
 ## Quick Reference
@@ -287,8 +353,8 @@ rm -rf build/
 ### One-Liner Build Commands
 
 ```bash
-# macOS/Linux - Full rebuild from repo root
-cd mssql_python/pybind && rm -rf build && ./build.sh && cd ../.. && python -c "from mssql_python import connect; print('✅ Build successful')"
+# macOS/Linux - Full rebuild from repo root (includes mssql_py_core)
+cd mssql_python/pybind && rm -rf build && ./build.sh && cd ../.. && bash eng/scripts/install-mssql-py-core.sh && python -c "from mssql_python import connect; print('✅ Build successful')"
 ```
 
 ### Build Output Naming Convention
@@ -305,7 +371,7 @@ cd mssql_python/pybind && rm -rf build && ./build.sh && cd ../.. && python -c "f
 
 ## After Building
 
-Once the build succeeds:
+Once the build succeeds (Steps 1 and 2 above):
 
 1. **Run tests** → Use `#run-tests`
 2. **Test manually** with a connection to SQL Server
