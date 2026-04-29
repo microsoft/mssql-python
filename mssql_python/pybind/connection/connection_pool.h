@@ -20,7 +20,7 @@ class ConnectionPool {
     ConnectionPool(size_t max_size, int idle_timeout_secs);
 
     // Acquires a connection from the pool or creates a new one if under limit
-    std::shared_ptr<Connection> acquire(const std::wstring& connStr,
+    std::shared_ptr<Connection> acquire(const std::u16string& connStr,
                                         const py::dict& attrs_before = py::dict());
 
     // Returns a connection to the pool for reuse
@@ -46,11 +46,11 @@ class ConnectionPoolManager {
     void configure(int max_size, int idle_timeout);
 
     // Gets a connection from the appropriate pool (creates one if none exists)
-    std::shared_ptr<Connection> acquireConnection(const std::wstring& conn_str,
+    std::shared_ptr<Connection> acquireConnection(const std::u16string& conn_str,
                                                   const py::dict& attrs_before = py::dict());
 
     // Returns a connection to its original pool
-    void returnConnection(const std::wstring& conn_str, std::shared_ptr<Connection> conn);
+    void returnConnection(const std::u16string& conn_str, std::shared_ptr<Connection> conn);
 
     // Closes all pools and their connections
     void closePools();
@@ -60,7 +60,7 @@ class ConnectionPoolManager {
     ~ConnectionPoolManager() = default;
 
     // Map from connection string to connection pool
-    std::unordered_map<std::wstring, std::shared_ptr<ConnectionPool>> _pools;
+    std::unordered_map<std::u16string, std::shared_ptr<ConnectionPool>> _pools;
 
     // Protects access to the _pools map
     std::mutex _manager_mutex;

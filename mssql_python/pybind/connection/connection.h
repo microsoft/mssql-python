@@ -21,7 +21,7 @@
 
 class Connection {
   public:
-    Connection(const std::wstring& connStr, bool fromPool);
+    Connection(const std::u16string& connStr, bool fromPool);
 
     ~Connection();
 
@@ -63,12 +63,12 @@ class Connection {
     void checkError(SQLRETURN ret) const;
     void applyAttrsBefore(const py::dict& attrs_before);
 
-    std::wstring _connStr;
+    std::u16string _connStr;
     bool _fromPool = false;
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
-    std::wstring wstrStringBuffer;  // wstr buffer for string attribute setting
+    std::u16string wstrStringBuffer;  // UTF-16 buffer for wide ODBC attributes
     std::string strBytesBuffer;     // string buffer for byte attributes setting
 
     // Track child statement handles to mark them as implicitly freed when connection closes
@@ -90,7 +90,7 @@ class Connection {
 
 class ConnectionHandle {
   public:
-    ConnectionHandle(const std::string& connStr, bool usePool,
+    ConnectionHandle(const std::u16string& connStr, bool usePool,
                      const py::dict& attrsBefore = py::dict());
     ~ConnectionHandle();
 
@@ -108,5 +108,5 @@ class ConnectionHandle {
   private:
     std::shared_ptr<Connection> _conn;
     bool _usePool;
-    std::wstring _connStr;
+    std::u16string _connStr;
 };
