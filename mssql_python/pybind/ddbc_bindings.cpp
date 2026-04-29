@@ -1378,6 +1378,32 @@ void SqlHandle::close_cursor() {
     }
 }
 
+SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
+    if (!statementHandle || !statementHandle->get()) {
+        return SQL_INVALID_HANDLE;
+    }
+    if (statementHandle->isImplicitlyFreed()) {
+        return SQL_INVALID_HANDLE;
+    }
+    if (!SQLFreeStmt_ptr) {
+        DriverLoader::getInstance().loadDriver();
+    }
+    SQLHANDLE hStmt = statementHandle->get();
+
+    SQLRETURN rc;
+    {
+        py::gil_scoped_release release;
+        rc = SQLFreeStmt_ptr(hStmt, SQL_CLOSE);
+        if (SQL_SUCCEEDED(rc)) {
+            rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+        }
+        if (SQL_SUCCEEDED(rc) && SQLSetStmtAttr_ptr) {
+            rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0);
+        }
+    }
+    return rc;
+}
+
 SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataType) {
     if (!SQLGetTypeInfo_ptr) {
         ThrowStdException("SQLGetTypeInfo function not loaded");
@@ -5912,6 +5938,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("wcharEncoding") = "utf-16le");
     m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap, "Fetch an arrow batch of given length from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
+    m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap, "Close cursor and unbind params without freeing HSTMT");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle", py::arg("handle"));
