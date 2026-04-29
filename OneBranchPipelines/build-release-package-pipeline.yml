@@ -130,9 +130,12 @@ parameters:
   - name: linuxConfigs
     type: object
     default:
-      # manylinux (glibc-based) for x86_64 and ARM64
+      # manylinux_2_34 (glibc 2.34, AlmaLinux 9) for x86_64 and ARM64
       - { tag: 'manylinux', arch: 'x86_64', platform: 'linux/amd64' }
       - { tag: 'manylinux', arch: 'aarch64', platform: 'linux/arm64' }
+      # manylinux_2_28 (glibc 2.28, AlmaLinux 8 / RHEL 8 compatible) for x86_64 and ARM64
+      - { tag: 'manylinux_2_28', arch: 'x86_64', platform: 'linux/amd64' }
+      - { tag: 'manylinux_2_28', arch: 'aarch64', platform: 'linux/arm64' }
       # musllinux (musl-based) for x86_64 and ARM64
       - { tag: 'musllinux', arch: 'x86_64', platform: 'linux/amd64' }
       - { tag: 'musllinux', arch: 'aarch64', platform: 'linux/arm64' }
