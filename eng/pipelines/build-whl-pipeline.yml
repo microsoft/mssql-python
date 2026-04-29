@@ -248,11 +248,12 @@ jobs:
         targetArch: 'universal2'
 
   steps:
+    # Use correct Python version and architecture for the current job
     - task: UsePythonVersion@0
       inputs:
         versionSpec: '$(pythonVersion)'
         addToPath: true
-      displayName: 'Use Python $(pythonVersion)'
+      displayName: 'Use Python $(pythonVersion) (Universal2)'
 
     # Install CMake on macOS
     - script: |
