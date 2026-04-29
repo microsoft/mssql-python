@@ -66,7 +66,3 @@ mssql_py_core/
 
 # learning files
 learnings/
-
-# Triage test output files
-triage-out*.txt
-triage-err*.txt

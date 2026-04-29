@@ -281,6 +281,7 @@ class SqlHandle {
     SQLSMALLINT type() const;
     void free();
     void close_cursor();
+    bool isImplicitlyFreed() const { return _implicitly_freed; }
 
     // Mark this handle as implicitly freed (freed by parent handle)
     // This prevents double-free attempts when the ODBC driver automatically
