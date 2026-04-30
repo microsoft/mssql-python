@@ -2434,7 +2434,7 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
                               const std::wstring& query,
                               py::list params,
                               py::list is_stmt_prepared,
-                              bool use_prepare,
+                              bool /*use_prepare*/,
                               const py::dict& encoding_settings) {
     if (!statementHandle || !statementHandle->get()) {
         return SQL_INVALID_HANDLE;
@@ -2527,7 +2527,7 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
                     try {
                         py::object encoded = pyObj.attr("encode")(charEncoding, "strict");
                         encodedStr = encoded.cast<std::string>();
-                    } catch (const py::error_already_set& e) {
+                    } catch (const py::error_already_set&) {
                         throw;
                     }
                     const char* dataPtr = encodedStr.data();
