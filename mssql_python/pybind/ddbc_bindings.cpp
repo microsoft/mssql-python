@@ -813,7 +813,10 @@ static py::object build_numeric_data(const py::object& decimal_param) {
     nd.scale = static_cast<SQLSCHAR>(scale);
     nd.sign = (sign_val == 0) ? 1 : 0;
     std::memset(&nd.val[0], 0, SQL_MAX_NUMERIC_LEN);
-    std::memcpy(&nd.val[0], val_str.data(), std::min(val_str.size(), (size_t)SQL_MAX_NUMERIC_LEN));
+    size_t copy_len = std::min(val_str.size(), static_cast<size_t>(SQL_MAX_NUMERIC_LEN));
+    if (copy_len > 0 && val_str.data() != nullptr) {
+        std::memcpy(&nd.val[0], val_str.data(), copy_len);
+    }
 
     return py::cast(nd);
 }
