@@ -47,10 +47,13 @@ def get_platform_info():
         libc_name, _ = platform.libc_ver()
         is_musl = libc_name == "" or "musl" in libc_name.lower()
 
+        # Allow explicit override via MANYLINUX_TAG env var (defaults to manylinux_2_28)
+        manylinux_tag = os.environ.get("MANYLINUX_TAG", "manylinux_2_28")
+
         if target_arch == "x86_64":
-            return "x86_64", "musllinux_1_2_x86_64" if is_musl else "manylinux_2_34_x86_64"
+            return "x86_64", f"musllinux_1_2_x86_64" if is_musl else f"{manylinux_tag}_x86_64"
         elif target_arch in ["aarch64", "arm64"]:
-            return "aarch64", "musllinux_1_2_aarch64" if is_musl else "manylinux_2_34_aarch64"
+            return "aarch64", f"musllinux_1_2_aarch64" if is_musl else f"{manylinux_tag}_aarch64"
         else:
             raise OSError(
                 f"Unsupported architecture '{target_arch}' for Linux; expected 'x86_64' or 'aarch64'."
