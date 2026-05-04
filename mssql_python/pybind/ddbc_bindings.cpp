@@ -81,7 +81,16 @@ inline std::string GetEffectiveCharDecoding(const std::string& userEncoding) {
 // on the system locale, so this workaround is not needed.
 inline bool ShouldFetchCharAsWChar(const std::string& charEncoding) {
 #if defined(_WIN32)
-    return charEncoding == "utf-8" || charEncoding == "UTF-8" || charEncoding == "utf8";
+    // Normalize: lowercase and strip '-' and '_' to match all Python codec
+    // variants ("utf-8", "UTF-8", "utf8", "Utf_8", "UTF_8", etc.)
+    std::string normalized;
+    normalized.reserve(charEncoding.size());
+    for (char c : charEncoding) {
+        if (c != '-' && c != '_') {
+            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    return normalized == "utf8";
 #else
     (void)charEncoding;
     return false;
@@ -4490,7 +4499,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 // Given a list of columns that are a part of single row in the result set,
 // calculates the max size of the row
 // TODO: Move to anonymous namespace, since it is not used outside this file
-size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
+size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols,
+                        const std::string& charEncoding = "") {
     size_t rowSize = 0;
     for (SQLUSMALLINT col = 1; col <= numCols; col++) {
         auto columnMeta = columnNames[col - 1].cast<py::dict>();
@@ -4501,7 +4511,14 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR:
-                rowSize += columnSize;
+                // When UTF-8 WCHAR workaround is active on Windows,
+                // VARCHAR is bound as SQL_C_WCHAR (2 bytes per char).
+                // Account for this in memory estimation.
+                if (ShouldFetchCharAsWChar(charEncoding)) {
+                    rowSize += columnSize * sizeof(SQLWCHAR);
+                } else {
+                    rowSize += columnSize;
+                }
                 break;
             case SQL_SS_XML:
             case SQL_WCHAR:
@@ -4998,7 +5015,9 @@ SQLRETURN FetchArrowBatch_wrap(
 
     if (!hasLobColumns && fetchSize > 0) {
         // Bind columns
-        // Arrow path doesn't have per-connection charEncoding, use default "utf-8"
+        // Arrow path intentionally omits charEncoding (defaults to "") so that
+        // ShouldFetchCharAsWChar returns false and VARCHAR stays bound as
+        // SQL_C_CHAR. Arrow has its own char-to-UTF-8 processing pipeline.
         ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error when binding columns");
@@ -5794,7 +5813,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     // No LOBs detected - use binding path with batch fetching
     // Define a memory limit (1 GB)
     const size_t memoryLimit = 1ULL * 1024 * 1024 * 1024;
-    size_t totalRowSize = calculateRowSize(columnNames, numCols);
+    size_t totalRowSize = calculateRowSize(columnNames, numCols, charEncoding);
 
     // Calculate fetch size based on the total row size and memory limit
     size_t numRowsInMemLimit;

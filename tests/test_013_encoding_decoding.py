@@ -7373,5 +7373,230 @@ def test_varchar_utf8_collation_unicode_roundtrip(db_connection):
         cursor.close()
 
 
+def test_varchar_utf8_collation_null_and_empty(db_connection):
+    """Test NULL and empty string handling for VARCHAR UTF-8 collation columns.
+
+    Covers the NULL (SQL_NULL_DATA) and empty string (dataLen==0) branches
+    in the WCHAR fetch path of SQLGetData_wrap and the batch paths.
+    """
+    cursor = db_connection.cursor()
+
+    try:
+        cursor.execute("""
+            CREATE TABLE #test_utf8_null_empty (
+                id INT PRIMARY KEY,
+                varchar_utf8 VARCHAR(200) COLLATE Latin1_General_100_CI_AS_SC_UTF8,
+                nvarchar_ref NVARCHAR(200)
+            )
+        """)
+
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8")
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le")
+
+        # Insert NULL and empty string rows
+        cursor.execute(
+            "INSERT INTO #test_utf8_null_empty (id, varchar_utf8, nvarchar_ref) "
+            "VALUES (?, ?, ?)",
+            1,
+            None,
+            None,
+        )
+        cursor.execute(
+            "INSERT INTO #test_utf8_null_empty (id, varchar_utf8, nvarchar_ref) "
+            "VALUES (?, ?, ?)",
+            2,
+            "",
+            "",
+        )
+        cursor.execute(
+            "INSERT INTO #test_utf8_null_empty (id, varchar_utf8, nvarchar_ref) "
+            "VALUES (?, ?, ?)",
+            3,
+            "hello",
+            "hello",
+        )
+
+        # ---- Test fetchone path (covers lines 3291-3295) ----
+        # NULL row
+        cursor.execute("SELECT varchar_utf8, nvarchar_ref FROM #test_utf8_null_empty WHERE id = 1")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] is None, f"Expected NULL varchar, got {row[0]!r}"
+        assert row[1] is None, f"Expected NULL nvarchar, got {row[1]!r}"
+
+        # Empty string row
+        cursor.execute("SELECT varchar_utf8, nvarchar_ref FROM #test_utf8_null_empty WHERE id = 2")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "", f"Expected empty varchar, got {row[0]!r}"
+        assert row[1] == "", f"Expected empty nvarchar, got {row[1]!r}"
+
+        # Normal row
+        cursor.execute("SELECT varchar_utf8, nvarchar_ref FROM #test_utf8_null_empty WHERE id = 3")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "hello", f"Expected 'hello', got {row[0]!r}"
+
+        # ---- Test fetchall path (covers batch bind lines 3854-3859, dispatch line 4127) ----
+        cursor.execute("SELECT id, varchar_utf8 FROM #test_utf8_null_empty ORDER BY id")
+        all_rows = cursor.fetchall()
+        assert len(all_rows) == 3
+        assert all_rows[0][1] is None, f"fetchall: expected NULL, got {all_rows[0][1]!r}"
+        assert all_rows[1][1] == "", f"fetchall: expected empty, got {all_rows[1][1]!r}"
+        assert all_rows[2][1] == "hello", f"fetchall: expected 'hello', got {all_rows[2][1]!r}"
+
+        # ---- Test fetchmany path ----
+        cursor.execute("SELECT id, varchar_utf8 FROM #test_utf8_null_empty ORDER BY id")
+        many_rows = cursor.fetchmany(3)
+        assert len(many_rows) == 3
+        assert many_rows[0][1] is None
+        assert many_rows[1][1] == ""
+        assert many_rows[2][1] == "hello"
+
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_utf8_null_empty")
+        except:
+            pass
+        cursor.close()
+
+
+def test_varchar_utf8_collation_lob_streaming(db_connection):
+    """Test VARCHAR(MAX) with UTF-8 collation triggers LOB streaming path.
+
+    VARCHAR(MAX) columns have columnSize=0 or SQL_NO_TOTAL, which routes
+    through FetchLobColumnData with SQL_C_WCHAR when UTF-8 WCHAR workaround
+    is active. Covers lines 3237-3241 (LOB WCHAR path).
+    """
+    cursor = db_connection.cursor()
+
+    try:
+        cursor.execute("""
+            CREATE TABLE #test_utf8_lob (
+                id INT PRIMARY KEY,
+                varchar_max_utf8 VARCHAR(MAX) COLLATE Latin1_General_100_CI_AS_SC_UTF8,
+                nvarchar_max_ref NVARCHAR(MAX)
+            )
+        """)
+
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8")
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le")
+
+        # Test cases: short, medium, and large Unicode strings
+        test_cases = [
+            (1, "Hello World"),
+            (2, "你好世界 こんにちは Привет"),
+            (3, "café résumé naïve Grüße"),
+            (4, "😀😃😄😁🌍🌎🌏"),
+            # Large string to exercise LOB streaming loop
+            (5, "Unicode混合テスト" * 500),
+        ]
+
+        for id_val, text in test_cases:
+            cursor.execute(
+                "INSERT INTO #test_utf8_lob (id, varchar_max_utf8, nvarchar_max_ref) "
+                "VALUES (?, ?, ?)",
+                id_val,
+                text,
+                text,
+            )
+
+        # ---- Test fetchone path (LOB streaming per-row) ----
+        for id_val, expected_text in test_cases:
+            cursor.execute(
+                "SELECT varchar_max_utf8, nvarchar_max_ref " "FROM #test_utf8_lob WHERE id = ?",
+                id_val,
+            )
+            row = cursor.fetchone()
+            assert row is not None, f"No row for id={id_val}"
+            assert isinstance(
+                row[0], str
+            ), f"LOB VARCHAR(MAX) returned {type(row[0]).__name__} for id={id_val}"
+            assert row[0] == expected_text, (
+                f"LOB VARCHAR(MAX) mismatch for id={id_val}: "
+                f"expected len={len(expected_text)}, got len={len(row[0])}"
+            )
+            assert row[1] == expected_text, f"LOB NVARCHAR(MAX) mismatch for id={id_val}"
+
+        # ---- Test fetchall path (LOB triggers per-row SQLGetData fallback) ----
+        cursor.execute("SELECT id, varchar_max_utf8 FROM #test_utf8_lob ORDER BY id")
+        all_rows = cursor.fetchall()
+        assert len(all_rows) == len(test_cases)
+        for row, (expected_id, expected_text) in zip(all_rows, test_cases):
+            assert row[0] == expected_id
+            assert row[1] == expected_text, f"fetchall LOB mismatch for id={expected_id}"
+
+        # ---- Test NULL in VARCHAR(MAX) ----
+        cursor.execute(
+            "INSERT INTO #test_utf8_lob (id, varchar_max_utf8, nvarchar_max_ref) "
+            "VALUES (?, ?, ?)",
+            99,
+            None,
+            None,
+        )
+        cursor.execute("SELECT varchar_max_utf8 FROM #test_utf8_lob WHERE id = 99")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] is None, f"Expected NULL for VARCHAR(MAX), got {row[0]!r}"
+
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_utf8_lob")
+        except:
+            pass
+        cursor.close()
+
+
+def test_varchar_utf8_collation_encoding_variants(db_connection):
+    """Test that various UTF-8 encoding name variants all activate the WCHAR workaround.
+
+    Python codec names are case-insensitive and can use '-' or '_' separators.
+    ShouldFetchCharAsWChar must handle: utf-8, UTF-8, utf8, Utf_8, UTF_8, etc.
+    """
+    cursor = db_connection.cursor()
+
+    try:
+        cursor.execute("""
+            CREATE TABLE #test_utf8_variants (
+                id INT PRIMARY KEY,
+                varchar_utf8 VARCHAR(100) COLLATE Latin1_General_100_CI_AS_SC_UTF8
+            )
+        """)
+
+        unicode_text = "你好世界"
+
+        # Test multiple encoding name variants
+        encoding_variants = ["utf-8", "UTF-8", "utf8"]
+
+        for i, enc in enumerate(encoding_variants):
+            db_connection.setdecoding(SQL_CHAR, encoding=enc)
+
+            cursor.execute("DELETE FROM #test_utf8_variants")
+            cursor.execute(
+                "INSERT INTO #test_utf8_variants (id, varchar_utf8) VALUES (?, ?)",
+                1,
+                unicode_text,
+            )
+            cursor.execute("SELECT varchar_utf8 FROM #test_utf8_variants WHERE id = 1")
+            row = cursor.fetchone()
+            assert row is not None
+            assert isinstance(
+                row[0], str
+            ), f"Encoding variant '{enc}' returned {type(row[0]).__name__} instead of str"
+            assert (
+                row[0] == unicode_text
+            ), f"Encoding variant '{enc}' mismatch: expected {unicode_text!r}, got {row[0]!r}"
+
+        # Restore default
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8")
+
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_utf8_variants")
+        except:
+            pass
+        cursor.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
