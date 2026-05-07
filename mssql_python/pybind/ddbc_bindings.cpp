@@ -457,11 +457,11 @@ static constexpr int MAX_NUMERIC_PRECISION = 38;
 static constexpr double MONEY_MIN = -922337203685477.5808;
 static constexpr double MONEY_MAX = 922337203685477.5807;
 
-// SMALLMONEY range: -214,748.3648 to 214,748.3647
-static constexpr double SMALLMONEY_MIN = -214748.3648;
-static constexpr double SMALLMONEY_MAX = 214748.3647;
-
-// Platform-specific text C type: unixODBC requires all text as wide chars
+// Platform-specific text C type: unixODBC requires all text as wide chars on
+// Linux/macOS. On Windows the ODBC driver accepts SQL_C_CHAR for ASCII text.
+// This matches the Python slow path's behavior (its SQL_C_CHAR constant is
+// numerically -8, which is ODBC's SQL_C_WCHAR — a long-standing alias used
+// throughout the Python layer).
 #if defined(__APPLE__) || defined(__linux__)
 static constexpr SQLSMALLINT PARAM_C_TYPE_TEXT = SQL_C_WCHAR;
 #else
@@ -481,7 +481,8 @@ static py::object build_numeric_data(const py::object& decimal_param);
 //   - bool before int (bool is a subclass of int in Python)
 //   - datetime before date (datetime is a subclass of date)
 //
-// Some types mutate the params list in-place via PyList_SET_ITEM:
+// Some types mutate the params list in-place via PyList_SetItem (which
+// decrefs the old slot before stealing the new ref):
 //   - time → normalized to "HH:MM:SS.ffffff" string
 //   - Decimal in MONEY range → formatted via __format__("f")
 //   - Decimal (generic) → converted to NumericData struct
@@ -589,23 +590,26 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
 
             if (utf16_len > MAX_INLINE_CHAR) {
                 // DAE path: match slow-path types exactly.
-                // Non-unicode → SQL_VARCHAR + SQL_C_CHAR (encoded via Python codec in DAE loop)
-                // Unicode → SQL_WVARCHAR + SQL_C_WCHAR (wide-char streaming in DAE loop)
+                // Non-unicode (ASCII) → SQL_VARCHAR + PARAM_C_TYPE_TEXT
+                //   On Linux/macOS PARAM_C_TYPE_TEXT == SQL_C_WCHAR, matching
+                //   the slow path's SQL_C_CHAR (which is numerically -8 ==
+                //   SQL_C_WCHAR — a long-standing alias in the Python layer).
+                // Unicode → SQL_WVARCHAR + SQL_C_WCHAR (wide-char streaming)
                 info.isDAE = true;
                 info.columnSize = 0;
                 info.dataPtr = py::reinterpret_borrow<py::object>(py::handle(obj));
                 info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
-                info.paramCType = is_unicode ? SQL_C_WCHAR : SQL_C_CHAR;
+                info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             } else {
                 info.columnSize = is_unicode ? utf16_len : length;
-                info.utf16Len = utf16_len;
                 info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             }
             info.decimalDigits = 0;
 
-            // Check geometry prefixes
-            if (length >= 5 && kind == PyUnicode_1BYTE_KIND) {
+            // Check geometry prefixes (only for non-DAE strings; long geometry
+            // values stay on the DAE path with their already-set types).
+            if (!info.isDAE && length >= 5 && kind == PyUnicode_1BYTE_KIND) {
                 const char* ascii = (const char*)PyUnicode_1BYTE_DATA(obj);
                 if (strncmp(ascii, "POINT", 5) == 0 ||
                     (length >= 10 && strncmp(ascii, "LINESTRING", 10) == 0) ||
@@ -636,7 +640,7 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- datetime (must check before date, since datetime is subclass of date) ---
-        if (PyObject_IsInstance(obj, datetime_type)) {
+        if (PyObject_IsInstance(obj, datetime_type) == 1) {
             py::handle h(obj);
             py::object tzinfo = h.attr("tzinfo");
             if (!tzinfo.is_none()) {
@@ -654,7 +658,7 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- date ---
-        if (PyObject_IsInstance(obj, date_type)) {
+        if (PyObject_IsInstance(obj, date_type) == 1) {
             info.paramSQLType = SQL_TYPE_DATE;
             info.paramCType = SQL_C_TYPE_DATE;
             info.columnSize = 10;
@@ -663,9 +667,9 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- time (normalized to string for binding) ---
-        if (PyObject_IsInstance(obj, time_type)) {
+        if (PyObject_IsInstance(obj, time_type) == 1) {
             info.paramSQLType = SQL_TYPE_TIME;
-            info.paramCType = PARAM_C_TYPE_TEXT;
+            info.paramCType = PARAM_C_TYPE_TEXT;  // matches slow path (its SQL_C_CHAR is -8 = SQL_C_WCHAR)
             info.columnSize = 16;
             info.decimalDigits = 6;
             py::handle h(obj);
@@ -673,34 +677,28 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             int minute = h.attr("minute").cast<int>();
             int second = h.attr("second").cast<int>();
             int microsecond = h.attr("microsecond").cast<int>();
+            // Always include microseconds (matches Python's isoformat(timespec="microseconds")).
             char buf[32];
-            if (microsecond > 0) {
-                snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%06d", hour, minute, second, microsecond);
-            } else {
-                snprintf(buf, sizeof(buf), "%02d:%02d:%02d", hour, minute, second);
-            }
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%06d", hour, minute, second, microsecond);
             py::str time_str(buf);
             Py_ssize_t time_len = py::len(time_str);
             info.columnSize = std::max<SQLULEN>(info.columnSize, time_len);
-            info.utf16Len = time_len;
-            PyList_SET_ITEM(params.ptr(), i, time_str.release().ptr());
+            // PyList_SetItem (lowercase) decrefs the old slot before stealing the new
+            // reference, so this is safe even if `params` is shared with the caller.
+            PyList_SetItem(params.ptr(), i, time_str.release().ptr());
             continue;
         }
 
         // --- Decimal ---
-        if (PyObject_IsInstance(obj, decimal_type)) {
+        if (PyObject_IsInstance(obj, decimal_type) == 1) {
             py::handle h(obj);
             py::object as_tuple = h.attr("as_tuple")();
             py::object exponent_obj = as_tuple.attr("exponent");
 
+            // NaN / Infinity / sNaN: refuse rather than silently writing 0.
             if (py::isinstance<py::str>(exponent_obj)) {
-                info.paramSQLType = SQL_NUMERIC;
-                info.paramCType = SQL_C_NUMERIC;
-                info.columnSize = MAX_NUMERIC_PRECISION;
-                info.decimalDigits = 0;
-                py::object numeric_data = build_numeric_data(py::reinterpret_borrow<py::object>(h));
-                PyList_SET_ITEM(params.ptr(), i, numeric_data.release().ptr());
-                continue;
+                throw py::value_error(
+                    "Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC");
             }
 
             py::tuple digits = as_tuple.attr("digits").cast<py::tuple>();
@@ -728,12 +726,11 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             if (dval >= MONEY_MIN && dval <= MONEY_MAX) {
                 py::str formatted = h.attr("__format__")(py::str("f"));
                 info.paramSQLType = SQL_VARCHAR;
-                info.paramCType = PARAM_C_TYPE_TEXT;
+                info.paramCType = PARAM_C_TYPE_TEXT;  // matches slow path
                 Py_ssize_t fmtLen = py::len(formatted);
                 info.columnSize = fmtLen;
-                info.utf16Len = fmtLen;
                 info.decimalDigits = 0;
-                PyList_SET_ITEM(params.ptr(), i, formatted.release().ptr());
+                PyList_SetItem(params.ptr(), i, formatted.release().ptr());
                 continue;
             }
 
@@ -744,19 +741,19 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             NumericData nd = numeric_data.cast<NumericData>();
             info.columnSize = nd.precision;
             info.decimalDigits = nd.scale;
-            PyList_SET_ITEM(params.ptr(), i, numeric_data.release().ptr());
+            PyList_SetItem(params.ptr(), i, numeric_data.release().ptr());
             continue;
         }
 
         // --- UUID ---
-        if (PyObject_IsInstance(obj, uuid_type)) {
+        if (PyObject_IsInstance(obj, uuid_type) == 1) {
             py::handle h(obj);
             py::bytes bytes_le = h.attr("bytes_le");
             info.paramSQLType = SQL_GUID;
             info.paramCType = SQL_C_GUID;
             info.columnSize = 16;
             info.decimalDigits = 0;
-            PyList_SET_ITEM(params.ptr(), i, bytes_le.release().ptr());
+            PyList_SetItem(params.ptr(), i, bytes_le.release().ptr());
             continue;
         }
 
@@ -2505,23 +2502,26 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
                            (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
     }
 
-    // Match the slow path's encoding-dict contract: keys are "encoding" and "ctype".
-    // Only honor the user's encoding when their preferred ctype is SQL_C_CHAR;
-    // otherwise the default ctype is SQL_C_WCHAR and the "encoding" value is
-    // meant for wide-char paths (e.g. "utf-16le") and would corrupt the
-    // SQL_C_CHAR DAE/inline path that operates on byte data.
+    // The encoding-settings dict has the form {"encoding": str, "ctype": int}.
+    // Note: the Python layer's SQL_C_CHAR constant is numerically -8, the same
+    // as ODBC's SQL_C_WCHAR. As a result, the only path that genuinely uses
+    // byte-level character encoding is when the user explicitly opts in via
+    // setencoding(..., ctype=mssql_python.SQL_CHAR) (which sends ctype=1, the
+    // real ODBC SQL_CHAR). We default to utf-8 and only honor the dict's
+    // encoding when ctype == 1 (real ODBC SQL_CHAR). Otherwise the user's
+    // "encoding" value is meant for the wide-char path and we leave it alone.
     std::string charEncoding = "utf-8";
     if (encoding_settings.contains("ctype") && encoding_settings.contains("encoding")) {
         int ctype = encoding_settings["ctype"].cast<int>();
-        if (ctype == SQL_C_CHAR) {
+        if (ctype == SQL_C_CHAR /* real ODBC value: 1 */) {
             charEncoding = encoding_settings["encoding"].cast<std::string>();
         }
     }
 
-    // Shallow-copy the parameter list so DetectParamTypes' in-place
-    // PyList_SET_ITEM never mutates the caller's list. The cost is one
-    // PyList_New + N refcount bumps; cheap relative to ODBC binding.
-    params = py::list(params);
+    // The cursor.py caller always passes a fresh `list(actual_params)` so this
+    // function is free to mutate slots in place. Even so, every site below uses
+    // PyList_SetItem (which decrefs the old slot before stealing the new ref),
+    // so the function is safe regardless of who owns the list.
 
     RETCODE rc;
     bool already_prepared = is_stmt_prepared[0].cast<bool>();
