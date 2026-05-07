@@ -80,7 +80,7 @@ class TestBulkcopyAuthCleanup:
         mock_logger.is_debug_enabled = False
 
         cursor = _make_cursor(
-            "Server=tcp:test.database.windows.net;Database=testdb;" "UID=sa;PWD=password123",
+            "Server=localhost;Database=testdb;" "UID=sa;PWD=mypwd",
             None,  # no AD auth
         )
 
@@ -107,4 +107,4 @@ class TestBulkcopyAuthCleanup:
 
         assert "access_token" not in captured_context
         assert captured_context.get("user_name") == "sa"
-        assert captured_context.get("password") == "password123"
+        assert captured_context.get("password") == "mypwd"

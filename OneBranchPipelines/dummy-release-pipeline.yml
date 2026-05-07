@@ -90,8 +90,9 @@ extends:
         displayName: '[TEST] Dummy Release - Testing ESRP Workflow'
         
         jobs:
-          - job: DownloadAndTestRelease
-            displayName: '[TEST] Download Artifacts and Perform Dummy Release'
+          # Job 1: Download, validate, and stage artifacts (custom pool)
+          - job: PrepAndValidate
+            displayName: '[TEST] Download and Validate Artifacts'
             
             pool:
               type: windows
@@ -116,7 +117,7 @@ extends:
                   artifactName: 'drop_Consolidate_ConsolidateArtifacts'  # Consolidated artifact with dist/ and symbols/
                   targetPath: '$(Build.SourcesDirectory)/artifacts'
               
-              # Step 3: List downloaded artifacts for verification
+              # Step 2: List downloaded artifacts for verification
               - task: PowerShell@2
                 displayName: '[TEST] List Downloaded Wheel and Symbol Files'
                 inputs:
@@ -174,7 +175,7 @@ extends:
                     Write-Host "Symbols: $(if ($symbols) { $symbols.Count } else { 0 }) files"
                     Write-Host "====================================="
               
-              # Step 3.5: Validate mssql-py-core is a stable version (no dev/alpha/beta/rc)
+              # Step 3: Validate mssql-py-core is a stable version (no dev/alpha/beta/rc)
               - task: PowerShell@2
                 displayName: '[TEST] Validate mssql-py-core is a stable version'
                 inputs:
@@ -222,74 +223,7 @@ extends:
                     parameters:
                       SymbolsFolder: '$(Build.SourcesDirectory)/symbols'
               
-              # Step 6: Copy wheels to ob_outputDirectory for OneBranch artifact publishing
-              - task: CopyFiles@2
-                displayName: '[TEST] Stage Wheels for Dummy Release'
-                inputs:
-                  SourceFolder: '$(Build.SourcesDirectory)/dist'
-                  Contents: '*.whl'
-                  TargetFolder: '$(ob_outputDirectory)/release'
-                  flattenFolders: true
-              
-              # Step 7: ESRP Dummy Release Task (only if performDummyRelease is true)
-              # ⚠️ IMPORTANT: Uses Maven ContentType for testing - NOT PyPI!
-              - ${{ if eq(parameters.performDummyRelease, true) }}:
-                  - task: EsrpRelease@9
-                    displayName: '[TEST] ESRP Dummy Release (Maven - NOT PyPI)'
-                    inputs:
-                      connectedservicename: '$(ESRPConnectedServiceName)'
-                      usemanagedidentity: true
-                      keyvaultname: '$(AuthAKVName)'
-                      signcertname: '$(AuthSignCertName)'
-                      clientid: '$(EsrpClientId)'
-                      Intent: 'PackageDistribution'
-                      # ⚠️ CRITICAL: ContentType is Maven (NOT PyPI) for safe testing
-                      # This ensures no accidental production releases to PyPI
-                      ContentType: 'Maven'
-                      ContentSource: 'Folder'
-                      FolderLocation: '$(Build.SourcesDirectory)/dist'
-                      WaitForReleaseCompletion: true
-                      Owners: '$(owner)'
-                      Approvers: '$(approver)'
-                      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
-                      MainPublisher: 'ESRPRELPACMAN'
-                      DomainTenantId: '$(DomainTenantId)'
-              
-              # Step 8: Show test release status
-              - ${{ if eq(parameters.performDummyRelease, true) }}:
-                  - task: PowerShell@2
-                    displayName: '[TEST] Dummy Release Summary'
-                    inputs:
-                      targetType: 'inline'
-                      script: |
-                        Write-Host "===================================="
-                        Write-Host "⚠️  TEST PIPELINE - DUMMY RELEASE COMPLETED  ⚠️"
-                        Write-Host "===================================="
-                        Write-Host "Package: mssql-python (TEST)"
-                        Write-Host "ContentType: Maven (NOT PyPI - Safe for Testing)"
-                        Write-Host "Owners: $(owner)"
-                        Write-Host "Approvers: $(approver)"
-                        Write-Host "Symbols Published: ${{ parameters.publishSymbols }}"
-                        Write-Host "====================================="
-                        Write-Host ""
-                        Write-Host "⚠️ IMPORTANT: This was a DUMMY release using Maven ContentType"
-                        Write-Host "   NO packages were released to PyPI"
-                        Write-Host ""
-                        Write-Host "What was tested:"
-                        Write-Host "✓ Artifact download from build pipeline"
-                        Write-Host "✓ Wheel integrity verification"
-                        if ("${{ parameters.publishSymbols }}" -eq "True") {
-                          Write-Host "✓ Symbol publishing to SqlClientDrivers org"
-                        }
-                        Write-Host "✓ ESRP release workflow (Maven ContentType)"
-                        Write-Host ""
-                        Write-Host "Next steps:"
-                        Write-Host "1. Verify dummy release in ESRP portal"
-                        Write-Host "2. Check ESRP approval workflow completion"
-                        Write-Host "3. Verify symbols in SqlClientDrivers org (if published)"
-                        Write-Host "4. For PRODUCTION release, use official-release-pipeline.yml"
-                        Write-Host "====================================="
-              
+              # Dry run summary (when release is disabled)
               - ${{ if eq(parameters.performDummyRelease, false) }}:
                   - task: PowerShell@2
                     displayName: '[TEST] Dry Run - Dummy Release Skipped'
@@ -318,3 +252,88 @@ extends:
                         Write-Host "1. Use official-release-pipeline.yml instead"
                         Write-Host "2. Official pipeline uses PyPI ContentType"
                         Write-Host "====================================="
+          
+          # Job 2: ESRP Release (releaseJob on 1ES hosted pool — required by OneBranch policy)
+          # EsrpRelease is not allowed in custom pools; must use templateContext.type: releaseJob
+          - ${{ if eq(parameters.performDummyRelease, true) }}:
+            - job: DummyRelease
+              displayName: '[TEST] ESRP Dummy Release (Maven - NOT PyPI)'
+              dependsOn: PrepAndValidate
+              
+              templateContext:
+                type: releaseJob
+              
+              pool:
+                type: windows
+              
+              variables:
+                ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+                WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
+              
+              steps:
+                # Download artifacts directly from build pipeline
+                - task: DownloadPipelineArtifact@2
+                  displayName: '[TEST] Download Artifacts from Build Pipeline'
+                  inputs:
+                    buildType: 'specific'
+                    project: '$(System.TeamProject)'
+                    definition: 2199
+                    buildVersionToDownload: 'specific'
+                    buildId: $(resources.pipeline.buildPipeline.runID)
+                    artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+                    targetPath: '$(Build.SourcesDirectory)/artifacts'
+                
+                # ⚠️ IMPORTANT: Uses Maven ContentType for testing - NOT PyPI!
+                - task: EsrpRelease@9
+                  displayName: '[TEST] ESRP Dummy Release (Maven - NOT PyPI)'
+                  inputs:
+                    connectedservicename: '$(ESRPConnectedServiceName)'
+                    usemanagedidentity: true
+                    keyvaultname: '$(AuthAKVName)'
+                    signcertname: '$(AuthSignCertName)'
+                    clientid: '$(EsrpClientId)'
+                    Intent: 'PackageDistribution'
+                    # ⚠️ CRITICAL: ContentType is Maven (NOT PyPI) for safe testing
+                    # This ensures no accidental production releases to PyPI
+                    ContentType: 'Maven'
+                    ContentSource: 'Folder'
+                    FolderLocation: '$(Build.SourcesDirectory)/artifacts/dist'
+                    WaitForReleaseCompletion: true
+                    Owners: '$(owner)'
+                    Approvers: '$(approver)'
+                    ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+                    MainPublisher: 'ESRPRELPACMAN'
+                    DomainTenantId: '$(DomainTenantId)'
+                
+                - task: PowerShell@2
+                  displayName: '[TEST] Dummy Release Summary'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      Write-Host "===================================="
+                      Write-Host "⚠️  TEST PIPELINE - DUMMY RELEASE COMPLETED  ⚠️"
+                      Write-Host "===================================="
+                      Write-Host "Package: mssql-python (TEST)"
+                      Write-Host "ContentType: Maven (NOT PyPI - Safe for Testing)"
+                      Write-Host "Owners: $(owner)"
+                      Write-Host "Approvers: $(approver)"
+                      Write-Host "Symbols Published: ${{ parameters.publishSymbols }}"
+                      Write-Host "====================================="
+                      Write-Host ""
+                      Write-Host "⚠️ IMPORTANT: This was a DUMMY release using Maven ContentType"
+                      Write-Host "   NO packages were released to PyPI"
+                      Write-Host ""
+                      Write-Host "What was tested:"
+                      Write-Host "✓ Artifact download from build pipeline"
+                      Write-Host "✓ Wheel integrity verification"
+                      if ("${{ parameters.publishSymbols }}" -eq "True") {
+                        Write-Host "✓ Symbol publishing to SqlClientDrivers org"
+                      }
+                      Write-Host "✓ ESRP release workflow (Maven ContentType)"
+                      Write-Host ""
+                      Write-Host "Next steps:"
+                      Write-Host "1. Verify dummy release in ESRP portal"
+                      Write-Host "2. Check ESRP approval workflow completion"
+                      Write-Host "3. Verify symbols in SqlClientDrivers org (if published)"
+                      Write-Host "4. For PRODUCTION release, use official-release-pipeline.yml"
+                      Write-Host "====================================="

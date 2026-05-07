@@ -6,10 +6,18 @@ This module handles authentication for the mssql_python package.
 
 import platform
 import struct
+import threading
 from typing import Tuple, Dict, Optional, List
 
 from mssql_python.logging import logger
 from mssql_python.constants import AuthType, ConstantsDDBC
+
+# Module-level credential instance cache.
+# Reusing credential objects allows the Azure Identity SDK's built-in
+# in-memory token cache to work, avoiding redundant token acquisitions.
+# See: https://github.com/Azure/azure-sdk-for-python/blob/main/sdk/identity/azure-identity/TOKEN_CACHING.md
+_credential_cache: Dict[str, object] = {}
+_credential_cache_lock = threading.Lock()
 
 
 class AADAuth:
@@ -36,12 +44,11 @@ class AADAuth:
 
     @staticmethod
     def get_raw_token(auth_type: str) -> str:
-        """Acquire a fresh raw JWT for the mssql-py-core connection (bulk copy).
+        """Acquire a raw JWT for the mssql-py-core connection (bulk copy).
 
-        This deliberately does NOT cache the credential or token — each call
-        creates a new Azure Identity credential instance and requests a token.
-        A fresh acquisition avoids expired-token errors when bulkcopy() is
-        called long after the original DDBC connect().
+        Uses the cached credential instance so the Azure Identity SDK's
+        built-in token cache can serve a valid token without a round-trip
+        when the previous token has not yet expired.
         """
         _, raw_token = AADAuth._acquire_token(auth_type)
         return raw_token
@@ -83,7 +90,19 @@ class AADAuth:
         )
 
         try:
-            credential = credential_class()
+            with _credential_cache_lock:
+                if auth_type not in _credential_cache:
+                    logger.debug(
+                        "get_token: Creating new credential instance for auth_type=%s",
+                        auth_type,
+                    )
+                    _credential_cache[auth_type] = credential_class()
+                else:
+                    logger.debug(
+                        "get_token: Reusing cached credential instance for auth_type=%s",
+                        auth_type,
+                    )
+                credential = _credential_cache[auth_type]
             raw_token = credential.get_token("https://database.windows.net/.default").token
             logger.info(
                 "get_token: Azure AD token acquired successfully - token_length=%d chars",

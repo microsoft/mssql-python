@@ -35,7 +35,7 @@ If you are a Microsoft organization member (internal contributor):
 
 All pull requests must include:
 
-- **Valid Title Prefix**: Your PR title must start with one of: `FEAT:`, `CHORE:`, `FIX:`, `DOC:`, `STYLE:`, `REFACTOR:`, or `RELEASE:`
+- **Valid Title Prefix**: Your PR title must start with one of: `FEAT:`, `CHORE:`, `FIX:`, `DOC:`, `STYLE:`, `REFACTOR:`, `PERF:`, or `RELEASE:`
 - **Meaningful Summary**: Include a clear description of your changes under the "### Summary" section in the PR description (minimum 10 characters)
 - **Issue/Work Item Link** (only one required): 
   - External contributors: Link to a GitHub issue

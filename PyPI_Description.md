@@ -35,22 +35,20 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.4.0
+## What's new in v1.6.0
 
-### Features
+### Enhancements
 
-- **Bulk Copy Support** - High-performance bulk data loading API is now publicly available with support for large-scale ETL workloads, configurable batch sizes, column mappings, and identity/constraint handling.
-- **Spatial Type Support** - Added support for geography, geometry, and hierarchyid spatial types.
-- **mssql-py-core Upgrade** - Upgraded to mssql-py-core version 0.1.0 with enhanced connection string parameter support.
-- **Type Annotations** - Added py.typed marker for improved type checking support.
-- **Azure SQL Database Testing** - Added Azure SQL Database to PR validation pipeline matrix.
+- **Connection String Sanitization** - Connection string sanitization has been migrated from regex-based to parser-based logic, making it more robust and consistent with connection string parsing rules.
 
 ### Bug Fixes
 
-- **VARCHAR Encoding Fix** - Fixed VARCHAR fetch failures when data length equals column size with non-ASCII CP1252 characters.
-- **Segmentation Fault Fix** - Fixed segmentation fault when interleaving fetchmany and fetchone calls.
-- **Date/Time Type Mappings** - Aligned date/time type code mappings with ODBC 18 driver source.
-- **Pipeline Updates** - Updated OneBranch pipelines for new 1ES images and pool selection.
+- **GIL Release During ODBC Connect/Disconnect** - The driver now releases the GIL during blocking ODBC connect and disconnect calls, improving concurrency for multi-threaded applications.
+- **setinputsizes() SQL_DECIMAL Crash Fix** - Fixed a crash in `cursor.setinputsizes()` when specifying `SQL_DECIMAL` type hints.
+- **ODBC Catalog fetchone() Fix** - Fixed an issue where `fetchone()` on ODBC catalog method results returned incorrect data.
+- **cursor.execute() Invalid Cursor State Fix** - Fixed `cursor.execute()` raising an Invalid cursor state error when called with `reset_cursor=False`.
+- **executemany Type Annotation Fix** - Corrected the type annotation for `executemany` `seq_of_parameters` parameter to accept `Mapping` types.
+- **setup_logging Path Traversal Guard** - Added path canonicalization and traversal guard to `setup_logging`'s `log_file_path` parameter to prevent path traversal issues.
  
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
