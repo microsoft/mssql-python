@@ -29,7 +29,7 @@ class Row:
 
     # __slots__ eliminates per-instance __dict__ (~232 bytes/row savings),
     # and makes attribute access ~30% faster (array index vs dict lookup).
-    __slots__ = ('_values', '_column_map', '_cursor')
+    __slots__ = ("_values", "_column_map", "_cursor")
 
     @staticmethod
     def _fast_create(values, column_map, cursor):

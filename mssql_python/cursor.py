@@ -160,9 +160,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._has_result_set = False  # Track if we have an active result set
         # Cache decoding encoding strings — these don't change between fetches,
         # so we avoid 2 method calls + 2 dict.get() per fetch call.
-        self._cached_char_encoding = self._get_decoding_settings(
-            ddbc_sql_const.SQL_CHAR.value
-        ).get("encoding", "utf-8")
+        self._cached_char_encoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value).get(
+            "encoding", "utf-8"
+        )
         self._cached_wchar_encoding = self._get_decoding_settings(
             ddbc_sql_const.SQL_WCHAR.value
         ).get("encoding", "utf-16le")
@@ -2569,9 +2569,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             uuid_idx = self._uuid_str_indices
             # Fast path: build Row objects in C++ — avoids Python loop overhead
             if not converter_map and not uuid_idx:
-                return ddbc_bindings.construct_rows(
-                    rows_data, Row, column_map, self
-                )
+                return ddbc_bindings.construct_rows(rows_data, Row, column_map, self)
             return [
                 Row(
                     row_data,
@@ -2635,9 +2633,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             uuid_idx = self._uuid_str_indices
             # Fast path: build Row objects in C++ — avoids Python loop overhead
             if not converter_map and not uuid_idx:
-                return ddbc_bindings.construct_rows(
-                    rows_data, Row, column_map, self
-                )
+                return ddbc_bindings.construct_rows(rows_data, Row, column_map, self)
             return [
                 Row(
                     row_data,
