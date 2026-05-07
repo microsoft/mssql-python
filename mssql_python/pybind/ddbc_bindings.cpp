@@ -526,8 +526,8 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             continue;
         }
 
-        // --- int ---
-        if (PyLong_CheckExact(obj)) {
+        // --- int (allow subclasses, but bool was already caught above) ---
+        if (PyLong_Check(obj)) {
             int overflow = 0;
             int64_t val = PyLong_AsLongLongAndOverflow(obj, &overflow);
             if (overflow == 0 && !PyErr_Occurred()) {
@@ -558,8 +558,8 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             continue;
         }
 
-        // --- float ---
-        if (PyFloat_CheckExact(obj)) {
+        // --- float (allow subclasses) ---
+        if (PyFloat_Check(obj)) {
             info.paramSQLType = SQL_DOUBLE;
             info.paramCType = SQL_C_DOUBLE;
             info.columnSize = 15;
@@ -567,8 +567,8 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             continue;
         }
 
-        // --- str ---
-        if (PyUnicode_CheckExact(obj)) {
+        // --- str (allow subclasses) ---
+        if (PyUnicode_Check(obj)) {
             Py_ssize_t length = PyUnicode_GET_LENGTH(obj);
             unsigned int kind = PyUnicode_KIND(obj);
 
@@ -618,10 +618,10 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             continue;
         }
 
-        // --- bytes / bytearray ---
-        if (PyBytes_CheckExact(obj) || PyByteArray_CheckExact(obj)) {
-            Py_ssize_t length = PyBytes_CheckExact(obj) ? PyBytes_GET_SIZE(obj)
-                                                         : PyByteArray_GET_SIZE(obj);
+        // --- bytes / bytearray (allow subclasses) ---
+        if (PyBytes_Check(obj) || PyByteArray_Check(obj)) {
+            Py_ssize_t length =
+                PyBytes_Check(obj) ? PyBytes_Size(obj) : PyByteArray_Size(obj);
             info.paramSQLType = SQL_VARBINARY;
             info.paramCType = SQL_C_BINARY;
             info.decimalDigits = 0;
@@ -2496,14 +2496,32 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
     }
 
     SQLHANDLE hStmt = statementHandle->get();
+
+    // Configure forward-only / read-only cursor (matches slow path semantics).
+    if (SQLSetStmtAttr_ptr) {
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CURSOR_TYPE,
+                           (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY, 0);
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY,
+                           (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
+    }
+
+    // Match the slow path's encoding-dict contract: keys are "encoding" and "ctype".
+    // Only honor the user's encoding when their preferred ctype is SQL_C_CHAR;
+    // otherwise the default ctype is SQL_C_WCHAR and the "encoding" value is
+    // meant for wide-char paths (e.g. "utf-16le") and would corrupt the
+    // SQL_C_CHAR DAE/inline path that operates on byte data.
     std::string charEncoding = "utf-8";
-    std::string wcharEncoding = "utf-16le";
-    if (encoding_settings.contains("charEncoding")) {
-        charEncoding = encoding_settings["charEncoding"].cast<std::string>();
+    if (encoding_settings.contains("ctype") && encoding_settings.contains("encoding")) {
+        int ctype = encoding_settings["ctype"].cast<int>();
+        if (ctype == SQL_C_CHAR) {
+            charEncoding = encoding_settings["encoding"].cast<std::string>();
+        }
     }
-    if (encoding_settings.contains("wcharEncoding")) {
-        wcharEncoding = encoding_settings["wcharEncoding"].cast<std::string>();
-    }
+
+    // Shallow-copy the parameter list so DetectParamTypes' in-place
+    // PyList_SET_ITEM never mutates the caller's list. The cost is one
+    // PyList_New + N refcount bumps; cheap relative to ODBC binding.
+    params = py::list(params);
 
     RETCODE rc;
     bool already_prepared = is_stmt_prepared[0].cast<bool>();
@@ -2538,9 +2556,16 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
     // DAE (Data-At-Execution) loop: when BindParameters marks a param as DAE
     // (large str/bytes/binary), SQLExecute returns SQL_NEED_DATA. We must
     // stream the data via SQLParamData/SQLPutData before execution completes.
+    // GIL is released around each ODBC call to match slow-path concurrency.
     if (rc == SQL_NEED_DATA) {
         SQLPOINTER paramToken = nullptr;
-        while ((rc = SQLParamData_ptr(hStmt, &paramToken)) == SQL_NEED_DATA) {
+        while (true) {
+            {
+                py::gil_scoped_release release;
+                rc = SQLParamData_ptr(hStmt, &paramToken);
+            }
+            if (rc != SQL_NEED_DATA) break;
+
             const ParamInfo* matchedInfo = nullptr;
             for (auto& info : paramInfos) {
                 if (reinterpret_cast<SQLPOINTER>(const_cast<ParamInfo*>(&info)) == paramToken) {
@@ -2553,6 +2578,7 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
             }
             const py::object& pyObj = matchedInfo->dataPtr;
             if (pyObj.is_none()) {
+                py::gil_scoped_release release;
                 SQLPutData_ptr(hStmt, nullptr, 0);
                 continue;
             }
@@ -2573,25 +2599,27 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
                     size_t chunkChars = DAE_CHUNK_SIZE / sizeof(SQLWCHAR);
                     for (size_t offset = 0; offset < totalChars; offset += chunkChars) {
                         size_t len = std::min(chunkChars, totalChars - offset);
-                        rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                            static_cast<SQLLEN>(len * sizeof(SQLWCHAR)));
+                        {
+                            py::gil_scoped_release release;
+                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
+                                                static_cast<SQLLEN>(len * sizeof(SQLWCHAR)));
+                        }
                         if (!SQL_SUCCEEDED(rc)) return rc;
                     }
                 } else if (matchedInfo->paramCType == SQL_C_CHAR) {
                     std::string encodedStr;
-                    try {
-                        py::object encoded = pyObj.attr("encode")(charEncoding, "strict");
-                        encodedStr = encoded.cast<std::string>();
-                    } catch (const py::error_already_set&) {
-                        throw;
-                    }
+                    py::object encoded = pyObj.attr("encode")(charEncoding, "strict");
+                    encodedStr = encoded.cast<std::string>();
                     const char* dataPtr = encodedStr.data();
                     size_t totalBytes = encodedStr.size();
                     for (size_t offset = 0; offset < totalBytes; offset += DAE_CHUNK_SIZE) {
                         size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE),
                                               totalBytes - offset);
-                        rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                            static_cast<SQLLEN>(len));
+                        {
+                            py::gil_scoped_release release;
+                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
+                                                static_cast<SQLLEN>(len));
+                        }
                         if (!SQL_SUCCEEDED(rc)) return rc;
                     }
                 } else {
@@ -2606,8 +2634,11 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
                 for (size_t offset = 0; offset < totalBytes; offset += DAE_CHUNK_SIZE) {
                     size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE),
                                           totalBytes - offset);
-                    rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                        static_cast<SQLLEN>(len));
+                    {
+                        py::gil_scoped_release release;
+                        rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
+                                            static_cast<SQLLEN>(len));
+                    }
                     if (!SQL_SUCCEEDED(rc)) return rc;
                 }
             } else {
@@ -2619,9 +2650,11 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
 
     if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
 
-    // Unbind params — buffers go out of scope after this
-    rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-    return rc;
+    // Preserve the execute return code (e.g. SQL_SUCCESS_WITH_INFO) — don't
+    // let the SQLFreeStmt return value clobber what the caller needs to see.
+    SQLRETURN exec_rc = rc;
+    SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    return exec_rc;
 }
 
 SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
