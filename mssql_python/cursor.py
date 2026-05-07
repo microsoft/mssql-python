@@ -1492,9 +1492,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             if parameters:
                 param_info = ddbc_bindings.ParamInfo
                 for i, param in enumerate(parameters):
-                    paraminfo = self._create_parameter_types_list(
-                        param, param_info, parameters, i
-                    )
+                    paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
                     parameters_type.append(paraminfo)
 
             if logger.isEnabledFor(logging.DEBUG):
