@@ -158,6 +158,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._conn_native_uuid = getattr(self.connection, "_native_uuid", None)
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
+        # Cache decoding encoding strings — these don't change between fetches,
+        # so we avoid 2 method calls + 2 dict.get() per fetch call.
+        self._cached_char_encoding = self._get_decoding_settings(
+            ddbc_sql_const.SQL_CHAR.value
+        ).get("encoding", "utf-8")
+        self._cached_wchar_encoding = self._get_decoding_settings(
+            ddbc_sql_const.SQL_WCHAR.value
+        ).get("encoding", "utf-16le")
         self._skip_increment_for_next_fetch = (
             False  # Track if we need to skip incrementing the row index
         )
@@ -173,11 +181,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns:
             True if the string contains non-ASCII characters, False otherwise.
         """
-        try:
-            param.encode("ascii")
-            return False  # Can be encoded to ASCII, so not Unicode
-        except UnicodeEncodeError:
-            return True  # Contains non-ASCII characters, so treat as Unicode
+        return not param.isascii()
 
     def _parse_date(self, param: str) -> Optional[datetime.date]:
         """
@@ -895,45 +899,51 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """Reset input sizes after execution"""
         self._inputsizes = None
 
+    # Pre-built constant lookup table — avoids rebuilding ~30 entries on every call.
+    # Used by setinputsizes fallback path (PR #549 fast path doesn't need this).
+    _SQL_TO_C_TYPE = None
+
+    @classmethod
+    def _get_sql_to_c_type_map(cls):
+        if cls._SQL_TO_C_TYPE is None:
+            cls._SQL_TO_C_TYPE = {
+                ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+                ddbc_sql_const.SQL_VARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+                ddbc_sql_const.SQL_LONGVARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+                ddbc_sql_const.SQL_WCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
+                ddbc_sql_const.SQL_WVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
+                ddbc_sql_const.SQL_WLONGVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
+                ddbc_sql_const.SQL_DECIMAL.value: ddbc_sql_const.SQL_C_NUMERIC.value,
+                ddbc_sql_const.SQL_NUMERIC.value: ddbc_sql_const.SQL_C_NUMERIC.value,
+                ddbc_sql_const.SQL_BIT.value: ddbc_sql_const.SQL_C_BIT.value,
+                ddbc_sql_const.SQL_TINYINT.value: ddbc_sql_const.SQL_C_TINYINT.value,
+                ddbc_sql_const.SQL_SMALLINT.value: ddbc_sql_const.SQL_C_SHORT.value,
+                ddbc_sql_const.SQL_INTEGER.value: ddbc_sql_const.SQL_C_LONG.value,
+                ddbc_sql_const.SQL_BIGINT.value: ddbc_sql_const.SQL_C_SBIGINT.value,
+                ddbc_sql_const.SQL_REAL.value: ddbc_sql_const.SQL_C_FLOAT.value,
+                ddbc_sql_const.SQL_FLOAT.value: ddbc_sql_const.SQL_C_DOUBLE.value,
+                ddbc_sql_const.SQL_DOUBLE.value: ddbc_sql_const.SQL_C_DOUBLE.value,
+                ddbc_sql_const.SQL_BINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+                ddbc_sql_const.SQL_VARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+                ddbc_sql_const.SQL_LONGVARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+                ddbc_sql_const.SQL_SS_UDT.value: ddbc_sql_const.SQL_C_BINARY.value,
+                ddbc_sql_const.SQL_TYPE_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
+                ddbc_sql_const.SQL_TYPE_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
+                ddbc_sql_const.SQL_TYPE_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+                ddbc_sql_const.SQL_SS_TIME2.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
+                ddbc_sql_const.SQL_DATETIMEOFFSET.value: ddbc_sql_const.SQL_C_SS_TIMESTAMPOFFSET.value,
+                ddbc_sql_const.SQL_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
+                ddbc_sql_const.SQL_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
+                ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+                ddbc_sql_const.SQL_GUID.value: ddbc_sql_const.SQL_C_GUID.value,
+                ddbc_sql_const.SQL_SS_XML.value: ddbc_sql_const.SQL_C_WCHAR.value,
+                ddbc_sql_const.SQL_SS_VARIANT.value: ddbc_sql_const.SQL_C_BINARY.value,
+            }
+        return cls._SQL_TO_C_TYPE
+
     def _get_c_type_for_sql_type(self, sql_type: int) -> int:
         """Map SQL type to appropriate C type for parameter binding."""
-        sql_to_c_type = {
-            ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
-            ddbc_sql_const.SQL_VARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
-            ddbc_sql_const.SQL_LONGVARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
-            ddbc_sql_const.SQL_WCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
-            ddbc_sql_const.SQL_WVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
-            ddbc_sql_const.SQL_WLONGVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
-            ddbc_sql_const.SQL_DECIMAL.value: ddbc_sql_const.SQL_C_NUMERIC.value,
-            ddbc_sql_const.SQL_NUMERIC.value: ddbc_sql_const.SQL_C_NUMERIC.value,
-            ddbc_sql_const.SQL_BIT.value: ddbc_sql_const.SQL_C_BIT.value,
-            ddbc_sql_const.SQL_TINYINT.value: ddbc_sql_const.SQL_C_TINYINT.value,
-            ddbc_sql_const.SQL_SMALLINT.value: ddbc_sql_const.SQL_C_SHORT.value,
-            ddbc_sql_const.SQL_INTEGER.value: ddbc_sql_const.SQL_C_LONG.value,
-            ddbc_sql_const.SQL_BIGINT.value: ddbc_sql_const.SQL_C_SBIGINT.value,
-            ddbc_sql_const.SQL_REAL.value: ddbc_sql_const.SQL_C_FLOAT.value,
-            ddbc_sql_const.SQL_FLOAT.value: ddbc_sql_const.SQL_C_DOUBLE.value,
-            ddbc_sql_const.SQL_DOUBLE.value: ddbc_sql_const.SQL_C_DOUBLE.value,
-            ddbc_sql_const.SQL_BINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
-            ddbc_sql_const.SQL_VARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
-            ddbc_sql_const.SQL_LONGVARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
-            ddbc_sql_const.SQL_SS_UDT.value: ddbc_sql_const.SQL_C_BINARY.value,
-            # ODBC 3.x date/time types (reported by ODBC 18 driver)
-            ddbc_sql_const.SQL_TYPE_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
-            ddbc_sql_const.SQL_TYPE_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
-            ddbc_sql_const.SQL_TYPE_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
-            ddbc_sql_const.SQL_SS_TIME2.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
-            ddbc_sql_const.SQL_DATETIMEOFFSET.value: ddbc_sql_const.SQL_C_SS_TIMESTAMPOFFSET.value,
-            # ODBC 2.x aliases (accepted by setinputsizes via SQLTypes)
-            ddbc_sql_const.SQL_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
-            ddbc_sql_const.SQL_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
-            ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
-            # Other types
-            ddbc_sql_const.SQL_GUID.value: ddbc_sql_const.SQL_C_GUID.value,
-            ddbc_sql_const.SQL_SS_XML.value: ddbc_sql_const.SQL_C_WCHAR.value,
-            ddbc_sql_const.SQL_SS_VARIANT.value: ddbc_sql_const.SQL_C_BINARY.value,
-        }
-        return sql_to_c_type.get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
+        return self._get_sql_to_c_type_map().get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
 
     def _create_parameter_types_list(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
@@ -2453,8 +2463,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         self._check_closed()  # Check if the cursor is closed
 
-        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
-        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+        # Use cached encoding strings — eliminates 2 method calls + 2 dict.get() per fetch
+        char_enc = self._cached_char_encoding
+        wchar_enc = self._cached_wchar_encoding
 
         # Fetch raw data
         row_data = []
@@ -2462,17 +2473,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ret = ddbc_bindings.DDBCSQLFetchOne(
                 self.hstmt,
                 row_data,
-                char_decoding.get("encoding", "utf-8"),
-                wchar_decoding.get("encoding", "utf-16le"),
+                char_enc,
+                wchar_enc,
             )
 
-            if self.hstmt:
+            # Only retrieve diag records on SQL_SUCCESS_WITH_INFO.
+            if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
                 # No more data available
                 if self._next_row_index == 0 and self.description is not None:
-                    # This is an empty result set, set rowcount to 0
                     self.rowcount = 0
                 return None
 
@@ -2487,6 +2498,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Get column and converter maps
             column_map, converter_map = self._get_column_and_converter_maps()
+            # Fast path: skip __init__ overhead when no converters/UUID processing
+            if not converter_map and not self._uuid_str_indices:
+                return Row._fast_create(row_data, column_map, self)
             return Row(
                 row_data,
                 column_map,
@@ -2518,8 +2532,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if size <= 0:
             return []
 
-        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
-        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+        # Use cached encoding strings
+        char_enc = self._cached_char_encoding
+        wchar_enc = self._cached_wchar_encoding
 
         # Fetch raw data
         rows_data = []
@@ -2528,11 +2543,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.hstmt,
                 rows_data,
                 size,
-                char_decoding.get("encoding", "utf-8"),
-                wchar_decoding.get("encoding", "utf-16le"),
+                char_enc,
+                wchar_enc,
             )
 
-            if self.hstmt:
+            if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
@@ -2552,6 +2567,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
+            # Fast path: build Row objects in C++ — avoids Python loop overhead
+            if not converter_map and not uuid_idx:
+                return ddbc_bindings.construct_rows(
+                    rows_data, Row, column_map, self
+                )
             return [
                 Row(
                     row_data,
@@ -2577,8 +2597,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
-        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
-        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+        # Use cached encoding strings
+        char_enc = self._cached_char_encoding
+        wchar_enc = self._cached_wchar_encoding
 
         # Fetch raw data
         rows_data = []
@@ -2586,14 +2607,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ret = ddbc_bindings.DDBCSQLFetchAll(
                 self.hstmt,
                 rows_data,
-                char_decoding.get("encoding", "utf-8"),
-                wchar_decoding.get("encoding", "utf-16le"),
+                char_enc,
+                wchar_enc,
             )
 
             # Check for errors
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
-            if self.hstmt:
+            if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
@@ -2612,6 +2633,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
+            # Fast path: build Row objects in C++ — avoids Python loop overhead
+            if not converter_map and not uuid_idx:
+                return ddbc_bindings.construct_rows(
+                    rows_data, Row, column_map, self
+                )
             return [
                 Row(
                     row_data,
