@@ -7435,13 +7435,20 @@ class TestVarcharByteDecodingIssue:
 
         # CP-1252 defined high bytes (excluding 0x81, 0x8D, 0x8F, 0x90, 0x9D)
         defined_bytes = [b for b in range(128, 256) if b not in (0x81, 0x8D, 0x8F, 0x90, 0x9D)]
-        for b in defined_bytes:
-            cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES ({b}, CHAR({b}))")
+        # Batch insert via a single multi-row INSERT to avoid 123 separate
+        # round-trips on Windows CI. CHAR(n) is computed server-side from the
+        # parameterized id, keeping the test data identical to the per-row
+        # version while collapsing the work into one statement.
+        values_clause = ", ".join(f"({b}, CHAR({b}))" for b in defined_bytes)
+        cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES {values_clause}")
         db_connection.commit()
 
         cursor.execute(f"SELECT id, data FROM {self.TABLE_NAME} ORDER BY id")
         rows = cursor.fetchall()
 
+        assert len(rows) == len(
+            defined_bytes
+        ), f"Expected {len(defined_bytes)} rows, got {len(rows)}"
         for row in rows:
             byte_val, data = row[0], row[1]
             assert isinstance(data, str), (
