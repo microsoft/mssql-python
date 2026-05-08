@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it
-//             arch agnostic will be taken up in future.
-
 #pragma once
 
 // pybind11.h must be the first include
@@ -67,9 +64,9 @@ inline std::u16string dupeSqlWCharAsUtf16Le(const SQLWCHAR* value, size_t length
 
 inline SQLWCHAR* reinterpretU16stringAsSqlWChar(const std::u16string& utf16) {
     static_assert(sizeof(std::u16string::value_type) == sizeof(SQLWCHAR),
-        "SQLWCHAR must same as u16string");
+        "SQLWCHAR must have the same size as std::u16string::value_type");
     static_assert(alignof(std::u16string::value_type) == alignof(SQLWCHAR),
-        "SQLWCHAR must same as u16string");
+        "SQLWCHAR must have the same alignment as std::u16string::value_type");
     return const_cast<SQLWCHAR*>(reinterpret_cast<const SQLWCHAR*>(utf16.c_str()));
 }
 
