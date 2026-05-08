@@ -1828,8 +1828,8 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::wstring& catal
     {
         // Release the GIL during the blocking ODBC catalog call
         py::gil_scoped_release release;
-        ret = SQLTables_ptr(StatementHandle->get(), catalogPtr, catalogLen, schemaPtr,
-                            schemaLen, tablePtr, tableLen, tableTypePtr, tableTypeLen);
+        ret = SQLTables_ptr(StatementHandle->get(), catalogPtr, catalogLen, schemaPtr, schemaLen,
+                            tablePtr, tableLen, tableTypePtr, tableTypeLen);
     }
 
     LOG("SQLTables: Catalog metadata query %s - SQLRETURN=%d",
@@ -2036,8 +2036,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                         while (offset < totalBytes) {
                             size_t len = std::min(chunkBytes, totalBytes - offset);
 
-                            rc = putData((SQLPOINTER)(dataPtr + offset),
-                                         static_cast<SQLLEN>(len));
+                            rc = putData((SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
                             if (!SQL_SUCCEEDED(rc)) {
                                 LOG("SQLExecute: SQLPutData failed for "
                                     "SQL_C_CHAR chunk - offset=%zu",
@@ -2058,8 +2057,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     const size_t chunkSize = DAE_CHUNK_SIZE;
                     for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
                         size_t len = std::min(chunkSize, totalBytes - offset);
-                        rc = putData((SQLPOINTER)(dataPtr + offset),
-                                     static_cast<SQLLEN>(len));
+                        rc = putData((SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
                         if (!SQL_SUCCEEDED(rc)) {
                             LOG("SQLExecute: SQLPutData failed for "
                                 "binary/bytes chunk - offset=%zu",
@@ -3374,7 +3372,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 std::string utf8str = WideToUTF8(wstr);
                                 row.append(py::str(utf8str));
 #else
-                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
+                                // Construct with explicit length: SQLGetData reports the
+                                // exact number of characters via dataLen, so do not rely on
+                                // null termination. This preserves embedded NULs and avoids
+                                // any risk of reading past the valid range if the driver
+                                // omits the terminator.
+                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()),
+                                                  static_cast<size_t>(numCharsInData));
                                 row.append(py::cast(wstr));
 #endif
                                 LOG("SQLGetData: CHAR column %d fetched as WCHAR, "
@@ -3525,7 +3529,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 std::string utf8str = WideToUTF8(wstr);
                                 row.append(py::str(utf8str));
 #else
-                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
+                                // Construct with explicit length: SQLGetData reports the
+                                // exact number of characters via dataLen, so do not rely on
+                                // null termination. This preserves embedded NULs and avoids
+                                // any risk of reading past the valid range if the driver
+                                // omits the terminator.
+                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()),
+                                                  static_cast<size_t>(numCharsInData));
                                 row.append(py::cast(wstr));
 #endif
                                 LOG("SQLGetData: Appended NVARCHAR string "
@@ -5163,12 +5173,10 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         }
                         case SQL_SS_TIME2: {
                             buffers.timeBuffers[idxCol].resize(1);
-                            ret = SQLGetData_ptr(
-                                hStmt, idxCol + 1, SQL_C_SS_TIME2,
-                                buffers.timeBuffers[idxCol].data(),
-                                sizeof(SQL_SS_TIME2_STRUCT),
-                                buffers.indicators[idxCol].data()
-                            );
+                            ret = SQLGetData_ptr(hStmt, idxCol + 1, SQL_C_SS_TIME2,
+                                                 buffers.timeBuffers[idxCol].data(),
+                                                 sizeof(SQL_SS_TIME2_STRUCT),
+                                                 buffers.indicators[idxCol].data());
                             if (!SQL_SUCCEEDED(ret)) {
                                 LOG("Error fetching TYPE_TIME data for column %d", idxCol + 1);
                                 return ret;
@@ -5432,8 +5440,9 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                             buffers.dateBuffers[idxCol][idxRowSql].day);
                         break;
                     case SQL_SS_TIME2: {
-                        const SQL_SS_TIME2_STRUCT& timeValue = buffers.timeBuffers[idxCol][idxRowSql];
-                        arrowColumnProducer->timeNanoVal[idxRowArrow] = 
+                        const SQL_SS_TIME2_STRUCT& timeValue =
+                            buffers.timeBuffers[idxCol][idxRowSql];
+                        arrowColumnProducer->timeNanoVal[idxRowArrow] =
                             static_cast<int64_t>(timeValue.hour) * 3600 * 1000000000 +
                             static_cast<int64_t>(timeValue.minute) * 60 * 1000000000 +
                             static_cast<int64_t>(timeValue.second) * 1000000000 +
@@ -5964,7 +5973,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")
-        .def("_close_cursor", &SqlHandle::close_cursor, "Internal: close the cursor without freeing the prepared statement");
+        .def("_close_cursor", &SqlHandle::close_cursor,
+             "Internal: close the cursor without freeing the prepared statement");
 
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::string&, bool, const py::dict&>(), py::arg("conn_str"),
@@ -6009,7 +6019,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap,
           "Fetch an arrow batch of given length from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
-    m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap, "Close cursor and unbind params without freeing HSTMT");
+    m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap,
+          "Close cursor and unbind params without freeing HSTMT");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle", py::arg("handle"));

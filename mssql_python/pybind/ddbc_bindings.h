@@ -837,9 +837,20 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
                 PyUnicode_FromWideChar(reinterpret_cast<const wchar_t*>(wcharData), numCharsInData);
 #endif
             if (!pyStr) {
+                // Decode failed — fall back to returning the raw UTF-16LE bytes
+                // (consistent with the narrow-char path below and with
+                // FetchLobColumnData / SQLGetData_wrap which return raw bytes on
+                // decode failure instead of silently dropping data as None).
                 PyErr_Clear();
-                Py_INCREF(Py_None);
-                PyList_SET_ITEM(row, col - 1, Py_None);
+                PyObject* pyBytes = PyBytes_FromStringAndSize(
+                    reinterpret_cast<const char*>(wcharData), numCharsInData * sizeof(SQLWCHAR));
+                if (pyBytes) {
+                    PyList_SET_ITEM(row, col - 1, pyBytes);
+                } else {
+                    PyErr_Clear();
+                    Py_INCREF(Py_None);
+                    PyList_SET_ITEM(row, col - 1, Py_None);
+                }
             } else {
                 PyList_SET_ITEM(row, col - 1, pyStr);
             }

@@ -704,13 +704,22 @@ def test_setdecoding_explicit_ctype_override(db_connection):
 
 
 def test_setdecoding_none_parameters(db_connection):
-    """Test setdecoding with None parameters uses appropriate defaults."""
+    """Test setdecoding with None parameters uses appropriate defaults.
 
-    # Test SQL_CHAR with encoding=None (should use utf-8 default)
+    All sqltypes default to utf-16le (matching Connection.__init__ defaults), so
+    setdecoding(<sqltype>, encoding=None) acts as a true reset-to-defaults.
+    """
+
+    # Test SQL_CHAR with encoding=None (should use utf-16le default + SQL_WCHAR ctype
+    # to match the connection-level default and avoid CP-1252 decode mismatches)
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert settings["encoding"] == "utf-8", "SQL_CHAR with encoding=None should use utf-8 default"
-    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should be SQL_CHAR for utf-8"
+    assert (
+        settings["encoding"] == "utf-16le"
+    ), "SQL_CHAR with encoding=None should use utf-16le default"
+    assert (
+        settings["ctype"] == mssql_python.SQL_WCHAR
+    ), "ctype should default to SQL_WCHAR for utf-16le"
 
     # Test SQL_WCHAR with encoding=None (should use utf-16le default)
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=None)
@@ -720,11 +729,15 @@ def test_setdecoding_none_parameters(db_connection):
     ), "SQL_WCHAR with encoding=None should use utf-16le default"
     assert settings["ctype"] == mssql_python.SQL_WCHAR, "ctype should be SQL_WCHAR for utf-16le"
 
-    # Test with both parameters None
+    # Test with both parameters None — should still resolve to the connection defaults
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None, ctype=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert settings["encoding"] == "utf-8", "SQL_CHAR with both None should use utf-8 default"
-    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should default to SQL_CHAR"
+    assert (
+        settings["encoding"] == "utf-16le"
+    ), "SQL_CHAR with both None should reset to utf-16le default"
+    assert (
+        settings["ctype"] == mssql_python.SQL_WCHAR
+    ), "ctype should default to SQL_WCHAR for utf-16le"
 
 
 def test_setdecoding_invalid_sqltype(db_connection):
