@@ -2304,6 +2304,54 @@ def test_executemany_Decimal_list(cursor, db_connection):
         db_connection.commit()
 
 
+def test_executemany_decimal_sign_change(cursor, db_connection):
+    """Test executemany with decimals that change signs (GH-557).
+
+    When the sample value chosen for column sizing is shorter than a negative
+    value in the batch, the formatted string (with a leading '-') can exceed
+    the allocated column_size, causing a RuntimeError.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_decimal_sign (col_1 DECIMAL(28, 14))")
+
+        # Case 1: negative first, then positive — previously worked
+        data1 = [(decimal.Decimal("-0.1"),), (decimal.Decimal("1.0"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data1)
+
+        # Case 2: positive first, then negative — previously failed
+        data2 = [(decimal.Decimal("0.1"),), (decimal.Decimal("-0.1"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data2)
+
+        # Case 3: positive then negative with different integer parts
+        data3 = [(decimal.Decimal("1.0"),), (decimal.Decimal("-0.1"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data3)
+
+        # Case 4: multiple sign changes in a single batch
+        data4 = [
+            (decimal.Decimal("100.5"),),
+            (decimal.Decimal("-0.001"),),
+            (decimal.Decimal("0.5"),),
+            (decimal.Decimal("-999.99"),),
+        ]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data4)
+
+        db_connection.commit()
+
+        # Verify row count
+        cursor.execute("SELECT COUNT(*) FROM #pytest_decimal_sign")
+        count = cursor.fetchone()[0]
+        assert count == 10
+
+        # Verify data correctness for the originally-failing case
+        cursor.execute("SELECT col_1 FROM #pytest_decimal_sign ORDER BY col_1")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert decimal.Decimal("-999.99") in [r.quantize(decimal.Decimal("0.01")) for r in rows]
+        assert decimal.Decimal("0.1") in [r.quantize(decimal.Decimal("0.1")) for r in rows]
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_sign")
+        db_connection.commit()
+
+
 def test_executemany_DecimalString_list(cursor, db_connection):
     """Test executemany with an string of decimal parameter list."""
     try:
