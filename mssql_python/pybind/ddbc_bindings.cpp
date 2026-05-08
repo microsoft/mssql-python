@@ -5,6 +5,7 @@
 // agnostic will be
 //             taken up in beta release
 #include "ddbc_bindings.h"
+#include "utf_utils.h"
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"

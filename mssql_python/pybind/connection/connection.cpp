@@ -3,6 +3,7 @@
 
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
+#include "utf_utils.h"
 #include <algorithm>
 #include <memory>
 #include <pybind11/pybind11.h>
