@@ -68,6 +68,27 @@ inline std::string GetEffectiveCharDecoding(const std::string& userEncoding) {
 #endif
 }
 
+// Windows-only fix for issue #531: when the user explicitly requests
+// SQL_C_CHAR + utf-8 decoding (e.g. setdecoding(SQL_CHAR, "utf-8", SQL_CHAR)),
+// the SQL Server ODBC driver on Windows returns VARCHAR data in the server's
+// ANSI code page (e.g. CP1252) regardless of the column's actual collation.
+// For UTF-8 collation columns or any non-ASCII data, this is lossy ('?'
+// substitution) and unrecoverable on the Python side. Internally upgrading
+// the fetch to SQL_C_WCHAR triggers the driver's lossless UTF-16 conversion,
+// which produces a correct Python Unicode string regardless of column
+// collation. On Linux/macOS the SQL_C_CHAR path already returns UTF-8 from
+// the driver, so this upgrade is a no-op there.
+inline int EffectiveCharCtypeForFetch(int charCtype, const std::string& charEncoding) {
+#ifdef _WIN32
+    if (charCtype == SQL_C_CHAR && charEncoding == "utf-8") {
+        return SQL_C_WCHAR;
+    }
+#else
+    (void)charEncoding;
+#endif
+    return charCtype;
+}
+
 namespace PythonObjectCache {
 py::object get_time_class();
 }
@@ -4573,6 +4594,9 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
                          const std::string& charEncoding = "utf-8",
                          const std::string& wcharEncoding = "utf-16le",
                          int charCtype = SQL_C_WCHAR) {
+    // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
+    // driver does lossless UTF-16 conversion instead of returning ACP bytes.
+    charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -5687,6 +5711,9 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
                         const std::string& charEncoding = "utf-8",
                         const std::string& wcharEncoding = "utf-16le",
                         int charCtype = SQL_C_WCHAR) {
+    // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
+    // driver does lossless UTF-16 conversion instead of returning ACP bytes.
+    charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -5830,6 +5857,9 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
                         const std::string& charEncoding = "utf-8",
                         const std::string& wcharEncoding = "utf-16le",
                         int charCtype = SQL_C_WCHAR) {
+    // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
+    // driver does lossless UTF-16 conversion instead of returning ACP bytes.
+    charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
 
