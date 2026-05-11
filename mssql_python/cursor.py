@@ -2324,7 +2324,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
                 # Only scan when the already-materialized column actually contains
                 # Decimal values inferred as SQL_VARCHAR, and reuse that column data
-                # to avoid re-iterating the whole batch (GH-557).
+                # to avoid re-iterating the whole batch.
                 if (
                     paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
                     and any(
