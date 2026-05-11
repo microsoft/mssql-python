@@ -85,8 +85,16 @@ void Connection::connect(const py::dict& attrs_before) {
 #else
     connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
 #endif
-    SQLRETURN ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
-                                         0, nullptr, SQL_DRIVER_NOPROMPT);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC connect call.
+        // SQLDriverConnect involves DNS resolution, TCP handshake, TLS negotiation,
+        // and SQL Server authentication — all pure I/O that doesn't need the GIL.
+        // This allows other Python threads to run concurrently.
+        py::gil_scoped_release release;
+        ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
+                                   0, nullptr, SQL_DRIVER_NOPROMPT);
+    }
     checkError(ret);
     updateLastUsed();
 }
@@ -94,6 +102,11 @@ void Connection::connect(const py::dict& attrs_before) {
 SQLRETURN Connection::disconnect_impl() noexcept {
     if (_dbcHandle) {
         LOG("Disconnecting from database");
+
+        // Check if we hold the GIL so we can conditionally release it.
+        // The GIL is held when called from pybind11-bound methods but may NOT
+        // be held in destructor paths (C++ shared_ptr ref-count drop, shutdown).
+        bool hasGil = PyGILState_Check() != 0;
 
         // CRITICAL FIX: Mark all child statement handles as implicitly freed
         // When we free the DBC handle below, the ODBC driver will automatically free
@@ -136,8 +149,27 @@ SQLRETURN Connection::disconnect_impl() noexcept {
             _allocationsSinceCompaction = 0;
         }  // Release lock before potentially slow SQLDisconnect call
 
-        SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
-        // Always free the handle regardless of SQLDisconnect result
+        SQLRETURN ret;
+        if (hasGil) {
+            // Release the GIL during the blocking ODBC disconnect call.
+            // This allows other Python threads to run while the network
+            // round-trip completes.
+            py::gil_scoped_release release;
+            ret = SQLDisconnect_ptr(_dbcHandle->get());
+        } else {
+            // Destructor / shutdown path — GIL is not held, call directly.
+            ret = SQLDisconnect_ptr(_dbcHandle->get());
+        }
+        // In destructor/shutdown paths, suppress errors to avoid
+        // std::terminate() if this throws during stack unwinding.
+        if (hasGil) {
+            checkError(ret);
+        } else if (!SQL_SUCCEEDED(ret)) {
+            // Intentionally no LOG() here: LOG() acquires the GIL internally
+            // via py::gil_scoped_acquire, which is unsafe during interpreter
+            // shutdown or stack unwinding (can deadlock or call std::terminate).
+        }
+        // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
         return ret;
     } else {
@@ -180,7 +212,12 @@ void Connection::commit() {
     }
     updateLastUsed();
     LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking SQLEndTran network round-trip.
+        py::gil_scoped_release release;
+        ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    }
     checkError(ret);
 }
 
@@ -190,7 +227,12 @@ void Connection::rollback() {
     }
     updateLastUsed();
     LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking SQLEndTran network round-trip.
+        py::gil_scoped_release release;
+        ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    }
     checkError(ret);
 }
 
@@ -394,7 +436,6 @@ bool Connection::reset() {
                                           (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
-        disconnect_nothrow();
         return false;
     }
 
@@ -406,7 +447,6 @@ bool Connection::reset() {
                                 (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
-        disconnect_nothrow();
         return false;
     }
 

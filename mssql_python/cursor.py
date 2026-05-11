@@ -12,10 +12,11 @@ Resource Management:
 # pylint: disable=too-many-lines  # Large file due to comprehensive DB-API 2.0 implementation
 
 import decimal
+import logging
 import uuid
 import datetime
 import warnings
-from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
+from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
 from mssql_python.logging import logger
@@ -49,6 +50,19 @@ SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
+
+
+def _normalize_time_param(value, c_type):
+    """Convert a datetime.time to its isoformat string when bound via text C-types.
+
+    Returns the isoformat string if conversion applies, otherwise *None*.
+    """
+    if isinstance(value, datetime.time) and c_type in (
+        ddbc_sql_const.SQL_C_CHAR.value,
+        ddbc_sql_const.SQL_C_WCHAR.value,
+    ):
+        return value.isoformat(timespec="microseconds")
+    return None
 
 
 class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
@@ -676,10 +690,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         if isinstance(param, datetime.time):
             return (
-                ddbc_sql_const.SQL_TIME.value,
-                ddbc_sql_const.SQL_C_TYPE_TIME.value,
-                8,
-                0,
+                ddbc_sql_const.SQL_TYPE_TIME.value,
+                ddbc_sql_const.SQL_C_CHAR.value,
+                16,
+                6,
                 False,
             )
 
@@ -734,6 +748,24 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Reinitialize the statement handle
         self._initialize_cursor()
+        self.is_stmt_prepared = [False]
+
+    def _soft_reset_cursor(self) -> None:
+        """Lightweight reset: close cursor and unbind params without freeing the HSTMT.
+
+        Preserves the prepared statement plan on the server so repeated
+        executions of the same SQL skip SQLPrepare entirely.
+        """
+        if self.hstmt:
+            ret = ddbc_bindings.DDBCSQLResetStmt(self.hstmt)
+            try:
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+            except Exception:
+                logger.warning("_soft_reset_cursor failed; falling back to full reset")
+                self._reset_cursor()
+                self.last_executed_stmt = ""
+                return
+        self._clear_rownumber()
 
     def close(self) -> None:
         """
@@ -936,6 +968,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # For non-NULL parameters, determine the appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
 
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503).
+                # The generic mapping returns SQL_C_NUMERIC which requires NumericData
+                # structs, but setinputsizes declares fixed precision/scale that may
+                # differ from per-value precision, causing misinterpretation. String
+                # binding lets ODBC convert using the declared columnSize/decimalDigits.
+                if sql_type in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    c_type = ddbc_sql_const.SQL_C_CHAR.value
+                    if isinstance(parameter, decimal.Decimal):
+                        parameters_list[i] = format(parameter, "f")
+                        parameter = parameters_list[i]
+
                 # Check if this should be a DAE (data at execution) parameter
                 # For string types with large column sizes
                 if isinstance(parameter, str) and column_size > MAX_INLINE_CHAR:
@@ -957,6 +1003,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
                 parameter, parameters_list, i, min_val=min_val, max_val=max_val
             )
+
+        # If TIME values are being bound via text C-types, normalize them to a
+        # textual representation expected by SQL_C_CHAR/SQL_C_WCHAR binding.
+        time_text = _normalize_time_param(parameter, c_type)
+        if time_text is not None:
+            parameters_list[i] = time_text
+            column_size = max(column_size, len(time_text))
 
         paraminfo.paramCType = c_type
         paraminfo.paramSQLType = sql_type
@@ -1329,8 +1382,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
-            logger.debug("execute: Resetting cursor state")
-            self._reset_cursor()
+            if self.hstmt:
+                self._soft_reset_cursor()
+            else:
+                self._reset_cursor()
+        else:
+            # Close just the ODBC cursor (not the statement handle) so the
+            # prepared plan can be reused.  SQLFreeStmt(SQL_CLOSE) releases
+            # the cursor associated with hstmt without destroying the
+            # prepared statement, which is the standard ODBC pattern for
+            # re-executing a prepared query.
+            if self.hstmt:
+                logger.debug("execute: Closing cursor for re-execution (reset_cursor=False)")
+                self.hstmt._close_cursor()
+                self._clear_rownumber()
 
         # Clear any previous messages
         self.messages = []
@@ -1365,8 +1430,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Check if single parameter is a nested container that should be unwrapped
             # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
             if isinstance(parameters, tuple) and len(parameters) == 1:
-                # Could be either (value,) for single param or ((tuple),) for nested
-                # Check if it's a nested container
                 if isinstance(parameters[0], (tuple, list, dict)):
                     actual_params = parameters[0]
                 else:
@@ -1374,11 +1437,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             else:
                 actual_params = parameters
 
-            # Convert parameters based on detected style
-            operation, converted_params = detect_and_convert_parameters(operation, actual_params)
-
-            # Convert back to list format expected by the binding code
-            parameters = list(converted_params)
+            # Skip detect_and_convert_parameters when re-executing the same SQL —
+            # the parameter style (qmark vs pyformat) won't change between calls.
+            if operation == self.last_executed_stmt and isinstance(actual_params, (tuple, list)):
+                parameters = list(actual_params)
+            else:
+                operation, converted_params = detect_and_convert_parameters(
+                    operation, actual_params
+                )
+                parameters = list(converted_params)
         else:
             parameters = []
 
@@ -1406,27 +1473,28 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
                 parameters_type.append(paraminfo)
 
-        # TODO: Use a more sophisticated string compare that handles redundant spaces etc.
-        #       Also consider storing last query's hash instead of full query string. This will help
-        #       in low-memory conditions
-        #       (Ex: huge number of parallel queries with huge query string sizes)
-        if operation != self.last_executed_stmt:
-            # Executing a new statement. Reset is_stmt_prepared to false
+        # Prepare caching: skip SQLPrepare when re-executing the same SQL
+        # with parameters. The HSTMT is reused via _soft_reset_cursor, so the
+        # server-side plan from the previous SQLPrepare is still valid.
+        same_sql = parameters and operation == self.last_executed_stmt and self.is_stmt_prepared[0]
+        if not same_sql:
             self.is_stmt_prepared = [False]
+        effective_use_prepare = use_prepare and not same_sql
 
-        for i, param in enumerate(parameters):
-            logger.debug(
-                """Parameter number: %s, Parameter: %s,
-                Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                i + 1,
-                param,
-                str(type(param)),
-                parameters_type[i].paramSQLType,
-                parameters_type[i].paramCType,
-                parameters_type[i].columnSize,
-                parameters_type[i].decimalDigits,
-                parameters_type[i].inputOutputType,
-            )
+        if logger.isEnabledFor(logging.DEBUG):
+            for i, param in enumerate(parameters):
+                logger.debug(
+                    """Parameter number: %s, Parameter: %s,
+                    Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                    i + 1,
+                    param,
+                    str(type(param)),
+                    parameters_type[i].paramSQLType,
+                    parameters_type[i].paramCType,
+                    parameters_type[i].columnSize,
+                    parameters_type[i].decimalDigits,
+                    parameters_type[i].inputOutputType,
+                )
 
         ret = ddbc_bindings.DDBCSQLExecute(
             self.hstmt,
@@ -1434,7 +1502,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             parameters,
             parameters_type,
             self.is_stmt_prepared,
-            use_prepare,
+            effective_use_prepare,
             encoding_settings,
         )
         # Check return code
@@ -1447,8 +1515,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._reset_cursor()
             raise
 
-        # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
-        if self.hstmt:
+        # Capture diagnostic messages only on SQL_SUCCESS_WITH_INFO.
+        # SQL_SUCCESS has no records — calling DDBCSQLGetAllDiagRecords on it
+        # costs ~10ms/call (driver scans internal state to find nothing).
+        # SQL_ERROR is already handled by check_error() above which extracts
+        # diagnostics and raises.
+        if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
         self.last_executed_stmt = operation
@@ -1617,6 +1689,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.fetchone = fetchone_with_mapping
                 self.fetchmany = fetchmany_with_mapping
                 self.fetchall = fetchall_with_mapping
+
+        # Initialize rownumber tracking so fetchone() and iteration work
+        self._reset_rownumber()
+
+        # Metadata methods produce a new result set, so rowcount is unknown
+        # until rows are fetched. Reset it to avoid exposing a stale value
+        # from a previous statement.
+        self.rowcount = -1
 
         # Return the cursor itself for method chaining
         return self
@@ -2043,7 +2123,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return sample_value, None, None
 
     def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-        self, operation: str, seq_of_parameters: List[Sequence[Any]]
+        self, operation: str, seq_of_parameters: Union[List[Sequence[Any]], List[Mapping[str, Any]]]
     ) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
@@ -2156,6 +2236,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
                 # Determine appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
+
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
+                if sql_type in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    c_type = ddbc_sql_const.SQL_C_CHAR.value
 
                 # Check if this should be a DAE (data at execution) parameter based on column size
                 if sample_value is not None:
@@ -2277,22 +2364,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             for i, val in enumerate(processed_row):
                 if val is None:
                     continue
+                time_text = _normalize_time_param(val, parameters_type[i].paramCType)
+                if time_text is not None:
+                    processed_row[i] = time_text
+                    continue
                 if (
                     isinstance(val, decimal.Decimal)
                     and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
                 ):
                     processed_row[i] = format(val, "f")
-                # Existing numeric conversion
+                # Convert all values to string for DECIMAL/NUMERIC columns (GH-503)
                 elif parameters_type[i].paramSQLType in (
                     ddbc_sql_const.SQL_DECIMAL.value,
                     ddbc_sql_const.SQL_NUMERIC.value,
-                ) and not isinstance(val, decimal.Decimal):
-                    try:
-                        processed_row[i] = decimal.Decimal(str(val))
-                    except Exception as e:  # pylint: disable=broad-exception-caught
-                        raise ValueError(
-                            f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
-                        ) from e
+                ):
+                    if isinstance(val, decimal.Decimal):
+                        processed_row[i] = format(val, "f")
+                    else:
+                        try:
+                            processed_row[i] = format(decimal.Decimal(str(val)), "f")
+                        except Exception as e:  # pylint: disable=broad-exception-caught
+                            raise ValueError(
+                                f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
+                            ) from e
             processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
@@ -2828,6 +2922,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     f"for auth_type '{self.connection._auth_type}': {e}"
                 ) from e
             pycore_context["access_token"] = raw_token
+            # Token replaces credential fields — py-core's validator rejects
+            # access_token combined with authentication/user_name/password.
+            for key in ("authentication", "user_name", "password"):
+                pycore_context.pop(key, None)
             logger.debug(
                 "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
                 self.connection._auth_type,
