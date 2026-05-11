@@ -81,6 +81,12 @@ inline std::string GetEffectiveCharDecoding(const std::string& userEncoding) {
 inline int EffectiveCharCtypeForFetch(int charCtype, const std::string& charEncoding) {
 #ifdef _WIN32
     if (charCtype == SQL_C_CHAR && charEncoding == "utf-8") {
+        // Surface the override so users can correlate observed SQL_C_WCHAR
+        // fetches with their explicit setdecoding(SQL_CHAR, "utf-8", SQL_CHAR)
+        // call (issue#531). Logged at INFO so it appears in production traces
+        // without flooding default DEBUG output.
+        LOG_INFO("EffectiveCharCtypeForFetch: Upgrading SQL_C_CHAR + utf-8 to "
+                 "SQL_C_WCHAR on Windows to avoid lossy ACP conversion ");
         return SQL_C_WCHAR;
     }
 #else
