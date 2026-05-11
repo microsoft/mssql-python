@@ -190,6 +190,71 @@ def test_connection_error():
     assert "Incomplete specification" in str(excinfo.value) or "has no value" in str(excinfo.value)
 
 
+def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
+    """Regression test for https://github.com/microsoft/mssql-python/issues/532.
+
+    Connection failures from the C++ pybind layer (RuntimeError) must be mapped
+    to the correct DB-API 2.0 exception via the embedded SQLSTATE code.
+    This covers connect(), commit(), and rollback() — all of which go through
+    Connection::checkError() in the C++ layer.
+    """
+    from unittest.mock import MagicMock, patch
+
+    # SQLSTATE 28000 = login failed -> OperationalError
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError("SQLSTATE:28000:Login failed for user 'baduser'."),
+    ):
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=localhost;Database=mydb;UID=baduser;PWD=wrongpassword;")
+    assert "Login failed for user" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # SQLSTATE IM002 = driver not found -> OperationalError (per SQLSTATE mapping)
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError(
+            "SQLSTATE:IM002:Data source name not found and no default driver specified"
+        ),
+    ):
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=localhost;Database=mydb;UID=u;PWD=p;")
+    assert "no default driver" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # No SQLSTATE prefix -> fallback OperationalError
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError("Connection handle not allocated"),
+    ):
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=localhost;Database=mydb;UID=u;PWD=p;")
+    assert "Connection handle not allocated" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # commit() failure -> OperationalError via same _raise_connection_error path
+    mock_conn = MagicMock()
+    mock_conn.commit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+    mock_conn.get_autocommit.return_value = False
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=localhost;Database=mydb;UID=u;PWD=p;")
+    with pytest.raises(OperationalError) as exc_info:
+        conn.commit()
+    assert "Communication link failure" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # rollback() failure -> OperationalError via same _raise_connection_error path
+    mock_conn2 = MagicMock()
+    mock_conn2.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+    mock_conn2.get_autocommit.return_value = False
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn2):
+        conn2 = connect("Server=localhost;Database=mydb;UID=u;PWD=p;")
+    with pytest.raises(OperationalError) as exc_info:
+        conn2.rollback()
+    assert "Communication link failure" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+
 def test_truncate_error_message_successful_cases():
     """Test truncate_error_message with valid Microsoft messages for comparison."""
 

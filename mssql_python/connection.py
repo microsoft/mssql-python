@@ -38,6 +38,7 @@ from mssql_python.exceptions import (
     InternalError,
     ProgrammingError,
     NotSupportedError,
+    sqlstate_to_exception,
 )
 from mssql_python.auth import extract_auth_type, process_connection_string
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
@@ -56,6 +57,35 @@ INFO_TYPE_STRING_THRESHOLD: int = 10000
 # UTF-16 encoding variants that should use SQL_WCHAR by default
 # Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
 UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
+
+_SQLSTATE_RE = re.compile(r"^SQLSTATE:([A-Z0-9]{5}):(.*)", re.DOTALL)
+
+
+def _raise_connection_error(e: RuntimeError) -> None:
+    """Map a RuntimeError from the C++ pybind layer to the correct DB-API 2.0 exception.
+
+    Connection::checkError() throws "SQLSTATE:XXXXX:<odbc_message>" so the SQLSTATE
+    can be mapped via sqlstate_to_exception(), consistent with cursor-level error handling.
+    """
+    error_msg = str(e)
+    match = _SQLSTATE_RE.match(error_msg)
+    if match:
+        sqlstate, ddbc_error = match.group(1), match.group(2)
+        exc = sqlstate_to_exception(sqlstate, ddbc_error)
+        if exc is None:
+            logger.error("Unknown SQLSTATE %s, raising DatabaseError", sqlstate)
+            raise DatabaseError(
+                driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
+                ddbc_error=ddbc_error,
+            ) from None
+        logger.error("Connection error (SQLSTATE %s): %s", sqlstate, ddbc_error)
+        raise exc from None
+    # Fallback: no SQLSTATE prefix — e.g. "Connection handle not allocated"
+    logger.error("Connection error: %s", error_msg)
+    raise OperationalError(
+        driver_error="Connection operation failed",
+        ddbc_error=error_msg,
+    ) from None
 
 
 def _validate_utf16_wchar_compatibility(
@@ -333,9 +363,12 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
-        self._conn = ddbc_bindings.Connection(
-            self.connection_str, self._pooling, self._attrs_before
-        )
+        try:
+            self._conn = ddbc_bindings.Connection(
+                self.connection_str, self._pooling, self._attrs_before
+            )
+        except RuntimeError as e:
+            _raise_connection_error(e)
         self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
@@ -496,7 +529,10 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while setting the autocommit mode.
         """
-        self._conn.set_autocommit(value)
+        try:
+            self._conn.set_autocommit(value)
+        except RuntimeError as e:
+            _raise_connection_error(e)
 
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
@@ -1491,7 +1527,10 @@ class Connection:
             )
 
         # Commit the current transaction
-        self._conn.commit()
+        try:
+            self._conn.commit()
+        except RuntimeError as e:
+            _raise_connection_error(e)
         logger.info("Transaction committed successfully.")
 
     def rollback(self) -> None:
@@ -1514,7 +1553,10 @@ class Connection:
             )
 
         # Roll back the current transaction
-        self._conn.rollback()
+        try:
+            self._conn.rollback()
+        except RuntimeError as e:
+            _raise_connection_error(e)
         logger.info("Transaction rolled back successfully.")
 
     def close(self) -> None:
