@@ -211,9 +211,16 @@ void Connection::setAutocommit(bool enable) {
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);
-    SQLRETURN ret =
-        SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
-                              reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC call. Holding the GIL
+        // here can deadlock when the network path goes through another
+        // Python thread (e.g. an in-process SSH tunnel via paramiko +
+        // sshtunnel), since that thread also needs the GIL to run.
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                                    reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    }
     checkError(ret);
     if (value == SQL_AUTOCOMMIT_ON) {
         LOG("Autocommit enabled");
@@ -286,9 +293,15 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         // Get the integer value
         int64_t longValue = value.cast<int64_t>();
 
-        SQLRETURN ret = SQLSetConnectAttr_ptr(
-            _dbcHandle->get(), attribute,
-            reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
+        SQLRETURN ret;
+        {
+            // Release the GIL around the ODBC call for consistency with the
+            // other connection-attribute paths; some attributes can block.
+            py::gil_scoped_release release;
+            ret = SQLSetConnectAttr_ptr(
+                _dbcHandle->get(), attribute,
+                reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
+        }
 
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Failed to set integer attribute=%d, ret=%d", attribute, ret);
@@ -306,7 +319,11 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             ptr = reinterpretU16stringAsSqlWChar(this->wstrStringBuffer);
             length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
 
-            SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            }
             if (!SQL_SUCCEEDED(ret)) {
                 LOG("Failed to set string attribute=%d, ret=%d", attribute, ret);
             } else {
@@ -325,7 +342,11 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.c_str());
             SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
 
-            SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            }
             if (!SQL_SUCCEEDED(ret)) {
                 LOG("Failed to set binary attribute=%d, ret=%d", attribute, ret);
             } else {
@@ -376,8 +397,14 @@ bool Connection::reset() {
         ThrowStdException("Connection handle not allocated");
     }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
-                                          (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+    SQLRETURN ret;
+    {
+        // Release the GIL around the ODBC call for consistency with the
+        // other connection-attribute paths; some attributes can block.
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
+                                    (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
         return false;
@@ -387,8 +414,11 @@ bool Connection::reset() {
     // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
     // isolation level settings from leaking between pooled connection usages.
     LOG("Resetting transaction isolation level to READ COMMITTED");
-    ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
-                                (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
+                                    (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
         return false;
