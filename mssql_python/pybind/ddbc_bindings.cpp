@@ -3419,11 +3419,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
-                            LOG("SQLGetData: Cannot determine data length "
-                                "(SQL_NO_TOTAL) for column %d (CHAR via WCHAR), "
-                                "returning NULL",
+                            // Driver cannot report total length up front; this is
+                            // NOT a NULL value. Fall back to streaming via
+                            // FetchLobColumnData (repeated SQLGetData chunks) so
+                            // we don't silently lose data.
+                            LOG("SQLGetData: SQL_NO_TOTAL for column %d (CHAR via WCHAR), "
+                                "streaming via FetchLobColumnData",
                                 i);
-                            row.append(py::none());
+                            row.append(
+                                FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d - dataType=%d, dataLen=%ld",
@@ -3432,10 +3436,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                               "data length");
                         }
                     } else {
-                        LOG("SQLGetData: Error retrieving data for column %d "
-                            "(CHAR via WCHAR) - SQLRETURN=%d, returning NULL",
-                            i, ret);
-                        row.append(py::none());
+                        // Surface driver errors instead of silently returning NULL.
+                        // Returning py::none() here would be indistinguishable from
+                        // a genuine SQL NULL value to the Python caller and is a
+                        // data-integrity risk.
+                        LOG_ERROR("SQLGetData: Error retrieving data for column %d "
+                                  "(CHAR via WCHAR) - SQLRETURN=%d",
+                                  i, ret);
+                        ThrowStdException("SQLGetData failed for CHAR/VARCHAR column "
+                                          "fetched as SQL_C_WCHAR");
                     }
                 } else {
                     // Allocate columnSize * 4 + 1 on ALL platforms (no #if guard).
@@ -3499,11 +3508,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
-                            LOG("SQLGetData: Cannot determine data length "
-                                "(SQL_NO_TOTAL) for column %d (SQL_CHAR), "
-                                "returning NULL",
+                            // Driver cannot report total length up front; this is
+                            // NOT a NULL value. Fall back to streaming via
+                            // FetchLobColumnData (repeated SQLGetData chunks) so
+                            // we don't silently lose data.
+                            LOG("SQLGetData: SQL_NO_TOTAL for column %d (SQL_CHAR), "
+                                "streaming via FetchLobColumnData",
                                 i);
-                            row.append(py::none());
+                            row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
+                                                          effectiveCharEnc));
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d - dataType=%d, dataLen=%ld",
@@ -3512,10 +3525,14 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                               "data length");
                         }
                     } else {
-                        LOG("SQLGetData: Error retrieving data for column %d "
-                            "(SQL_CHAR) - SQLRETURN=%d, returning NULL",
-                            i, ret);
-                        row.append(py::none());
+                        // Surface driver errors instead of silently returning NULL.
+                        // Returning py::none() here would be indistinguishable from
+                        // a genuine SQL NULL value to the Python caller and is a
+                        // data-integrity risk.
+                        LOG_ERROR("SQLGetData: Error retrieving data for column %d "
+                                  "(SQL_CHAR) - SQLRETURN=%d",
+                                  i, ret);
+                        ThrowStdException("SQLGetData failed for SQL_CHAR/VARCHAR column");
                     }
                 }
                 break;
@@ -3576,11 +3593,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
-                            LOG("SQLGetData: Cannot determine NVARCHAR data "
-                                "length (SQL_NO_TOTAL) for column %d, "
-                                "returning NULL",
+                            // Driver cannot report total length up front; this is
+                            // NOT a NULL value. Fall back to streaming via
+                            // FetchLobColumnData (repeated SQLGetData chunks) so
+                            // we don't silently lose data.
+                            LOG("SQLGetData: SQL_NO_TOTAL for column %d (NVARCHAR), "
+                                "streaming via FetchLobColumnData",
                                 i);
-                            row.append(py::none());
+                            row.append(
+                                FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d (NVARCHAR) - dataLen=%ld",
@@ -3589,10 +3610,14 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                               "data length");
                         }
                     } else {
-                        LOG("SQLGetData: Error retrieving data for column %d "
-                            "(NVARCHAR) - SQLRETURN=%d",
-                            i, ret);
-                        row.append(py::none());
+                        // Surface driver errors instead of silently returning NULL.
+                        // Returning py::none() here would be indistinguishable from
+                        // a genuine SQL NULL value to the Python caller and is a
+                        // data-integrity risk.
+                        LOG_ERROR("SQLGetData: Error retrieving data for column %d "
+                                  "(NVARCHAR) - SQLRETURN=%d",
+                                  i, ret);
+                        ThrowStdException("SQLGetData failed for NVARCHAR column");
                     }
                 }
                 break;
