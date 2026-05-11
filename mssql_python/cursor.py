@@ -2074,9 +2074,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         max_decimal_formatted_len = 0
         for v in non_nulls:
             if isinstance(v, decimal.Decimal):
-                max_decimal_formatted_len = max(
-                    max_decimal_formatted_len, len(format(v, "f"))
-                )
+                max_decimal_formatted_len = max(max_decimal_formatted_len, len(format(v, "f")))
             if not sample_value:
                 sample_value = v
             elif isinstance(v, (str, bytes, bytearray)) and isinstance(
@@ -2311,9 +2309,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     if hasattr(seq_of_parameters, "__getitem__")
                     else []
                 )
-                sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(
-                    column
-                )
+                sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(column)
 
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
