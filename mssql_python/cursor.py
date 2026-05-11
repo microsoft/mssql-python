@@ -2322,19 +2322,24 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
                     paraminfo.columnSize = 1
 
-                # Special handling for Decimal columns sent as SQL_VARCHAR (GH-557)
-                # The column_size was computed from a single sample value, but
-                # negative signs can make other rows' formatted strings longer.
-                # Scan all rows to find the true maximum formatted length.
-                if paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value:
-                    max_decimal_size = paraminfo.columnSize
-                    for row in seq_of_parameters:
-                        value = row[col_index]
-                        if value is not None and isinstance(value, decimal.Decimal):
-                            formatted_len = len(format(value, "f"))
-                            if formatted_len > max_decimal_size:
-                                max_decimal_size = formatted_len
-                    paraminfo.columnSize = max_decimal_size
+                # Only scan when the already-materialized column actually contains
+                # Decimal values inferred as SQL_VARCHAR, and reuse that column data
+                # to avoid re-iterating the whole batch (GH-557).
+                if (
+                    paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
+                    and any(
+                        value is not None and isinstance(value, decimal.Decimal)
+                        for value in column
+                    )
+                ):
+                    paraminfo.columnSize = max(
+                        paraminfo.columnSize,
+                        max(
+                            len(format(value, "f"))
+                            for value in column
+                            if value is not None and isinstance(value, decimal.Decimal)
+                        ),
+                    )
 
                 # Special handling for binary data in auto-detected types
                 if paraminfo.paramSQLType in (
