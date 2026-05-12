@@ -7837,5 +7837,93 @@ class TestIssue531Utf8CollationVarchar:
             assert row[1] == original
 
 
+class TestIssue531CoverageGaps:
+    """Targeted coverage for the new CHAR-via-WCHAR / LOB / boundary branches
+    introduced for issue #531 (review feedback)."""
+
+    UTF8_COLLATION = "Latin1_General_100_CI_AS_SC_UTF8"
+
+    @pytest.fixture(autouse=True)
+    def reset_decoding(self, db_connection):
+        """Ensure default decoding settings before each test (db_connection
+        is module-scoped and other classes mutate it)."""
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)
+        yield
+
+    def test_fetchone_null_and_empty_varchar(self, cursor):
+        """Covers null/empty arms in the new CHAR-via-WCHAR block."""
+        cursor.execute("SELECT CAST(NULL AS VARCHAR(10)), CAST('' AS VARCHAR(10))")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] is None
+        assert row[1] == ""
+
+    def test_fetchone_varchar_max_and_nvarchar_max_50k_unicode(self, db_connection, cursor):
+        """Exercises wide-char LOB streaming in ProcessChar / SQLGetData_wrap.
+        Large LOBs deterministically surface SQL_NO_TOTAL on the first chunk."""
+        payload = "caf\u00e9 \u00ad " * 6250  # ~50k chars, includes non-ASCII (é, soft hyphen)
+        table = "#t_issue531_lob_max"
+        try:
+            cursor.execute(
+                f"CREATE TABLE {table} ("
+                f"  v VARCHAR(MAX) COLLATE {self.UTF8_COLLATION},"
+                f"  n NVARCHAR(MAX))"
+            )
+        except Exception as exc:
+            pytest.skip(f"UTF-8 collation '{self.UTF8_COLLATION}' not supported: {exc}")
+        try:
+            cursor.execute(f"INSERT INTO {table} VALUES (?, ?)", payload, payload)
+            cursor.execute(f"SELECT v, n FROM {table}")
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] == payload
+            assert row[1] == payload
+        finally:
+            try:
+                cursor.execute(f"DROP TABLE {table}")
+            except Exception:
+                pass
+
+    def test_fetchone_text_column_sql_no_total(self, cursor):
+        """Legacy TEXT LOB deterministically returns SQL_NO_TOTAL on the first
+        chunk — cheapest way to actually exercise that branch."""
+        table = "#t_issue531_text"
+        cursor.execute(f"CREATE TABLE {table} (v TEXT)")
+        try:
+            payload = "A" * 100_000
+            cursor.execute(f"INSERT INTO {table} VALUES (?)", payload)
+            cursor.execute(f"SELECT v FROM {table}")
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] == payload
+        finally:
+            try:
+                cursor.execute(f"DROP TABLE {table}")
+            except Exception:
+                pass
+
+    def test_fetchall_varchar_n_utf8_collation_non_bmp_boundary(self, cursor):
+        """Catches off-by-one in the wide-char path with a non-BMP character
+        on a VARCHAR(N) column at the size boundary."""
+        table = "#t_issue531_boundary"
+        try:
+            cursor.execute(f"CREATE TABLE {table} (v VARCHAR(4) COLLATE {self.UTF8_COLLATION})")
+        except Exception as exc:
+            pytest.skip(f"UTF-8 collation '{self.UTF8_COLLATION}' not supported: {exc}")
+        try:
+            cursor.execute(f"INSERT INTO {table} VALUES (N'\U0001f600')")
+            cursor.execute(f"SELECT v FROM {table}")
+            rows = cursor.fetchall()
+            assert len(rows) == 1
+            assert rows[0][0] == "\U0001f600"
+        finally:
+            try:
+                cursor.execute(f"DROP TABLE {table}")
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
