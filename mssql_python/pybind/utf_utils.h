@@ -15,11 +15,10 @@ inline std::string utf16LeToUtf8Alloc(const std::u16string& utf16) {
         return {};
     }
 
-    simdutf::result utf8Length =
-        simdutf::utf8_length_from_utf16le_with_replacement(utf16.data(), utf16.size());
-    std::string utf8(utf8Length.count, '\0');
-    utf8.resize(
-        simdutf::convert_utf16le_to_utf8_with_replacement(utf16.data(), utf16.size(), utf8.data()));
+    std::string utf8(utf16.size() * 3, '\0');
+    size_t n = simdutf::convert_utf16le_to_utf8_with_replacement(
+        utf16.data(), utf16.size(), utf8.data());
+    utf8.resize(n);
     return utf8;
 }
 
