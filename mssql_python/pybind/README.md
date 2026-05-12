@@ -1,6 +1,6 @@
 # Build Instructions for Developers
 
-This Chapter provides instructions to build the DDBC Bindings for your system and documents the platform-specific dependencies.
+This README provides instructions to build the DDBC Bindings for your system and documents the platform-specific dependencies.
 
 ## **Key Architecture Handling**
 
