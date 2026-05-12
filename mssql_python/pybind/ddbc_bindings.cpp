@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>  // For std::memcpy
+#include <algorithm> // std::min
 #include <filesystem>
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
@@ -44,6 +45,8 @@
 #endif
 // SQL Server-specific variant TIME type code
 #define SQL_SS_VARIANT_TIME (16384)
+// Space for driver name + up to 8000 characters output by PRINT statements
+#define SQL_MAX_MESSAGE_LENGTH_SQLSERVER (10000)
 
 #define STRINGIFY_FOR_CASE(x)                                                                      \
     case x:                                                                                        \
@@ -1555,16 +1558,18 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
             DriverLoader::getInstance().loadDriver();  // Load the driver
         }
 
-        SQLWCHAR sqlState[6], message[SQL_MAX_MESSAGE_LENGTH];
+        SQLWCHAR sqlState[6], message[SQL_MAX_MESSAGE_LENGTH_SQLSERVER];
         SQLINTEGER nativeError;
         SQLSMALLINT messageLen;
 
         SQLRETURN diagReturn = SQLGetDiagRec_ptr(handleType, rawHandle, 1, sqlState, &nativeError,
-                                                 message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
+                                                 message, SQL_MAX_MESSAGE_LENGTH_SQLSERVER, &messageLen);
 
         if (SQL_SUCCEEDED(diagReturn)) {
             std::u16string sqlStateUtf16 = dupeSqlWCharAsUtf16Le(sqlState, 5);
-            std::u16string messageUtf16 = dupeSqlWCharAsUtf16Le(message, static_cast<size_t>(messageLen));
+            std::u16string messageUtf16 = dupeSqlWCharAsUtf16Le(
+                message, std::min(static_cast<size_t>(messageLen),
+                                  static_cast<size_t>(SQL_MAX_MESSAGE_LENGTH_SQLSERVER - 1)));
 
             errorInfo.sqlState = utf16LeToUtf8Alloc(std::move(sqlStateUtf16));
             errorInfo.ddbcErrorMsg = utf16LeToUtf8Alloc(std::move(messageUtf16));
@@ -1590,19 +1595,21 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
     // Iterate through all available diagnostic records
     for (SQLSMALLINT recNumber = 1;; recNumber++) {
         SQLWCHAR sqlState[6] = {0};
-        SQLWCHAR message[SQL_MAX_MESSAGE_LENGTH] = {0};
+        SQLWCHAR message[SQL_MAX_MESSAGE_LENGTH_SQLSERVER] = {0};
         SQLINTEGER nativeError = 0;
         SQLSMALLINT messageLen = 0;
 
         SQLRETURN diagReturn =
             SQLGetDiagRec_ptr(handleType, rawHandle, recNumber, sqlState, &nativeError, message,
-                              SQL_MAX_MESSAGE_LENGTH, &messageLen);
+                              SQL_MAX_MESSAGE_LENGTH_SQLSERVER, &messageLen);
 
         if (diagReturn == SQL_NO_DATA || !SQL_SUCCEEDED(diagReturn))
             break;
 
         std::u16string sqlStateUtf16 = dupeSqlWCharAsUtf16Le(sqlState, 5);
-        std::u16string messageUtf16 = dupeSqlWCharAsUtf16Le(message, static_cast<size_t>(messageLen));
+        std::u16string messageUtf16 = dupeSqlWCharAsUtf16Le(
+            message, std::min(static_cast<size_t>(messageLen),
+                              static_cast<size_t>(SQL_MAX_MESSAGE_LENGTH_SQLSERVER - 1)));
 
         std::string stateStr = utf16LeToUtf8Alloc(std::move(sqlStateUtf16));
         std::string msgStr = utf16LeToUtf8Alloc(std::move(messageUtf16));
@@ -2780,10 +2787,13 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
         if (SQL_SUCCEEDED(retcode)) {
             // Append a named py::dict to ColumnMetadata
             // TODO: Should we define a struct for this task instead of dict?
-            ColumnMetadata.append(py::dict("ColumnName"_a = dupeSqlWCharAsUtf16Le(ColumnName, static_cast<size_t>(NameLength)),
-                                           "DataType"_a = DataType, "ColumnSize"_a = ColumnSize,
-                                           "DecimalDigits"_a = DecimalDigits,
-                                           "Nullable"_a = Nullable));
+            ColumnMetadata.append(
+                py::dict("ColumnName"_a = dupeSqlWCharAsUtf16Le(
+                             ColumnName,
+                             std::min(static_cast<size_t>(NameLength),
+                                      (sizeof(ColumnName) / sizeof(SQLWCHAR)) - 1)),
+                         "DataType"_a = DataType, "ColumnSize"_a = ColumnSize,
+                         "DecimalDigits"_a = DecimalDigits, "Nullable"_a = Nullable));
         } else {
             return retcode;
         }

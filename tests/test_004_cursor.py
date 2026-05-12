@@ -16114,3 +16114,41 @@ def test_catalog_rownumber_increments_correctly(cursor, db_connection, catalog_f
         assert cursor.rownumber == expected_idx
 
     assert cursor.fetchone() is None
+
+
+@pytest.mark.parametrize(
+    "raiserror_len",
+    [2047, 4000],
+)
+def test_long_raiserror(cursor, raiserror_len):
+    """Test that long error messages from RAISERROR are correctly captured"""
+    query = f"""
+        DECLARE @msg NVARCHAR(MAX) = REPLICATE(N'a', {raiserror_len});
+        RAISERROR(@msg, 16, 1);
+    """
+    try:
+        cursor.execute(query)
+    except mssql_python.ProgrammingError as e:
+        msg = e.args[0]
+        if raiserror_len <= 2047:  # SQL Server length cap
+            assert msg.endswith("a" * raiserror_len), msg
+        else:
+            assert msg.endswith("a" * (2047 - 3) + "..."), msg
+
+
+@pytest.mark.parametrize(
+    "message_len",
+    [2047, 4000, 8000, 8001, 80000],
+)
+def test_long_print_message(cursor, message_len):
+    """Test that long messages from PRINT are correctly captured."""
+    query = f"""
+        DECLARE @msg VARCHAR(MAX);
+        /* Use STRING_AGG because REPLICATE caps at length 4000 */
+        SET @msg = (SELECT STRING_AGG(CAST(N'a' AS NVARCHAR(MAX)), N'') FROM GENERATE_SERIES(1, {message_len}));
+        PRINT @msg;
+    """
+    cursor.execute(query)
+    msg = cursor.messages[0][1]
+    # SQL Server truncates at 8000 characters
+    assert msg.endswith("a" * min(8000, message_len)), msg
