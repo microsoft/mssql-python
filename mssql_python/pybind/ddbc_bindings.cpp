@@ -5850,6 +5850,56 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 #endif
 
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
+// ---------------------------------------------------------------------------
+// construct_rows — Build Row objects entirely in C++.
+//
+// Replaces the Python list comprehension:
+//   [Row._fast_create(rd, column_map, cursor) for rd in rows_data]
+//
+// By doing tp_alloc + slot assignment in a tight C loop, this avoids:
+//   - Python bytecode dispatch (FOR_ITER, LOAD_FAST, CALL_FUNCTION)
+//   - Keyword argument processing overhead per Row
+//   - Python function call frame setup per iteration
+//
+// Requires Row to have __slots__ = ('_values', '_column_map', '_cursor').
+// Semantically identical to _fast_create — no converter or UUID processing.
+// ---------------------------------------------------------------------------
+py::list construct_rows(const py::list& rows_data,
+                        const py::object& row_class,
+                        const py::object& column_map,
+                        const py::object& cursor_obj) {
+    PyTypeObject* row_type = reinterpret_cast<PyTypeObject*>(row_class.ptr());
+    Py_ssize_t n = PyList_GET_SIZE(rows_data.ptr());
+
+    // Pre-intern slot name strings (cached by CPython after first call)
+    static PyObject* attr_values = PyUnicode_InternFromString("_values");
+    static PyObject* attr_column_map = PyUnicode_InternFromString("_column_map");
+    static PyObject* attr_cursor = PyUnicode_InternFromString("_cursor");
+
+    py::list result(n);
+
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        // Allocate Row without calling __init__
+        PyObject* row = row_type->tp_alloc(row_type, 0);
+        if (!row) throw py::error_already_set();
+
+        PyObject* row_data = PyList_GET_ITEM(rows_data.ptr(), i);
+
+        // Set __slots__ via GenericSetAttr (uses descriptor offsets — fast path)
+        if (PyObject_GenericSetAttr(row, attr_values, row_data) < 0 ||
+            PyObject_GenericSetAttr(row, attr_column_map, column_map.ptr()) < 0 ||
+            PyObject_GenericSetAttr(row, attr_cursor, cursor_obj.ptr()) < 0) {
+            Py_DECREF(row);
+            throw py::error_already_set();
+        }
+
+        // PyList_SET_ITEM steals the reference — don't Py_DECREF row
+        PyList_SET_ITEM(result.ptr(), i, row);
+    }
+
+    return result;
+}
+
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
 
@@ -6006,6 +6056,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
+
+    // Fast Row construction in C++ — replaces Python list comprehension
+    m.def("construct_rows", &construct_rows,
+          "Build Row objects in C++ for fetchall/fetchmany fast path",
+          py::arg("rows_data"), py::arg("row_class"),
+          py::arg("column_map"), py::arg("cursor"));
 
     // Expose logger bridge function to Python
     m.def("update_log_level", &mssql_python::logging::LoggerBridge::updateLevel,
