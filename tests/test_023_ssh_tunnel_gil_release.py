@@ -213,6 +213,10 @@ def test_connect_through_python_tcp_forwarder_does_not_deadlock():
     env = os.environ.copy()
     env["DB_CONNECTION_STRING"] = base_conn_str
     env["PYTHONUNBUFFERED"] = "1"
+    # Propagate sys.path so the subprocess can find mssql_python even when
+    # the package is only available via pytest's path manipulation or an
+    # editable install rooted in the workspace.
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
 
     proc = subprocess.Popen(
         [sys.executable, __file__],
