@@ -16,6 +16,7 @@ from mssql_python.auth import (
     get_auth_token,
     process_connection_string,
     extract_auth_type,
+    extract_credential_kwargs,
     _credential_cache,
     _credential_cache_lock,
 )
@@ -44,6 +45,17 @@ def setup_azure_identity():
         def get_token(self, scope):
             return MockToken()
 
+    class MockManagedIdentityCredential:
+        # Captures construction kwargs so user-assigned MSI tests can assert
+        # client_id was forwarded correctly.
+        last_init_kwargs = None
+
+        def __init__(self, **kwargs):
+            MockManagedIdentityCredential.last_init_kwargs = kwargs
+
+        def get_token(self, scope):
+            return MockToken()
+
     # Mock ClientAuthenticationError
     class MockClientAuthenticationError(Exception):
         pass
@@ -52,6 +64,7 @@ def setup_azure_identity():
         DefaultAzureCredential = MockDefaultAzureCredential
         DeviceCodeCredential = MockDeviceCodeCredential
         InteractiveBrowserCredential = MockInteractiveBrowserCredential
+        ManagedIdentityCredential = MockManagedIdentityCredential
 
     class MockCore:
         class exceptions:
@@ -87,6 +100,7 @@ class TestAuthType:
         assert AuthType.INTERACTIVE.value == "activedirectoryinteractive"
         assert AuthType.DEVICE_CODE.value == "activedirectorydevicecode"
         assert AuthType.DEFAULT.value == "activedirectorydefault"
+        assert AuthType.MSI.value == "activedirectorymsi"
 
 
 class TestAADAuth:
@@ -317,6 +331,16 @@ class TestProcessAuthParameters:
         _, auth_type = process_auth_parameters(params)
         assert auth_type == "default"
 
+    def test_msi_auth(self):
+        params = ["Authentication=ActiveDirectoryMSI", "Server=test"]
+        _, auth_type = process_auth_parameters(params)
+        assert auth_type == "msi"
+
+    def test_msi_auth_case_insensitive(self):
+        params = ["authentication=activedirectorymsi", "Server=test"]
+        _, auth_type = process_auth_parameters(params)
+        assert auth_type == "msi"
+
 
 class TestRemoveSensitiveParams:
     def test_remove_sensitive_parameters(self):
@@ -407,11 +431,100 @@ class TestExtractAuthType:
             == "devicecode"
         )
 
+    def test_msi(self):
+        assert extract_auth_type("Server=test;Authentication=ActiveDirectoryMSI;") == "msi"
+
     def test_no_auth(self):
         assert extract_auth_type("Server=test;Database=db;") is None
 
     def test_unsupported_auth(self):
         assert extract_auth_type("Server=test;Authentication=SqlPassword;") is None
+
+
+class TestManagedIdentity:
+    """Tests for ActiveDirectoryMSI support (system- and user-assigned)."""
+
+    def test_get_token_system_assigned_msi(self):
+        """System-assigned MSI: ManagedIdentityCredential() constructed with no kwargs."""
+        az = sys.modules["azure.identity"]
+
+        az.ManagedIdentityCredential.last_init_kwargs = None
+        token_struct = AADAuth.get_token("msi")
+        assert isinstance(token_struct, bytes)
+        assert az.ManagedIdentityCredential.last_init_kwargs == {}
+
+    def test_get_raw_token_system_assigned_msi(self):
+        raw_token = AADAuth.get_raw_token("msi")
+        assert raw_token == SAMPLE_TOKEN
+
+    def test_get_token_user_assigned_msi(self):
+        """User-assigned MSI: client_id is forwarded to the credential constructor."""
+        az = sys.modules["azure.identity"]
+
+        az.ManagedIdentityCredential.last_init_kwargs = None
+        client_id = "11111111-2222-3333-4444-555555555555"
+        token_struct = AADAuth.get_token("msi", {"client_id": client_id})
+        assert isinstance(token_struct, bytes)
+        assert az.ManagedIdentityCredential.last_init_kwargs == {"client_id": client_id}
+
+    def test_msi_separate_cache_entries_per_client_id(self):
+        """System-assigned and user-assigned MSI must not share a cached credential."""
+        AADAuth.get_token("msi")  # system-assigned
+        AADAuth.get_token("msi", {"client_id": "abc"})
+        AADAuth.get_token("msi", {"client_id": "def"})
+
+        # System-assigned uses the bare string key; user-assigned uses tuples.
+        assert "msi" in _credential_cache
+        assert ("msi", (("client_id", "abc"),)) in _credential_cache
+        assert ("msi", (("client_id", "def"),)) in _credential_cache
+        assert (
+            _credential_cache["msi"]
+            is not _credential_cache[("msi", (("client_id", "abc"),))]
+        )
+
+    def test_extract_credential_kwargs_system_assigned(self):
+        """No UID in connection string → system-assigned MSI → empty kwargs."""
+        conn_str = "Server=test;Authentication=ActiveDirectoryMSI;"
+        assert extract_credential_kwargs(conn_str, "msi") == {}
+
+    def test_extract_credential_kwargs_user_assigned(self):
+        """UID present → user-assigned MSI → client_id kwarg."""
+        conn_str = "Server=test;Authentication=ActiveDirectoryMSI;UID=11111111-2222-3333-4444-555555555555;"
+        assert extract_credential_kwargs(conn_str, "msi") == {
+            "client_id": "11111111-2222-3333-4444-555555555555"
+        }
+
+    def test_extract_credential_kwargs_non_msi(self):
+        """For non-MSI auth types, kwargs are always empty (UID is ignored)."""
+        conn_str = "Server=test;Authentication=ActiveDirectoryDefault;UID=user;"
+        assert extract_credential_kwargs(conn_str, "default") == {}
+
+    def test_extract_credential_kwargs_empty_uid(self):
+        """Empty UID value is treated as system-assigned MSI."""
+        conn_str = "Server=test;Authentication=ActiveDirectoryMSI;UID=;"
+        assert extract_credential_kwargs(conn_str, "msi") == {}
+
+    def test_process_connection_string_msi_strips_uid(self):
+        """MSI connection strings: UID is stripped from the ODBC connection
+        string but the client_id is still applied to the credential."""
+        az = sys.modules["azure.identity"]
+
+        az.ManagedIdentityCredential.last_init_kwargs = None
+        conn_str = (
+            "Server=test;Authentication=ActiveDirectoryMSI;"
+            "UID=11111111-2222-3333-4444-555555555555;Database=testdb"
+        )
+        result_str, attrs, auth_type = process_connection_string(conn_str)
+
+        assert auth_type == "msi"
+        assert "UID=" not in result_str
+        assert "Authentication=" not in result_str
+        assert "Server=test" in result_str
+        assert "Database=testdb" in result_str
+        assert attrs is not None
+        assert az.ManagedIdentityCredential.last_init_kwargs == {
+            "client_id": "11111111-2222-3333-4444-555555555555"
+        }
 
 
 class TestCredentialInstanceCache:
