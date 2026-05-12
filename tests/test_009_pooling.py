@@ -47,6 +47,11 @@ def _run_in_subprocess(body: str, conn_str: str) -> None:
         text=True,
         timeout=120,
     )
+    # Sentinel exit code 77 means the subprocess decided to skip
+    # (e.g. the test prerequisite is unmet on this server, like missing
+    # KILL permission). The reason is printed to stderr.
+    if proc.returncode == 77:
+        pytest.skip(proc.stderr.strip() or "Subprocess requested skip")
     if proc.returncode != 0:
         pytest.fail(
             "Subprocess test body failed\n"
@@ -461,8 +466,23 @@ def test_pool_removes_invalid_connections(conn_str):
         )
         victim_spid = victim_id[0]
 
-        # Step 2: admin KILLs the victim's session.
-        admin.cursor().execute(f"KILL {victim_spid}")
+        # Step 2: admin KILLs the victim's session. Requires server
+        # permission (ALTER ANY CONNECTION or sysadmin); on hosted/CI
+        # databases the test login often lacks it, so skip gracefully.
+        try:
+            admin.cursor().execute(f"KILL {victim_spid}")
+        except Exception as e:
+            msg = str(e)
+            if "permission" in msg.lower() or "KILL" in msg:
+                import sys as _sys
+                print(
+                    f"Skipping: KILL not permitted for this login: {msg}",
+                    file=_sys.stderr,
+                )
+                victim.close()
+                admin.close()
+                _sys.exit(77)
+            raise
 
         # KILL is processed asynchronously on the server. Poll until the
         # victim's session has actually disappeared from sys.dm_exec_sessions
