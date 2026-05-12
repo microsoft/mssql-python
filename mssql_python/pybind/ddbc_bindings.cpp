@@ -3268,7 +3268,7 @@ static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize
 
 // Helper function to retrieve column data
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row,
-                          const std::string& charEncoding = "utf-8",
+                          const std::string& charEncoding = "utf-16le",
                           const std::string& wcharEncoding = "utf-16le",
                           int charCtype = SQL_C_WCHAR) {
     // Note: wcharEncoding parameter is reserved for future use
@@ -4161,7 +4161,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
                          const std::vector<SQLUSMALLINT>& lobColumns,
-                         const std::string& charEncoding = "utf-8", int charCtype = SQL_C_WCHAR) {
+                         const std::string& charEncoding = "utf-16le",
+                         int charCtype = SQL_C_WCHAR) {
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
     {
@@ -4622,7 +4623,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
 // there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs
 // during fetching, it throws a runtime error.
 SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize,
-                         const std::string& charEncoding = "utf-8",
+                         const std::string& charEncoding = "utf-16le",
                          const std::string& wcharEncoding = "utf-16le",
                          int charCtype = SQL_C_WCHAR) {
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
@@ -5739,7 +5740,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
 // rows to fetch, it returns SQL_NO_DATA. If an error occurs during fetching, it
 // throws a runtime error.
 SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
-                        const std::string& charEncoding = "utf-8",
+                        const std::string& charEncoding = "utf-16le",
                         const std::string& wcharEncoding = "utf-16le",
                         int charCtype = SQL_C_WCHAR) {
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
@@ -5885,7 +5886,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 // are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs during
 // fetching, it throws a runtime error.
 SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
-                        const std::string& charEncoding = "utf-8",
+                        const std::string& charEncoding = "utf-16le",
                         const std::string& wcharEncoding = "utf-16le",
                         int charCtype = SQL_C_WCHAR) {
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
@@ -6068,14 +6069,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLGetData", &SQLGetData_wrap, "Retrieve data from the result set");
     m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
     m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set",
-          py::arg("StatementHandle"), py::arg("row"), py::arg("charEncoding") = "utf-8",
+          py::arg("StatementHandle"), py::arg("row"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR);
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
-          py::arg("fetchSize"), py::arg("charEncoding") = "utf-8",
+          py::arg("fetchSize"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR,
           "Fetch many rows from the result set");
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set",
-          py::arg("StatementHandle"), py::arg("rows"), py::arg("charEncoding") = "utf-8",
+          py::arg("StatementHandle"), py::arg("rows"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR);
     m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap,
           "Fetch an arrow batch of given length from the result set");
