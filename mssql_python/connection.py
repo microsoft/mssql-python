@@ -58,7 +58,7 @@ INFO_TYPE_STRING_THRESHOLD: int = 10000
 # Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
 UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
 
-_SQLSTATE_RE = re.compile(r"^SQLSTATE:([A-Z0-9]{5}):(.*)", re.DOTALL)
+_SQLSTATE_RE = re.compile(r"^SQLSTATE:([A-Z0-9]{0,5}):(.*)", re.DOTALL)
 
 
 def _raise_connection_error(e: RuntimeError) -> None:
@@ -71,6 +71,13 @@ def _raise_connection_error(e: RuntimeError) -> None:
     match = _SQLSTATE_RE.match(error_msg)
     if match:
         sqlstate, ddbc_error = match.group(1), match.group(2)
+        # Handle malformed SQLSTATE prefix (empty or invalid code)
+        if not sqlstate or len(sqlstate) != 5:
+            logger.error("Connection error (malformed SQLSTATE): %s", ddbc_error)
+            raise OperationalError(
+                driver_error="Connection operation failed",
+                ddbc_error=ddbc_error,
+            ) from None
         exc = sqlstate_to_exception(sqlstate, ddbc_error)
         if exc is None:
             logger.error("Unknown SQLSTATE %s, raising DatabaseError", sqlstate)

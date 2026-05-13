@@ -174,7 +174,13 @@ void Connection::checkError(SQLRETURN ret) const {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
         std::string sqlState = WideToUTF8(err.sqlState);
         std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
-        ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
+        // Only add SQLSTATE prefix if we have a valid 5-character code
+        if (sqlState.length() == 5) {
+            ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
+        } else {
+            // No valid SQLSTATE (e.g., SQL_INVALID_HANDLE) — throw clean error message
+            ThrowStdException(errorMsg);
+        }
     }
 }
 

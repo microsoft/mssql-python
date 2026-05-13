@@ -232,6 +232,27 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
     assert "Connection handle not allocated" in exc_info.value.ddbc_error
     assert not isinstance(exc_info.value, RuntimeError)
 
+    # Unmapped SQLSTATE (sqlstate_to_exception returns None) -> DatabaseError
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError("SQLSTATE:99999:Unknown error with unmapped code"),
+    ):
+        with pytest.raises(DatabaseError) as exc_info:
+            connect("Server=localhost;Database=mydb;UID=u;PWD=p;")
+    assert "Unknown error with unmapped code" in exc_info.value.ddbc_error
+    assert "SQLSTATE code: 99999" in exc_info.value.driver_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # Malformed SQLSTATE (empty code) -> OperationalError
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError("SQLSTATE::Invalid handle!"),
+    ):
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=localhost;Database=mydb;UID=u;PWD=p;")
+    assert "Invalid handle!" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
     # commit() failure -> OperationalError via same _raise_connection_error path
     mock_conn = MagicMock()
     mock_conn.commit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
