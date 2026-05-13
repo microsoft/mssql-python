@@ -496,7 +496,10 @@ class Connection:
         Returns:
             bool: True if autocommit is enabled, False otherwise.
         """
-        return self._conn.get_autocommit()
+        try:
+            return self._conn.get_autocommit()
+        except RuntimeError as e:
+            _raise_connection_error(e)
 
     @autocommit.setter
     def autocommit(self, value: bool) -> None:
@@ -928,6 +931,9 @@ class Connection:
             self._conn.set_attr(attribute, value)
             logger.info(f"Connection attribute {sanitized_attr} set successfully")
 
+        except RuntimeError as e:
+            # Handle C++ layer RuntimeError with proper DB-API exception mapping
+            _raise_connection_error(e)
         except Exception as e:
             error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
 
@@ -1308,6 +1314,9 @@ class Connection:
         # Get the raw result from the C++ layer
         try:
             raw_result = self._conn.get_info(info_type)
+        except RuntimeError as e:
+            # Handle C++ layer RuntimeError with proper DB-API exception mapping
+            _raise_connection_error(e)
         except Exception as e:  # pylint: disable=broad-exception-caught
             # Log the error and return None for invalid info types
             logger.warning(f"getinfo({info_type}) failed: {e}")
@@ -1619,7 +1628,11 @@ class Connection:
                     # For autocommit True, this is not necessary as each statement is
                     # committed immediately
                     logger.debug("Rolling back uncommitted changes before closing connection.")
-                    self._conn.rollback()
+                    try:
+                        self._conn.rollback()
+                    except RuntimeError as e:
+                        # Handle C++ layer RuntimeError with proper DB-API exception mapping
+                        _raise_connection_error(e)
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
                 self._conn.close()
