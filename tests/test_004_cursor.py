@@ -2307,9 +2307,10 @@ def test_executemany_Decimal_list(cursor, db_connection):
 def test_executemany_decimal_sign_change(cursor, db_connection):
     """Test executemany with decimals that change signs (GH-557).
 
-    When the sample value chosen for column sizing is shorter than a negative
-    value in the batch, the formatted string (with a leading '-') can exceed
-    the allocated column_size, causing a RuntimeError.
+    When the sample value chosen for column sizing is a positive Decimal,
+    its format(v, 'f') string is shorter than the negative counterpart
+    (e.g. '1.0' vs '-0.1'), causing the C++ buffer validation to reject
+    the longer row with a column-size overflow error.
     """
     try:
         cursor.execute("CREATE TABLE #pytest_decimal_sign (col_1 DECIMAL(28, 14))")
