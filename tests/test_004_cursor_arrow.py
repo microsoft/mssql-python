@@ -327,7 +327,38 @@ def test_arrow_varchar_utf8_collation_unicode(cursor: mssql_python.Cursor):
         None,
     ]
 
-    cursor.execute(f"create table {table} (id int primary key, v varchar(64) collate {collation})")
+    try:
+        cursor.execute(
+            f"create table {table} (id int primary key, v varchar(32) collate {collation})"
+        )
+    except Exception as exc:
+        pytest.skip(f"UTF-8 collation '{collation}' not supported: {exc}")
+
+    try:
+        for index, value in enumerate(expected, start=1):
+            cursor.execute(f"insert into {table} (id, v) values (?, ?)", index, value)
+        tbl = cursor.execute(f"select v from {table} order by id").arrow()
+        assert tbl.column(0).type.equals(pa.large_string())
+        assert tbl.column(0).to_pylist() == expected
+    finally:
+        cursor.execute(f"drop table if exists {table}")
+
+
+def test_arrow_varchar_utf8_collation_cp1252(cursor: mssql_python.Cursor):
+    table = "#t_arrow_cp1252_varchar"
+    collation = "SQL_Latin1_General_CP1_CI_AS"
+    expected = [
+        "Grüße",
+        "café René!",
+        "naïve café",
+        "Español",
+        "Müller-Öztürk",
+        "Françoise",
+        "",
+        None,
+    ]
+
+    cursor.execute(f"create table {table} (id int primary key, v varchar(32) collate {collation})")
 
     try:
         for index, value in enumerate(expected, start=1):
