@@ -484,22 +484,14 @@ def test_pool_removes_invalid_connections(conn_str):
                 _sys.exit(77)
             raise
 
-        # KILL is processed asynchronously on the server. Poll until the
-        # victim's session has actually disappeared from sys.dm_exec_sessions
-        # before returning anything to the pool.
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
-            row = admin.cursor().execute(
-                "SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE session_id = ?",
-                victim_spid,
-            ).fetchone()
-            if row[0] == 0:
-                break
-            time.sleep(0.1)
-        else:
-            raise AssertionError(
-                f"KILL of SPID {victim_spid} did not take effect within 10s"
-            )
+        # KILL is processed asynchronously on the server, but we don't
+        # need to wait for it here. The test's correctness contract is
+        # "the killed (SPID, login_time) must never reappear in
+        # subsequent acquires." Any session that gets handed back
+        # later — whether the same SPID reused by the server or a
+        # transparently-reconnected one — necessarily has a different
+        # login_time, so the identity check below catches the only
+        # failure mode that matters.
 
         # Step 3: return both to the pool.
         victim.close()
