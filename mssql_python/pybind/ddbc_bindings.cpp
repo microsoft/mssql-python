@@ -2953,9 +2953,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
         std::vector<SQLWCHAR> alignedBuf(wcharCount);
         std::memcpy(alignedBuf.data(), buffer.data(), buffer.size());
-        std::u16string utf16 = dupeSqlWCharAsUtf16Le(alignedBuf.data(), wcharCount);
-        std::string utf8str = utf16LeToUtf8Alloc(std::move(utf16));
-        return py::str(utf8str);
+        return py::cast(dupeSqlWCharAsUtf16Le(alignedBuf.data(), wcharCount));
     }
     if (isBinary) {
         LOG("FetchLobColumnData: Returning binary data - %zu bytes for column "
@@ -3174,10 +3172,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
-                                std::u16string utf16 =
-                                    dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData);
-                                std::string utf8str = utf16LeToUtf8Alloc(std::move(utf16));
-                                row.append(py::str(utf8str));
+                                row.append(
+                                    py::cast(dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData)));
                                 LOG("SQLGetData: CHAR column %d fetched as WCHAR, "
                                     "length=%lu",
                                     i, (unsigned long)numCharsInData);
@@ -3342,9 +3338,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
-                                std::u16string utf16 = dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData);
-                                std::string utf8str = utf16LeToUtf8Alloc(std::move(utf16));
-                                row.append(py::str(utf8str));
+                                row.append(
+                                    py::cast(dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData)));
                                 LOG("SQLGetData: Appended NVARCHAR string "
                                     "length=%lu for column %d",
                                     (unsigned long)numCharsInData, i);
