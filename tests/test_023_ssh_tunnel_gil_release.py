@@ -219,7 +219,7 @@ def test_connect_through_python_tcp_forwarder_does_not_deadlock():
     env["PYTHONPATH"] = os.pathsep.join(sys.path)
 
     proc = subprocess.Popen(
-        [sys.executable, __file__],
+        [sys.executable, os.path.abspath(__file__)],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

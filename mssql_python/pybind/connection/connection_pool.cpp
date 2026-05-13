@@ -39,6 +39,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     _pool.end());
 
         size_t pruned = before - _pool.size();
+        // Decrement _current_size eagerly so new slots can be reserved while
+        // stale connections are being disconnected (Phase 4).  This means
+        // _current_size tracks *reserved capacity* (pooled + checked-out +
+        // in-flight new), not necessarily live ODBC handles.
         _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
     }
 
@@ -57,6 +61,12 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     ++_current_size;
                     needs_connect = true;
                 } else {
+                    // NOTE: Another thread may be validating a popped candidate
+                    // outside the mutex right now.  If that candidate fails, a
+                    // slot will open up — but we can't wait for it here without
+                    // adding a condition-variable retry loop.  This is an
+                    // acceptable trade-off: transient "pool full" errors under
+                    // heavy contention are rare and callers can retry.
                     throw std::runtime_error("ConnectionPool::acquire: pool size limit reached");
                 }
                 break;
