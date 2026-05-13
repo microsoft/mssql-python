@@ -16144,8 +16144,8 @@ def test_long_print_message(cursor, message_len):
     """Test that long messages from PRINT are correctly captured."""
     query = f"""
         DECLARE @msg VARCHAR(MAX);
-        /* Use STRING_AGG because REPLICATE caps at length 4000 */
-        SET @msg = (SELECT STRING_AGG(CAST(N'a' AS NVARCHAR(MAX)), N'') FROM GENERATE_SERIES(1, {message_len}));
+        /* Cast to VARCHAR(MAX) so REPLICATE is not truncated to 8000 bytes. */
+        SET @msg = REPLICATE(CAST('a' AS VARCHAR(MAX)), {message_len});
         PRINT @msg;
     """
     cursor.execute(query)
