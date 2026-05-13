@@ -2481,8 +2481,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ret = ddbc_bindings.DDBCSQLFetchOne(
                 self.hstmt,
                 row_data,
-                char_decoding.get("encoding", "utf-8"),
+                char_decoding.get("encoding", "utf-16le"),
                 wchar_decoding.get("encoding", "utf-16le"),
+                char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
             )
 
             if self.hstmt:
@@ -2547,8 +2548,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.hstmt,
                 rows_data,
                 size,
-                char_decoding.get("encoding", "utf-8"),
+                char_decoding.get("encoding", "utf-16le"),
                 wchar_decoding.get("encoding", "utf-16le"),
+                char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
             )
 
             if self.hstmt:
@@ -2605,8 +2607,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ret = ddbc_bindings.DDBCSQLFetchAll(
                 self.hstmt,
                 rows_data,
-                char_decoding.get("encoding", "utf-8"),
+                char_decoding.get("encoding", "utf-16le"),
                 wchar_decoding.get("encoding", "utf-16le"),
+                char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
             )
 
             # Check for errors
