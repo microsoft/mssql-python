@@ -5022,9 +5022,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     ColumnBuffers buffers(numCols, fetchSize);
 
     if (!hasLobColumns && fetchSize > 0) {
-        // Bind columns — Arrow always uses SQL_C_CHAR for VARCHAR because
-        // it processes raw byte buffers directly, not via Python codecs.
-        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, SQL_C_CHAR);
+        // Always request WCHARs so we don't have to deal with CHAR encodings
+        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, SQL_C_WCHAR);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error when binding columns");
             return ret;
@@ -5083,16 +5082,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         }
                         case SQL_CHAR:
                         case SQL_VARCHAR:
-                        case SQL_LONGVARCHAR: {
-                            ret = GetDataVar(hStmt, idxCol + 1, SQL_C_CHAR,
-                                             buffers.charBuffers[idxCol],
-                                             buffers.indicators[idxCol].data());
-                            if (!SQL_SUCCEEDED(ret)) {
-                                LOG("Error fetching CHAR LOB for column %d", idxCol + 1);
-                                return ret;
-                            }
-                            break;
-                        }
+                        case SQL_LONGVARCHAR:
                         case SQL_SS_XML:
                         case SQL_WCHAR:
                         case SQL_WVARCHAR:
@@ -5335,24 +5325,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     }
                     case SQL_CHAR:
                     case SQL_VARCHAR:
-                    case SQL_LONGVARCHAR: {
-#if defined(__APPLE__) || defined(__linux__)
-                        uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
-#else
-                        uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-#endif
-                        auto target_vec = &arrowColumnProducer->varData;
-                        auto start = arrowColumnProducer->varVal[idxRowArrow];
-                        while (target_vec->size() < start + dataLen) {
-                            target_vec->resize(target_vec->size() * 2);
-                        }
-
-                        std::memcpy(&(*target_vec)[start],
-                                    &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize],
-                                    dataLen);
-                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
-                        break;
-                    }
+                    case SQL_LONGVARCHAR:
                     case SQL_SS_XML:
                     case SQL_WCHAR:
                     case SQL_WVARCHAR:

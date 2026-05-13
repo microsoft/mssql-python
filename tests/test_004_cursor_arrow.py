@@ -313,6 +313,32 @@ def test_arrow_long_string(cursor: mssql_python.Cursor):
     assert batch.column(0).to_pylist() == [long_string]
 
 
+def test_arrow_varchar_utf8_collation_unicode(cursor: mssql_python.Cursor):
+    table = "#t_arrow_utf8_varchar"
+    collation = "Latin1_General_100_CI_AS_SC_UTF8"
+    expected = [
+        "Grüße",
+        "你好😀",
+        "こんにちは",
+        "Привет",
+        "Hello 世界",
+        "😀😃😄😁",
+        "",
+        None,
+    ]
+
+    cursor.execute(f"create table {table} (id int primary key, v varchar(64) collate {collation})")
+
+    try:
+        for index, value in enumerate(expected, start=1):
+            cursor.execute(f"insert into {table} (id, v) values (?, ?)", index, value)
+        tbl = cursor.execute(f"select v from {table} order by id").arrow()
+        assert tbl.column(0).type.equals(pa.large_string())
+        assert tbl.column(0).to_pylist() == expected
+    finally:
+        cursor.execute(f"drop table if exists {table}")
+
+
 def test_rownumber_arrow_batch_interleaved_fetchmany(cursor: mssql_python.Cursor):
     """Verify that arrow_batch and fetchmany can be interleaved
     on the same result set with correct rownumber tracking and values."""
