@@ -11,6 +11,7 @@ from typing import Tuple, Dict, Optional, List
 
 from mssql_python.logging import logger
 from mssql_python.constants import AuthType, ConstantsDDBC
+from mssql_python.connection_string_parser import _ConnectionStringParser
 
 # Module-level credential instance cache.
 # Reusing credential objects allows the Azure Identity SDK's built-in
@@ -150,18 +151,25 @@ class AADAuth:
             raise RuntimeError(f"Failed to create {credential_class.__name__}: {e}") from e
 
 
-def _extract_msi_client_id(parameters: List[str]) -> Optional[str]:
-    """Pull UID out of connection parameters for user-assigned MSI.
+def _extract_msi_client_id(connection_string: str) -> Optional[str]:
+    """Pull UID out of a connection string for user-assigned MSI.
 
     For ActiveDirectoryMSI, UID (when present) carries the user-assigned
-    identity's client_id. Returns None for system-assigned MSI.
+    identity's ``client_id``. Returns None for system-assigned MSI.
+
+    Uses the canonical ``_ConnectionStringParser`` so braced ODBC values
+    are handled correctly: a ``UID={hello=world}`` resolves to the value
+    ``hello=world`` (no surrounding braces, no false split on the inner
+    ``=``), and a semicolon inside a legitimate braced value (e.g.
+    ``Database={foo;uid=victim;bar}``) cannot spoof a top-level ``UID=``.
     """
-    for param in parameters:
-        key, _, value = param.strip().partition("=")
-        if key.strip().lower() == "uid":
-            value = value.strip()
-            return value or None
-    return None
+    try:
+        parsed = _ConnectionStringParser(validate_keywords=False)._parse(connection_string)
+    except Exception:  # noqa: BLE001 — parser raises ConnectionStringParseError on malformed input;
+        # absence of UID is the safe answer for credential extraction.
+        return None
+    uid = (parsed.get("uid") or "").strip()
+    return uid or None
 
 
 def process_auth_parameters(parameters: List[str]) -> Tuple[List[str], Optional[str]]:
@@ -348,10 +356,13 @@ def process_connection_string(
     modified_parameters, auth_type = process_auth_parameters(parameters)
 
     # Capture credential kwargs (e.g. user-assigned MSI client_id) before
-    # remove_sensitive_params strips UID from the parameter list.
+    # remove_sensitive_params strips UID from the parameter list. Pass the
+    # original connection_string (not modified_parameters) so the helper can
+    # use the canonical _ConnectionStringParser — handles braced values like
+    # UID={hello=world} correctly.
     credential_kwargs: Dict[str, str] = {}
     if auth_type == "msi":
-        client_id = _extract_msi_client_id(modified_parameters)
+        client_id = _extract_msi_client_id(connection_string)
         if client_id:
             credential_kwargs["client_id"] = client_id
 

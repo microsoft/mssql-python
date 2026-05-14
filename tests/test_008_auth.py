@@ -514,6 +514,28 @@ class TestManagedIdentity:
         assert auth_type == "msi"
         assert credential_kwargs is None
 
+    def test_msi_braced_uid_value_is_unwrapped(self):
+        """A braced UID value (UID={hello=world}) must be unwrapped by the
+        canonical _ConnectionStringParser; the inner '=' must NOT split the
+        value. Without parser-aware extraction the helper would return
+        '{hello=world}' verbatim and ManagedIdentityCredential would reject
+        it. Regression test for saurabh500's review comment on auth.py."""
+        conn_str = "Server=test;Authentication=ActiveDirectoryMSI;UID={hello=world};Database=testdb"
+        _, _, auth_type, credential_kwargs = process_connection_string(conn_str)
+        assert auth_type == "msi"
+        assert credential_kwargs == {"client_id": "hello=world"}
+
+    def test_msi_braced_uid_with_semicolon_is_preserved(self):
+        """A braced UID value containing a semicolon (legal under ODBC) must
+        be returned intact, not truncated at the inner ';'."""
+        weird_id = "abc;def;ghi"
+        conn_str = (
+            f"Server=test;Authentication=ActiveDirectoryMSI;" f"UID={{{weird_id}}};Database=testdb"
+        )
+        _, _, auth_type, credential_kwargs = process_connection_string(conn_str)
+        assert auth_type == "msi"
+        assert credential_kwargs == {"client_id": weird_id}
+
     def test_bulkcopy_path_preserves_user_assigned_msi_client_id(self):
         """Regression test (cursor.bulkcopy() end-to-end) for the silent
         system-assigned fallback: the bulkcopy fresh-token code path must
