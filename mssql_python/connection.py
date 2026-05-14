@@ -280,6 +280,12 @@ class Connection:
         # We intentionally do NOT cache the token — a fresh one is acquired
         # each time bulkcopy() is called to avoid expired-token errors.
         self._auth_type = None
+        # Credential constructor kwargs (e.g. user-assigned MSI client_id)
+        # captured at __init__ time before remove_sensitive_params strips UID
+        # from self.connection_str. bulkcopy() re-uses these when acquiring a
+        # fresh token; re-parsing self.connection_str at that point would miss
+        # them because UID is already gone.
+        self._credential_kwargs: Optional[Dict[str, str]] = None
 
         # Check if the connection string contains authentication parameters
         # This is important for processing the connection string correctly.
@@ -294,6 +300,7 @@ class Connection:
             # On Windows Interactive, process_connection_string returns None
             # (DDBC handles auth natively), so fall back to the connection string.
             self._auth_type = connection_result[2] or extract_auth_type(self.connection_str)
+            self._credential_kwargs = connection_result[3]
 
         self._closed = False
         self._timeout = timeout

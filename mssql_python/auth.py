@@ -51,17 +51,13 @@ class AADAuth:
         return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
 
     @staticmethod
-    def get_token(
-        auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None
-    ) -> bytes:
+    def get_token(auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None) -> bytes:
         """Get DDBC token struct for the specified authentication type."""
         token_struct, _ = AADAuth._acquire_token(auth_type, credential_kwargs)
         return token_struct
 
     @staticmethod
-    def get_raw_token(
-        auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None
-    ) -> str:
+    def get_raw_token(auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None) -> str:
         """Acquire a raw JWT for the mssql-py-core connection (bulk copy).
 
         Uses the cached credential instance so the Azure Identity SDK's
@@ -299,23 +295,9 @@ def extract_auth_type(connection_string: str) -> Optional[str]:
     return None
 
 
-def extract_credential_kwargs(
-    connection_string: str, auth_type: Optional[str]
-) -> Dict[str, str]:
-    """Extract credential constructor kwargs for the given auth type.
-
-    For ActiveDirectoryMSI: returns ``{"client_id": uid}`` when UID is
-    set (user-assigned MSI) and ``{}`` for system-assigned MSI.
-    """
-    if auth_type != "msi":
-        return {}
-    client_id = _extract_msi_client_id(connection_string.split(";"))
-    return {"client_id": client_id} if client_id else {}
-
-
 def process_connection_string(
     connection_string: str,
-) -> Tuple[str, Optional[Dict[int, bytes]], Optional[str]]:
+) -> Tuple[str, Optional[Dict[int, bytes]], Optional[str], Optional[Dict[str, str]]]:
     """
     Process connection string and handle authentication.
 
@@ -323,8 +305,13 @@ def process_connection_string(
         connection_string: The connection string to process
 
     Returns:
-        Tuple[str, Optional[Dict], Optional[str]]: Processed connection string,
-            attrs_before dict if needed, and auth_type string for bulk copy token acquisition
+        Tuple[str, Optional[Dict], Optional[str], Optional[Dict[str, str]]]:
+            Processed connection string, attrs_before dict if needed, auth_type
+            string for bulk copy token acquisition, and credential constructor
+            kwargs (e.g. user-assigned MSI ``client_id``) to be persisted on
+            the Connection so bulkcopy can re-use them when acquiring a fresh
+            token after sanitization has stripped UID from the connection
+            string.
 
     Raises:
         ValueError: If the connection string is invalid or empty
@@ -383,6 +370,7 @@ def process_connection_string(
                 ";".join(modified_parameters) + ";",
                 {ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value: token_struct},
                 auth_type,
+                credential_kwargs or None,
             )
         else:
             logger.warning(
@@ -393,4 +381,9 @@ def process_connection_string(
         "process_connection_string: Connection string processing complete - has_auth=%s",
         bool(auth_type),
     )
-    return ";".join(modified_parameters) + ";", None, auth_type
+    return (
+        ";".join(modified_parameters) + ";",
+        None,
+        auth_type,
+        credential_kwargs or None,
+    )

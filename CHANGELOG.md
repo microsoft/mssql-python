@@ -9,7 +9,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Added
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
-- Bulk copy: `Authentication=ActiveDirectoryMSI` support (system- and user-assigned managed identity). UID is interpreted as the user-assigned identity's `client_id`. Partial fix for #534.
 
 ### Changed
 - Improved error handling in the connection module.

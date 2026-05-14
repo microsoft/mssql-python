@@ -16,7 +16,6 @@ from mssql_python.auth import (
     get_auth_token,
     process_connection_string,
     extract_auth_type,
-    extract_credential_kwargs,
     _credential_cache,
     _credential_cache_lock,
 )
@@ -368,7 +367,7 @@ class TestRemoveSensitiveParams:
 class TestProcessConnectionString:
     def test_process_connection_string_with_default_auth(self):
         conn_str = "Server=test;Authentication=ActiveDirectoryDefault;Database=testdb"
-        result_str, attrs, auth_type = process_connection_string(conn_str)
+        result_str, attrs, auth_type, credential_kwargs = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
@@ -376,10 +375,11 @@ class TestProcessConnectionString:
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in attrs
         assert isinstance(attrs[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value], bytes)
         assert auth_type == "default"
+        assert credential_kwargs is None
 
     def test_process_connection_string_no_auth(self):
         conn_str = "Server=test;Database=testdb;UID=user;PWD=password"
-        result_str, attrs, auth_type = process_connection_string(conn_str)
+        result_str, attrs, auth_type, credential_kwargs = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
@@ -387,11 +387,12 @@ class TestProcessConnectionString:
         assert "PWD=password" in result_str
         assert attrs is None
         assert auth_type is None
+        assert credential_kwargs is None
 
     def test_process_connection_string_interactive_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
         conn_str = "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
-        result_str, attrs, auth_type = process_connection_string(conn_str)
+        result_str, attrs, auth_type, credential_kwargs = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
@@ -399,6 +400,7 @@ class TestProcessConnectionString:
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in attrs
         assert isinstance(attrs[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value], bytes)
         assert auth_type == "interactive"
+        assert credential_kwargs is None
 
 
 def test_error_handling():
@@ -477,36 +479,12 @@ class TestManagedIdentity:
         assert "msi" in _credential_cache
         assert ("msi", (("client_id", "abc"),)) in _credential_cache
         assert ("msi", (("client_id", "def"),)) in _credential_cache
-        assert (
-            _credential_cache["msi"]
-            is not _credential_cache[("msi", (("client_id", "abc"),))]
-        )
+        assert _credential_cache["msi"] is not _credential_cache[("msi", (("client_id", "abc"),))]
 
-    def test_extract_credential_kwargs_system_assigned(self):
-        """No UID in connection string → system-assigned MSI → empty kwargs."""
-        conn_str = "Server=test;Authentication=ActiveDirectoryMSI;"
-        assert extract_credential_kwargs(conn_str, "msi") == {}
-
-    def test_extract_credential_kwargs_user_assigned(self):
-        """UID present → user-assigned MSI → client_id kwarg."""
-        conn_str = "Server=test;Authentication=ActiveDirectoryMSI;UID=11111111-2222-3333-4444-555555555555;"
-        assert extract_credential_kwargs(conn_str, "msi") == {
-            "client_id": "11111111-2222-3333-4444-555555555555"
-        }
-
-    def test_extract_credential_kwargs_non_msi(self):
-        """For non-MSI auth types, kwargs are always empty (UID is ignored)."""
-        conn_str = "Server=test;Authentication=ActiveDirectoryDefault;UID=user;"
-        assert extract_credential_kwargs(conn_str, "default") == {}
-
-    def test_extract_credential_kwargs_empty_uid(self):
-        """Empty UID value is treated as system-assigned MSI."""
-        conn_str = "Server=test;Authentication=ActiveDirectoryMSI;UID=;"
-        assert extract_credential_kwargs(conn_str, "msi") == {}
-
-    def test_process_connection_string_msi_strips_uid(self):
+    def test_process_connection_string_msi_strips_uid_and_returns_kwargs(self):
         """MSI connection strings: UID is stripped from the ODBC connection
-        string but the client_id is still applied to the credential."""
+        string but the client_id is captured as credential_kwargs (so it can
+        be persisted on the Connection for the bulkcopy fresh-token path)."""
         az = sys.modules["azure.identity"]
 
         az.ManagedIdentityCredential.last_init_kwargs = None
@@ -514,7 +492,7 @@ class TestManagedIdentity:
             "Server=test;Authentication=ActiveDirectoryMSI;"
             "UID=11111111-2222-3333-4444-555555555555;Database=testdb"
         )
-        result_str, attrs, auth_type = process_connection_string(conn_str)
+        result_str, attrs, auth_type, credential_kwargs = process_connection_string(conn_str)
 
         assert auth_type == "msi"
         assert "UID=" not in result_str
@@ -525,6 +503,75 @@ class TestManagedIdentity:
         assert az.ManagedIdentityCredential.last_init_kwargs == {
             "client_id": "11111111-2222-3333-4444-555555555555"
         }
+        # client_id must be returned so Connection can persist it for the
+        # bulkcopy fresh-token path (UID is gone from result_str by then).
+        assert credential_kwargs == {"client_id": "11111111-2222-3333-4444-555555555555"}
+
+    def test_process_connection_string_msi_system_assigned_no_kwargs(self):
+        """System-assigned MSI: no UID → credential_kwargs is None."""
+        conn_str = "Server=test;Authentication=ActiveDirectoryMSI;Database=testdb"
+        _, _, auth_type, credential_kwargs = process_connection_string(conn_str)
+        assert auth_type == "msi"
+        assert credential_kwargs is None
+
+    def test_bulkcopy_path_preserves_user_assigned_msi_client_id(self):
+        """Regression test (cursor.bulkcopy() end-to-end) for the silent
+        system-assigned fallback: the bulkcopy fresh-token code path must
+        forward Connection._credential_kwargs to AADAuth.get_raw_token,
+        not re-parse the (now UID-stripped) connection_str.
+
+        Fails if cursor.py is reverted to call extract_credential_kwargs on
+        self.connection.connection_str, OR if Connection stops persisting
+        _credential_kwargs."""
+        from mssql_python.cursor import Cursor
+
+        client_id = "11111111-2222-3333-4444-555555555555"
+
+        # Mock Connection holding what Connection.__init__ would store after
+        # process_connection_string strips UID from the user-supplied string.
+        mock_conn = MagicMock()
+        # Post-sanitization string: NO UID. If cursor re-parses this, the
+        # forwarded kwargs will be {} and the assert below will fail.
+        mock_conn.connection_str = "Server=tcp:test.database.windows.net;Database=testdb;"
+        mock_conn._auth_type = "msi"
+        mock_conn._credential_kwargs = {"client_id": client_id}
+        mock_conn._is_connected = True
+
+        cursor = Cursor.__new__(Cursor)
+        cursor._connection = mock_conn
+        cursor.closed = False
+        cursor.hstmt = None
+
+        captured = {}
+
+        def fake_get_raw_token(auth_type, credential_kwargs=None):
+            captured["auth_type"] = auth_type
+            captured["credential_kwargs"] = credential_kwargs
+            return SAMPLE_TOKEN
+
+        mock_pycore_cursor = MagicMock()
+        mock_pycore_cursor.bulkcopy.return_value = {
+            "rows_copied": 1,
+            "batch_count": 1,
+            "elapsed_time": 0.1,
+        }
+        mock_pycore_conn = MagicMock()
+        mock_pycore_conn.cursor.return_value = mock_pycore_cursor
+        mock_pycore_module = MagicMock()
+        mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
+
+        with (
+            patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}),
+            patch("mssql_python.auth.AADAuth.get_raw_token", side_effect=fake_get_raw_token),
+        ):
+            cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
+
+        assert captured["auth_type"] == "msi"
+        assert captured["credential_kwargs"] == {"client_id": client_id}, (
+            f"bulkcopy must forward Connection._credential_kwargs verbatim; "
+            f"got {captured['credential_kwargs']!r}. If this is {{}} or None, "
+            f"the cursor likely re-parses the (UID-stripped) connection_str."
+        )
 
 
 class TestCredentialInstanceCache:
@@ -737,6 +784,50 @@ class TestConnectionAuthType:
         assert conn._auth_type == "default"
         conn.close()
 
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_credential_kwargs_persisted_for_user_assigned_msi(self, mock_ddbc_conn):
+        """Connection.__init__ must capture MSI client_id BEFORE
+        remove_sensitive_params strips UID, and persist it on
+        self._credential_kwargs so cursor.bulkcopy() can use it later."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        client_id = "11111111-2222-3333-4444-555555555555"
+        conn = connect(
+            f"Server=test;Database=testdb;Authentication=ActiveDirectoryMSI;UID={client_id}"
+        )
+        assert conn._auth_type == "msi"
+        assert conn._credential_kwargs == {"client_id": client_id}
+        # And the connection_str on the Connection should NOT contain UID
+        # (this is what makes _credential_kwargs the source of truth).
+        assert "UID=" not in conn.connection_str
+        conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_credential_kwargs_none_for_system_assigned_msi(self, mock_ddbc_conn):
+        """System-assigned MSI: no UID → _credential_kwargs stays None."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryMSI")
+        assert conn._auth_type == "msi"
+        assert conn._credential_kwargs is None
+        conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_credential_kwargs_none_for_non_msi_auth(self, mock_ddbc_conn):
+        """Non-MSI auth types must not pick up credential_kwargs even if
+        UID is present (e.g. SQL auth UID)."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect(
+            "Server=test;Database=testdb;Authentication=ActiveDirectoryDefault;UID=user@x"
+        )
+        assert conn._auth_type == "default"
+        assert conn._credential_kwargs is None
+        conn.close()
+
 
 class TestCredentialCacheThreadSafety:
     """Verify thread-safe behavior of credential instance cache."""
@@ -873,7 +964,7 @@ class TestProcessConnectionStringTokenFailureFallthrough:
 
     def test_returns_none_attrs_when_token_acquisition_fails(self):
         """When auth type is detected but token acquisition fails,
-        process_connection_string should return (conn_str, None, auth_type)."""
+        process_connection_string should return (conn_str, None, auth_type, kwargs)."""
         import sys
 
         azure_identity = sys.modules["azure.identity"]
@@ -886,7 +977,7 @@ class TestProcessConnectionStringTokenFailureFallthrough:
         try:
             azure_identity.DefaultAzureCredential = CredentialThatAlwaysFails
             conn_str = "Server=test;Authentication=ActiveDirectoryDefault;Database=testdb"
-            result_str, attrs, auth_type = process_connection_string(conn_str)
+            result_str, attrs, auth_type, credential_kwargs = process_connection_string(conn_str)
 
             # Auth type was detected
             assert auth_type == "default"
@@ -895,5 +986,7 @@ class TestProcessConnectionStringTokenFailureFallthrough:
             # Connection string is still returned (sensitive params removed)
             assert "Server=test" in result_str
             assert "Database=testdb" in result_str
+            # Default auth has no credential kwargs
+            assert credential_kwargs is None
         finally:
             azure_identity.DefaultAzureCredential = original
