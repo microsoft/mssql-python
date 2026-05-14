@@ -17,12 +17,13 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
     bool needs_connect = false;
+
+    // Phase 1: Prune stale connections (under mutex — no ODBC calls).
     {
         std::lock_guard<std::mutex> lock(_mutex);
         auto now = std::chrono::steady_clock::now();
         size_t before = _pool.size();
 
-        // Phase 1: Remove stale connections, collect for later disconnect
         _pool.erase(std::remove_if(_pool.begin(), _pool.end(),
                                    [&](const std::shared_ptr<Connection>& conn) {
                                        auto idle_time =
@@ -38,40 +39,62 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     _pool.end());
 
         size_t pruned = before - _pool.size();
+        // Decrement _current_size eagerly so new slots can be reserved while
+        // stale connections are being disconnected (Phase 4).  This means
+        // _current_size tracks *reserved capacity* (pooled + checked-out +
+        // in-flight new), not necessarily live ODBC handles.
         _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
+    }
 
-        // Phase 2: Attempt to reuse healthy connections
-        while (!_pool.empty()) {
-            auto conn = _pool.front();
-            _pool.pop_front();
-            if (conn->isAlive()) {
-                if (!conn->reset()) {
-                    to_disconnect.push_back(conn);
-                    --_current_size;
-                    continue;
+    // Phase 2: Pop one candidate at a time and validate it outside the
+    // mutex.  isAlive() and reset() perform ODBC calls that release the
+    // GIL; calling them while holding the mutex would create a mutex/GIL
+    // lock-ordering deadlock when multiple threads acquire concurrently.
+    while (true) {
+        std::shared_ptr<Connection> candidate;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_pool.empty()) {
+                // No more candidates — try to reserve a slot for a new connection.
+                if (_current_size < _max_size) {
+                    valid_conn = std::make_shared<Connection>(connStr, true);
+                    ++_current_size;
+                    needs_connect = true;
+                } else {
+                    // NOTE: Another thread may be validating a popped candidate
+                    // outside the mutex right now.  If that candidate fails, a
+                    // slot will open up — but we can't wait for it here without
+                    // adding a condition-variable retry loop.  This is an
+                    // acceptable trade-off: transient "pool full" errors under
+                    // heavy contention are rare and callers can retry.
+                    throw std::runtime_error("ConnectionPool::acquire: pool size limit reached");
                 }
-                valid_conn = conn;
                 break;
-            } else {
-                to_disconnect.push_back(conn);
-                --_current_size;
             }
+            candidate = _pool.front();
+            _pool.pop_front();
         }
 
-        // Reserve a slot for a new connection if none reusable.
-        // The actual connect() call happens outside the mutex to avoid
-        // holding the mutex during the blocking ODBC call (which releases
-        // the GIL and could otherwise cause a mutex/GIL deadlock).
-        if (!valid_conn && _current_size < _max_size) {
-            valid_conn = std::make_shared<Connection>(connStr, true);
-            ++_current_size;
-            needs_connect = true;
-        } else if (!valid_conn) {
-            throw std::runtime_error("ConnectionPool::acquire: pool size limit reached");
+        // Validate the candidate outside the mutex.
+        try {
+            if (candidate->isAlive() && candidate->reset()) {
+                valid_conn = candidate;
+                break;
+            }
+        } catch (const std::exception& ex) {
+            LOG("Candidate connection validation failed: %s", ex.what());
+        }
+
+        // Candidate is dead or reset failed — mark for disconnect and
+        // decrement the pool size.
+        to_disconnect.push_back(candidate);
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_current_size > 0) --_current_size;
         }
     }
 
-    // Phase 2.5: Connect the new connection outside the mutex.
+    // Phase 3: Connect the new connection outside the mutex.
     if (needs_connect) {
         try {
             valid_conn->connect(attrs_before);
@@ -85,7 +108,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
         }
     }
 
-    // Phase 3: Disconnect expired/bad connections outside lock
+    // Phase 4: Disconnect expired/bad connections outside lock.
     for (auto& conn : to_disconnect) {
         try {
             conn->disconnect();
