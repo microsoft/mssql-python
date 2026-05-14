@@ -184,3 +184,6 @@ Examples:
 - Linux x86_64: `ddbc_bindings.cp311-x86_64.so`
 - Linux ARM64: `ddbc_bindings.cp311-arm64.so`
 
+# String Handling for Unicode Data
+
+Use std::u16string or the Python C-API when converting between SQLWCHAR data and Python strings. Use simdutf for any pure c++ UTF transcoding. Do not introduce std::wstring in the C++ bindings.
