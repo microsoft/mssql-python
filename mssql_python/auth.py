@@ -166,11 +166,12 @@ def _extract_msi_client_id(connection_string: str) -> Optional[str]:
     ``=``), and a semicolon inside a legitimate braced value (e.g.
     ``Database={foo;uid=victim;bar}``) cannot spoof a top-level ``UID=``.
     """
-    try:
-        parsed = _ConnectionStringParser(validate_keywords=False)._parse(connection_string)
-    except Exception:  # noqa: BLE001 — parser raises ConnectionStringParseError on malformed input;
-        # absence of UID is the safe answer for credential extraction.
-        return None
+    # Connection.__init__ already parsed the same string through
+    # _ConnectionStringParser via _construct_connection_string, so by the
+    # time we get here the input is guaranteed parseable. No defensive
+    # try/except: a parse failure now means a real bug upstream and should
+    # propagate, not silently degrade user-assigned MSI to system-assigned.
+    parsed = _ConnectionStringParser(validate_keywords=False)._parse(connection_string)
     uid = (parsed.get("uid") or "").strip()
     return uid or None
 
