@@ -315,9 +315,13 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
 
             SQLPOINTER ptr;
             SQLINTEGER length;
-            
-            ptr = reinterpretU16stringAsSqlWChar(this->wstrStringBuffer);
-            length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
+            // Copy to a stack-local buffer so that releasing the GIL below
+            // doesn't expose a race where another thread overwrites the
+            // member wstrStringBuffer (and reallocates) while the ODBC
+            // driver is still reading from ptr.
+            std::u16string localStrBuffer = this->wstrStringBuffer;
+            ptr = reinterpretU16stringAsSqlWChar(localStrBuffer);
+            length = static_cast<SQLINTEGER>(localStrBuffer.length() * sizeof(SQLWCHAR));
 
             SQLRETURN ret;
             {
@@ -336,11 +340,12 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         }
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         try {
-            std::string binary_data = value.cast<std::string>();
-            this->strBytesBuffer.clear();
-            this->strBytesBuffer = std::move(binary_data);
-            SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.c_str());
-            SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
+            // Copy to a stack-local buffer so that releasing the GIL
+            // doesn't expose a race where another thread overwrites the
+            // member strBytesBuffer while the driver reads from ptr.
+            std::string localBytesBuffer = value.cast<std::string>();
+            SQLPOINTER ptr = const_cast<char*>(localBytesBuffer.c_str());
+            SQLINTEGER length = static_cast<SQLINTEGER>(localBytesBuffer.size());
 
             SQLRETURN ret;
             {
