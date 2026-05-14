@@ -17,6 +17,9 @@ from mssql_python.connection_string_parser import _ConnectionStringParser
 # Reusing credential objects allows the Azure Identity SDK's built-in
 # in-memory token cache to work, avoiding redundant token acquisitions.
 # See: https://github.com/Azure/azure-sdk-for-python/blob/main/sdk/identity/azure-identity/TOKEN_CACHING.md
+#
+# Cache is keyed on (auth_type, sorted credential_kwargs), which is
+# bounded by the distinct credentials a single process ever uses.
 _credential_cache: Dict[object, object] = {}
 _credential_cache_lock = threading.Lock()
 
@@ -365,6 +368,16 @@ def process_connection_string(
         client_id = _extract_msi_client_id(connection_string)
         if client_id:
             credential_kwargs["client_id"] = client_id
+            logger.debug(
+                "process_connection_string: ActiveDirectoryMSI with UID — "
+                "user-assigned managed identity selected (client_id length=%d)",
+                len(client_id),
+            )
+        else:
+            logger.debug(
+                "process_connection_string: ActiveDirectoryMSI without UID — "
+                "system-assigned managed identity selected"
+            )
 
     if auth_type:
         logger.info(
