@@ -172,8 +172,8 @@ void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
         // Format: "SQLSTATE:XXXXX:<odbc_error_message>" — parsed by _raise_connection_error()
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string sqlState = WideToUTF8(err.sqlState);
-        std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
+        std::string sqlState = err.sqlState;
+        std::string errorMsg = err.ddbcErrorMsg;
         // Only add SQLSTATE prefix if we have a valid 5-character code
         if (sqlState.length() == 5) {
             ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
