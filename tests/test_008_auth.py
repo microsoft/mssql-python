@@ -519,7 +519,7 @@ class TestManagedIdentity:
         canonical _ConnectionStringParser; the inner '=' must NOT split the
         value. Without parser-aware extraction the helper would return
         '{hello=world}' verbatim and ManagedIdentityCredential would reject
-        it. Regression test for saurabh500's review comment on auth.py."""
+        it."""
         conn_str = "Server=test;Authentication=ActiveDirectoryMSI;UID={hello=world};Database=testdb"
         _, _, auth_type, credential_kwargs = process_connection_string(conn_str)
         assert auth_type == "msi"
