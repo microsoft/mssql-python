@@ -2054,19 +2054,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             sample_value: Representative value for type inference and modified_row.
             min_val: Minimum for integers (None otherwise).
             max_val: Maximum for integers (None otherwise).
+            max_decimal_formatted_len: Maximum len(format(d, 'f')) across all
+                Decimal values in the column (0 when no Decimals are present).
+                Used by executemany to correct the SQL_VARCHAR column size when
+                the sample value's formatted string is shorter than another
+                value's (e.g. positive sample vs negative row value) (GH-557).
         """
         non_nulls = [v for v in column if v is not None]
         if not non_nulls:
-            return None, None, None
+            return None, None, None, 0
 
         int_values = [v for v in non_nulls if isinstance(v, int)]
         if int_values:
             min_val, max_val = min(int_values), max(int_values)
             sample_value = max(int_values, key=abs)
-            return sample_value, min_val, max_val
+            return sample_value, min_val, max_val, 0
 
         sample_value = None
+        max_decimal_formatted_len = 0
         for v in non_nulls:
+            if isinstance(v, decimal.Decimal):
+                max_decimal_formatted_len = max(max_decimal_formatted_len, len(format(v, "f")))
             if not sample_value:
                 sample_value = v
             elif isinstance(v, (str, bytes, bytearray)) and isinstance(
@@ -2120,7 +2128,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # If comparing Decimal to non-Decimal, prefer Decimal for better type inference
                 sample_value = v
 
-        return sample_value, None, None
+        return sample_value, None, None, max_decimal_formatted_len
 
     def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self, operation: str, seq_of_parameters: Union[List[Sequence[Any]], List[Mapping[str, Any]]]
@@ -2225,7 +2233,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if hasattr(seq_of_parameters, "__getitem__")
                 else []
             )
-            sample_value, min_val, max_val = self._compute_column_type(column)
+            sample_value, min_val, max_val, _ = self._compute_column_type(column)
 
             if self._inputsizes and col_index < len(self._inputsizes):
                 # Use explicitly set input sizes
@@ -2301,7 +2309,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     if hasattr(seq_of_parameters, "__getitem__")
                     else []
                 )
-                sample_value, min_val, max_val = self._compute_column_type(column)
+                sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(column)
 
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
@@ -2321,6 +2329,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 ):
                     paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
                     paraminfo.columnSize = 1
+
+                # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
+                # The sample value's formatted string may be shorter than another
+                # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
+                # max_decimal_len was already computed during _compute_column_type
+                # so no extra iteration is needed.
+                if (
+                    paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
+                    and max_decimal_len > paraminfo.columnSize
+                ):
+                    paraminfo.columnSize = max_decimal_len
 
                 # Special handling for binary data in auto-detected types
                 if paraminfo.paramSQLType in (
