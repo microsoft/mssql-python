@@ -261,10 +261,14 @@ class Connection:
         }
 
         # Initialize decoding settings with Python 3 defaults
+        # SQL_CHAR default uses SQL_WCHAR ctype so the ODBC driver returns
+        # UTF-16 data for VARCHAR columns. This avoids encoding mismatches on
+        # Windows where the driver returns raw bytes in the server's native
+        # code page (e.g. CP-1252) that may fail to decode as UTF-8.
         self._decoding_settings = {
             ConstantsDDBC.SQL_CHAR.value: {
-                "encoding": "utf-8",
-                "ctype": ConstantsDDBC.SQL_CHAR.value,
+                "encoding": "utf-16le",
+                "ctype": ConstantsDDBC.SQL_WCHAR.value,
             },
             ConstantsDDBC.SQL_WCHAR.value: {
                 "encoding": "utf-16le",
@@ -650,9 +654,13 @@ class Connection:
             sqltype (int): The SQL type being configured: SQL_CHAR, SQL_WCHAR, or SQL_WMETADATA.
                 SQL_WMETADATA is a special flag for configuring column name decoding.
             encoding (str, optional): The Python encoding to use when decoding the data.
-                If None, uses default encoding based on sqltype.
+                If None, defaults to ``'utf-16le'`` for all sqltypes (SQL_CHAR,
+                SQL_WCHAR, and SQL_WMETADATA), matching the connection-level
+                defaults set in ``Connection.__init__``. Passing ``encoding=None``
+                therefore resets the sqltype to its initial default.
             ctype (int, optional): The C data type to request from SQLGetData:
-                SQL_CHAR or SQL_WCHAR. If None, uses default based on encoding.
+                SQL_CHAR or SQL_WCHAR. If None, uses default based on encoding
+                (SQL_WCHAR for UTF-16 variants, SQL_CHAR otherwise).
 
         Returns:
             None
@@ -662,7 +670,10 @@ class Connection:
             InterfaceError: If the connection is closed.
 
         Example:
-            # Configure SQL_CHAR to use UTF-8 decoding
+            # Reset SQL_CHAR to the connection default (utf-16le + SQL_WCHAR ctype)
+            cnxn.setdecoding(mssql_python.SQL_CHAR)
+
+            # Configure SQL_CHAR to use UTF-8 decoding (opt-in, non-default)
             cnxn.setdecoding(mssql_python.SQL_CHAR, encoding='utf-8')
 
             # Configure column metadata decoding
@@ -698,12 +709,15 @@ class Connection:
                 ),
             )
 
-        # Set default encoding based on sqltype if not provided
+        # Set default encoding based on sqltype if not provided.
+        # All sqltypes default to UTF-16LE to match Connection.__init__ defaults.
+        # SQL_CHAR uses utf-16le + SQL_WCHAR ctype so the ODBC driver returns
+        # UTF-16 data for VARCHAR columns, avoiding encoding mismatches on
+        # Windows where the driver may otherwise return raw bytes in the
+        # server's native code page (e.g. CP-1252). This makes
+        # ``setdecoding(SQL_CHAR)`` with no arguments a true reset-to-defaults.
         if encoding is None:
-            if sqltype == ConstantsDDBC.SQL_CHAR.value:
-                encoding = "utf-8"  # Default for SQL_CHAR in Python 3
-            else:  # SQL_WCHAR or SQL_WMETADATA
-                encoding = "utf-16le"  # Default for SQL_WCHAR in Python 3
+            encoding = "utf-16le"
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
