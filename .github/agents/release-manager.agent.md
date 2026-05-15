@@ -103,7 +103,7 @@ Create branch `release/X.X.X` (no `v` prefix) from `main` with **exactly 3 file 
 **PR details:**
 - Title: `RELEASE:X.X.X`
 - Base: `main`
-- Reviewers: `jahnvi480`, `sumitmsft`, `bewithgaurav`
+- Reviewers: `jahnvi480`, `sumitmsft`, `bewithgaurav`, `subrata-ms`
 - Body: ADO Work Item (`AB#<ID>`), summary of features and bug fixes, version update note
 - **Do NOT merge until Step 8**
 
