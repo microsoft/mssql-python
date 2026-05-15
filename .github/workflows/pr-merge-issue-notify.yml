@@ -1,0 +1,141 @@
+name: Notify Linked Issues on PR Merge
+
+# When a PR that closes one or more GitHub issues is merged into `main`,
+# post a release-cycle heads-up comment on each linked issue.
+#
+# - Closing of the issue is left to GitHub's native auto-close (driven by
+#   the `Closes #N` keyword in the PR template). This workflow does NOT
+#   close anything itself; it only adds a comment.
+# - Linked issues are discovered via the PR's `closingIssuesReferences`
+#   GraphQL connection, which covers both keyword references in the body
+#   AND issues linked via the "Development" sidebar.
+
+# Uses `pull_request_target` (not `pull_request`) so that PRs originating
+# from forks still run with a write-capable `GITHUB_TOKEN`. This is safe
+# here because the workflow never checks out PR code — it only reads the
+# event payload and calls GitHub REST/GraphQL APIs.
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notify-linked-issues:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Comment on linked issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const prTitle = context.payload.pull_request.title;
+            const prUrl = context.payload.pull_request.html_url;
+            const baseRef = context.payload.pull_request.base.ref;
+
+            // Sentinel so re-runs of this workflow don't double-comment.
+            const SENTINEL = '<!-- mssql-python-merge-notify -->';
+
+            // Fetch the issues this PR closes via the GraphQL
+            // `closingIssuesReferences` connection. Paginate defensively
+            // even though most PRs link only one issue.
+            const linked = [];
+            let cursor = null;
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+              const result = await github.graphql(
+                `query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+                   repository(owner: $owner, name: $repo) {
+                     pullRequest(number: $pr) {
+                       closingIssuesReferences(first: 50, after: $cursor) {
+                         pageInfo { hasNextPage endCursor }
+                         nodes { number repository { owner { login } name } }
+                       }
+                     }
+                   }
+                 }`,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pr: prNumber,
+                  cursor,
+                }
+              );
+              const conn = result.repository.pullRequest.closingIssuesReferences;
+              for (const node of conn.nodes) {
+                // Only comment on issues in this same repo. Cross-repo
+                // links are unusual here and would need different perms.
+                if (
+                  node.repository.owner.login === context.repo.owner &&
+                  node.repository.name === context.repo.repo
+                ) {
+                  linked.push(node.number);
+                }
+              }
+              if (!conn.pageInfo.hasNextPage) break;
+              cursor = conn.pageInfo.endCursor;
+            }
+
+            if (linked.length === 0) {
+              core.info(`PR #${prNumber} has no linked closing issues; nothing to do.`);
+              return;
+            }
+
+            core.info(`Linked issues for PR #${prNumber}: ${linked.join(', ')}`);
+
+            const failures = [];
+
+            const body =
+              `${SENTINEL}\n` +
+              `🚀 The fix from #${prNumber} ` +
+              `(_${prTitle}_) has been merged into \`${baseRef}\` ` +
+              `and will ship in the next mssql-python release.\n\n` +
+              `Thanks for reporting — watch [Releases](https://github.com/${context.repo.owner}/${context.repo.repo}/releases) for the announcement.`;
+
+            for (const issueNumber of linked) {
+              try {
+                // Idempotency: skip if we (or a prior run) already left the
+                // sentinel comment on this issue.
+                const existing = await github.paginate(
+                  github.rest.issues.listComments,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    per_page: 100,
+                  }
+                );
+                const already = existing.some(
+                  (c) => c.body && c.body.includes(SENTINEL) && c.body.includes(`#${prNumber}`)
+                );
+                if (already) {
+                  core.info(`Issue #${issueNumber}: notify comment already present, skipping.`);
+                  continue;
+                }
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  body,
+                });
+                core.info(`Issue #${issueNumber}: posted release-cycle comment.`);
+              } catch (err) {
+                const msg = `Issue #${issueNumber}: failed to comment — ${err.message}`;
+                core.error(msg);
+                failures.push(msg);
+              }
+            }
+
+            if (failures.length > 0) {
+              core.setFailed(
+                `Failed to notify ${failures.length} of ${linked.length} linked issue(s). See logs above.`
+              );
+            }
