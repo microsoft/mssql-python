@@ -65,8 +65,20 @@ The `github-ado-sync` pipeline runs daily at **5pm IST (11:30 UTC)** and creates
 
 1. Run `git log <last-release-tag>..HEAD --oneline --no-merges` to collect Python-side changes since the last release.
 2. Auto-resolve Rust changes from version bump PRs (see Rust Dependency section). This must be done now — the results feed both `PyPI_Description.md` and the release notes draft.
+3. Fetch GitHub issues closed since the last release date:
+   ```
+   gh issue list --repo microsoft/mssql-python --state closed --json number,title,closedAt,url \
+     --search "closed:>LAST_RELEASE_DATE"
+   ```
+   Cross-check each closed issue against the git log commits. Flag any issue that has **no corresponding commit** in the git log — it may have been fixed in the Rust repo (`microsoft/mssql-rs`) and shipped via a `mssql-py-core` version bump rather than a Python-side commit.
+4. For any flagged issues, check whether a `mssql-rs` PR references that issue number:
+   ```
+   gh pr list --repo microsoft/mssql-rs --state merged --search "<issue-number> in:body" \
+     --json number,title,body,mergedAt
+   ```
+   If found, include the fix in release notes attributed to `mssql_py_core` with a link to both the `mssql-rs` PR and the `mssql-python` issue.
 
-Present the full list of Python + Rust changes to the user for a quick sanity check before writing any files.
+Present the full list of Python + Rust changes **and** the closed-issue cross-check results to the user for a quick sanity check before writing any files.
 
 Create branch `release/X.X.X` (no `v` prefix) from `main` with **exactly 3 file changes**:
 
