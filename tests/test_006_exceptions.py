@@ -206,7 +206,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         side_effect=RuntimeError("SQLSTATE:28000:Login failed for user 'baduser'."),
     ):
         with pytest.raises(OperationalError) as exc_info:
-            connect("Server=testserver;Database=mydb;UID=baduser;PWD=wrongpassword;")
+            connect("Server=testserver;Database=mydb;UID=testuser;PWD=<placeholder>;")
     assert "Login failed for user" in exc_info.value.ddbc_error
     assert not isinstance(exc_info.value, RuntimeError)
 
@@ -218,7 +218,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         ),
     ):
         with pytest.raises(OperationalError) as exc_info:
-            connect("Server=testserver;Database=mydb;UID=u;PWD=p;")
+            connect("Server=testserver;Database=mydb;UID=testuser;PWD=<placeholder>;")
     assert "no default driver" in exc_info.value.ddbc_error
     assert not isinstance(exc_info.value, RuntimeError)
 
