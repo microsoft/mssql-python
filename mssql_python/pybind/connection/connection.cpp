@@ -170,8 +170,17 @@ void Connection::disconnect() {
 // DB spec compliant
 void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
+        // Format: "SQLSTATE:XXXXX:<odbc_error_message>" — parsed by _raise_connection_error()
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        ThrowStdException(err.ddbcErrorMsg);
+        std::string sqlState = err.sqlState;
+        std::string errorMsg = err.ddbcErrorMsg;
+        // Only add SQLSTATE prefix if we have a valid 5-character code
+        if (sqlState.length() == 5) {
+            ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
+        } else {
+            // No valid SQLSTATE (e.g., SQL_INVALID_HANDLE) — throw clean error message
+            ThrowStdException(errorMsg);
+        }
     }
 }
 
