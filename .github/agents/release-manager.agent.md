@@ -63,20 +63,33 @@ The `github-ado-sync` pipeline runs daily at **5pm IST (11:30 UTC)** and creates
 
 **Before making any file edits**, gather all the content that will go into the PR and release notes:
 
-1. Run `git log <last-release-tag>..HEAD --oneline --no-merges` to collect Python-side changes since the last release.
-2. Auto-resolve Rust changes from version bump PRs (see Rust Dependency section). This must be done now — the results feed both `PyPI_Description.md` and the release notes draft.
-3. Fetch GitHub issues closed since the last release date:
+Execute all four sub-steps automatically — do not ask the user before running any of them:
+
+1. **Python commits**: Run and capture output:
    ```
-   gh issue list --repo microsoft/mssql-python --state closed --json number,title,closedAt,url \
-     --search "closed:>LAST_RELEASE_DATE"
+   git log <last-release-tag>..HEAD --oneline --no-merges
    ```
-   Cross-check each closed issue against the git log commits. Flag any issue that has **no corresponding commit** in the git log — it may have been fixed in the Rust repo (`microsoft/mssql-rs`) and shipped via a `mssql-py-core` version bump rather than a Python-side commit.
-4. For any flagged issues, check whether a `mssql-rs` PR references that issue number:
+
+2. **Rust changes**: Run and capture output (see Rust Dependency section for full logic):
    ```
-   gh pr list --repo microsoft/mssql-rs --state merged --search "<issue-number> in:body" \
+   gh pr list --repo microsoft/mssql-python --state merged --search "mssql-py-core in:title" \
      --json number,title,body,mergedAt
    ```
-   If found, include the fix in release notes attributed to `mssql_py_core` with a link to both the `mssql-rs` PR and the `mssql-python` issue.
+   Filter to PRs merged after the last release date. Extract `## Rust Changes` sections; fall back to PR body summary if absent.
+
+3. **Closed issues**: Run and capture output — substitute the actual last release date for `LAST_RELEASE_DATE`:
+   ```
+   gh issue list --repo microsoft/mssql-python --state closed \
+     --json number,title,closedAt,url --search "closed:>LAST_RELEASE_DATE"
+   ```
+   Cross-check each closed issue against the git log output from sub-step 1. Flag any issue whose number does not appear in any commit message — it may have been fixed in `microsoft/mssql-rs` and shipped via a `mssql-py-core` bump.
+
+4. **Rust repo cross-check** (run once per flagged issue — no user prompt needed):
+   ```
+   gh pr list --repo microsoft/mssql-rs --state merged \
+     --search "<issue-number> in:body" --json number,title,body,mergedAt
+   ```
+   For each match found, add the fix to the release notes attributed to `mssql_py_core` with links to both the `mssql-rs` PR and the `mssql-python` issue. If no match is found for a flagged issue, note it explicitly in the sanity-check summary so the user can investigate.
 
 Present the full list of Python + Rust changes **and** the closed-issue cross-check results to the user for a quick sanity check before writing any files.
 
