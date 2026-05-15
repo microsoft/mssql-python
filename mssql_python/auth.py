@@ -313,6 +313,13 @@ def process_connection_string(
     """
     Process connection string and handle authentication.
 
+    NOTE: Returns a 4-tuple. Callers must unpack all four elements.
+    Destructuring with three names raises ``ValueError: too many values
+    to unpack``. The fourth element (``credential_kwargs``) is needed by
+    Connection.__init__ to persist credential constructor args (e.g. the
+    user-assigned MSI ``client_id``) for the bulkcopy fresh-token path,
+    since UID is stripped from the sanitized connection string.
+
     Args:
         connection_string: The connection string to process
 
