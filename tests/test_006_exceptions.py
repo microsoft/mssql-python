@@ -206,7 +206,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         side_effect=RuntimeError("SQLSTATE:28000:Login failed for user 'baduser'."),
     ):
         with pytest.raises(OperationalError) as exc_info:
-            connect("Server=testserver;Database=mydb;UID=baduser;PWD=wrongpassword;")
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "Login failed for user" in exc_info.value.ddbc_error
     assert not isinstance(exc_info.value, RuntimeError)
 
@@ -218,7 +218,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         ),
     ):
         with pytest.raises(OperationalError) as exc_info:
-            connect("Server=testserver;Database=mydb;UID=u;PWD=p;")
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "no default driver" in exc_info.value.ddbc_error
     assert not isinstance(exc_info.value, RuntimeError)
 
@@ -228,7 +228,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         side_effect=RuntimeError("Connection handle not allocated"),
     ):
         with pytest.raises(OperationalError) as exc_info:
-            connect("Server=testserver;Database=mydb;UID=u;PWD=p;")
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "Connection handle not allocated" in exc_info.value.ddbc_error
     assert not isinstance(exc_info.value, RuntimeError)
 
@@ -238,7 +238,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         side_effect=RuntimeError("SQLSTATE:99999:Unknown error with unmapped code"),
     ):
         with pytest.raises(DatabaseError) as exc_info:
-            connect("Server=testserver;Database=mydb;UID=u;PWD=p;")
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "Unknown error with unmapped code" in exc_info.value.ddbc_error
     assert "SQLSTATE code: 99999" in exc_info.value.driver_error
     assert not isinstance(exc_info.value, RuntimeError)
@@ -249,7 +249,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         side_effect=RuntimeError("SQLSTATE::Invalid handle!"),
     ):
         with pytest.raises(OperationalError) as exc_info:
-            connect("Server=testserver;Database=mydb;UID=u;PWD=p;")
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "Invalid handle!" in exc_info.value.ddbc_error
     assert not isinstance(exc_info.value, RuntimeError)
 
@@ -258,7 +258,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
     mock_conn.commit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
     mock_conn.get_autocommit.return_value = False
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
-        conn = connect("Server=testserver;Database=mydb;UID=u;PWD=p;")
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     with pytest.raises(OperationalError) as exc_info:
         conn.commit()
     assert "Communication link failure" in exc_info.value.ddbc_error
@@ -269,7 +269,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
     mock_conn2.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
     mock_conn2.get_autocommit.return_value = False
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn2):
-        conn2 = connect("Server=testserver;Database=mydb;UID=u;PWD=p;")
+        conn2 = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     with pytest.raises(OperationalError) as exc_info:
         conn2.rollback()
     assert "Communication link failure" in exc_info.value.ddbc_error
