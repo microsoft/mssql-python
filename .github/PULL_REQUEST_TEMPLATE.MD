@@ -10,7 +10,7 @@ Only one reference is required - either GitHub issue OR ADO Work Item.
 > ADO Work Item: Fixed AB#<WORK_ITEM_ID>
 
 <!-- External contributors: GitHub Issue -->
-> GitHub Issue: Closes #<ISSUE_NUMBER>
+> GitHub Issue: #<ISSUE_NUMBER>
 
 -------------------------------------------------------------------
 ### Summary   
