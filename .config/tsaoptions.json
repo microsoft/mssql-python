@@ -1,0 +1,14 @@
+{
+  "instanceUrl": "https://sqlclientdrivers.visualstudio.com",
+  "projectName": "mssql-python",
+  "areaPath": "mssql-python",
+  "iterationPath": "mssql-python",
+  "notificationAliases": [
+    "mssql-python@microsoft.com"
+  ],
+  "repositoryName": "mssql-python",
+  "codebaseName": "Microsoft Python Driver for SQL Server",
+  "allTools": true,
+  "includePathPatterns": "mssql_python/*, setup.py, requirements.txt",
+  "excludePathPatterns": "tests/*, benchmarks/*, eng/*, OneBranchPipelines/*"
+}

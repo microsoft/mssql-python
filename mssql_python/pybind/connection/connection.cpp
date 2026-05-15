@@ -1,16 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
-//             taken up in future
-
-#include "connection.h"
-#include "connection_pool.h"
-#include <vector>
+#include "connection/connection.h"
+#include "connection/connection_pool.h"
+#include "utf_utils.h"
+#include <algorithm>
+#include <memory>
 #include <pybind11/pybind11.h>
+#include <regex>
+#include <string>
+#include <utility>
+#include <vector>
 
-#define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
-#define SQL_MAX_SMALL_INT 32767  // Maximum value for SQLSMALLINT
+#define SQL_COPT_SS_ACCESS_TOKEN 1256  // Custom attribute ID for access token
+#define SQL_MAX_SMALL_INT 32767        // Maximum value for SQLSMALLINT
+
+// Logging uses LOG() macro for all diagnostic output
+#include "logger_bridge.hpp"
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
@@ -24,7 +30,8 @@ static SqlHandlePtr getEnvHandle() {
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to allocate environment handle");
         }
-        ret = SQLSetEnvAttr_ptr(env, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3_80, 0);
+        ret = SQLSetEnvAttr_ptr(env, SQL_ATTR_ODBC_VERSION,
+                                reinterpret_cast<void*>(SQL_OV_ODBC3_80), 0);
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to set environment attributes");
         }
@@ -39,20 +46,20 @@ static SqlHandlePtr getEnvHandle() {
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
-Connection::Connection(const std::wstring& conn_str, bool use_pool)
+Connection::Connection(const std::u16string& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
     allocateDbcHandle();
 }
 
 Connection::~Connection() {
-    disconnect();   // fallback if user forgets to disconnect
+    disconnect();  // fallback if user forgets to disconnect
 }
 
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
     auto _envHandle = getEnvHandle();
     SQLHANDLE dbc = nullptr;
-    LOG("Allocate SQL Connection Handle");
+    LOG("Allocating SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
     checkError(ret);
     _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
@@ -68,21 +75,17 @@ void Connection::connect(const py::dict& attrs_before) {
             setAutocommit(_autocommit);
         }
     }
-    SQLWCHAR* connStrPtr;
-#if defined(__APPLE__) || defined(__linux__) // macOS/Linux specific handling
-    LOG("Creating connection string buffer for macOS/Linux");
-    std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
-    // Ensure the buffer is null-terminated
-    LOG("Connection string buffer size - {}", connStrBuffer.size());
-    connStrPtr = connStrBuffer.data();
-    LOG("Connection string buffer created");
-#else
-    connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
-#endif
-    SQLRETURN ret = SQLDriverConnect_ptr(
-        _dbcHandle->get(), nullptr,
-        connStrPtr, SQL_NTS,
-        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    SQLWCHAR* connStrPtr = reinterpretU16stringAsSqlWChar(_connStr);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC connect call.
+        // SQLDriverConnect involves DNS resolution, TCP handshake, TLS negotiation,
+        // and SQL Server authentication — all pure I/O that doesn't need the GIL.
+        // This allows other Python threads to run concurrently.
+        py::gil_scoped_release release;
+        ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
+                                   0, nullptr, SQL_DRIVER_NOPROMPT);
+    }
     checkError(ret);
     updateLastUsed();
 }
@@ -90,21 +93,94 @@ void Connection::connect(const py::dict& attrs_before) {
 void Connection::disconnect() {
     if (_dbcHandle) {
         LOG("Disconnecting from database");
-        SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
-        checkError(ret);
-        _dbcHandle.reset(); // triggers SQLFreeHandle via destructor, if last owner
-    }
-    else {
+
+        // Check if we hold the GIL so we can conditionally release it.
+        // The GIL is held when called from pybind11-bound methods but may NOT
+        // be held in destructor paths (C++ shared_ptr ref-count drop, shutdown).
+        bool hasGil = PyGILState_Check() != 0;
+
+        // CRITICAL FIX: Mark all child statement handles as implicitly freed
+        // When we free the DBC handle below, the ODBC driver will automatically free
+        // all child STMT handles. We need to tell the SqlHandle objects about this
+        // so they don't try to free the handles again during their destruction.
+        
+        // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
+        // This protects against concurrent allocStatementHandle() calls or GC finalizers
+        {
+            std::lock_guard<std::mutex> lock(_childHandlesMutex);
+            
+            // First compact: remove expired weak_ptrs (they're already destroyed)
+            size_t originalSize = _childStatementHandles.size();
+            _childStatementHandles.erase(
+                std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
+                               [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
+                _childStatementHandles.end());
+            
+            LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
+                originalSize, _childStatementHandles.size(),
+                originalSize - _childStatementHandles.size());
+            
+            LOG("Marking %zu child statement handles as implicitly freed",
+                _childStatementHandles.size());
+            for (auto& weakHandle : _childStatementHandles) {
+                if (auto handle = weakHandle.lock()) {
+                    // SAFETY ASSERTION: Only STMT handles should be in this vector
+                    // This is guaranteed by allocStatementHandle() which only creates STMT handles
+                    // If this assertion fails, it indicates a serious bug in handle tracking
+                    if (handle->type() != SQL_HANDLE_STMT) {
+                        LOG_ERROR("CRITICAL: Non-STMT handle (type=%d) found in _childStatementHandles. "
+                                  "This will cause a handle leak!", handle->type());
+                        continue;  // Skip marking to prevent leak
+                    }
+                    handle->markImplicitlyFreed();
+                }
+            }
+            _childStatementHandles.clear();
+            _allocationsSinceCompaction = 0;
+        }  // Release lock before potentially slow SQLDisconnect call
+
+        SQLRETURN ret;
+        if (hasGil) {
+            // Release the GIL during the blocking ODBC disconnect call.
+            // This allows other Python threads to run while the network
+            // round-trip completes.
+            py::gil_scoped_release release;
+            ret = SQLDisconnect_ptr(_dbcHandle->get());
+        } else {
+            // Destructor / shutdown path — GIL is not held, call directly.
+            ret = SQLDisconnect_ptr(_dbcHandle->get());
+        }
+        // In destructor/shutdown paths, suppress errors to avoid
+        // std::terminate() if this throws during stack unwinding.
+        if (hasGil) {
+            checkError(ret);
+        } else if (!SQL_SUCCEEDED(ret)) {
+            // Intentionally no LOG() here: LOG() acquires the GIL internally
+            // via py::gil_scoped_acquire, which is unsafe during interpreter
+            // shutdown or stack unwinding (can deadlock or call std::terminate).
+        }
+        // triggers SQLFreeHandle via destructor, if last owner
+        _dbcHandle.reset();
+    } else {
         LOG("No connection handle to disconnect");
     }
 }
 
-// TODO: Add an exception class in C++ for error handling, DB spec compliant
-void Connection::checkError(SQLRETURN ret) const{
+// TODO(microsoft): Add an exception class in C++ for error handling,
+// DB spec compliant
+void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
+        // Format: "SQLSTATE:XXXXX:<odbc_error_message>" — parsed by _raise_connection_error()
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
-        ThrowStdException(errorMsg);
+        std::string sqlState = err.sqlState;
+        std::string errorMsg = err.ddbcErrorMsg;
+        // Only add SQLSTATE prefix if we have a valid 5-character code
+        if (sqlState.length() == 5) {
+            ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
+        } else {
+            // No valid SQLSTATE (e.g., SQL_INVALID_HANDLE) — throw clean error message
+            ThrowStdException(errorMsg);
+        }
     }
 }
 
@@ -114,7 +190,12 @@ void Connection::commit() {
     }
     updateLastUsed();
     LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking SQLEndTran network round-trip.
+        py::gil_scoped_release release;
+        ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    }
     checkError(ret);
 }
 
@@ -124,7 +205,12 @@ void Connection::rollback() {
     }
     updateLastUsed();
     LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking SQLEndTran network round-trip.
+        py::gil_scoped_release release;
+        ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    }
     checkError(ret);
 }
 
@@ -133,13 +219,22 @@ void Connection::setAutocommit(bool enable) {
         ThrowStdException("Connection handle not allocated");
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    LOG("Setting SQL Connection Attribute");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    LOG("Setting autocommit=%d", enable);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC call. Holding the GIL
+        // here can deadlock when the network path goes through another
+        // Python thread (e.g. an in-process SSH tunnel via paramiko +
+        // sshtunnel), since that thread also needs the GIL to run.
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                                    reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    }
     checkError(ret);
-    if(value == SQL_AUTOCOMMIT_ON) {
-        LOG("SQL Autocommit set to True");
+    if (value == SQL_AUTOCOMMIT_ON) {
+        LOG("Autocommit enabled");
     } else {
-        LOG("SQL Autocommit set to False");
+        LOG("Autocommit disabled");
     }
     _autocommit = enable;
 }
@@ -148,10 +243,11 @@ bool Connection::getAutocommit() const {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
-    LOG("Get SQL Connection Attribute");
+    LOG("Getting autocommit attribute");
     SQLINTEGER value;
     SQLINTEGER string_length;
-    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
+    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, &value,
+                                          sizeof(value), &string_length);
     checkError(ret);
     return value == SQL_AUTOCOMMIT_ON;
 }
@@ -165,42 +261,120 @@ SqlHandlePtr Connection::allocStatementHandle() {
     SQLHANDLE stmt = nullptr;
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
     checkError(ret);
-    return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
+    auto stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
+
+    // THREAD-SAFETY: Lock mutex before modifying _childStatementHandles
+    // This protects against concurrent disconnect() or allocStatementHandle() calls,
+    // or GC finalizers running from different threads
+    {
+        std::lock_guard<std::mutex> lock(_childHandlesMutex);
+        
+        // Track this child handle so we can mark it as implicitly freed when connection closes
+        // Use weak_ptr to avoid circular references and allow normal cleanup
+        _childStatementHandles.push_back(stmtHandle);
+        _allocationsSinceCompaction++;
+
+        // Compact expired weak_ptrs only periodically to avoid O(n²) overhead
+        // This keeps allocation fast (O(1) amortized) while preventing unbounded growth
+        // disconnect() also compacts, so this is just for long-lived connections with many cursors
+        if (_allocationsSinceCompaction >= COMPACTION_INTERVAL) {
+            size_t originalSize = _childStatementHandles.size();
+            _childStatementHandles.erase(
+                std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
+                               [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
+                _childStatementHandles.end());
+            _allocationsSinceCompaction = 0;
+            LOG("Periodic compaction: %zu -> %zu handles (removed %zu expired)",
+                originalSize, _childStatementHandles.size(),
+                originalSize - _childStatementHandles.size());
+        }
+    }  // Release lock
+
+    return stmtHandle;
 }
 
-
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
-    LOG("Setting SQL attribute");
-    SQLPOINTER ptr = nullptr;
-    SQLINTEGER length = 0;
-    std::string buffer; // to hold sensitive data temporarily
+    LOG("Setting SQL attribute=%d", attribute);
+    // SQLPOINTER ptr = nullptr;
+    // SQLINTEGER length = 0;
 
     if (py::isinstance<py::int_>(value)) {
-        int intValue = value.cast<int>();
-        ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
-        length = SQL_IS_INTEGER;
+        // Get the integer value
+        int64_t longValue = value.cast<int64_t>();
+
+        SQLRETURN ret;
+        {
+            // Release the GIL around the ODBC call for consistency with the
+            // other connection-attribute paths; some attributes can block.
+            py::gil_scoped_release release;
+            ret = SQLSetConnectAttr_ptr(
+                _dbcHandle->get(), attribute,
+                reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
+        }
+
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("Failed to set integer attribute=%d, ret=%d", attribute, ret);
+        } else {
+            LOG("Set integer attribute=%d successfully", attribute);
+        }
+        return ret;
+    } else if (py::isinstance<py::str>(value)) {
+        try {
+            this->wstrStringBuffer = value.cast<std::u16string>();
+
+            SQLPOINTER ptr;
+            SQLINTEGER length;
+            // Copy to a stack-local buffer so that releasing the GIL below
+            // doesn't expose a race where another thread overwrites the
+            // member wstrStringBuffer (and reallocates) while the ODBC
+            // driver is still reading from ptr.
+            std::u16string localStrBuffer = this->wstrStringBuffer;
+            ptr = reinterpretU16stringAsSqlWChar(localStrBuffer);
+            length = static_cast<SQLINTEGER>(localStrBuffer.length() * sizeof(SQLWCHAR));
+
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            }
+            if (!SQL_SUCCEEDED(ret)) {
+                LOG("Failed to set string attribute=%d, ret=%d", attribute, ret);
+            } else {
+                LOG("Set string attribute=%d successfully", attribute);
+            }
+            return ret;
+        } catch (const std::exception& e) {
+            LOG("Exception during string attribute=%d setting: %s", attribute, e.what());
+            return SQL_ERROR;
+        }
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
-        buffer = value.cast<std::string>();  // stack buffer
-        ptr = buffer.data();
-        length = static_cast<SQLINTEGER>(buffer.size());
+        try {
+            // Copy to a stack-local buffer so that releasing the GIL
+            // doesn't expose a race where another thread overwrites the
+            // member strBytesBuffer while the driver reads from ptr.
+            std::string localBytesBuffer = value.cast<std::string>();
+            SQLPOINTER ptr = const_cast<char*>(localBytesBuffer.c_str());
+            SQLINTEGER length = static_cast<SQLINTEGER>(localBytesBuffer.size());
+
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            }
+            if (!SQL_SUCCEEDED(ret)) {
+                LOG("Failed to set binary attribute=%d, ret=%d", attribute, ret);
+            } else {
+                LOG("Set binary attribute=%d successfully (length=%d)", attribute, length);
+            }
+            return ret;
+        } catch (const std::exception& e) {
+            LOG("Exception during binary attribute=%d setting: %s", attribute, e.what());
+            return SQL_ERROR;
+        }
     } else {
-        LOG("Unsupported attribute value type");
+        LOG("Unsupported attribute value type for attribute=%d", attribute);
         return SQL_ERROR;
     }
-
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set attribute");
-    }
-    else {
-        LOG("Set attribute successfully");
-    }
-    
-    // Zero out sensitive data if used
-    if (!buffer.empty()) {
-        std::fill(buffer.begin(), buffer.end(), static_cast<char>(0));
-    }
-    return ret;
 }
 
 void Connection::applyAttrsBefore(const py::dict& attrs) {
@@ -212,11 +386,12 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
             continue;
         }
 
-        if (key == SQL_COPT_SS_ACCESS_TOKEN) {   
-            SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
-            if (!SQL_SUCCEEDED(ret)) {
-                ThrowStdException("Failed to set access token before connect");
-            }
+        // Apply all supported attributes
+        SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+        if (!SQL_SUCCEEDED(ret)) {
+            std::string attrName = std::to_string(key);
+            std::string errorMsg = "Failed to set attribute " + attrName + " before connect";
+            ThrowStdException(errorMsg);
         }
     }
 }
@@ -226,8 +401,8 @@ bool Connection::isAlive() const {
         ThrowStdException("Connection handle not allocated");
     }
     SQLUINTEGER status;
-    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_CONNECTION_DEAD,
-        &status, 0, nullptr);
+    SQLRETURN ret =
+        SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_CONNECTION_DEAD, &status, 0, nullptr);
     return SQL_SUCCEEDED(ret) && status == SQL_CD_FALSE;
 }
 
@@ -236,16 +411,33 @@ bool Connection::reset() {
         ThrowStdException("Connection handle not allocated");
     }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(
-        _dbcHandle->get(),
-        SQL_ATTR_RESET_CONNECTION,
-        (SQLPOINTER)SQL_RESET_CONNECTION_YES,
-        SQL_IS_INTEGER);
+    SQLRETURN ret;
+    {
+        // Release the GIL around the ODBC call for consistency with the
+        // other connection-attribute paths; some attributes can block.
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
+                                    (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+    }
     if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to reset connection. Marking as dead.");
-        disconnect();
+        LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
         return false;
     }
+
+    // SQL_ATTR_RESET_CONNECTION does NOT reset the transaction isolation level.
+    // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
+    // isolation level settings from leaking between pooled connection usages.
+    LOG("Resetting transaction isolation level to READ COMMITTED");
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
+                                    (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
+        return false;
+    }
+
     updateLastUsed();
     return true;
 }
@@ -258,9 +450,9 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
-ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool, const py::dict& attrsBefore)
-    : _usePool(usePool) {
-    _connStr = Utf8ToWString(connStr);
+ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
+                                   const py::dict& attrsBefore)
+    : _usePool(usePool), _connStr(connStr) {
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
     } else {
@@ -326,16 +518,16 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
-    
+
     // First call with NULL buffer to get required length
     SQLSMALLINT requiredLen = 0;
     SQLRETURN ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, NULL, 0, &requiredLen);
-    
+
     if (!SQL_SUCCEEDED(ret)) {
         checkError(ret);
         return py::none();
     }
-    
+
     // For zero-length results
     if (requiredLen == 0) {
         py::dict result;
@@ -344,37 +536,38 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
         result["info_type"] = infoType;
         return result;
     }
-    
-    // Cap buffer allocation to SQL_MAX_SMALL_INT to prevent excessive memory usage
+
+    // Cap buffer allocation to SQL_MAX_SMALL_INT to prevent excessive
+    // memory usage
     SQLSMALLINT allocSize = requiredLen + 10;
     if (allocSize > SQL_MAX_SMALL_INT) {
         allocSize = SQL_MAX_SMALL_INT;
     }
     std::vector<char> buffer(allocSize, 0);  // Extra padding for safety
-    
+
     // Get the actual data - avoid using std::min
     SQLSMALLINT bufferSize = requiredLen + 10;
     if (bufferSize > SQL_MAX_SMALL_INT) {
         bufferSize = SQL_MAX_SMALL_INT;
     }
-    
+
     SQLSMALLINT returnedLen = 0;
     ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), bufferSize, &returnedLen);
-    
+
     if (!SQL_SUCCEEDED(ret)) {
         checkError(ret);
         return py::none();
     }
-    
+
     // Create a dictionary with the raw data
     py::dict result;
-    
+
     // IMPORTANT: Pass exactly what SQLGetInfo returned
     // No null-terminator manipulation, just pass the raw data
     result["data"] = py::bytes(buffer.data(), returnedLen);
     result["length"] = returnedLen;
     result["info_type"] = infoType;
-    
+
     return result;
 }
 
@@ -383,4 +576,34 @@ py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
         ThrowStdException("Connection object is not initialized");
     }
     return _conn->getInfo(infoType);
+}
+
+void ConnectionHandle::setAttr(int attribute, py::object value) {
+    if (!_conn) {
+        ThrowStdException("Connection not established");
+    }
+
+    // Use existing setAttribute with better error handling
+    SQLRETURN ret = _conn->setAttribute(static_cast<SQLINTEGER>(attribute), value);
+    if (!SQL_SUCCEEDED(ret)) {
+        // Get detailed error information from ODBC
+        try {
+            ErrorInfo errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
+
+            std::string errorMsg =
+                "Failed to set connection attribute " + std::to_string(attribute);
+            if (!errorInfo.ddbcErrorMsg.empty()) {
+                errorMsg += ": " + errorInfo.ddbcErrorMsg;
+            }
+
+            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
+            ThrowStdException(errorMsg);
+        } catch (...) {
+            // Fallback to generic error if detailed error retrieval fails
+            std::string errorMsg =
+                "Failed to set connection attribute " + std::to_string(attribute);
+            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
+            ThrowStdException(errorMsg);
+        }
+    }
 }

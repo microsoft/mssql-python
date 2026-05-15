@@ -1,0 +1,25 @@
+# Common variables used across all pipelines
+variables:
+  # Repository root path
+  - name: REPO_ROOT
+    value: $(Build.SourcesDirectory)
+    readonly: true
+  
+  # Artifact staging paths
+  - name: ARTIFACT_PATH
+    value: $(Build.ArtifactStagingDirectory)
+    readonly: true
+  
+  # Build configuration
+  - name: BUILD_CONFIGURATION
+    value: 'Release'
+  
+  # Python versions to build
+  - name: PYTHON_VERSIONS
+    value: '3.10,3.11,3.12,3.13'
+  
+  # Package name
+  - name: PACKAGE_NAME
+    value: 'mssql-python'
+    readonly: true
+

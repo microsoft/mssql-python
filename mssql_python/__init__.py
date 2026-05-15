@@ -3,102 +3,21 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
+
+import atexit
+import sys
 import threading
-import locale
+import types
+import weakref
+
+# Import settings from helpers module
+from .helpers import Settings, get_settings, _settings, _settings_lock
+
+# Driver version
+__version__ = "1.6.0"
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
-
-# GLOBALS
-# Read-Only
-apilevel = "2.0"
-paramstyle = "qmark"
-threadsafety = 1
-
-# Initialize the locale setting only once at module import time
-# This avoids thread-safety issues with locale
-_DEFAULT_DECIMAL_SEPARATOR = "."
-try:
-    # Get the locale setting once during module initialization
-    _locale_separator = locale.localeconv()['decimal_point']
-    if _locale_separator and len(_locale_separator) == 1:
-        _DEFAULT_DECIMAL_SEPARATOR = _locale_separator
-except (AttributeError, KeyError, TypeError, ValueError):
-    pass  # Keep the default "." if locale access fails
-
-class Settings:
-    def __init__(self):
-        self.lowercase = False
-        # Use the pre-determined separator - no locale access here
-        self.decimal_separator = _DEFAULT_DECIMAL_SEPARATOR
-
-# Global settings instance
-_settings = Settings()
-_settings_lock = threading.Lock()
-
-def get_settings():
-    """Return the global settings object"""
-    with _settings_lock:
-        _settings.lowercase = lowercase
-        return _settings
-
-lowercase = _settings.lowercase  # Default is False
-
-# Set the initial decimal separator in C++
-from .ddbc_bindings import DDBCSetDecimalSeparator
-DDBCSetDecimalSeparator(_settings.decimal_separator)
-
-# New functions for decimal separator control
-def setDecimalSeparator(separator):
-    """
-    Sets the decimal separator character used when parsing NUMERIC/DECIMAL values 
-    from the database, e.g. the "." in "1,234.56".
-    
-    The default is to use the current locale's "decimal_point" value when the module
-    was first imported, or "." if the locale is not available. This function overrides 
-    the default.
-    
-    Args:
-        separator (str): The character to use as decimal separator
-        
-    Raises:
-        ValueError: If the separator is not a single character string
-    """
-    # Type validation
-    if not isinstance(separator, str):
-        raise ValueError("Decimal separator must be a string")
-    
-    # Length validation
-    if len(separator) == 0:
-        raise ValueError("Decimal separator cannot be empty")
-        
-    if len(separator) > 1:
-        raise ValueError("Decimal separator must be a single character")
-    
-    # Character validation
-    if separator.isspace():
-        raise ValueError("Whitespace characters are not allowed as decimal separators")
-        
-    # Check for specific disallowed characters
-    if separator in ['\t', '\n', '\r', '\v', '\f']:
-        raise ValueError(f"Control character '{repr(separator)}' is not allowed as a decimal separator")
-    
-    # Set in Python side settings
-    _settings.decimal_separator = separator
-    
-    # Update the C++ side
-    from .ddbc_bindings import DDBCSetDecimalSeparator
-    DDBCSetDecimalSeparator(separator)
-
-def getDecimalSeparator():
-    """
-    Returns the decimal separator character used when parsing NUMERIC/DECIMAL values
-    from the database.
-    
-    Returns:
-        str: The current decimal separator character
-    """
-    return _settings.decimal_separator
 
 # Import necessary modules
 from .exceptions import (
@@ -112,6 +31,7 @@ from .exceptions import (
     InternalError,
     ProgrammingError,
     NotSupportedError,
+    ConnectionStringParseError,
 )
 
 # Type Objects
@@ -133,44 +53,487 @@ from .type import (
 # Connection Objects
 from .db_connection import connect, Connection
 
+# Connection String Handling
+from .connection_string_parser import _ConnectionStringParser
+from .connection_string_builder import _ConnectionStringBuilder
+
 # Cursor Objects
 from .cursor import Cursor
 
-# Logging Configuration
-from .logging_config import setup_logging, get_logger
+# Row Objects
+from .row import Row
+
+# Logging Configuration (Simplified single-level DEBUG system)
+from .logging import logger, setup_logging, driver_logger
 
 # Constants
-from .constants import ConstantsDDBC, GetInfoConstants
+from .constants import ConstantsDDBC, GetInfoConstants, get_info_constants
 
-# Export specific constants for setencoding()
-SQL_CHAR = ConstantsDDBC.SQL_CHAR.value
-SQL_WCHAR = ConstantsDDBC.SQL_WCHAR.value
-SQL_WMETADATA = -99
-
+# Pooling
 from .pooling import PoolingManager
-def pooling(max_size=100, idle_timeout=600, enabled=True):
-#     """
-#     Enable connection pooling with the specified parameters.
-#     By default:
-#         - If not explicitly called, pooling will be auto-enabled with default values.
 
-#     Args:
-#         max_size (int): Maximum number of connections in the pool.
-#         idle_timeout (int): Time in seconds before idle connections are closed.
-    
-#     Returns:
-#         None
-#     """
+# Global registry for tracking active connections (using weak references)
+_active_connections = weakref.WeakSet()
+_connections_lock = threading.Lock()
+
+
+def _register_connection(conn):
+    """Register a connection for cleanup before shutdown."""
+    with _connections_lock:
+        _active_connections.add(conn)
+
+
+def _cleanup_connections():
+    """
+    Cleanup function called by atexit to close all active connections.
+
+    This prevents resource leaks during interpreter shutdown by ensuring
+    all ODBC handles are freed in the correct order before Python finalizes.
+    """
+    # Make a copy of the connections to avoid modification during iteration
+    with _connections_lock:
+        connections_to_close = list(_active_connections)
+
+    for conn in connections_to_close:
+        try:
+            # Check if connection is still valid and not closed
+            if hasattr(conn, "_closed") and not conn._closed:
+                # Close will handle both cursors and the connection
+                conn.close()
+        except Exception as e:
+            # Log errors during shutdown cleanup for debugging
+            # We're prioritizing crash prevention over error propagation
+            try:
+                driver_logger.error(
+                    f"Error during connection cleanup at shutdown: {type(e).__name__}: {e}"
+                )
+            except Exception:
+                # If logging fails during shutdown, silently ignore
+                pass
+
+
+# Register cleanup function to run before Python exits
+atexit.register(_cleanup_connections)
+
+# GLOBALS
+# Read-Only
+apilevel: str = "2.0"
+paramstyle: str = "pyformat"
+threadsafety: int = 1
+
+# Create decimal separator control functions bound to our settings
+from .decimal_config import create_decimal_separator_functions
+
+setDecimalSeparator, getDecimalSeparator = create_decimal_separator_functions(_settings)
+
+# Import module-level constants from constants module
+from .constants import (  # noqa: F401
+    # Enum classes
+    AuthType,
+    SQLTypes,
+    # Helper function
+    get_info_constants,
+    # SQL Type constants (from ConstantsDDBC)
+    SQL_CHAR,
+    SQL_VARCHAR,
+    SQL_LONGVARCHAR,
+    SQL_WCHAR,
+    SQL_WVARCHAR,
+    SQL_WLONGVARCHAR,
+    SQL_DECIMAL,
+    SQL_NUMERIC,
+    SQL_BIT,
+    SQL_TINYINT,
+    SQL_SMALLINT,
+    SQL_INTEGER,
+    SQL_BIGINT,
+    SQL_REAL,
+    SQL_FLOAT,
+    SQL_DOUBLE,
+    SQL_BINARY,
+    SQL_VARBINARY,
+    SQL_LONGVARBINARY,
+    SQL_DATE,
+    SQL_TIME,
+    SQL_TIMESTAMP,
+    SQL_TYPE_DATE,
+    SQL_TYPE_TIME,
+    SQL_TYPE_TIMESTAMP,
+    SQL_GUID,
+    SQL_XML,
+    # Connection attribute constants
+    SQL_ATTR_ACCESS_MODE,
+    SQL_ATTR_CONNECTION_TIMEOUT,
+    SQL_ATTR_CURRENT_CATALOG,
+    SQL_ATTR_LOGIN_TIMEOUT,
+    SQL_ATTR_PACKET_SIZE,
+    SQL_ATTR_TXN_ISOLATION,
+    # Transaction isolation levels
+    SQL_TXN_READ_UNCOMMITTED,
+    SQL_TXN_READ_COMMITTED,
+    SQL_TXN_REPEATABLE_READ,
+    SQL_TXN_SERIALIZABLE,
+    # Access modes
+    SQL_MODE_READ_WRITE,
+    SQL_MODE_READ_ONLY,
+    # Special constants
+    SQL_WMETADATA,
+    # GetInfoConstants (all exported as module-level constants)
+    SQL_DRIVER_NAME,
+    SQL_DRIVER_VER,
+    SQL_DRIVER_ODBC_VER,
+    SQL_DRIVER_HLIB,
+    SQL_DRIVER_HENV,
+    SQL_DRIVER_HDBC,
+    SQL_DATA_SOURCE_NAME,
+    SQL_DATABASE_NAME,
+    SQL_SERVER_NAME,
+    SQL_USER_NAME,
+    SQL_SQL_CONFORMANCE,
+    SQL_KEYWORDS,
+    SQL_IDENTIFIER_CASE,
+    SQL_IDENTIFIER_QUOTE_CHAR,
+    SQL_SPECIAL_CHARACTERS,
+    SQL_SQL92_ENTRY_SQL,
+    SQL_SQL92_INTERMEDIATE_SQL,
+    SQL_SQL92_FULL_SQL,
+    SQL_SUBQUERIES,
+    SQL_EXPRESSIONS_IN_ORDERBY,
+    SQL_CORRELATION_NAME,
+    SQL_SEARCH_PATTERN_ESCAPE,
+    SQL_CATALOG_TERM,
+    SQL_CATALOG_NAME_SEPARATOR,
+    SQL_SCHEMA_TERM,
+    SQL_TABLE_TERM,
+    SQL_PROCEDURES,
+    SQL_ACCESSIBLE_TABLES,
+    SQL_ACCESSIBLE_PROCEDURES,
+    SQL_CATALOG_NAME,
+    SQL_CATALOG_USAGE,
+    SQL_SCHEMA_USAGE,
+    SQL_COLUMN_ALIAS,
+    SQL_DESCRIBE_PARAMETER,
+    SQL_TXN_CAPABLE,
+    SQL_TXN_ISOLATION_OPTION,
+    SQL_DEFAULT_TXN_ISOLATION,
+    SQL_MULTIPLE_ACTIVE_TXN,
+    SQL_TXN_ISOLATION_LEVEL,
+    SQL_NUMERIC_FUNCTIONS,
+    SQL_STRING_FUNCTIONS,
+    SQL_DATETIME_FUNCTIONS,
+    SQL_SYSTEM_FUNCTIONS,
+    SQL_CONVERT_FUNCTIONS,
+    SQL_LIKE_ESCAPE_CLAUSE,
+    SQL_MAX_COLUMN_NAME_LEN,
+    SQL_MAX_TABLE_NAME_LEN,
+    SQL_MAX_SCHEMA_NAME_LEN,
+    SQL_MAX_CATALOG_NAME_LEN,
+    SQL_MAX_IDENTIFIER_LEN,
+    SQL_MAX_STATEMENT_LEN,
+    SQL_MAX_CHAR_LITERAL_LEN,
+    SQL_MAX_BINARY_LITERAL_LEN,
+    SQL_MAX_COLUMNS_IN_TABLE,
+    SQL_MAX_COLUMNS_IN_SELECT,
+    SQL_MAX_COLUMNS_IN_GROUP_BY,
+    SQL_MAX_COLUMNS_IN_ORDER_BY,
+    SQL_MAX_COLUMNS_IN_INDEX,
+    SQL_MAX_TABLES_IN_SELECT,
+    SQL_MAX_CONCURRENT_ACTIVITIES,
+    SQL_MAX_DRIVER_CONNECTIONS,
+    SQL_MAX_ROW_SIZE,
+    SQL_MAX_USER_NAME_LEN,
+    SQL_ACTIVE_CONNECTIONS,
+    SQL_ACTIVE_STATEMENTS,
+    SQL_DATA_SOURCE_READ_ONLY,
+    SQL_NEED_LONG_DATA_LEN,
+    SQL_GETDATA_EXTENSIONS,
+    SQL_CURSOR_COMMIT_BEHAVIOR,
+    SQL_CURSOR_ROLLBACK_BEHAVIOR,
+    SQL_CURSOR_SENSITIVITY,
+    SQL_BOOKMARK_PERSISTENCE,
+    SQL_DYNAMIC_CURSOR_ATTRIBUTES1,
+    SQL_DYNAMIC_CURSOR_ATTRIBUTES2,
+    SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1,
+    SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2,
+    SQL_STATIC_CURSOR_ATTRIBUTES1,
+    SQL_STATIC_CURSOR_ATTRIBUTES2,
+    SQL_KEYSET_CURSOR_ATTRIBUTES1,
+    SQL_KEYSET_CURSOR_ATTRIBUTES2,
+    SQL_SCROLL_OPTIONS,
+    SQL_SCROLL_CONCURRENCY,
+    SQL_FETCH_DIRECTION,
+    SQL_ROWSET_SIZE,
+    SQL_CONCURRENCY,
+    SQL_ROW_NUMBER,
+    SQL_STATIC_SENSITIVITY,
+    SQL_BATCH_SUPPORT,
+    SQL_BATCH_ROW_COUNT,
+    SQL_PARAM_ARRAY_ROW_COUNTS,
+    SQL_PARAM_ARRAY_SELECTS,
+    SQL_PROCEDURE_TERM,
+    SQL_POSITIONED_STATEMENTS,
+    SQL_GROUP_BY,
+    SQL_OJ_CAPABILITIES,
+    SQL_ORDER_BY_COLUMNS_IN_SELECT,
+    SQL_OUTER_JOINS,
+    SQL_QUOTED_IDENTIFIER_CASE,
+    SQL_CONCAT_NULL_BEHAVIOR,
+    SQL_NULL_COLLATION,
+    SQL_ALTER_TABLE,
+    SQL_UNION,
+    SQL_DDL_INDEX,
+    SQL_MULT_RESULT_SETS,
+    SQL_OWNER_USAGE,
+    SQL_QUALIFIER_USAGE,
+    SQL_TIMEDATE_ADD_INTERVALS,
+    SQL_TIMEDATE_DIFF_INTERVALS,
+    SQL_IC_UPPER,
+    SQL_IC_LOWER,
+    SQL_IC_SENSITIVE,
+    SQL_IC_MIXED,
+)
+
+__all__ = [
+    # Exception classes
+    "Warning",
+    "Error",
+    "InterfaceError",
+    "DatabaseError",
+    "DataError",
+    "OperationalError",
+    "IntegrityError",
+    "InternalError",
+    "ProgrammingError",
+    "NotSupportedError",
+    "ConnectionStringParseError",
+    # Type objects and functions
+    "Date",
+    "Time",
+    "Timestamp",
+    "DateFromTicks",
+    "TimeFromTicks",
+    "TimestampFromTicks",
+    "Binary",
+    "STRING",
+    "BINARY",
+    "NUMBER",
+    "DATETIME",
+    "ROWID",
+    # Connection and cursor classes
+    "connect",
+    "Connection",
+    "Cursor",
+    "Row",
+    # Settings
+    "Settings",
+    "get_settings",
+    # Logging
+    "logger",
+    "setup_logging",
+    "driver_logger",
+    # Decimal functions
+    "setDecimalSeparator",
+    "getDecimalSeparator",
+    # Pooling
+    "pooling",
+    "PoolingManager",
+    # Constants - Enum classes
+    "AuthType",
+    "SQLTypes",
+    "get_info_constants",
+    # SQL Type constants
+    "SQL_CHAR",
+    "SQL_VARCHAR",
+    "SQL_LONGVARCHAR",
+    "SQL_WCHAR",
+    "SQL_WVARCHAR",
+    "SQL_WLONGVARCHAR",
+    "SQL_DECIMAL",
+    "SQL_NUMERIC",
+    "SQL_BIT",
+    "SQL_TINYINT",
+    "SQL_SMALLINT",
+    "SQL_INTEGER",
+    "SQL_BIGINT",
+    "SQL_REAL",
+    "SQL_FLOAT",
+    "SQL_DOUBLE",
+    "SQL_BINARY",
+    "SQL_VARBINARY",
+    "SQL_LONGVARBINARY",
+    "SQL_DATE",
+    "SQL_TIME",
+    "SQL_TIMESTAMP",
+    "SQL_TYPE_DATE",
+    "SQL_TYPE_TIME",
+    "SQL_TYPE_TIMESTAMP",
+    "SQL_GUID",
+    "SQL_XML",
+    # Connection attribute constants
+    "SQL_ATTR_ACCESS_MODE",
+    "SQL_ATTR_CONNECTION_TIMEOUT",
+    "SQL_ATTR_CURRENT_CATALOG",
+    "SQL_ATTR_LOGIN_TIMEOUT",
+    "SQL_ATTR_PACKET_SIZE",
+    "SQL_ATTR_TXN_ISOLATION",
+    # Transaction isolation levels
+    "SQL_TXN_READ_UNCOMMITTED",
+    "SQL_TXN_READ_COMMITTED",
+    "SQL_TXN_REPEATABLE_READ",
+    "SQL_TXN_SERIALIZABLE",
+    # Access modes
+    "SQL_MODE_READ_WRITE",
+    "SQL_MODE_READ_ONLY",
+    # Special constants
+    "SQL_WMETADATA",
+    # GetInfo constants
+    "SQL_DRIVER_NAME",
+    "SQL_DRIVER_VER",
+    "SQL_DRIVER_ODBC_VER",
+    "SQL_DRIVER_HLIB",
+    "SQL_DRIVER_HENV",
+    "SQL_DRIVER_HDBC",
+    "SQL_DATA_SOURCE_NAME",
+    "SQL_DATABASE_NAME",
+    "SQL_SERVER_NAME",
+    "SQL_USER_NAME",
+    "SQL_SQL_CONFORMANCE",
+    "SQL_KEYWORDS",
+    "SQL_IDENTIFIER_CASE",
+    "SQL_IDENTIFIER_QUOTE_CHAR",
+    "SQL_SPECIAL_CHARACTERS",
+    "SQL_SQL92_ENTRY_SQL",
+    "SQL_SQL92_INTERMEDIATE_SQL",
+    "SQL_SQL92_FULL_SQL",
+    "SQL_SUBQUERIES",
+    "SQL_EXPRESSIONS_IN_ORDERBY",
+    "SQL_CORRELATION_NAME",
+    "SQL_SEARCH_PATTERN_ESCAPE",
+    "SQL_CATALOG_TERM",
+    "SQL_CATALOG_NAME_SEPARATOR",
+    "SQL_SCHEMA_TERM",
+    "SQL_TABLE_TERM",
+    "SQL_PROCEDURES",
+    "SQL_ACCESSIBLE_TABLES",
+    "SQL_ACCESSIBLE_PROCEDURES",
+    "SQL_CATALOG_NAME",
+    "SQL_CATALOG_USAGE",
+    "SQL_SCHEMA_USAGE",
+    "SQL_COLUMN_ALIAS",
+    "SQL_DESCRIBE_PARAMETER",
+    "SQL_TXN_CAPABLE",
+    "SQL_TXN_ISOLATION_OPTION",
+    "SQL_DEFAULT_TXN_ISOLATION",
+    "SQL_MULTIPLE_ACTIVE_TXN",
+    "SQL_TXN_ISOLATION_LEVEL",
+    "SQL_NUMERIC_FUNCTIONS",
+    "SQL_STRING_FUNCTIONS",
+    "SQL_DATETIME_FUNCTIONS",
+    "SQL_SYSTEM_FUNCTIONS",
+    "SQL_CONVERT_FUNCTIONS",
+    "SQL_LIKE_ESCAPE_CLAUSE",
+    "SQL_MAX_COLUMN_NAME_LEN",
+    "SQL_MAX_TABLE_NAME_LEN",
+    "SQL_MAX_SCHEMA_NAME_LEN",
+    "SQL_MAX_CATALOG_NAME_LEN",
+    "SQL_MAX_IDENTIFIER_LEN",
+    "SQL_MAX_STATEMENT_LEN",
+    "SQL_MAX_CHAR_LITERAL_LEN",
+    "SQL_MAX_BINARY_LITERAL_LEN",
+    "SQL_MAX_COLUMNS_IN_TABLE",
+    "SQL_MAX_COLUMNS_IN_SELECT",
+    "SQL_MAX_COLUMNS_IN_GROUP_BY",
+    "SQL_MAX_COLUMNS_IN_ORDER_BY",
+    "SQL_MAX_COLUMNS_IN_INDEX",
+    "SQL_MAX_TABLES_IN_SELECT",
+    "SQL_MAX_CONCURRENT_ACTIVITIES",
+    "SQL_MAX_DRIVER_CONNECTIONS",
+    "SQL_MAX_ROW_SIZE",
+    "SQL_MAX_USER_NAME_LEN",
+    "SQL_ACTIVE_CONNECTIONS",
+    "SQL_ACTIVE_STATEMENTS",
+    "SQL_DATA_SOURCE_READ_ONLY",
+    "SQL_NEED_LONG_DATA_LEN",
+    "SQL_GETDATA_EXTENSIONS",
+    "SQL_CURSOR_COMMIT_BEHAVIOR",
+    "SQL_CURSOR_ROLLBACK_BEHAVIOR",
+    "SQL_CURSOR_SENSITIVITY",
+    "SQL_BOOKMARK_PERSISTENCE",
+    "SQL_DYNAMIC_CURSOR_ATTRIBUTES1",
+    "SQL_DYNAMIC_CURSOR_ATTRIBUTES2",
+    "SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1",
+    "SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2",
+    "SQL_STATIC_CURSOR_ATTRIBUTES1",
+    "SQL_STATIC_CURSOR_ATTRIBUTES2",
+    "SQL_KEYSET_CURSOR_ATTRIBUTES1",
+    "SQL_KEYSET_CURSOR_ATTRIBUTES2",
+    "SQL_SCROLL_OPTIONS",
+    "SQL_SCROLL_CONCURRENCY",
+    "SQL_FETCH_DIRECTION",
+    "SQL_ROWSET_SIZE",
+    "SQL_CONCURRENCY",
+    "SQL_ROW_NUMBER",
+    "SQL_STATIC_SENSITIVITY",
+    "SQL_BATCH_SUPPORT",
+    "SQL_BATCH_ROW_COUNT",
+    "SQL_PARAM_ARRAY_ROW_COUNTS",
+    "SQL_PARAM_ARRAY_SELECTS",
+    "SQL_PROCEDURE_TERM",
+    "SQL_POSITIONED_STATEMENTS",
+    "SQL_GROUP_BY",
+    "SQL_OJ_CAPABILITIES",
+    "SQL_ORDER_BY_COLUMNS_IN_SELECT",
+    "SQL_OUTER_JOINS",
+    "SQL_QUOTED_IDENTIFIER_CASE",
+    "SQL_CONCAT_NULL_BEHAVIOR",
+    "SQL_NULL_COLLATION",
+    "SQL_ALTER_TABLE",
+    "SQL_UNION",
+    "SQL_DDL_INDEX",
+    "SQL_MULT_RESULT_SETS",
+    "SQL_OWNER_USAGE",
+    "SQL_QUALIFIER_USAGE",
+    "SQL_TIMEDATE_ADD_INTERVALS",
+    "SQL_TIMEDATE_DIFF_INTERVALS",
+    "SQL_IC_UPPER",
+    "SQL_IC_LOWER",
+    "SQL_IC_SENSITIVE",
+    "SQL_IC_MIXED",
+    # API level globals
+    "apilevel",
+    "paramstyle",
+    "threadsafety",
+    # Module properties
+    "lowercase",
+    "native_uuid",
+]
+
+
+def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) -> None:
+    """
+    Enable connection pooling with the specified parameters.
+    By default:
+        - If not explicitly called, pooling will be auto-enabled with default values.
+
+    Args:
+        max_size (int): Maximum number of connections in the pool.
+        idle_timeout (int): Time in seconds before idle connections are closed.
+        enabled (bool): Whether to enable or disable pooling.
+
+    Returns:
+        None
+    """
     if not enabled:
         PoolingManager.disable()
     else:
         PoolingManager.enable(max_size, idle_timeout)
 
-import sys
+
 _original_module_setattr = sys.modules[__name__].__setattr__
 
+
 def _custom_setattr(name, value):
-    if name == 'lowercase':
+    if name == "lowercase":
         with _settings_lock:
             _settings.lowercase = bool(value)
             # Update the module's lowercase variable
@@ -178,82 +541,60 @@ def _custom_setattr(name, value):
     else:
         _original_module_setattr(name, value)
 
+
 # Replace the module's __setattr__ with our custom version
 sys.modules[__name__].__setattr__ = _custom_setattr
 
 
-# Export SQL constants at module level
-SQL_CHAR = ConstantsDDBC.SQL_CHAR.value
-SQL_VARCHAR = ConstantsDDBC.SQL_VARCHAR.value
-SQL_LONGVARCHAR = ConstantsDDBC.SQL_LONGVARCHAR.value
-SQL_WCHAR = ConstantsDDBC.SQL_WCHAR.value
-SQL_WVARCHAR = ConstantsDDBC.SQL_WVARCHAR.value
-SQL_WLONGVARCHAR = ConstantsDDBC.SQL_WLONGVARCHAR.value
-SQL_DECIMAL = ConstantsDDBC.SQL_DECIMAL.value
-SQL_NUMERIC = ConstantsDDBC.SQL_NUMERIC.value
-SQL_BIT = ConstantsDDBC.SQL_BIT.value
-SQL_TINYINT = ConstantsDDBC.SQL_TINYINT.value
-SQL_SMALLINT = ConstantsDDBC.SQL_SMALLINT.value
-SQL_INTEGER = ConstantsDDBC.SQL_INTEGER.value
-SQL_BIGINT = ConstantsDDBC.SQL_BIGINT.value
-SQL_REAL = ConstantsDDBC.SQL_REAL.value
-SQL_FLOAT = ConstantsDDBC.SQL_FLOAT.value
-SQL_DOUBLE = ConstantsDDBC.SQL_DOUBLE.value
-SQL_BINARY = ConstantsDDBC.SQL_BINARY.value
-SQL_VARBINARY = ConstantsDDBC.SQL_VARBINARY.value
-SQL_LONGVARBINARY = ConstantsDDBC.SQL_LONGVARBINARY.value
-SQL_DATE = ConstantsDDBC.SQL_DATE.value
-SQL_TIME = ConstantsDDBC.SQL_TIME.value
-SQL_TIMESTAMP = ConstantsDDBC.SQL_TIMESTAMP.value
+# Create a custom module class that uses properties instead of __setattr__
+class _MSSQLModule(types.ModuleType):
+    @property
+    def lowercase(self) -> bool:
+        """Get the lowercase setting."""
+        return _settings.lowercase
 
-# Export GetInfo constants at module level
-# Driver and database information
-SQL_DRIVER_NAME = GetInfoConstants.SQL_DRIVER_NAME.value
-SQL_DRIVER_VER = GetInfoConstants.SQL_DRIVER_VER.value
-SQL_DRIVER_ODBC_VER = GetInfoConstants.SQL_DRIVER_ODBC_VER.value
-SQL_DATA_SOURCE_NAME = GetInfoConstants.SQL_DATA_SOURCE_NAME.value
-SQL_DATABASE_NAME = GetInfoConstants.SQL_DATABASE_NAME.value
-SQL_SERVER_NAME = GetInfoConstants.SQL_SERVER_NAME.value
-SQL_USER_NAME = GetInfoConstants.SQL_USER_NAME.value
+    @lowercase.setter
+    def lowercase(self, value: bool) -> None:
+        """Set the lowercase setting."""
+        if not isinstance(value, bool):
+            raise ValueError("lowercase must be a boolean value")
+        with _settings_lock:
+            _settings.lowercase = value
 
-# SQL conformance and support
-SQL_SQL_CONFORMANCE = GetInfoConstants.SQL_SQL_CONFORMANCE.value
-SQL_KEYWORDS = GetInfoConstants.SQL_KEYWORDS.value
-SQL_IDENTIFIER_QUOTE_CHAR = GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value
-SQL_SEARCH_PATTERN_ESCAPE = GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value
+    @property
+    def native_uuid(self) -> bool:
+        """Get the native_uuid setting.
 
-# Catalog and schema support
-SQL_CATALOG_TERM = GetInfoConstants.SQL_CATALOG_TERM.value
-SQL_SCHEMA_TERM = GetInfoConstants.SQL_SCHEMA_TERM.value
-SQL_TABLE_TERM = GetInfoConstants.SQL_TABLE_TERM.value
-SQL_PROCEDURE_TERM = GetInfoConstants.SQL_PROCEDURE_TERM.value
+        Controls whether UNIQUEIDENTIFIER columns return uuid.UUID objects (True)
+        or str (False). Default is True.
+        Set to False to return str for pyodbc-compatible migration.
+        """
+        return _settings.native_uuid
 
-# Transaction support
-SQL_TXN_CAPABLE = GetInfoConstants.SQL_TXN_CAPABLE.value
-SQL_DEFAULT_TXN_ISOLATION = GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value
+    @native_uuid.setter
+    def native_uuid(self, value: bool) -> None:
+        """Set the native_uuid setting."""
+        if not isinstance(value, bool):
+            raise ValueError("native_uuid must be a boolean value")
+        with _settings_lock:
+            _settings.native_uuid = value
 
-# Data type support
-SQL_NUMERIC_FUNCTIONS = GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value
-SQL_STRING_FUNCTIONS = GetInfoConstants.SQL_STRING_FUNCTIONS.value
-SQL_DATETIME_FUNCTIONS = GetInfoConstants.SQL_DATETIME_FUNCTIONS.value
 
-# Limits
-SQL_MAX_COLUMN_NAME_LEN = GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value
-SQL_MAX_TABLE_NAME_LEN = GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value
-SQL_MAX_SCHEMA_NAME_LEN = GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value
-SQL_MAX_CATALOG_NAME_LEN = GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value
-SQL_MAX_IDENTIFIER_LEN = GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value
+# Replace the current module with our custom module class
+old_module: types.ModuleType = sys.modules[__name__]
+new_module: _MSSQLModule = _MSSQLModule(__name__)
 
-# Also provide a function to get all constants
-def get_info_constants():
-    """
-    Returns a dictionary of all available GetInfo constants.
-    
-    This provides all SQLGetInfo constants that can be used with the Connection.getinfo() method
-    to retrieve metadata about the database server and driver.
-    
-    Returns:
-        dict: Dictionary mapping constant names to their integer values
-    """
-    return {name: member.value for name, member in GetInfoConstants.__members__.items()}
+# Copy all existing attributes to the new module
+for attr_name in dir(old_module):
+    if attr_name != "__class__":
+        try:
+            setattr(new_module, attr_name, getattr(old_module, attr_name))
+        except AttributeError:
+            pass
 
+# Replace the module in sys.modules
+sys.modules[__name__] = new_module
+
+# Initialize property values
+lowercase: bool = _settings.lowercase
+native_uuid: bool = _settings.native_uuid

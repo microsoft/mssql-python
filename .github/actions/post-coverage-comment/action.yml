@@ -1,0 +1,105 @@
+name: Post Coverage Comment
+description: Posts a standardized code coverage comment on a pull request
+
+inputs:
+  pr_number:
+    description: 'Pull request number'
+    required: true
+  coverage_percentage:
+    description: 'Overall coverage percentage'
+    required: true
+  covered_lines:
+    description: 'Number of covered lines'
+    required: true
+  total_lines:
+    description: 'Total number of lines'
+    required: true
+  patch_coverage_pct:
+    description: 'Patch/diff coverage percentage'
+    required: true
+  low_coverage_files:
+    description: 'Files with lowest coverage (multiline)'
+    required: true
+  patch_coverage_summary:
+    description: 'Patch coverage summary markdown (multiline)'
+    required: true
+  ado_url:
+    description: 'Azure DevOps build URL'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Post coverage comment
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: Code Coverage Report
+        number: ${{ inputs.pr_number }}
+        message: |
+          # 📊 Code Coverage Report
+          
+          <table>
+          <tr>
+          <td align="center" width="200">
+          
+          ### 🔥 Diff Coverage
+          ### **${{ inputs.patch_coverage_pct }}**
+          <br>
+          </td>
+          <td align="center" width="200">
+          
+          ### 🎯 Overall Coverage
+          ### **${{ inputs.coverage_percentage }}**
+          <br>
+          </td>
+          <td>
+          
+          **📈 Total Lines Covered:** `${{ inputs.covered_lines }}` out of `${{ inputs.total_lines }}`  
+          **📁 Project:** `mssql-python`  
+          
+          </td>
+          </tr>
+          </table>
+          
+          ---
+          
+          ${{ inputs.patch_coverage_summary }}
+          
+          ---
+          ### 📋 Files Needing Attention
+          
+          <details>
+          <summary>📉 <strong>Files with overall lowest coverage</strong> (click to expand)</summary>
+          <br>
+          
+          ```diff
+          ${{ inputs.low_coverage_files }}
+          ```
+          
+          </details>
+          
+          ---
+          ### 🔗 Quick Links
+
+          <table>
+          <tr>
+          <td align="left" width="200">
+          <b>⚙️ Build Summary</b>
+          </td>
+          <td align="left">
+          <b>📋 Coverage Details</b>
+          </td>
+          </tr>
+          <tr>
+          <td align="left" width="200">
+
+          [View Azure DevOps Build](${{ inputs.ado_url }})
+
+          </td>
+          <td align="left">
+
+          [Browse Full Coverage Report](${{ inputs.ado_url }}&view=codecoverage-tab) 
+
+          </td>
+          </tr>
+          </table>

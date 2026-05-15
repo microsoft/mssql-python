@@ -1,7 +1,22 @@
+# Testing dependencies
 pytest
 pytest-cov
-pybind11
 coverage
 unittest-xml-reporting
-setuptools
 psutil
+pyarrow
+
+# Build dependencies
+pybind11
+setuptools
+
+# Code formatting and linting
+black
+autopep8
+flake8
+pylint
+cpplint
+mypy
+
+# Type checking stubs
+types-setuptools

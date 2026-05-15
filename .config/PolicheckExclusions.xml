@@ -1,0 +1,11 @@
+<PoliCheckExclusions>
+  <!-- Each of these exclusions is a folder name - if \[name]\ exists in the file path, it will be skipped -->
+  <Exclusion Type="FolderPathFull">
+    tests|benchmarks|eng|OneBranchPipelines|examples|docs|build-artifacts|dist|__pycache__|myvenv|testenv
+  </Exclusion>
+
+  <!-- The file(s) named with any of these specified file names will be skipped during the scan regardless which folder they are in -->
+  <Exclusion Type="FileName">
+    CHANGELOG.md|README.md|LICENSE|NOTICE.txt|ROADMAP.md|CODE_OF_CONDUCT.md|CONTRIBUTING.md|SECURITY.md|SUPPORT.md
+  </Exclusion>
+</PoliCheckExclusions>

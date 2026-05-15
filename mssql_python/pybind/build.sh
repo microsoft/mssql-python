@@ -118,6 +118,21 @@ else
             else
                 echo "[WARNING] macOS dylib configuration encountered issues"
             fi
+            
+            # Codesign the Python extension module (.so file) to prevent SIP crashes
+            echo "[ACTION] Codesigning Python extension module..."
+            SO_FILE="$PARENT_DIR/"*.so
+            for so in $SO_FILE; do
+                if [ -f "$so" ]; then
+                    echo "  Signing: $so"
+                    codesign -s - -f "$so" 2>/dev/null
+                    if [ $? -eq 0 ]; then
+                        echo "[SUCCESS] Python extension codesigned: $so"
+                    else
+                        echo "[WARNING] Failed to codesign: $so"
+                    fi
+                fi
+            done
         fi
     else
         echo "[ERROR] Failed to copy .so file"

@@ -1,0 +1,62 @@
+# Step template: Install mssql_py_core from NuGet wheel package
+#
+# Usage:
+#   # Windows (host)
+#   - template: steps/install-mssql-py-core.yml
+#     parameters:
+#       platform: windows
+#
+#   # macOS / Linux (host)
+#   - template: steps/install-mssql-py-core.yml
+#     parameters:
+#       platform: unix
+#
+#   # Inside a Docker container
+#   - template: steps/install-mssql-py-core.yml
+#     parameters:
+#       platform: container
+#       containerName: test-container-$(distroName)
+#       venvActivate: 'source /opt/venv/bin/activate'
+
+parameters:
+  - name: platform
+    type: string
+    values: [windows, unix, container]
+
+  - name: containerName
+    type: string
+    default: ''
+
+  - name: venvActivate
+    type: string
+    default: 'source /opt/venv/bin/activate'
+
+  - name: displaySuffix
+    type: string
+    default: ''
+
+steps:
+# Windows: run the PowerShell script directly on the host
+- ${{ if eq(parameters.platform, 'windows') }}:
+  - task: PowerShell@2
+    displayName: 'Install mssql_py_core from NuGet wheels${{ parameters.displaySuffix }}'
+    inputs:
+      targetType: 'filePath'
+      filePath: 'eng/scripts/install-mssql-py-core.ps1'
+
+# Unix host (macOS, Linux without container)
+- ${{ if eq(parameters.platform, 'unix') }}:
+  - script: |
+      chmod +x eng/scripts/install-mssql-py-core.sh
+      ./eng/scripts/install-mssql-py-core.sh
+    displayName: 'Install mssql_py_core from NuGet wheels${{ parameters.displaySuffix }}'
+
+# Inside a Docker container
+- ${{ if eq(parameters.platform, 'container') }}:
+  - script: |
+      docker exec ${{ parameters.containerName }} bash -c "
+        ${{ parameters.venvActivate }}
+        chmod +x eng/scripts/install-mssql-py-core.sh
+        ./eng/scripts/install-mssql-py-core.sh
+      "
+    displayName: 'Install mssql_py_core in ${{ parameters.containerName }}${{ parameters.displaySuffix }}'

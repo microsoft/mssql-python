@@ -1,8 +1,8 @@
 ### Work Item / Issue Reference  
 <!-- 
 IMPORTANT: Please follow the PR template guidelines below.
-For mssql-python maintainers: Insert your ADO Work Item ID below (e.g. AB#37452)
-For external contributors: Insert Github Issue number below (e.g. #149)
+For mssql-python maintainers: Insert your ADO Work Item ID below 
+For external contributors: Insert Github Issue number below
 Only one reference is required - either GitHub issue OR ADO Work Item.
 -->
 
@@ -37,6 +37,9 @@ STYLE: (short-description)
 
 > For Refactor, without any feature changes
 REFACTOR: (short-description)
+
+> For performance improvements
+PERF: (short-description)
 
 > For release related changes, without any feature changes
 RELEASE: #<RELEASE_VERSION> (short-description) 

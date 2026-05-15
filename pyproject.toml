@@ -1,0 +1,47 @@
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.tox
+  | build
+  | dist
+  | __pycache__
+  | htmlcov
+)/
+'''
+
+[tool.autopep8]
+max_line_length = 100
+ignore = "E203,W503"
+in-place = true
+recursive = true
+aggressive = 3
+
+[tool.pylint.messages_control]
+disable = [
+    "fixme",
+    "no-member",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "invalid-name",
+    "useless-parent-delegation"
+]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.flake8]
+max-line-length = 100
+extend-ignore = ["E203", "W503"]
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    ".venv",
+    "htmlcov"
+]

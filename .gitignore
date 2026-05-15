@@ -63,3 +63,9 @@ build/
 
 # main.py - no need to track this file
 main.py
+
+# Extracted mssql_py_core (from eng/scripts/install-mssql-py-core)
+mssql_py_core/
+
+# learning files
+learnings/
