@@ -2015,7 +2015,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     def _transpose_rowwise_to_columnwise(
         self,
-        seq_of_parameters: Union[Sequence[Sequence[Any]], Sequence[Mapping[str, Any]]],
+        seq_of_parameters: Sequence[Sequence[Any]],
     ) -> tuple[list, int]:
         """
         Convert sequence of rows (row-wise) into list of columns (column-wise),
