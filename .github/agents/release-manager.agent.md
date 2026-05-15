@@ -82,14 +82,13 @@ Execute all four sub-steps automatically — do not ask the user before running 
    gh issue list --repo microsoft/mssql-python --state closed \
      --json number,title,closedAt,url --search "closed:>LAST_RELEASE_DATE"
    ```
-   Cross-check each closed issue against the git log output from sub-step 1. Flag any issue whose number does not appear in any commit message — it may have been fixed in `microsoft/mssql-rs` and shipped via a `mssql-py-core` bump.
+   Cross-check each closed issue against the git log output from sub-step 1. Flag any issue whose number does not appear in any commit message — its fix may have come from `microsoft/mssql-rs` rather than a Python-side commit.
 
-4. **Rust repo cross-check** (run once per flagged issue — no user prompt needed):
+4. **Rust fix detection via issue body/comments** (run once per flagged issue — no user prompt needed):
    ```
-   gh pr list --repo microsoft/mssql-rs --state merged \
-     --search "<issue-number> in:body" --json number,title,body,mergedAt
+   gh issue view <number> --repo microsoft/mssql-python --json body,comments
    ```
-   For each match found, add the fix to the release notes attributed to `mssql_py_core` with links to both the `mssql-rs` PR and the `mssql-python` issue. If no match is found for a flagged issue, note it explicitly in the sanity-check summary so the user can investigate.
+   Scan the body and all comments for any reference to `microsoft/mssql-rs` (e.g. a linked PR URL or a "fixed by mssql-rs#N" mention). If found, that issue was resolved on the Rust side — include it in the release notes attributed to `mssql_py_core` with links to both the `mssql-rs` PR and the `mssql-python` issue. If no `mssql-rs` reference is found, note the issue in the sanity-check summary as "closed with no linked fix" so the user can verify (e.g. it may have been closed as duplicate/won't-fix).
 
 Present the full list of Python + Rust changes **and** the closed-issue cross-check results to the user for a quick sanity check before writing any files.
 
