@@ -35,6 +35,23 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
+## What's new in v1.7.0
+
+### Enhancements
+
+- **UTF-16 String Performance** - UTF-16 strings are now handled using `simdutf` and `std::u16string`, significantly reducing encoding/decoding overhead for Unicode-heavy workloads.
+- **execute() Hot Path Optimization** - Optimized the `execute()` hot path with soft cursor reset, prepared statement caching, and guarded diagnostics, reducing per-call overhead for high-frequency queries.
+
+### Bug Fixes
+
+- **Login Failure Exception Type** - Login failures are now correctly raised as `mssql_python` exceptions (e.g. `OperationalError`) instead of a generic `RuntimeError`.
+- **GIL Release During ODBC Calls** - The driver now releases the GIL during all blocking ODBC statement, fetch, transaction, and connection attribute calls, improving concurrency for multi-threaded applications.
+- **executemany Decimal Sign Change** - Fixed a `RuntimeError` in `executemany` when decimal values changed signs across rows.
+- **CP1252 VARCHAR Inconsistency** - Fixed inconsistent retrieval of CP1252-encoded data in `VARCHAR` columns between Windows and Linux.
+- **RHEL 8 / glibc 2.28 Wheel Support** - Added `manylinux_2_28` build targets, enabling installation on Red Hat Enterprise Linux 8 and other glibc 2.28 compatible distributions.
+- **macOS Python 3.10 Universal2 Wheel** - Fixed missing `universal2` wheel for Python 3.10 on macOS, restoring native Apple Silicon support for that version.
+- **BulkCopy Empty String in NVARCHAR(MAX)** - Fixed `cursor.bulkcopy()` failing with SQL error 40197/4804 when any row contained an empty string `""` in an `NVARCHAR(MAX)` or `VARCHAR(MAX)` column. *(via `mssql_py_core`)*
+
 ## What's new in v1.6.0
 
 ### Enhancements
