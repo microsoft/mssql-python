@@ -3,6 +3,7 @@
 
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
+#include "utf_utils.h"
 #include <algorithm>
 #include <memory>
 #include <pybind11/pybind11.h>
@@ -45,7 +46,7 @@ static SqlHandlePtr getEnvHandle() {
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
-Connection::Connection(const std::wstring& conn_str, bool use_pool)
+Connection::Connection(const std::u16string& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
     allocateDbcHandle();
 }
@@ -74,17 +75,7 @@ void Connection::connect(const py::dict& attrs_before) {
             setAutocommit(_autocommit);
         }
     }
-    SQLWCHAR* connStrPtr;
-#if defined(__APPLE__) || defined(__linux__)  // macOS/Linux handling
-    LOG("Creating connection string buffer for macOS/Linux");
-    std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
-    // Ensure the buffer is null-terminated
-    LOG("Connection string buffer size=%zu", connStrBuffer.size());
-    connStrPtr = connStrBuffer.data();
-    LOG("Connection string buffer created");
-#else
-    connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
-#endif
+    SQLWCHAR* connStrPtr = reinterpretU16stringAsSqlWChar(_connStr);
     SQLRETURN ret;
     {
         // Release the GIL during the blocking ODBC connect call.
@@ -179,9 +170,17 @@ void Connection::disconnect() {
 // DB spec compliant
 void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
+        // Format: "SQLSTATE:XXXXX:<odbc_error_message>" — parsed by _raise_connection_error()
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
-        ThrowStdException(errorMsg);
+        std::string sqlState = err.sqlState;
+        std::string errorMsg = err.ddbcErrorMsg;
+        // Only add SQLSTATE prefix if we have a valid 5-character code
+        if (sqlState.length() == 5) {
+            ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
+        } else {
+            // No valid SQLSTATE (e.g., SQL_INVALID_HANDLE) — throw clean error message
+            ThrowStdException(errorMsg);
+        }
     }
 }
 
@@ -221,9 +220,16 @@ void Connection::setAutocommit(bool enable) {
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);
-    SQLRETURN ret =
-        SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
-                              reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC call. Holding the GIL
+        // here can deadlock when the network path goes through another
+        // Python thread (e.g. an in-process SSH tunnel via paramiko +
+        // sshtunnel), since that thread also needs the GIL to run.
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                                    reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    }
     checkError(ret);
     if (value == SQL_AUTOCOMMIT_ON) {
         LOG("Autocommit enabled");
@@ -296,9 +302,15 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         // Get the integer value
         int64_t longValue = value.cast<int64_t>();
 
-        SQLRETURN ret = SQLSetConnectAttr_ptr(
-            _dbcHandle->get(), attribute,
-            reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
+        SQLRETURN ret;
+        {
+            // Release the GIL around the ODBC call for consistency with the
+            // other connection-attribute paths; some attributes can block.
+            py::gil_scoped_release release;
+            ret = SQLSetConnectAttr_ptr(
+                _dbcHandle->get(), attribute,
+                reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
+        }
 
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Failed to set integer attribute=%d, ret=%d", attribute, ret);
@@ -308,41 +320,23 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return ret;
     } else if (py::isinstance<py::str>(value)) {
         try {
-            std::string utf8_str = value.cast<std::string>();
-
-            // Convert to wide string
-            std::wstring wstr = Utf8ToWString(utf8_str);
-            if (wstr.empty() && !utf8_str.empty()) {
-                LOG("Failed to convert string value to wide string for "
-                    "attribute=%d",
-                    attribute);
-                return SQL_ERROR;
-            }
-            this->wstrStringBuffer.clear();
-            this->wstrStringBuffer = std::move(wstr);
+            this->wstrStringBuffer = value.cast<std::u16string>();
 
             SQLPOINTER ptr;
             SQLINTEGER length;
+            // Copy to a stack-local buffer so that releasing the GIL below
+            // doesn't expose a race where another thread overwrites the
+            // member wstrStringBuffer (and reallocates) while the ODBC
+            // driver is still reading from ptr.
+            std::u16string localStrBuffer = this->wstrStringBuffer;
+            ptr = reinterpretU16stringAsSqlWChar(localStrBuffer);
+            length = static_cast<SQLINTEGER>(localStrBuffer.length() * sizeof(SQLWCHAR));
 
-#if defined(__APPLE__) || defined(__linux__)
-            // For macOS/Linux, convert wstring to SQLWCHAR buffer
-            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(this->wstrStringBuffer);
-            if (sqlwcharBuffer.empty() && !this->wstrStringBuffer.empty()) {
-                LOG("Failed to convert wide string to SQLWCHAR buffer for "
-                    "attribute=%d",
-                    attribute);
-                return SQL_ERROR;
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             }
-
-            ptr = sqlwcharBuffer.data();
-            length = static_cast<SQLINTEGER>(sqlwcharBuffer.size() * sizeof(SQLWCHAR));
-#else
-            // On Windows, wchar_t and SQLWCHAR are the same size
-            ptr = const_cast<SQLWCHAR*>(this->wstrStringBuffer.c_str());
-            length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
-#endif
-
-            SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             if (!SQL_SUCCEEDED(ret)) {
                 LOG("Failed to set string attribute=%d, ret=%d", attribute, ret);
             } else {
@@ -355,13 +349,18 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         }
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         try {
-            std::string binary_data = value.cast<std::string>();
-            this->strBytesBuffer.clear();
-            this->strBytesBuffer = std::move(binary_data);
-            SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.c_str());
-            SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
+            // Copy to a stack-local buffer so that releasing the GIL
+            // doesn't expose a race where another thread overwrites the
+            // member strBytesBuffer while the driver reads from ptr.
+            std::string localBytesBuffer = value.cast<std::string>();
+            SQLPOINTER ptr = const_cast<char*>(localBytesBuffer.c_str());
+            SQLINTEGER length = static_cast<SQLINTEGER>(localBytesBuffer.size());
 
-            SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            }
             if (!SQL_SUCCEEDED(ret)) {
                 LOG("Failed to set binary attribute=%d, ret=%d", attribute, ret);
             } else {
@@ -412,8 +411,14 @@ bool Connection::reset() {
         ThrowStdException("Connection handle not allocated");
     }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
-                                          (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+    SQLRETURN ret;
+    {
+        // Release the GIL around the ODBC call for consistency with the
+        // other connection-attribute paths; some attributes can block.
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
+                                    (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
         return false;
@@ -423,8 +428,11 @@ bool Connection::reset() {
     // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
     // isolation level settings from leaking between pooled connection usages.
     LOG("Resetting transaction isolation level to READ COMMITTED");
-    ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
-                                (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
+                                    (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
         return false;
@@ -442,10 +450,9 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
-ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool,
+ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
                                    const py::dict& attrsBefore)
-    : _usePool(usePool) {
-    _connStr = Utf8ToWString(connStr);
+    : _usePool(usePool), _connStr(connStr) {
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
     } else {
@@ -586,9 +593,7 @@ void ConnectionHandle::setAttr(int attribute, py::object value) {
             std::string errorMsg =
                 "Failed to set connection attribute " + std::to_string(attribute);
             if (!errorInfo.ddbcErrorMsg.empty()) {
-                // Convert wstring to string for concatenation
-                std::string ddbcErrorStr = WideToUTF8(errorInfo.ddbcErrorMsg);
-                errorMsg += ": " + ddbcErrorStr;
+                errorMsg += ": " + errorInfo.ddbcErrorMsg;
             }
 
             LOG("Connection setAttribute failed: %s", errorMsg.c_str());
