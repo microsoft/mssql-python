@@ -996,3 +996,53 @@ def test_stringify_uuids_with_tuple_values():
     assert row[2] == "hello"
     # Internal storage should now be a list (converted from tuple)
     assert isinstance(row._values, list)
+
+
+def test_row_string_key_indexing():
+    """Test Row supports string-key indexing via __getitem__ (row['col'])."""
+    from mssql_python.row import Row
+
+    row = Row(
+        [1, "foo", 3.14],
+        {"ProductID": 0, "Name": 1, "Price": 2},
+        cursor=None,
+    )
+
+    # String-key access
+    assert row["ProductID"] == 1
+    assert row["Name"] == "foo"
+    assert row["Price"] == 3.14
+
+    # Integer index access still works
+    assert row[0] == 1
+    assert row[1] == "foo"
+    assert row[2] == 3.14
+
+    # Slice access still works
+    assert row[0:2] == [1, "foo"]
+
+    # Missing key raises KeyError
+    with pytest.raises(KeyError):
+        row["nonexistent"]
+
+
+def test_row_string_key_case_insensitive_with_lowercase():
+    """Test Row string-key indexing is case-insensitive when cursor.lowercase is True."""
+    from mssql_python.row import Row
+    from unittest.mock import Mock
+
+    mock_cursor = Mock()
+    mock_cursor.lowercase = True
+    mock_cursor.connection._output_converters = None
+
+    row = Row(
+        [1, "bar"],
+        {"productid": 0, "name": 1},
+        cursor=mock_cursor,
+    )
+
+    # Exact match
+    assert row["productid"] == 1
+    # Case-insensitive match
+    assert row["ProductID"] == 1
+    assert row["NAME"] == "bar"

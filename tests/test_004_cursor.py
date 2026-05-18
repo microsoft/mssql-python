@@ -2307,6 +2307,54 @@ def test_executemany_Decimal_list(cursor, db_connection):
 def test_executemany_decimal_sign_change(cursor, db_connection):
     """Test executemany with decimals that change signs (GH-557).
 
+    When the sample value chosen for column sizing is shorter than a negative
+    value in the batch, the formatted string (with a leading '-') can exceed
+    the allocated column_size, causing a RuntimeError.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_decimal_sign (col_1 DECIMAL(28, 14))")
+
+        # Case 1: negative first, then positive — previously worked
+        data1 = [(decimal.Decimal("-0.1"),), (decimal.Decimal("1.0"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data1)
+
+        # Case 2: positive first, then negative — previously failed
+        data2 = [(decimal.Decimal("0.1"),), (decimal.Decimal("-0.1"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data2)
+
+        # Case 3: positive then negative with different integer parts
+        data3 = [(decimal.Decimal("1.0"),), (decimal.Decimal("-0.1"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data3)
+
+        # Case 4: multiple sign changes in a single batch
+        data4 = [
+            (decimal.Decimal("100.5"),),
+            (decimal.Decimal("-0.001"),),
+            (decimal.Decimal("0.5"),),
+            (decimal.Decimal("-999.99"),),
+        ]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data4)
+
+        db_connection.commit()
+
+        # Verify row count
+        cursor.execute("SELECT COUNT(*) FROM #pytest_decimal_sign")
+        count = cursor.fetchone()[0]
+        assert count == 10
+
+        # Verify data correctness for the originally-failing case
+        cursor.execute("SELECT col_1 FROM #pytest_decimal_sign ORDER BY col_1")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert decimal.Decimal("-999.99") in [r.quantize(decimal.Decimal("0.01")) for r in rows]
+        assert decimal.Decimal("0.1") in [r.quantize(decimal.Decimal("0.1")) for r in rows]
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_sign")
+        db_connection.commit()
+
+
+def test_executemany_decimal_sign_change(cursor, db_connection):
+    """Test executemany with decimals that change signs (GH-557).
+
     When the sample value chosen for column sizing is a positive Decimal,
     its format(v, 'f') string is shorter than the negative counterpart
     (e.g. '1.0' vs '-0.1'), causing the C++ buffer validation to reject
@@ -16163,6 +16211,44 @@ def test_catalog_rownumber_increments_correctly(cursor, db_connection, catalog_f
         assert cursor.rownumber == expected_idx
 
     assert cursor.fetchone() is None
+
+
+@pytest.mark.parametrize(
+    "raiserror_len",
+    [2047, 4000],
+)
+def test_long_raiserror(cursor, raiserror_len):
+    """Test that long error messages from RAISERROR are correctly captured"""
+    query = f"""
+        DECLARE @msg NVARCHAR(MAX) = REPLICATE(N'a', {raiserror_len});
+        RAISERROR(@msg, 16, 1);
+    """
+    try:
+        cursor.execute(query)
+    except mssql_python.ProgrammingError as e:
+        msg = e.args[0]
+        if raiserror_len <= 2047:  # SQL Server length cap
+            assert msg.endswith("a" * raiserror_len), msg
+        else:
+            assert msg.endswith("a" * (2047 - 3) + "..."), msg
+
+
+@pytest.mark.parametrize(
+    "message_len",
+    [2047, 4000, 8000, 8001, 80000],
+)
+def test_long_print_message(cursor, message_len):
+    """Test that long messages from PRINT are correctly captured."""
+    query = f"""
+        DECLARE @msg VARCHAR(MAX);
+        /* Cast to VARCHAR(MAX) so REPLICATE is not truncated to 8000 bytes. */
+        SET @msg = REPLICATE(CAST('a' AS VARCHAR(MAX)), {message_len});
+        PRINT @msg;
+    """
+    cursor.execute(query)
+    msg = cursor.messages[0][1]
+    # SQL Server truncates at 8000 characters
+    assert msg.endswith("a" * min(8000, message_len)), msg
 
 
 @pytest.mark.parametrize(

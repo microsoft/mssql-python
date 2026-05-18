@@ -156,8 +156,18 @@ class Row:
 
         return converted_values
 
-    def __getitem__(self, index: int) -> Any:
-        """Allow accessing by numeric index: row[0]"""
+    def __getitem__(self, index) -> Any:
+        """Allow accessing by numeric index (row[0]) or column name (row["col"])."""
+        if isinstance(index, str):
+            if index in self._column_map:
+                return self._values[self._column_map[index]]
+            # Case-insensitive lookup when lowercase is enabled
+            if hasattr(self._cursor, "lowercase") and self._cursor.lowercase:
+                index_lower = index.lower()
+                for col_name in self._column_map:
+                    if col_name.lower() == index_lower:
+                        return self._values[self._column_map[col_name]]
+            raise KeyError(f"Row has no column '{index}'")
         return self._values[index]
 
     def __getattr__(self, name: str) -> Any:
