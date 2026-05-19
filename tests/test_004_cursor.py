@@ -16235,4 +16235,4 @@ def test_long_print_message(cursor, message_len):
     cursor.execute(query)
     msg = cursor.messages[0][1]
     # SQL Server truncates at 8000 characters
-    assert msg.endswith("a" * min(8000, message_len)), msg 
+    assert msg.endswith("a" * min(8000, message_len)), msg
