@@ -31,6 +31,34 @@ COVERAGE_MODE=false
 if [[ "${1:-}" == "codecov" || "${1:-}" == "--coverage" ]]; then
     COVERAGE_MODE=true
     echo "[MODE] Enabling Clang coverage instrumentation"
+    
+    # For coverage builds, join multi-line LOG statements to simplify LCOV filtering
+    # This works on a temporary copy - original source is restored on exit
+    echo "[ACTION] Preparing source for coverage build (joining LOG statements)"
+    
+    # Save current directory
+    ORIGINAL_DIR=$(pwd)
+    
+    # Create backup directory
+    BACKUP_DIR="${ORIGINAL_DIR}/.source_backup_coverage"
+    rm -rf "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
+    
+    # Backup all .cpp and .hpp files
+    find . -maxdepth 2 -type f \( -name "*.cpp" -o -name "*.hpp" \) -exec cp {} "$BACKUP_DIR/" \;
+    
+    # Set trap to restore source files on exit (success or failure)
+    trap 'echo "[CLEANUP] Restoring original source files"; cp -f "$BACKUP_DIR"/* "$ORIGINAL_DIR/" 2>/dev/null || true; rm -rf "$BACKUP_DIR"' EXIT
+    
+    # Join LOG statements using the helper script
+    SCRIPT_PATH="${ORIGINAL_DIR}/../../eng/scripts/join_logs_for_coverage.py"
+    if [[ -f "$SCRIPT_PATH" ]]; then
+        python3 "$SCRIPT_PATH" "$ORIGINAL_DIR"
+        echo "[SUCCESS] LOG statements joined for coverage build"
+    else
+        echo "[WARNING] join_logs_for_coverage.py not found at $SCRIPT_PATH"
+        echo "[WARNING] Continuing with original source (LOG filtering may be incomplete)"
+    fi
 fi
 
 # Get Python version from active interpreter

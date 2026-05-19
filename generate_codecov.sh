@@ -74,32 +74,42 @@ fi
 
 echo "[INFO] Using pybind module: $PYBIND_SO"
 
-# Export C++ coverage, excluding Python headers, pybind11, and system includes
+# Export C++ coverage, excluding Python headers, pybind11, system includes, and vendored deps
 llvm-cov export "$PYBIND_SO" \
   -instr-profile=default.profdata \
-  -ignore-filename-regex='(python3\.[0-9]+|cpython|pybind11|/usr/include/|/usr/lib/)' \
+  -ignore-filename-regex='(python3\.[0-9]+|cpython|pybind11|/usr/include/|/usr/lib/|build/_deps/)' \
   --skip-functions \
   -format=lcov > cpp-coverage.info
 
-# Note: LCOV exclusion markers (LCOV_EXCL_LINE) should be added to source code
-# to exclude LOG() statements from coverage. However, for automated exclusion
-# of all LOG lines without modifying source code, we can use geninfo's --omit-lines
-# feature during the merge step (see below).
+# Note: LCOV exclusion markers (LCOV_EXCL_LINE) are processed below
 
 echo "==================================="
 echo "[STEP 4] Merging Python + C++ coverage"
 echo "==================================="
 
-# Merge LCOV reports (ignore inconsistencies in Python LCOV export)
-echo "[ACTION] Merging Python and C++ coverage"
-lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
+# Merge LCOV reports and filter LOG statements using lcov's built-in exclusion
+# The --rc option sets lcov_excl_line to match any line containing LOG macros
+# Since we joined multi-line LOGs during build, they're now on single lines
+echo "[ACTION] Merging Python and C++ coverage with LOG exclusion"
+lcov -a python-coverage.info -a cpp-coverage.info -o total-unfiltered.info \
+  --rc lcov_excl_line='\bLOG[A-Z_]*\s*\(' \
   --ignore-errors inconsistent,corrupt
+
+echo "[INFO] Coverage merged with LOG statements excluded"
+
+# Defense-in-depth: drop any vendored third-party sources pulled in via CMake
+# FetchContent (e.g. simdutf). The llvm-cov ignore-filename-regex above is the
+# primary filter; this catches anything that slips through future deps.
+echo "[ACTION] Removing vendored third-party sources from merged coverage"
+lcov --remove total-unfiltered.info '*/build/_deps/*' -o total.info \
+  --ignore-errors inconsistent,unused
 
 # Normalize paths so everything starts from mssql_python/
 echo "[ACTION] Normalizing paths in LCOV report"
 sed -i "s|$(pwd)/||g" total.info
 
 # Generate full HTML report
+echo "[ACTION] Generating HTML coverage report"
 genhtml total.info \
   --output-directory unified-coverage \
   --quiet \
