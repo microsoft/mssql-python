@@ -26,17 +26,28 @@ def join_log_statements(content: str) -> str:
             # Start collecting the full statement
             full_statement = line
             paren_depth = line.count('(') - line.count(')')
+            start_line = i + 1  # For error reporting
             i += 1
+            lines_collected = 1
+            max_lines = 20  # Safety limit to prevent infinite loops
             
             # Continue collecting until we close all parentheses
-            while i < len(lines) and paren_depth > 0:
+            while i < len(lines) and paren_depth > 0 and lines_collected < max_lines:
                 next_line = lines[i]
                 full_statement += ' ' + next_line.strip()
                 paren_depth += next_line.count('(') - next_line.count(')')
                 i += 1
+                lines_collected += 1
             
-            # Add the joined statement
-            result.append(full_statement)
+            # Validation: Check if we successfully closed all parentheses
+            if paren_depth != 0:
+                print(f"[WARNING] Unbalanced parentheses in LOG statement starting at line {start_line}")
+                print(f"[WARNING] Collected {lines_collected} lines, paren_depth={paren_depth}")
+                # Keep the original multi-line format for safety
+                result.extend(lines[start_line-1:i])
+            else:
+                # Add the joined statement
+                result.append(full_statement)
         else:
             result.append(line)
             i += 1

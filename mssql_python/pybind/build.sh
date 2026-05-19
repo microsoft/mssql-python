@@ -33,31 +33,42 @@ if [[ "${1:-}" == "codecov" || "${1:-}" == "--coverage" ]]; then
     echo "[MODE] Enabling Clang coverage instrumentation"
     
     # For coverage builds, join multi-line LOG statements to simplify LCOV filtering
-    # This works on a temporary copy - original source is restored on exit
+    # Original source is backed up and must be restored by generate_codecov.sh after analysis
     echo "[ACTION] Preparing source for coverage build (joining LOG statements)"
     
     # Save current directory
     ORIGINAL_DIR=$(pwd)
     
-    # Create backup directory
-    BACKUP_DIR="${ORIGINAL_DIR}/.source_backup_coverage"
-    rm -rf "$BACKUP_DIR"
-    mkdir -p "$BACKUP_DIR"
+    # Create backup using tar to preserve directory structure
+    BACKUP_FILE="${ORIGINAL_DIR}/.source_backup_coverage.tar.gz"
+    echo "[INFO] Creating backup of source files"
+    tar -czf "$BACKUP_FILE" --exclude='build' --exclude='.source_backup*' \
+        $(find . -maxdepth 2 -type f \( -name "*.cpp" -o -name "*.hpp" \) -o -type d -name connection) 2>/dev/null || true
     
-    # Backup all .cpp and .hpp files
-    find . -maxdepth 2 -type f \( -name "*.cpp" -o -name "*.hpp" \) -exec cp {} "$BACKUP_DIR/" \;
-    
-    # Set trap to restore source files on exit (success or failure)
-    trap 'echo "[CLEANUP] Restoring original source files"; cp -f "$BACKUP_DIR"/* "$ORIGINAL_DIR/" 2>/dev/null || true; rm -rf "$BACKUP_DIR"' EXIT
+    if [[ ! -f "$BACKUP_FILE" ]]; then
+        echo "[ERROR] Failed to create source backup"
+        exit 1
+    fi
     
     # Join LOG statements using the helper script
     SCRIPT_PATH="${ORIGINAL_DIR}/../../eng/scripts/join_logs_for_coverage.py"
     if [[ -f "$SCRIPT_PATH" ]]; then
         python3 "$SCRIPT_PATH" "$ORIGINAL_DIR"
-        echo "[SUCCESS] LOG statements joined for coverage build"
+        if [[ $? -eq 0 ]]; then
+            echo "[SUCCESS] LOG statements joined for coverage build"
+            echo "[INFO] Original source backed up to $BACKUP_FILE"
+            echo "[IMPORTANT] Run 'tar -xzf $BACKUP_FILE' in $(pwd) to restore after coverage analysis"
+        else
+            echo "[ERROR] Failed to join LOG statements"
+            # Restore backup and exit
+            tar -xzf "$BACKUP_FILE" 2>/dev/null
+            rm -f "$BACKUP_FILE"
+            exit 1
+        fi
     else
         echo "[WARNING] join_logs_for_coverage.py not found at $SCRIPT_PATH"
         echo "[WARNING] Continuing with original source (LOG filtering may be incomplete)"
+        rm -f "$BACKUP_FILE"  # No need for backup if not joining
     fi
 fi
 

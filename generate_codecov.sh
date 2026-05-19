@@ -117,3 +117,18 @@ genhtml total.info \
 
 # Generate Cobertura XML (for Azure DevOps Code Coverage tab)
 lcov_cobertura total.info --output coverage.xml
+
+echo "==================================="
+echo "[STEP 5] Cleanup"
+echo "==================================="
+
+# Restore original source files if they were backed up during coverage build
+BACKUP_FILE="mssql_python/pybind/.source_backup_coverage.tar.gz"
+if [ -f "$BACKUP_FILE" ]; then
+    echo "[ACTION] Restoring original source files from backup"
+    (cd mssql_python/pybind && tar -xzf .source_backup_coverage.tar.gz)
+    rm -f "$BACKUP_FILE"
+    echo "[INFO] Original source files restored"
+fi
+
+echo "[INFO] Coverage report generation complete"
