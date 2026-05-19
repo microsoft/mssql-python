@@ -13,7 +13,11 @@ from pathlib import Path
 
 
 def join_log_statements(content: str) -> str:
-    """Join multi-line LOG macro calls onto a single line."""
+    """Join multi-line LOG macro calls onto a single line.
+    
+    Uses semicolon-based joining rather than parenthesis counting to avoid
+    issues with unbalanced parentheses inside C++ string literals.
+    """
     lines = content.split('\n')
     result = []
     i = 0
@@ -23,26 +27,27 @@ def join_log_statements(content: str) -> str:
         
         # Check if this line contains a LOG macro start
         if re.search(r'\bLOG[A-Z_]*\s*\(', line):
-            # Start collecting the full statement
+            # Start collecting the full statement until we find a semicolon
             full_statement = line
-            paren_depth = line.count('(') - line.count(')')
             start_line = i + 1  # For error reporting
             i += 1
             lines_collected = 1
-            max_lines = 20  # Safety limit to prevent infinite loops
+            max_lines = 20  # Safety limit to prevent runaway joins
             
-            # Continue collecting until we close all parentheses
-            while i < len(lines) and paren_depth > 0 and lines_collected < max_lines:
+            # Continue collecting until we find a semicolon (end of statement)
+            # This is more reliable than parenthesis counting for LOG statements
+            # because it doesn't get confused by unbalanced parens in string literals
+            while i < len(lines) and ';' not in full_statement and lines_collected < max_lines:
                 next_line = lines[i]
                 full_statement += ' ' + next_line.strip()
-                paren_depth += next_line.count('(') - next_line.count(')')
                 i += 1
                 lines_collected += 1
             
-            # Validation: Check if we successfully closed all parentheses
-            if paren_depth != 0:
-                print(f"[WARNING] Unbalanced parentheses in LOG statement starting at line {start_line}")
-                print(f"[WARNING] Collected {lines_collected} lines, paren_depth={paren_depth}")
+            # Validation: Check if we found a semicolon
+            if ';' not in full_statement:
+                print(f"[WARNING] No semicolon found in LOG statement starting at line {start_line}")
+                print(f"[WARNING] Collected {lines_collected} lines without finding ';'")
+                print(f"[WARNING] First 100 chars: {full_statement[:100]}...")
                 # Keep the original multi-line format for safety
                 result.extend(lines[start_line-1:i])
             else:
