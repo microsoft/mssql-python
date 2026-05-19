@@ -16,7 +16,7 @@ variables:
   
   # Python versions to build
   - name: PYTHON_VERSIONS
-    value: '3.10,3.11,3.12,3.13'
+    value: '3.11,3.12,3.13,3.14'
   
   # Package name
   - name: PACKAGE_NAME
