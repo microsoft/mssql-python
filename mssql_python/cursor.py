@@ -2793,6 +2793,64 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return True
 
     # ── Mapping from ODBC connection-string keywords (lowercase, as _parse returns)
+    def _build_pycore_context(self):
+        """Build the connection context dict expected by mssql_py_core.
+
+        Parses the underlying ODBC connection string, validates the SERVER
+        parameter, and (when AAD auth is in use) acquires a fresh access
+        token, replacing credential fields with it. Returns a dict that can
+        be handed to PyCoreConnection. Raises RuntimeError/ValueError on
+        configuration problems.
+        """
+        if not hasattr(self.connection, "connection_str"):
+            logger.error("_build_pycore_context: Connection string not available")
+            raise RuntimeError("Connection string not available for bulk copy")
+
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+
+        parser = _ConnectionStringParser(validate_keywords=False)
+        params = parser._parse(self.connection.connection_str)
+
+        if not (params.get("server") or params.get("addr") or params.get("address")):
+            raise ValueError("SERVER parameter is required in connection string")
+
+        pycore_context = connstr_to_pycore_params(params)
+
+        if self.connection._auth_type:
+            from mssql_python.auth import AADAuth
+
+            try:
+                raw_token = AADAuth.get_raw_token(self.connection._auth_type)
+            except (RuntimeError, ValueError) as e:
+                raise RuntimeError(
+                    f"Bulk copy failed: unable to acquire Azure AD token "
+                    f"for auth_type '{self.connection._auth_type}': {e}"
+                ) from e
+            pycore_context["access_token"] = raw_token
+            for key in ("authentication", "user_name", "password"):
+                pycore_context.pop(key, None)
+            logger.debug(
+                "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
+                self.connection._auth_type,
+            )
+
+        return pycore_context
+
+    @staticmethod
+    def _looks_like_arrow_source(data) -> bool:
+        """Return True if `data` should be routed to the Arrow bulkcopy path."""
+        if data is None:
+            return False
+        if hasattr(data, "__arrow_c_stream__"):
+            return True
+        try:
+            import pyarrow as pa  # noqa: F401
+        except ImportError:
+            return False
+        return isinstance(
+            data, (pa.Table, pa.RecordBatch, pa.RecordBatchReader)
+        )
+
     def bulkcopy(
         self,
         table_name: str,
@@ -2809,6 +2867,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     ):  # pragma: no cover
         """
         Perform bulk copy operation for high-performance data loading.
+
+        Accepts an iterable of row tuples/lists. For Apache Arrow input
+        (``pyarrow.Table``, ``RecordBatch``, ``RecordBatchReader``, anything
+        implementing ``__arrow_c_stream__``) use :meth:`bulkcopy_arrow`
+        instead — it follows a zero-copy path through the Arrow C-data
+        interface and avoids materializing Python row tuples.
 
         Args:
             table_name: Target table name (can include schema, e.g., 'dbo.MyTable').
@@ -2865,12 +2929,22 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         Raises:
             ImportError: If mssql_py_core library is not installed
-            TypeError: If data is None, not iterable, or is a string/bytes
+            TypeError: If data is None, not iterable, is a string/bytes, or is an
+                Arrow source (use :meth:`bulkcopy_arrow` for those)
             ValueError: If table_name is empty or parameters are invalid
             RuntimeError: If connection string is not available
         """
         # Fast check if logging is enabled to avoid overhead
         is_logging_enabled = logger.is_debug_enabled
+
+        # Steer Arrow-shaped sources to the dedicated method instead of
+        # silently re-routing.
+        if self._looks_like_arrow_source(data):
+            raise TypeError(
+                "bulkcopy() expects an iterable of row tuples/lists. "
+                "For pyarrow.Table / RecordBatch / RecordBatchReader / objects "
+                "implementing __arrow_c_stream__, call cursor.bulkcopy_arrow() instead."
+            )
 
         try:
             import mssql_py_core
@@ -2913,45 +2987,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if timeout <= 0:
             raise ValueError(f"timeout must be positive, got {timeout}")
 
-        # Get and parse connection string
-        if not hasattr(self.connection, "connection_str"):
-            logger.error("_bulkcopy: Connection string not available")
-            raise RuntimeError("Connection string not available for bulk copy")
-
-        # Use the proper connection string parser that handles braced values
-        from mssql_python.connection_string_parser import _ConnectionStringParser
-
-        parser = _ConnectionStringParser(validate_keywords=False)
-        params = parser._parse(self.connection.connection_str)
-
-        # Check for server parameter (accepts synonyms: server, addr, address)
-        if not (params.get("server") or params.get("addr") or params.get("address")):
-            raise ValueError("SERVER parameter is required in connection string")
-
-        # Translate parsed connection string into the dict py-core expects.
-        pycore_context = connstr_to_pycore_params(params)
-
-        # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
-        if self.connection._auth_type:
-            # Fresh token acquisition for mssql-py-core connection
-            from mssql_python.auth import AADAuth
-
-            try:
-                raw_token = AADAuth.get_raw_token(self.connection._auth_type)
-            except (RuntimeError, ValueError) as e:
-                raise RuntimeError(
-                    f"Bulk copy failed: unable to acquire Azure AD token "
-                    f"for auth_type '{self.connection._auth_type}': {e}"
-                ) from e
-            pycore_context["access_token"] = raw_token
-            # Token replaces credential fields — py-core's validator rejects
-            # access_token combined with authentication/user_name/password.
-            for key in ("authentication", "user_name", "password"):
-                pycore_context.pop(key, None)
-            logger.debug(
-                "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
-                self.connection._auth_type,
-            )
+        pycore_context = self._build_pycore_context()
 
         pycore_connection = None
         pycore_cursor = None
@@ -3012,6 +3048,125 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         resource.close()
                     except Exception as cleanup_error:
                         # Log cleanup errors only - aids troubleshooting without masking original exception
+                        logger.debug(
+                            "Failed to close bulk copy resource %s: %s",
+                            type(resource).__name__,
+                            cleanup_error,
+                        )
+
+    def bulkcopy_arrow(
+        self,
+        table_name: str,
+        source,
+        *,
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
+    ):  # pragma: no cover
+        """Bulk-copy from an Arrow source straight into TDS.
+
+        ``source`` may be any of:
+
+        * ``pyarrow.Table``
+        * ``pyarrow.RecordBatch``
+        * ``pyarrow.RecordBatchReader``
+        * any object that exposes ``__arrow_c_stream__`` (Arrow PyCapsule
+          interface)
+        * an iterable of ``pyarrow.RecordBatch`` (all batches must share
+          the same schema)
+
+        Compared to :meth:`bulkcopy`, this path skips per-cell Python
+        round-trips: each batch's typed Arrow buffers are read directly by
+        the Rust core and streamed into the TDS bulk-load packets. Schema/
+        column-mapping semantics, options and the returned dictionary are
+        identical to :meth:`bulkcopy`.
+        """
+        is_logging_enabled = logger.is_debug_enabled
+
+        try:
+            import mssql_py_core
+        except ImportError as exc:
+            logger.error("bulkcopy_arrow: Failed to import mssql_py_core module")
+            raise ImportError(
+                "Bulk copy requires the mssql_py_core library which is not available. "
+                "This is an unexpected error. "
+            ) from exc
+
+        if not table_name or not isinstance(table_name, str):
+            raise ValueError("table_name must be a non-empty string")
+
+        if source is None:
+            raise TypeError("source must be a pyarrow Table/RecordBatch/Reader, got None")
+
+        if not isinstance(batch_size, int):
+            raise TypeError(
+                f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
+            )
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
+
+        if not isinstance(timeout, int):
+            raise TypeError(f"timeout must be a positive integer, got {type(timeout).__name__}")
+        if timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
+
+        pycore_context = self._build_pycore_context()
+
+        pycore_connection = None
+        pycore_cursor = None
+        try:
+            pycore_connection = mssql_py_core.PyCoreConnection(
+                pycore_context, python_logger=logger if is_logging_enabled else None
+            )
+            pycore_cursor = pycore_connection.cursor()
+
+            result = pycore_cursor.bulkcopy_arrow(
+                table_name,
+                source,
+                batch_size=batch_size,
+                timeout=timeout,
+                column_mappings=column_mappings,
+                keep_identity=keep_identity,
+                check_constraints=check_constraints,
+                table_lock=table_lock,
+                keep_nulls=keep_nulls,
+                fire_triggers=fire_triggers,
+                use_internal_transaction=use_internal_transaction,
+                python_logger=logger if is_logging_enabled else None,
+            )
+
+            logger.info(
+                "bulkcopy_arrow: completed - rows_copied=%s, batch_count=%s, elapsed_time=%s",
+                result.get("rows_copied", "N/A"),
+                result.get("batch_count", "N/A"),
+                result.get("elapsed_time", "N/A"),
+            )
+            return result
+
+        except Exception as e:
+            logger.debug(
+                "bulkcopy_arrow failed for table '%s': %s: %s",
+                table_name,
+                type(e).__name__,
+                str(e),
+            )
+            raise type(e)(str(e)) from None
+
+        finally:
+            if pycore_context:
+                for key in ("password", "user_name", "access_token"):
+                    pycore_context.pop(key, None)
+            for resource in (pycore_cursor, pycore_connection):
+                if resource and hasattr(resource, "close"):
+                    try:
+                        resource.close()
+                    except Exception as cleanup_error:
                         logger.debug(
                             "Failed to close bulk copy resource %s: %s",
                             type(resource).__name__,
