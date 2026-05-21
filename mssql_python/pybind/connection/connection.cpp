@@ -320,17 +320,23 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return ret;
     } else if (py::isinstance<py::str>(value)) {
         try {
+            // Store the value in the Connection-owned member buffer so the
+            // memory remains valid for the lifetime of the connection. Some
+            // ODBC connect attributes (notably SQL_COPT_SS_ACCESS_TOKEN, 1256)
+            // are "deferred": the MS driver stores the caller's pointer at
+            // SQLSetConnectAttr time and dereferences it later during
+            // SQLDriverConnect to build the FedAuth login packet. A
+            // stack-local buffer freed when this function returns would
+            // cause a use-after-free during connect (issue #594).
+            //
+            // Note: attrs_before is applied once, sequentially, during
+            // connect(); the Connection's attribute setters are not designed
+            // for concurrent mutation from multiple threads.
             this->wstrStringBuffer = value.cast<std::u16string>();
 
-            SQLPOINTER ptr;
-            SQLINTEGER length;
-            // Copy to a stack-local buffer so that releasing the GIL below
-            // doesn't expose a race where another thread overwrites the
-            // member wstrStringBuffer (and reallocates) while the ODBC
-            // driver is still reading from ptr.
-            std::u16string localStrBuffer = this->wstrStringBuffer;
-            ptr = reinterpretU16stringAsSqlWChar(localStrBuffer);
-            length = static_cast<SQLINTEGER>(localStrBuffer.length() * sizeof(SQLWCHAR));
+            SQLPOINTER ptr = reinterpretU16stringAsSqlWChar(this->wstrStringBuffer);
+            SQLINTEGER length =
+                static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
 
             SQLRETURN ret;
             {
@@ -349,12 +355,23 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         }
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         try {
-            // Copy to a stack-local buffer so that releasing the GIL
-            // doesn't expose a race where another thread overwrites the
-            // member strBytesBuffer while the driver reads from ptr.
-            std::string localBytesBuffer = value.cast<std::string>();
-            SQLPOINTER ptr = const_cast<char*>(localBytesBuffer.c_str());
-            SQLINTEGER length = static_cast<SQLINTEGER>(localBytesBuffer.size());
+            // Store the value in the Connection-owned member buffer so the
+            // memory remains valid for the lifetime of the connection.
+            // SQL_COPT_SS_ACCESS_TOKEN (1256) is a deferred attribute: the
+            // driver stores this pointer at SQLSetConnectAttr time and
+            // dereferences it later during SQLDriverConnect. A stack-local
+            // buffer freed when this function returns would cause a
+            // use-after-free during connect (issue #594, symptoms: SIGBUS
+            // on macOS, "Authentication token is missing in the federated
+            // authentication message" on Windows, TCP reset 0x2746 against
+            // Azure SQL).
+            //
+            // Note: attrs_before is applied once, sequentially, during
+            // connect(); concurrent setAttribute() on the same Connection
+            // from different threads is not a supported pattern.
+            this->strBytesBuffer = value.cast<std::string>();
+            SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.data());
+            SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
 
             SQLRETURN ret;
             {
