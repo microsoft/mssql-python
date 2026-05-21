@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <mutex>
+#include <unordered_map>
 
 // Represents a single ODBC database connection.
 // Manages connection handles.
@@ -68,8 +69,13 @@ class Connection {
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
-    std::u16string wstrStringBuffer;  // UTF-16 buffer for wide ODBC attributes
-    std::string strBytesBuffer;     // string buffer for byte attributes setting
+    // Per-attribute owned buffers for connect attributes whose pointer the
+    // driver may dereference *after* SQLSetConnectAttr returns (deferred
+    // attributes, e.g. SQL_COPT_SS_ACCESS_TOKEN). Keyed by attribute ID so
+    // that setting a second deferred attribute does not invalidate the
+    // pointer the driver stashed for the first. See issue #594.
+    std::unordered_map<SQLINTEGER, std::u16string> _attrStringBuffers;
+    std::unordered_map<SQLINTEGER, std::string>    _attrBytesBuffers;
 
     // Track child statement handles to mark them as implicitly freed when connection closes
     // Uses weak_ptr to avoid circular references and allow normal cleanup

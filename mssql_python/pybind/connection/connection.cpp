@@ -320,23 +320,27 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return ret;
     } else if (py::isinstance<py::str>(value)) {
         try {
-            // Store the value in the Connection-owned member buffer so the
-            // memory remains valid for the lifetime of the connection. Some
-            // ODBC connect attributes (notably SQL_COPT_SS_ACCESS_TOKEN, 1256)
-            // are "deferred": the MS driver stores the caller's pointer at
-            // SQLSetConnectAttr time and dereferences it later during
-            // SQLDriverConnect to build the FedAuth login packet. A
-            // stack-local buffer freed when this function returns would
-            // cause a use-after-free during connect (issue #594).
+            // Store the value in a Connection-owned, per-attribute member
+            // buffer so the memory remains valid for the lifetime of the
+            // connection. Some ODBC connect attributes (notably
+            // SQL_COPT_SS_ACCESS_TOKEN, 1256) are "deferred": the MS driver
+            // stores the caller's pointer at SQLSetConnectAttr time and
+            // dereferences it later during SQLDriverConnect to build the
+            // FedAuth login packet. A stack-local buffer freed when this
+            // function returns would cause a use-after-free during connect
+            // (issue #594). Keying by attribute id also prevents a second
+            // deferred attribute from invalidating the pointer stored for
+            // the first.
             //
             // Note: attrs_before is applied once, sequentially, during
             // connect(); the Connection's attribute setters are not designed
             // for concurrent mutation from multiple threads.
-            this->wstrStringBuffer = value.cast<std::u16string>();
+            auto& buf = this->_attrStringBuffers[attribute];
+            buf = value.cast<std::u16string>();
 
-            SQLPOINTER ptr = reinterpretU16stringAsSqlWChar(this->wstrStringBuffer);
+            SQLPOINTER ptr = reinterpretU16stringAsSqlWChar(buf);
             SQLINTEGER length =
-                static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
+                static_cast<SQLINTEGER>(buf.length() * sizeof(SQLWCHAR));
 
             SQLRETURN ret;
             {
@@ -355,23 +359,26 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         }
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         try {
-            // Store the value in the Connection-owned member buffer so the
-            // memory remains valid for the lifetime of the connection.
-            // SQL_COPT_SS_ACCESS_TOKEN (1256) is a deferred attribute: the
-            // driver stores this pointer at SQLSetConnectAttr time and
-            // dereferences it later during SQLDriverConnect. A stack-local
-            // buffer freed when this function returns would cause a
-            // use-after-free during connect (issue #594, symptoms: SIGBUS
-            // on macOS, "Authentication token is missing in the federated
-            // authentication message" on Windows, TCP reset 0x2746 against
-            // Azure SQL).
+            // Store the value in a Connection-owned, per-attribute member
+            // buffer so the memory remains valid for the lifetime of the
+            // connection. SQL_COPT_SS_ACCESS_TOKEN (1256) is a deferred
+            // attribute: the driver stores this pointer at
+            // SQLSetConnectAttr time and dereferences it later during
+            // SQLDriverConnect. A stack-local buffer freed when this
+            // function returns would cause a use-after-free during connect
+            // (issue #594, symptoms: SIGBUS on macOS, "Authentication
+            // token is missing in the federated authentication message"
+            // on Windows, TCP reset 0x2746 against Azure SQL). Keying by
+            // attribute id also prevents a second deferred attribute from
+            // invalidating the pointer stored for the first.
             //
             // Note: attrs_before is applied once, sequentially, during
             // connect(); concurrent setAttribute() on the same Connection
             // from different threads is not a supported pattern.
-            this->strBytesBuffer = value.cast<std::string>();
-            SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.data());
-            SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
+            auto& buf = this->_attrBytesBuffers[attribute];
+            buf = value.cast<std::string>();
+            SQLPOINTER ptr = const_cast<char*>(buf.data());
+            SQLINTEGER length = static_cast<SQLINTEGER>(buf.size());
 
             SQLRETURN ret;
             {
