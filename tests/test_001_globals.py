@@ -1027,22 +1027,25 @@ def test_row_string_key_indexing():
 
 
 def test_row_string_key_case_insensitive_with_lowercase():
-    """Test Row string-key indexing is case-insensitive when cursor.lowercase is True."""
+    """Test Row string-key indexing is case-insensitive when global lowercase is True."""
     from mssql_python.row import Row
-    from unittest.mock import Mock
+    from mssql_python.helpers import get_settings
 
-    mock_cursor = Mock()
-    mock_cursor.lowercase = True
-    mock_cursor.connection._output_converters = None
+    settings = get_settings()
+    original = settings.lowercase
+    try:
+        settings.lowercase = True
 
-    row = Row(
-        [1, "bar"],
-        {"productid": 0, "name": 1},
-        cursor=mock_cursor,
-    )
+        row = Row(
+            [1, "bar"],
+            {"productid": 0, "name": 1},
+            cursor=None,
+        )
 
-    # Exact match
-    assert row["productid"] == 1
-    # Case-insensitive match
-    assert row["ProductID"] == 1
-    assert row["NAME"] == "bar"
+        # Exact match
+        assert row["productid"] == 1
+        # Case-insensitive match
+        assert row["ProductID"] == 1
+        assert row["NAME"] == "bar"
+    finally:
+        settings.lowercase = original

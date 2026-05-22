@@ -162,7 +162,7 @@ class Row:
             if index in self._column_map:
                 return self._values[self._column_map[index]]
             # Case-insensitive lookup when lowercase is enabled
-            if hasattr(self._cursor, "lowercase") and self._cursor.lowercase:
+            if get_settings().lowercase:
                 index_lower = index.lower()
                 for col_name in self._column_map:
                     if col_name.lower() == index_lower:
@@ -185,8 +185,8 @@ class Row:
         if name in self._column_map:
             return self._values[self._column_map[name]]
 
-        # If lowercase is enabled on the cursor, try case-insensitive lookup
-        if hasattr(self._cursor, "lowercase") and self._cursor.lowercase:
+        # If lowercase is enabled, try case-insensitive lookup
+        if get_settings().lowercase:
             name_lower = name.lower()
             for col_name in self._column_map:
                 if col_name.lower() == name_lower:
