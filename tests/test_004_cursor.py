@@ -2907,8 +2907,11 @@ def test_row_string_key_indexing(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Row string-key indexing test failed: {e}")
     finally:
-        cursor.execute("DROP TABLE #pytest_row_strkey")
-        db_connection.commit()
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_strkey")
+            db_connection.commit()
+        except Exception:
+            pass
 
 
 def test_row_comparison_with_list(cursor, db_connection):
