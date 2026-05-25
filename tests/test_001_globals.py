@@ -1025,6 +1025,12 @@ def test_row_string_key_indexing():
     with pytest.raises(KeyError):
         row["nonexistent"]
 
+    # Unsupported index types raise TypeError
+    with pytest.raises(TypeError):
+        row[3.5]
+    with pytest.raises(TypeError):
+        row[None]
+
 
 def test_row_string_key_case_insensitive_with_lowercase():
     """Test Row string-key indexing is case-insensitive when global lowercase is True."""

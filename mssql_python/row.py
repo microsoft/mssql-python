@@ -60,6 +60,9 @@ class Row:
 
         self._column_map = column_map
         self._cursor = cursor
+        # Pre-built lowercase-key map case-insensitive lookups.
+        # Built once per Row, shared cost amortised across all accesses.
+        self._column_map_lower = {k.lower(): v for k, v in column_map.items()} if column_map else {}
 
     def _stringify_uuids(self, indices):
         """
@@ -163,12 +166,15 @@ class Row:
                 return self._values[self._column_map[index]]
             # Case-insensitive lookup when lowercase is enabled
             if get_settings().lowercase:
-                index_lower = index.lower()
-                for col_name in self._column_map:
-                    if col_name.lower() == index_lower:
-                        return self._values[self._column_map[col_name]]
+                idx = self._column_map_lower.get(index.lower())
+                if idx is not None:
+                    return self._values[idx]
             raise KeyError(f"Row has no column '{index}'")
-        return self._values[index]
+        if isinstance(index, (int, slice)):
+            return self._values[index]
+        raise TypeError(
+            f"Row indices must be integers, slices, or strings, not {type(index).__name__}"
+        )
 
     def __getattr__(self, name: str) -> Any:
         """
@@ -187,10 +193,9 @@ class Row:
 
         # If lowercase is enabled, try case-insensitive lookup
         if get_settings().lowercase:
-            name_lower = name.lower()
-            for col_name in self._column_map:
-                if col_name.lower() == name_lower:
-                    return self._values[self._column_map[col_name]]
+            idx = self._column_map_lower.get(name.lower())
+            if idx is not None:
+                return self._values[idx]
 
         raise AttributeError(f"Row has no attribute '{name}'")
 
