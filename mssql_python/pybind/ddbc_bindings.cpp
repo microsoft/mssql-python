@@ -1146,7 +1146,7 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     }
 
     fs::path driverPath =
-        basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
+        basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.6.so.2.1";
     return driverPath.string();
 
 #elif defined(__APPLE__)
