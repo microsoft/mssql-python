@@ -474,6 +474,33 @@ class TestManagedIdentity:
         assert conn._credential_kwargs == {"client_id": "hello=world"}
         conn.close()
 
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_msi_braced_uid_with_semicolon_is_preserved(self, mock_ddbc_conn):
+        """A braced UID value containing a semicolon (legal under ODBC) must
+        be returned intact, not truncated at the inner ';'."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect(
+            "Server=test;Authentication=ActiveDirectoryMSI;" "UID={abc;def;ghi};Database=testdb"
+        )
+        assert conn._auth_type == "msi"
+        assert conn._credential_kwargs == {"client_id": "abc;def;ghi"}
+        conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_msi_without_uid_is_system_assigned(self, mock_ddbc_conn):
+        """MSI without UID at all should be treated as system-assigned."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect("Server=test;Authentication=ActiveDirectoryMSI;Database=testdb")
+        assert conn._auth_type == "msi"
+        assert conn._credential_kwargs is None
+        # UID should not appear in the connection string
+        assert "UID=" not in conn.connection_str
+        conn.close()
+
     def test_bulkcopy_path_preserves_user_assigned_msi_client_id(self):
         """Regression test (cursor.bulkcopy() end-to-end) for the silent
         system-assigned fallback: the bulkcopy fresh-token code path must
@@ -689,6 +716,36 @@ class TestProcessAuthParametersEdgeCases:
         params = {"Server": "test", "Authentication": "", "Database": "db"}
         auth_type = process_auth_parameters(params)
         assert auth_type is None
+
+
+class TestTokenFailureFallthrough:
+    """Verify that connect() succeeds without a token when credential creation fails."""
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_connect_proceeds_without_token_on_credential_failure(self, mock_ddbc_conn):
+        """When auth type is detected but token acquisition fails,
+        the connection should still be attempted (just without a token)."""
+        mock_ddbc_conn.return_value = MagicMock()
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+
+        class CredentialThatAlwaysFails:
+            def __init__(self):
+                raise RuntimeError("cannot create credential")
+
+        try:
+            azure_identity.DefaultAzureCredential = CredentialThatAlwaysFails
+            from mssql_python import connect
+
+            conn = connect("Server=test;Authentication=ActiveDirectoryDefault;Database=testdb")
+            assert conn._auth_type == "default"
+            # Token should not be in attrs_before since acquisition failed
+            assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value not in conn._attrs_before
+            conn.close()
+        finally:
+            azure_identity.DefaultAzureCredential = original
 
 
 class TestGetAuthTokenEdgeCases:
