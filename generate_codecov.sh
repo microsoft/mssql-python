@@ -87,12 +87,12 @@ echo "==================================="
 echo "[STEP 4] Merging Python + C++ coverage"
 echo "==================================="
 
-# Merge LCOV reports and filter LOG statements using lcov's built-in exclusion
-# The --rc option sets lcov_excl_line to match any line containing LOG macros
+# Merge LCOV reports and filter LOG statements using --omit-lines
+# The --omit-lines option excludes lines matching the regex from coverage
 # Since we joined multi-line LOGs during build, they're now on single lines
 echo "[ACTION] Merging Python and C++ coverage with LOG exclusion"
 lcov -a python-coverage.info -a cpp-coverage.info -o total-unfiltered.info \
-  --rc lcov_excl_line='\bLOG[A-Z_]*\s*\(' \
+  --omit-lines '\bLOG[A-Z_]*\s*\(' \
   --ignore-errors inconsistent,corrupt
 
 echo "[INFO] Coverage merged with LOG statements excluded"

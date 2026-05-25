@@ -179,8 +179,9 @@ def main():
         print(f"[ERROR] Directory not found: {base_dir}", file=sys.stderr)
         sys.exit(1)
     
-    # Find all C++ source files
-    cpp_files = list(base_dir.rglob('*.cpp')) + list(base_dir.rglob('*.hpp'))
+    # Find all C++ source and header files (*.cpp, *.h, *.hpp)
+    # Note: using '*.h*' pattern to match both .h and .hpp extensions
+    cpp_files = list(base_dir.rglob('*.cpp')) + list(base_dir.rglob('*.h*'))
     
     if not cpp_files:
         print(f"[WARNING] No .cpp or .hpp files found in {base_dir}")
@@ -188,6 +189,9 @@ def main():
     
     print(f"[INFO] Processing {len(cpp_files)} C++ files in {base_dir}")
     for filepath in cpp_files:
+        # Skip cmake-generated files in build directory
+        if 'build' in filepath.parts:
+            continue
         process_file(filepath)
     
     print(f"[SUCCESS] Joined LOG statements in {len(cpp_files)} files")
