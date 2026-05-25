@@ -154,6 +154,135 @@ class AADAuth:
             raise RuntimeError(f"Failed to create {credential_class.__name__}: {e}") from e
 
 
+def _parse_tenant_id(sts_url: str) -> Optional[str]:
+    """Extract tenant ID (GUID or domain) from a FedAuthInfo STS URL.
+
+    Expected formats:
+      https://login.microsoftonline.com/<tenant>/
+      https://login.microsoftonline.com/<tenant>/?...
+      https://login.microsoftonline.com/<tenant>
+    where <tenant> is either a GUID (e.g. ``aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee``)
+    or a verified domain (e.g. ``contoso.onmicrosoft.com``). Both forms are
+    accepted by ``azure.identity.ClientSecretCredential``.
+    """
+    # pylint: disable=import-outside-toplevel
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(sts_url)
+    except (ValueError, AttributeError):
+        return None
+    # Reject anything that isn't an https URL with a netloc. ``urlparse`` will
+    # happily put a bare string like ``"tenant-guid"`` into ``path``, which
+    # would then look like a valid tenant. Azure AD STS URLs are always https.
+    if parsed.scheme != "https" or not parsed.netloc:
+        return None
+    path = (parsed.path or "").strip("/")
+    if not path:
+        return None
+    first_segment = path.split("/", 1)[0]
+    return first_segment or None
+
+
+class ServicePrincipalAuth:
+    """Builds an ``entra_id_token_factory`` callable for ActiveDirectoryServicePrincipal.
+
+    The bulkcopy path through mssql-py-core uses callback-based token
+    acquisition (FedAuth workflow ``0x02``) because tenant_id is only known
+    from the STS URL that the server returns during the TDS handshake.
+    """
+
+    @staticmethod
+    def make_token_factory(client_id: str, client_secret: str):
+        """Return a callable suitable for ``entra_id_token_factory``.
+
+        Signature: ``(spn: str, sts_url: str, auth_method: str) -> bytes``.
+        Returns the JWT encoded as UTF-16LE bytes (the TDS FedAuth wire format).
+
+        ``ClientSecretCredential`` instances are reused across calls via the
+        module-level ``_credential_cache``, keyed by
+        ``("serviceprincipal", tenant_id, client_id)`` so that azure-identity's
+        in-memory token cache (which is per-credential-instance) actually
+        works across handshake retries, reconnects, and separate bulkcopy
+        invocations using the same identity.
+        """
+        if not client_id:
+            raise ValueError("ServicePrincipal auth requires a non-empty client_id (UID)")
+        if not client_secret:
+            raise ValueError("ServicePrincipal auth requires a non-empty client_secret (PWD)")
+
+        def _factory(spn: str, sts_url: str, auth_method: str) -> bytes:
+            # pylint: disable=import-outside-toplevel,unused-argument
+            try:
+                from azure.identity import ClientSecretCredential
+                from azure.core.exceptions import ClientAuthenticationError
+            except ImportError as e:
+                raise RuntimeError(
+                    "Azure authentication libraries are not installed. "
+                    "Please install with: pip install azure-identity azure-core"
+                ) from e
+
+            if not spn:
+                raise RuntimeError(
+                    "ServicePrincipal token factory: empty SPN from server "
+                    "(cannot construct token scope)"
+                )
+            tenant_id = _parse_tenant_id(sts_url)
+            if not tenant_id:
+                raise RuntimeError(f"Could not extract tenant_id from STS URL: {sts_url!r}")
+
+            logger.info(
+                "ServicePrincipal token factory: acquiring token for tenant=%s, spn=%s",
+                tenant_id,
+                spn,
+            )
+            try:
+                # Reuse the shared credential cache (introduced for MSI in PR #573)
+                # so SP credentials get the same per-instance token reuse semantics
+                # as the other AD methods. Key includes tenant_id so a server that
+                # somehow returns different tenants on different handshakes still
+                # gets distinct credentials. client_secret is intentionally NOT in
+                # the key — credentials are looked up by identity, not by secret;
+                # if the secret rotates, the closure will still hold the old one
+                # and AAD will reject the token, surfacing as ClientAuthenticationError.
+                cache_key = _credential_cache_key(
+                    "serviceprincipal",
+                    {"tenant_id": tenant_id, "client_id": client_id},
+                )
+                with _credential_cache_lock:
+                    credential = _credential_cache.get(cache_key)
+                    if credential is None:
+                        credential = ClientSecretCredential(
+                            tenant_id=tenant_id,
+                            client_id=client_id,
+                            client_secret=client_secret,
+                        )
+                        _credential_cache[cache_key] = credential
+                # mssql-tds passes the resource SPN; azure-identity wants a scope.
+                scope = spn if spn.endswith("/.default") else spn.rstrip("/") + "/.default"
+                token = credential.get_token(scope).token
+                logger.info(
+                    "ServicePrincipal token factory: token acquired, length=%d chars",
+                    len(token),
+                )
+                return token.encode("utf-16-le")
+            except ClientAuthenticationError as e:
+                # Keep the detailed provider error in debug logs only. The
+                # surfaced message is intentionally generic so that any
+                # secret-bearing provider text never reaches the user-facing
+                # exception chain.
+                logger.error(
+                    "ServicePrincipal authentication failed: tenant=%s, error=%s",
+                    tenant_id,
+                    str(e),
+                )
+                raise RuntimeError(
+                    "ServicePrincipal authentication failed; " "see debug logs for provider details"
+                ) from None
+
+        return _factory
+
+
 def _extract_msi_client_id(connection_string: str) -> Optional[str]:
     """Pull UID out of a connection string for user-assigned MSI.
 
@@ -230,6 +359,17 @@ def process_auth_parameters(parameters: List[str]) -> Tuple[List[str], Optional[
                 # Managed identity authentication (system- or user-assigned)
                 logger.debug("process_auth_parameters: Managed identity authentication detected")
                 auth_type = "msi"
+            elif value_lower == AuthType.SERVICE_PRINCIPAL.value:
+                # ServicePrincipal authentication. ODBC (msodbcsql 17.3+)
+                # handles this natively for regular queries, so leave
+                # auth_type=None to let ODBC own the query path.
+                # Bulkcopy still needs the auth type — extract_auth_type()
+                # propagates it as "serviceprincipal" so the bulkcopy path
+                # can register an entra_id_token_factory callback (Model B,
+                # required because tenant_id is only known from the STS URL
+                # that the server returns during the FedAuth handshake).
+                logger.debug("process_auth_parameters: Service principal authentication detected")
+                auth_type = None
         modified_parameters.append(param)
 
     logger.debug(
@@ -299,6 +439,7 @@ def extract_auth_type(connection_string: str) -> Optional[str]:
         AuthType.DEVICE_CODE.value: "devicecode",
         AuthType.DEFAULT.value: "default",
         AuthType.MSI.value: "msi",
+        AuthType.SERVICE_PRINCIPAL.value: "serviceprincipal",
     }
     for part in connection_string.split(";"):
         key, _, value = part.strip().partition("=")
@@ -312,13 +453,6 @@ def process_connection_string(
 ) -> Tuple[str, Optional[Dict[int, bytes]], Optional[str], Optional[Dict[str, str]]]:
     """
     Process connection string and handle authentication.
-
-    NOTE: Returns a 4-tuple. Callers must unpack all four elements.
-    Destructuring with three names raises ``ValueError: too many values
-    to unpack``. The fourth element (``credential_kwargs``) is needed by
-    Connection.__init__ to persist credential constructor args (e.g. the
-    user-assigned MSI ``client_id``) for the bulkcopy fresh-token path,
-    since UID is stripped from the sanitized connection string.
 
     Args:
         connection_string: The connection string to process

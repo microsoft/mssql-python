@@ -338,6 +338,7 @@ class AuthType(Enum):
     DEVICE_CODE = "activedirectorydevicecode"
     DEFAULT = "activedirectorydefault"
     MSI = "activedirectorymsi"
+    SERVICE_PRINCIPAL = "activedirectoryserviceprincipal"
 
 
 class SQLTypes:

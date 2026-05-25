@@ -11,6 +11,8 @@ import threading
 from unittest.mock import patch, MagicMock
 from mssql_python.auth import (
     AADAuth,
+    ServicePrincipalAuth,
+    _parse_tenant_id,
     process_auth_parameters,
     remove_sensitive_params,
     get_auth_token,
@@ -44,6 +46,20 @@ def setup_azure_identity():
         def get_token(self, scope):
             return MockToken()
 
+    class MockClientSecretCredential:
+        # Captures construction kwargs and get_token args so ServicePrincipal
+        # tests can assert the right tenant/client_id/secret/scope flowed
+        # through from the connection string + STS URL.
+        last_init_kwargs = None
+        last_scope = None
+
+        def __init__(self, **kwargs):
+            MockClientSecretCredential.last_init_kwargs = kwargs
+
+        def get_token(self, scope):
+            MockClientSecretCredential.last_scope = scope
+            return MockToken()
+
     class MockManagedIdentityCredential:
         # Captures construction kwargs so user-assigned MSI tests can assert
         # client_id was forwarded correctly.
@@ -63,6 +79,7 @@ def setup_azure_identity():
         DefaultAzureCredential = MockDefaultAzureCredential
         DeviceCodeCredential = MockDeviceCodeCredential
         InteractiveBrowserCredential = MockInteractiveBrowserCredential
+        ClientSecretCredential = MockClientSecretCredential
         ManagedIdentityCredential = MockManagedIdentityCredential
 
     class MockCore:
@@ -100,6 +117,7 @@ class TestAuthType:
         assert AuthType.DEVICE_CODE.value == "activedirectorydevicecode"
         assert AuthType.DEFAULT.value == "activedirectorydefault"
         assert AuthType.MSI.value == "activedirectorymsi"
+        assert AuthType.SERVICE_PRINCIPAL.value == "activedirectoryserviceprincipal"
 
 
 class TestAADAuth:
@@ -330,6 +348,20 @@ class TestProcessAuthParameters:
         _, auth_type = process_auth_parameters(params)
         assert auth_type == "default"
 
+    def test_service_principal_auth_leaves_odbc_path_alone(self):
+        """ServicePrincipal is handled natively by ODBC. process_auth_parameters
+        must return auth_type=None so the ODBC path doesn't pre-acquire a token
+        (which would require tenant_id we don't have client-side)."""
+        params = ["Authentication=ActiveDirectoryServicePrincipal", "Server=test"]
+        modified_params, auth_type = process_auth_parameters(params)
+        assert "Authentication=ActiveDirectoryServicePrincipal" in modified_params
+        assert auth_type is None
+
+    def test_service_principal_auth_case_insensitive(self):
+        params = ["authentication=activedirectoryserviceprincipal", "Server=test"]
+        _, auth_type = process_auth_parameters(params)
+        assert auth_type is None
+
     def test_msi_auth(self):
         params = ["Authentication=ActiveDirectoryMSI", "Server=test"]
         _, auth_type = process_auth_parameters(params)
@@ -431,6 +463,12 @@ class TestExtractAuthType:
         assert (
             extract_auth_type("Server=test;Authentication=ActiveDirectoryDeviceCode;")
             == "devicecode"
+        )
+
+    def test_serviceprincipal(self):
+        assert (
+            extract_auth_type("Server=test;Authentication=ActiveDirectoryServicePrincipal;")
+            == "serviceprincipal"
         )
 
     def test_msi(self):
@@ -1012,3 +1050,233 @@ class TestProcessConnectionStringTokenFailureFallthrough:
             assert credential_kwargs is None
         finally:
             azure_identity.DefaultAzureCredential = original
+
+
+class TestParseTenantId:
+    def test_guid_tenant(self):
+        url = "https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/"
+        assert _parse_tenant_id(url) == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def test_guid_tenant_no_trailing_slash(self):
+        url = "https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        assert _parse_tenant_id(url) == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def test_domain_tenant(self):
+        url = "https://login.microsoftonline.com/contoso.onmicrosoft.com/"
+        assert _parse_tenant_id(url) == "contoso.onmicrosoft.com"
+
+    def test_tenant_with_query_string(self):
+        url = "https://login.microsoftonline.com/tenant-guid/?foo=bar"
+        assert _parse_tenant_id(url) == "tenant-guid"
+
+    def test_extra_path_segments_after_tenant(self):
+        url = "https://login.microsoftonline.com/tenant-guid/oauth2/authorize"
+        assert _parse_tenant_id(url) == "tenant-guid"
+
+    def test_empty_string(self):
+        assert _parse_tenant_id("") is None
+
+    def test_no_path(self):
+        assert _parse_tenant_id("https://login.microsoftonline.com/") is None
+
+    def test_rejects_bare_string_without_scheme(self):
+        # urlparse puts a bare string into path; without a scheme/netloc check
+        # this would be silently treated as a tenant id.
+        assert _parse_tenant_id("tenant-guid") is None
+
+    def test_rejects_path_only_url(self):
+        assert _parse_tenant_id("/tenant-guid/oauth2") is None
+
+    def test_rejects_http_scheme(self):
+        # Azure AD STS URLs are always https. Reject http to avoid trusting
+        # a downgraded URL.
+        assert _parse_tenant_id("http://login.microsoftonline.com/tenant/") is None
+
+
+class TestServicePrincipalAuth:
+    """Tests for the ActiveDirectoryServicePrincipal token factory."""
+
+    def test_make_token_factory_returns_callable(self):
+        factory = ServicePrincipalAuth.make_token_factory("client-id", "client-secret")
+        assert callable(factory)
+
+    def test_factory_requires_client_id(self):
+        with pytest.raises(ValueError, match="client_id"):
+            ServicePrincipalAuth.make_token_factory("", "client-secret")
+
+    def test_factory_requires_client_secret(self):
+        with pytest.raises(ValueError, match="client_secret"):
+            ServicePrincipalAuth.make_token_factory("client-id", "")
+
+    def test_factory_returns_utf16le_bytes(self):
+        factory = ServicePrincipalAuth.make_token_factory("client-id", "client-secret")
+        result = factory(
+            "https://database.windows.net/",
+            "https://login.microsoftonline.com/tenant-guid/",
+            "activedirectoryserviceprincipal",
+        )
+        assert isinstance(result, bytes)
+        # SAMPLE_TOKEN is hex chars (ASCII). UTF-16LE encoding doubles each byte
+        # and inserts a 0x00 high byte after each ASCII char.
+        assert result == SAMPLE_TOKEN.encode("utf-16-le")
+        assert len(result) == len(SAMPLE_TOKEN) * 2
+
+    def test_factory_forwards_credentials_to_ClientSecretCredential(self):
+        az = sys.modules["azure.identity"]
+        az.ClientSecretCredential.last_init_kwargs = None
+        az.ClientSecretCredential.last_scope = None
+
+        factory = ServicePrincipalAuth.make_token_factory(
+            "11111111-2222-3333-4444-555555555555", "my-secret"
+        )
+        factory(
+            "https://database.windows.net/",
+            "https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/",
+            "activedirectoryserviceprincipal",
+        )
+
+        assert az.ClientSecretCredential.last_init_kwargs == {
+            "tenant_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "client_id": "11111111-2222-3333-4444-555555555555",
+            "client_secret": "my-secret",
+        }
+
+    def test_factory_builds_scope_from_spn(self):
+        az = sys.modules["azure.identity"]
+        az.ClientSecretCredential.last_scope = None
+
+        factory = ServicePrincipalAuth.make_token_factory("cid", "secret")
+        factory(
+            "https://database.windows.net/",
+            "https://login.microsoftonline.com/tenant/",
+            "activedirectoryserviceprincipal",
+        )
+        assert az.ClientSecretCredential.last_scope == "https://database.windows.net/.default"
+
+    def test_factory_keeps_existing_default_suffix(self):
+        az = sys.modules["azure.identity"]
+        az.ClientSecretCredential.last_scope = None
+
+        factory = ServicePrincipalAuth.make_token_factory("cid", "secret")
+        factory(
+            "https://database.windows.net/.default",
+            "https://login.microsoftonline.com/tenant/",
+            "activedirectoryserviceprincipal",
+        )
+        assert az.ClientSecretCredential.last_scope == "https://database.windows.net/.default"
+
+    def test_factory_errors_on_unparseable_sts_url(self):
+        factory = ServicePrincipalAuth.make_token_factory("cid", "secret")
+        with pytest.raises(RuntimeError, match="Could not extract tenant_id"):
+            factory(
+                "https://database.windows.net/",
+                "https://login.microsoftonline.com/",  # no tenant segment
+                "activedirectoryserviceprincipal",
+            )
+
+    def test_factory_propagates_authentication_error(self):
+        from azure.core.exceptions import ClientAuthenticationError
+
+        class FailingCred:
+            def __init__(self, **kwargs):
+                pass
+
+            def get_token(self, scope):
+                raise ClientAuthenticationError("AADSTS7000215: Invalid client secret")
+
+        original = sys.modules["azure.identity"].ClientSecretCredential
+        sys.modules["azure.identity"].ClientSecretCredential = FailingCred
+        try:
+            factory = ServicePrincipalAuth.make_token_factory("cid", "secret")
+            with pytest.raises(RuntimeError, match="ServicePrincipal authentication failed"):
+                factory(
+                    "https://database.windows.net/",
+                    "https://login.microsoftonline.com/tenant-guid/",
+                    "activedirectoryserviceprincipal",
+                )
+        finally:
+            sys.modules["azure.identity"].ClientSecretCredential = original
+
+    def test_factory_does_not_leak_provider_message_in_runtime_error(self):
+        """The user-facing RuntimeError must not echo the provider message
+        (which can carry tenant ids, claims, or other sensitive context).
+        Provider detail is preserved in debug logs only."""
+        from azure.core.exceptions import ClientAuthenticationError
+
+        secret_marker = "AADSTS7000215_SECRET_MARKER_in_provider_message"
+
+        class FailingCred:
+            def __init__(self, **kwargs):
+                pass
+
+            def get_token(self, scope):
+                raise ClientAuthenticationError(secret_marker)
+
+        original = sys.modules["azure.identity"].ClientSecretCredential
+        sys.modules["azure.identity"].ClientSecretCredential = FailingCred
+        try:
+            factory = ServicePrincipalAuth.make_token_factory("cid", "secret")
+            try:
+                factory(
+                    "https://database.windows.net/",
+                    "https://login.microsoftonline.com/tenant-guid/",
+                    "activedirectoryserviceprincipal",
+                )
+            except RuntimeError as e:
+                full_chain = str(e)
+                cause = e.__cause__
+                while cause is not None:
+                    full_chain += " || " + str(cause)
+                    cause = getattr(cause, "__cause__", None)
+                assert (
+                    secret_marker not in full_chain
+                ), f"Provider message leaked into surfaced exception chain: {full_chain}"
+        finally:
+            sys.modules["azure.identity"].ClientSecretCredential = original
+
+    def test_factory_rejects_empty_spn(self):
+        factory = ServicePrincipalAuth.make_token_factory("cid", "secret")
+        with pytest.raises(RuntimeError, match="empty SPN"):
+            factory(
+                "",
+                "https://login.microsoftonline.com/tenant-guid/",
+                "activedirectoryserviceprincipal",
+            )
+
+    def test_factory_caches_credential_per_tenant(self):
+        """ClientSecretCredential must be reused across calls for the same
+        tenant so azure-identity's per-instance token cache actually works."""
+        az = sys.modules["azure.identity"]
+        construction_count = {"n": 0}
+
+        original = az.ClientSecretCredential
+
+        class _Tok:
+            token = SAMPLE_TOKEN
+
+        class CountingCred:
+            def __init__(self, **kwargs):
+                construction_count["n"] += 1
+
+            def get_token(self, scope):
+                return _Tok()
+
+        az.ClientSecretCredential = CountingCred
+        try:
+            factory = ServicePrincipalAuth.make_token_factory("cid", "secret")
+            sts = "https://login.microsoftonline.com/tenant-guid/"
+            for _ in range(3):
+                factory("https://database.windows.net/", sts, "activedirectoryserviceprincipal")
+            assert construction_count["n"] == 1, (
+                f"Expected 1 ClientSecretCredential construction across 3 calls, "
+                f"got {construction_count['n']}"
+            )
+            # A different tenant should produce a second instance.
+            factory(
+                "https://database.windows.net/",
+                "https://login.microsoftonline.com/other-tenant/",
+                "activedirectoryserviceprincipal",
+            )
+            assert construction_count["n"] == 2
+        finally:
+            az.ClientSecretCredential = original
