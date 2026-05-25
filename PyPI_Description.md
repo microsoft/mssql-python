@@ -35,21 +35,24 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.6.0
+## What's new in v1.7.1
 
 ### Enhancements
 
-- **Connection String Sanitization** - Connection string sanitization has been migrated from regex-based to parser-based logic, making it more robust and consistent with connection string parsing rules.
+- **Platform Support: manylinux_2_28 Build Targets** - Added build targets for RHEL 8 and glibc 2.28 compatible distributions (#548).
+- **Platform Support: macOS universal2 Wheel for Python 3.10** - Now producing a universal2 wheel for Python 3.10 on macOS, enabling native performance on Apple Silicon (#542).
+- **Performance: UTF-16 String Handling via simdutf** - UTF-16 string processing now uses `simdutf` and `std::u16string` for significantly faster encoding/decoding (#526).
+- **Performance: Optimized execute() Hot Path** - `execute()` gains soft reset, prepare caching, and guarded diagnostics for reduced overhead on repeated statement execution (#528).
+- **Documentation: Azure Linux Installation Guide** - Added installation instructions for Azure Linux (#567).
 
 ### Bug Fixes
 
-- **GIL Release During ODBC Connect/Disconnect** - The driver now releases the GIL during blocking ODBC connect and disconnect calls, improving concurrency for multi-threaded applications.
-- **setinputsizes() SQL_DECIMAL Crash Fix** - Fixed a crash in `cursor.setinputsizes()` when specifying `SQL_DECIMAL` type hints.
-- **ODBC Catalog fetchone() Fix** - Fixed an issue where `fetchone()` on ODBC catalog method results returned incorrect data.
-- **cursor.execute() Invalid Cursor State Fix** - Fixed `cursor.execute()` raising an Invalid cursor state error when called with `reset_cursor=False`.
-- **executemany Type Annotation Fix** - Corrected the type annotation for `executemany` `seq_of_parameters` parameter to accept `Mapping` types.
-- **setup_logging Path Traversal Guard** - Added path canonicalization and traversal guard to `setup_logging`'s `log_file_path` parameter to prevent path traversal issues.
- 
+- **Login Failures Now Raise Correct Exception Type** - Authentication failures previously surfaced as `RuntimeError`; they now raise the appropriate `mssql_python` exception type (#562).
+- **GIL Release Around Blocking ODBC Calls** - The GIL is now released around blocking `SQLSetConnectAttr` calls (#568), ODBC statement/fetch/transaction calls (#541), preventing thread stalls in multi-threaded workloads.
+- **executemany Decimal Sign Change Fix** - Fixed a `RuntimeError` in `executemany` when decimal parameter values change sign between rows (#560).
+- **CP1252 VARCHAR Encoding Consistency** - Fixed inconsistent retrieval of CP1252 encoded data in `VARCHAR` columns between Windows and Linux (#495).
+- **BulkCopy Empty String in NVARCHAR(MAX)/VARCHAR(MAX)** - Fixed `cursor.bulkcopy()` failing with SQL error 40197/4804 when any row contained an empty string `""` in an `NVARCHAR(MAX)` or `VARCHAR(MAX)` column. Fix ships via `mssql_py_core` 0.1.4 (#559).
+
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
 If you have any feedback, questions or need support please mail us at mssql-python@microsoft.com.
