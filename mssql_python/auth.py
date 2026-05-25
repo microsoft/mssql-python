@@ -4,6 +4,7 @@ Licensed under the MIT license.
 This module handles authentication for the mssql_python package.
 """
 
+import hashlib
 import platform
 import struct
 import threading
@@ -239,15 +240,23 @@ class ServicePrincipalAuth:
             try:
                 # Reuse the shared credential cache (introduced for MSI in PR #573)
                 # so SP credentials get the same per-instance token reuse semantics
-                # as the other AD methods. Key includes tenant_id so a server that
-                # somehow returns different tenants on different handshakes still
-                # gets distinct credentials. client_secret is intentionally NOT in
-                # the key — credentials are looked up by identity, not by secret;
-                # if the secret rotates, the closure will still hold the old one
-                # and AAD will reject the token, surfacing as ClientAuthenticationError.
+                # as the other AD methods.
+                #
+                # The cache key includes a hash of client_secret so a rotated
+                # secret produces a different cache entry. Without this, an
+                # external secret rotation would not invalidate the cached
+                # ClientSecretCredential: azure-identity's internal token cache
+                # would keep returning the previously-issued token (good for
+                # up to ~1 hour) until expiry, masking the rotation. Hashing
+                # avoids storing the raw secret in the dict key.
+                secret_hash = hashlib.sha256(client_secret.encode("utf-8")).hexdigest()
                 cache_key = _credential_cache_key(
                     "serviceprincipal",
-                    {"tenant_id": tenant_id, "client_id": client_id},
+                    {
+                        "tenant_id": tenant_id,
+                        "client_id": client_id,
+                        "secret_hash": secret_hash,
+                    },
                 )
                 with _credential_cache_lock:
                     credential = _credential_cache.get(cache_key)

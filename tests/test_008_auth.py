@@ -1280,3 +1280,71 @@ class TestServicePrincipalAuth:
             assert construction_count["n"] == 2
         finally:
             az.ClientSecretCredential = original
+
+    def test_factory_rotates_credential_when_secret_changes(self):
+        """A new client_secret for the same tenant+client_id MUST produce a new
+        ClientSecretCredential instance. Without this, an external secret
+        rotation would not invalidate the cached credential: azure-identity's
+        internal token cache would keep returning the previously-issued token
+        (good for up to ~1 hour) until expiry, masking the rotation."""
+        az = sys.modules["azure.identity"]
+        construction_count = {"n": 0}
+
+        original = az.ClientSecretCredential
+
+        class _Tok:
+            token = SAMPLE_TOKEN
+
+        class CountingCred:
+            def __init__(self, **kwargs):
+                construction_count["n"] += 1
+
+            def get_token(self, scope):
+                return _Tok()
+
+        az.ClientSecretCredential = CountingCred
+        try:
+            sts = "https://login.microsoftonline.com/tenant-guid/"
+            spn = "https://database.windows.net/"
+
+            # Old secret, two calls -> 1 construction (cached)
+            factory_old = ServicePrincipalAuth.make_token_factory("cid", "old-secret")
+            factory_old(spn, sts, "activedirectoryserviceprincipal")
+            factory_old(spn, sts, "activedirectoryserviceprincipal")
+            assert construction_count["n"] == 1
+
+            # Rotate the secret. Same tenant + client_id, different secret.
+            # MUST produce a fresh ClientSecretCredential so azure-identity
+            # cannot serve a stale token from its internal cache.
+            factory_new = ServicePrincipalAuth.make_token_factory("cid", "new-secret")
+            factory_new(spn, sts, "activedirectoryserviceprincipal")
+            assert construction_count["n"] == 2, (
+                f"Expected 2 ClientSecretCredential constructions after secret rotation, "
+                f"got {construction_count['n']}. A rotated secret was silently ignored."
+            )
+
+            # Calling the new factory again should hit cache (1 more = 2 total)
+            factory_new(spn, sts, "activedirectoryserviceprincipal")
+            assert construction_count["n"] == 2
+
+            # Calling the OLD factory again should still hit the OLD cache entry
+            # (it's keyed on the hash of "old-secret"), not construct again.
+            factory_old(spn, sts, "activedirectoryserviceprincipal")
+            assert construction_count["n"] == 2
+        finally:
+            az.ClientSecretCredential = original
+
+    def test_factory_cache_key_does_not_contain_raw_secret(self):
+        """The cache key must hash the secret, never store it raw. Otherwise
+        the secret is visible in process memory as part of the dict key."""
+        from mssql_python.auth import _credential_cache
+
+        secret_marker = "RAW_SECRET_MARKER_must_not_appear_in_cache_key"
+        factory = ServicePrincipalAuth.make_token_factory("cid", secret_marker)
+        factory(
+            "https://database.windows.net/",
+            "https://login.microsoftonline.com/tenant-guid/",
+            "activedirectoryserviceprincipal",
+        )
+        for key in _credential_cache.keys():
+            assert secret_marker not in repr(key), f"Raw secret leaked into cache key: {key!r}"
