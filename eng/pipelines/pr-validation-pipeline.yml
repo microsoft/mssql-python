@@ -340,10 +340,10 @@ jobs:
       } else {
         Write-Host "ODBC Driver 18 for SQL Server not found, installing..."
         
-        # Download ODBC Driver 18.5.2.1 (x64) from official Microsoft link
+        # Download ODBC Driver 18.6.2.1 (x64) from official Microsoft link
         $ProgressPreference = 'SilentlyContinue'
-        $installerUrl = "https://go.microsoft.com/fwlink/?linkid=2335671"
-        $installerPath = "$env:TEMP\msodbcsql_18.5.2.1_x64.msi"
+        $installerUrl = "https://go.microsoft.com/fwlink/?linkid=2358430"
+        $installerPath = "$env:TEMP\msodbcsql_18.6.2.1_x64.msi"
         
         Write-Host "Downloading ODBC Driver 18 (x64) from Microsoft..."
         Write-Host "  URL: $installerUrl"
@@ -808,7 +808,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
+        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.6.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
 
@@ -1133,7 +1133,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
+        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.6.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
 
@@ -1346,7 +1346,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
+        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.6.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
 
@@ -1571,7 +1571,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
+        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.6.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
 
@@ -1731,24 +1731,24 @@ jobs:
         echo 'Detected architecture: '\$architecture
         
         # Download the packages
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Download signatures for verification
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
         
         # Import Microsoft GPG key and verify packages
         curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
-        gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+        gpg --verify msodbcsql18_18.6.2.1-1_\$architecture.sig msodbcsql18_18.6.2.1-1_\$architecture.apk
         gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Install the packages
-        apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+        apk add --allow-untrusted msodbcsql18_18.6.2.1-1_\$architecture.apk
         apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Cleanup
-        rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+        rm -f msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
         
         # Add mssql-tools to PATH
         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
@@ -1805,7 +1805,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
+        ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.6.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
 
@@ -1981,24 +1981,24 @@ jobs:
         echo 'Detected architecture: '\$architecture
         
         # Download the packages
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Download signatures for verification
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
         
         # Import Microsoft GPG key and verify packages
         curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
-        gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+        gpg --verify msodbcsql18_18.6.2.1-1_\$architecture.sig msodbcsql18_18.6.2.1-1_\$architecture.apk
         gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Install the packages
-        apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+        apk add --allow-untrusted msodbcsql18_18.6.2.1-1_\$architecture.apk
         apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Cleanup
-        rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+        rm -f msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
         
         # Add mssql-tools to PATH
         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
@@ -2056,7 +2056,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
+        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.6.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
 
