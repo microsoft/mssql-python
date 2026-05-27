@@ -2876,6 +2876,44 @@ def test_row_attribute_access(cursor, db_connection):
         db_connection.commit()
 
 
+def test_row_string_key_indexing(cursor, db_connection):
+    """Test accessing row values by column name as string key: row['col']"""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_strkey (id INT PRIMARY KEY, name VARCHAR(50), age INT)"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_strkey (id, name, age) VALUES (1, 'Alice', 25)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_strkey")
+        row = cursor.fetchone()
+
+        # String-key access
+        assert row["id"] == 1, "Failed to access 'id' by string key"
+        assert row["name"] == "Alice", "Failed to access 'name' by string key"
+        assert row["age"] == 25, "Failed to access 'age' by string key"
+
+        # Consistency with index and attribute access
+        assert row["id"] == row[0] == row.id
+        assert row["name"] == row[1] == row.name
+        assert row["age"] == row[2] == row.age
+
+        # Non-existent key raises KeyError
+        with pytest.raises(KeyError):
+            row["nonexistent"]
+
+    except Exception as e:
+        pytest.fail(f"Row string-key indexing test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_strkey")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
 def test_row_comparison_with_list(cursor, db_connection):
     """Test comparing Row objects with lists (__eq__ method)"""
     try:
