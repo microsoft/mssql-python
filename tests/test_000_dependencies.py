@@ -78,7 +78,7 @@ class DependencyTester:
             platform = "debian_ubuntu";
         }
 
-        fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
+        fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.6.so.2.1";
         return driverPath.string();
         """
         try:
@@ -149,7 +149,7 @@ class DependencyTester:
         base_path = self.module_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
 
         dependencies = [
-            base_path / "libmsodbcsql-18.5.so.1.1",
+            base_path / "libmsodbcsql-18.6.so.2.1",
             base_path / "libodbcinst.so.2",
         ]
 
@@ -210,7 +210,7 @@ class DependencyTester:
                 / distro_name
                 / normalized_arch
                 / "lib"
-                / "libmsodbcsql-18.5.so.1.1"
+                / "libmsodbcsql-18.6.so.2.1"
             )
 
         else:

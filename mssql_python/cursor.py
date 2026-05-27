@@ -2938,11 +2938,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
         if self.connection._auth_type:
-            # Fresh token acquisition for mssql-py-core connection
+            # Fresh token acquisition for mssql-py-core connection. credential
+            # kwargs (e.g. user-assigned MSI client_id) were captured by
+            # Connection.__init__ before remove_sensitive_params stripped UID
+            # from connection_str — re-parsing here would miss them.
             from mssql_python.auth import AADAuth
 
             try:
-                raw_token = AADAuth.get_raw_token(self.connection._auth_type)
+                raw_token = AADAuth.get_raw_token(
+                    self.connection._auth_type,
+                    self.connection._credential_kwargs,
+                )
             except (RuntimeError, ValueError) as e:
                 raise RuntimeError(
                     f"Bulk copy failed: unable to acquire Azure AD token "

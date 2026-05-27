@@ -123,7 +123,7 @@ def test_connection(db_connection):
 def test_construct_connection_string(db_connection):
     # Check if the connection string is constructed correctly with kwargs
     # Using official ODBC parameter names
-    conn_str = db_connection._construct_connection_string(
+    conn_str, _ = db_connection._construct_connection_string(
         Server="localhost",
         UID="me",
         PWD="mypwd",
@@ -149,7 +149,7 @@ def test_construct_connection_string(db_connection):
 def test_connection_string_with_attrs_before(db_connection):
     # Check if the connection string is constructed correctly with attrs_before
     # Using official ODBC parameter names
-    conn_str = db_connection._construct_connection_string(
+    conn_str, _ = db_connection._construct_connection_string(
         Server="localhost",
         UID="me",
         PWD="mypwd",
@@ -177,7 +177,7 @@ def test_connection_string_with_attrs_before(db_connection):
 def test_connection_string_with_odbc_param(db_connection):
     # Check if the connection string is constructed correctly with ODBC parameters
     # Using lowercase synonyms that normalize to uppercase (uid->UID, pwd->PWD)
-    conn_str = db_connection._construct_connection_string(
+    conn_str, _ = db_connection._construct_connection_string(
         server="localhost",
         uid="me",
         pwd="mypwd",
