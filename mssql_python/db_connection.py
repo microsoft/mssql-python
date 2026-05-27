@@ -15,6 +15,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
+    credential: Optional[object] = None,
     **kwargs: Any,
 ) -> Connection:
     """
@@ -35,6 +36,16 @@ def connect(
             This per-connection override is useful for migration from pyodbc:
             connections that need string UUIDs can pass native_uuid=False, while the default (True)
             returns native uuid.UUID objects.
+        credential (object, optional): An Azure Identity credential object (or any object with a
+            ``.get_token(scope)`` method) used for Entra ID authentication. When provided, the
+            driver calls ``credential.get_token()`` to acquire a token instead of using the
+            built-in credential map. Cannot be combined with ``Authentication=`` in the
+            connection string.
+
+            For environment-portable code, prefer ``Authentication=ActiveDirectoryDefault`` in
+            the connection string — ``DefaultAzureCredential`` automatically picks the right
+            credential per environment. Use ``credential=`` only when you need explicit control
+            (e.g., excluding specific providers or using a credential not in the built-in map).
     Keyword Args:
         **kwargs: Additional key/value pairs for the connection string.
     Below attributes are not implemented in the internal driver:
@@ -58,6 +69,7 @@ def connect(
         attrs_before=attrs_before,
         timeout=timeout,
         native_uuid=native_uuid,
+        credential=credential,
         **kwargs,
     )
     return conn

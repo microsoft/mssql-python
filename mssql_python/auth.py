@@ -238,3 +238,68 @@ def extract_auth_type(parsed_params: Dict[str, str]) -> Optional[str]:
     """
     auth_value = parsed_params.get(_KEY_AUTHENTICATION, "").strip().lower()
     return _AUTH_TYPE_MAP.get(auth_value)
+
+
+def _get_token_from_credential(credential: object) -> str:
+    """Internal: call credential.get_token() and return the raw JWT string.
+
+    Centralises the token-acquisition + error-wrapping logic that both
+    :func:`acquire_token_from_credential` and
+    :func:`acquire_raw_token_from_credential` need.
+
+    Raises:
+        RuntimeError: If token acquisition fails.
+    """
+    try:
+        raw_token = credential.get_token("https://database.windows.net/.default").token
+        logger.info(
+            "_get_token_from_credential: Token acquired from %s - length=%d chars",
+            type(credential).__name__,
+            len(raw_token),
+        )
+        return raw_token
+    except Exception as e:
+        logger.error(
+            "_get_token_from_credential: Failed - credential=%s, error=%s",
+            type(credential).__name__,
+            str(e),
+        )
+        raise RuntimeError(
+            f"Failed to acquire token from credential " f"({type(credential).__name__}): {e}"
+        ) from e
+
+
+def acquire_token_from_credential(credential: object) -> bytes:
+    """Acquire an ODBC token struct from a user-supplied credential object.
+
+    The credential must follow the Azure ``TokenCredential`` protocol — i.e.
+    have a ``.get_token(scope)`` method returning an object with a ``.token``
+    attribute (a raw JWT string).
+
+    Args:
+        credential: Any object with a ``.get_token(scope)`` method.
+
+    Returns:
+        bytes: ODBC-compatible token struct for ``SQL_COPT_SS_ACCESS_TOKEN``.
+
+    Raises:
+        RuntimeError: If token acquisition fails.
+    """
+    return AADAuth.get_token_struct(_get_token_from_credential(credential))
+
+
+def acquire_raw_token_from_credential(credential: object) -> str:
+    """Acquire a raw JWT string from a user-supplied credential object.
+
+    Used by bulk copy, which needs the raw JWT rather than the ODBC struct.
+
+    Args:
+        credential: Any object with a ``.get_token(scope)`` method.
+
+    Returns:
+        str: Raw JWT token string.
+
+    Raises:
+        RuntimeError: If token acquisition fails.
+    """
+    return _get_token_from_credential(credential)
