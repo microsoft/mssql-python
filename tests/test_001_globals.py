@@ -1033,25 +1033,29 @@ def test_row_string_key_indexing():
 
 
 def test_row_string_key_case_insensitive_with_lowercase():
-    """Test Row string-key indexing is case-insensitive when global lowercase is True."""
+    """Test Row string-key indexing is case-insensitive when column_map_lower is provided."""
     from mssql_python.row import Row
-    from mssql_python.helpers import get_settings
 
-    settings = get_settings()
-    original = settings.lowercase
-    try:
-        settings.lowercase = True
+    column_map = {"productid": 0, "name": 1}
+    column_map_lower = {k.lower(): v for k, v in column_map.items()}
 
-        row = Row(
-            [1, "bar"],
-            {"productid": 0, "name": 1},
-            cursor=None,
-        )
+    row = Row(
+        [1, "bar"],
+        column_map,
+        cursor=None,
+        column_map_lower=column_map_lower,
+    )
 
-        # Exact match
-        assert row["productid"] == 1
-        # Case-insensitive match
-        assert row["ProductID"] == 1
-        assert row["NAME"] == "bar"
-    finally:
-        settings.lowercase = original
+    # Exact match via __getitem__
+    assert row["productid"] == 1
+    # Exact match via __getattr__
+    assert row.productid == 1
+    # Case-insensitive match via __getitem__
+    assert row["ProductID"] == 1
+    assert row["NAME"] == "bar"
+    # Case-insensitive match via __getattr__ (attribute access)
+    assert row.ProductID == 1
+    assert row.NAME == "bar"
+    # Non-existent attribute raises AttributeError
+    with pytest.raises(AttributeError):
+        row.nonexistent
