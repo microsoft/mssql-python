@@ -187,9 +187,96 @@ def _run_forwarded_connect_subprocess() -> int:
     return 0
 
 
+def _run_forwarded_param_query_subprocess() -> int:
+    """
+    Subprocess body for the parametrized-query teardown regression from
+    issue #565 (latest comment by @jschuba).
+
+    Executes parametrized SELECTs through the in-process forwarder, then
+    closes the connection. Before the GIL-release fix on the teardown
+    handle-freeing path, ``conn.close()`` blocks indefinitely inside
+    ``SQLFreeHandle`` (the server-side cursor opened by the parametrized
+    SELECT triggers a network round-trip during STMT-handle teardown,
+    while the GIL is held - starving the in-process forwarder thread).
+    """
+    import mssql_python
+    from mssql_python import connect
+
+    base = os.environ["DB_CONNECTION_STRING"]
+    target = _parse_server(base)
+    if target is None:
+        print("ERR: could not parse Server=... clause", file=sys.stderr)
+        return 2
+
+    fwd_host, fwd_port = _start_forwarder(target)
+    mssql_python.pooling(enabled=False)
+    tunneled = _replace_server(base, fwd_host, fwd_port)
+
+    conn = connect(tunneled)
+
+    # Use Connection.execute (same flow as the issue report) so cursors are
+    # not explicitly closed by the user - the deadlock occurs when conn.close()
+    # cascades through the still-open server-side cursors.
+    res = conn.execute("SELECT 1 as result WHERE 1=?", (1,))
+    row_qmark = res.fetchall()
+
+    res = conn.execute("SELECT 1 as result WHERE 1=%(parameter)s", {"parameter": 1})
+    row_named = res.fetchall()
+
+    # This is the call that hangs in the unfixed binary.
+    conn.close()
+
+    print(f"OK qmark={row_qmark} named={row_named}", flush=True)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # The actual pytest test.
 # ---------------------------------------------------------------------------
+
+
+def _run_subprocess_scenario(
+    scenario_env_value: str,
+    expected_marker: bytes,
+    failure_message: str,
+) -> None:
+    """Shared helper: spawn this file as a subprocess and apply the watchdog."""
+    base_conn_str = os.getenv("DB_CONNECTION_STRING")
+    if not base_conn_str:
+        pytest.skip("DB_CONNECTION_STRING environment variable not set")
+
+    if _parse_server(base_conn_str) is None:
+        pytest.skip("Could not parse Server=host,port from DB_CONNECTION_STRING")
+
+    env = os.environ.copy()
+    env["DB_CONNECTION_STRING"] = base_conn_str
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    env["MSSQL_PYTHON_TEST_565_SCENARIO"] = scenario_env_value
+
+    proc = subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        out, err = proc.communicate(timeout=WATCHDOG_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        pytest.fail(failure_message)
+
+    assert proc.returncode == 0, (
+        f"Subprocess exited with {proc.returncode}.\n"
+        f"stdout:\n{out.decode(errors='replace')}\n"
+        f"stderr:\n{err.decode(errors='replace')}"
+    )
+    assert expected_marker in out, (
+        f"Unexpected subprocess output.\n"
+        f"stdout:\n{out.decode(errors='replace')}\n"
+        f"stderr:\n{err.decode(errors='replace')}"
+    )
 
 
 def test_connect_through_python_tcp_forwarder_does_not_deadlock():
@@ -203,52 +290,47 @@ def test_connect_through_python_tcp_forwarder_does_not_deadlock():
     ``Connection.setautocommit`` immediately after ``SQLDriverConnect``
     returns); with the fix it completes in well under a second.
     """
-    base_conn_str = os.getenv("DB_CONNECTION_STRING")
-    if not base_conn_str:
-        pytest.skip("DB_CONNECTION_STRING environment variable not set")
-
-    if _parse_server(base_conn_str) is None:
-        pytest.skip("Could not parse Server=host,port from DB_CONNECTION_STRING")
-
-    env = os.environ.copy()
-    env["DB_CONNECTION_STRING"] = base_conn_str
-    env["PYTHONUNBUFFERED"] = "1"
-    # Propagate sys.path so the subprocess can find mssql_python even when
-    # the package is only available via pytest's path manipulation or an
-    # editable install rooted in the workspace.
-    env["PYTHONPATH"] = os.pathsep.join(sys.path)
-
-    proc = subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__)],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        out, err = proc.communicate(timeout=WATCHDOG_SECONDS)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        pytest.fail(
+    _run_subprocess_scenario(
+        scenario_env_value="connect",
+        expected_marker=b"OK (1,)",
+        failure_message=(
             f"connect()+SELECT through in-process Python TCP forwarder did "
             f"not complete within {WATCHDOG_SECONDS}s — this is the issue "
             f"#565 deadlock (GIL held across SQLSetConnectAttr_AUTOCOMMIT)."
-        )
-
-    assert proc.returncode == 0, (
-        f"Subprocess exited with {proc.returncode}.\n"
-        f"stdout:\n{out.decode(errors='replace')}\n"
-        f"stderr:\n{err.decode(errors='replace')}"
-    )
-    assert b"OK (1,)" in out, (
-        f"Unexpected subprocess output.\n"
-        f"stdout:\n{out.decode(errors='replace')}\n"
-        f"stderr:\n{err.decode(errors='replace')}"
+        ),
     )
 
 
-# Subprocess entry point: when this file is run as a script (by the test
-# above), execute the forwarded-connect body. Pytest collection ignores
-# this block.
+def test_param_query_close_through_python_tcp_forwarder_does_not_deadlock():
+    """
+    Regression test for the parametrized-query teardown variant of issue
+    #565 (latest comment by @jschuba on the reopened issue).
+
+    Executes parametrized SELECTs through the in-process forwarder and
+    then calls ``conn.close()``. Before the fix that releases the GIL
+    around ``SQLFreeHandle`` / ``SQLFreeStmt`` in the handle-teardown
+    path, ``conn.close()`` deadlocks inside ``SQLFreeHandle(SQL_HANDLE_STMT)``
+    because the server-side cursor opened by the parametrized SELECT
+    triggers a network round-trip during handle teardown while the GIL
+    is held — starving the in-process forwarder thread.
+    """
+    _run_subprocess_scenario(
+        scenario_env_value="param_close",
+        expected_marker=b"OK qmark=[(1,)] named=[(1,)]",
+        failure_message=(
+            f"Parametrized-query teardown through in-process Python TCP "
+            f"forwarder did not complete within {WATCHDOG_SECONDS}s — this "
+            f"is the issue #565 deadlock variant (GIL held across "
+            f"SQLFreeHandle/SQLFreeStmt during cursor/connection close)."
+        ),
+    )
+
+
+# Subprocess entry point: when this file is run as a script (by the tests
+# above), execute the requested scenario. Pytest collection ignores this
+# block.
 if __name__ == "__main__":
+    scenario = os.environ.get("MSSQL_PYTHON_TEST_565_SCENARIO", "connect")
+    if scenario == "param_close":
+        sys.exit(_run_forwarded_param_query_subprocess())
     sys.exit(_run_forwarded_connect_subprocess())
