@@ -43,7 +43,7 @@ if [[ "${1:-}" == "codecov" || "${1:-}" == "--coverage" ]]; then
     BACKUP_FILE="${ORIGINAL_DIR}/.source_backup_coverage.tar.gz"
     echo "[INFO] Creating backup of source files"
     tar -czf "$BACKUP_FILE" --exclude='build' --exclude='.source_backup*' \
-        $(find . -maxdepth 2 -type f \( -name "*.cpp" -o -name "*.hpp" \) -o -type d -name connection) 2>/dev/null || true
+        $(find . -maxdepth 2 -type f \( -name "*.cpp" -o -name "*.h*" \) -o -type d -name connection) 2>/dev/null || true
     
     if [[ ! -f "$BACKUP_FILE" ]]; then
         echo "[ERROR] Failed to create source backup"
