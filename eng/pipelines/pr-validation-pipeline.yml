@@ -1006,7 +1006,7 @@ jobs:
   strategy:
     matrix:
       Ubuntu_ARM64:
-        dockerImage: 'ubuntu:24.04'
+        dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
         archName: 'arm64'
       Debian_ARM64:
@@ -1104,7 +1104,7 @@ jobs:
         
         # Download the package to configure the Microsoft repo
         if [[ '$(distroName)' =~ ^Ubuntu ]]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
+          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
         else
           # Debian 12
           curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
