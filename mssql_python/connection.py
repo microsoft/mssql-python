@@ -358,6 +358,10 @@ class Connection:
             token = acquire_token_from_credential(credential)
             self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
             self._custom_credential = credential
+            # Strip sensitive params (UID/PWD/Trusted_Connection) since
+            # access-token auth is used — same as the Authentication= path.
+            sanitized = remove_sensitive_params(parsed_params)
+            self.connection_str = _ConnectionStringBuilder(sanitized).build()
 
         # Handle Entra ID authentication if specified.
         # The parsed dict is used directly — no re-parsing of the connection string.

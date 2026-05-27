@@ -246,6 +246,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
+        credential: Optional[object] = None,
         **kwargs: Any,
     ) -> None: ...
 
@@ -289,6 +290,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
+    credential: Optional[object] = None,
     **kwargs: Any,
 ) -> Connection: ...
 
