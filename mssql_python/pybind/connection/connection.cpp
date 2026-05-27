@@ -320,17 +320,38 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return ret;
     } else if (py::isinstance<py::str>(value)) {
         try {
-            this->wstrStringBuffer = value.cast<std::u16string>();
+            // Store the value in a Connection-owned, per-attribute member
+            // buffer so the memory remains valid for the lifetime of the
+            // Connection object. Some ODBC connect attributes (notably
+            // SQL_COPT_SS_ACCESS_TOKEN, 1256) are "deferred": the MS driver
+            // stores the caller's pointer at SQLSetConnectAttr time and
+            // dereferences it later during SQLDriverConnect to build the
+            // FedAuth login packet. A stack-local buffer freed when this
+            // function returns would cause a use-after-free during connect
+            // (issue #594). Keying by attribute id also prevents a second
+            // deferred attribute from invalidating the pointer stored for
+            // the first.
+            //
+            // Lifetime: the buffer MUST outlive every potential dereference
+            // of the deferred-attribute pointer by the driver, which
+            // includes paths beyond the initial connect (Idle Connection
+            // Resiliency re-auth on a dropped socket, transparent pool
+            // checkout re-handshake). SQL_ATTR_RESET_CONNECTION (see
+            // Connection::reset()) only wipes per-session state and does
+            // NOT tear down the driver-side authentication context, so the
+            // per-attribute buffers are NOT cleared on reset()/checkin;
+            // they are released only when the Connection object itself is
+            // destroyed.
+            //
+            // Note: attrs_before is applied once, sequentially, during
+            // connect(); the Connection's attribute setters are not designed
+            // for concurrent mutation from multiple threads.
+            auto& buf = this->_attrStringBuffers[attribute];
+            buf = value.cast<std::u16string>();
 
-            SQLPOINTER ptr;
-            SQLINTEGER length;
-            // Copy to a stack-local buffer so that releasing the GIL below
-            // doesn't expose a race where another thread overwrites the
-            // member wstrStringBuffer (and reallocates) while the ODBC
-            // driver is still reading from ptr.
-            std::u16string localStrBuffer = this->wstrStringBuffer;
-            ptr = reinterpretU16stringAsSqlWChar(localStrBuffer);
-            length = static_cast<SQLINTEGER>(localStrBuffer.length() * sizeof(SQLWCHAR));
+            SQLPOINTER ptr = reinterpretU16stringAsSqlWChar(buf);
+            SQLINTEGER length =
+                static_cast<SQLINTEGER>(buf.length() * sizeof(SQLWCHAR));
 
             SQLRETURN ret;
             {
@@ -349,12 +370,42 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         }
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         try {
-            // Copy to a stack-local buffer so that releasing the GIL
-            // doesn't expose a race where another thread overwrites the
-            // member strBytesBuffer while the driver reads from ptr.
-            std::string localBytesBuffer = value.cast<std::string>();
-            SQLPOINTER ptr = const_cast<char*>(localBytesBuffer.c_str());
-            SQLINTEGER length = static_cast<SQLINTEGER>(localBytesBuffer.size());
+            // Store the value in a Connection-owned, per-attribute member
+            // buffer so the memory remains valid for the lifetime of the
+            // Connection object. SQL_COPT_SS_ACCESS_TOKEN (1256) is a
+            // deferred attribute: the driver stores this pointer at
+            // SQLSetConnectAttr time and dereferences it later during
+            // SQLDriverConnect. A stack-local buffer freed when this
+            // function returns would cause a use-after-free during connect
+            // (issue #594, symptoms: SIGBUS on macOS, "Authentication
+            // token is missing in the federated authentication message"
+            // on Windows, TCP reset 0x2746 against Azure SQL). Keying by
+            // attribute id also prevents a second deferred attribute from
+            // invalidating the pointer stored for the first.
+            //
+            // Lifetime: the buffer MUST outlive every potential dereference
+            // of the deferred-attribute pointer by the driver, which
+            // includes paths beyond the initial connect:
+            //   * Idle Connection Resiliency (ICR): if the underlying TCP
+            //     connection drops while the connection sits idle in the
+            //     pool, the driver transparently re-establishes it on the
+            //     next use and re-runs the Login7 / FedAuth handshake,
+            //     dereferencing the same stashed token pointer.
+            //   * SQL_ATTR_RESET_CONNECTION pool checkin (see
+            //     Connection::reset()) only wipes per-session state; the
+            //     driver-side authentication context and the stashed
+            //     deferred-attribute pointer are intentionally retained.
+            // For these reasons the per-attribute buffers are NOT cleared
+            // on reset()/checkin; they are released only when the
+            // Connection object itself is destroyed.
+            //
+            // Note: attrs_before is applied once, sequentially, during
+            // connect(); concurrent setAttribute() on the same Connection
+            // from different threads is not a supported pattern.
+            auto& buf = this->_attrBytesBuffers[attribute];
+            buf = value.cast<std::string>();
+            SQLPOINTER ptr = const_cast<char*>(buf.data());
+            SQLINTEGER length = static_cast<SQLINTEGER>(buf.size());
 
             SQLRETURN ret;
             {
@@ -411,6 +462,18 @@ bool Connection::reset() {
         ThrowStdException("Connection handle not allocated");
     }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
+    // NOTE: SQL_ATTR_RESET_CONNECTION is a pool-checkin reset: it asks the
+    // driver to wipe per-session state (temp tables, open cursors, SET
+    // options, etc.) on the next use. It does NOT tear down the underlying
+    // TCP/TLS connection nor the driver-side authentication context, and
+    // it does NOT discard the deferred connect attributes the driver has
+    // stashed (e.g., the SQL_COPT_SS_ACCESS_TOKEN pointer used to build
+    // the FedAuth Login7 packet). The driver may still dereference those
+    // pointers after this reset on Idle Connection Resiliency re-auth or
+    // a transparent reconnect, so the per-attribute buffers owned by this
+    // Connection (_attrStringBuffers / _attrBytesBuffers) are intentionally
+    // retained here. Clearing them would reintroduce issue #594 in a new
+    // form (UAF during silent reconnect).
     SQLRETURN ret;
     {
         // Release the GIL around the ODBC call for consistency with the
