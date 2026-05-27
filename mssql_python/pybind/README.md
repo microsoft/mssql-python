@@ -142,33 +142,33 @@ macOS builds use universal2 binaries and depend on:
 Linux builds support multiple distributions:
 
 **Debian/Ubuntu x86_64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **Debian/Ubuntu ARM64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **RHEL/CentOS x86_64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **RHEL/CentOS ARM64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **SUSE/openSUSE x86_64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 > **Note:** SUSE/openSUSE ARM64 is not supported by Microsoft ODBC Driver 18
 
 **Alpine x86_64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **Alpine ARM64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 ## **Python Extension Modules**

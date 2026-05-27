@@ -1,5 +1,33 @@
 ChangeLog (Release Notes)
 
+18.6.2.1 - 2026-03-18
+
+Fixed:
+    - Fix SQL_ATTR_PARAMS_PROCESSED_PTR updates so the number of processed parameter sets is reported correctly when executing parameter arrays.
+    - Fix SQL_ATTR_PARAMS_PROCESSED_PTR and row counting when SQL_PARAM_IGNORE is used in parameter arrays.
+    - Fix segmentation fault when calling SQLNumResultCol in describe-only scenarios where no parameter bindings are present.
+    - Fix bcp_bind to correctly handle consecutive field terminators without misinterpreting them as empty fields.
+    - Fix Debian package installation to honor EULA acceptance and complete successfully.
+    - Fix RPM packaging rules to allow installing multiple driver versions side by side.
+    - Fix XA recovery to compute transaction IDs correctly and avoid missing recoverable transactions.
+    - Fix segmentation fault on handling of NULL values in table-valued parameter (TVP) arguments.
+
+Added:
+    - Improve handling of output and input/output vector parameters when using prepared statements.
+    - Allow up to 10 server redirections per connection attempt to support Microsoft Fabric redirection scenarios.
+    - Improve architecture detection and packaging for Alpine Linux environments.
+
+18.6.1.1 - 2025-12-08
+
+Added:
+    - Vector data type (float32)
+    - Support for ConcatNullYieldsNull property as both a connection string property and a registry key option
+    - Updated License Acceptance Process for Azure Linux
+    - Support Azure Linux 3.0 ARM
+    - Support Debian13
+    - Support RedHat 10
+    - Support Ubuntu 25.10
+
 18.5.1.1 - 2025-03-17
 
 Fixed:
