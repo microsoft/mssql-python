@@ -476,46 +476,10 @@ jobs:
         pythonVersion: '3.14'
 
   steps:
-  # Python 3.14 Installation for macOS: Download from python.org (not yet in UsePythonVersion@0)
-  - script: |
-      if [ "$(pythonVersion)" = "3.14" ]; then
-        echo "Python 3.14 detected - downloading from python.org..."
-        
-        # Download Python 3.14 universal2 installer
-        PYTHON_PKG="python-3.14.0-macos11.pkg"
-        curl -o "$PYTHON_PKG" "https://www.python.org/ftp/python/3.14.0/$PYTHON_PKG"
-        
-        # Install Python
-        sudo installer -pkg "$PYTHON_PKG" -target /
-        
-        # Python 3.14 is installed to /Library/Frameworks/Python.framework/Versions/3.14
-        PYTHON_PATH="/Library/Frameworks/Python.framework/Versions/3.14/bin"
-        
-        # Add to PATH
-        echo "##vso[task.prependpath]$PYTHON_PATH"
-        
-        # Verify installation
-        "$PYTHON_PATH/python3.14" --version
-        "$PYTHON_PATH/python3.14" -c "import sys; print('Python:', sys.executable)"
-        
-        # Create symlink for convenience
-        sudo ln -sf "$PYTHON_PATH/python3.14" /usr/local/bin/python
-        sudo ln -sf "$PYTHON_PATH/python3.14" /usr/local/bin/python3
-        
-        # Cleanup
-        rm -f "$PYTHON_PKG"
-        
-        echo "Python 3.14 installation completed"
-      fi
-    condition: eq(variables['pythonVersion'], '3.14')
-    displayName: 'Install Python 3.14 from python.org'
-
-  # Python 3.10-3.13: Use standard Azure Pipelines task
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
       addToPath: true
-    condition: ne(variables['pythonVersion'], '3.14')
     displayName: 'Use Python $(pythonVersion) on macOS'
 
   - script: |
