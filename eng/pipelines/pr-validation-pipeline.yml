@@ -473,7 +473,7 @@ jobs:
       SQL2025:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
-        pythonVersion: '3.14'
+        pythonVersion: '3.13'
 
   steps:
   - task: UsePythonVersion@0
@@ -743,7 +743,7 @@ jobs:
         export DEBIAN_FRONTEND=noninteractive
         
         # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
+        if [[ '$(distroName)' =~ ^Ubuntu ]]; then
           curl -sSL -O https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
         else
           # Debian 12
@@ -1067,7 +1067,7 @@ jobs:
         export DEBIAN_FRONTEND=noninteractive
         
         # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
+        if [[ '$(distroName)' =~ ^Ubuntu ]]; then
           curl -sSL -O https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
         else
           # Debian 12
