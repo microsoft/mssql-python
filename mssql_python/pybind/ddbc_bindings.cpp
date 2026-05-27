@@ -635,9 +635,17 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     SQLULEN describedSize;
                     SQLSMALLINT describedDigits;
                     SQLSMALLINT nullable;
-                    RETCODE rc = SQLDescribeParam_ptr(
-                        hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &describedType,
-                        &describedSize, &describedDigits, &nullable);
+                    // SQLDescribeParam may issue a server round-trip
+                    // (sp_describe_undeclared_parameters). Release the GIL
+                    // around it so in-process Python TCP forwarders can run
+                    // (issue #565 family).
+                    RETCODE rc;
+                    {
+                        py::gil_scoped_release release;
+                        rc = SQLDescribeParam_ptr(
+                            hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &describedType,
+                            &describedSize, &describedDigits, &nullable);
+                    }
                     if (!SQL_SUCCEEDED(rc)) {
                         // SQLDescribeParam can fail for generic SELECT statements where
                         // no table column is referenced. Fall back to SQL_VARCHAR as a safe
