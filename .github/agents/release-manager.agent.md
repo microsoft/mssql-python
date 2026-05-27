@@ -194,7 +194,23 @@ Ask the user to confirm the GitHub PR has been approved before continuing.
 
 **No cherry-pick.** The GitHub commit SHA is not present in the ADO repo clone. Instead, apply the same 3 file edits directly to ADO `main`.
 
-Ask the user for the ADO repo local path if not already known (e.g. `C:\Users\<user>\source\repos\ado-python\mssql-python`).
+**Auto-detect the ADO repo local path — do not ask the user.** Run the following to find it:
+
+```powershell
+# The ADO clone is typically a sibling of the GitHub clone.
+# GitHub clone path example: C:\Users\user\source\repos\github-python\mssql-python
+# Try replacing 'github-python' with 'ado-python' in the path:
+$ghPath = (Get-Location).Path   # current GitHub repo root
+$adoCandidate = $ghPath -replace 'github-python', 'ado-python'
+if (Test-Path "$adoCandidate\.git") {
+    cd $adoCandidate
+    git remote -v   # confirm ADO remote (sqlclientdrivers.visualstudio.com)
+}
+```
+
+If the candidate path exists and `git remote -v` shows `sqlclientdrivers.visualstudio.com`, use it.
+If not found, try other sibling directories for a repo with that remote URL.
+Only ask the user if auto-detection genuinely fails.
 
 **5a — Create ADO branch:**
 
@@ -392,18 +408,19 @@ Release vX.X.X Checklist:
 [ ] 9.  GitHub release PR created (RELEASE:X.X.X, reviewers assigned)
 [ ] 10. GitHub release notes drafted and approved by user
 [ ] 11. GitHub release PR approved by reviewer (GATE — do not proceed to Step 5 until done)
-[ ] 12. ADO branch release/X.X.X created from ADO main (no cherry-pick, no v prefix)
-[ ] 13. ADO branch diff shown to user and confirmed — matches GitHub PR diff
-[ ] 14. ADO PR created; merged (MANUAL)
-[ ] 15. ADO build pipeline completed successfully
-[ ] 16. Dummy release pipeline ran (failed successfully) (MANUAL trigger)
-[ ] 17. Artifact count verified: 34
-[ ] 18. Official release pipeline completed, releaseToPyPI: true (MANUAL confirm)
-[ ] 19. PyPI page live: https://pypi.org/project/mssql-python/X.X.X/
-[ ] 20. GitHub release PR merged into main
-[ ] 21. GitHub Release published (tag: vX.X.X, marked as latest)
-[ ] 22. Smoke test passed: pip install + import + __version__ == X.X.X
-[ ] 23. ADO Work Item closed
+[ ] 12. ADO repo local path auto-detected (no user prompt needed)
+[ ] 13. ADO branch release/X.X.X created from ADO main (no cherry-pick, no v prefix)
+[ ] 14. ADO branch diff shown to user and confirmed — matches GitHub PR diff
+[ ] 15. ADO PR created; merged (MANUAL)
+[ ] 16. ADO build pipeline completed successfully
+[ ] 17. Dummy release pipeline ran (failed successfully) (MANUAL trigger)
+[ ] 18. Artifact count verified: 34
+[ ] 19. Official release pipeline completed, releaseToPyPI: true (MANUAL confirm)
+[ ] 20. PyPI page live: https://pypi.org/project/mssql-python/X.X.X/
+[ ] 21. GitHub release PR merged into main
+[ ] 22. GitHub Release published (tag: vX.X.X, marked as latest)
+[ ] 23. Smoke test passed: pip install + import + __version__ == X.X.X
+[ ] 24. ADO Work Item closed
 ```
 
 ---
@@ -413,8 +430,7 @@ Release vX.X.X Checklist:
 Ask for:
 1. **Target version** — read current from `mssql_python/__init__.py`, propose next semantic version, confirm with user
 2. **ADO Work Item ID** — for `AB#<ID>` in the release PR body
-3. **ADO repo local path** — path to the local ADO clone (e.g. `C:\Users\<user>\source\repos\ado-python\mssql-python`)
 
 Then present the checklist and begin with Step 1.
 
-> All other inputs (PR list, Rust changes, closed issues) are gathered automatically — do not ask the user for them.
+> All other inputs (PR list, Rust changes, closed issues, ADO repo path) are gathered automatically — do not ask the user for them.
