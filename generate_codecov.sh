@@ -77,7 +77,7 @@ echo "[INFO] Using pybind module: $PYBIND_SO"
 # Export C++ coverage, excluding Python headers, pybind11, and system includes
 llvm-cov export "$PYBIND_SO" \
   -instr-profile=default.profdata \
-  -ignore-filename-regex='(python3\.[0-9]+|cpython|pybind11|/usr/include/|/usr/lib/)' \
+  -ignore-filename-regex='(python3\.[0-9]+|cpython|pybind11|/usr/include/|/usr/lib/|build/_deps/)' \
   --skip-functions \
   -format=lcov > cpp-coverage.info
 
@@ -94,6 +94,13 @@ echo "==================================="
 echo "[ACTION] Merging Python and C++ coverage"
 lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
   --ignore-errors inconsistent,corrupt
+
+# Defense-in-depth: drop any vendored third-party sources pulled in via CMake
+# FetchContent (e.g. simdutf). The llvm-cov ignore-filename-regex above is the
+# primary filter; this catches anything that slips through future deps.
+echo "[ACTION] Removing vendored third-party sources from merged coverage"
+lcov --remove total.info '*/build/_deps/*' -o total.info \
+  --ignore-errors inconsistent,unused
 
 # Normalize paths so everything starts from mssql_python/
 echo "[ACTION] Normalizing paths in LCOV report"
