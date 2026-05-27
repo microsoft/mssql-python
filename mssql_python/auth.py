@@ -10,7 +10,14 @@ import threading
 from typing import Tuple, Dict, Optional
 
 from mssql_python.logging import logger
-from mssql_python.constants import AuthType, ConstantsDDBC
+from mssql_python.constants import (
+    AuthType,
+    ConstantsDDBC,
+    _KEY_AUTHENTICATION,
+    _KEY_UID,
+    _KEY_PWD,
+    _KEY_TRUSTED_CONNECTION,
+)
 
 # Module-level credential instance cache.
 # Reusing credential objects allows the Azure Identity SDK's built-in
@@ -23,7 +30,7 @@ _credential_cache: Dict[object, object] = {}
 _credential_cache_lock = threading.Lock()
 
 # Canonical keys to strip when handing an Entra-token connection to ODBC.
-_SENSITIVE_KEYS = frozenset({"UID", "PWD", "Trusted_Connection", "Authentication"})
+_SENSITIVE_KEYS = frozenset({_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION, _KEY_AUTHENTICATION})
 
 # Map Authentication connection-string values to internal short names.
 _AUTH_TYPE_MAP: Dict[str, str] = {
@@ -229,5 +236,5 @@ def extract_auth_type(parsed_params: Dict[str, str]) -> Optional[str]:
     no platform checks — use :func:`process_auth_parameters` when you need
     the Windows-Interactive suppression logic.
     """
-    auth_value = parsed_params.get("Authentication", "").strip().lower()
+    auth_value = parsed_params.get(_KEY_AUTHENTICATION, "").strip().lower()
     return _AUTH_TYPE_MAP.get(auth_value)

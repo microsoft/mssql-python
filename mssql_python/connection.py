@@ -49,7 +49,7 @@ from mssql_python.auth import (
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
-from mssql_python.constants import _RESERVED_PARAMETERS
+from mssql_python.constants import _RESERVED_PARAMETERS, _KEY_AUTHENTICATION, _KEY_UID
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
@@ -292,7 +292,7 @@ class Connection:
             raise ValueError("native_uuid must be a boolean value or None")
         self._native_uuid = native_uuid
 
-        self.connection_str, self._parsed_params = self._construct_connection_string(
+        self.connection_str, parsed_params = self._construct_connection_string(
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
@@ -337,20 +337,20 @@ class Connection:
 
         # Handle Entra ID authentication if specified.
         # The parsed dict is used directly — no re-parsing of the connection string.
-        if "Authentication" in self._parsed_params:
-            auth_type = process_auth_parameters(self._parsed_params)
+        if _KEY_AUTHENTICATION in parsed_params:
+            auth_type = process_auth_parameters(parsed_params)
 
             if auth_type:
                 # Capture credential kwargs (e.g. user-assigned MSI client_id)
                 # from the parsed dict *before* remove_sensitive_params strips UID.
                 credential_kwargs: Optional[Dict[str, str]] = None
                 if auth_type == "msi":
-                    uid = (self._parsed_params.get("UID") or "").strip()
+                    uid = (parsed_params.get(_KEY_UID) or "").strip()
                     if uid:
                         credential_kwargs = {"client_id": uid}
 
                 # Strip sensitive params and rebuild the connection string.
-                sanitized = remove_sensitive_params(self._parsed_params)
+                sanitized = remove_sensitive_params(parsed_params)
                 self.connection_str = _ConnectionStringBuilder(sanitized).build()
                 token = get_auth_token(auth_type, credential_kwargs)
                 if token:
@@ -360,7 +360,7 @@ class Connection:
             # Store auth type so bulkcopy() can acquire a fresh token later.
             # On Windows Interactive, process_auth_parameters returns None
             # (DDBC handles auth natively), so fall back to extract_auth_type.
-            self._auth_type = auth_type or extract_auth_type(self._parsed_params)
+            self._auth_type = auth_type or extract_auth_type(parsed_params)
 
         self._closed = False
         self._timeout = timeout
