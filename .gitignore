@@ -48,6 +48,16 @@ build/
 
 # wheel files
 *.whl
+
+# Coverage reports and artifacts
+.coverage
+coverage.json
+coverage*.xml
+htmlcov/
+unified-coverage/
+*.profraw
+*.profdata
+*.info
 *.tar.gz
 *.zip
 
@@ -66,3 +76,11 @@ mssql_py_core/
 
 # learning files
 learnings/
+
+# Local development and experimental scripts (not part of the PR)
+add_platform_exclusions.py
+add_lcov_exclusions.py
+fix_multiline_log_exclusions.py
+test_pyodbc_decimal.py
+run_coverage_docker.ps1
+TRIAGE_REPORT_*.md
