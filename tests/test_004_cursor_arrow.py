@@ -313,8 +313,15 @@ def test_arrow_long_string(cursor: mssql_python.Cursor):
     assert batch.column(0).to_pylist() == [long_string]
 
 
-def test_arrow_varchar_utf8_collation_unicode(cursor: mssql_python.Cursor):
-    table = "#t_arrow_utf8_varchar"
+@pytest.mark.parametrize(
+    "sql_type",
+    [
+        pytest.param("char(32)", id="char"),
+        pytest.param("varchar(32)", id="varchar"),
+    ],
+)
+def test_arrow_char_utf8_collation_unicode(cursor: mssql_python.Cursor, sql_type: str):
+    table = "#t_arrow_char_decode"
     collation = "Latin1_General_100_CI_AS_SC_UTF8"
     expected = [
         "Grüße",
@@ -329,7 +336,7 @@ def test_arrow_varchar_utf8_collation_unicode(cursor: mssql_python.Cursor):
 
     try:
         cursor.execute(
-            f"create table {table} (id int primary key, v varchar(32) collate {collation})"
+            f"create table {table} (id int primary key, v {sql_type} collate {collation})"
         )
     except Exception as exc:
         pytest.skip(f"UTF-8 collation '{collation}' not supported: {exc}")
@@ -339,13 +346,24 @@ def test_arrow_varchar_utf8_collation_unicode(cursor: mssql_python.Cursor):
             cursor.execute(f"insert into {table} (id, v) values (?, ?)", index, value)
         tbl = cursor.execute(f"select v from {table} order by id").arrow()
         assert tbl.column(0).type.equals(pa.large_string())
-        assert tbl.column(0).to_pylist() == expected
+        for expected_val, actual_val in zip(expected, tbl.column(0).to_pylist(), strict=True):
+            if actual_val is not None:
+                actual_val = actual_val.strip()
+            assert expected_val == actual_val
     finally:
         cursor.execute(f"drop table if exists {table}")
 
 
-def test_arrow_varchar_utf8_collation_cp1252(cursor: mssql_python.Cursor):
-    table = "#t_arrow_cp1252_varchar"
+@pytest.mark.parametrize(
+    "sql_type",
+    [
+        pytest.param("char(32)", id="char"),
+        pytest.param("varchar(32)", id="varchar"),
+        pytest.param("text", id="text"),
+    ],
+)
+def test_arrow_char_cp1252_collation_unicode(cursor: mssql_python.Cursor, sql_type: str):
+    table = "#t_arrow_char_decode"
     collation = "SQL_Latin1_General_CP1_CI_AS"
     expected = [
         "Grüße",
@@ -358,14 +376,17 @@ def test_arrow_varchar_utf8_collation_cp1252(cursor: mssql_python.Cursor):
         None,
     ]
 
-    cursor.execute(f"create table {table} (id int primary key, v varchar(32) collate {collation})")
+    cursor.execute(f"create table {table} (id int primary key, v {sql_type} collate {collation})")
 
     try:
         for index, value in enumerate(expected, start=1):
             cursor.execute(f"insert into {table} (id, v) values (?, ?)", index, value)
         tbl = cursor.execute(f"select v from {table} order by id").arrow()
         assert tbl.column(0).type.equals(pa.large_string())
-        assert tbl.column(0).to_pylist() == expected
+        for expected_val, actual_val in zip(expected, tbl.column(0).to_pylist(), strict=True):
+            if actual_val is not None:
+                actual_val = actual_val.strip()
+            assert expected_val == actual_val
     finally:
         cursor.execute(f"drop table if exists {table}")
 

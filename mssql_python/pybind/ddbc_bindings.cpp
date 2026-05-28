@@ -4845,6 +4845,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         case SQL_WCHAR:
                         case SQL_WVARCHAR:
                         case SQL_WLONGVARCHAR: {
+                            // Always request WCHARs so we don't have to deal with CHAR encodings.
                             ret = GetDataVar(hStmt, idxCol + 1, SQL_C_WCHAR,
                                              buffers.wcharBuffers[idxCol],
                                              buffers.indicators[idxCol].data());
@@ -5088,6 +5089,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     case SQL_WCHAR:
                     case SQL_WVARCHAR:
                     case SQL_WLONGVARCHAR: {
+                        // We have previously fetched these as WCHARs, even for SQL_CHAR types.
                         assert(dataLen % sizeof(SQLWCHAR) == 0);
                         auto dataLenW = dataLen / sizeof(SQLWCHAR);
                         auto wcharSource =
