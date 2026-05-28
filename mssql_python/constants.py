@@ -519,6 +519,14 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     "packetsize": "PacketSize",
 }
 
+# Canonical normalized key names produced by _ConnectionStringParser._normalize_params.
+# Consumer code should reference these instead of hard-coding raw strings so that
+# a rename in _ALLOWED_CONNECTION_STRING_PARAMS is caught at import time.
+_KEY_AUTHENTICATION = "Authentication"
+_KEY_UID = "UID"
+_KEY_PWD = "PWD"
+_KEY_TRUSTED_CONNECTION = "Trusted_Connection"
+
 
 def get_info_constants() -> Dict[str, int]:
     """
