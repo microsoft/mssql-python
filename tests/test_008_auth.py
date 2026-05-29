@@ -524,7 +524,7 @@ class TestManagedIdentity:
         mock_conn.connection_str = "Server=tcp:test.database.windows.net;Database=testdb;"
         mock_conn._auth_type = "msi"
         mock_conn._credential_kwargs = {"client_id": client_id}
-        mock_conn._custom_credential = None
+        mock_conn._token_provider = None
         mock_conn._is_connected = True
 
         cursor = Cursor.__new__(Cursor)
@@ -975,7 +975,7 @@ class TestCacheOutputCorrectness:
         assert "default" in _credential_cache
 
 
-# ── Custom credential= parameter tests ──
+# ── Custom token_provider= parameter tests ──
 
 
 class TestAcquireTokenFromCredential:
@@ -1018,18 +1018,18 @@ class TestAcquireRawTokenFromCredential:
 
 
 class TestCustomCredentialConnect:
-    """Tests for the credential= parameter on connect()."""
+    """Tests for the token_provider= parameter on connect()."""
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_credential_happy_path(self, mock_ddbc_conn):
-        """credential= acquires token and sets attrs_before."""
+        """token_provider= acquires token and sets attrs_before."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
         from mssql_python import connect
 
-        conn = connect("Server=test;Database=testdb", credential=mock_cred)
-        assert conn._custom_credential is mock_cred
+        conn = connect("Server=test;Database=testdb", token_provider=mock_cred)
+        assert conn._token_provider is mock_cred
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
         # Existing auth_type should be None (no Authentication= in conn str)
         assert conn._auth_type is None
@@ -1037,7 +1037,7 @@ class TestCustomCredentialConnect:
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_credential_plus_authentication_raises_valueerror(self, mock_ddbc_conn):
-        """credential= + Authentication= raises ValueError."""
+        """token_provider= + Authentication= raises ValueError."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
@@ -1046,12 +1046,12 @@ class TestCustomCredentialConnect:
         with pytest.raises(ValueError, match="Cannot specify both"):
             connect(
                 "Server=test;Database=testdb;Authentication=ActiveDirectoryDefault",
-                credential=mock_cred,
+                token_provider=mock_cred,
             )
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_credential_plus_authentication_via_kwargs_raises_valueerror(self, mock_ddbc_conn):
-        """credential= + Authentication via kwargs raises ValueError."""
+        """token_provider= + Authentication via kwargs raises ValueError."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
@@ -1060,7 +1060,7 @@ class TestCustomCredentialConnect:
         with pytest.raises(ValueError, match="Cannot specify both"):
             connect(
                 "Server=test;Database=testdb",
-                credential=mock_cred,
+                token_provider=mock_cred,
                 Authentication="ActiveDirectoryDefault",
             )
 
@@ -1070,23 +1070,23 @@ class TestCustomCredentialConnect:
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
 
-        with pytest.raises(TypeError, match="credential must have a .get_token"):
-            connect("Server=test;Database=testdb", credential="not_a_credential")
+        with pytest.raises(TypeError, match="token_provider must have a .get_token"):
+            connect("Server=test;Database=testdb", token_provider="not_a_credential")
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_credential_none_uses_existing_flow(self, mock_ddbc_conn):
-        """credential=None (default) uses existing auth flow, no change."""
+        """token_provider=None (default) uses existing auth flow, no change."""
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
 
         conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
-        assert conn._custom_credential is None
+        assert conn._token_provider is None
         assert conn._auth_type == "default"
         conn.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_credential_with_non_auth_attrs_before(self, mock_ddbc_conn):
-        """credential= works alongside non-auth attrs_before."""
+        """token_provider= works alongside non-auth attrs_before."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
@@ -1095,7 +1095,7 @@ class TestCustomCredentialConnect:
         login_timeout_attr = 113  # SQL_ATTR_LOGIN_TIMEOUT
         conn = connect(
             "Server=test;Database=testdb",
-            credential=mock_cred,
+            token_provider=mock_cred,
             attrs_before={login_timeout_attr: 30},
         )
         assert conn._attrs_before[login_timeout_attr] == 30
@@ -1111,7 +1111,7 @@ class TestCustomCredentialConnect:
         from mssql_python import connect
 
         with pytest.raises(RuntimeError, match="Failed to acquire token from credential"):
-            connect("Server=test;Database=testdb", credential=mock_cred)
+            connect("Server=test;Database=testdb", token_provider=mock_cred)
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_credential_with_non_callable_get_token_raises_typeerror(self, mock_ddbc_conn):
@@ -1122,8 +1122,8 @@ class TestCustomCredentialConnect:
         class BadCredential:
             get_token = "not_a_method"
 
-        with pytest.raises(TypeError, match="credential must have a .get_token"):
-            connect("Server=test;Database=testdb", credential=BadCredential())
+        with pytest.raises(TypeError, match="token_provider must have a .get_token"):
+            connect("Server=test;Database=testdb", token_provider=BadCredential())
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_multiple_connections_share_same_credential(self, mock_ddbc_conn):
@@ -1133,9 +1133,9 @@ class TestCustomCredentialConnect:
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
         from mssql_python import connect
 
-        conn1 = connect("Server=test1;Database=db1", credential=mock_cred)
-        conn2 = connect("Server=test2;Database=db2", credential=mock_cred)
-        assert conn1._custom_credential is conn2._custom_credential
+        conn1 = connect("Server=test1;Database=db1", token_provider=mock_cred)
+        conn2 = connect("Server=test2;Database=db2", token_provider=mock_cred)
+        assert conn1._token_provider is conn2._token_provider
         assert mock_cred.get_token.call_count == 2
         conn1.close()
         conn2.close()

@@ -22,7 +22,7 @@ def _make_cursor(connection_str, auth_type):
     mock_conn = MagicMock()
     mock_conn.connection_str = connection_str
     mock_conn._auth_type = auth_type
-    mock_conn._custom_credential = None
+    mock_conn._token_provider = None
     mock_conn._is_connected = True
 
     cursor = Cursor.__new__(Cursor)

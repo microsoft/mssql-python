@@ -246,7 +246,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
-        credential: Optional[object] = None,
+        token_provider: Optional[object] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -335,29 +335,29 @@ class Connection:
         # fresh token; re-parsing self.connection_str at that point would miss
         # them because UID is already gone.
         self._credential_kwargs: Optional[Dict[str, str]] = None
-        # User-supplied credential object for custom Entra ID authentication.
+        # User-supplied token provider for custom Entra ID authentication.
         # Stored so bulk copy can call .get_token() for a fresh JWT later.
-        self._custom_credential = None
+        self._token_provider = None
 
-        # Custom credential= parameter — takes priority, mutually exclusive
+        # Custom token_provider= parameter — takes priority, mutually exclusive
         # with Authentication= in the connection string.
-        if credential is not None:
+        if token_provider is not None:
             if _KEY_AUTHENTICATION in parsed_params:
                 raise ValueError(
-                    "Cannot specify both 'credential' parameter and "
+                    "Cannot specify both 'token_provider' parameter and "
                     "'Authentication' in the connection string. "
                     "Use one or the other."
                 )
-            if not callable(getattr(credential, "get_token", None)):
+            if not callable(getattr(token_provider, "get_token", None)):
                 raise TypeError(
-                    f"credential must have a .get_token() method. "
-                    f"Got {type(credential).__name__}."
+                    f"token_provider must have a .get_token() method. "
+                    f"Got {type(token_provider).__name__}."
                 )
             from mssql_python.auth import acquire_token_from_credential
 
-            token = acquire_token_from_credential(credential)
+            token = acquire_token_from_credential(token_provider)
             self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
-            self._custom_credential = credential
+            self._token_provider = token_provider
             # Strip sensitive params (UID/PWD/Trusted_Connection) since
             # access-token auth is used — same as the Authentication= path.
             sanitized = remove_sensitive_params(parsed_params)
