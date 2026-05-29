@@ -2022,7 +2022,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
-    def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> tuple[list, int]:
+    def _transpose_rowwise_to_columnwise(
+        self,
+        seq_of_parameters: Sequence[Sequence[Any]],
+    ) -> tuple[list, int]:
         """
         Convert sequence of rows (row-wise) into list of columns (column-wise),
         for array binding via ODBC. Works with both iterables and generators.
@@ -2140,7 +2143,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return sample_value, None, None, max_decimal_formatted_len
 
     def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-        self, operation: str, seq_of_parameters: Union[List[Sequence[Any]], List[Mapping[str, Any]]]
+        self,
+        operation: str,
+        seq_of_parameters: Union[Sequence[Sequence[Any]], Sequence[Mapping[str, Any]]],
     ) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
