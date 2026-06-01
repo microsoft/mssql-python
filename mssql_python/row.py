@@ -209,6 +209,31 @@ class Row:
 
         raise AttributeError(f"Row has no attribute '{name}'")
 
+    def keys(self):
+        """Return column names, like dict.keys()."""
+        return self._column_map.keys()
+
+    def values(self):
+        """Return column values, like dict.values()."""
+        return self._values
+
+    def items(self):
+        """Return (column_name, value) pairs, like dict.items()."""
+        return ((name, self._values[idx]) for name, idx in self._column_map.items())
+
+    def to_dict(self):
+        """Return the row as a plain dict mapping column names to values."""
+        return {name: self._values[idx] for name, idx in self._column_map.items()}
+
+    def __contains__(self, key) -> bool:
+        """Support 'col_name in row' membership testing."""
+        if isinstance(key, str):
+            if key in self._column_map:
+                return True
+            if self._column_map_lower is not None:
+                return key.lower() in self._column_map_lower
+        return False
+
     def __eq__(self, other: Any) -> bool:
         """
         Support comparison with lists for test compatibility.

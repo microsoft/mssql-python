@@ -1059,3 +1059,66 @@ def test_row_string_key_case_insensitive_with_lowercase():
     # Non-existent attribute raises AttributeError
     with pytest.raises(AttributeError):
         row.nonexistent
+
+
+def test_row_to_dict():
+    """Test Row.to_dict() returns a plain dict of column names to values."""
+    from mssql_python.row import Row
+
+    row = Row(
+        [1, "foo", 3.14],
+        {"ProductID": 0, "Name": 1, "Price": 2},
+        cursor=None,
+    )
+
+    d = row.to_dict()
+    assert d == {"ProductID": 1, "Name": "foo", "Price": 3.14}
+    assert isinstance(d, dict)
+
+
+def test_row_keys_values_items():
+    """Test Row.keys(), values(), and items() behave like dict counterparts."""
+    from mssql_python.row import Row
+
+    column_map = {"id": 0, "name": 1}
+    row = Row([42, "Alice"], column_map, cursor=None)
+
+    # keys()
+    assert list(row.keys()) == ["id", "name"]
+
+    # values()
+    assert list(row.values()) == [42, "Alice"]
+
+    # items()
+    assert list(row.items()) == [("id", 42), ("name", "Alice")]
+
+
+def test_row_contains():
+    """Test 'column_name in row' membership testing."""
+    from mssql_python.row import Row
+
+    row = Row(
+        [1, "foo"],
+        {"ProductID": 0, "Name": 1},
+        cursor=None,
+    )
+
+    assert "ProductID" in row
+    assert "Name" in row
+    assert "nonexistent" not in row
+    # Integer is not a column name
+    assert 0 not in row
+
+
+def test_row_contains_case_insensitive():
+    """Test 'in' operator is case-insensitive when column_map_lower is provided."""
+    from mssql_python.row import Row
+
+    column_map = {"productid": 0, "name": 1}
+    column_map_lower = {k.lower(): v for k, v in column_map.items()}
+    row = Row([1, "bar"], column_map, cursor=None, column_map_lower=column_map_lower)
+
+    assert "productid" in row
+    assert "ProductID" in row
+    assert "NAME" in row
+    assert "missing" not in row
