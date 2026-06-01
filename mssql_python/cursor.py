@@ -2344,6 +2344,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
                     paraminfo.columnSize = 1
 
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding.
+                # _map_sql_type may return SQL_C_NUMERIC (expecting NumericData structs)
+                # but the conversion loop below converts all Decimal values to strings.
+                # The C type must match the actual data to avoid:
+                #   RuntimeError: Parameter's object type does not match parameter's C type
+                if paraminfo.paramSQLType in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
+                    # Ensure columnSize accommodates the longest string representation
+                    if max_decimal_len > paraminfo.columnSize:
+                        paraminfo.columnSize = max_decimal_len
+
                 # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
                 # The sample value's formatted string may be shorter than another
                 # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
@@ -2997,11 +3011,28 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
             pycore_cursor = pycore_connection.cursor()
 
+            # Auto-convert Row/list objects to tuples for the Rust layer.
+            # mssql_py_core expects native tuples; Row objects (from fetchmany)
+            # are iterable but fail the strict type check in Rust.
+            from mssql_python.row import Row
+
+            def _ensure_tuples(iterable):
+                for item in iterable:
+                    if isinstance(item, tuple):
+                        yield item
+                    elif isinstance(item, (list, Row)):
+                        yield tuple(item)
+                    else:
+                        raise TypeError(
+                            f"bulkcopy data rows must be tuples, lists, or Row objects, "
+                            f"got {type(item).__name__}"
+                        )
+
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             result = pycore_cursor.bulkcopy(
                 table_name,
-                iter(data),
+                _ensure_tuples(data),
                 batch_size=batch_size,
                 timeout=timeout,
                 column_mappings=column_mappings,

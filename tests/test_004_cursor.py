@@ -16239,3 +16239,103 @@ def test_long_print_message(cursor, message_len):
     msg = cursor.messages[0][1]
     # SQL Server truncates at 8000 characters
     assert msg.endswith("a" * min(8000, message_len)), msg
+
+
+# ---------------------------------------------------------
+# GH-609: executemany with Decimal values outside MONEY range
+# ---------------------------------------------------------
+def test_executemany_decimal_outside_money_range(cursor, db_connection):
+    """Test executemany with Decimal values exceeding the MONEY range (GH-609).
+
+    When a batch contains Decimal values outside ±922,337,203,685,477.5807,
+    _map_sql_type returns SQL_C_NUMERIC (expecting NumericData structs), but
+    the conversion loop converts all Decimals to strings. Without the GH-609
+    fix, this mismatch causes:
+        RuntimeError: Parameter's object type does not match parameter's C type
+
+    Also exercises separate batches (customer scenario: most batches have
+    in-MONEY-range values, one batch exceeds the range).
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_gh609 (val DECIMAL(38, 6))")
+
+        # Batch 1: all values inside MONEY range
+        batch1 = [(decimal.Decimal("100.50"),), (decimal.Decimal("200.75"),)]
+        cursor.executemany("INSERT INTO #pytest_gh609 VALUES (?)", batch1)
+
+        # Batch 2: mix of inside and outside MONEY range
+        batch2 = [
+            (decimal.Decimal("0.000001"),),
+            (decimal.Decimal("999999999999999999.123456"),),  # exceeds MONEY_MAX
+            (decimal.Decimal("-999999999999999999.654321"),),  # exceeds MONEY_MIN
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609 VALUES (?)", batch2)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_gh609 ORDER BY val")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert len(rows) == 5
+        assert rows[0] == decimal.Decimal("-999999999999999999.654321")
+        assert rows[-1] == decimal.Decimal("999999999999999999.123456")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609")
+        db_connection.commit()
+
+
+def test_executemany_decimal_with_nulls_outside_money(cursor, db_connection):
+    """Test executemany with NULL + large Decimal values outside MONEY range (GH-609)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_gh609_nulls (val DECIMAL(38, 10))")
+        data = [
+            (None,),
+            (decimal.Decimal("12345678901234567890.1234567890"),),
+            (None,),
+            (decimal.Decimal("-12345678901234567890.1234567890"),),
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609_nulls VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_gh609_nulls WHERE val IS NOT NULL ORDER BY val")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert len(rows) == 2
+        assert rows[0] == decimal.Decimal("-12345678901234567890.1234567890")
+        assert rows[1] == decimal.Decimal("12345678901234567890.1234567890")
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh609_nulls WHERE val IS NULL")
+        assert cursor.fetchone()[0] == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_nulls")
+        db_connection.commit()
+
+
+def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
+    """Test executemany with multiple columns including large Decimal (GH-609).
+
+    Mirrors the customer's scenario: a table with many columns where one
+    NUMERIC column has values outside the MONEY range.
+    """
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_gh609_multi (
+                id INT,
+                name NVARCHAR(100),
+                amount DECIMAL(38, 6),
+                description VARCHAR(200)
+            )
+        """)
+        data = [
+            (1, "row1", decimal.Decimal("999999999999999999.123456"), "test"),
+            (2, "row2", decimal.Decimal("50.0"), "small"),
+            (3, "row3", decimal.Decimal("-999999999999999999.654321"), "negative large"),
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609_multi VALUES (?, ?, ?, ?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, amount FROM #pytest_gh609_multi ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3
+        assert rows[0][1] == decimal.Decimal("999999999999999999.123456")
+        assert rows[2][1] == decimal.Decimal("-999999999999999999.654321")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_multi")
+        db_connection.commit()
