@@ -40,11 +40,16 @@ from mssql_python.exceptions import (
     NotSupportedError,
     sqlstate_to_exception,
 )
-from mssql_python.auth import extract_auth_type, process_connection_string
+from mssql_python.auth import (
+    extract_auth_type,
+    process_auth_parameters,
+    remove_sensitive_params,
+    get_auth_token,
+)
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
-from mssql_python.constants import _RESERVED_PARAMETERS
+from mssql_python.constants import _RESERVED_PARAMETERS, _KEY_AUTHENTICATION, _KEY_UID
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
@@ -287,7 +292,9 @@ class Connection:
             raise ValueError("native_uuid must be a boolean value or None")
         self._native_uuid = native_uuid
 
-        self.connection_str = self._construct_connection_string(connection_str, **kwargs)
+        self.connection_str, parsed_params = self._construct_connection_string(
+            connection_str, **kwargs
+        )
         self._attrs_before = attrs_before or {}
 
         # Initialize encoding settings with defaults for Python 3
@@ -321,20 +328,39 @@ class Connection:
         # We intentionally do NOT cache the token — a fresh one is acquired
         # each time bulkcopy() is called to avoid expired-token errors.
         self._auth_type = None
+        # Credential constructor kwargs (e.g. user-assigned MSI client_id)
+        # captured at __init__ time before remove_sensitive_params strips UID
+        # from self.connection_str. bulkcopy() re-uses these when acquiring a
+        # fresh token; re-parsing self.connection_str at that point would miss
+        # them because UID is already gone.
+        self._credential_kwargs: Optional[Dict[str, str]] = None
 
-        # Check if the connection string contains authentication parameters
-        # This is important for processing the connection string correctly.
-        # If authentication is specified, it will be processed to handle
-        # different authentication types like interactive, device code, etc.
-        if re.search(r"authentication", self.connection_str, re.IGNORECASE):
-            connection_result = process_connection_string(self.connection_str)
-            self.connection_str = connection_result[0]
-            if connection_result[1]:
-                self._attrs_before.update(connection_result[1])
+        # Handle Entra ID authentication if specified.
+        # The parsed dict is used directly — no re-parsing of the connection string.
+        if _KEY_AUTHENTICATION in parsed_params:
+            auth_type = process_auth_parameters(parsed_params)
+
+            if auth_type:
+                # Capture credential kwargs (e.g. user-assigned MSI client_id)
+                # from the parsed dict *before* remove_sensitive_params strips UID.
+                credential_kwargs: Optional[Dict[str, str]] = None
+                if auth_type == "msi":
+                    uid = (parsed_params.get(_KEY_UID) or "").strip()
+                    if uid:
+                        credential_kwargs = {"client_id": uid}
+
+                # Strip sensitive params and rebuild the connection string.
+                sanitized = remove_sensitive_params(parsed_params)
+                self.connection_str = _ConnectionStringBuilder(sanitized).build()
+                token = get_auth_token(auth_type, credential_kwargs)
+                if token:
+                    self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
+                self._credential_kwargs = credential_kwargs
+
             # Store auth type so bulkcopy() can acquire a fresh token later.
-            # On Windows Interactive, process_connection_string returns None
-            # (DDBC handles auth natively), so fall back to the connection string.
-            self._auth_type = connection_result[2] or extract_auth_type(self.connection_str)
+            # On Windows Interactive, process_auth_parameters returns None
+            # (DDBC handles auth natively), so fall back to extract_auth_type.
+            self._auth_type = auth_type or extract_auth_type(parsed_params)
 
         self._closed = False
         self._timeout = timeout
@@ -394,24 +420,25 @@ class Connection:
                 f"Unexpected error during connection registration: {type(e).__name__}: {e}"
             )
 
-    def _construct_connection_string(self, connection_str: str = "", **kwargs: Any) -> str:
+    def _construct_connection_string(
+        self, connection_str: str = "", **kwargs: Any
+    ) -> Tuple[str, Dict[str, str]]:
         """
         Construct the connection string by parsing, validating, and merging parameters.
 
-        This method performs a 6-step process:
         1. Parse and validate the base connection_str (validates against allowlist)
         2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         3. Merge kwargs (which override connection_str params after normalization)
-        4. Build connection string from normalized, merged params
-        5. Add Driver and APP parameters (always controlled by the driver)
-        6. Return the final connection string
+        4. Add Driver and APP (always controlled by the driver)
+        5. Build and return the final connection string + parameter dictionary
 
         Args:
             connection_str (str): The base connection string.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
-            str: The constructed and validated connection string.
+            Tuple[str, Dict[str, str]]: The constructed connection string and
+                the normalized parameter dictionary.
         """
 
         # Step 1: Parse base connection string with allowlist validation
@@ -441,20 +468,16 @@ class Connection:
             else:
                 logger.warning(f"Ignoring unknown connection parameter from kwargs: {key}")
 
-        # Step 4: Build connection string with merged params
-        builder = _ConnectionStringBuilder(normalized_params)
+        # Step 4: Add Driver and APP (always controlled by the driver).
+        normalized_params["Driver"] = "ODBC Driver 18 for SQL Server"
+        normalized_params["APP"] = "MSSQL-Python"
 
-        # Step 5: Add Driver and APP parameters (always controlled by the driver)
-        # These maintain existing behavior: Driver is always hardcoded, APP is always MSSQL-Python
-        builder.add_param("Driver", "ODBC Driver 18 for SQL Server")
-        builder.add_param("APP", "MSSQL-Python")
-
-        # Step 6: Build final string
-        conn_str = builder.build()
+        # Step 5: Build final connection string
+        conn_str = _ConnectionStringBuilder(normalized_params).build()
 
         logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
 
-        return conn_str
+        return conn_str, normalized_params
 
     @property
     def timeout(self) -> int:

@@ -1124,6 +1124,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Build column map locally first, then assign to cache
             column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             self._cached_column_map = column_map
+            self._cached_column_map_lower = (
+                {k.lower(): v for k, v in column_map.items()} if get_settings().lowercase else None
+            )
 
         # Fallback to legacy column name map if no cached map
         column_map = column_map or getattr(self, "_column_name_map", None)
@@ -1131,7 +1134,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Get cached converter map
         converter_map = getattr(self, "_cached_converter_map", None)
 
-        return column_map, converter_map
+        return column_map, converter_map, self._cached_column_map_lower
 
     def _map_data_type(self, sql_type):
         """
@@ -1547,12 +1550,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._cached_column_map = {
                 col_desc[0]: i for i, col_desc in enumerate(self.description)
             }
+            self._cached_column_map_lower = (
+                {k.lower(): v for k, v in self._cached_column_map.items()}
+                if get_settings().lowercase
+                else None
+            )
             self._cached_converter_map = self._build_converter_map()
             self._uuid_str_indices = self._compute_uuid_str_indices()
         else:
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
             self._cached_column_map = None
+            self._cached_column_map_lower = None
             self._cached_converter_map = None
             self._uuid_str_indices = None
 
@@ -2013,7 +2022,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
-    def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> tuple[list, int]:
+    def _transpose_rowwise_to_columnwise(
+        self,
+        seq_of_parameters: Sequence[Sequence[Any]],
+    ) -> tuple[list, int]:
         """
         Convert sequence of rows (row-wise) into list of columns (column-wise),
         for array binding via ODBC. Works with both iterables and generators.
@@ -2131,7 +2143,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return sample_value, None, None, max_decimal_formatted_len
 
     def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-        self, operation: str, seq_of_parameters: Union[List[Sequence[Any]], List[Mapping[str, Any]]]
+        self,
+        operation: str,
+        seq_of_parameters: Union[Sequence[Sequence[Any]], Sequence[Mapping[str, Any]]],
     ) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
@@ -2451,12 +2465,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._cached_column_map = {
                     col_desc[0]: i for i, col_desc in enumerate(self.description)
                 }
+                self._cached_column_map_lower = (
+                    {k.lower(): v for k, v in self._cached_column_map.items()}
+                    if get_settings().lowercase
+                    else None
+                )
                 self._cached_converter_map = self._build_converter_map()
                 self._uuid_str_indices = self._compute_uuid_str_indices()
             else:
                 self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
                 self._clear_rownumber()
                 self._cached_column_map = None
+                self._cached_column_map_lower = None
                 self._cached_converter_map = None
                 self._uuid_str_indices = None
         finally:
@@ -2506,13 +2526,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
             return Row(
                 row_data,
                 column_map,
                 cursor=self,
                 converter_map=converter_map,
                 uuid_str_indices=self._uuid_str_indices,
+                column_map_lower=column_map_lower,
             )
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
@@ -2569,7 +2590,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
@@ -2580,6 +2601,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     cursor=self,
                     converter_map=converter_map,
                     uuid_str_indices=uuid_idx,
+                    column_map_lower=column_map_lower,
                 )
                 for row_data in rows_data
             ]
@@ -2630,7 +2652,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
@@ -2641,6 +2663,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     cursor=self,
                     converter_map=converter_map,
                     uuid_str_indices=uuid_idx,
+                    column_map_lower=column_map_lower,
                 )
                 for row_data in rows_data
             ]
@@ -2754,6 +2777,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Clear cached column and converter maps for the new result set
         self._cached_column_map = None
+        self._cached_column_map_lower = None
         self._cached_converter_map = None
         self._uuid_str_indices = None
 
@@ -2780,6 +2804,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._cached_column_map = {
                     col_desc[0]: i for i, col_desc in enumerate(self.description)
                 }
+                self._cached_column_map_lower = (
+                    {k.lower(): v for k, v in self._cached_column_map.items()}
+                    if get_settings().lowercase
+                    else None
+                )
                 self._cached_converter_map = self._build_converter_map()
                 self._uuid_str_indices = self._compute_uuid_str_indices()
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -2933,11 +2962,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
         if self.connection._auth_type:
-            # Fresh token acquisition for mssql-py-core connection
+            # Fresh token acquisition for mssql-py-core connection. credential
+            # kwargs (e.g. user-assigned MSI client_id) were captured by
+            # Connection.__init__ before remove_sensitive_params stripped UID
+            # from connection_str — re-parsing here would miss them.
             from mssql_python.auth import AADAuth
 
             try:
-                raw_token = AADAuth.get_raw_token(self.connection._auth_type)
+                raw_token = AADAuth.get_raw_token(
+                    self.connection._auth_type,
+                    self.connection._credential_kwargs,
+                )
             except (RuntimeError, ValueError) as e:
                 raise RuntimeError(
                     f"Bulk copy failed: unable to acquire Azure AD token "
