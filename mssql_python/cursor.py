@@ -3011,28 +3011,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
             pycore_cursor = pycore_connection.cursor()
 
-            # Auto-convert Row/list objects to tuples for the Rust layer.
-            # mssql_py_core expects native tuples; Row objects (from fetchmany)
-            # are iterable but fail the strict type check in Rust.
-            from mssql_python.row import Row
-
-            def _ensure_tuples(iterable):
-                for item in iterable:
-                    if isinstance(item, tuple):
-                        yield item
-                    elif isinstance(item, (list, Row)):
-                        yield tuple(item)
-                    else:
-                        raise TypeError(
-                            f"bulkcopy data rows must be tuples, lists, or Row objects, "
-                            f"got {type(item).__name__}"
-                        )
-
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             result = pycore_cursor.bulkcopy(
                 table_name,
-                _ensure_tuples(data),
+                iter(data),
                 batch_size=batch_size,
                 timeout=timeout,
                 column_mappings=column_mappings,
