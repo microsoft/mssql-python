@@ -35,23 +35,19 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.7.1
+## What's new in v1.8.0
 
 ### Enhancements
 
-- **Platform Support: manylinux_2_28 Build Targets** - Added build targets for RHEL 8 and glibc 2.28 compatible distributions (#548).
-- **Platform Support: macOS universal2 Wheel for Python 3.10** - Now producing a universal2 wheel for Python 3.10 on macOS, enabling native performance on Apple Silicon (#542).
-- **Performance: UTF-16 String Handling via simdutf** - UTF-16 string processing now uses `simdutf` and `std::u16string` for significantly faster encoding/decoding (#526).
-- **Performance: Optimized execute() Hot Path** - `execute()` gains soft reset, prepare caching, and guarded diagnostics for reduced overhead on repeated statement execution (#528).
-- **Documentation: Azure Linux Installation Guide** - Added installation instructions for Azure Linux (#567).
+- **ActiveDirectoryMSI Support for Bulk Copy** - Adds `Authentication=ActiveDirectoryMSI` support to bulk copy, enabling both system-assigned and user-assigned managed identity authentication for Azure-hosted services (#573).
+- **Row String-Key Indexing** - Row objects now support accessing values by column name as a string key (e.g., `row["col"]`), in addition to integer index and attribute access. Case-insensitive lookup is supported when the cursor's `lowercase` attribute is enabled (#589).
+- **Bundled ODBC Driver Upgrade** - Updated the bundled Microsoft ODBC Driver for SQL Server from 18.5.1.1 to 18.6.2.1 (#569).
 
 ### Bug Fixes
 
-- **Login Failures Now Raise Correct Exception Type** - Authentication failures previously surfaced as `RuntimeError`; they now raise the appropriate `mssql_python` exception type (#562).
-- **GIL Release Around Blocking ODBC Calls** - The GIL is now released around blocking `SQLSetConnectAttr` calls (#568), ODBC statement/fetch/transaction calls (#541), preventing thread stalls in multi-threaded workloads.
-- **executemany Decimal Sign Change Fix** - Fixed a `RuntimeError` in `executemany` when decimal parameter values change sign between rows (#560).
-- **CP1252 VARCHAR Encoding Consistency** - Fixed inconsistent retrieval of CP1252 encoded data in `VARCHAR` columns between Windows and Linux (#495).
-- **BulkCopy Empty String in NVARCHAR(MAX)/VARCHAR(MAX)** - Fixed `cursor.bulkcopy()` failing with SQL error 40197/4804 when any row contained an empty string `""` in an `NVARCHAR(MAX)` or `VARCHAR(MAX)` column. Fix ships via `mssql_py_core` 0.1.4 (#559).
+- **Deferred Connect-Attribute Use-After-Free** - Fixed a use-after-free in `Connection.setAttribute` for deferred ODBC attributes (e.g., `SQL_COPT_SS_ACCESS_TOKEN`) that caused SIGBUS on macOS arm64 and authentication failures on Windows and Azure SQL (#596).
+- **Connection String Parsed Multiple Times in Auth Path** - Refactored authentication handling to use dictionary-based parameter processing instead of repeated string parsing, improving reliability and performance (#590).
+- **executemany Type Annotation Regression** - Fixed a typing regression where `Cursor.executemany` rejected valid `list[tuple[...]]` arguments under mypy due to invariant `List` type. The parameter type now uses covariant `Sequence` matching PEP 249 (#586).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
