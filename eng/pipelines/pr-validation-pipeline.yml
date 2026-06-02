@@ -47,27 +47,49 @@ jobs:
       Write-Host "=== Installing SQL Server 2016 SP3 Express ==="
       $ProgressPreference = 'SilentlyContinue'
 
+      # SQLEXPR_x64_ENU.exe is a self-contained installer — run it directly
       $installerUrl = "https://download.microsoft.com/download/9/0/7/907AD35F-9F9C-43A5-9789-52470555DB90/ENU/SQLEXPR_x64_ENU.exe"
       Write-Host "Downloading from $installerUrl ..."
       Invoke-WebRequest -Uri $installerUrl -OutFile "$env:TEMP\SQLEXPR_x64_ENU.exe"
 
-      Write-Host "Extracting..."
-      Start-Process -FilePath "$env:TEMP\SQLEXPR_x64_ENU.exe" -ArgumentList "/x:$env:TEMP\SQL2016Setup","/u" -Wait
+      Write-Host "Running SQL Server 2016 Express setup directly..."
+      $args = @(
+        "/Q",
+        "/ACTION=Install",
+        "/FEATURES=SQLEngine",
+        "/INSTANCENAME=MSSQLSERVER",
+        "/SQLSVCACCOUNT=NT AUTHORITY\SYSTEM",
+        "/SQLSYSADMINACCOUNTS=BUILTIN\Administrators",
+        "/TCPENABLED=1",
+        "/SECURITYMODE=SQL",
+        "/SAPWD=$(DB_PASSWORD)",
+        "/IACCEPTSQLSERVERLICENSETERMS",
+        "/UPDATEENABLED=0"
+      )
+      Write-Host "Args: $($args -join ' ')"
+      $proc = Start-Process -FilePath "$env:TEMP\SQLEXPR_x64_ENU.exe" -ArgumentList $args -Wait -PassThru
+      Write-Host "Setup exit code: $($proc.ExitCode)"
 
-      Write-Host "Running SQL Server 2016 setup..."
-      Start-Process -FilePath "$env:TEMP\SQL2016Setup\setup.exe" -ArgumentList `
-        "/Q", `
-        "/ACTION=Install", `
-        "/FEATURES=SQLEngine", `
-        "/INSTANCENAME=MSSQLSERVER", `
-        "/SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`"", `
-        "/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`"", `
-        "/TCPENABLED=1", `
-        "/SECURITYMODE=SQL", `
-        "/SAPWD=$(DB_PASSWORD)", `
-        "/IACCEPTSQLSERVERLICENSETERMS" `
-        -Wait
+      # Check summary log regardless of exit code
+      $summaryLog = Get-ChildItem -Path "$env:ProgramFiles\Microsoft SQL Server\*\Setup Bootstrap\Log" -Filter "Summary.txt" -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if ($summaryLog) {
+        Write-Host "=== Setup Summary Log ==="
+        Get-Content $summaryLog.FullName | Select-Object -Last 40
+      }
 
+      if ($proc.ExitCode -ne 0) {
+        # Also check detail log
+        $detailLog = Get-ChildItem -Path "$env:ProgramFiles\Microsoft SQL Server\*\Setup Bootstrap\Log" -Filter "Detail.txt" -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($detailLog) {
+          Write-Host "=== Setup Detail Log (last 60 lines) ==="
+          Get-Content $detailLog.FullName | Select-Object -Last 60
+        }
+        Write-Error "SQL Server 2016 setup failed with exit code $($proc.ExitCode)"
+        exit 1
+      }
+
+      # Verify service exists
+      Get-Service -Name "MSSQL*" -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType
       Write-Host "SQL Server 2016 installation completed"
     displayName: 'Install SQL Server 2016 SP3 Express'
     env:
