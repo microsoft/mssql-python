@@ -2342,15 +2342,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     max_val=max_val,
                 )
 
-                # For executemany with all-NULL columns, SQL_UNKNOWN_TYPE doesn't work
-                # with array binding. Fall back to SQL_VARCHAR as a safe default.
-                if (
-                    sample_value is None
-                    and paraminfo.paramSQLType == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
-                ):
-                    paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
-                    paraminfo.columnSize = 1
-
                 # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
                 # The sample value's formatted string may be shorter than another
                 # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
