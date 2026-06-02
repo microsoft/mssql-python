@@ -16242,7 +16242,130 @@ def test_long_print_message(cursor, message_len):
 
 
 # ---------------------------------------------------------
-# GH-609: executemany with Decimal values outside MONEY range
+# GH-609: Unit tests (no DB connection needed)
+# ---------------------------------------------------------
+from mssql_python.cursor import Cursor as _Cursor, MONEY_MAX as _MONEY_MAX
+from mssql_python.constants import ConstantsDDBC as _C
+
+
+def _make_bare_cursor():
+    """Create a Cursor instance without a connection for unit testing."""
+    cur = _Cursor.__new__(_Cursor)
+    cur._inputsizes = None
+    return cur
+
+
+def test_compute_column_type_large_decimal():
+    """_compute_column_type picks the highest-precision Decimal as sample."""
+    cur = _make_bare_cursor()
+    column = [
+        decimal.Decimal("100.50"),
+        decimal.Decimal("999999999999999999.123456"),
+        decimal.Decimal("200.75"),
+    ]
+    sample, _, _, max_dec_len = cur._compute_column_type(column)
+    assert isinstance(sample, decimal.Decimal)
+    assert sample > _MONEY_MAX
+    assert max_dec_len > 0
+
+
+def test_map_sql_type_decimal_outside_money_returns_numeric():
+    """_map_sql_type returns SQL_C_NUMERIC for Decimal outside MONEY range."""
+    cur = _make_bare_cursor()
+    val = decimal.Decimal("999999999999999999.123456")
+    dummy_row = [val]
+    sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
+    assert sql_type == _C.SQL_NUMERIC.value
+    assert c_type == _C.SQL_C_NUMERIC.value
+    assert isinstance(format(val, "f"), str)
+
+
+def test_map_sql_type_decimal_in_money_returns_varchar():
+    """_map_sql_type returns SQL_VARCHAR for Decimal within MONEY range."""
+    cur = _make_bare_cursor()
+    val = decimal.Decimal("100.50")
+    dummy_row = [val]
+    sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
+    assert sql_type == _C.SQL_VARCHAR.value
+    assert c_type == _C.SQL_C_CHAR.value
+
+
+def test_executemany_numeric_override_needed():
+    """The executemany auto-detection path must override SQL_C_NUMERIC to SQL_C_CHAR (GH-609)."""
+    from mssql_python import ddbc_bindings
+
+    cur = _make_bare_cursor()
+    data = [
+        (decimal.Decimal("100.50"),),
+        (decimal.Decimal("999999999999999999.123456"),),
+    ]
+    column = [row[0] for row in data]
+    sample_value, min_val, max_val, max_decimal_len = cur._compute_column_type(column)
+    dummy_row = list(data[0])
+    paraminfo = cur._create_parameter_types_list(
+        sample_value,
+        ddbc_bindings.ParamInfo,
+        dummy_row,
+        0,
+        min_val=min_val,
+        max_val=max_val,
+    )
+    assert paraminfo.paramSQLType == _C.SQL_NUMERIC.value
+    original_c_type = paraminfo.paramCType
+    if paraminfo.paramSQLType in (_C.SQL_DECIMAL.value, _C.SQL_NUMERIC.value):
+        paraminfo.paramCType = _C.SQL_C_CHAR.value
+        if max_decimal_len > paraminfo.columnSize:
+            paraminfo.columnSize = max_decimal_len
+    assert paraminfo.paramCType == _C.SQL_C_CHAR.value
+    assert original_c_type == _C.SQL_C_NUMERIC.value
+    assert paraminfo.columnSize >= max_decimal_len
+
+
+def test_executemany_decimal_numeric_override_coverage(monkeypatch):
+    """Call the real executemany method to cover the GH-609 override lines."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        captured["row_count"] = row_count
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [
+        (decimal.Decimal("100.50"),),
+        (decimal.Decimal("999999999999999999.123456"),),
+    ]
+    cur.executemany("INSERT INTO t VALUES (?)", data)
+    pt = captured["parameters_type"]
+    assert len(pt) == 1
+    assert pt[0].paramSQLType == _C.SQL_NUMERIC.value
+    assert pt[0].paramCType == _C.SQL_C_CHAR.value
+    col_values = captured["columnwise_params"][0]
+    for val in col_values:
+        assert val is None or isinstance(val, str)
+
+
+# ---------------------------------------------------------
+# GH-609: Integration tests (need DB connection)
 # ---------------------------------------------------------
 def test_executemany_decimal_outside_money_range(cursor, db_connection):
     """Test executemany with Decimal values exceeding the MONEY range (GH-609).
