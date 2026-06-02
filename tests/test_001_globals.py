@@ -1093,6 +1093,44 @@ def test_row_keys_values_items():
     assert list(row.items()) == [("id", 42), ("name", "Alice")]
 
 
+def test_row_dict_methods_with_lowercase_aliases():
+    """Test dict-like methods deduplicate when _column_map contains lowercase aliases.
+
+    The cursor's _prepare_metadata_result_set injects both original-cased and
+    lowercase entries (e.g. {"ProductID": 0, "productid": 0}). The dict methods
+    must return N entries (not 2N) and preserve original casing.
+    """
+    from mssql_python.row import Row
+
+    # Simulate what _prepare_metadata_result_set produces:
+    # original name + lowercase alias per column
+    column_map = {"ProductID": 0, "productid": 0, "Name": 1, "name": 1}
+    row = Row([1, "foo"], column_map, cursor=None)
+
+    # keys() — N entries, original casing preserved
+    keys = list(row.keys())
+    assert len(keys) == 2
+    assert keys == ["ProductID", "Name"]
+
+    # values() — N entries matching the values
+    assert list(row.values()) == [1, "foo"]
+
+    # items() — N pairs
+    items = list(row.items())
+    assert len(items) == 2
+    assert items == [("ProductID", 1), ("Name", "foo")]
+
+    # to_dict() — N entries, original casing as keys
+    d = row.to_dict()
+    assert len(d) == 2
+    assert d == {"ProductID": 1, "Name": "foo"}
+
+    # len consistency: keys, values, items all match len(row)
+    assert len(keys) == len(row)
+    assert len(list(row.values())) == len(row)
+    assert len(items) == len(row)
+
+
 def test_row_contains():
     """Test 'column_name in row' membership testing."""
     from mssql_python.row import Row
