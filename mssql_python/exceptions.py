@@ -30,6 +30,9 @@ class ConnectionStringParseError(builtins.Exception):
         message = "Connection string parsing failed:\n  " + "\n  ".join(errors)
         super().__init__(message)
 
+    def __reduce__(self):
+        return (self.__class__, (self.errors,))
+
 
 class Exception(builtins.Exception):
     """
@@ -46,6 +49,9 @@ class Exception(builtins.Exception):
             # Errors raised by the driver itself should not have a DDBC error message
             self.message = f"Driver Error: {self.driver_error}"
         super().__init__(self.message)
+
+    def __reduce__(self):
+        return (self.__class__, (self.driver_error, self.ddbc_error))
 
 
 class Warning(Exception):
