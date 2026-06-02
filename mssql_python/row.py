@@ -84,9 +84,7 @@ class Row:
             for name, idx in column_map.items():
                 if idx not in idx_to_name:
                     idx_to_name[idx] = name
-            self._column_names = tuple(
-                idx_to_name[i] for i in sorted(idx_to_name)
-            )
+            self._column_names = tuple(idx_to_name[i] for i in sorted(idx_to_name))
         else:
             self._column_names = ()
 
