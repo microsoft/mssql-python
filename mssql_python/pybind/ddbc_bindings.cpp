@@ -397,8 +397,6 @@ SQLParamDataFunc SQLParamData_ptr = nullptr;
 SQLPutDataFunc SQLPutData_ptr = nullptr;
 SQLTablesFunc SQLTables_ptr = nullptr;
 
-SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
-
 namespace {
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
@@ -627,41 +625,10 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                SQLSMALLINT sqlType = paramInfo.paramSQLType;
-                SQLULEN columnSize = paramInfo.columnSize;
-                SQLSMALLINT decimalDigits = paramInfo.decimalDigits;
-                if (sqlType == SQL_UNKNOWN_TYPE) {
-                    SQLSMALLINT describedType;
-                    SQLULEN describedSize;
-                    SQLSMALLINT describedDigits;
-                    SQLSMALLINT nullable;
-                    RETCODE rc = SQLDescribeParam_ptr(
-                        hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &describedType,
-                        &describedSize, &describedDigits, &nullable);
-                    if (!SQL_SUCCEEDED(rc)) {
-                        // SQLDescribeParam can fail for generic SELECT statements where
-                        // no table column is referenced. Fall back to SQL_VARCHAR as a safe
-                        // default.
-                        LOG_WARNING("BindParameters: SQLDescribeParam failed for "
-                                    "param[%d] (NULL parameter) - SQLRETURN=%d, falling back to "
-                                    "SQL_VARCHAR",
-                                    paramIndex, rc);
-                        sqlType = SQL_VARCHAR;
-                        columnSize = 1;
-                        decimalDigits = 0;
-                    } else {
-                        sqlType = describedType;
-                        columnSize = describedSize;
-                        decimalDigits = describedDigits;
-                    }
-                }
                 dataPtr = nullptr;
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                 *strLenOrIndPtr = SQL_NULL_DATA;
                 bufferLength = 0;
-                paramInfo.paramSQLType = sqlType;
-                paramInfo.columnSize = columnSize;
-                paramInfo.decimalDigits = decimalDigits;
                 break;
             }
             case SQL_C_STINYINT:
@@ -1278,8 +1245,6 @@ DriverHandle LoadDriverOrThrowException() {
     SQLPutData_ptr = GetFunctionPointer<SQLPutDataFunc>(handle, "SQLPutData");
     SQLTables_ptr = GetFunctionPointer<SQLTablesFunc>(handle, "SQLTablesW");
 
-    SQLDescribeParam_ptr = GetFunctionPointer<SQLDescribeParamFunc>(handle, "SQLDescribeParam");
-
     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
@@ -1288,7 +1253,7 @@ DriverHandle LoadDriverOrThrowException() {
                    SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
                    SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr && SQLFreeStmt_ptr &&
                    SQLGetDiagRec_ptr && SQLGetInfo_ptr && SQLParamData_ptr && SQLPutData_ptr &&
-                   SQLTables_ptr && SQLDescribeParam_ptr && SQLGetTypeInfo_ptr &&
+                   SQLTables_ptr && SQLGetTypeInfo_ptr &&
                    SQLProcedures_ptr && SQLForeignKeys_ptr && SQLPrimaryKeys_ptr &&
                    SQLSpecialColumns_ptr && SQLStatistics_ptr && SQLColumns_ptr;
 
@@ -1297,7 +1262,7 @@ DriverHandle LoadDriverOrThrowException() {
     }
     LOG("LoadDriverOrThrowException: All %d ODBC function pointers loaded "
         "successfully",
-        44);
+        43);
     return handle;
 }
 
