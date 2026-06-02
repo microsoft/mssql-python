@@ -8,7 +8,7 @@ trigger:
 
 jobs:
 - job: pytestonwindows
-  displayName: 'Windows  SQL 2016 repro (#600)'x64 
+  displayName: 'Windows x64 - SQL 2016 repro (#600)'
   pool:
     vmImage: 'windows-latest'
 
