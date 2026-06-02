@@ -75,19 +75,64 @@ jobs:
 
   # Wait for SQL Server to start and set up database
   - powershell: |
+      # Check install summary log for errors
+      $summaryLog = Get-ChildItem -Path "$env:TEMP\SQL2016Setup" -Filter "Summary*.txt" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($summaryLog) {
+        Write-Host "=== Install summary log ==="
+        Get-Content $summaryLog.FullName | Select-Object -Last 30
+      }
+
+      # Check if SQL Server service exists and start it
+      Write-Host "=== SQL Server services ==="
+      Get-Service -Name "MSSQL*" -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType
+      Get-Service -Name "SQL*" -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType
+
+      # Force start the service
+      $svc = Get-Service -Name "MSSQLSERVER" -ErrorAction SilentlyContinue
+      if ($svc) {
+        if ($svc.Status -ne 'Running') {
+          Write-Host "Starting MSSQLSERVER service..."
+          Start-Service -Name "MSSQLSERVER"
+          Start-Sleep -Seconds 5
+        }
+        Write-Host "MSSQLSERVER status: $((Get-Service MSSQLSERVER).Status)"
+      } else {
+        Write-Host "MSSQLSERVER service not found, checking for named instances..."
+        Get-Service | Where-Object { $_.Name -like '*SQL*' } | Format-Table Name, Status
+      }
+
+      # Enable TCP/IP via registry (SQL 2016 sometimes ignores /TCPENABLED=1)
+      $regPath = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL13.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp"
+      if (Test-Path $regPath) {
+        Set-ItemProperty -Path $regPath -Name "Enabled" -Value 1
+        Write-Host "TCP/IP enabled via registry"
+        # Restart to pick up TCP change
+        Restart-Service -Name "MSSQLSERVER" -Force
+        Start-Sleep -Seconds 5
+      } else {
+        Write-Host "TCP registry path not found at: $regPath"
+        # Try to find the actual path
+        Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\" -ErrorAction SilentlyContinue | Select-Object -First 10
+      }
+
+      # Now try to connect
       $maxAttempts = 30
       $attempt = 0
       $connected = $false
 
-      Write-Host "Waiting for SQL Server 2016 to start..."
+      Write-Host "Waiting for SQL Server 2016 to accept connections..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
         try {
           $result = sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SELECT 1" -C 2>&1
           if ($LASTEXITCODE -eq 0) {
             $connected = $true
             Write-Host "SQL Server 2016 is ready!"
+          } else {
+            Write-Host "sqlcmd exit code: $LASTEXITCODE"
           }
-        } catch { }
+        } catch {
+          Write-Host "Exception: $_"
+        }
         if (-not $connected) {
           $attempt++
           Write-Host "Waiting... ($attempt/$maxAttempts)"
@@ -96,6 +141,15 @@ jobs:
       }
 
       if (-not $connected) {
+        # Dump error log for diagnosis
+        Write-Host "=== SQL Server Error Log ==="
+        $errorLog = "C:\Program Files\Microsoft SQL Server\MSSQL13.MSSQLSERVER\MSSQL\Log\ERRORLOG"
+        if (Test-Path $errorLog) {
+          Get-Content $errorLog | Select-Object -Last 50
+        } else {
+          Write-Host "Error log not found at $errorLog"
+          Get-ChildItem "C:\Program Files\Microsoft SQL Server\" -Recurse -Filter "ERRORLOG" -ErrorAction SilentlyContinue | Select-Object FullName
+        }
         Write-Error "Failed to connect to SQL Server 2016"
         exit 1
       }
