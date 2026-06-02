@@ -2759,12 +2759,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         return pyarrow.RecordBatchReader.from_batches(schema, batch_generator())
 
-    def nextset(self) -> Union[bool, None]:
+    def nextset(self) -> bool:
         """
         Skip to the next available result set.
 
         Returns:
-            True if there is another result set, None otherwise.
+            True if there is another result set, False otherwise.
 
         Raises:
             Error: If the previous call to execute did not produce any result set.
@@ -2784,6 +2784,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+        # Capture diagnostic messages (e.g. PRINT output) on SQL_SUCCESS_WITH_INFO.
+        # Without this, messages from subsequent result sets are silently lost (GH-612).
+        if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             logger.debug("nextset: No more result sets available")
