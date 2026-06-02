@@ -412,8 +412,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         logger.debug("_map_sql_type: Mapping param index=%d, type=%s", i, type(param).__name__)
         if param is None:
             logger.debug("_map_sql_type: NULL parameter - index=%d", i)
+            # Use SQL_VARCHAR directly instead of SQL_UNKNOWN_TYPE to avoid
+            # a costly SQLDescribeParam / sp_describe_undeclared_parameters
+            # round-trip to the server for every NULL parameter.  The describe
+            # call fails most of the time (especially for stored-procedure
+            # calls) and the C++ layer already falls back to SQL_VARCHAR, so
+            # this is safe.  Matches the executemany() all-NULL optimisation.
+            # See GH-610.
             return (
-                ddbc_sql_const.SQL_UNKNOWN_TYPE.value,
+                ddbc_sql_const.SQL_VARCHAR.value,
                 ddbc_sql_const.SQL_C_DEFAULT.value,
                 1,
                 0,
