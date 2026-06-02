@@ -188,6 +188,7 @@ jobs:
 
   # Run the bulkcopy repro with full Rust TDS tracing
   - script: |
+      pip install -e .
       set MSSQL_TDS_TRACE=true
       set MSSQL_TDS_TRACE_LEVEL=debug
       python tests/gh600_bulkcopy_repro.py
