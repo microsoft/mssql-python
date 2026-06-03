@@ -127,13 +127,13 @@ class TestAuditContext:
             audit_conn.set_audit_context(**{"x" * 200: "v"})
 
     def test_audit_context_value_too_long(self, audit_conn):
-        """Values longer than 8000 characters are rejected."""
+        """Values longer than 4000 characters are rejected."""
         with pytest.raises(ProgrammingError):
-            audit_conn.set_audit_context(user_id="v" * 8001)
+            audit_conn.set_audit_context(user_id="v" * 4001)
 
     def test_audit_context_non_string_value(self, audit_conn):
         """Non-string values are rejected with ProgrammingError."""
-        with pytest.raises((ProgrammingError, TypeError)):
+        with pytest.raises(ProgrammingError):
             audit_conn.set_audit_context(user_id=123)  # type: ignore[arg-type]
 
     def test_get_audit_context_returns_copy(self, audit_conn):

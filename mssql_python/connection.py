@@ -1113,13 +1113,12 @@ class Connection:
             if hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()
         logger.info("Cleared all output converters")
-        
-        
+
     # ---- Session Metadata / Auditing API ----
 
     # Maximum length for session context keys and values to prevent abuse.
     _AUDIT_KEY_MAX_LEN: int = 128
-    _AUDIT_VALUE_MAX_LEN: int = 8000  # SQL Server sp_set_session_context limit
+    _AUDIT_VALUE_MAX_LEN: int = 4000
 
     def set_audit_context(
         self,
@@ -1158,8 +1157,7 @@ class Connection:
 
         Raises:
             InterfaceError: If the connection is closed.
-            ProgrammingError: If a key or value exceeds length limits or
-                contains invalid characters.
+            ProgrammingError: If a key or value exceeds length limits
             DatabaseError: If ``sp_set_session_context`` execution fails.
 
         Example::
@@ -1281,7 +1279,6 @@ class Connection:
         if not hasattr(self, "_audit_context"):
             return {}
         return dict(self._audit_context)
-        
 
     def execute(self, sql: str, *args: Any) -> Cursor:
         """
