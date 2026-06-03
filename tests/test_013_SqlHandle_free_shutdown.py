@@ -257,7 +257,9 @@ class TestHandleFreeShutdown:
         assert "Query result: [(1,)]" in result.stdout
         print(f"PASS: STMT handle (Type 3) cleanup during shutdown")
 
-    @pytest.mark.skipif(QEMU, reason="SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64")
+    @pytest.mark.skipif(
+        QEMU, reason="SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64"
+    )
     def test_dbc_handle_cleanup_at_shutdown(self, conn_str):
         """
         Test DBC handle (Type 2) cleanup during Python shutdown.
@@ -513,7 +515,9 @@ class TestHandleFreeShutdown:
         assert "Exception test: Exiting after exception without cleanup" in result.stdout
         print(f"PASS: Exception during query with shutdown")
 
-    @pytest.mark.skipif(QEMU, reason="SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64")
+    @pytest.mark.skipif(
+        QEMU, reason="SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64"
+    )
     def test_weakref_cleanup_at_shutdown(self, conn_str):
         """
         Test handle cleanup when using weakrefs during shutdown.
