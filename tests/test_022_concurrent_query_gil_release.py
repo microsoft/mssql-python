@@ -7,9 +7,8 @@ release added in PR #541 (covering ``SQLExecute`` / ``SQLExecDirect`` /
 ``SQLFetch`` / ``SQLEndTran`` in ``mssql_python/pybind/ddbc_bindings.cpp``
 and ``mssql_python/pybind/connection/connection.cpp``).
 
-These are **not** performance/stress tests — they assert a binary
-correctness property (the GIL must be released around blocking ODBC calls)
-using a conservative threshold that doesn't depend on hardware speed:
+These tests assert a binary correctness property (the GIL must be released
+around blocking ODBC calls) using a heartbeat-tick threshold:
 
 * with the GIL released, a Python heartbeat thread keeps ticking while
   another thread sits in ``cursor.execute("WAITFOR DELAY '00:00:02'")``
@@ -17,15 +16,11 @@ using a conservative threshold that doesn't depend on hardware speed:
 * same property holds across an explicit ``commit()`` (covers the
   ``SQLEndTran`` GIL-release path).
 
-A wall-clock "N threads finish in ~one WAITFOR worth of time" assertion
-was deliberately *not* added here — it depends on the SQL Server
-scheduler/container CPU allocation and is too flaky for the functional
-suite. That style of test lives in ``test_021_concurrent_connection_perf.py``
-under ``@pytest.mark.stress``.
-
-A 2-second server-side WAITFOR is short enough to keep these in the
-default functional suite (~5s total) while still producing an unambiguous
-signal that survives normal CI jitter.
+Marked ``@pytest.mark.stress`` because the tick-count thresholds are
+sensitive to CI runner scheduling and ``time.sleep()`` precision — they
+flake on macOS (especially pre-release Python builds) while reliably
+passing on developer machines. The nightly stress-test-pipeline runs
+these; they are excluded from PR validation via ``pytest.ini`` addopts.
 """
 
 import os
@@ -70,6 +65,7 @@ def _run_waitfor(conn_str: str) -> float:
 # ============================================================================
 
 
+@pytest.mark.stress
 def test_query_does_not_block_other_python_threads(conn_str):
     """
     While one thread executes a 2-second ``WAITFOR DELAY``, a second pure-Python
@@ -134,6 +130,7 @@ def test_query_does_not_block_other_python_threads(conn_str):
 # ============================================================================
 
 
+@pytest.mark.stress
 def test_commit_does_not_block_other_python_threads(conn_str):
     """
     Smoke test for the SQLEndTran GIL-release added to ``Connection::commit``
