@@ -1113,6 +1113,175 @@ class Connection:
             if hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()
         logger.info("Cleared all output converters")
+        
+        
+    # ---- Session Metadata / Auditing API ----
+
+    # Maximum length for session context keys and values to prevent abuse.
+    _AUDIT_KEY_MAX_LEN: int = 128
+    _AUDIT_VALUE_MAX_LEN: int = 8000  # SQL Server sp_set_session_context limit
+
+    def set_audit_context(
+        self,
+        *,
+        application: Optional[str] = None,
+        module: Optional[str] = None,
+        action: Optional[str] = None,
+        user_id: Optional[str] = None,
+        read_only: bool = False,
+        **extra: str,
+    ) -> None:
+        """
+        Set session-level auditing / tracing metadata on the current connection.
+
+        This stores name-value pairs in the SQL Server session context via
+        ``sp_set_session_context``, making them visible to:
+
+        * ``SESSION_CONTEXT()`` in T-SQL queries, triggers, and stored procedures
+        * Extended Events sessions that capture session context
+        * ``sys.dm_exec_sessions`` (for *application*)
+        * Audit specifications that reference session context
+
+        All parameters are optional; only the ones provided will be set.
+        Calling this method again merges new values with previously-set ones;
+        to clear a key pass an empty string ``""``.
+
+        Args:
+            application: Logical application name (sets ``application_name``).
+            module: Module or component name (sets ``module_name``).
+            action: Current action or operation (sets ``action_name``).
+            user_id: End-user identifier (sets ``user_id``).
+            read_only: If ``True``, the keys become read-only for the
+                remainder of the session — subsequent calls cannot change them.
+            **extra: Arbitrary additional key-value pairs to store in the
+                session context.
+
+        Raises:
+            InterfaceError: If the connection is closed.
+            ProgrammingError: If a key or value exceeds length limits or
+                contains invalid characters.
+            DatabaseError: If ``sp_set_session_context`` execution fails.
+
+        Example::
+
+            conn.set_audit_context(
+                application="BillingAPI",
+                module="InvoiceProcessor",
+                action="GenerateInvoice",
+                user_id="123",
+            )
+            # Values are now readable in T-SQL:
+            #   SELECT SESSION_CONTEXT(N'application_name')
+        """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Connection is closed",
+                ddbc_error="Cannot set audit context on a closed connection",
+            )
+
+        # Build the mapping of keys to set
+        pairs: Dict[str, str] = {}
+        if application is not None:
+            pairs["application_name"] = application
+        if module is not None:
+            pairs["module_name"] = module
+        if action is not None:
+            pairs["action_name"] = action
+        if user_id is not None:
+            pairs["user_id"] = user_id
+        for key, value in extra.items():
+            pairs[key] = value
+
+        if not pairs:
+            return  # nothing to do
+
+        # Validate lengths
+        for key, value in pairs.items():
+            if not isinstance(key, str) or not key:
+                raise ProgrammingError(
+                    driver_error="Invalid audit context key",
+                    ddbc_error="Session context key must be a non-empty string",
+                )
+            if len(key) > self._AUDIT_KEY_MAX_LEN:
+                raise ProgrammingError(
+                    driver_error="Audit context key too long",
+                    ddbc_error=(
+                        f"Session context key exceeds {self._AUDIT_KEY_MAX_LEN} characters"
+                    ),
+                )
+            if not isinstance(value, str):
+                raise ProgrammingError(
+                    driver_error="Invalid audit context value",
+                    ddbc_error="Session context values must be strings",
+                )
+            if len(value) > self._AUDIT_VALUE_MAX_LEN:
+                raise ProgrammingError(
+                    driver_error="Audit context value too long",
+                    ddbc_error=(
+                        f"Session context value exceeds {self._AUDIT_VALUE_MAX_LEN} characters"
+                    ),
+                )
+
+        # Initialize local cache if first call
+        if not hasattr(self, "_audit_context"):
+            self._audit_context: Dict[str, str] = {}
+
+        # Execute sp_set_session_context for each pair using parameterized queries
+        cursor = self.cursor()
+        try:
+            for key, value in pairs.items():
+                # Empty string means "clear"; sp_set_session_context requires NULL
+                sql_value = None if value == "" else value
+                if read_only:
+                    cursor.execute(
+                        "EXEC sp_set_session_context @key=?, @value=?, @read_only=1",
+                        key,
+                        sql_value,
+                    )
+                else:
+                    cursor.execute(
+                        "EXEC sp_set_session_context @key=?, @value=?",
+                        key,
+                        sql_value,
+                    )
+                if value == "":
+                    self._audit_context.pop(key, None)
+                else:
+                    self._audit_context[key] = value
+                logger.debug("Set session context: %s", sanitize_user_input(key))
+        finally:
+            cursor.close()
+
+        logger.info(
+            "Audit context set with %d key(s): %s",
+            len(pairs),
+            ", ".join(sanitize_user_input(k) for k in pairs),
+        )
+
+    def get_audit_context(self) -> Dict[str, str]:
+        """
+        Return a copy of the session audit context previously set via
+        :meth:`set_audit_context`.
+
+        This returns the *locally cached* values — it does not round-trip to
+        the server.  To verify server-side values, query
+        ``SESSION_CONTEXT(N'<key>')`` directly.
+
+        Returns:
+            dict: A ``{key: value}`` mapping of the current session context.
+
+        Raises:
+            InterfaceError: If the connection is closed.
+        """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Connection is closed",
+                ddbc_error="Cannot get audit context on a closed connection",
+            )
+        if not hasattr(self, "_audit_context"):
+            return {}
+        return dict(self._audit_context)
+        
 
     def execute(self, sql: str, *args: Any) -> Cursor:
         """
