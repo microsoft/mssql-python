@@ -26,7 +26,6 @@ Test Strategy:
 """
 
 import os
-import platform
 import subprocess
 import sys
 import textwrap
@@ -35,20 +34,7 @@ import time
 
 import pytest
 
-
-def _is_qemu_emulated():
-    """Detect if running under QEMU user-mode emulation (e.g. ARM64 on x86_64 host)."""
-    try:
-        with open("/proc/cpuinfo") as f:
-            for line in f:
-                if line.startswith("CPU implementer") and "0x51" in line:
-                    return True
-    except (FileNotFoundError, PermissionError):
-        pass
-    return False
-
-
-_QEMU = _is_qemu_emulated()
+from conftest import QEMU
 
 
 class TestHandleFreeShutdown:
@@ -271,7 +257,7 @@ class TestHandleFreeShutdown:
         assert "Query result: [(1,)]" in result.stdout
         print(f"PASS: STMT handle (Type 3) cleanup during shutdown")
 
-    @pytest.mark.skipif(_QEMU, reason="SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64")
+    @pytest.mark.skipif(QEMU, reason="SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64")
     def test_dbc_handle_cleanup_at_shutdown(self, conn_str):
         """
         Test DBC handle (Type 2) cleanup during Python shutdown.
@@ -527,7 +513,7 @@ class TestHandleFreeShutdown:
         assert "Exception test: Exiting after exception without cleanup" in result.stdout
         print(f"PASS: Exception during query with shutdown")
 
-    @pytest.mark.skipif(_QEMU, reason="SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64")
+    @pytest.mark.skipif(QEMU, reason="SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64")
     def test_weakref_cleanup_at_shutdown(self, conn_str):
         """
         Test handle cleanup when using weakrefs during shutdown.
@@ -930,7 +916,7 @@ class TestHandleFreeShutdown:
             ),
         ],
     )
-    @pytest.mark.skipif(_QEMU, reason="Flaky under QEMU user-mode emulation")
+    @pytest.mark.skipif(QEMU, reason="Flaky under QEMU user-mode emulation")
     def test_cleanup_connections_scenarios(self, conn_str, scenario, test_code, expected_msg):
         """
         Test _cleanup_connections() with various scenarios.
@@ -1155,7 +1141,7 @@ class TestHandleFreeShutdown:
         )
         print(f"PASS: Cleanup connections list copy isolation")
 
-    @pytest.mark.skipif(_QEMU, reason="Flaky under QEMU user-mode emulation")
+    @pytest.mark.skipif(QEMU, reason="Flaky under QEMU user-mode emulation")
     def test_cleanup_connections_weakset_modification_during_iteration(self, conn_str):
         """
         Test that list copy prevents RuntimeError when WeakSet is modified during iteration.
