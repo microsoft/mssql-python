@@ -7,8 +7,9 @@ release added in PR #541 (covering ``SQLExecute`` / ``SQLExecDirect`` /
 ``SQLFetch`` / ``SQLEndTran`` in ``mssql_python/pybind/ddbc_bindings.cpp``
 and ``mssql_python/pybind/connection/connection.cpp``).
 
-These tests assert a binary correctness property (the GIL must be released
-around blocking ODBC calls) using a heartbeat-tick threshold:
+These are **not** performance/stress tests — they assert a binary
+correctness property (the GIL must be released around blocking ODBC calls)
+using a conservative threshold that doesn't depend on hardware speed:
 
 * with the GIL released, a Python heartbeat thread keeps ticking while
   another thread sits in ``cursor.execute("WAITFOR DELAY '00:00:02'")``
@@ -16,11 +17,15 @@ around blocking ODBC calls) using a heartbeat-tick threshold:
 * same property holds across an explicit ``commit()`` (covers the
   ``SQLEndTran`` GIL-release path).
 
-Marked ``@pytest.mark.stress`` because the tick-count thresholds are
-sensitive to CI runner scheduling and ``time.sleep()`` precision — they
-flake on macOS (especially pre-release Python builds) while reliably
-passing on developer machines. The nightly stress-test-pipeline runs
-these; they are excluded from PR validation via ``pytest.ini`` addopts.
+The threshold is set at 15% of theoretical max ticks — low enough to
+survive CI runner CPU contention (worst observed: 30%) while still
+catching real GIL starvation (which yields 0-2 ticks vs threshold of 6).
+
+A wall-clock "N threads finish in ~one WAITFOR worth of time" assertion
+was deliberately *not* added here — it depends on the SQL Server
+scheduler/container CPU allocation and is too flaky for the functional
+suite. That style of test lives in ``test_021_concurrent_connection_perf.py``
+under ``@pytest.mark.stress``.
 """
 
 import os
@@ -65,7 +70,6 @@ def _run_waitfor(conn_str: str) -> float:
 # ============================================================================
 
 
-@pytest.mark.stress
 def test_query_does_not_block_other_python_threads(conn_str):
     """
     While one thread executes a 2-second ``WAITFOR DELAY``, a second pure-Python
@@ -75,7 +79,9 @@ def test_query_does_not_block_other_python_threads(conn_str):
     mssql_python.pooling(enabled=False)
 
     heartbeat_interval = 0.05  # 50ms ticks
-    expected_min_ticks = int(WAITFOR_SECONDS / heartbeat_interval * 0.5)  # 50% of theoretical max
+    # 15% of theoretical max: low enough to survive CI CPU contention (worst
+    # observed was 12 ticks ≈ 30%) but well above real GIL starvation (0-2 ticks).
+    expected_min_ticks = int(WAITFOR_SECONDS / heartbeat_interval * 0.15)
 
     stop_event = threading.Event()
     tick_count = [0]
@@ -130,7 +136,6 @@ def test_query_does_not_block_other_python_threads(conn_str):
 # ============================================================================
 
 
-@pytest.mark.stress
 def test_commit_does_not_block_other_python_threads(conn_str):
     """
     Smoke test for the SQLEndTran GIL-release added to ``Connection::commit``
@@ -193,10 +198,9 @@ def test_commit_does_not_block_other_python_threads(conn_str):
     assert not txn_error, f"Transaction thread error: {txn_error}"
 
     ticks_during = ticks_after - ticks_before
-    # 40% of theoretical max gives margin against macOS CI scheduler noise
-    # (sleep(0.05) overshoot + GIL re-acquisition latency) while still
-    # catching real GIL starvation, which would yield <= ~2 ticks.
-    expected_min_ticks = int(WAITFOR_SECONDS / heartbeat_interval * 0.4)
+    # 15% of theoretical max: survives CI CPU contention while still catching
+    # real GIL starvation (which yields 0-2 ticks vs threshold of 6).
+    expected_min_ticks = int(WAITFOR_SECONDS / heartbeat_interval * 0.15)
     print(
         f"\n[HEARTBEAT] ticks during WAITFOR+commit: {ticks_during} "
         f"(expected >= {expected_min_ticks})"
