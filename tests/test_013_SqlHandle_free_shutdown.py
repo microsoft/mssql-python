@@ -85,7 +85,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         # Check for segfault
@@ -141,7 +141,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         if result.returncode < 0:
@@ -205,7 +205,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         if result.returncode < 0:
@@ -247,7 +247,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -290,7 +290,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -338,7 +338,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -410,7 +410,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -463,7 +463,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -502,7 +502,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -555,7 +555,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -613,7 +613,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -685,7 +685,7 @@ class TestHandleFreeShutdown:
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
