@@ -35,23 +35,20 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.4.0
+## What's new in v1.8.0
 
-### Features
+### Enhancements
 
-- **Bulk Copy Support** - High-performance bulk data loading API is now publicly available with support for large-scale ETL workloads, configurable batch sizes, column mappings, and identity/constraint handling.
-- **Spatial Type Support** - Added support for geography, geometry, and hierarchyid spatial types.
-- **mssql-py-core Upgrade** - Upgraded to mssql-py-core version 0.1.0 with enhanced connection string parameter support.
-- **Type Annotations** - Added py.typed marker for improved type checking support.
-- **Azure SQL Database Testing** - Added Azure SQL Database to PR validation pipeline matrix.
+- **ActiveDirectoryMSI Support for Bulk Copy** - Adds `Authentication=ActiveDirectoryMSI` support to bulk copy, enabling both system-assigned and user-assigned managed identity authentication for Azure-hosted services (#573).
+- **Row String-Key Indexing** - Row objects now support accessing values by column name as a string key (e.g., `row["col"]`), in addition to integer index and attribute access. Case-insensitive lookup is supported when the cursor's `lowercase` attribute is enabled (#589).
+- **Bundled ODBC Driver Upgrade** - Updated the bundled Microsoft ODBC Driver for SQL Server from 18.5.1.1 to 18.6.2.1 (#569).
 
 ### Bug Fixes
 
-- **VARCHAR Encoding Fix** - Fixed VARCHAR fetch failures when data length equals column size with non-ASCII CP1252 characters.
-- **Segmentation Fault Fix** - Fixed segmentation fault when interleaving fetchmany and fetchone calls.
-- **Date/Time Type Mappings** - Aligned date/time type code mappings with ODBC 18 driver source.
-- **Pipeline Updates** - Updated OneBranch pipelines for new 1ES images and pool selection.
- 
+- **Deferred Connect-Attribute Use-After-Free** - Fixed a use-after-free in `Connection.setAttribute` for deferred ODBC attributes (e.g., `SQL_COPT_SS_ACCESS_TOKEN`) that caused SIGBUS on macOS arm64 and authentication failures on Windows and Azure SQL (#596).
+- **Connection String Parsed Multiple Times in Auth Path** - Refactored authentication handling to use dictionary-based parameter processing instead of repeated string parsing, improving reliability and performance (#590).
+- **executemany Type Annotation Regression** - Fixed a typing regression where `Cursor.executemany` rejected valid `list[tuple[...]]` arguments under mypy due to invariant `List` type. The parameter type now uses covariant `Sequence` matching PEP 249 (#586).
+
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
 If you have any feedback, questions or need support please mail us at mssql-python@microsoft.com.

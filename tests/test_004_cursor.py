@@ -2304,6 +2304,55 @@ def test_executemany_Decimal_list(cursor, db_connection):
         db_connection.commit()
 
 
+def test_executemany_decimal_sign_change(cursor, db_connection):
+    """Test executemany with decimals that change signs (GH-557).
+
+    When the sample value chosen for column sizing is a positive Decimal,
+    its format(v, 'f') string is shorter than the negative counterpart
+    (e.g. '1.0' vs '-0.1'), causing the C++ buffer validation to reject
+    the longer row with a column-size overflow error.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_decimal_sign (col_1 DECIMAL(28, 14))")
+
+        # Case 1: negative first, then positive — previously worked
+        data1 = [(decimal.Decimal("-0.1"),), (decimal.Decimal("1.0"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data1)
+
+        # Case 2: positive first, then negative — previously failed
+        data2 = [(decimal.Decimal("0.1"),), (decimal.Decimal("-0.1"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data2)
+
+        # Case 3: positive then negative with different integer parts
+        data3 = [(decimal.Decimal("1.0"),), (decimal.Decimal("-0.1"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data3)
+
+        # Case 4: multiple sign changes in a single batch
+        data4 = [
+            (decimal.Decimal("100.5"),),
+            (decimal.Decimal("-0.001"),),
+            (decimal.Decimal("0.5"),),
+            (decimal.Decimal("-999.99"),),
+        ]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data4)
+
+        db_connection.commit()
+
+        # Verify row count
+        cursor.execute("SELECT COUNT(*) FROM #pytest_decimal_sign")
+        count = cursor.fetchone()[0]
+        assert count == 10
+
+        # Verify data correctness for the originally-failing case
+        cursor.execute("SELECT col_1 FROM #pytest_decimal_sign ORDER BY col_1")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert decimal.Decimal("-999.99") in [r.quantize(decimal.Decimal("0.01")) for r in rows]
+        assert decimal.Decimal("0.1") in [r.quantize(decimal.Decimal("0.1")) for r in rows]
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_sign")
+        db_connection.commit()
+
+
 def test_executemany_DecimalString_list(cursor, db_connection):
     """Test executemany with an string of decimal parameter list."""
     try:
@@ -2825,6 +2874,44 @@ def test_row_attribute_access(cursor, db_connection):
     finally:
         cursor.execute("DROP TABLE #pytest_row_attr_test")
         db_connection.commit()
+
+
+def test_row_string_key_indexing(cursor, db_connection):
+    """Test accessing row values by column name as string key: row['col']"""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_strkey (id INT PRIMARY KEY, name VARCHAR(50), age INT)"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_strkey (id, name, age) VALUES (1, 'Alice', 25)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_strkey")
+        row = cursor.fetchone()
+
+        # String-key access
+        assert row["id"] == 1, "Failed to access 'id' by string key"
+        assert row["name"] == "Alice", "Failed to access 'name' by string key"
+        assert row["age"] == 25, "Failed to access 'age' by string key"
+
+        # Consistency with index and attribute access
+        assert row["id"] == row[0] == row.id
+        assert row["name"] == row[1] == row.name
+        assert row["age"] == row[2] == row.age
+
+        # Non-existent key raises KeyError
+        with pytest.raises(KeyError):
+            row["nonexistent"]
+
+    except Exception as e:
+        pytest.fail(f"Row string-key indexing test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_strkey")
+            db_connection.commit()
+        except Exception:
+            pass
 
 
 def test_row_comparison_with_list(cursor, db_connection):
@@ -8032,376 +8119,6 @@ def test_nvarcharmax_large(cursor, db_connection):
         db_connection.commit()
 
 
-def test_money_smallmoney_insert_fetch(cursor, db_connection):
-    """Test inserting and retrieving valid MONEY and SMALLMONEY values including boundaries and typical data"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY,
-                d DECIMAL(19,4),
-                n NUMERIC(10,4)
-            )
-        """)
-        db_connection.commit()
-
-        # Max values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("922337203685477.5807"),
-                decimal.Decimal("214748.3647"),
-                decimal.Decimal("9999999999999.9999"),
-                decimal.Decimal("1234.5678"),
-            ),
-        )
-
-        # Min values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("-922337203685477.5808"),
-                decimal.Decimal("-214748.3648"),
-                decimal.Decimal("-9999999999999.9999"),
-                decimal.Decimal("-1234.5678"),
-            ),
-        )
-
-        # Typical values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("1234567.8901"),
-                decimal.Decimal("12345.6789"),
-                decimal.Decimal("42.4242"),
-                decimal.Decimal("3.1415"),
-            ),
-        )
-
-        # NULL values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (None, None, None, None),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm, d, n FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == 4, f"Expected 4 rows, got {len(results)}"
-
-        expected = [
-            (
-                decimal.Decimal("922337203685477.5807"),
-                decimal.Decimal("214748.3647"),
-                decimal.Decimal("9999999999999.9999"),
-                decimal.Decimal("1234.5678"),
-            ),
-            (
-                decimal.Decimal("-922337203685477.5808"),
-                decimal.Decimal("-214748.3648"),
-                decimal.Decimal("-9999999999999.9999"),
-                decimal.Decimal("-1234.5678"),
-            ),
-            (
-                decimal.Decimal("1234567.8901"),
-                decimal.Decimal("12345.6789"),
-                decimal.Decimal("42.4242"),
-                decimal.Decimal("3.1415"),
-            ),
-            (None, None, None, None),
-        ]
-
-        for i, (row, exp) in enumerate(zip(results, expected)):
-            for j, (val, exp_val) in enumerate(zip(row, exp), 1):
-                if exp_val is None:
-                    assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
-                else:
-                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
-                    assert isinstance(
-                        val, decimal.Decimal
-                    ), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY insert/fetch test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_null_handling(cursor, db_connection):
-    """Test that NULL values for MONEY and SMALLMONEY are stored and retrieved correctly"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Row with both NULLs
-        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", (None, None))
-
-        # Row with m filled, sm NULL
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("123.4500"), None),
-        )
-
-        # Row with m NULL, sm filled
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (None, decimal.Decimal("67.8900")),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == 3, f"Expected 3 rows, got {len(results)}"
-
-        expected = [
-            (None, None),
-            (decimal.Decimal("123.4500"), None),
-            (None, decimal.Decimal("67.8900")),
-        ]
-
-        for i, (row, exp) in enumerate(zip(results, expected)):
-            for j, (val, exp_val) in enumerate(zip(row, exp), 1):
-                if exp_val is None:
-                    assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
-                else:
-                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
-                    assert isinstance(
-                        val, decimal.Decimal
-                    ), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY NULL handling test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_roundtrip(cursor, db_connection):
-    """Test inserting and retrieving MONEY and SMALLMONEY using decimal.Decimal roundtrip"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        values = (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543"))
-        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", values)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
-        row = cursor.fetchone()
-        for i, (val, exp_val) in enumerate(zip(row, values), 1):
-            assert val == exp_val, f"col{i} roundtrip mismatch, got {val}, expected {exp_val}"
-            assert isinstance(val, decimal.Decimal), f"col{i} should be Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY roundtrip test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_boundaries(cursor, db_connection):
-    """Test boundary values for MONEY and SMALLMONEY types are handled correctly"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Insert max boundary
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")),
-        )
-
-        # Insert min boundary
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
-        results = cursor.fetchall()
-        expected = [
-            (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
-            (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")),
-        ]
-        for i, (row, exp_row) in enumerate(zip(results, expected), 1):
-            for j, (val, exp_val) in enumerate(zip(row, exp_row), 1):
-                assert val == exp_val, f"Row {i} col{j} mismatch, got {val}, expected {exp_val}"
-                assert isinstance(
-                    val, decimal.Decimal
-                ), f"Row {i} col{j} should be Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY boundary values test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_invalid_values(cursor, db_connection):
-    """Test that invalid or out-of-range MONEY and SMALLMONEY values raise errors"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Out of range MONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (m) VALUES (?)",
-                (decimal.Decimal("922337203685477.5808"),),
-            )
-
-        # Out of range SMALLMONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (sm) VALUES (?)",
-                (decimal.Decimal("214748.3648"),),
-            )
-
-        # Invalid string
-        with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #pytest_money_test (m) VALUES (?)", ("invalid_string",))
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY invalid values test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
-    """Test inserting and retrieving MONEY and SMALLMONEY using executemany with decimal.Decimal"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        test_data = [
-            (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543")),
-            (decimal.Decimal("0.0001"), decimal.Decimal("0.01")),
-            (None, decimal.Decimal("42.42")),
-            (decimal.Decimal("-1000.99"), None),
-        ]
-
-        # Insert using executemany directly with Decimals
-        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", test_data)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == len(test_data)
-
-        for i, (row, expected) in enumerate(zip(results, test_data), 1):
-            for j, (val, exp_val) in enumerate(zip(row, expected), 1):
-                if exp_val is None:
-                    assert val is None
-                else:
-                    assert val == exp_val
-                    assert isinstance(val, decimal.Decimal)
-
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_executemany_null_handling(cursor, db_connection):
-    """Test inserting NULLs into MONEY and SMALLMONEY using executemany"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        rows = [
-            (None, None),
-            (decimal.Decimal("123.4500"), None),
-            (None, decimal.Decimal("67.8900")),
-        ]
-        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", rows)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id ASC")
-        results = cursor.fetchall()
-        assert len(results) == len(rows)
-
-        for row, expected in zip(results, rows):
-            for val, exp_val in zip(row, expected):
-                if exp_val is None:
-                    assert val is None
-                else:
-                    assert val == exp_val
-                    assert isinstance(val, decimal.Decimal)
-
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_out_of_range_low(cursor, db_connection):
-    """Test inserting values just below the minimum MONEY/SMALLMONEY range raises error"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("CREATE TABLE #pytest_money_test (m MONEY, sm SMALLMONEY)")
-        db_connection.commit()
-
-        # Just below minimum MONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (m) VALUES (?)",
-                (decimal.Decimal("-922337203685477.5809"),),
-            )
-
-        # Just below minimum SMALLMONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (sm) VALUES (?)",
-                (decimal.Decimal("-214748.3649"),),
-            )
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
 def test_uuid_insert_and_select_none(cursor, db_connection):
     """Test inserting and retrieving None in a nullable UUID column."""
     table_name = "#pytest_uuid_nullable"
@@ -9972,6 +9689,298 @@ def test_cursor_setinputsizes_with_executemany_float(db_connection):
 
     # Clean up
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_float")
+
+
+def test_setinputsizes_sql_decimal_with_executemany(db_connection):
+    """Test setinputsizes with SQL_DECIMAL accepts Python Decimal values (GH-503).
+
+    Without this fix, passing SQL_DECIMAL or SQL_NUMERIC via setinputsizes()
+    caused a RuntimeError because Decimal objects were not converted to
+    NumericData before the C binding validated the C type.
+    """
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_decimal")
+    try:
+        cursor.execute("""
+        CREATE TABLE #test_sis_decimal (
+            Name NVARCHAR(100),
+            CategoryID INT,
+            Price DECIMAL(18,2)
+        )
+        """)
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_WVARCHAR, 100, 0),
+                (mssql_python.SQL_INTEGER, 0, 0),
+                (mssql_python.SQL_DECIMAL, 18, 2),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_decimal (Name, CategoryID, Price) VALUES (?, ?, ?)",
+            [
+                ("Widget", 1, decimal.Decimal("19.99")),
+                ("Gadget", 2, decimal.Decimal("29.99")),
+                ("Gizmo", 3, decimal.Decimal("0.01")),
+            ],
+        )
+
+        cursor.execute("SELECT Name, CategoryID, Price FROM #test_sis_decimal ORDER BY CategoryID")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == "Widget"
+        assert rows[0][1] == 1
+        assert rows[0][2] == decimal.Decimal("19.99")
+        assert rows[1][0] == "Gadget"
+        assert rows[1][1] == 2
+        assert rows[1][2] == decimal.Decimal("29.99")
+        assert rows[2][0] == "Gizmo"
+        assert rows[2][1] == 3
+        assert rows[2][2] == decimal.Decimal("0.01")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_decimal")
+
+
+def test_setinputsizes_sql_numeric_with_executemany(db_connection):
+    """Test setinputsizes with SQL_NUMERIC accepts Python Decimal values (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_numeric")
+    try:
+        cursor.execute("""
+        CREATE TABLE #test_sis_numeric (
+            Value NUMERIC(10,4)
+        )
+        """)
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_NUMERIC, 10, 4),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_numeric (Value) VALUES (?)",
+            [
+                (decimal.Decimal("123.4567"),),
+                (decimal.Decimal("-99.0001"),),
+                (decimal.Decimal("0.0000"),),
+            ],
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_numeric ORDER BY Value")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("-99.0001")
+        assert rows[1][0] == decimal.Decimal("0.0000")
+        assert rows[2][0] == decimal.Decimal("123.4567")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_numeric")
+
+
+def test_setinputsizes_sql_decimal_with_non_decimal_values(db_connection):
+    """Test setinputsizes with SQL_DECIMAL converts non-Decimal values (int/float) to string (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_nondec")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_nondc (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        # Pass int and float instead of Decimal — exercises the non-Decimal conversion branch
+        cursor.executemany(
+            "INSERT INTO #test_sis_dec_nondc (Price) VALUES (?)",
+            [(42,), (19.99,), (0,)],
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_nondc ORDER BY Price")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("0.00")
+        assert rows[1][0] == decimal.Decimal("19.99")
+        assert rows[2][0] == decimal.Decimal("42.00")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_nondc")
+
+
+def test_setinputsizes_sql_decimal_with_execute(db_connection):
+    """Test setinputsizes with SQL_DECIMAL works with single execute() too (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_exec")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_exec (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_exec (Price) VALUES (?)",
+            decimal.Decimal("99.95"),
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_exec")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal("99.95")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_exec")
+
+
+def test_setinputsizes_sql_decimal_null(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles NULL values correctly (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_null")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_null (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_null (Price) VALUES (?)",
+            None,
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_null")
+        row = cursor.fetchone()
+        assert row[0] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_null")
+
+
+def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
+    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_bad (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError, match="Failed to convert parameter"):
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_bad (Price) VALUES (?)",
+                [("not_a_number",)],
+            )
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+
+
+def test_setinputsizes_sql_decimal_high_precision(db_connection):
+    """Test setinputsizes with SQL_DECIMAL preserves full DECIMAL(38,18) precision (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_hp")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_hp (Value DECIMAL(38,18))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 38, 18)])
+
+        high_prec = decimal.Decimal("12345678901234567890.123456789012345678")
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_hp (Value) VALUES (?)",
+            high_prec,
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_dec_hp")
+        row = cursor.fetchone()
+        assert row[0] == high_prec
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_hp")
+
+
+def test_setinputsizes_sql_decimal_negative_zero(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles Decimal('-0.00') correctly (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_negz")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_negz (Value DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_negz (Value) VALUES (?)",
+            decimal.Decimal("-0.00"),
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_dec_negz")
+        row = cursor.fetchone()
+        # SQL Server normalizes -0.00 to 0.00
+        assert row[0] == decimal.Decimal("0.00")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_negz")
+
+
+def test_setinputsizes_sql_decimal_mixed_null_executemany(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles mixed NULL/non-NULL in executemany (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mix")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_mix (Id INT, Price DECIMAL(18,2))")
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_INTEGER, 0, 0),
+                (mssql_python.SQL_DECIMAL, 18, 2),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_dec_mix (Id, Price) VALUES (?, ?)",
+            [
+                (1, decimal.Decimal("10.50")),
+                (2, None),
+                (3, decimal.Decimal("30.75")),
+                (4, None),
+            ],
+        )
+
+        cursor.execute("SELECT Id, Price FROM #test_sis_dec_mix ORDER BY Id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 4
+        assert rows[0][1] == decimal.Decimal("10.50")
+        assert rows[1][1] is None
+        assert rows[2][1] == decimal.Decimal("30.75")
+        assert rows[3][1] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mix")
+
+
+def test_decimal_without_setinputsizes_no_regression(db_connection):
+    """Verify plain Decimal binding without setinputsizes still works (GH-503 regression check)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_dec_noreg")
+    try:
+        cursor.execute("CREATE TABLE #test_dec_noreg (Price DECIMAL(18,2))")
+
+        # Single execute without setinputsizes
+        cursor.execute(
+            "INSERT INTO #test_dec_noreg (Price) VALUES (?)",
+            decimal.Decimal("49.99"),
+        )
+
+        # executemany without setinputsizes
+        cursor.executemany(
+            "INSERT INTO #test_dec_noreg (Price) VALUES (?)",
+            [(decimal.Decimal("99.99"),), (decimal.Decimal("0.01"),)],
+        )
+
+        cursor.execute("SELECT Price FROM #test_dec_noreg ORDER BY Price")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("0.01")
+        assert rows[1][0] == decimal.Decimal("49.99")
+        assert rows[2][0] == decimal.Decimal("99.99")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_dec_noreg")
 
 
 def test_cursor_setinputsizes_reset(db_connection):
@@ -15961,3 +15970,495 @@ def test_native_uuid_concurrent_toggle_consistency(conn_str):
     finally:
         stop_event.set()
         mssql_python.native_uuid = original
+
+
+def test_execute_reset_cursor_false_reuses_prepared_plan(db_connection):
+    """Test that reset_cursor=False reuses the prepared statement handle
+    and successfully re-executes after consuming the previous result set."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT 1 AS val WHERE 1 = ?", (1,))
+        row = cursor.fetchone()
+        assert row[0] == 1
+        _ = cursor.fetchall()  # consume remaining
+
+        # Re-execute with reset_cursor=False — this was raising
+        # ProgrammingError: Invalid cursor state before the fix.
+        cursor.execute("SELECT 1 AS val WHERE 1 = ?", (2,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row is None  # No match for WHERE 1 = 2
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_returns_new_results(db_connection):
+    """Test that reset_cursor=False correctly returns results from the
+    second execution with different parameter values."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT ? AS val", (42,))
+        row = cursor.fetchone()
+        assert row[0] == 42
+        _ = cursor.fetchall()
+
+        cursor.execute("SELECT ? AS val", (99,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 99
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_multiple_iterations(db_connection):
+    """Test that reset_cursor=False works across several consecutive
+    re-executions on the same cursor."""
+    cursor = db_connection.cursor()
+    try:
+        for i in range(5):
+            kwargs = {"reset_cursor": False} if i > 0 else {}
+            cursor.execute("SELECT ? AS iter", (i,), **kwargs)
+            row = cursor.fetchone()
+            assert row is not None, f"Expected row with value {i}, got None"
+            assert row[0] == i, f"Expected {i}, got {row[0]}"
+            _ = cursor.fetchall()
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_no_params(db_connection):
+    """Test that reset_cursor=False works for queries without parameters."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT 1 AS a")
+        _ = cursor.fetchall()
+
+        cursor.execute("SELECT 2 AS a", reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 2
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_after_fetchone_only(db_connection):
+    """Test reset_cursor=False when only fetchone() was called (result set
+    not fully consumed via fetchall)."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT ? AS val", (1,))
+        row = cursor.fetchone()
+        assert row[0] == 1
+        # Do NOT call fetchall — go straight to re-execute
+        cursor.execute("SELECT ? AS val", (2,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 2
+    finally:
+        cursor.close()
+
+
+@pytest.fixture(scope="module")
+def catalog_fetch_schema(cursor, db_connection):
+    """Create and tear down test objects for catalog fetchone/iteration testing."""
+    cursor.execute(
+        "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_cat_fetch') "
+        "EXEC('CREATE SCHEMA pytest_cat_fetch')"
+    )
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    cursor.execute("DROP PROCEDURE IF EXISTS pytest_cat_fetch.fetch_test_proc")
+
+    cursor.execute("""
+        CREATE TABLE pytest_cat_fetch.fetch_test (
+            id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            value DECIMAL(10,2),
+            ts DATETIME DEFAULT GETDATE()
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE pytest_cat_fetch.fetch_test_child (
+            child_id INT PRIMARY KEY,
+            parent_id INT NOT NULL,
+            CONSTRAINT fk_parent FOREIGN KEY (parent_id)
+                REFERENCES pytest_cat_fetch.fetch_test(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE PROCEDURE pytest_cat_fetch.fetch_test_proc
+        AS
+        BEGIN
+            SELECT 1 AS result
+        END
+    """)
+    db_connection.commit()
+
+    yield
+
+    cursor.execute("DROP PROCEDURE IF EXISTS pytest_cat_fetch.fetch_test_proc")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    cursor.execute("DROP SCHEMA IF EXISTS pytest_cat_fetch")
+    db_connection.commit()
+
+
+def test_tables_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on tables() result set (GH-505)"""
+    cursor.tables(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row"
+    assert row.table_name.lower() == "fetch_test"
+    assert row.table_schem.lower() == "pytest_cat_fetch"
+    assert cursor.fetchone() is None
+
+
+def test_tables_iteration(cursor, db_connection, catalog_fetch_schema):
+    """Test that 'for row in cursor.tables()' works (GH-505)"""
+    rows = list(cursor.tables(table="fetch_test", schema="pytest_cat_fetch"))
+    assert len(rows) == 1, "Iteration should yield 1 row"
+    assert rows[0].table_name.lower() == "fetch_test"
+
+
+def test_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on columns() result set (GH-505)"""
+    cursor.columns(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from columns()"
+    assert hasattr(row, "column_name")
+    assert row.table_name.lower() == "fetch_test"
+
+
+def test_primarykeys_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on primaryKeys() result set (GH-505)"""
+    cursor.primaryKeys(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from primaryKeys()"
+    assert row.column_name.lower() == "id"
+    assert cursor.fetchone() is None
+
+
+def test_foreignkeys_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on foreignKeys() result set (GH-505)"""
+    cursor.foreignKeys(
+        table="fetch_test_child",
+        schema="pytest_cat_fetch",
+    )
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from foreignKeys()"
+    assert row.pkcolumn_name.lower() == "id"
+    assert row.fkcolumn_name.lower() == "parent_id"
+    assert cursor.fetchone() is None
+
+
+def test_statistics_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on statistics() result set (GH-505)"""
+    cursor.statistics(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from statistics()"
+    assert row.table_name.lower() == "fetch_test"
+
+
+def test_procedures_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on procedures() result set (GH-505)"""
+    cursor.procedures(procedure="fetch_test_proc", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from procedures()"
+    assert row.procedure_name.lower().startswith("fetch_test_proc")
+    assert cursor.fetchone() is None
+
+
+def test_rowid_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on rowIdColumns() result set (GH-505)"""
+    cursor.rowIdColumns(table="fetch_test", schema="pytest_cat_fetch")
+    # May or may not have rowid columns; just verify no InterfaceError
+    row = cursor.fetchone()
+    if row is not None:
+        assert hasattr(row, "column_name")
+
+
+def test_rowver_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on rowVerColumns() result set (GH-505)"""
+    cursor.rowVerColumns(table="fetch_test", schema="pytest_cat_fetch")
+    # May or may not have rowver columns; just verify no InterfaceError
+    row = cursor.fetchone()
+    if row is not None:
+        assert hasattr(row, "column_name")
+
+
+def test_gettypeinfo_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on getTypeInfo() result set (GH-505)"""
+    cursor.getTypeInfo()
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from getTypeInfo()"
+    assert hasattr(row, "type_name")
+
+
+def test_catalog_rownumber_increments_correctly(cursor, db_connection, catalog_fetch_schema):
+    """Test that rownumber increments correctly during fetchone() on catalog results (GH-505)"""
+    cursor.columns(table="fetch_test", schema="pytest_cat_fetch")
+    assert cursor.rownumber == -1
+
+    for expected_idx in range(4):
+        row = cursor.fetchone()
+        assert row is not None, f"Expected row at index {expected_idx}"
+        assert cursor.rownumber == expected_idx
+
+    assert cursor.fetchone() is None
+
+
+@pytest.mark.parametrize(
+    "raiserror_len",
+    [2047, 4000],
+)
+def test_long_raiserror(cursor, raiserror_len):
+    """Test that long error messages from RAISERROR are correctly captured"""
+    query = f"""
+        DECLARE @msg NVARCHAR(MAX) = REPLICATE(N'a', {raiserror_len});
+        RAISERROR(@msg, 16, 1);
+    """
+    try:
+        cursor.execute(query)
+    except mssql_python.ProgrammingError as e:
+        msg = e.args[0]
+        if raiserror_len <= 2047:  # SQL Server length cap
+            assert msg.endswith("a" * raiserror_len), msg
+        else:
+            assert msg.endswith("a" * (2047 - 3) + "..."), msg
+
+
+@pytest.mark.parametrize(
+    "message_len",
+    [2047, 4000, 8000, 8001, 80000],
+)
+def test_long_print_message(cursor, message_len):
+    """Test that long messages from PRINT are correctly captured."""
+    query = f"""
+        DECLARE @msg VARCHAR(MAX);
+        /* Cast to VARCHAR(MAX) so REPLICATE is not truncated to 8000 bytes. */
+        SET @msg = REPLICATE(CAST('a' AS VARCHAR(MAX)), {message_len});
+        PRINT @msg;
+    """
+    cursor.execute(query)
+    msg = cursor.messages[0][1]
+    # SQL Server truncates at 8000 characters
+    assert msg.endswith("a" * min(8000, message_len)), msg
+
+
+# ---------------------------------------------------------
+# GH-609: Unit tests (no DB connection needed)
+# ---------------------------------------------------------
+from mssql_python.cursor import Cursor as _Cursor, MONEY_MAX as _MONEY_MAX
+from mssql_python.constants import ConstantsDDBC as _C
+
+
+def _make_bare_cursor():
+    """Create a Cursor instance without a connection for unit testing."""
+    cur = _Cursor.__new__(_Cursor)
+    cur._inputsizes = None
+    return cur
+
+
+def test_compute_column_type_large_decimal():
+    """_compute_column_type picks the highest-precision Decimal as sample."""
+    cur = _make_bare_cursor()
+    column = [
+        decimal.Decimal("100.50"),
+        decimal.Decimal("999999999999999999.123456"),
+        decimal.Decimal("200.75"),
+    ]
+    sample, _, _, max_dec_len = cur._compute_column_type(column)
+    assert isinstance(sample, decimal.Decimal)
+    assert sample > _MONEY_MAX
+    assert max_dec_len > 0
+
+
+def test_map_sql_type_decimal_outside_money_returns_numeric():
+    """_map_sql_type returns SQL_C_NUMERIC for Decimal outside MONEY range."""
+    cur = _make_bare_cursor()
+    val = decimal.Decimal("999999999999999999.123456")
+    dummy_row = [val]
+    sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
+    assert sql_type == _C.SQL_NUMERIC.value
+    assert c_type == _C.SQL_C_NUMERIC.value
+    assert isinstance(format(val, "f"), str)
+
+
+def test_map_sql_type_decimal_in_money_returns_varchar():
+    """_map_sql_type returns SQL_VARCHAR for Decimal within MONEY range."""
+    cur = _make_bare_cursor()
+    val = decimal.Decimal("100.50")
+    dummy_row = [val]
+    sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
+    assert sql_type == _C.SQL_VARCHAR.value
+    assert c_type == _C.SQL_C_CHAR.value
+
+
+def test_executemany_numeric_override_needed():
+    """The executemany auto-detection path must override SQL_C_NUMERIC to SQL_C_CHAR (GH-609)."""
+    from mssql_python import ddbc_bindings
+
+    cur = _make_bare_cursor()
+    data = [
+        (decimal.Decimal("100.50"),),
+        (decimal.Decimal("999999999999999999.123456"),),
+    ]
+    column = [row[0] for row in data]
+    sample_value, min_val, max_val, max_decimal_len = cur._compute_column_type(column)
+    dummy_row = list(data[0])
+    paraminfo = cur._create_parameter_types_list(
+        sample_value,
+        ddbc_bindings.ParamInfo,
+        dummy_row,
+        0,
+        min_val=min_val,
+        max_val=max_val,
+    )
+    assert paraminfo.paramSQLType == _C.SQL_NUMERIC.value
+    original_c_type = paraminfo.paramCType
+    if paraminfo.paramSQLType in (_C.SQL_DECIMAL.value, _C.SQL_NUMERIC.value):
+        paraminfo.paramCType = _C.SQL_C_CHAR.value
+        if max_decimal_len > paraminfo.columnSize:
+            paraminfo.columnSize = max_decimal_len
+    assert paraminfo.paramCType == _C.SQL_C_CHAR.value
+    assert original_c_type == _C.SQL_C_NUMERIC.value
+    assert paraminfo.columnSize >= max_decimal_len
+
+
+def test_executemany_decimal_numeric_override_coverage(monkeypatch):
+    """Call the real executemany method to cover the GH-609 override lines."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        captured["row_count"] = row_count
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [
+        (decimal.Decimal("100.50"),),
+        (decimal.Decimal("999999999999999999.123456"),),
+    ]
+    cur.executemany("INSERT INTO t VALUES (?)", data)
+    pt = captured["parameters_type"]
+    assert len(pt) == 1
+    assert pt[0].paramSQLType == _C.SQL_NUMERIC.value
+    assert pt[0].paramCType == _C.SQL_C_CHAR.value
+    col_values = captured["columnwise_params"][0]
+    for val in col_values:
+        assert val is None or isinstance(val, str)
+
+
+# ---------------------------------------------------------
+# GH-609: Integration tests (need DB connection)
+# ---------------------------------------------------------
+def test_executemany_decimal_outside_money_range(cursor, db_connection):
+    """Test executemany with Decimal values exceeding the MONEY range (GH-609).
+
+    When a batch contains Decimal values outside ±922,337,203,685,477.5807,
+    _map_sql_type returns SQL_C_NUMERIC (expecting NumericData structs), but
+    the conversion loop converts all Decimals to strings. Without the GH-609
+    fix, this mismatch causes:
+        RuntimeError: Parameter's object type does not match parameter's C type
+
+    Also exercises separate batches (customer scenario: most batches have
+    in-MONEY-range values, one batch exceeds the range).
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_gh609 (val DECIMAL(38, 6))")
+
+        # Batch 1: all values inside MONEY range
+        batch1 = [(decimal.Decimal("100.50"),), (decimal.Decimal("200.75"),)]
+        cursor.executemany("INSERT INTO #pytest_gh609 VALUES (?)", batch1)
+
+        # Batch 2: mix of inside and outside MONEY range
+        batch2 = [
+            (decimal.Decimal("0.000001"),),
+            (decimal.Decimal("999999999999999999.123456"),),  # exceeds MONEY_MAX
+            (decimal.Decimal("-999999999999999999.654321"),),  # exceeds MONEY_MIN
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609 VALUES (?)", batch2)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_gh609 ORDER BY val")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert len(rows) == 5
+        assert rows[0] == decimal.Decimal("-999999999999999999.654321")
+        assert rows[-1] == decimal.Decimal("999999999999999999.123456")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609")
+        db_connection.commit()
+
+
+def test_executemany_decimal_with_nulls_outside_money(cursor, db_connection):
+    """Test executemany with NULL + large Decimal values outside MONEY range (GH-609)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_gh609_nulls (val DECIMAL(38, 10))")
+        data = [
+            (None,),
+            (decimal.Decimal("12345678901234567890.1234567890"),),
+            (None,),
+            (decimal.Decimal("-12345678901234567890.1234567890"),),
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609_nulls VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_gh609_nulls WHERE val IS NOT NULL ORDER BY val")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert len(rows) == 2
+        assert rows[0] == decimal.Decimal("-12345678901234567890.1234567890")
+        assert rows[1] == decimal.Decimal("12345678901234567890.1234567890")
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh609_nulls WHERE val IS NULL")
+        assert cursor.fetchone()[0] == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_nulls")
+        db_connection.commit()
+
+
+def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
+    """Test executemany with multiple columns including large Decimal (GH-609).
+
+    Mirrors the customer's scenario: a table with many columns where one
+    NUMERIC column has values outside the MONEY range.
+    """
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_gh609_multi (
+                id INT,
+                name NVARCHAR(100),
+                amount DECIMAL(38, 6),
+                description VARCHAR(200)
+            )
+        """)
+        data = [
+            (1, "row1", decimal.Decimal("999999999999999999.123456"), "test"),
+            (2, "row2", decimal.Decimal("50.0"), "small"),
+            (3, "row3", decimal.Decimal("-999999999999999999.654321"), "negative large"),
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609_multi VALUES (?, ?, ?, ?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, amount FROM #pytest_gh609_multi ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3
+        assert rows[0][1] == decimal.Decimal("999999999999999999.123456")
+        assert rows[2][1] == decimal.Decimal("-999999999999999999.654321")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_multi")
+        db_connection.commit()

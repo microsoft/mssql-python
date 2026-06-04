@@ -21,6 +21,8 @@ from mssql_python.constants import _ALLOWED_CONNECTION_STRING_PARAMS, _RESERVED_
 from mssql_python.helpers import sanitize_user_input
 from mssql_python.logging import logger
 
+_SENSITIVE_KEYS = frozenset({"pwd"})
+
 
 class _ConnectionStringParser:
     """
@@ -375,3 +377,48 @@ class _ConnectionStringParser:
 
         # Reached end without finding closing '}'
         raise ValueError(f"Unclosed braced value starting at position {brace_start_pos}")
+
+
+def sanitize_connection_string(conn_str: str) -> str:
+    """
+    Sanitize a connection string by masking sensitive values (PWD, Password).
+
+    Uses _ConnectionStringParser to correctly handle ODBC braced values
+    (e.g. PWD={Top;Secret}) rather than a simple regex, which would truncate
+    at the first semicolon and leak the tail of the password.
+
+    If parsing fails (malformed input), the entire string is redacted to
+    prevent any partial password leakage.
+
+    Args:
+        conn_str (str): The connection string to sanitize.
+    Returns:
+        str: The sanitized connection string.
+    """
+    from mssql_python.connection_string_builder import _ConnectionStringBuilder
+
+    logger.debug(
+        "sanitize_connection_string: Sanitizing connection string (length=%d)", len(conn_str)
+    )
+
+    try:
+        parser = _ConnectionStringParser(validate_keywords=False)
+        params = parser._parse(conn_str)
+
+        sanitized_params = {}
+        for key, value in params.items():
+            canonical = _ConnectionStringParser.normalize_key(key)
+            display_key = canonical if canonical else key
+            if key in _SENSITIVE_KEYS:
+                sanitized_params[display_key] = "***"
+            else:
+                sanitized_params[display_key] = value
+
+        builder = _ConnectionStringBuilder(sanitized_params)
+        sanitized = builder.build()
+    except Exception:
+        logger.debug("sanitize_connection_string: Failed to parse, redacting entire string")
+        sanitized = "<redacted – unparseable connection string>"
+
+    logger.debug("sanitize_connection_string: Password fields masked")
+    return sanitized
