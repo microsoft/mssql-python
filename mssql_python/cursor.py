@@ -161,7 +161,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._skip_increment_for_next_fetch = (
             False  # Track if we need to skip incrementing the row index
         )
-        self.messages = []  # Store diagnostic messages
+        self.messages: List[Tuple[str, str]] = []  # Store diagnostic messages
 
     def _is_unicode_string(self, param: str) -> bool:
         """

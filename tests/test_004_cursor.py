@@ -6561,8 +6561,9 @@ def test_cursor_messages_nextset_clears_previous(cursor):
 def test_cursor_messages_nextset_trailing_print(cursor):
     """Test that a trailing PRINT after the final SELECT is captured.
 
-    SQLMoreResults returns SQL_NO_DATA for the final advance but the
-    ODBC driver can still attach diagnostic records to that return.
+    The ODBC driver delivers the trailing PRINT as a separate result set
+    (SQL_SUCCESS_WITH_INFO), so nextset() returns True and captures the
+    message.  A second nextset() then returns False (SQL_NO_DATA).
     This is the most common customer pain point (GH-612).
     """
     cursor.execute("""
@@ -6574,13 +6575,13 @@ def test_cursor_messages_nextset_trailing_print(cursor):
     assert len(rows) == 1
     assert rows[0][0] == 1
 
-    # nextset() should return False (no more result sets) but still
-    # capture the trailing PRINT via SQL_NO_DATA diagnostics.
-    assert not cursor.nextset()
-    assert (
-        len(cursor.messages) >= 1
-    ), "Trailing PRINT after final SELECT should be captured on SQL_NO_DATA"
+    # The trailing PRINT is delivered as a separate result set
+    assert cursor.nextset()
+    assert len(cursor.messages) >= 1, "Trailing PRINT after final SELECT should be captured"
     assert "trailing" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
 
 
 def test_tables_setup(cursor, db_connection):
