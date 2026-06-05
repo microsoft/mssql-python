@@ -6459,8 +6459,8 @@ def test_cursor_messages_nextset_multiple_prints(cursor):
     because nextset() did not capture SQL_SUCCESS_WITH_INFO diagnostics.
     """
     cursor.execute("""
-        PRINT('hi');
-        PRINT('ih');
+        PRINT 'hi';
+        PRINT 'ih';
         """)
 
     # First PRINT is captured by execute()
@@ -6480,29 +6480,35 @@ def test_cursor_messages_nextset_print_with_select(cursor):
     """Test PRINT messages interleaved with SELECT result sets via nextset().
 
     Ensures messages are captured correctly when PRINT and SELECT are mixed.
-    The ODBC driver may batch the first PRINT with the SELECT, so we collect
-    all messages and rows across nextset() calls and verify totals.
+    Only messages collected from nextset() itself are checked so the test
+    fails if nextset() drops messages (even if fetchall() would mask it).
     """
     cursor.execute("""
-        PRINT('before select');
+        PRINT 'before select';
         SELECT 1 AS val;
-        PRINT('after select');
+        PRINT 'after select';
         """)
 
-    all_messages = list(cursor.messages)
+    # First PRINT captured by execute()
+    assert len(cursor.messages) >= 1
+    assert "before select" in cursor.messages[0][1]
+
+    nextset_messages = []
     all_rows = []
 
     while cursor.nextset():
-        all_messages.extend(cursor.messages)
+        # Collect only messages produced by nextset() — not by fetchall()
+        nextset_messages.extend(cursor.messages)
         if cursor.description:
             all_rows.extend(cursor.fetchall())
-            # fetchall may also produce diagnostics
-            all_messages.extend(cursor.messages)
 
-    # Verify both PRINT messages were captured somewhere across all result sets
-    combined_text = " ".join(m[1] for m in all_messages)
-    assert "before select" in combined_text, "First PRINT message should be captured"
-    assert "after select" in combined_text, "Second PRINT message should be captured"
+    # Also collect messages from the final nextset() that returned False
+    # (trailing PRINT can attach to SQL_NO_DATA)
+    nextset_messages.extend(cursor.messages)
+
+    # Verify the "after select" PRINT was captured by nextset(), not fetchall()
+    combined_text = " ".join(m[1] for m in nextset_messages)
+    assert "after select" in combined_text, "nextset() should capture the trailing PRINT message"
 
     # Verify the SELECT result was returned
     assert len(all_rows) == 1
@@ -6512,9 +6518,9 @@ def test_cursor_messages_nextset_print_with_select(cursor):
 def test_cursor_messages_nextset_three_prints(cursor):
     """Test that three consecutive PRINT messages are all captured across nextset() calls."""
     cursor.execute("""
-        PRINT('msg1');
-        PRINT('msg2');
-        PRINT('msg3');
+        PRINT 'msg1';
+        PRINT 'msg2';
+        PRINT 'msg3';
         """)
 
     # First PRINT captured by execute()
@@ -6538,8 +6544,8 @@ def test_cursor_messages_nextset_three_prints(cursor):
 def test_cursor_messages_nextset_clears_previous(cursor):
     """Test that nextset() clears messages from the previous result set."""
     cursor.execute("""
-        PRINT('first');
-        PRINT('second');
+        PRINT 'first';
+        PRINT 'second';
         """)
 
     assert len(cursor.messages) == 1
@@ -6550,6 +6556,31 @@ def test_cursor_messages_nextset_clears_previous(cursor):
     assert len(cursor.messages) == 1, "Previous messages should have been cleared"
     assert "second" in cursor.messages[0][1]
     assert not any("first" in m[1] for m in cursor.messages), "Old message should not persist"
+
+
+def test_cursor_messages_nextset_trailing_print(cursor):
+    """Test that a trailing PRINT after the final SELECT is captured.
+
+    SQLMoreResults returns SQL_NO_DATA for the final advance but the
+    ODBC driver can still attach diagnostic records to that return.
+    This is the most common customer pain point (GH-612).
+    """
+    cursor.execute("""
+        SELECT 1 AS val;
+        PRINT 'trailing';
+        """)
+
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 1
+
+    # nextset() should return False (no more result sets) but still
+    # capture the trailing PRINT via SQL_NO_DATA diagnostics.
+    assert not cursor.nextset()
+    assert (
+        len(cursor.messages) >= 1
+    ), "Trailing PRINT after final SELECT should be captured on SQL_NO_DATA"
+    assert "trailing" in cursor.messages[0][1]
 
 
 def test_tables_setup(cursor, db_connection):
