@@ -2184,25 +2184,24 @@ def test_executemany_MIX_NONE_parameter_list(cursor, db_connection):
         db_connection.commit()
 
 
-def test_map_sql_type_none_returns_sql_varchar():
-    """Test that _map_sql_type returns SQL_VARCHAR for None params (GH-610).
+def test_map_sql_type_none_returns_sql_unknown_type():
+    """Test that _map_sql_type returns SQL_UNKNOWN_TYPE for None params (GH-610).
 
-    Previously, None returned SQL_UNKNOWN_TYPE which triggered a costly
-    SQLDescribeParam / sp_describe_undeclared_parameters round-trip to the
-    server on every execute call with a NULL parameter.
+    None returns SQL_UNKNOWN_TYPE so the C++ BindParameters cache can resolve
+    the correct type via SQLDescribeParam on first call and cache it for
+    subsequent calls.
     """
     from unittest.mock import MagicMock
 
     from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 
     cursor = MagicMock(spec=mssql_python.Cursor)
-    # Bind the real method to the mock so we test actual logic
     _map_sql_type = mssql_python.Cursor._map_sql_type.__get__(cursor)
     params = [None, 42, None]
 
     sql_type, c_type, col_size, dec_digits, is_dae = _map_sql_type(None, params, 0)
 
-    assert sql_type == ddbc_sql_const.SQL_VARCHAR.value
+    assert sql_type == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
     assert c_type == ddbc_sql_const.SQL_C_DEFAULT.value
     assert col_size == 1
     assert dec_digits == 0

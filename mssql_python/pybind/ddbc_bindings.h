@@ -117,6 +117,9 @@ typedef SQLRETURN(SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 typedef SQLRETURN(SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*,
                                               SQLINTEGER*, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
 
+typedef SQLRETURN(SQL_API* SQLDescribeParamFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT*, SQLULEN*,
+                                                 SQLSMALLINT*, SQLSMALLINT*);
+
 // DAE APIs
 typedef SQLRETURN(SQL_API* SQLParamDataFunc)(SQLHSTMT, SQLPOINTER*);
 typedef SQLRETURN(SQL_API* SQLPutDataFunc)(SQLHSTMT, SQLPOINTER, SQLLEN);
@@ -170,6 +173,8 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
+
+extern SQLDescribeParamFunc SQLDescribeParam_ptr;
 
 // DAE APIs
 extern SQLParamDataFunc SQLParamData_ptr;
