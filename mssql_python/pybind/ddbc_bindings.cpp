@@ -18,9 +18,6 @@
 #include <filesystem>
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
-#include <mutex>  // std::shared_mutex, std::shared_lock, std::unique_lock
-#include <shared_mutex>
-#include <unordered_map>
 #include <utility>  // std::forward
 
 
@@ -404,76 +401,6 @@ SQLTablesFunc SQLTables_ptr = nullptr;
 
 SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
 
-// --- GH-610: SQLDescribeParam result cache ---
-// Caches SQLDescribeParam results per (hStmt, paramIndex) to avoid
-// redundant sp_describe_undeclared_parameters round-trips on repeated
-// executions of the same prepared statement with NULL parameters.
-struct DescribedParamInfo {
-    SQLSMALLINT sqlType;
-    SQLULEN columnSize;
-    SQLSMALLINT decimalDigits;
-    bool succeeded;
-};
-
-static std::shared_mutex g_describeCacheMutex;
-static std::unordered_map<SQLHANDLE, std::unordered_map<int, DescribedParamInfo>> g_describeCache;
-
-static DescribedParamInfo ResolveNullParamType(SQLHANDLE hStmt, int paramIndex) {
-    // 1. Check cache (shared/read lock — concurrent readers allowed)
-    {
-        std::shared_lock<std::shared_mutex> lock(g_describeCacheMutex);
-        auto it = g_describeCache.find(hStmt);
-        if (it != g_describeCache.end()) {
-            auto paramIt = it->second.find(paramIndex);
-            if (paramIt != it->second.end()) {
-                LOG("ResolveNullParamType: Cache HIT for hStmt=%p param[%d] "
-                    "-> sqlType=%d",
-                    (void*)hStmt, paramIndex, paramIt->second.sqlType);
-                return paramIt->second;
-            }
-        }
-    }
-
-    // 2. Cache miss — call SQLDescribeParam (NO lock held during round-trip)
-    SQLSMALLINT type, digits, nullable;
-    SQLULEN size;
-    LOG("ResolveNullParamType: Cache MISS for hStmt=%p param[%d], calling "
-        "SQLDescribeParam",
-        (void*)hStmt, paramIndex);
-    RETCODE rc = SQLDescribeParam_ptr(hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &type,
-                                      &size, &digits, &nullable);
-
-    DescribedParamInfo info;
-    if (SQL_SUCCEEDED(rc)) {
-        info = {type, size, digits, true};
-        LOG("ResolveNullParamType: SQLDescribeParam succeeded for param[%d] "
-            "-> sqlType=%d, columnSize=%lu, decimalDigits=%d",
-            paramIndex, type, (unsigned long)size, digits);
-    } else {
-        info = {SQL_VARCHAR, 1, 0, false};
-        LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
-                    "param[%d] (rc=%d), falling back to SQL_VARCHAR",
-                    paramIndex, rc);
-    }
-
-    // 3. Store in cache (exclusive/write lock)
-    {
-        std::unique_lock<std::shared_mutex> lock(g_describeCacheMutex);
-        g_describeCache[hStmt][paramIndex] = info;
-    }
-
-    return info;
-}
-
-static void InvalidateDescribeCache(SQLHANDLE hStmt) {
-    std::unique_lock<std::shared_mutex> lock(g_describeCacheMutex);
-    auto erased = g_describeCache.erase(hStmt);
-    if (erased) {
-        LOG("InvalidateDescribeCache: Cleared cache for hStmt=%p", (void*)hStmt);
-    }
-}
-// --- End GH-610 cache ---
-
 namespace {
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
@@ -545,17 +472,55 @@ std::string DescribeChar(unsigned char ch) {
     }
 }
 
+// GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
+// On cache miss, calls SQLDescribeParam and stores the result.
+static DescribedParamInfo ResolveNullParamType(
+        SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
+    // Check per-handle cache (no mutex — one handle per thread)
+    auto it = handle.describeCache.find(paramIndex);
+    if (it != handle.describeCache.end()) {
+        LOG("ResolveNullParamType: Cache HIT for hStmt=%p param[%d] "
+            "-> sqlType=%d", (void*)hStmt, paramIndex, it->second.sqlType);
+        return it->second;
+    }
+
+    // Cache miss — call SQLDescribeParam
+    SQLSMALLINT type, digits, nullable;
+    SQLULEN size;
+    LOG("ResolveNullParamType: Cache MISS for hStmt=%p param[%d], calling "
+        "SQLDescribeParam", (void*)hStmt, paramIndex);
+    RETCODE rc = SQLDescribeParam_ptr(
+        hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
+        &type, &size, &digits, &nullable);
+
+    DescribedParamInfo info;
+    if (SQL_SUCCEEDED(rc)) {
+        info = {type, size, digits, true};
+        LOG("ResolveNullParamType: SQLDescribeParam succeeded for param[%d] "
+            "-> sqlType=%d, columnSize=%lu, decimalDigits=%d",
+            paramIndex, type, (unsigned long)size, digits);
+    } else {
+        info = {SQL_VARCHAR, 1, 0, false};
+        LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
+                    "param[%d] (rc=%d), falling back to SQL_VARCHAR",
+                    paramIndex, rc);
+    }
+
+    // Store in per-handle cache
+    handle.describeCache[paramIndex] = info;
+    return info;
+}
+
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
 // each of them with appropriate arguments
-SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
+SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
                          std::vector<ParamInfo>& paramInfos,
                          std::vector<std::shared_ptr<void>>& paramBuffers,
                          const std::string& charEncoding = "utf-8") {
     LOG("BindParameters: Starting parameter binding for statement handle %p "
         "with %zu parameters",
         (void*)hStmt, params.size());
-
-    for (int paramIndex = 0; paramIndex < static_cast<int>(params.size()); paramIndex++) {
+    for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         ParamInfo& paramInfo = paramInfos[paramIndex];
         LOG("BindParameters: Processing param[%d] - C_Type=%d, SQL_Type=%d, "
@@ -704,12 +669,12 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                // GH-610: resolve SQL type for NULL params via cache
+                // GH-610: Resolve SQL type for NULL params via per-handle cache.
                 SQLSMALLINT sqlType = paramInfo.paramSQLType;
                 SQLULEN columnSize = paramInfo.columnSize;
                 SQLSMALLINT decimalDigits = paramInfo.decimalDigits;
                 if (sqlType == SQL_UNKNOWN_TYPE) {
-                    auto resolved = ResolveNullParamType(hStmt, paramIndex);
+                    auto resolved = ResolveNullParamType(handle, hStmt, paramIndex);
                     sqlType = resolved.sqlType;
                     columnSize = resolved.columnSize;
                     decimalDigits = resolved.decimalDigits;
@@ -1417,6 +1382,9 @@ void SqlHandle::markImplicitlyFreed() {
  */
 void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
+        // GH-610: Clear describe cache to prevent memory leak.
+        describeCache.clear();
+
         // Check if Python is shutting down using centralized helper function
         bool pythonShuttingDown = is_python_finalizing();
 
@@ -1840,8 +1808,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
                     rc, (void*)hStmt);
                 return rc;
             }
-            // GH-610: Invalidate describe cache (new prepare = new param types)
-            InvalidateDescribeCache(hStmt);
+            // GH-610: Clear per-handle describe cache (new prepare = new param types)
+            statementHandle->clearDescribeCache();
             isStmtPrepared[0] = py::cast(true);
         } else {
             // Make sure the statement has been prepared earlier if we're not
@@ -1862,7 +1830,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         }
 
         std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameters(hStmt, params, paramInfos, paramBuffers, charEncoding);
+        rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
             return rc;
         }
@@ -2010,7 +1978,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
     }
 }
 
-SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
+SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
                              const std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers,
                              const std::string& charEncoding = "utf-8") {
@@ -2598,26 +2566,21 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                 }
                 case SQL_C_DEFAULT: {
                     // Handle NULL parameters - all values in this column should be NULL
-                    // The upstream Python type detection (via _compute_column_type) ensures
-                    // SQL_C_DEFAULT is only used when all values are None
                     LOG("BindParameterArray: Binding SQL_C_DEFAULT (NULL) array - param_index=%d, "
                         "count=%zu",
                         paramIndex, paramSetSize);
 
-                    // GH-610: resolve SQL type for all-NULL columns via cache
+                    // GH-610: Resolve SQL type for all-NULL columns via per-handle cache.
                     SQLSMALLINT resolvedSqlType = info.paramSQLType;
                     SQLULEN resolvedColSize = info.columnSize;
                     SQLSMALLINT resolvedDecDigits = info.decimalDigits;
                     if (resolvedSqlType == SQL_UNKNOWN_TYPE) {
-                        auto resolved = ResolveNullParamType(hStmt, paramIndex);
+                        auto resolved = ResolveNullParamType(handle, hStmt, paramIndex);
                         resolvedSqlType = resolved.sqlType;
                         resolvedColSize = resolved.columnSize;
                         resolvedDecDigits = resolved.decimalDigits;
                     }
 
-                    // For NULL parameters, we need to allocate a minimal buffer and set all
-                    // indicators to SQL_NULL_DATA Use SQL_C_CHAR as a safe default C type for NULL
-                    // values
                     char* nullBuffer = AllocateParamBufferArray<char>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
@@ -2635,8 +2598,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                     const_cast<ParamInfo&>(info).decimalDigits = resolvedDecDigits;
 
                     LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d, "
-                        "resolvedSqlType=%d",
-                        paramIndex, resolvedSqlType);
+                        "resolvedSqlType=%d", paramIndex, resolvedSqlType);
                     break;
                 }
                 default: {
@@ -2695,8 +2657,8 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
         LOG("SQLExecuteMany: SQLPrepare failed - rc=%d", rc);
         return rc;
     }
-    // GH-610: Invalidate describe cache for this statement (new prepare = new param types)
-    InvalidateDescribeCache(hStmt);
+    // GH-610: Clear per-handle describe cache (new prepare = new param types)
+    statementHandle->clearDescribeCache();
     LOG("SQLExecuteMany: Query prepared successfully");
 
     bool hasDAE = false;
@@ -2719,7 +2681,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
             "BindParameterArray with encoding '%s'",
             charEncoding.c_str());
         std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers,
+        rc = BindParameterArray(*statementHandle, hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers,
                                 charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
             LOG("SQLExecuteMany: BindParameterArray failed - rc=%d", rc);
@@ -2749,7 +2711,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
             py::list rowParams = columnwise_params[rowIndex];
 
             std::vector<std::shared_ptr<void>> paramBuffers;
-            rc = BindParameters(hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos),
+            rc = BindParameters(*statementHandle, hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos),
                                 paramBuffers, charEncoding);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecuteMany: BindParameters failed for row %zu - rc=%d", rowIndex, rc);

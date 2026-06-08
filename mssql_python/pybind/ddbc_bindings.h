@@ -4,6 +4,7 @@
 #pragma once
 
 // pybind11.h must be the first include
+#include <cstring>
 #include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -11,9 +12,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
-#include <cstring>
 #include <string>
 #include <vector>
+
 
 namespace py = pybind11;
 using py::literals::operator""_a;
@@ -232,12 +233,23 @@ class DriverLoader {
     std::once_flag m_onceFlag;
 };
 
+#include <unordered_map>
+
 //-------------------------------------------------------------------------------------------------
 // SqlHandle
 //
 // RAII wrapper around ODBC handles (ENV, DBC, STMT).
 // Use `std::shared_ptr<SqlHandle>` (alias: SqlHandlePtr) for shared ownership.
 //-------------------------------------------------------------------------------------------------
+
+// GH-610: Cached result of SQLDescribeParam for a single parameter.
+struct DescribedParamInfo {
+    SQLSMALLINT sqlType;
+    SQLULEN columnSize;
+    SQLSMALLINT decimalDigits;
+    bool succeeded;  // false = SQLDescribeParam failed, used SQL_VARCHAR fallback
+};
+
 class SqlHandle {
   public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
@@ -261,6 +273,13 @@ class SqlHandle {
     // Current usage: Connection::disconnect() marks all tracked STMT handles
     // before freeing the DBC handle.
     void markImplicitlyFreed();
+
+    // GH-610: Per-handle SQLDescribeParam result cache.
+    // Keyed by 0-based parameter index. Populated on first NULL param
+    // execution, cleared on SQLPrepare (new SQL = new param types) and
+    // on handle free. No mutex needed — each handle is used by one thread.
+    std::unordered_map<int, DescribedParamInfo> describeCache;
+    void clearDescribeCache() { describeCache.clear(); }
 
   private:
     SQLSMALLINT _type;
