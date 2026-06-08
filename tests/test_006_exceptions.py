@@ -451,3 +451,76 @@ def test_truncate_error_message_return_paths():
         # If the exception handling worked, it would have been caught
         # and the function would return the original message (line 531)
         pass
+
+
+# ---------------------------------------------------------------------------
+# Pickle / unpickle round-trip tests
+# ---------------------------------------------------------------------------
+
+
+def test_exception_pickle_roundtrip():
+    """All DB-API exception subclasses must survive a pickle round-trip."""
+    import pickle
+    import copy
+
+    exception_classes = [
+        Warning,
+        Error,
+        InterfaceError,
+        DatabaseError,
+        DataError,
+        OperationalError,
+        IntegrityError,
+        InternalError,
+        ProgrammingError,
+        NotSupportedError,
+    ]
+
+    for cls in exception_classes:
+        original = cls("driver msg", "ddbc msg")
+
+        # pickle round-trip
+        restored = pickle.loads(pickle.dumps(original))
+
+        assert type(restored) is cls, f"{cls.__name__}: type mismatch after unpickle"
+        assert restored.driver_error == "driver msg", f"{cls.__name__}: driver_error mismatch"
+        assert restored.ddbc_error == "ddbc msg", f"{cls.__name__}: ddbc_error mismatch"
+        assert str(restored) == str(original), f"{cls.__name__}: str() mismatch"
+
+        # copy.deepcopy also uses __reduce__
+        deep = copy.deepcopy(original)
+        assert type(deep) is cls
+        assert deep.driver_error == "driver msg"
+
+
+def test_exception_pickle_empty_ddbc_error():
+    """Exceptions with empty ddbc_error should also round-trip cleanly."""
+    import pickle
+
+    original = ProgrammingError("cursor is closed", "")
+    restored = pickle.loads(pickle.dumps(original))
+
+    assert type(restored) is ProgrammingError
+    assert restored.driver_error == "cursor is closed"
+    assert restored.ddbc_error == ""
+    assert str(restored) == str(original)
+
+
+def test_connection_string_parse_error_pickle_roundtrip():
+    """ConnectionStringParseError should survive a pickle round-trip."""
+    import pickle
+    import copy
+
+    errors = ["Unknown keyword: foo", "Missing value for: bar"]
+    original = ConnectionStringParseError(errors)
+
+    restored = pickle.loads(pickle.dumps(original))
+
+    assert type(restored) is ConnectionStringParseError
+    assert restored.errors == errors
+    assert str(restored) == str(original)
+
+    # copy.deepcopy
+    deep = copy.deepcopy(original)
+    assert type(deep) is ConnectionStringParseError
+    assert deep.errors == errors
