@@ -161,7 +161,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._skip_increment_for_next_fetch = (
             False  # Track if we need to skip incrementing the row index
         )
-        self.messages = []  # Store diagnostic messages
+        self.messages: List[Tuple[str, str]] = []  # Store diagnostic messages
 
     def _is_unicode_string(self, param: str) -> bool:
         """
@@ -809,6 +809,25 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 driver_error="Operation cannot be performed: The cursor is closed.",
                 ddbc_error="",
             )
+
+    def _capture_diagnostics(self, ret: int) -> None:
+        """Append diagnostic messages to self.messages when the return code
+        indicates records may be present.
+
+        Captures on SQL_SUCCESS_WITH_INFO (info/warning messages) and
+        SQL_NO_DATA (trailing diagnostics attached by SQLMoreResults,
+        e.g. a PRINT after the final result set).
+
+        Skips SQL_SUCCESS to avoid the ~10 ms overhead of scanning the
+        driver's internal state when no records exist.  SQL_ERROR is
+        handled separately by check_error() which extracts diagnostics
+        and raises.
+        """
+        if self.hstmt and ret in (
+            ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value,
+            ddbc_sql_const.SQL_NO_DATA.value,
+        ):
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
     def _ensure_pyarrow(self) -> Any:
         """
@@ -1518,13 +1537,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._reset_cursor()
             raise
 
-        # Capture diagnostic messages only on SQL_SUCCESS_WITH_INFO.
-        # SQL_SUCCESS has no records — calling DDBCSQLGetAllDiagRecords on it
-        # costs ~10ms/call (driver scans internal state to find nothing).
-        # SQL_ERROR is already handled by check_error() above which extracts
-        # diagnostics and raises.
-        if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
-            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+        self._capture_diagnostics(ret)
 
         self.last_executed_stmt = operation
 
@@ -2773,12 +2786,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         return pyarrow.RecordBatchReader.from_batches(schema, batch_generator())
 
-    def nextset(self) -> Union[bool, None]:
+    def nextset(self) -> Optional[bool]:
         """
         Skip to the next available result set.
 
         Returns:
-            True if there is another result set, None otherwise.
+            True if there is another result set, False otherwise.
+            Note: PEP 249 specifies True/None; we return True/False
+            for backward compatibility with existing callers and pyodbc
+            parity. The signature is Optional[bool] to keep the door
+            open for a future migration to True/None semantics.
 
         Raises:
             Error: If the previous call to execute did not produce any result set.
@@ -2798,6 +2815,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+        # Capture diagnostic messages (e.g. PRINT output) — handles both
+        # SQL_SUCCESS_WITH_INFO and SQL_NO_DATA (trailing PRINT after the
+        # final result set).  Without this, messages from subsequent result
+        # sets are silently lost (GH-612).
+        self._capture_diagnostics(ret)
 
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             logger.debug("nextset: No more result sets available")
