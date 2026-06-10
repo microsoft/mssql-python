@@ -70,6 +70,14 @@ def setup_azure_identity():
         def get_token(self, scope):
             return MockToken()
 
+    class MockRequestsTransport:
+        # Captures construction kwargs so the SP factory's timeout config
+        # can be asserted.
+        last_init_kwargs = None
+
+        def __init__(self, **kwargs):
+            MockRequestsTransport.last_init_kwargs = kwargs
+
     # Mock ClientAuthenticationError
     class MockClientAuthenticationError(Exception):
         pass
@@ -85,6 +93,10 @@ def setup_azure_identity():
         class exceptions:
             ClientAuthenticationError = MockClientAuthenticationError
 
+        class pipeline:
+            class transport:
+                RequestsTransport = MockRequestsTransport
+
     # Create mock azure module if it doesn't exist
     if "azure" not in sys.modules:
         sys.modules["azure"] = type("MockAzure", (), {})()
@@ -93,11 +105,19 @@ def setup_azure_identity():
     sys.modules["azure.identity"] = MockIdentity()
     sys.modules["azure.core"] = MockCore()
     sys.modules["azure.core.exceptions"] = MockCore.exceptions()
+    sys.modules["azure.core.pipeline"] = MockCore.pipeline()
+    sys.modules["azure.core.pipeline.transport"] = MockCore.pipeline.transport()
 
     yield
 
     # Cleanup
-    for module in ["azure.identity", "azure.core", "azure.core.exceptions"]:
+    for module in [
+        "azure.identity",
+        "azure.core",
+        "azure.core.exceptions",
+        "azure.core.pipeline",
+        "azure.core.pipeline.transport",
+    ]:
         if module in sys.modules:
             del sys.modules[module]
 
@@ -1052,6 +1072,22 @@ class TestParseTenantId:
         # a downgraded URL.
         assert _parse_tenant_id("http://login.microsoftonline.com/tenant/") is None
 
+    def test_rejects_common_alias(self):
+        # Multi-tenant alias — confidential clients (SP) cannot auth against
+        # it. Reject up front so the error surfaced is ours, not AADSTS50194.
+        assert _parse_tenant_id("https://login.microsoftonline.com/common/") is None
+
+    def test_rejects_organizations_alias(self):
+        assert _parse_tenant_id("https://login.microsoftonline.com/organizations/") is None
+
+    def test_rejects_consumers_alias(self):
+        assert _parse_tenant_id("https://login.microsoftonline.com/consumers/") is None
+
+    def test_rejects_reserved_alias_case_insensitive(self):
+        # Defensive: AAD treats these as case-insensitive; we should too.
+        assert _parse_tenant_id("https://login.microsoftonline.com/Common/") is None
+        assert _parse_tenant_id("https://login.microsoftonline.com/COMMON/") is None
+
 
 class TestServicePrincipalAuth:
     """Tests for the ActiveDirectoryServicePrincipal token factory."""
@@ -1095,11 +1131,42 @@ class TestServicePrincipalAuth:
             "activedirectoryserviceprincipal",
         )
 
-        assert az.ClientSecretCredential.last_init_kwargs == {
-            "tenant_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-            "client_id": "11111111-2222-3333-4444-555555555555",
-            "client_secret": "my-secret",
-        }
+        kwargs = az.ClientSecretCredential.last_init_kwargs
+        # tenant/client/secret must match — transport is asserted separately.
+        assert kwargs["tenant_id"] == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        assert kwargs["client_id"] == "11111111-2222-3333-4444-555555555555"
+        assert kwargs["client_secret"] == "my-secret"
+
+    def test_factory_passes_transport_with_explicit_timeouts(self):
+        # Without explicit timeouts, azure-identity defaults can block the
+        # mssql-py-core blocking-pool worker for tens of seconds on a slow
+        # AAD endpoint. The factory must pass a bounded RequestsTransport.
+        from azure.core.pipeline.transport import RequestsTransport
+
+        RequestsTransport.last_init_kwargs = None
+        az = sys.modules["azure.identity"]
+        az.ClientSecretCredential.last_init_kwargs = None
+
+        factory = ServicePrincipalAuth.make_token_factory("cid", "secret")
+        factory(
+            "https://database.windows.net/",
+            "https://login.microsoftonline.com/tenant-guid/",
+            "activedirectoryserviceprincipal",
+        )
+
+        # Transport is constructed with finite connection + read timeouts.
+        t_kwargs = RequestsTransport.last_init_kwargs
+        assert t_kwargs is not None, "RequestsTransport was never constructed"
+        assert "connection_timeout" in t_kwargs
+        assert "read_timeout" in t_kwargs
+        assert isinstance(t_kwargs["connection_timeout"], (int, float))
+        assert isinstance(t_kwargs["read_timeout"], (int, float))
+        assert 0 < t_kwargs["connection_timeout"] <= 30
+        assert 0 < t_kwargs["read_timeout"] <= 60
+
+        # Credential receives the transport.
+        cred_kwargs = az.ClientSecretCredential.last_init_kwargs
+        assert "transport" in cred_kwargs
 
     def test_factory_builds_scope_from_spn(self):
         az = sys.modules["azure.identity"]

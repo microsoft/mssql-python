@@ -174,6 +174,9 @@ class AADAuth:
             raise RuntimeError(f"Failed to create {credential_class.__name__}: {e}") from e
 
 
+_RESERVED_TENANTS = frozenset({"common", "organizations", "consumers"})
+
+
 def _parse_tenant_id(sts_url: str) -> Optional[str]:
     """Extract tenant ID (GUID or domain) from a FedAuthInfo STS URL.
 
@@ -184,6 +187,12 @@ def _parse_tenant_id(sts_url: str) -> Optional[str]:
     where <tenant> is either a GUID (e.g. ``aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee``)
     or a verified domain (e.g. ``contoso.onmicrosoft.com``). Both forms are
     accepted by ``azure.identity.ClientSecretCredential``.
+
+    Returns ``None`` for the multi-tenant aliases ``common`` / ``organizations``
+    / ``consumers``: confidential clients (SP) cannot authenticate against
+    them and AAD responds with a cryptic ``AADSTS50194`` ("application is not
+    configured as multi-tenant"). Failing fast in the factory surfaces a
+    clearer error than the AAD round-trip would.
     """
     # pylint: disable=import-outside-toplevel
     from urllib.parse import urlparse
@@ -201,7 +210,11 @@ def _parse_tenant_id(sts_url: str) -> Optional[str]:
     if not path:
         return None
     first_segment = path.split("/", 1)[0]
-    return first_segment or None
+    if not first_segment:
+        return None
+    if first_segment.lower() in _RESERVED_TENANTS:
+        return None
+    return first_segment
 
 
 class ServicePrincipalAuth:
@@ -236,6 +249,7 @@ class ServicePrincipalAuth:
             try:
                 from azure.identity import ClientSecretCredential
                 from azure.core.exceptions import ClientAuthenticationError
+                from azure.core.pipeline.transport import RequestsTransport
             except ImportError as e:
                 raise RuntimeError(
                     "Azure authentication libraries are not installed. "
@@ -280,10 +294,34 @@ class ServicePrincipalAuth:
                 with _credential_cache_lock:
                     credential = _credential_cache.get(cache_key)
                     if credential is None:
+                        # Bound the AAD network round-trip. Without explicit
+                        # timeouts, azure-identity's defaults can let an
+                        # unreachable / slow STS endpoint block the calling
+                        # thread for tens of seconds. The factory runs on a
+                        # mssql-py-core blocking-pool worker (tokio
+                        # spawn_blocking), so a stuck callback ties that
+                        # worker up for the duration. SP is non-interactive
+                        # and token issuance is typically <1s; 10s/15s is
+                        # generous and still bounded.
+                        transport = RequestsTransport(
+                            connection_timeout=10,
+                            read_timeout=15,
+                        )
+                        # KNOWN LIMITATION: ``authority=`` is not passed,
+                        # so this defaults to the public-cloud authority
+                        # (login.microsoftonline.com). Sovereign clouds
+                        # (Azure US Gov, Azure China) are not supported on
+                        # this code path today: AAD will fail with
+                        # "tenant not found" because the tenant lives in
+                        # the sovereign cloud's AAD, not the public one.
+                        # Tracked as a follow-up; the fix is to derive
+                        # ``authority`` from ``urlparse(sts_url).netloc``.
+                        # Out of scope for the initial #534 work.
                         credential = ClientSecretCredential(
                             tenant_id=tenant_id,
                             client_id=client_id,
                             client_secret=client_secret,
+                            transport=transport,
                         )
                         _credential_cache[cache_key] = credential
                 # mssql-tds passes the resource SPN; azure-identity wants a scope.
