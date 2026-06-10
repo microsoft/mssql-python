@@ -495,12 +495,12 @@ static DescribedParamInfo ResolveNullParamType(
 
     DescribedParamInfo info;
     if (SQL_SUCCEEDED(rc)) {
-        info = {type, size, digits, true};
+        info = {type, size, digits};
         LOG("ResolveNullParamType: SQLDescribeParam succeeded for param[%d] "
             "-> sqlType=%d, columnSize=%lu, decimalDigits=%d",
             paramIndex, type, (unsigned long)size, digits);
     } else {
-        info = {SQL_VARCHAR, 1, 0, false};
+        info = {SQL_VARCHAR, 1, 0};
         LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
                     "param[%d] (rc=%d), falling back to SQL_VARCHAR",
                     paramIndex, rc);
@@ -1979,7 +1979,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
 }
 
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
-                             const std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
+                             std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers,
                              const std::string& charEncoding = "utf-8") {
     LOG("BindParameterArray: Starting column-wise array binding - "
@@ -1991,7 +1991,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     try {
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
-            const ParamInfo& info = paramInfos[paramIndex];
+            ParamInfo& info = paramInfos[paramIndex];
             LOG("BindParameterArray: Processing param_index=%d, C_type=%d, "
                 "SQL_type=%d, column_size=%zu, decimal_digits=%d",
                 paramIndex, info.paramCType, info.paramSQLType, info.columnSize,
@@ -2593,9 +2593,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     bufferLength = 1;
 
                     // Override info fields so SQLBindParameter below uses resolved type
-                    const_cast<ParamInfo&>(info).paramSQLType = resolvedSqlType;
-                    const_cast<ParamInfo&>(info).columnSize = resolvedColSize;
-                    const_cast<ParamInfo&>(info).decimalDigits = resolvedDecDigits;
+                    info.paramSQLType = resolvedSqlType;
+                    info.columnSize = resolvedColSize;
+                    info.decimalDigits = resolvedDecDigits;
 
                     LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d, "
                         "resolvedSqlType=%d", paramIndex, resolvedSqlType);
@@ -2639,7 +2639,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
 
 SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                               const py::list& columnwise_params,
-                              const std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
+                              std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                               const py::dict& encodingSettings) {
     LOG("SQLExecuteMany: Starting batch execution - param_count=%zu, "
         "param_set_size=%zu",
@@ -2711,7 +2711,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
             py::list rowParams = columnwise_params[rowIndex];
 
             std::vector<std::shared_ptr<void>> paramBuffers;
-            rc = BindParameters(*statementHandle, hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos),
+            rc = BindParameters(*statementHandle, hStmt, rowParams, paramInfos,
                                 paramBuffers, charEncoding);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecuteMany: BindParameters failed for row %zu - rc=%d", rowIndex, rc);

@@ -247,7 +247,6 @@ struct DescribedParamInfo {
     SQLSMALLINT sqlType;
     SQLULEN columnSize;
     SQLSMALLINT decimalDigits;
-    bool succeeded;  // false = SQLDescribeParam failed, used SQL_VARCHAR fallback
 };
 
 class SqlHandle {
