@@ -1454,6 +1454,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             if isinstance(parameters, tuple) and len(parameters) == 1:
                 if isinstance(parameters[0], (tuple, list, dict)):
                     actual_params = parameters[0]
+                elif isinstance(parameters[0], Row):
+                    # A Row (e.g. from fetchone()) is a sequence of column values.
+                    # Normalize it to a tuple so the downstream binding logic, which
+                    # only handles tuple/list/dict, can unwrap it into individual
+                    # parameters instead of treating the whole Row as one value.
+                    actual_params = tuple(parameters[0])
                 else:
                     actual_params = parameters
             else:
@@ -2413,11 +2419,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "DAE parameters detected. Falling back to row-by-row execution with streaming.",
             )
             for row in seq_of_parameters:
-                # Convert Row objects to tuples so execute() can unwrap them as parameters.
-                # execute() only unwraps tuple/list/dict arguments, not Row objects,
-                # so passing a Row directly would treat it as a single scalar parameter.
-                if isinstance(row, Row):
-                    row = tuple(row)
                 self.execute(operation, row)
             return
 

@@ -16617,7 +16617,7 @@ def test_executemany_row_objects_with_varchar_max_dae(cursor, db_connection):
         cursor.execute("SELECT * FROM #pytest_gh629_source")
         rows = cursor.fetchmany(10)  # Returns Row objects
         assert len(rows) == 2
-        assert type(rows[0]).__name__ == "Row"
+        assert isinstance(rows[0], mssql_python.Row)
 
         # Create target table
         cursor.execute("""
