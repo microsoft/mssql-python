@@ -49,7 +49,12 @@ from mssql_python.auth import (
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
-from mssql_python.constants import _RESERVED_PARAMETERS, _KEY_AUTHENTICATION, _KEY_UID, _AuthInternal
+from mssql_python.constants import (
+    _RESERVED_PARAMETERS,
+    _KEY_AUTHENTICATION,
+    _KEY_UID,
+    _AuthInternal,
+)
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
