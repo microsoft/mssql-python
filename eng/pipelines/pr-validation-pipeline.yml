@@ -469,16 +469,18 @@ jobs:
       SQL2022:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
         sqlVersion: 'SQL2022'
+        pythonVersion: '3.13'
       SQL2025:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
+        pythonVersion: '3.14'
 
   steps:
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.13'
+      versionSpec: '$(pythonVersion)'
       addToPath: true
-    displayName: 'Use Python 3.13 on macOS'
+    displayName: 'Use Python $(pythonVersion) on macOS'
 
   - script: |
       brew update
@@ -619,6 +621,7 @@ jobs:
       python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
     displayName: 'Run performance benchmarks on macOS $(sqlVersion)'
     condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    timeoutInMinutes: 20
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -640,18 +643,18 @@ jobs:
   strategy:
     matrix:
       Ubuntu:
-        dockerImage: 'ubuntu:22.04'
+        dockerImage: 'ubuntu:24.04'
         distroName: 'Ubuntu'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
         useAzureSQL: 'false'
       Ubuntu_SQL2025:
-        dockerImage: 'ubuntu:22.04'
+        dockerImage: 'ubuntu:24.04'
         distroName: 'Ubuntu-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
       ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
         Ubuntu_AzureSQL:
-          dockerImage: 'ubuntu:22.04'
+          dockerImage: 'ubuntu:24.04'
           distroName: 'Ubuntu-AzureSQL'
           sqlServerImage: ''
           useAzureSQL: 'true'
@@ -741,8 +744,8 @@ jobs:
         export DEBIAN_FRONTEND=noninteractive
         
         # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+        if [[ '$(distroName)' =~ ^Ubuntu ]]; then
+          curl -sSL -O https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
         else
           # Debian 12
           curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
@@ -898,7 +901,7 @@ jobs:
           
           # Add Microsoft repository
           curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
+          curl -sSL https://packages.microsoft.com/config/ubuntu/24.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
           
           # Update package lists
           apt-get update -qq
@@ -1065,7 +1068,7 @@ jobs:
         export DEBIAN_FRONTEND=noninteractive
         
         # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
+        if [[ '$(distroName)' =~ ^Ubuntu ]]; then
           curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
         else
           # Debian 12

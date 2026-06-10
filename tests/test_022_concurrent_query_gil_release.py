@@ -70,6 +70,7 @@ def _run_waitfor(conn_str: str) -> float:
 # ============================================================================
 
 
+@pytest.mark.stress  # Heartbeat tick counts flake under CI CPU contention (macOS Py3.14)
 def test_query_does_not_block_other_python_threads(conn_str):
     """
     While one thread executes a 2-second ``WAITFOR DELAY``, a second pure-Python
@@ -134,6 +135,7 @@ def test_query_does_not_block_other_python_threads(conn_str):
 # ============================================================================
 
 
+@pytest.mark.stress  # Heartbeat tick counts flake under CI CPU contention (macOS Py3.14)
 def test_commit_does_not_block_other_python_threads(conn_str):
     """
     Smoke test for the SQLEndTran GIL-release added to ``Connection::commit``
