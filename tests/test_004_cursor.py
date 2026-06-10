@@ -16594,3 +16594,67 @@ def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_multi")
         db_connection.commit()
+
+
+def test_executemany_row_objects_with_varchar_max_dae(cursor, db_connection):
+    """Test executemany with Row objects from fetchmany() and VARCHAR(MAX) DAE fallback (GH-629).
+
+    When executemany() detects DAE parameters (large strings >4000 chars for VARCHAR(MAX)),
+    it falls back to row-by-row execution. This fallback must handle Row objects returned
+    by fetch APIs (fetchone/fetchmany/fetchall) by converting them to tuples before
+    passing to execute().
+
+    Without the GH-629 fix, this scenario raises:
+        TypeError: Unsupported parameter type: The driver cannot safely convert it to a SQL type.
+
+    This regression test ensures Row objects from fetch APIs can be passed directly to
+    executemany() even when DAE fallback is triggered.
+    """
+    try:
+        # Create source table with VARCHAR(MAX) column
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_source (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Insert data with large strings (>4000 chars triggers DAE)
+        large_text = "X" * 5000
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (1, large_text))
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (2, large_text))
+        db_connection.commit()
+
+        # Fetch rows as Row objects
+        cursor.execute("SELECT * FROM #pytest_gh629_source")
+        rows = cursor.fetchmany(10)  # Returns Row objects
+        assert len(rows) == 2
+        assert type(rows[0]).__name__ == "Row"
+
+        # Create target table
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_target (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # executemany with Row objects should work (triggers DAE + row-by-row fallback)
+        cursor.executemany("INSERT INTO #pytest_gh629_target VALUES (?, ?)", rows)
+        db_connection.commit()
+
+        # Verify data was inserted correctly
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh629_target")
+        assert cursor.fetchone()[0] == 2
+
+        cursor.execute("SELECT id, LEN(large_text) FROM #pytest_gh629_target ORDER BY id")
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == 5000
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_target")
+        db_connection.commit()
+

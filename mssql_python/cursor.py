@@ -2413,10 +2413,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "DAE parameters detected. Falling back to row-by-row execution with streaming.",
             )
             for row in seq_of_parameters:
-                # Convert Row objects to tuples for compatibility with execute()
-                # Row objects from fetch APIs must be converted since _map_sql_type
-                # only recognizes primitive types (str, int, etc.), not Row objects
-                if hasattr(row, "_values") and hasattr(row, "__iter__"):
+                # Convert Row objects to tuples so execute() can unwrap them as parameters.
+                # execute() only unwraps tuple/list/dict arguments, not Row objects,
+                # so passing a Row directly would treat it as a single scalar parameter.
+                if isinstance(row, Row):
                     row = tuple(row)
                 self.execute(operation, row)
             return
