@@ -16597,19 +16597,7 @@ def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
 
 
 def test_executemany_row_objects_with_varchar_max_dae(cursor, db_connection):
-    """Test executemany with Row objects from fetchmany() and VARCHAR(MAX) DAE fallback (GH-629).
-
-    When executemany() detects DAE parameters (large strings >4000 chars for VARCHAR(MAX)),
-    it falls back to row-by-row execution. This fallback must handle Row objects returned
-    by fetch APIs (fetchone/fetchmany/fetchall) by converting them to tuples before
-    passing to execute().
-
-    Without the GH-629 fix, this scenario raises:
-        TypeError: Unsupported parameter type: The driver cannot safely convert it to a SQL type.
-
-    This regression test ensures Row objects from fetch APIs can be passed directly to
-    executemany() even when DAE fallback is triggered.
-    """
+    """Test executemany with Row objects and VARCHAR(MAX) DAE fallback (GH-629)."""
     try:
         # Create source table with VARCHAR(MAX) column
         cursor.execute("""
