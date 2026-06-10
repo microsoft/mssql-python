@@ -323,12 +323,8 @@ def test_bulkcopy_fetchmany_row_objects(cursor):
 
     try:
         # Setup source table with data
-        cursor.execute(
-            f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}"
-        )
-        cursor.execute(
-            f"CREATE TABLE {source_table} (id INT, name NVARCHAR(50), val FLOAT)"
-        )
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"CREATE TABLE {source_table} (id INT, name NVARCHAR(50), val FLOAT)")
         cursor.connection.commit()
 
         cursor.executemany(
@@ -338,12 +334,8 @@ def test_bulkcopy_fetchmany_row_objects(cursor):
         cursor.connection.commit()
 
         # Setup empty target table
-        cursor.execute(
-            f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}"
-        )
-        cursor.execute(
-            f"CREATE TABLE {target_table} (id INT, name NVARCHAR(50), val FLOAT)"
-        )
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.execute(f"CREATE TABLE {target_table} (id INT, name NVARCHAR(50), val FLOAT)")
         cursor.connection.commit()
 
         # Fetch Row objects from source
@@ -364,12 +356,8 @@ def test_bulkcopy_fetchmany_row_objects(cursor):
         assert target_rows[2][0] == 3 and target_rows[2][1] == "Charlie"
 
     finally:
-        cursor.execute(
-            f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}"
-        )
-        cursor.execute(
-            f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
         cursor.connection.commit()
 
 
@@ -379,9 +367,7 @@ def test_bulkcopy_fetchall_row_objects(cursor):
     target_table = "mssql_python_bcp_fetchall_tgt"
 
     try:
-        cursor.execute(
-            f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
         cursor.execute(f"CREATE TABLE {source_table} (id INT, txt VARCHAR(20))")
         cursor.connection.commit()
 
@@ -391,9 +377,7 @@ def test_bulkcopy_fetchall_row_objects(cursor):
         )
         cursor.connection.commit()
 
-        cursor.execute(
-            f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
         cursor.execute(f"CREATE TABLE {target_table} (id INT, txt VARCHAR(20))")
         cursor.connection.commit()
 
@@ -411,12 +395,8 @@ def test_bulkcopy_fetchall_row_objects(cursor):
         assert target_rows[1][1] == "row2"
 
     finally:
-        cursor.execute(
-            f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}"
-        )
-        cursor.execute(
-            f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
         cursor.connection.commit()
 
 
@@ -424,9 +404,7 @@ def test_bulkcopy_rejects_list_rows(cursor):
     """Regression test: list rows are rejected since Rust only accepts PyTuple (GH-482)."""
     table_name = "mssql_python_bcp_list_reject"
     try:
-        cursor.execute(
-            f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
         cursor.execute(f"CREATE TABLE {table_name} (id INT)")
         cursor.connection.commit()
 
@@ -435,9 +413,7 @@ def test_bulkcopy_rejects_list_rows(cursor):
             cursor.bulkcopy(table_name, [[1], [2], [3]], timeout=60)
 
     finally:
-        cursor.execute(
-            f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
         cursor.connection.commit()
 
 
@@ -445,9 +421,7 @@ def test_bulkcopy_tuple_passthrough(cursor):
     """Regression test: tuple rows still work as before (GH-482 doesn't break existing)."""
     table_name = "mssql_python_bcp_tuple_pass"
     try:
-        cursor.execute(
-            f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
         cursor.execute(f"CREATE TABLE {table_name} (id INT, name VARCHAR(20))")
         cursor.connection.commit()
 
@@ -456,9 +430,7 @@ def test_bulkcopy_tuple_passthrough(cursor):
         assert result["rows_copied"] == 2
 
     finally:
-        cursor.execute(
-            f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
         cursor.connection.commit()
 
 
@@ -466,9 +438,7 @@ def test_bulkcopy_empty_iterator(cursor):
     """Regression test: empty iterator doesn't crash (GH-482)."""
     table_name = "mssql_python_bcp_empty"
     try:
-        cursor.execute(
-            f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
         cursor.execute(f"CREATE TABLE {table_name} (id INT)")
         cursor.connection.commit()
 
@@ -476,7 +446,5 @@ def test_bulkcopy_empty_iterator(cursor):
         assert result["rows_copied"] == 0
 
     finally:
-        cursor.execute(
-            f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-        )
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
         cursor.connection.commit()

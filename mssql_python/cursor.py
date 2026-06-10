@@ -3046,6 +3046,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # generator frame overhead on the tuple passthrough path).
             def _prepare_row_iterator(iterable):
                 from itertools import chain
+
                 it = iter(iterable)
                 first = next(it, None)
                 if first is None:
