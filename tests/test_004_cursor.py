@@ -16657,4 +16657,3 @@ def test_executemany_row_objects_with_varchar_max_dae(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_source")
         cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_target")
         db_connection.commit()
-
