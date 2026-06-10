@@ -141,16 +141,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             False
         ]  # Indicates if last_executed_stmt was prepared by ddbc shim.
         # Is a list instead of a bool coz bools in Python are immutable.
-
-        # Initialize attributes that may be defined later to avoid pylint warnings
-        # Note: _original_fetch* methods are not initialized here as they need to be
-        # conditionally set based on hasattr() checks
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
 
         self._rownumber = -1  # DB-API extension: last returned row index, -1 before first
 
+        # Column-name -> index map for the current result set. For catalog/metadata
+        # result sets this also carries lowercase and friendly aliases (see
+        # _prepare_metadata_result_set).
+        self._column_map = None
         self._cached_column_map = None
+        self._cached_column_map_lower = None
         self._cached_converter_map = None
         self._uuid_str_indices = None  # Pre-computed UUID column indices for str conversion
         # Cache the effective native_uuid setting for this cursor's connection.
@@ -1392,16 +1393,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Log the actual query being executed
         logger.debug("Executing query: %s", operation)
 
-        # Restore original fetch methods if they exist
-        if hasattr(self, "_original_fetchone"):
-            logger.debug("execute: Restoring original fetch methods")
-            self.fetchone = self._original_fetchone
-            self.fetchmany = self._original_fetchmany
-            self.fetchall = self._original_fetchall
-            del self._original_fetchone
-            del self._original_fetchmany
-            del self._original_fetchall
-
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             if self.hstmt:
@@ -1589,8 +1580,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Prepares a metadata result set by:
         1. Retrieving column metadata if not provided
         2. Initializing the description attribute
-        3. Setting up column name mappings
-        4. Creating wrapper fetch methods with column mapping support
+        3. Setting up column name mappings (including any specialized aliases)
+           so the standard fetch methods return rows keyed by catalog columns
 
         Args:
             column_metadata (list, optional): Pre-fetched column metadata.
@@ -1623,94 +1614,31 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self.description and fallback_description:
             self.description = fallback_description
 
-        # Define column names in ODBC standard order
-        self._column_map = {}  # pylint: disable=attribute-defined-outside-init
+        # Build the column-name -> index map for this metadata result set.
+        # Both the exact name and its lowercase alias are stored so that rows
+        # support case-insensitive lookup regardless of the global ``lowercase``
+        # setting (catalog column names are well-known and case-stable).
+        column_map = {}
         for i, (name, *_) in enumerate(self.description):
-            # Add standard name
-            self._column_map[name] = i
-            # Add lowercase alias
-            self._column_map[name.lower()] = i
+            column_map[name] = i
+            column_map[name.lower()] = i
 
-        # If specialized mapping is provided, handle it differently
+        # Some catalog helpers expose additional friendly aliases (e.g. ODBC 2.x
+        # vs 3.x column names) via a specialized mapping. Merge them in so they
+        # resolve to the same column indices.
         if specialized_mapping:
-            # Define specialized fetch methods that use the custom mapping
-            def fetchone_with_specialized_mapping():
-                row = self._original_fetchone()
-                if row is not None:
-                    merged_map = getattr(row, "_column_map", {}).copy()
-                    merged_map.update(specialized_mapping)
-                    row._column_map = merged_map
-                return row
+            column_map.update(specialized_mapping)
 
-            def fetchmany_with_specialized_mapping(size=None):
-                rows = self._original_fetchmany(size)
-                for row in rows:
-                    merged_map = getattr(row, "_column_map", {}).copy()
-                    merged_map.update(specialized_mapping)
-                    row._column_map = merged_map
-                return rows
+        self._column_map = column_map
 
-            def fetchall_with_specialized_mapping():
-                rows = self._original_fetchall()
-                for row in rows:
-                    merged_map = getattr(row, "_column_map", {}).copy()
-                    merged_map.update(specialized_mapping)
-                    row._column_map = merged_map
-                return rows
-
-            # Save original fetch methods
-            if not hasattr(self, "_original_fetchone"):
-                self._original_fetchone = (
-                    self.fetchone
-                )  # pylint: disable=attribute-defined-outside-init
-                self._original_fetchmany = (
-                    self.fetchmany
-                )  # pylint: disable=attribute-defined-outside-init
-                self._original_fetchall = (
-                    self.fetchall
-                )  # pylint: disable=attribute-defined-outside-init
-
-            # Use specialized mapping methods
-            self.fetchone = fetchone_with_specialized_mapping
-            self.fetchmany = fetchmany_with_specialized_mapping
-            self.fetchall = fetchall_with_specialized_mapping
-        else:
-            # Standard column mapping
-            # Remember original fetch methods (store only once)
-            if not hasattr(self, "_original_fetchone"):
-                self._original_fetchone = (
-                    self.fetchone
-                )  # pylint: disable=attribute-defined-outside-init
-                self._original_fetchmany = (
-                    self.fetchmany
-                )  # pylint: disable=attribute-defined-outside-init
-                self._original_fetchall = (
-                    self.fetchall
-                )  # pylint: disable=attribute-defined-outside-init
-
-                # Create wrapper fetch methods that add column mappings
-                def fetchone_with_mapping():
-                    row = self._original_fetchone()
-                    if row is not None:
-                        row._column_map = self._column_map
-                    return row
-
-                def fetchmany_with_mapping(size=None):
-                    rows = self._original_fetchmany(size)
-                    for row in rows:
-                        row._column_map = self._column_map
-                    return rows
-
-                def fetchall_with_mapping():
-                    rows = self._original_fetchall()
-                    for row in rows:
-                        row._column_map = self._column_map
-                    return rows
-
-                # Replace fetch methods
-                self.fetchone = fetchone_with_mapping
-                self.fetchmany = fetchmany_with_mapping
-                self.fetchall = fetchall_with_mapping
+        # Route the map through the shared fetch path. The standard fetchone/
+        # fetchmany/fetchall methods read these cached maps when constructing Row
+        # objects, so metadata rows pick up the catalog column names without any
+        # per-call method reassignment (the previous approach broke static type
+        # checking - see GH #620). Lowercase aliases are already merged above, so
+        # a separate lowercase map is unnecessary.
+        self._cached_column_map = column_map
+        self._cached_column_map_lower = None
 
         # Initialize rownumber tracking so fetchone() and iteration work
         self._reset_rownumber()

@@ -10411,6 +10411,34 @@ def test_setinputsizes_sql_injection_protection(db_connection):
     cursor.execute("DROP TABLE #test_sql_injection")
 
 
+def test_fetch_methods_not_shadowed_on_instance(cursor):
+    """Regression test for GH #620.
+
+    The fetch methods (fetchone/fetchmany/fetchall) must remain regular class
+    methods and never be reassigned as instance attributes. The previous
+    implementation swapped them for closures on the instance while preparing
+    catalog/metadata result sets, which produced a union type that broke static
+    type checkers (e.g. ``ty`` reported a spurious missing ``self`` argument).
+    """
+    fetch_methods = ("fetchone", "fetchmany", "fetchall")
+
+    # Pristine cursor: methods come from the class, not the instance.
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} should not be an instance attribute"
+
+    # A catalog helper historically reassigned the fetch methods. Make sure it
+    # no longer shadows them on the instance.
+    cursor.getTypeInfo().fetchall()
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after getTypeInfo()"
+
+    # A normal execute must also leave the class methods intact.
+    cursor.execute("SELECT 1 AS one")
+    assert cursor.fetchall() == [[1]]
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after execute()"
+
+
 def test_gettypeinfo_all_types(cursor):
     """Test getTypeInfo with no arguments returns all data types"""
     # Get all type information
