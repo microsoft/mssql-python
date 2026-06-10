@@ -4591,7 +4591,32 @@ int32_t days_from_civil(int y, int m, int d) {
 }
 
 SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
-                               int arrowBatchSize) {
+                               int arrowBatchSize,
+                               const std::string& charEncoding = "utf-16le",
+                               const std::string& wcharEncoding = "utf-16le",
+                               int charCtype = SQL_C_WCHAR) {
+    // Honor the connection's setdecoding(SQL_CHAR, ...) so that VARCHAR
+    // columns produce valid UTF-8 in the resulting Arrow buffer.
+    //
+    // Default behavior: charCtype is SQL_C_WCHAR (matching Connection.__init__
+    // defaults). The driver returns UTF-16 for VARCHAR columns and we convert
+    // to UTF-8 via simdutf, which works correctly on every platform regardless
+    // of the column collation (issue #468 / #531).
+    //
+    // Issue #531 follow-up: when the user explicitly sets
+    // setdecoding(SQL_CHAR, "utf-8", SQL_CHAR), upgrade to SQL_C_WCHAR on
+    // Windows so the driver does lossless UTF-16 conversion rather than
+    // returning ACP-encoded bytes that would be invalid UTF-8 in Arrow.
+    (void)wcharEncoding;  // currently unused; reserved for future symmetry
+    charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
+    const bool useWideCharForVarchar = (charCtype == SQL_C_WCHAR);
+    // For the SQL_C_CHAR path, decide what the byte stream coming back from
+    // the driver actually is. On Linux/macOS the driver always returns UTF-8
+    // for SQL_C_CHAR regardless of the user-requested encoding, so we treat
+    // it as UTF-8. On Windows it is whatever encoding the user requested.
+    const std::string effectiveCharEnc = GetEffectiveCharDecoding(charEncoding);
+    const bool charBytesAreUtf8 = (effectiveCharEnc == "utf-8");
+
     // An overly large fetch size doesn't seem to help performance
     int fetchSize = 64;
 
@@ -4780,9 +4805,11 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     ColumnBuffers buffers(numCols, fetchSize);
 
     if (!hasLobColumns && fetchSize > 0) {
-        // Bind columns — Arrow always uses SQL_C_CHAR for VARCHAR because
-        // it processes raw byte buffers directly, not via Python codecs.
-        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, SQL_C_CHAR);
+        // Bind columns using the effective charCtype. VARCHAR columns are
+        // bound as SQL_C_WCHAR by default so the driver does lossless UTF-16
+        // conversion; we then convert UTF-16 → UTF-8 via simdutf when filling
+        // the Arrow buffer.
+        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error when binding columns");
             return ret;
@@ -4842,9 +4869,18 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         case SQL_CHAR:
                         case SQL_VARCHAR:
                         case SQL_LONGVARCHAR: {
-                            ret = GetDataVar(hStmt, idxCol + 1, SQL_C_CHAR,
-                                             buffers.charBuffers[idxCol],
-                                             buffers.indicators[idxCol].data());
+                            if (useWideCharForVarchar) {
+                                // Fetch as SQL_C_WCHAR so the driver does
+                                // lossless UTF-16 conversion; we transcode to
+                                // UTF-8 below when populating the Arrow buffer.
+                                ret = GetDataVar(hStmt, idxCol + 1, SQL_C_WCHAR,
+                                                 buffers.wcharBuffers[idxCol],
+                                                 buffers.indicators[idxCol].data());
+                            } else {
+                                ret = GetDataVar(hStmt, idxCol + 1, SQL_C_CHAR,
+                                                 buffers.charBuffers[idxCol],
+                                                 buffers.indicators[idxCol].data());
+                            }
                             if (!SQL_SUCCEEDED(ret)) {
                                 LOG("Error fetching CHAR LOB for column %d", idxCol + 1);
                                 return ret;
@@ -5094,21 +5130,86 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     case SQL_CHAR:
                     case SQL_VARCHAR:
                     case SQL_LONGVARCHAR: {
+                        if (useWideCharForVarchar) {
+                            // VARCHAR was fetched as SQL_C_WCHAR: transcode
+                            // UTF-16 → UTF-8 for the Arrow string buffer.
+                            // For LOB rows wcharBuffers was sized by
+                            // GetDataVar starting at offset 0; for non-LOB it
+                            // uses the per-row stride (columnSize + 1).
+                            assert(dataLen % sizeof(SQLWCHAR) == 0);
+                            auto dataLenW = dataLen / sizeof(SQLWCHAR);
+                            auto wcharSource =
+                                &buffers.wcharBuffers[idxCol][idxRowSql * (columnSize + 1)];
+                            static_assert(sizeof(SQLWCHAR) == sizeof(char16_t),
+                                          "SQLWCHAR must be 2 bytes on this platform");
+                            static_assert(alignof(SQLWCHAR) == alignof(char16_t),
+                                          "SQLWCHAR alignment mismatch with char16_t");
+                            const auto* utf16Source =
+                                reinterpret_cast<const char16_t*>(wcharSource);
+                            auto start = arrowColumnProducer->varVal[idxRowArrow];
+                            auto target_vec = &arrowColumnProducer->varData;
+                            size_t maxUtf8Size = dataLenW * 3;
+                            while (target_vec->size() < start + maxUtf8Size) {
+                                target_vec->resize(target_vec->size() * 2);
+                            }
+                            size_t bytesWritten =
+                                simdutf::convert_utf16le_to_utf8_with_replacement(
+                                    utf16Source, dataLenW,
+                                    reinterpret_cast<char*>(target_vec->data() + start));
+                            arrowColumnProducer->varVal[idxRowArrow + 1] = start + bytesWritten;
+                        } else if (charBytesAreUtf8) {
+                            // SQL_C_CHAR + UTF-8 source: copy raw bytes
+                            // directly into the Arrow buffer.
 #if defined(__APPLE__) || defined(__linux__)
-                        uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
+                            uint64_t fetchBufferSize =
+                                columnSize * 4 + 1 /*null-terminator*/;
 #else
-                        uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                            uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 #endif
-                        auto target_vec = &arrowColumnProducer->varData;
-                        auto start = arrowColumnProducer->varVal[idxRowArrow];
-                        while (target_vec->size() < start + dataLen) {
-                            target_vec->resize(target_vec->size() * 2);
+                            auto target_vec = &arrowColumnProducer->varData;
+                            auto start = arrowColumnProducer->varVal[idxRowArrow];
+                            while (target_vec->size() < start + dataLen) {
+                                target_vec->resize(target_vec->size() * 2);
+                            }
+                            std::memcpy(
+                                &(*target_vec)[start],
+                                &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize], dataLen);
+                            arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
+                        } else {
+                            // SQL_C_CHAR + non-UTF-8 source (e.g. CP1252 on
+                            // Windows when the user explicitly opts in via
+                            // setdecoding(SQL_CHAR, "<codec>", SQL_CHAR)):
+                            // decode the bytes through the Python codec, then
+                            // re-encode to UTF-8 for the Arrow buffer. This
+                            // path is only reachable on Windows because the
+                            // unixODBC driver always emits UTF-8 for
+                            // SQL_C_CHAR (see GetEffectiveCharDecoding).
+                            uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                            const char* dataPtr = reinterpret_cast<const char*>(
+                                &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize]);
+                            py::object pyStr = py::reinterpret_steal<py::object>(
+                                PyUnicode_Decode(dataPtr, static_cast<Py_ssize_t>(dataLen),
+                                                 effectiveCharEnc.c_str(), "strict"));
+                            if (!pyStr) {
+                                throw py::error_already_set();
+                            }
+                            Py_ssize_t utf8Len = 0;
+                            const char* utf8Bytes =
+                                PyUnicode_AsUTF8AndSize(pyStr.ptr(), &utf8Len);
+                            if (!utf8Bytes) {
+                                throw py::error_already_set();
+                            }
+                            auto target_vec = &arrowColumnProducer->varData;
+                            auto start = arrowColumnProducer->varVal[idxRowArrow];
+                            while (target_vec->size() <
+                                   start + static_cast<size_t>(utf8Len)) {
+                                target_vec->resize(target_vec->size() * 2);
+                            }
+                            std::memcpy(target_vec->data() + start, utf8Bytes,
+                                        static_cast<size_t>(utf8Len));
+                            arrowColumnProducer->varVal[idxRowArrow + 1] =
+                                start + static_cast<uint64_t>(utf8Len);
                         }
-
-                        std::memcpy(&(*target_vec)[start],
-                                    &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize],
-                                    dataLen);
-                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
                         break;
                     }
                     case SQL_SS_XML:
@@ -5830,7 +5931,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("StatementHandle"), py::arg("rows"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR);
     m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap,
-          "Fetch an arrow batch of given length from the result set");
+          "Fetch an arrow batch of given length from the result set",
+          py::arg("StatementHandle"), py::arg("capsules"), py::arg("arrowBatchSize"),
+          py::arg("charEncoding") = "utf-16le", py::arg("wcharEncoding") = "utf-16le",
+          py::arg("charCtype") = SQL_C_WCHAR);
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap,
           "Close cursor and unbind params without freeing HSTMT");

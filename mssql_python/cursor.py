@@ -2715,8 +2715,23 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
+        # Honor the connection's setdecoding(SQL_CHAR, ...) so that VARCHAR
+        # columns produce valid UTF-8 in the resulting Arrow buffer. By
+        # default the connection uses utf-16le + SQL_C_WCHAR for SQL_CHAR so
+        # the driver returns lossless UTF-16 for VARCHAR columns regardless
+        # of their collation (e.g. CP1252).
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         capsules = []
-        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, max(batch_size, 0))
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(
+            self.hstmt,
+            capsules,
+            max(batch_size, 0),
+            char_decoding.get("encoding", "utf-16le"),
+            wchar_decoding.get("encoding", "utf-16le"),
+            char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
+        )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)

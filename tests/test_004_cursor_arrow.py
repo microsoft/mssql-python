@@ -313,6 +313,55 @@ def test_arrow_long_string(cursor: mssql_python.Cursor):
     assert batch.column(0).to_pylist() == [long_string]
 
 
+def test_arrow_varchar_non_ascii_cp1252(db_connection):
+    """VARCHAR columns with non-ASCII data must round-trip to valid UTF-8 in Arrow.
+
+    Reproduces the user-reported bug where ``.arrow().to_pandas()`` raised
+    invalid-UTF-8 errors for VARCHAR columns containing CP1252 characters
+    because the Arrow path was using SQL_C_CHAR + raw bytes, ignoring the
+    connection's setdecoding(SQL_CHAR, ...) settings. With the fix, the
+    default decoding (utf-16le + SQL_C_WCHAR) is honored and the driver
+    returns lossless UTF-16, which we transcode to UTF-8 for the Arrow
+    buffer regardless of the column's collation.
+    """
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("""
+            SELECT id,
+                   CAST(v      AS VARCHAR(50))  COLLATE SQL_Latin1_General_CP1_CI_AS AS v,
+                   CAST(v_long AS VARCHAR(MAX)) COLLATE SQL_Latin1_General_CP1_CI_AS AS v_long
+            FROM (VALUES
+                (1, 'café',       'élève été'),
+                (2, 'señor año',  'naïve café'),
+                (3, 'Größe Maß',  'Françoise'),
+                (4, CAST(NULL AS VARCHAR(50)), CAST(NULL AS VARCHAR(MAX)))
+            ) AS t(id, v, v_long)
+            ORDER BY id;
+        """)
+        batch = cursor.arrow_batch(10)
+        assert batch.num_rows == 4
+        ids = batch.column(0).to_pylist()
+        short = batch.column(1).to_pylist()
+        long_ = batch.column(2).to_pylist()
+        assert ids == [1, 2, 3, 4]
+        assert short == ["café", "señor año", "Größe Maß", None]
+        assert long_ == ["élève été", "naïve café", "Françoise", None]
+
+        # Round-trip through pandas — this is what failed for users when the
+        # buffer held invalid UTF-8.
+        try:
+            import pandas  # noqa: F401
+        except ImportError:
+            pandas = None  # type: ignore[assignment]
+        if pandas is not None:
+            cursor.execute("SELECT CAST('café' AS VARCHAR(20)) "
+                           "COLLATE SQL_Latin1_General_CP1_CI_AS AS c")
+            df = cursor.arrow().to_pandas()
+            assert df["c"].iloc[0] == "café"
+    finally:
+        cursor.close()
+
+
 def test_rownumber_arrow_batch_interleaved_fetchmany(cursor: mssql_python.Cursor):
     """Verify that arrow_batch and fetchmany can be interleaved
     on the same result set with correct rownumber tracking and values."""
