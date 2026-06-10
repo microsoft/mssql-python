@@ -3037,32 +3037,33 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             pycore_cursor = pycore_connection.cursor()
 
             # Enforce the bulkcopy type contract: only tuple and Row accepted.
-            # Rust (mssql_py_core) requires native PyTuple via cast::<PyTuple>().
-            # Row objects from fetch methods are converted using direct _values
-            # access (4x faster than __iter__). All other types raise TypeError.
-            def _ensure_tuples(iterable):
+            # Created to support the fetchone/fetchmany/fetchall -> bulkcopy
+            # pipeline where Row objects need conversion to native tuples.
+            # Rust (mssql_py_core) requires PyTuple via cast::<PyTuple>() and
+            # rejects all other types including list. Row objects are converted
+            # using direct _values access (4x faster than __iter__ protocol).
+            # Uses itertools.chain for C-level iteration (avoids Python
+            # generator frame overhead on the tuple passthrough path).
+            def _prepare_row_iterator(iterable):
+                from itertools import chain
                 it = iter(iterable)
                 first = next(it, None)
                 if first is None:
-                    return
+                    return iter(())
                 if isinstance(first, tuple):
-                    yield first
-                    yield from it
-                elif isinstance(first, Row):
-                    yield tuple(first._values)
-                    for item in it:
-                        yield tuple(item._values)
-                else:
-                    raise TypeError(
-                        f"bulkcopy data rows must be tuples or Row objects, "
-                        f"got {type(first).__name__}"
-                    )
+                    return chain((first,), it)
+                if isinstance(first, Row):
+                    return (tuple(item._values) for item in chain((first,), it))
+                raise TypeError(
+                    f"bulkcopy data rows must be tuples or Row objects, "
+                    f"got {type(first).__name__}"
+                )
 
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             result = pycore_cursor.bulkcopy(
                 table_name,
-                _ensure_tuples(data),
+                _prepare_row_iterator(data),
                 batch_size=batch_size,
                 timeout=timeout,
                 column_mappings=column_mappings,
