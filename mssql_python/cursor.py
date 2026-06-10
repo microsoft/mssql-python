@@ -2978,8 +2978,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if self.connection._auth_type:
             # Fresh token acquisition for mssql-py-core connection
             from mssql_python.auth import AADAuth, ServicePrincipalAuth
+            from mssql_python.constants import _AuthInternal
 
-            if self.connection._auth_type == "serviceprincipal":
+            if self.connection._auth_type == _AuthInternal.SERVICE_PRINCIPAL:
                 # Model B: callback-based. tenant_id is only known from the
                 # STS URL the server returns mid-handshake, so we register a
                 # factory that py-core invokes during FedAuth (workflow 0x02).

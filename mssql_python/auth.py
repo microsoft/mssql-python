@@ -14,6 +14,7 @@ from mssql_python.logging import logger
 from mssql_python.constants import (
     AuthType,
     ConstantsDDBC,
+    _AuthInternal,
     _KEY_AUTHENTICATION,
     _KEY_UID,
     _KEY_PWD,
@@ -35,11 +36,11 @@ _SENSITIVE_KEYS = frozenset({_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION, _KEY_A
 
 # Map Authentication connection-string values to internal short names.
 _AUTH_TYPE_MAP: Dict[str, str] = {
-    AuthType.INTERACTIVE.value: "interactive",
-    AuthType.DEVICE_CODE.value: "devicecode",
-    AuthType.DEFAULT.value: "default",
-    AuthType.MSI.value: "msi",
-    AuthType.SERVICE_PRINCIPAL.value: "serviceprincipal",
+    AuthType.INTERACTIVE.value: _AuthInternal.INTERACTIVE,
+    AuthType.DEVICE_CODE.value: _AuthInternal.DEVICE_CODE,
+    AuthType.DEFAULT.value: _AuthInternal.DEFAULT,
+    AuthType.MSI.value: _AuthInternal.MSI,
+    AuthType.SERVICE_PRINCIPAL.value: _AuthInternal.SERVICE_PRINCIPAL,
 }
 
 
@@ -113,10 +114,10 @@ class AADAuth:
 
         # Mapping of auth types to credential classes
         credential_map = {
-            "default": DefaultAzureCredential,
-            "devicecode": DeviceCodeCredential,
-            "interactive": InteractiveBrowserCredential,
-            "msi": ManagedIdentityCredential,
+            _AuthInternal.DEFAULT: DefaultAzureCredential,
+            _AuthInternal.DEVICE_CODE: DeviceCodeCredential,
+            _AuthInternal.INTERACTIVE: InteractiveBrowserCredential,
+            _AuthInternal.MSI: ManagedIdentityCredential,
         }
 
         credential_class = credential_map.get(auth_type)
@@ -269,7 +270,7 @@ class ServicePrincipalAuth:
                 # avoids storing the raw secret in the dict key.
                 secret_hash = hashlib.sha256(client_secret.encode("utf-8")).hexdigest()
                 cache_key = _credential_cache_key(
-                    "serviceprincipal",
+                    _AuthInternal.SERVICE_PRINCIPAL,
                     {
                         "tenant_id": tenant_id,
                         "client_id": client_id,
@@ -329,7 +330,7 @@ def process_auth_parameters(parsed_params: Dict[str, str]) -> Optional[str]:
         return None
 
     # On Windows, Interactive auth is handled natively by the ODBC driver.
-    if auth_type == "interactive" and platform.system().lower() == "windows":
+    if auth_type == _AuthInternal.INTERACTIVE and platform.system().lower() == "windows":
         logger.debug("process_auth_parameters: Windows platform - using native AADInteractive")
         return None
 
@@ -339,7 +340,7 @@ def process_auth_parameters(parsed_params: Dict[str, str]) -> Optional[str]:
     # extract_auth_type for that), and the cursor.bulkcopy() Model B branch
     # registers an entra_id_token_factory callback because tenant_id is only
     # known from the STS URL the server returns during the FedAuth handshake.
-    if auth_type == "serviceprincipal":
+    if auth_type == _AuthInternal.SERVICE_PRINCIPAL:
         logger.debug("process_auth_parameters: ServicePrincipal - ODBC handles natively")
         return None
 
@@ -362,7 +363,7 @@ def get_auth_token(
         return None
 
     # Handle platform-specific logic for interactive auth
-    if auth_type == "interactive" and platform.system().lower() == "windows":
+    if auth_type == _AuthInternal.INTERACTIVE and platform.system().lower() == "windows":
         logger.debug("get_auth_token: Windows interactive auth - delegating to native handler")
         return None  # Let Windows handle AADInteractive natively
 

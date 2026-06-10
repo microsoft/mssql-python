@@ -332,13 +332,28 @@ class GetInfoConstants(Enum):
 
 
 class AuthType(Enum):
-    """Constants for authentication types"""
+    """Constants for authentication types (public/ODBC connection-string form)."""
 
     INTERACTIVE = "activedirectoryinteractive"
     DEVICE_CODE = "activedirectorydevicecode"
     DEFAULT = "activedirectorydefault"
     MSI = "activedirectorymsi"
     SERVICE_PRINCIPAL = "activedirectoryserviceprincipal"
+
+
+class _AuthInternal:
+    """Internal short-form auth identifiers used after normalization.
+
+    Paired with :class:`AuthType` (the public ODBC-string form) by
+    ``mssql_python.auth._AUTH_TYPE_MAP``. Adding a new auth mode requires
+    one entry here, one in ``AuthType``, and one in ``_AUTH_TYPE_MAP``.
+    """
+
+    DEFAULT = "default"
+    DEVICE_CODE = "devicecode"
+    INTERACTIVE = "interactive"
+    MSI = "msi"
+    SERVICE_PRINCIPAL = "serviceprincipal"
 
 
 class SQLTypes:
