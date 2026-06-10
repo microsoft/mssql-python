@@ -375,9 +375,9 @@ def process_auth_parameters(parsed_params: Dict[str, str]) -> Optional[str]:
     # ServicePrincipal: ODBC (msodbcsql 17.3+) handles this natively for
     # regular queries, so return None to let ODBC own the query path. Bulkcopy
     # still needs the auth type (Connection.__init__ falls back to
-    # extract_auth_type for that), and the cursor.bulkcopy() Model B branch
-    # registers an entra_id_token_factory callback because tenant_id is only
-    # known from the STS URL the server returns during the FedAuth handshake.
+    # extract_auth_type for that), and the cursor.bulkcopy() callback branch
+    # registers an entra_id_token_factory because tenant_id is only known
+    # from the STS URL the server returns during the FedAuth handshake.
     if auth_type == _AuthInternal.SERVICE_PRINCIPAL:
         logger.debug("process_auth_parameters: ServicePrincipal - ODBC handles natively")
         return None

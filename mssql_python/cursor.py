@@ -2981,15 +2981,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             from mssql_python.constants import _AuthInternal
 
             if self.connection._auth_type == _AuthInternal.SERVICE_PRINCIPAL:
-                # Model B: callback-based. tenant_id is only known from the
-                # STS URL the server returns mid-handshake, so we register a
-                # factory that py-core invokes during FedAuth (workflow 0x02).
+                # Callback-based path: tenant_id is only known from the STS URL
+                # the server returns mid-handshake, so we register a factory
+                # that py-core invokes during FedAuth (workflow 0x02).
+                # Cert-based ServicePrincipal is not supported on this path.
                 client_id = params.get("uid", "")
                 client_secret = params.get("pwd", "")
                 if not client_id or not client_secret:
                     raise RuntimeError(
                         "Bulk copy with Authentication=ActiveDirectoryServicePrincipal "
-                        "requires UID (client_id) and PWD (client_secret) in the "
+                        "currently supports client-secret only. "
+                        "Provide UID (client_id) and PWD (client_secret) in the "
                         "connection string."
                     )
                 try:
@@ -3005,13 +3007,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # the factory is dispatched at handshake time.
                 logger.debug("Bulk copy: registered ServicePrincipal token factory")
             else:
-                # Model A: pre-acquired token. Used for Default, DeviceCode,
+                # Pre-acquired token path. Used for Default, DeviceCode,
                 # Interactive (non-Windows), MSI (system- or user-assigned),
                 # and any other AD method whose tenant_id is discoverable
                 # client-side via Azure Identity SDK. credential kwargs
                 # (e.g. user-assigned MSI client_id) were captured by
                 # Connection.__init__ before remove_sensitive_params stripped
-                # UID from connection_str — re-parsing here would miss them.
+                # UID from connection_str. re-parsing here would miss them.
                 try:
                     raw_token = AADAuth.get_raw_token(
                         self.connection._auth_type,
