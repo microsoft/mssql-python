@@ -10439,6 +10439,34 @@ def test_fetch_methods_not_shadowed_on_instance(cursor):
         assert name not in cursor.__dict__, f"{name} was shadowed after execute()"
 
 
+def test_metadata_case_insensitive_access_when_lowercase(db_connection):
+    """Regression test for GH #620 follow-up.
+
+    Catalog result sets must keep case-insensitive column access even when the
+    global ``lowercase`` setting is enabled. With lowercase=True the description
+    names are lowercased, so the cursor must build a lowercase lookup map for
+    metadata rows; otherwise original-cased ODBC names like ``TABLE_NAME`` stop
+    resolving.
+    """
+    original_lowercase = mssql_python.lowercase
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        try:
+            row = cursor.getTypeInfo().fetchone()
+            assert row is not None, "getTypeInfo() should return at least one row"
+            # Lowercase access (the stored casing) must work...
+            lower_value = row.type_name
+            # ...and so must the original ODBC casing, via the lowercase map.
+            assert row.TYPE_NAME == lower_value
+            assert row["TYPE_NAME"] == lower_value
+            assert row["type_name"] == lower_value
+        finally:
+            cursor.close()
+    finally:
+        mssql_python.lowercase = original_lowercase
+
+
 def test_gettypeinfo_all_types(cursor):
     """Test getTypeInfo with no arguments returns all data types"""
     # Get all type information

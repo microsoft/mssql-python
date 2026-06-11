@@ -149,7 +149,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Column-name -> index map for the current result set. For catalog/metadata
         # result sets this also carries lowercase and friendly aliases (see
         # _prepare_metadata_result_set).
-        self._column_map = None
         self._cached_column_map = None
         self._cached_column_map_lower = None
         self._cached_converter_map = None
@@ -1629,16 +1628,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if specialized_mapping:
             column_map.update(specialized_mapping)
 
-        self._column_map = column_map
-
         # Route the map through the shared fetch path. The standard fetchone/
         # fetchmany/fetchall methods read these cached maps when constructing Row
         # objects, so metadata rows pick up the catalog column names without any
         # per-call method reassignment (the previous approach broke static type
-        # checking - see GH #620). Lowercase aliases are already merged above, so
-        # a separate lowercase map is unnecessary.
+        # checking - see GH #620).
         self._cached_column_map = column_map
-        self._cached_column_map_lower = None
+        # Mirror execute(): when ``lowercase`` is enabled the description names are
+        # already lowercased, so build the lowercase lookup map (including any
+        # specialized aliases) to keep case-insensitive access working for catalog
+        # rows (e.g. row.TABLE_NAME when lowercase=True).
+        self._cached_column_map_lower = (
+            {k.lower(): v for k, v in column_map.items()}
+            if get_settings().lowercase
+            else None
+        )
 
         # Initialize rownumber tracking so fetchone() and iteration work
         self._reset_rownumber()
