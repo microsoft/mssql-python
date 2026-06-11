@@ -3290,6 +3290,36 @@ def test_row_case_sensitive_access(cursor, db_connection):
             pass
 
 
+def test_row_none_column_map():
+    """Test Row edge case with column_map=None (covers _column_names=() branch)."""
+    from mssql_python.row import Row
+
+    row = Row([], None, cursor=None)
+    assert list(row.keys()) == []
+    assert list(row.values()) == []
+    assert list(row.items()) == []
+    assert row.to_dict() == {}
+    assert "anything" not in row
+
+
+def test_row_contains_with_lowercase_map():
+    """Test __contains__ with column_map_lower (covers lowercase lookup branch)."""
+    from mssql_python.row import Row
+
+    column_map = {"ProductID": 0, "Name": 1}
+    column_map_lower = {"productid": 0, "name": 1}
+    row = Row(
+        [1, "foo"], column_map, cursor=None, column_map_lower=column_map_lower
+    )
+
+    # Exact match hits _column_map directly
+    assert "ProductID" in row
+    # Case-insensitive match hits _column_map_lower branch
+    assert "productid" in row
+    assert "NAME" in row
+    assert "missing" not in row
+
+
 def test_row_items_is_reusable(cursor, db_connection):
     """Test items() returns a reusable list, not a one-shot iterator."""
     try:
