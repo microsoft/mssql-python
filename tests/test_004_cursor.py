@@ -2184,6 +2184,173 @@ def test_executemany_MIX_NONE_parameter_list(cursor, db_connection):
         db_connection.commit()
 
 
+def test_map_sql_type_none_returns_sql_unknown_type():
+    """Test that _map_sql_type returns SQL_UNKNOWN_TYPE for None params (GH-610).
+
+    None returns SQL_UNKNOWN_TYPE so the C++ BindParameters cache can resolve
+    the correct type via SQLDescribeParam on first call and cache it for
+    subsequent calls.
+    """
+    from unittest.mock import MagicMock
+
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+
+    cursor = MagicMock(spec=mssql_python.Cursor)
+    _map_sql_type = mssql_python.Cursor._map_sql_type.__get__(cursor)
+    params = [None, 42, None]
+
+    sql_type, c_type, col_size, dec_digits, is_dae = _map_sql_type(None, params, 0)
+
+    assert sql_type == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
+    assert c_type == ddbc_sql_const.SQL_C_DEFAULT.value
+    assert col_size == 1
+    assert dec_digits == 0
+    assert is_dae is False
+
+
+# ---------------------------------------------------------
+# GH-610: SQLDescribeParam cache coverage tests
+# ---------------------------------------------------------
+
+
+def test_gh610_execute_null_param_cache_miss(cursor, db_connection):
+    """Cover cache MISS path: first execute with NULL triggers SQLDescribeParam."""
+    cursor.execute("CREATE TABLE #gh610_cov1 (id INT, name VARCHAR(50))")
+    cursor.execute("INSERT INTO #gh610_cov1 VALUES (?, ?)", (1, None))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov1")
+    assert cursor.fetchone()[0] == 1
+    cursor.execute("DROP TABLE #gh610_cov1")
+
+
+def test_gh610_execute_null_param_cache_hit(cursor, db_connection):
+    """Cover cache HIT path: repeated execute with same SQL + NULL."""
+    cursor.execute("CREATE TABLE #gh610_cov2 (id INT, name VARCHAR(50))")
+    # First call: cache miss → SQLDescribeParam
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (1, None))
+    # Second call: cache hit → no SQLDescribeParam
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (2, None))
+    # Third call: cache hit
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (3, None))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov2")
+    assert cursor.fetchone()[0] == 3
+    cursor.execute("DROP TABLE #gh610_cov2")
+
+
+def test_gh610_cache_invalidation_on_new_sql(cursor, db_connection):
+    """Cover InvalidateDescribeCache path: different SQL clears cache."""
+    cursor.execute("CREATE TABLE #gh610_cov3a (val INT)")
+    cursor.execute("CREATE TABLE #gh610_cov3b (val VARCHAR(50))")
+    # First query — cache populated
+    cursor.execute("INSERT INTO #gh610_cov3a VALUES (?)", (None,))
+    # Different SQL — triggers SQLPrepare → InvalidateDescribeCache
+    cursor.execute("INSERT INTO #gh610_cov3b VALUES (?)", (None,))
+    # Back to first — triggers SQLPrepare → InvalidateDescribeCache again
+    cursor.execute("INSERT INTO #gh610_cov3a VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov3a")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("DROP TABLE #gh610_cov3a")
+    cursor.execute("DROP TABLE #gh610_cov3b")
+
+
+def test_gh610_executemany_all_null_column(cursor, db_connection):
+    """Cover BindParameterArray SQL_C_DEFAULT + SQL_UNKNOWN_TYPE path."""
+    cursor.execute("CREATE TABLE #gh610_cov4 (id INT, name VARCHAR(50))")
+    cursor.executemany(
+        "INSERT INTO #gh610_cov4 VALUES (?, ?)",
+        [(1, None), (2, None), (3, None)],
+    )
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov4 WHERE name IS NULL")
+    assert cursor.fetchone()[0] == 3
+    cursor.execute("DROP TABLE #gh610_cov4")
+
+
+def test_gh610_executemany_multiple_all_null_columns(cursor, db_connection):
+    """Cover BindParameterArray with multiple all-NULL columns."""
+    cursor.execute("CREATE TABLE #gh610_cov5 (id INT, a VARCHAR(50), b INT, c VARCHAR(50))")
+    cursor.executemany(
+        "INSERT INTO #gh610_cov5 VALUES (?, ?, ?, ?)",
+        [(1, None, None, None), (2, None, None, None)],
+    )
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov5")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("DROP TABLE #gh610_cov5")
+
+
+def test_gh610_execute_all_null_params(cursor, db_connection):
+    """Cover BindParameters with all params being NULL."""
+    cursor.execute("CREATE TABLE #gh610_cov6 (a INT, b VARCHAR(50))")
+    cursor.execute("INSERT INTO #gh610_cov6 VALUES (?, ?)", (None, None))
+    db_connection.commit()
+    cursor.execute("SELECT * FROM #gh610_cov6")
+    row = cursor.fetchone()
+    assert row[0] is None and row[1] is None
+    cursor.execute("DROP TABLE #gh610_cov6")
+
+
+def test_gh610_setinputsizes_bypasses_cache(cursor, db_connection):
+    """setinputsizes provides type directly — cache not used."""
+    from mssql_python.constants import ConstantsDDBC as C
+
+    cursor.execute("CREATE TABLE #gh610_cov7 (val VARCHAR(50))")
+    cursor.setinputsizes([(C.SQL_VARCHAR.value, 50, 0)])
+    cursor.execute("INSERT INTO #gh610_cov7 VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT val FROM #gh610_cov7")
+    assert cursor.fetchone()[0] is None
+    cursor.execute("DROP TABLE #gh610_cov7")
+
+
+def test_gh610_cache_no_mix_across_different_sql(cursor, db_connection):
+    """Switching SQL on same cursor clears cache — no cross-query type mixing.
+
+    Regression test requested by gargsaumya: execute INSERT INTO t1 VALUES (?)
+    then INSERT INTO t2 VALUES (?, ?) on the same cursor to ensure cache
+    doesn't mix parameter types across different prepared statements.
+    """
+    cursor.execute("CREATE TABLE #gh610_mix1 (val INT)")
+    cursor.execute("CREATE TABLE #gh610_mix2 (a VARCHAR(50), b INT)")
+    # First query — cache populated for 1-param INSERT
+    cursor.execute("INSERT INTO #gh610_mix1 VALUES (?)", (None,))
+    # Different SQL (different param count) — cache must be cleared by re-prepare
+    cursor.execute("INSERT INTO #gh610_mix2 VALUES (?, ?)", (None, None))
+    # Back to first query — cache cleared again, fresh describe
+    cursor.execute("INSERT INTO #gh610_mix1 VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_mix1")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("SELECT COUNT(*) FROM #gh610_mix2")
+    assert cursor.fetchone()[0] == 1
+    cursor.execute("DROP TABLE #gh610_mix1")
+    cursor.execute("DROP TABLE #gh610_mix2")
+
+
+def test_gh610_cache_null_then_nonnull_same_statement(cursor, db_connection):
+    """Cached NULL type does not affect subsequent non-NULL execution.
+
+    Regression test requested by gargsaumya: execute with NULL first (caches
+    fallback type), then execute with non-NULL on same statement. The cache
+    should not interfere because non-NULL params take a different code path
+    (concrete C type, not SQL_C_DEFAULT).
+    """
+    cursor.execute("CREATE TABLE #gh610_nullnon (val INT)")
+    # First call: param is None → SQL_UNKNOWN_TYPE → cache populated
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (None,))
+    # Second call: param is 42 (int) → SQL_C_TINYINT, never hits cache
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (42,))
+    # Third call: param is None again → cache hit
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT val FROM #gh610_nullnon ORDER BY val")
+    rows = [r[0] for r in cursor.fetchall()]
+    assert rows == [None, None, 42]
+    cursor.execute("DROP TABLE #gh610_nullnon")
+
+
 @pytest.mark.skip(reason="Skipping due to commit reliability issues with executemany")
 def test_executemany_concurrent_null_parameters(db_connection):
     """Test executemany with NULL parameters across multiple sequential operations."""
