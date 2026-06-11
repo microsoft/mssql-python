@@ -3308,9 +3308,7 @@ def test_row_contains_with_lowercase_map():
 
     column_map = {"ProductID": 0, "Name": 1}
     column_map_lower = {"productid": 0, "name": 1}
-    row = Row(
-        [1, "foo"], column_map, cursor=None, column_map_lower=column_map_lower
-    )
+    row = Row([1, "foo"], column_map, cursor=None, column_map_lower=column_map_lower)
 
     # Exact match hits _column_map directly
     assert "ProductID" in row
