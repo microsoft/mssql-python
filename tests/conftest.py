@@ -15,6 +15,25 @@ from mssql_python import connect
 import time
 
 
+def is_qemu_emulated():
+    """Detect if running under QEMU user-mode emulation (e.g. ARM64 on x86_64 host).
+
+    QEMU reports CPU implementer 0x51 in /proc/cpuinfo. Native ARM64 hardware
+    uses vendor-specific IDs (0x41 ARM, 0x61 Apple, etc.).
+    """
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("CPU implementer") and "0x51" in line:
+                    return True
+    except (FileNotFoundError, PermissionError):
+        pass
+    return False
+
+
+QEMU = is_qemu_emulated()
+
+
 def is_azure_sql_connection(conn_str):
     """Helper function to detect if connection string is for Azure SQL Database"""
     if not conn_str:

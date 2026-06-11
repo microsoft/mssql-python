@@ -6452,6 +6452,138 @@ def test_cursor_messages_with_error(cursor):
     assert "After error" in cursor.messages[0][1], "Message should be from after the error"
 
 
+def test_cursor_messages_nextset_multiple_prints(cursor):
+    """Test that PRINT messages from subsequent result sets are captured via nextset().
+
+    Regression test for GH-612: PRINT messages after the first one were lost
+    because nextset() did not capture SQL_SUCCESS_WITH_INFO diagnostics.
+    """
+    cursor.execute("""
+        PRINT 'hi';
+        PRINT 'ih';
+        """)
+
+    # First PRINT is captured by execute()
+    assert len(cursor.messages) == 1, "execute() should capture the first PRINT message"
+    assert "hi" in cursor.messages[0][1]
+
+    # Advance to the next result set — should capture the second PRINT
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1, "nextset() should capture the second PRINT message"
+    assert "ih" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
+def test_cursor_messages_nextset_print_with_select(cursor):
+    """Test PRINT messages interleaved with SELECT result sets via nextset().
+
+    Ensures messages are captured correctly when PRINT and SELECT are mixed.
+    Only messages collected from nextset() itself are checked so the test
+    fails if nextset() drops messages (even if fetchall() would mask it).
+    """
+    cursor.execute("""
+        PRINT 'before select';
+        SELECT 1 AS val;
+        PRINT 'after select';
+        """)
+
+    # First PRINT captured by execute()
+    assert len(cursor.messages) >= 1
+    assert "before select" in cursor.messages[0][1]
+
+    nextset_messages = []
+    all_rows = []
+
+    while cursor.nextset():
+        # Collect only messages produced by nextset() — not by fetchall()
+        nextset_messages.extend(cursor.messages)
+        if cursor.description:
+            all_rows.extend(cursor.fetchall())
+
+    # Also collect messages from the final nextset() that returned False
+    # (trailing PRINT can attach to SQL_NO_DATA)
+    nextset_messages.extend(cursor.messages)
+
+    # Verify the "after select" PRINT was captured by nextset(), not fetchall()
+    combined_text = " ".join(m[1] for m in nextset_messages)
+    assert "after select" in combined_text, "nextset() should capture the trailing PRINT message"
+
+    # Verify the SELECT result was returned
+    assert len(all_rows) == 1
+    assert all_rows[0][0] == 1
+
+
+def test_cursor_messages_nextset_three_prints(cursor):
+    """Test that three consecutive PRINT messages are all captured across nextset() calls."""
+    cursor.execute("""
+        PRINT 'msg1';
+        PRINT 'msg2';
+        PRINT 'msg3';
+        """)
+
+    # First PRINT captured by execute()
+    assert len(cursor.messages) == 1
+    assert "msg1" in cursor.messages[0][1]
+
+    # Second PRINT via nextset()
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1
+    assert "msg2" in cursor.messages[0][1]
+
+    # Third PRINT via nextset()
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1
+    assert "msg3" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
+def test_cursor_messages_nextset_clears_previous(cursor):
+    """Test that nextset() clears messages from the previous result set."""
+    cursor.execute("""
+        PRINT 'first';
+        PRINT 'second';
+        """)
+
+    assert len(cursor.messages) == 1
+    assert "first" in cursor.messages[0][1]
+
+    # After nextset(), messages should only contain the new message
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1, "Previous messages should have been cleared"
+    assert "second" in cursor.messages[0][1]
+    assert not any("first" in m[1] for m in cursor.messages), "Old message should not persist"
+
+
+def test_cursor_messages_nextset_trailing_print(cursor):
+    """Test that a trailing PRINT after the final SELECT is captured.
+
+    The ODBC driver delivers the trailing PRINT as a separate result set
+    (SQL_SUCCESS_WITH_INFO), so nextset() returns True and captures the
+    message.  A second nextset() then returns False (SQL_NO_DATA).
+    This is the most common customer pain point (GH-612).
+    """
+    cursor.execute("""
+        SELECT 1 AS val;
+        PRINT 'trailing';
+        """)
+
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 1
+
+    # The trailing PRINT is delivered as a separate result set
+    assert cursor.nextset()
+    assert len(cursor.messages) >= 1, "Trailing PRINT after final SELECT should be captured"
+    assert "trailing" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
 def test_tables_setup(cursor, db_connection):
     """Create test objects for tables method testing"""
     try:
@@ -16239,3 +16371,226 @@ def test_long_print_message(cursor, message_len):
     msg = cursor.messages[0][1]
     # SQL Server truncates at 8000 characters
     assert msg.endswith("a" * min(8000, message_len)), msg
+
+
+# ---------------------------------------------------------
+# GH-609: Unit tests (no DB connection needed)
+# ---------------------------------------------------------
+from mssql_python.cursor import Cursor as _Cursor, MONEY_MAX as _MONEY_MAX
+from mssql_python.constants import ConstantsDDBC as _C
+
+
+def _make_bare_cursor():
+    """Create a Cursor instance without a connection for unit testing."""
+    cur = _Cursor.__new__(_Cursor)
+    cur._inputsizes = None
+    return cur
+
+
+def test_compute_column_type_large_decimal():
+    """_compute_column_type picks the highest-precision Decimal as sample."""
+    cur = _make_bare_cursor()
+    column = [
+        decimal.Decimal("100.50"),
+        decimal.Decimal("999999999999999999.123456"),
+        decimal.Decimal("200.75"),
+    ]
+    sample, _, _, max_dec_len = cur._compute_column_type(column)
+    assert isinstance(sample, decimal.Decimal)
+    assert sample > _MONEY_MAX
+    assert max_dec_len > 0
+
+
+def test_map_sql_type_decimal_outside_money_returns_numeric():
+    """_map_sql_type returns SQL_C_NUMERIC for Decimal outside MONEY range."""
+    cur = _make_bare_cursor()
+    val = decimal.Decimal("999999999999999999.123456")
+    dummy_row = [val]
+    sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
+    assert sql_type == _C.SQL_NUMERIC.value
+    assert c_type == _C.SQL_C_NUMERIC.value
+    assert isinstance(format(val, "f"), str)
+
+
+def test_map_sql_type_decimal_in_money_returns_varchar():
+    """_map_sql_type returns SQL_VARCHAR for Decimal within MONEY range."""
+    cur = _make_bare_cursor()
+    val = decimal.Decimal("100.50")
+    dummy_row = [val]
+    sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
+    assert sql_type == _C.SQL_VARCHAR.value
+    assert c_type == _C.SQL_C_CHAR.value
+
+
+def test_executemany_numeric_override_needed():
+    """The executemany auto-detection path must override SQL_C_NUMERIC to SQL_C_CHAR (GH-609)."""
+    from mssql_python import ddbc_bindings
+
+    cur = _make_bare_cursor()
+    data = [
+        (decimal.Decimal("100.50"),),
+        (decimal.Decimal("999999999999999999.123456"),),
+    ]
+    column = [row[0] for row in data]
+    sample_value, min_val, max_val, max_decimal_len = cur._compute_column_type(column)
+    dummy_row = list(data[0])
+    paraminfo = cur._create_parameter_types_list(
+        sample_value,
+        ddbc_bindings.ParamInfo,
+        dummy_row,
+        0,
+        min_val=min_val,
+        max_val=max_val,
+    )
+    assert paraminfo.paramSQLType == _C.SQL_NUMERIC.value
+    original_c_type = paraminfo.paramCType
+    if paraminfo.paramSQLType in (_C.SQL_DECIMAL.value, _C.SQL_NUMERIC.value):
+        paraminfo.paramCType = _C.SQL_C_CHAR.value
+        if max_decimal_len > paraminfo.columnSize:
+            paraminfo.columnSize = max_decimal_len
+    assert paraminfo.paramCType == _C.SQL_C_CHAR.value
+    assert original_c_type == _C.SQL_C_NUMERIC.value
+    assert paraminfo.columnSize >= max_decimal_len
+
+
+def test_executemany_decimal_numeric_override_coverage(monkeypatch):
+    """Call the real executemany method to cover the GH-609 override lines."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        captured["row_count"] = row_count
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [
+        (decimal.Decimal("100.50"),),
+        (decimal.Decimal("999999999999999999.123456"),),
+    ]
+    cur.executemany("INSERT INTO t VALUES (?)", data)
+    pt = captured["parameters_type"]
+    assert len(pt) == 1
+    assert pt[0].paramSQLType == _C.SQL_NUMERIC.value
+    assert pt[0].paramCType == _C.SQL_C_CHAR.value
+    col_values = captured["columnwise_params"][0]
+    for val in col_values:
+        assert val is None or isinstance(val, str)
+
+
+# ---------------------------------------------------------
+# GH-609: Integration tests (need DB connection)
+# ---------------------------------------------------------
+def test_executemany_decimal_outside_money_range(cursor, db_connection):
+    """Test executemany with Decimal values exceeding the MONEY range (GH-609).
+
+    When a batch contains Decimal values outside ±922,337,203,685,477.5807,
+    _map_sql_type returns SQL_C_NUMERIC (expecting NumericData structs), but
+    the conversion loop converts all Decimals to strings. Without the GH-609
+    fix, this mismatch causes:
+        RuntimeError: Parameter's object type does not match parameter's C type
+
+    Also exercises separate batches (customer scenario: most batches have
+    in-MONEY-range values, one batch exceeds the range).
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_gh609 (val DECIMAL(38, 6))")
+
+        # Batch 1: all values inside MONEY range
+        batch1 = [(decimal.Decimal("100.50"),), (decimal.Decimal("200.75"),)]
+        cursor.executemany("INSERT INTO #pytest_gh609 VALUES (?)", batch1)
+
+        # Batch 2: mix of inside and outside MONEY range
+        batch2 = [
+            (decimal.Decimal("0.000001"),),
+            (decimal.Decimal("999999999999999999.123456"),),  # exceeds MONEY_MAX
+            (decimal.Decimal("-999999999999999999.654321"),),  # exceeds MONEY_MIN
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609 VALUES (?)", batch2)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_gh609 ORDER BY val")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert len(rows) == 5
+        assert rows[0] == decimal.Decimal("-999999999999999999.654321")
+        assert rows[-1] == decimal.Decimal("999999999999999999.123456")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609")
+        db_connection.commit()
+
+
+def test_executemany_decimal_with_nulls_outside_money(cursor, db_connection):
+    """Test executemany with NULL + large Decimal values outside MONEY range (GH-609)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_gh609_nulls (val DECIMAL(38, 10))")
+        data = [
+            (None,),
+            (decimal.Decimal("12345678901234567890.1234567890"),),
+            (None,),
+            (decimal.Decimal("-12345678901234567890.1234567890"),),
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609_nulls VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_gh609_nulls WHERE val IS NOT NULL ORDER BY val")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert len(rows) == 2
+        assert rows[0] == decimal.Decimal("-12345678901234567890.1234567890")
+        assert rows[1] == decimal.Decimal("12345678901234567890.1234567890")
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh609_nulls WHERE val IS NULL")
+        assert cursor.fetchone()[0] == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_nulls")
+        db_connection.commit()
+
+
+def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
+    """Test executemany with multiple columns including large Decimal (GH-609).
+
+    Mirrors the customer's scenario: a table with many columns where one
+    NUMERIC column has values outside the MONEY range.
+    """
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_gh609_multi (
+                id INT,
+                name NVARCHAR(100),
+                amount DECIMAL(38, 6),
+                description VARCHAR(200)
+            )
+        """)
+        data = [
+            (1, "row1", decimal.Decimal("999999999999999999.123456"), "test"),
+            (2, "row2", decimal.Decimal("50.0"), "small"),
+            (3, "row3", decimal.Decimal("-999999999999999999.654321"), "negative large"),
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609_multi VALUES (?, ?, ?, ?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, amount FROM #pytest_gh609_multi ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3
+        assert rows[0][1] == decimal.Decimal("999999999999999999.123456")
+        assert rows[2][1] == decimal.Decimal("-999999999999999999.654321")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_multi")
+        db_connection.commit()
