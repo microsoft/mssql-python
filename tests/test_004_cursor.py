@@ -16828,3 +16828,116 @@ def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_multi")
         db_connection.commit()
+
+
+def test_executemany_row_objects_with_varchar_max_dae(cursor, db_connection):
+    """Test executemany with Row objects and VARCHAR(MAX) DAE fallback (GH-629)."""
+    try:
+        # Create source table with VARCHAR(MAX) column
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_source (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Insert data with large strings (>4000 chars triggers DAE)
+        large_text = "X" * 5000
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (1, large_text))
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (2, large_text))
+        db_connection.commit()
+
+        # Fetch rows as Row objects
+        cursor.execute("SELECT * FROM #pytest_gh629_source")
+        rows = cursor.fetchmany(10)  # Returns Row objects
+        assert len(rows) == 2
+        assert isinstance(rows[0], mssql_python.Row)
+
+        # Create target table
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_target (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # executemany with Row objects should work (triggers DAE + row-by-row fallback)
+        cursor.executemany("INSERT INTO #pytest_gh629_target VALUES (?, ?)", rows)
+        db_connection.commit()
+
+        # Verify data was inserted correctly
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh629_target")
+        assert cursor.fetchone()[0] == 2
+
+        cursor.execute("SELECT id, LEN(large_text) FROM #pytest_gh629_target ORDER BY id")
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == 5000
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_target")
+        db_connection.commit()
+
+
+def test_execute_with_row_object_as_parameters(cursor, db_connection):
+    """Test execute(sql, row) directly with a Row object as parameters (GH-629).
+
+    The fix for GH-629 lives in execute()'s single-argument unwrap: a Row
+    (e.g. from fetchone()) must be unwrapped into individual parameters
+    instead of being treated as one scalar value. This guards that surface
+    directly so a future refactor of the unwrap logic can't silently re-break it.
+    """
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_exec_source (
+                id INT,
+                name VARCHAR(50),
+                large_text VARCHAR(MAX)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_exec_target (
+                id INT,
+                name VARCHAR(50),
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Row 1 stays small (regular bind path); Row 2 has a >4000 char value (DAE path)
+        small_text = "hello"
+        large_text = "X" * 5000
+        cursor.execute(
+            "INSERT INTO #pytest_gh629_exec_source VALUES (?, ?, ?)", (1, "alice", small_text)
+        )
+        cursor.execute(
+            "INSERT INTO #pytest_gh629_exec_source VALUES (?, ?, ?)", (2, "bob", large_text)
+        )
+        db_connection.commit()
+
+        # Fetch as Row objects, then pass each Row directly to execute(sql, row)
+        cursor.execute("SELECT * FROM #pytest_gh629_exec_source ORDER BY id")
+        rows = cursor.fetchall()
+        assert isinstance(rows[0], mssql_python.Row)
+
+        for row in rows:
+            # Passing the Row directly (not tuple(row)) must work after the fix.
+            cursor.execute("INSERT INTO #pytest_gh629_exec_target VALUES (?, ?, ?)", row)
+        db_connection.commit()
+
+        # Verify the round-trip preserved every value
+        cursor.execute(
+            "SELECT id, name, LEN(large_text) FROM #pytest_gh629_exec_target ORDER BY id"
+        )
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == "alice"
+        assert result_rows[0][2] == len(small_text)
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == "bob"
+        assert result_rows[1][2] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_exec_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_exec_target")
+        db_connection.commit()
