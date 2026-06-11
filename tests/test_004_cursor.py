@@ -3317,6 +3317,10 @@ def test_row_contains_with_lowercase_map():
     assert "NAME" in row
     assert "missing" not in row
 
+    # Verify dict-like methods use deduplicated column names (covers _get_column_names fallback)
+    assert list(row.keys()) == ["ProductID", "Name"]
+    assert row.to_dict() == {"ProductID": 1, "Name": "foo"}
+
 
 def test_row_items_is_reusable(cursor, db_connection):
     """Test items() returns a reusable list, not a one-shot iterator."""
