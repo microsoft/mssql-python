@@ -2305,6 +2305,52 @@ def test_gh610_setinputsizes_bypasses_cache(cursor, db_connection):
     cursor.execute("DROP TABLE #gh610_cov7")
 
 
+def test_gh610_cache_no_mix_across_different_sql(cursor, db_connection):
+    """Switching SQL on same cursor clears cache — no cross-query type mixing.
+
+    Regression test requested by gargsaumya: execute INSERT INTO t1 VALUES (?)
+    then INSERT INTO t2 VALUES (?, ?) on the same cursor to ensure cache
+    doesn't mix parameter types across different prepared statements.
+    """
+    cursor.execute("CREATE TABLE #gh610_mix1 (val INT)")
+    cursor.execute("CREATE TABLE #gh610_mix2 (a VARCHAR(50), b INT)")
+    # First query — cache populated for 1-param INSERT
+    cursor.execute("INSERT INTO #gh610_mix1 VALUES (?)", (None,))
+    # Different SQL (different param count) — cache must be cleared by re-prepare
+    cursor.execute("INSERT INTO #gh610_mix2 VALUES (?, ?)", (None, None))
+    # Back to first query — cache cleared again, fresh describe
+    cursor.execute("INSERT INTO #gh610_mix1 VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_mix1")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("SELECT COUNT(*) FROM #gh610_mix2")
+    assert cursor.fetchone()[0] == 1
+    cursor.execute("DROP TABLE #gh610_mix1")
+    cursor.execute("DROP TABLE #gh610_mix2")
+
+
+def test_gh610_cache_null_then_nonnull_same_statement(cursor, db_connection):
+    """Cached NULL type does not affect subsequent non-NULL execution.
+
+    Regression test requested by gargsaumya: execute with NULL first (caches
+    fallback type), then execute with non-NULL on same statement. The cache
+    should not interfere because non-NULL params take a different code path
+    (concrete C type, not SQL_C_DEFAULT).
+    """
+    cursor.execute("CREATE TABLE #gh610_nullnon (val INT)")
+    # First call: param is None → SQL_UNKNOWN_TYPE → cache populated
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (None,))
+    # Second call: param is 42 (int) → SQL_C_TINYINT, never hits cache
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (42,))
+    # Third call: param is None again → cache hit
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT val FROM #gh610_nullnon ORDER BY val")
+    rows = [r[0] for r in cursor.fetchall()]
+    assert rows == [None, None, 42]
+    cursor.execute("DROP TABLE #gh610_nullnon")
+
+
 @pytest.mark.skip(reason="Skipping due to commit reliability issues with executemany")
 def test_executemany_concurrent_null_parameters(db_connection):
     """Test executemany with NULL parameters across multiple sequential operations."""

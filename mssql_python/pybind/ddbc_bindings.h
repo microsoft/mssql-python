@@ -276,7 +276,8 @@ class SqlHandle {
     // GH-610: Per-handle SQLDescribeParam result cache.
     // Keyed by 0-based parameter index. Populated on first NULL param
     // execution, cleared on SQLPrepare (new SQL = new param types) and
-    // on handle free. No mutex needed — each handle is used by one thread.
+    // on handle free. No mutex needed — ODBC statement handles are not
+    // thread-safe by spec (same assumption as the rest of the driver).
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
 
