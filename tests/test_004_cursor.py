@@ -3157,38 +3157,6 @@ def test_row_keys_values_items(cursor, db_connection):
             pass
 
 
-def test_row_contains(cursor, db_connection):
-    """Test 'column_name in row' membership testing from a real cursor row."""
-    try:
-        cursor.execute("CREATE TABLE #pytest_row_contains (ProductID INT, Name VARCHAR(50))")
-        db_connection.commit()
-
-        cursor.execute("INSERT INTO #pytest_row_contains VALUES (1, 'foo')")
-        db_connection.commit()
-
-        cursor.execute("SELECT * FROM #pytest_row_contains")
-        row = cursor.fetchone()
-
-        # Column names from description should be found
-        for desc in cursor.description:
-            assert desc[0] in row, f"Column '{desc[0]}' not found in row"
-
-        # Non-existent column
-        assert "nonexistent" not in row
-
-        # Integer is not a column name
-        assert 0 not in row
-
-    except Exception as e:
-        pytest.fail(f"Row __contains__ test failed: {e}")
-    finally:
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #pytest_row_contains")
-            db_connection.commit()
-        except Exception:
-            pass
-
-
 def test_row_dict_no_duplicate_keys(cursor, db_connection):
     """Test that dict-like methods don't produce duplicate keys from cursor rows.
 
@@ -3267,14 +3235,11 @@ def test_row_case_sensitive_access(cursor, db_connection):
         # Original casing works via all access methods
         assert row["ProductID"] == 1
         assert row.ProductID == 1
-        assert "ProductID" in row
 
         assert row["Name"] == "bar"
         assert row.Name == "bar"
-        assert "Name" in row
 
         # Non-existent
-        assert "nonexistent" not in row
         with pytest.raises(KeyError):
             row["nonexistent"]
         with pytest.raises(AttributeError):
@@ -3299,25 +3264,15 @@ def test_row_none_column_map():
     assert list(row.values()) == []
     assert list(row.items()) == []
     assert row.to_dict() == {}
-    assert "anything" not in row
 
 
-def test_row_contains_with_lowercase_map():
-    """Test __contains__ with column_map_lower (covers lowercase lookup branch)."""
+def test_row_dict_dedup_fallback():
+    """Test dict-like methods deduplicate _column_map when cursor is None."""
     from mssql_python.row import Row
 
     column_map = {"ProductID": 0, "Name": 1}
-    column_map_lower = {"productid": 0, "name": 1}
-    row = Row([1, "foo"], column_map, cursor=None, column_map_lower=column_map_lower)
+    row = Row([1, "foo"], column_map, cursor=None)
 
-    # Exact match hits _column_map directly
-    assert "ProductID" in row
-    # Case-insensitive match hits _column_map_lower branch
-    assert "productid" in row
-    assert "NAME" in row
-    assert "missing" not in row
-
-    # Verify dict-like methods use deduplicated column names (covers _get_column_names fallback)
     assert list(row.keys()) == ["ProductID", "Name"]
     assert row.to_dict() == {"ProductID": 1, "Name": "foo"}
 

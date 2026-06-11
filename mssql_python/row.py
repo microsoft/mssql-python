@@ -240,9 +240,9 @@ class Row:
         """Return column names, like dict.keys()."""
         return self._get_column_names()
 
-    def values(self) -> list:
-        """Return column values, like dict.values()."""
-        return self._values
+    def values(self) -> tuple:
+        """Return column values as a tuple, like dict.values()."""
+        return tuple(self._values)
 
     def items(self) -> list:
         """Return (column_name, value) pairs, like dict.items()."""
@@ -251,20 +251,6 @@ class Row:
     def to_dict(self) -> dict:
         """Return the row as a plain dict mapping column names to values."""
         return dict(zip(self._get_column_names(), self._values))
-
-    def __contains__(self, key) -> bool:
-        """Support 'col_name in row' membership testing.
-
-        Uses the full _column_map (which includes lowercase aliases),
-        so 'ProductID' in row and 'productid' in row both return True
-        even though keys() only lists the original-cased name.
-        """
-        if isinstance(key, str):
-            if self._column_map and key in self._column_map:
-                return True
-            if self._column_map_lower is not None:
-                return key.lower() in self._column_map_lower
-        return False
 
     def __eq__(self, other: Any) -> bool:
         """
