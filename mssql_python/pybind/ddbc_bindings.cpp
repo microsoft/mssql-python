@@ -5,19 +5,21 @@
 // agnostic will be
 //             taken up in beta release
 #include "ddbc_bindings.h"
-#include "utf_utils.h"
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
+#include "utf_utils.h"
 
+
+#include <algorithm>  // std::min
 #include <cctype>
 #include <cstdint>
 #include <cstring>  // For std::memcpy
-#include <algorithm> // std::min
 #include <filesystem>
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
+
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
@@ -470,9 +472,48 @@ std::string DescribeChar(unsigned char ch) {
     }
 }
 
+// GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
+// On cache miss, calls SQLDescribeParam and stores the result.
+static DescribedParamInfo ResolveNullParamType(
+        SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
+    // Check per-handle cache (no mutex — one handle per thread)
+    auto it = handle.describeCache.find(paramIndex);
+    if (it != handle.describeCache.end()) {
+        LOG("ResolveNullParamType: Cache HIT for hStmt=%p param[%d] "
+            "-> sqlType=%d", (void*)hStmt, paramIndex, it->second.sqlType);
+        return it->second;
+    }
+
+    // Cache miss — call SQLDescribeParam
+    SQLSMALLINT type, digits, nullable;
+    SQLULEN size;
+    LOG("ResolveNullParamType: Cache MISS for hStmt=%p param[%d], calling "
+        "SQLDescribeParam", (void*)hStmt, paramIndex);
+    RETCODE rc = SQLDescribeParam_ptr(
+        hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
+        &type, &size, &digits, &nullable);
+
+    DescribedParamInfo info;
+    if (SQL_SUCCEEDED(rc)) {
+        info = {type, size, digits};
+        LOG("ResolveNullParamType: SQLDescribeParam succeeded for param[%d] "
+            "-> sqlType=%d, columnSize=%lu, decimalDigits=%d",
+            paramIndex, type, (unsigned long)size, digits);
+    } else {
+        info = {SQL_VARCHAR, 1, 0};
+        LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
+                    "param[%d] (rc=%d), falling back to SQL_VARCHAR",
+                    paramIndex, rc);
+    }
+
+    // Store in per-handle cache
+    handle.describeCache[paramIndex] = info;
+    return info;
+}
+
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
 // each of them with appropriate arguments
-SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
+SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
                          std::vector<ParamInfo>& paramInfos,
                          std::vector<std::shared_ptr<void>>& paramBuffers,
                          const std::string& charEncoding = "utf-8") {
@@ -607,7 +648,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         paramBuffers, param.cast<std::u16string>());
                     LOG("BindParameters: param[%d] SQL_C_WCHAR - String "
                         "length=%zu characters, buffer=%zu bytes",
-                        paramIndex, sqlwcharBuffer->size(), sqlwcharBuffer->size() * sizeof(SQLWCHAR));
+                        paramIndex, sqlwcharBuffer->size(),
+                        sqlwcharBuffer->size() * sizeof(SQLWCHAR));
                     dataPtr = sqlwcharBuffer->data();
                     bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -627,33 +669,15 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
+                // GH-610: Resolve SQL type for NULL params via per-handle cache.
                 SQLSMALLINT sqlType = paramInfo.paramSQLType;
                 SQLULEN columnSize = paramInfo.columnSize;
                 SQLSMALLINT decimalDigits = paramInfo.decimalDigits;
                 if (sqlType == SQL_UNKNOWN_TYPE) {
-                    SQLSMALLINT describedType;
-                    SQLULEN describedSize;
-                    SQLSMALLINT describedDigits;
-                    SQLSMALLINT nullable;
-                    RETCODE rc = SQLDescribeParam_ptr(
-                        hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &describedType,
-                        &describedSize, &describedDigits, &nullable);
-                    if (!SQL_SUCCEEDED(rc)) {
-                        // SQLDescribeParam can fail for generic SELECT statements where
-                        // no table column is referenced. Fall back to SQL_VARCHAR as a safe
-                        // default.
-                        LOG_WARNING("BindParameters: SQLDescribeParam failed for "
-                                    "param[%d] (NULL parameter) - SQLRETURN=%d, falling back to "
-                                    "SQL_VARCHAR",
-                                    paramIndex, rc);
-                        sqlType = SQL_VARCHAR;
-                        columnSize = 1;
-                        decimalDigits = 0;
-                    } else {
-                        sqlType = describedType;
-                        columnSize = describedSize;
-                        decimalDigits = describedDigits;
-                    }
+                    auto resolved = ResolveNullParamType(handle, hStmt, paramIndex);
+                    sqlType = resolved.sqlType;
+                    columnSize = resolved.columnSize;
+                    decimalDigits = resolved.decimalDigits;
                 }
                 dataPtr = nullptr;
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -1358,6 +1382,9 @@ void SqlHandle::markImplicitlyFreed() {
  */
 void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
+        // GH-610: Clear describe cache to prevent memory leak.
+        describeCache.clear();
+
         // Check if Python is shutting down using centralized helper function
         bool pythonShuttingDown = is_python_finalizing();
 
@@ -1450,14 +1477,12 @@ SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, const py::object& cat
 
     std::u16string catalog = catalogObj.is_none() ? u"" : catalogObj.cast<std::u16string>();
     std::u16string schema = schemaObj.is_none() ? u"" : schemaObj.cast<std::u16string>();
-    std::u16string procedure =
-        procedureObj.is_none() ? u"" : procedureObj.cast<std::u16string>();
+    std::u16string procedure = procedureObj.is_none() ? u"" : procedureObj.cast<std::u16string>();
 
     // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
     return SQLProcedures_ptr(
-        StatementHandle->get(),
-        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+        StatementHandle->get(), catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
         catalog.empty() ? 0 : SQL_NTS,
         schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
         schema.empty() ? 0 : SQL_NTS,
@@ -1509,14 +1534,13 @@ SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, const py::object& ca
 
     // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
-    return SQLPrimaryKeys_ptr(
-        StatementHandle->get(),
-        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
-        catalog.empty() ? 0 : SQL_NTS,
-        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
-        schema.empty() ? 0 : SQL_NTS,
-        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
-        table.empty() ? 0 : SQL_NTS);
+    return SQLPrimaryKeys_ptr(StatementHandle->get(),
+                              catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+                              catalog.empty() ? 0 : SQL_NTS,
+                              schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+                              schema.empty() ? 0 : SQL_NTS,
+                              table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+                              table.empty() ? 0 : SQL_NTS);
 }
 
 SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
@@ -1531,14 +1555,13 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& cat
 
     // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
-    return SQLStatistics_ptr(
-        StatementHandle->get(),
-        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
-        catalog.empty() ? 0 : SQL_NTS,
-        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
-        schema.empty() ? 0 : SQL_NTS,
-        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
-        table.empty() ? 0 : SQL_NTS, unique, reserved);
+    return SQLStatistics_ptr(StatementHandle->get(),
+                             catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+                             catalog.empty() ? 0 : SQL_NTS,
+                             schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+                             schema.empty() ? 0 : SQL_NTS,
+                             table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+                             table.empty() ? 0 : SQL_NTS, unique, reserved);
 }
 
 SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
@@ -1555,16 +1578,15 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
 
     // Release the GIL during the blocking ODBC catalog call
     py::gil_scoped_release release;
-    return SQLColumns_ptr(
-        StatementHandle->get(),
-        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
-        catalog.empty() ? 0 : SQL_NTS,
-        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
-        schema.empty() ? 0 : SQL_NTS,
-        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
-        table.empty() ? 0 : SQL_NTS,
-        column.empty() ? nullptr : reinterpretU16stringAsSqlWChar(column),
-        column.empty() ? 0 : SQL_NTS);
+    return SQLColumns_ptr(StatementHandle->get(),
+                          catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+                          catalog.empty() ? 0 : SQL_NTS,
+                          schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+                          schema.empty() ? 0 : SQL_NTS,
+                          table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+                          table.empty() ? 0 : SQL_NTS,
+                          column.empty() ? nullptr : reinterpretU16stringAsSqlWChar(column),
+                          column.empty() ? 0 : SQL_NTS);
 }
 
 // Helper function to check for driver errors
@@ -1589,8 +1611,9 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
         SQLINTEGER nativeError;
         SQLSMALLINT messageLen;
 
-        SQLRETURN diagReturn = SQLGetDiagRec_ptr(handleType, rawHandle, 1, sqlState, &nativeError,
-                                                 message, SQL_MAX_MESSAGE_LENGTH_SQLSERVER, &messageLen);
+        SQLRETURN diagReturn =
+            SQLGetDiagRec_ptr(handleType, rawHandle, 1, sqlState, &nativeError, message,
+                              SQL_MAX_MESSAGE_LENGTH_SQLSERVER, &messageLen);
 
         if (SQL_SUCCEEDED(diagReturn)) {
             std::u16string sqlStateUtf16 = dupeSqlWCharAsUtf16Le(sqlState, 5);
@@ -1697,16 +1720,15 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
     {
         // Release the GIL during the blocking ODBC catalog call
         py::gil_scoped_release release;
-        ret = SQLTables_ptr(
-            StatementHandle->get(),
-            catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
-            catalog.empty() ? 0 : SQL_NTS,
-            schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
-            schema.empty() ? 0 : SQL_NTS,
-            table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
-            table.empty() ? 0 : SQL_NTS,
-            tableType.empty() ? nullptr : reinterpretU16stringAsSqlWChar(tableType),
-            tableType.empty() ? 0 : SQL_NTS);
+        ret = SQLTables_ptr(StatementHandle->get(),
+                            catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+                            catalog.empty() ? 0 : SQL_NTS,
+                            schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+                            schema.empty() ? 0 : SQL_NTS,
+                            table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+                            table.empty() ? 0 : SQL_NTS,
+                            tableType.empty() ? nullptr : reinterpretU16stringAsSqlWChar(tableType),
+                            tableType.empty() ? 0 : SQL_NTS);
     }
 
     LOG("SQLTables: Catalog metadata query %s - SQLRETURN=%d",
@@ -1719,8 +1741,7 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
 // statement and binds the parameters. Otherwise, it executes the query
 // directly. 'usePrepare' parameter can be used to disable the prepare step for
 // queries that might already be prepared in a previous call.
-SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
-                          const std::u16string& query,
+SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                           const py::list& params, std::vector<ParamInfo>& paramInfos,
                           py::list& isStmtPrepared, const bool usePrepare,
                           const py::dict& encodingSettings) {
@@ -1787,6 +1808,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     rc, (void*)hStmt);
                 return rc;
             }
+            // GH-610: Clear per-handle describe cache (new prepare = new param types)
+            statementHandle->clearDescribeCache();
             isStmtPrepared[0] = py::cast(true);
         } else {
             // Make sure the statement has been prepared earlier if we're not
@@ -1807,7 +1830,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         }
 
         std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameters(hStmt, params, paramInfos, paramBuffers, charEncoding);
+        rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
             return rc;
         }
@@ -1955,8 +1978,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     }
 }
 
-SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
-                             const std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
+SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
+                             std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers,
                              const std::string& charEncoding = "utf-8") {
     LOG("BindParameterArray: Starting column-wise array binding - "
@@ -1968,7 +1991,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
     try {
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
-            const ParamInfo& info = paramInfos[paramIndex];
+            ParamInfo& info = paramInfos[paramIndex];
             LOG("BindParameterArray: Processing param_index=%d, C_type=%d, "
                 "SQL_type=%d, column_size=%zu, decimal_digits=%d",
                 paramIndex, info.paramCType, info.paramSQLType, info.columnSize,
@@ -2543,15 +2566,21 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                 }
                 case SQL_C_DEFAULT: {
                     // Handle NULL parameters - all values in this column should be NULL
-                    // The upstream Python type detection (via _compute_column_type) ensures
-                    // SQL_C_DEFAULT is only used when all values are None
                     LOG("BindParameterArray: Binding SQL_C_DEFAULT (NULL) array - param_index=%d, "
                         "count=%zu",
                         paramIndex, paramSetSize);
 
-                    // For NULL parameters, we need to allocate a minimal buffer and set all
-                    // indicators to SQL_NULL_DATA Use SQL_C_CHAR as a safe default C type for NULL
-                    // values
+                    // GH-610: Resolve SQL type for all-NULL columns via per-handle cache.
+                    SQLSMALLINT resolvedSqlType = info.paramSQLType;
+                    SQLULEN resolvedColSize = info.columnSize;
+                    SQLSMALLINT resolvedDecDigits = info.decimalDigits;
+                    if (resolvedSqlType == SQL_UNKNOWN_TYPE) {
+                        auto resolved = ResolveNullParamType(handle, hStmt, paramIndex);
+                        resolvedSqlType = resolved.sqlType;
+                        resolvedColSize = resolved.columnSize;
+                        resolvedDecDigits = resolved.decimalDigits;
+                    }
+
                     char* nullBuffer = AllocateParamBufferArray<char>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
@@ -2562,7 +2591,14 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
 
                     dataPtr = nullBuffer;
                     bufferLength = 1;
-                    LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d", paramIndex);
+
+                    // Override info fields so SQLBindParameter below uses resolved type
+                    info.paramSQLType = resolvedSqlType;
+                    info.columnSize = resolvedColSize;
+                    info.decimalDigits = resolvedDecDigits;
+
+                    LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d, "
+                        "resolvedSqlType=%d", paramIndex, resolvedSqlType);
                     break;
                 }
                 default: {
@@ -2603,7 +2639,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
 
 SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                               const py::list& columnwise_params,
-                              const std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
+                              std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                               const py::dict& encodingSettings) {
     LOG("SQLExecuteMany: Starting batch execution - param_count=%zu, "
         "param_set_size=%zu",
@@ -2621,6 +2657,8 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
         LOG("SQLExecuteMany: SQLPrepare failed - rc=%d", rc);
         return rc;
     }
+    // GH-610: Clear per-handle describe cache (new prepare = new param types)
+    statementHandle->clearDescribeCache();
     LOG("SQLExecuteMany: Query prepared successfully");
 
     bool hasDAE = false;
@@ -2643,7 +2681,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
             "BindParameterArray with encoding '%s'",
             charEncoding.c_str());
         std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers,
+        rc = BindParameterArray(*statementHandle, hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers,
                                 charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
             LOG("SQLExecuteMany: BindParameterArray failed - rc=%d", rc);
@@ -2673,7 +2711,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
             py::list rowParams = columnwise_params[rowIndex];
 
             std::vector<std::shared_ptr<void>> paramBuffers;
-            rc = BindParameters(hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos),
+            rc = BindParameters(*statementHandle, hStmt, rowParams, paramInfos,
                                 paramBuffers, charEncoding);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecuteMany: BindParameters failed for row %zu - rc=%d", rowIndex, rc);
@@ -2814,9 +2852,8 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
             // TODO: Should we define a struct for this task instead of dict?
             ColumnMetadata.append(
                 py::dict("ColumnName"_a = dupeSqlWCharAsUtf16Le(
-                             ColumnName,
-                             std::min(static_cast<size_t>(NameLength),
-                                      (sizeof(ColumnName) / sizeof(SQLWCHAR)) - 1)),
+                             ColumnName, std::min(static_cast<size_t>(NameLength),
+                                                  (sizeof(ColumnName) / sizeof(SQLWCHAR)) - 1)),
                          "DataType"_a = DataType, "ColumnSize"_a = ColumnSize,
                          "DecimalDigits"_a = DecimalDigits, "Nullable"_a = Nullable));
         } else {
@@ -2838,14 +2875,14 @@ SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT ident
     std::u16string schema = schemaObj.is_none() ? u"" : schemaObj.cast<std::u16string>();
 
     py::gil_scoped_release release;
-    return SQLSpecialColumns_ptr(
-        StatementHandle->get(), identifierType,
-        catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
-        catalog.empty() ? 0 : SQL_NTS,
-        schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
-        schema.empty() ? 0 : SQL_NTS,
-        table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
-        table.empty() ? 0 : SQL_NTS, scope, nullable);
+    return SQLSpecialColumns_ptr(StatementHandle->get(), identifierType,
+                                 catalog.empty() ? nullptr
+                                                 : reinterpretU16stringAsSqlWChar(catalog),
+                                 catalog.empty() ? 0 : SQL_NTS,
+                                 schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+                                 schema.empty() ? 0 : SQL_NTS,
+                                 table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+                                 table.empty() ? 0 : SQL_NTS, scope, nullable);
 }
 
 // Wrap SQLFetch to retrieve rows
@@ -3172,8 +3209,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
-                                row.append(
-                                    py::cast(dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData)));
+                                row.append(py::cast(
+                                    dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData)));
                                 LOG("SQLGetData: CHAR column %d fetched as WCHAR, "
                                     "length=%lu",
                                     i, (unsigned long)numCharsInData);
@@ -3338,8 +3375,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
-                                row.append(
-                                    py::cast(dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData)));
+                                row.append(py::cast(
+                                    dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData)));
                                 LOG("SQLGetData: Appended NVARCHAR string "
                                     "length=%lu for column %d",
                                     (unsigned long)numCharsInData, i);
