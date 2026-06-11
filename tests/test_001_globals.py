@@ -1160,3 +1160,59 @@ def test_row_contains_case_insensitive():
     assert "ProductID" in row
     assert "NAME" in row
     assert "missing" not in row
+
+
+def test_row_dict_methods_with_column_names_param():
+    """Test dict methods use pre-built column_names from cursor (zero per-row cost)."""
+    from mssql_python.row import Row
+
+    # Simulate cursor passing column_names alongside a column_map with aliases
+    column_map = {"ProductID": 0, "productid": 0, "Name": 1, "name": 1}
+    column_names = ("ProductID", "Name")  # pre-built by cursor
+
+    row = Row([1, "foo"], column_map, cursor=None, column_names=column_names)
+
+    assert list(row.keys()) == ["ProductID", "Name"]
+    assert row.to_dict() == {"ProductID": 1, "Name": "foo"}
+    assert list(row.items()) == [("ProductID", 1), ("Name", "foo")]
+
+
+def test_row_dict_methods_with_none_column_map():
+    """Test dict methods when column_map is None (empty row)."""
+    from mssql_python.row import Row
+
+    row = Row([], None, cursor=None)
+
+    assert list(row.keys()) == []
+    assert list(row.values()) == []
+    assert list(row.items()) == []
+    assert row.to_dict() == {}
+    assert "anything" not in row
+
+
+def test_row_items_is_reusable():
+    """Test items() returns a reusable list, not a one-shot iterator."""
+    from mssql_python.row import Row
+
+    row = Row([1, "foo"], {"id": 0, "name": 1}, cursor=None)
+
+    items = row.items()
+    assert list(items) == [("id", 1), ("name", "foo")]
+    # Second iteration should produce the same result (not empty)
+    assert list(items) == [("id", 1), ("name", "foo")]
+
+
+def test_row_dict_methods_with_mock_cursor_description():
+    """Test that when column_names is provided (as cursor would), it's used directly."""
+    from mssql_python.row import Row
+
+    # column_map has aliases, but column_names is authoritative
+    column_map = {"MyCol": 0, "mycol": 0, "Score": 1, "score": 1}
+    column_names = ("MyCol", "Score")
+
+    row = Row([42, 99.5], column_map, cursor=None, column_names=column_names)
+
+    assert list(row.keys()) == ["MyCol", "Score"]
+    assert len(row.keys()) == len(row)
+    assert len(row.to_dict()) == len(row)
+    assert row.to_dict() == {"MyCol": 42, "Score": 99.5}

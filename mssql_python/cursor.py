@@ -1146,6 +1146,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._cached_column_map_lower = (
                 {k.lower(): v for k, v in column_map.items()} if get_settings().lowercase else None
             )
+            self._cached_column_names = tuple(desc[0] for desc in self.description)
 
         # Fallback to legacy column name map if no cached map
         column_map = column_map or getattr(self, "_column_name_map", None)
@@ -1153,7 +1154,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Get cached converter map
         converter_map = getattr(self, "_cached_converter_map", None)
 
-        return column_map, converter_map, self._cached_column_map_lower
+        return column_map, converter_map, self._cached_column_map_lower, self._cached_column_names
 
     def _map_data_type(self, sql_type):
         """
@@ -1568,6 +1569,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if get_settings().lowercase
                 else None
             )
+            self._cached_column_names = tuple(desc[0] for desc in self.description)
             self._cached_converter_map = self._build_converter_map()
             self._uuid_str_indices = self._compute_uuid_str_indices()
         else:
@@ -1575,6 +1577,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._clear_rownumber()
             self._cached_column_map = None
             self._cached_column_map_lower = None
+            self._cached_column_names = None
             self._cached_converter_map = None
             self._uuid_str_indices = None
 
@@ -2497,6 +2500,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     if get_settings().lowercase
                     else None
                 )
+                self._cached_column_names = tuple(desc[0] for desc in self.description)
                 self._cached_converter_map = self._build_converter_map()
                 self._uuid_str_indices = self._compute_uuid_str_indices()
             else:
@@ -2504,6 +2508,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._clear_rownumber()
                 self._cached_column_map = None
                 self._cached_column_map_lower = None
+                self._cached_column_names = None
                 self._cached_converter_map = None
                 self._uuid_str_indices = None
         finally:
@@ -2553,7 +2558,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower, column_names = (
+                self._get_column_and_converter_maps()
+            )
             return Row(
                 row_data,
                 column_map,
@@ -2561,6 +2568,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 converter_map=converter_map,
                 uuid_str_indices=self._uuid_str_indices,
                 column_map_lower=column_map_lower,
+                column_names=column_names,
             )
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
@@ -2617,7 +2625,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower, column_names = (
+                self._get_column_and_converter_maps()
+            )
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
@@ -2629,6 +2639,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     converter_map=converter_map,
                     uuid_str_indices=uuid_idx,
                     column_map_lower=column_map_lower,
+                    column_names=column_names,
                 )
                 for row_data in rows_data
             ]
@@ -2679,7 +2690,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower, column_names = (
+                self._get_column_and_converter_maps()
+            )
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
@@ -2691,6 +2704,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     converter_map=converter_map,
                     uuid_str_indices=uuid_idx,
                     column_map_lower=column_map_lower,
+                    column_names=column_names,
                 )
                 for row_data in rows_data
             ]
@@ -2809,6 +2823,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Clear cached column and converter maps for the new result set
         self._cached_column_map = None
         self._cached_column_map_lower = None
+        self._cached_column_names = None
         self._cached_converter_map = None
         self._uuid_str_indices = None
 
@@ -2846,6 +2861,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     if get_settings().lowercase
                     else None
                 )
+                self._cached_column_names = tuple(desc[0] for desc in self.description)
                 self._cached_converter_map = self._build_converter_map()
                 self._uuid_str_indices = self._compute_uuid_str_indices()
         except Exception as e:  # pylint: disable=broad-exception-caught

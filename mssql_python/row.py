@@ -34,6 +34,7 @@ class Row:
         converter_map=None,
         uuid_str_indices=None,
         column_map_lower=None,
+        column_names=None,
     ):
         """
         Initialize a Row object with values and pre-built column map.
@@ -48,6 +49,9 @@ class Row:
             column_map_lower: Pre-built lowercase column map for O(1) case-insensitive
                 lookups. Built once per result set in the cursor when lowercase is enabled;
                 None when lowercase is off (the default). Shared across all rows.
+            column_names: Pre-built tuple of deduplicated column names in ordinal order.
+                Built once per result set in the cursor and shared across all rows.
+                When None, falls back to deduplicating column_map (for unit tests).
         """
         # Apply output converters if available using pre-computed converter map
         if converter_map:
@@ -74,10 +78,10 @@ class Row:
         # across all rows. None when lowercase is off (the default) — zero cost.
         self._column_map_lower = column_map_lower
         # Canonical column names in ordinal order, deduplicated.
-        # cursor.description is the authoritative source; _column_map may
-        # contain lowercase aliases injected by _prepare_metadata_result_set.
-        if cursor and hasattr(cursor, "description") and cursor.description:
-            self._column_names = tuple(desc[0] for desc in cursor.description)
+        # Pre-built once per result set in the cursor and shared across all rows.
+        # Falls back to deduplicating column_map when not provided (e.g. unit tests).
+        if column_names is not None:
+            self._column_names = column_names
         elif column_map is not None:
             # Fallback: deduplicate _column_map by keeping first name per index
             idx_to_name: dict = {}
@@ -233,16 +237,21 @@ class Row:
 
     def items(self):
         """Return (column_name, value) pairs, like dict.items()."""
-        return zip(self._column_names, self._values)
+        return list(zip(self._column_names, self._values))
 
     def to_dict(self):
         """Return the row as a plain dict mapping column names to values."""
         return dict(zip(self._column_names, self._values))
 
     def __contains__(self, key) -> bool:
-        """Support 'col_name in row' membership testing."""
+        """Support 'col_name in row' membership testing.
+
+        Uses the full _column_map (which includes lowercase aliases),
+        so 'ProductID' in row and 'productid' in row both return True
+        even though keys() only lists the original-cased name.
+        """
         if isinstance(key, str):
-            if key in self._column_map:
+            if self._column_map and key in self._column_map:
                 return True
             if self._column_map_lower is not None:
                 return key.lower() in self._column_map_lower

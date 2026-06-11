@@ -2914,6 +2914,156 @@ def test_row_string_key_indexing(cursor, db_connection):
             pass
 
 
+def test_row_to_dict(cursor, db_connection):
+    """Test Row.to_dict() returns a plain dict from a real cursor row."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_todict (id INT PRIMARY KEY, name VARCHAR(50), price FLOAT)"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_todict VALUES (1, 'Widget', 9.99)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_todict")
+        row = cursor.fetchone()
+
+        d = row.to_dict()
+        assert isinstance(d, dict)
+        assert d["id"] == 1
+        assert d["name"] == "Widget"
+        assert d["price"] == 9.99
+        assert len(d) == len(row)
+
+    except Exception as e:
+        pytest.fail(f"Row to_dict test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_todict")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_keys_values_items(cursor, db_connection):
+    """Test Row.keys(), values(), items() from a real cursor row."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_kvi (id INT PRIMARY KEY, name VARCHAR(50))"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_kvi VALUES (42, 'Alice')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_kvi")
+        row = cursor.fetchone()
+
+        # keys() returns column names matching description
+        keys = list(row.keys())
+        assert len(keys) == 2
+        assert keys == [desc[0] for desc in cursor.description]
+
+        # values() matches positional access
+        vals = list(row.values())
+        assert vals == [row[0], row[1]]
+
+        # items() returns (name, value) pairs
+        items = row.items()
+        assert len(items) == 2
+        assert items[0] == (keys[0], row[0])
+        assert items[1] == (keys[1], row[1])
+
+        # items() is reusable (not one-shot iterator)
+        assert list(items) == list(items)
+
+        # len consistency
+        assert len(keys) == len(row)
+        assert len(vals) == len(row)
+        assert len(items) == len(row)
+
+    except Exception as e:
+        pytest.fail(f"Row keys/values/items test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_kvi")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_contains(cursor, db_connection):
+    """Test 'column_name in row' membership testing from a real cursor row."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_contains (ProductID INT, Name VARCHAR(50))"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_contains VALUES (1, 'foo')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_contains")
+        row = cursor.fetchone()
+
+        # Column names from description should be found
+        for desc in cursor.description:
+            assert desc[0] in row, f"Column '{desc[0]}' not found in row"
+
+        # Non-existent column
+        assert "nonexistent" not in row
+
+        # Integer is not a column name
+        assert 0 not in row
+
+    except Exception as e:
+        pytest.fail(f"Row __contains__ test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_contains")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_dict_no_duplicate_keys(cursor, db_connection):
+    """Test that dict-like methods don't produce duplicate keys from cursor rows.
+
+    The cursor may inject lowercase aliases into _column_map, but keys(),
+    items(), and to_dict() must return exactly N entries with original casing.
+    """
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_nodup (ProductID INT, MixedCase VARCHAR(20))"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_nodup VALUES (1, 'test')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_nodup")
+        row = cursor.fetchone()
+
+        keys = list(row.keys())
+        items = row.items()
+        d = row.to_dict()
+
+        # Exactly 2 columns, no duplicates
+        assert len(keys) == 2
+        assert len(items) == 2
+        assert len(d) == 2
+        assert len(keys) == len(row)
+
+    except Exception as e:
+        pytest.fail(f"Row dict no-duplicate-keys test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_nodup")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
 def test_row_comparison_with_list(cursor, db_connection):
     """Test comparing Row objects with lists (__eq__ method)"""
     try:
