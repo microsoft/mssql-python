@@ -2794,7 +2794,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     def bulkcopy(
         self,
         table_name: str,
-        data: Iterable[Union[Tuple, List]],
+        data: Iterable[Union[Tuple, "Row"]],
         batch_size: int = 0,
         timeout: int = 30,
         column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
@@ -2812,11 +2812,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             table_name: Target table name (can include schema, e.g., 'dbo.MyTable').
                 The table must exist and the user must have INSERT permissions.
 
-            data: Iterable of tuples or lists containing row data to be inserted.
+            data: Iterable of tuples or Row objects containing row data to be inserted.
+                Row objects from fetchone/fetchmany/fetchall are automatically
+                converted to tuples. Lists and other types are not accepted.
 
                 Data Format Requirements:
                 - Each element in the iterable represents one row
-                - Each row should be a tuple or list of column values
+                - Each row should be a tuple or Row object
                 - Column order must match the target table's column order (by ordinal
                   position), unless column_mappings is specified
                 - The number of values in each row must match the number of columns
@@ -2966,11 +2968,35 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
             pycore_cursor = pycore_connection.cursor()
 
+            # Enforce the bulkcopy type contract: only tuple and Row accepted.
+            # Created to support the fetchone/fetchmany/fetchall -> bulkcopy
+            # pipeline where Row objects need conversion to native tuples.
+            # Rust (mssql_py_core) requires PyTuple via cast::<PyTuple>() and
+            # rejects all other types including list. Row objects are converted
+            # using direct _values access (4x faster than __iter__ protocol).
+            # Uses itertools.chain for C-level iteration (avoids Python
+            # generator frame overhead on the tuple passthrough path).
+            def _prepare_row_iterator(iterable):
+                from itertools import chain
+
+                it = iter(iterable)
+                first = next(it, None)
+                if first is None:
+                    return iter(())
+                if isinstance(first, tuple):
+                    return chain((first,), it)
+                if isinstance(first, Row):
+                    return (tuple(item._values) for item in chain((first,), it))
+                raise TypeError(
+                    f"bulkcopy data rows must be tuples or Row objects, "
+                    f"got {type(first).__name__}"
+                )
+
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             result = pycore_cursor.bulkcopy(
                 table_name,
-                iter(data),
+                _prepare_row_iterator(data),
                 batch_size=batch_size,
                 timeout=timeout,
                 column_mappings=column_mappings,
