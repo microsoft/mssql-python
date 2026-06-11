@@ -3081,8 +3081,13 @@ def test_row_getitem_type_guard(cursor, db_connection):
             pass
 
 
-def test_row_case_insensitive_access(cursor, db_connection):
-    """Test case-insensitive __getitem__, __getattr__, and __contains__ via cursor rows."""
+def test_row_case_sensitive_access(cursor, db_connection):
+    """Test exact-case access via cursor rows.
+
+    Normal SELECT uses _cached_column_map (original casing only, no lowercase
+    aliases). Case-insensitive access only works when the global lowercase
+    setting is enabled or when rows come from metadata methods.
+    """
     try:
         cursor.execute("CREATE TABLE #pytest_row_ci (ProductID INT, Name VARCHAR(50))")
         db_connection.commit()
@@ -3097,10 +3102,9 @@ def test_row_case_insensitive_access(cursor, db_connection):
         assert row.ProductID == 1
         assert "ProductID" in row
 
-        # Lowercase alias works (cursor injects lowercase aliases into _column_map)
-        assert row["productid"] == 1
-        assert row.productid == 1
-        assert "productid" in row
+        assert row["Name"] == "bar"
+        assert row.Name == "bar"
+        assert "Name" in row
 
         # Non-existent
         assert "nonexistent" not in row
