@@ -2948,9 +2948,7 @@ def test_row_to_dict(cursor, db_connection):
 def test_row_keys_values_items(cursor, db_connection):
     """Test Row.keys(), values(), items() from a real cursor row."""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_row_kvi (id INT PRIMARY KEY, name VARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE #pytest_row_kvi (id INT PRIMARY KEY, name VARCHAR(50))")
         db_connection.commit()
 
         cursor.execute("INSERT INTO #pytest_row_kvi VALUES (42, 'Alice')")
@@ -2995,9 +2993,7 @@ def test_row_keys_values_items(cursor, db_connection):
 def test_row_contains(cursor, db_connection):
     """Test 'column_name in row' membership testing from a real cursor row."""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_row_contains (ProductID INT, Name VARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE #pytest_row_contains (ProductID INT, Name VARCHAR(50))")
         db_connection.commit()
 
         cursor.execute("INSERT INTO #pytest_row_contains VALUES (1, 'foo')")
@@ -3033,9 +3029,7 @@ def test_row_dict_no_duplicate_keys(cursor, db_connection):
     items(), and to_dict() must return exactly N entries with original casing.
     """
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_row_nodup (ProductID INT, MixedCase VARCHAR(20))"
-        )
+        cursor.execute("CREATE TABLE #pytest_row_nodup (ProductID INT, MixedCase VARCHAR(20))")
         db_connection.commit()
 
         cursor.execute("INSERT INTO #pytest_row_nodup VALUES (1, 'test')")
@@ -3059,6 +3053,91 @@ def test_row_dict_no_duplicate_keys(cursor, db_connection):
     finally:
         try:
             cursor.execute("DROP TABLE IF EXISTS #pytest_row_nodup")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_getitem_type_guard(cursor, db_connection):
+    """Test Row.__getitem__ raises TypeError for unsupported index types."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_typeguard (id INT)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_typeguard VALUES (1)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_typeguard")
+        row = cursor.fetchone()
+
+        with pytest.raises(TypeError):
+            row[3.5]
+        with pytest.raises(TypeError):
+            row[None]
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_typeguard")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_case_insensitive_access(cursor, db_connection):
+    """Test case-insensitive __getitem__, __getattr__, and __contains__ via cursor rows."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_ci (ProductID INT, Name VARCHAR(50))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_ci VALUES (1, 'bar')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_ci")
+        row = cursor.fetchone()
+
+        # Original casing works via all access methods
+        assert row["ProductID"] == 1
+        assert row.ProductID == 1
+        assert "ProductID" in row
+
+        # Lowercase alias works (cursor injects lowercase aliases into _column_map)
+        assert row["productid"] == 1
+        assert row.productid == 1
+        assert "productid" in row
+
+        # Non-existent
+        assert "nonexistent" not in row
+        with pytest.raises(KeyError):
+            row["nonexistent"]
+        with pytest.raises(AttributeError):
+            row.nonexistent
+
+    except Exception as e:
+        pytest.fail(f"Row case-insensitive access test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_ci")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_items_is_reusable(cursor, db_connection):
+    """Test items() returns a reusable list, not a one-shot iterator."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_reuse (id INT, name VARCHAR(50))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_reuse VALUES (1, 'foo')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_reuse")
+        row = cursor.fetchone()
+
+        items = row.items()
+        first = list(items)
+        second = list(items)
+        assert first == second
+        assert len(first) > 0
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_reuse")
             db_connection.commit()
         except Exception:
             pass
