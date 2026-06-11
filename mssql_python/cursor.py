@@ -1642,9 +1642,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # specialized aliases) to keep case-insensitive access working for catalog
         # rows (e.g. row.TABLE_NAME when lowercase=True).
         self._cached_column_map_lower = (
-            {k.lower(): v for k, v in column_map.items()}
-            if get_settings().lowercase
-            else None
+            {k.lower(): v for k, v in column_map.items()} if get_settings().lowercase else None
         )
 
         # Initialize rownumber tracking so fetchone() and iteration work
