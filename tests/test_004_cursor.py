@@ -10599,9 +10599,20 @@ def test_fetch_methods_not_shadowed_on_instance(cursor):
     for name in fetch_methods:
         assert name not in cursor.__dict__, f"{name} was shadowed after getTypeInfo()"
 
-    # A normal execute must also leave the class methods intact.
+    # A normal execute must also leave the class methods intact, and the
+    # column-name cache populated by the earlier getTypeInfo() call must be
+    # rebuilt so catalog column names do not leak into an ordinary SELECT.
     cursor.execute("SELECT 1 AS one")
-    assert cursor.fetchall() == [[1]]
+    rows = cursor.fetchall()
+    assert rows == [[1]]
+    row = rows[0]
+    assert row.one == 1
+    # "TYPE_NAME" belonged to the getTypeInfo() result set. If the cache leaked,
+    # these would resolve to column 0 (returning 1) instead of raising.
+    with pytest.raises(AttributeError):
+        _ = row.TYPE_NAME
+    with pytest.raises(KeyError):
+        _ = row["TYPE_NAME"]
     for name in fetch_methods:
         assert name not in cursor.__dict__, f"{name} was shadowed after execute()"
 

@@ -1620,8 +1620,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Both the exact name and its lowercase alias are stored so that rows
         # support case-insensitive lookup regardless of the global ``lowercase``
         # setting (catalog column names are well-known and case-stable).
+        # ``self.description`` is None when DDBCSQLDescribeCol failed above and no
+        # fallback_description was supplied (e.g. getTypeInfo()); guard with ``or ()``
+        # so the cursor simply yields no rows instead of raising TypeError here.
         column_map = {}
-        for i, (name, *_) in enumerate(self.description):
+        for i, (name, *_) in enumerate(self.description or ()):
             column_map[name] = i
             column_map[name.lower()] = i
 
