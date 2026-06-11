@@ -10798,6 +10798,73 @@ def test_setinputsizes_sql_injection_protection(db_connection):
     cursor.execute("DROP TABLE #test_sql_injection")
 
 
+def test_fetch_methods_not_shadowed_on_instance(cursor):
+    """Regression test for GH #620.
+
+    The fetch methods (fetchone/fetchmany/fetchall) must remain regular class
+    methods and never be reassigned as instance attributes. The previous
+    implementation swapped them for closures on the instance while preparing
+    catalog/metadata result sets, which produced a union type that broke static
+    type checkers (e.g. ``ty`` reported a spurious missing ``self`` argument).
+    """
+    fetch_methods = ("fetchone", "fetchmany", "fetchall")
+
+    # Pristine cursor: methods come from the class, not the instance.
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} should not be an instance attribute"
+
+    # A catalog helper historically reassigned the fetch methods. Make sure it
+    # no longer shadows them on the instance.
+    cursor.getTypeInfo().fetchall()
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after getTypeInfo()"
+
+    # A normal execute must also leave the class methods intact, and the
+    # column-name cache populated by the earlier getTypeInfo() call must be
+    # rebuilt so catalog column names do not leak into an ordinary SELECT.
+    cursor.execute("SELECT 1 AS one")
+    rows = cursor.fetchall()
+    assert rows == [[1]]
+    row = rows[0]
+    assert row.one == 1
+    # "TYPE_NAME" belonged to the getTypeInfo() result set. If the cache leaked,
+    # these would resolve to column 0 (returning 1) instead of raising.
+    with pytest.raises(AttributeError):
+        _ = row.TYPE_NAME
+    with pytest.raises(KeyError):
+        _ = row["TYPE_NAME"]
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after execute()"
+
+
+def test_metadata_case_insensitive_access_when_lowercase(db_connection):
+    """Regression test for GH #620 follow-up.
+
+    Catalog result sets must keep case-insensitive column access even when the
+    global ``lowercase`` setting is enabled. With lowercase=True the description
+    names are lowercased, so the cursor must build a lowercase lookup map for
+    metadata rows; otherwise original-cased ODBC names like ``TABLE_NAME`` stop
+    resolving.
+    """
+    original_lowercase = mssql_python.lowercase
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        try:
+            row = cursor.getTypeInfo().fetchone()
+            assert row is not None, "getTypeInfo() should return at least one row"
+            # Lowercase access (the stored casing) must work...
+            lower_value = row.type_name
+            # ...and so must the original ODBC casing, via the lowercase map.
+            assert row.TYPE_NAME == lower_value
+            assert row["TYPE_NAME"] == lower_value
+            assert row["type_name"] == lower_value
+        finally:
+            cursor.close()
+    finally:
+        mssql_python.lowercase = original_lowercase
+
+
 def test_gettypeinfo_all_types(cursor):
     """Test getTypeInfo with no arguments returns all data types"""
     # Get all type information
