@@ -1458,6 +1458,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             if isinstance(parameters, tuple) and len(parameters) == 1:
                 if isinstance(parameters[0], (tuple, list, dict)):
                     actual_params = parameters[0]
+                elif isinstance(parameters[0], Row):
+                    # A Row (e.g. from fetchone()) is a sequence of column values.
+                    # Normalize it to a tuple so the downstream binding logic, which
+                    # only handles tuple/list/dict, can unwrap it into individual
+                    # parameters instead of treating the whole Row as one value.
+                    actual_params = tuple(parameters[0])
                 else:
                     actual_params = parameters
             else:
