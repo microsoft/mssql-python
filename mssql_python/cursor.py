@@ -412,6 +412,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         logger.debug("_map_sql_type: Mapping param index=%d, type=%s", i, type(param).__name__)
         if param is None:
             logger.debug("_map_sql_type: NULL parameter - index=%d", i)
+            # GH-610: Send SQL_UNKNOWN_TYPE to C++ where the describe-cache
+            # in BindParameters / BindParameterArray resolves the correct
+            # type via SQLDescribeParam (cached after first call).
             return (
                 ddbc_sql_const.SQL_UNKNOWN_TYPE.value,
                 ddbc_sql_const.SQL_C_DEFAULT.value,
@@ -2348,14 +2351,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     max_val=max_val,
                 )
 
-                # For executemany with all-NULL columns, SQL_UNKNOWN_TYPE doesn't work
-                # with array binding. Fall back to SQL_VARCHAR as a safe default.
-                if (
-                    sample_value is None
-                    and paraminfo.paramSQLType == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
-                ):
-                    paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
-                    paraminfo.columnSize = 1
+                # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
+                # where BindParameterArray resolves the correct type via the
+                # SQLDescribeParam cache.  The previous SQL_VARCHAR hardcoded
+                # fallback was removed because it broke VARBINARY columns.
 
                 # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding.
                 # _map_sql_type may return SQL_C_NUMERIC (expecting NumericData structs)
