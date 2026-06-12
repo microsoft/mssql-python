@@ -2939,31 +2939,63 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
         if self.connection._auth_type:
-            # Fresh token acquisition for mssql-py-core connection. credential
-            # kwargs (e.g. user-assigned MSI client_id) were captured by
-            # Connection.__init__ before remove_sensitive_params stripped UID
-            # from connection_str — re-parsing here would miss them.
-            from mssql_python.auth import AADAuth
+            # Fresh token acquisition for mssql-py-core connection
+            from mssql_python.auth import AADAuth, ServicePrincipalAuth
+            from mssql_python.constants import _AuthInternal
 
-            try:
-                raw_token = AADAuth.get_raw_token(
+            if self.connection._auth_type == _AuthInternal.SERVICE_PRINCIPAL:
+                # Callback-based path: tenant_id is only known from the STS URL
+                # the server returns mid-handshake, so we register a factory
+                # that py-core invokes during FedAuth (workflow 0x02).
+                # Cert-based ServicePrincipal is not supported on this path.
+                client_id = params.get("uid", "")
+                client_secret = params.get("pwd", "")
+                if not client_id or not client_secret:
+                    raise RuntimeError(
+                        "Bulk copy with Authentication=ActiveDirectoryServicePrincipal "
+                        "currently supports client-secret only. "
+                        "Provide UID (client_id) and PWD (client_secret) in the "
+                        "connection string."
+                    )
+                try:
+                    factory = ServicePrincipalAuth.make_token_factory(client_id, client_secret)
+                except (RuntimeError, ValueError) as e:
+                    raise RuntimeError(
+                        f"Bulk copy failed: unable to build ServicePrincipal token factory: {e}"
+                    ) from e
+                pycore_context["entra_id_token_factory"] = factory
+                # Keep authentication/user_name/password in pycore_context —
+                # py-core's auth validator + transformer need them to resolve
+                # the auth method to ActiveDirectoryServicePrincipal before
+                # the factory is dispatched at handshake time.
+                logger.debug("Bulk copy: registered ServicePrincipal token factory")
+            else:
+                # Pre-acquired token path. Used for Default, DeviceCode,
+                # Interactive (non-Windows), MSI (system- or user-assigned),
+                # and any other AD method whose tenant_id is discoverable
+                # client-side via Azure Identity SDK. credential kwargs
+                # (e.g. user-assigned MSI client_id) were captured by
+                # Connection.__init__ before remove_sensitive_params stripped
+                # UID from connection_str. re-parsing here would miss them.
+                try:
+                    raw_token = AADAuth.get_raw_token(
+                        self.connection._auth_type,
+                        self.connection._credential_kwargs,
+                    )
+                except (RuntimeError, ValueError) as e:
+                    raise RuntimeError(
+                        f"Bulk copy failed: unable to acquire Azure AD token "
+                        f"for auth_type '{self.connection._auth_type}': {e}"
+                    ) from e
+                pycore_context["access_token"] = raw_token
+                # Token replaces credential fields — py-core's validator rejects
+                # access_token combined with authentication/user_name/password.
+                for key in ("authentication", "user_name", "password"):
+                    pycore_context.pop(key, None)
+                logger.debug(
+                    "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
                     self.connection._auth_type,
-                    self.connection._credential_kwargs,
                 )
-            except (RuntimeError, ValueError) as e:
-                raise RuntimeError(
-                    f"Bulk copy failed: unable to acquire Azure AD token "
-                    f"for auth_type '{self.connection._auth_type}': {e}"
-                ) from e
-            pycore_context["access_token"] = raw_token
-            # Token replaces credential fields — py-core's validator rejects
-            # access_token combined with authentication/user_name/password.
-            for key in ("authentication", "user_name", "password"):
-                pycore_context.pop(key, None)
-            logger.debug(
-                "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
-                self.connection._auth_type,
-            )
 
         pycore_connection = None
         pycore_cursor = None
@@ -3037,9 +3069,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise type(e)(str(e)) from None
 
         finally:
-            # Clear sensitive data to minimize memory exposure
+            # Clear sensitive data to minimize memory exposure. The
+            # entra_id_token_factory closure captures client_secret, so drop
+            # our dict reference to it (Rust still holds an Arc until the
+            # connection is dropped, but at least we don't keep an extra ref).
             if pycore_context:
-                for key in ("password", "user_name", "access_token"):
+                for key in (
+                    "password",
+                    "user_name",
+                    "access_token",
+                    "entra_id_token_factory",
+                ):
                     pycore_context.pop(key, None)
             # Clean up bulk copy resources
             for resource in (pycore_cursor, pycore_connection):
