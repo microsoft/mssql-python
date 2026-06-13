@@ -467,6 +467,16 @@ def get_attribute_set_timing(attribute):
 
 _CONNECTION_STRING_DRIVER_KEY = "Driver"
 _CONNECTION_STRING_APP_KEY = "APP"
+_CONNECTION_STRING_AUTH_KEY = "Authentication"
+_CONNECTION_STRING_UID_KEY = "UID"
+_CONNECTION_STRING_PWD_KEY = "PWD"
+_CONNECTION_STRING_TRUSTED_CONNECTION_KEY = "Trusted_Connection"
+
+# Aliases used by auth.py / connection.py — kept for readability.
+_KEY_AUTHENTICATION = _CONNECTION_STRING_AUTH_KEY
+_KEY_UID = _CONNECTION_STRING_UID_KEY
+_KEY_PWD = _CONNECTION_STRING_PWD_KEY
+_KEY_TRUSTED_CONNECTION = _CONNECTION_STRING_TRUSTED_CONNECTION_KEY
 
 # Reserved connection string parameters that are controlled by the driver
 # and cannot be set by users
@@ -486,16 +496,16 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     "address": "Server",
     "addr": "Server",
     # Authentication
-    "uid": "UID",
-    "pwd": "PWD",
-    "authentication": "Authentication",
-    "trusted_connection": "Trusted_Connection",
+    "uid": _CONNECTION_STRING_UID_KEY,
+    "pwd": _CONNECTION_STRING_PWD_KEY,
+    "authentication": _CONNECTION_STRING_AUTH_KEY,
+    "trusted_connection": _CONNECTION_STRING_TRUSTED_CONNECTION_KEY,
     # Database
     "database": "Database",
     # Driver (always controlled by mssql-python)
-    "driver": "Driver",
+    "driver": _CONNECTION_STRING_DRIVER_KEY,
     # Application name (always controlled by mssql-python)
-    "app": "APP",
+    "app": _CONNECTION_STRING_APP_KEY,
     # Encryption and Security
     "encrypt": "Encrypt",
     "trustservercertificate": "TrustServerCertificate",
@@ -518,14 +528,6 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     # internally.
     "packetsize": "PacketSize",
 }
-
-# Canonical normalized key names produced by _ConnectionStringParser._normalize_params.
-# Consumer code should reference these instead of hard-coding raw strings so that
-# a rename in _ALLOWED_CONNECTION_STRING_PARAMS is caught at import time.
-_KEY_AUTHENTICATION = "Authentication"
-_KEY_UID = "UID"
-_KEY_PWD = "PWD"
-_KEY_TRUSTED_CONNECTION = "Trusted_Connection"
 
 
 def get_info_constants() -> Dict[str, int]:

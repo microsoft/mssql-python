@@ -15,6 +15,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
+    token_provider: Optional[object] = None,
     **kwargs: Any,
 ) -> Connection:
     """
@@ -35,6 +36,29 @@ def connect(
             This per-connection override is useful for migration from pyodbc:
             connections that need string UUIDs can pass native_uuid=False, while the default (True)
             returns native uuid.UUID objects.
+        token_provider (object, optional): A token provider for Microsoft Entra ID
+            authentication. This must be any object with a ``.get_token(scope)`` method that
+            returns an object with a ``.token`` attribute containing a raw JWT string — for
+            example, any ``azure-identity`` credential class such as
+            ``DefaultAzureCredential``, ``AzureCliCredential``, ``ManagedIdentityCredential``,
+            ``CertificateCredential``, etc.
+
+            When provided, the driver calls ``token_provider.get_token()`` to acquire an
+            access token for SQL Server, bypassing the built-in credential map.
+            Cannot be combined with ``Authentication=`` in the connection string.
+
+            For environment-portable code, prefer ``Authentication=ActiveDirectoryDefault``
+            in the connection string — ``DefaultAzureCredential`` automatically picks the
+            right credential per environment (CLI on dev, Managed Identity in prod).
+            Use ``token_provider=`` only when you need explicit control over token
+            acquisition (e.g., excluding specific providers, using a credential not in
+            the built-in map, or passing custom options to the credential constructor).
+
+            Example::
+
+                from azure.identity import AzureCliCredential
+                conn = mssql_python.connect("Server=s;Database=d",
+                                            token_provider=AzureCliCredential())
     Keyword Args:
         **kwargs: Additional key/value pairs for the connection string.
     Below attributes are not implemented in the internal driver:
@@ -58,6 +82,7 @@ def connect(
         attrs_before=attrs_before,
         timeout=timeout,
         native_uuid=native_uuid,
+        token_provider=token_provider,
         **kwargs,
     )
     return conn
