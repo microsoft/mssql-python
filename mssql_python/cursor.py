@@ -2654,7 +2654,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._reset_rownumber()
 
         capsules = []
-        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, max(batch_size, 0))
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        char_c_type = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(
+            self.hstmt, capsules, max(batch_size, 0), char_c_type
+        )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
