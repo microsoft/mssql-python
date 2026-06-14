@@ -313,14 +313,11 @@ def test_arrow_long_string(cursor: mssql_python.Cursor):
     assert batch.column(0).to_pylist() == [long_string]
 
 
-@pytest.mark.parametrize(
-    "sql_type",
-    [
-        pytest.param("char(32)", id="char"),
-        pytest.param("varchar(32)", id="varchar"),
-    ],
-)
-def test_arrow_char_utf8_collation_unicode(cursor: mssql_python.Cursor, sql_type: str):
+@pytest.mark.parametrize("sql_type", ["char(32)", "varchar(32)"])
+@pytest.mark.parametrize("narrow", [True, False])
+def test_arrow_char_utf8_collation_unicode(
+    cursor: mssql_python.Cursor, sql_type: str, narrow: bool
+):
     table = "#t_arrow_char_decode"
     collation = "Latin1_General_100_CI_AS_SC_UTF8"
     expected = [
@@ -333,6 +330,8 @@ def test_arrow_char_utf8_collation_unicode(cursor: mssql_python.Cursor, sql_type
         "",
         None,
     ]
+    if narrow:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, ctype=mssql_python.SQL_CHAR)
 
     try:
         cursor.execute(
@@ -351,18 +350,15 @@ def test_arrow_char_utf8_collation_unicode(cursor: mssql_python.Cursor, sql_type
                 actual_val = actual_val.strip()
             assert expected_val == actual_val
     finally:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
         cursor.execute(f"drop table if exists {table}")
 
 
-@pytest.mark.parametrize(
-    "sql_type",
-    [
-        pytest.param("char(32)", id="char"),
-        pytest.param("varchar(32)", id="varchar"),
-        pytest.param("text", id="text"),
-    ],
-)
-def test_arrow_char_cp1252_collation_unicode(cursor: mssql_python.Cursor, sql_type: str):
+@pytest.mark.parametrize("sql_type", ["char(32)", "varchar(32)", "text"])
+@pytest.mark.parametrize("narrow", [True, False])
+def test_arrow_char_cp1252_collation_unicode(
+    cursor: mssql_python.Cursor, sql_type: str, narrow: bool
+):
     table = "#t_arrow_char_decode"
     collation = "SQL_Latin1_General_CP1_CI_AS"
     expected = [
@@ -375,6 +371,8 @@ def test_arrow_char_cp1252_collation_unicode(cursor: mssql_python.Cursor, sql_ty
         "",
         None,
     ]
+    if narrow:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, ctype=mssql_python.SQL_CHAR)
 
     cursor.execute(f"create table {table} (id int primary key, v {sql_type} collate {collation})")
 
@@ -388,6 +386,7 @@ def test_arrow_char_cp1252_collation_unicode(cursor: mssql_python.Cursor, sql_ty
                 actual_val = actual_val.strip()
             assert expected_val == actual_val
     finally:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
         cursor.execute(f"drop table if exists {table}")
 
 
