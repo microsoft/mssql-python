@@ -16,14 +16,21 @@ class Row:
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
     and attribute access to column values.
 
+    Row supports dict-like access via keys(), values(), items(), and to_dict().
+    However, iteration (for x in row) yields values, not keys — consistent with
+    pyodbc.Row and sqlite3.Row. Use row.keys() to iterate column names.
+
     Column attribute access behavior depends on the global 'lowercase' setting:
     - When enabled: Case-insensitive attribute access
     - When disabled (default): Case-sensitive attribute access matching original column names
 
     Example:
         row = cursor.fetchone()
-        print(row[0])           # Access by index
-        print(row.column_name)  # Access by column name (case sensitivity varies)
+        print(row[0])              # Access by index
+        print(row.column_name)     # Access by column name
+        print(row.to_dict())       # Convert to dict
+        for value in row:          # Iterates values, not keys
+            print(value)
     """
 
     def __init__(
@@ -73,6 +80,7 @@ class Row:
         # Lowercase map is pre-built once per result set in the cursor and shared
         # across all rows. None when lowercase is off (the default) — zero cost.
         self._column_map_lower = column_map_lower
+        self._column_names = None  # Lazy-computed on first access via _get_column_names()
 
     def _stringify_uuids(self, indices):
         """
@@ -208,6 +216,41 @@ class Row:
                 return self._values[idx]
 
         raise AttributeError(f"Row has no attribute '{name}'")
+
+    def _get_column_names(self) -> tuple:
+        """Lazy-compute and cache deduplicated column names on first access."""
+        if self._column_names is not None:
+            return self._column_names
+
+        if self._cursor and hasattr(self._cursor, "description") and self._cursor.description:
+            column_names = tuple(desc[0] for desc in self._cursor.description)
+        elif self._column_map:
+            idx_to_name: dict = {}
+            for name, idx in self._column_map.items():
+                if idx not in idx_to_name:
+                    idx_to_name[idx] = name
+            column_names = tuple(idx_to_name[i] for i in sorted(idx_to_name))
+        else:
+            column_names = ()
+
+        self._column_names = column_names
+        return column_names
+
+    def keys(self) -> tuple:
+        """Return column names, like dict.keys()."""
+        return self._get_column_names()
+
+    def values(self) -> tuple:
+        """Return column values as a tuple, like dict.values()."""
+        return tuple(self._values)
+
+    def items(self) -> list:
+        """Return (column_name, value) pairs, like dict.items()."""
+        return list(zip(self._get_column_names(), self._values))
+
+    def to_dict(self) -> dict:
+        """Return the row as a plain dict mapping column names to values."""
+        return dict(zip(self._get_column_names(), self._values))
 
     def __eq__(self, other: Any) -> bool:
         """

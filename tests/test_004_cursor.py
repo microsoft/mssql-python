@@ -3081,6 +3081,226 @@ def test_row_string_key_indexing(cursor, db_connection):
             pass
 
 
+def test_row_to_dict(cursor, db_connection):
+    """Test Row.to_dict() returns a plain dict from a real cursor row."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_todict (id INT PRIMARY KEY, name VARCHAR(50), price FLOAT)"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_todict VALUES (1, 'Widget', 9.99)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_todict")
+        row = cursor.fetchone()
+
+        d = row.to_dict()
+        assert isinstance(d, dict)
+        assert d["id"] == 1
+        assert d["name"] == "Widget"
+        assert d["price"] == 9.99
+        assert len(d) == len(row)
+
+    except Exception as e:
+        pytest.fail(f"Row to_dict test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_todict")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_keys_values_items(cursor, db_connection):
+    """Test Row.keys(), values(), items() from a real cursor row."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_kvi (id INT PRIMARY KEY, name VARCHAR(50))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_kvi VALUES (42, 'Alice')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_kvi")
+        row = cursor.fetchone()
+
+        # keys() returns column names matching description
+        keys = list(row.keys())
+        assert len(keys) == 2
+        assert keys == [desc[0] for desc in cursor.description]
+
+        # values() matches positional access
+        vals = list(row.values())
+        assert vals == [row[0], row[1]]
+
+        # items() returns (name, value) pairs
+        items = row.items()
+        assert len(items) == 2
+        assert items[0] == (keys[0], row[0])
+        assert items[1] == (keys[1], row[1])
+
+        # items() is reusable (not one-shot iterator)
+        assert list(items) == list(items)
+
+        # len consistency
+        assert len(keys) == len(row)
+        assert len(vals) == len(row)
+        assert len(items) == len(row)
+
+    except Exception as e:
+        pytest.fail(f"Row keys/values/items test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_kvi")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_dict_no_duplicate_keys(cursor, db_connection):
+    """Test that dict-like methods don't produce duplicate keys from cursor rows.
+
+    The cursor may inject lowercase aliases into _column_map, but keys(),
+    items(), and to_dict() must return exactly N entries with original casing.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_nodup (ProductID INT, MixedCase VARCHAR(20))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_nodup VALUES (1, 'test')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_nodup")
+        row = cursor.fetchone()
+
+        keys = list(row.keys())
+        items = row.items()
+        d = row.to_dict()
+
+        # Exactly 2 columns, no duplicates
+        assert len(keys) == 2
+        assert len(items) == 2
+        assert len(d) == 2
+        assert len(keys) == len(row)
+
+    except Exception as e:
+        pytest.fail(f"Row dict no-duplicate-keys test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_nodup")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_getitem_type_guard(cursor, db_connection):
+    """Test Row.__getitem__ raises TypeError for unsupported index types."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_typeguard (id INT)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_typeguard VALUES (1)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_typeguard")
+        row = cursor.fetchone()
+
+        with pytest.raises(TypeError):
+            row[3.5]
+        with pytest.raises(TypeError):
+            row[None]
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_typeguard")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_case_sensitive_access(cursor, db_connection):
+    """Test exact-case access via cursor rows.
+
+    Normal SELECT uses _cached_column_map (original casing only, no lowercase
+    aliases). Case-insensitive access only works when the global lowercase
+    setting is enabled or when rows come from metadata methods.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_ci (ProductID INT, Name VARCHAR(50))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_ci VALUES (1, 'bar')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_ci")
+        row = cursor.fetchone()
+
+        # Original casing works via all access methods
+        assert row["ProductID"] == 1
+        assert row.ProductID == 1
+
+        assert row["Name"] == "bar"
+        assert row.Name == "bar"
+
+        # Non-existent
+        with pytest.raises(KeyError):
+            row["nonexistent"]
+        with pytest.raises(AttributeError):
+            row.nonexistent
+
+    except Exception as e:
+        pytest.fail(f"Row case-insensitive access test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_ci")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_none_column_map():
+    """Test Row edge case with column_map=None (covers _column_names=() branch)."""
+    from mssql_python.row import Row
+
+    row = Row([], None, cursor=None)
+    assert list(row.keys()) == []
+    assert list(row.values()) == []
+    assert list(row.items()) == []
+    assert row.to_dict() == {}
+
+
+def test_row_dict_dedup_fallback():
+    """Test dict-like methods deduplicate _column_map when cursor is None."""
+    from mssql_python.row import Row
+
+    column_map = {"ProductID": 0, "Name": 1}
+    row = Row([1, "foo"], column_map, cursor=None)
+
+    assert list(row.keys()) == ["ProductID", "Name"]
+    assert row.to_dict() == {"ProductID": 1, "Name": "foo"}
+
+
+def test_row_items_is_reusable(cursor, db_connection):
+    """Test items() returns a reusable list, not a one-shot iterator."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_reuse (id INT, name VARCHAR(50))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_reuse VALUES (1, 'foo')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_reuse")
+        row = cursor.fetchone()
+
+        items = row.items()
+        first = list(items)
+        second = list(items)
+        assert first == second
+        assert len(first) > 0
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_reuse")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
 def test_row_comparison_with_list(cursor, db_connection):
     """Test comparing Row objects with lists (__eq__ method)"""
     try:
