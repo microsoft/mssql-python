@@ -5,10 +5,16 @@
 
 import pytest
 
-# Skip the entire module when mssql_py_core can't be loaded at runtime
-# (e.g. manylinux_2_28 build containers where glibc is too old for the .so).
+# Skip the entire module when mssql_py_core can't be loaded (e.g. it's not
+# installed, or its native extension fails to load in some build containers).
+# exc_type=ImportError is required because pytest 9.1 changed importorskip's
+# default to only skip on ModuleNotFoundError, so a module that is found but
+# fails to import its native extension would otherwise be raised as a collection
+# error instead of being skipped. The skip reason is left to pytest so it
+# reports the actual underlying import error.
 mssql_py_core = pytest.importorskip(
-    "mssql_py_core", reason="mssql_py_core not loadable (glibc too old?)"
+    "mssql_py_core",
+    exc_type=ImportError,
 )
 
 
