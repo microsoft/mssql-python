@@ -1709,9 +1709,10 @@ class Connection:
           is rolled back.
         - The connection is always closed when leaving the block.
 
-        If commit() fails, the connection is closed (which triggers rollback)
-        and the commit exception is raised. The original user exception is
-        never masked by cleanup failures.
+        If commit() fails on clean exit, the connection is closed and the
+        commit exception is raised. On exception exit, cleanup failures
+        (rollback or close) are suppressed so the original user exception
+        propagates unchanged.
         """
         if self._closed:
             return
@@ -1729,7 +1730,11 @@ class Connection:
             if exc_type is None:
                 raise
             return
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            if exc_type is None:
+                raise
 
     def __del__(self) -> None:
         """

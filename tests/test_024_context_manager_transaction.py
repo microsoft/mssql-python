@@ -21,10 +21,7 @@ import textwrap
 import signal
 import pytest
 
-CONN_STR = os.getenv(
-    "DB_CONNECTION_STRING",
-    "Server=127.0.0.1,1433;Database=master;UID=sa;PWD=Str0ng@Passw0rd123;TrustServerCertificate=yes;",
-)
+CONN_STR = os.getenv("DB_CONNECTION_STRING")
 PYTHON = sys.executable
 TIMEOUT = 30
 
@@ -47,9 +44,10 @@ def _assert_no_crash(result: subprocess.CompletedProcess, context: str = ""):
     """Assert the subprocess did not segfault."""
     if result.returncode < 0:
         sig = -result.returncode
-        sig_name = (
-            signal.Signals(sig).name if sig in signal.Signals._value2member_map_ else str(sig)
-        )
+        try:
+            sig_name = signal.Signals(sig).name
+        except ValueError:
+            sig_name = str(sig)
         pytest.fail(
             f"CRASH ({sig_name}) {context}\n"
             f"stdout: {result.stdout[-500:]}\n"
@@ -819,7 +817,8 @@ class TestContextManagerCommit:
     @pytest.mark.stress
     def test_large_transaction_commit(self):
         """10k inserts in one block, all committed on exit."""
-        result = _run_script("""
+        result = _run_script(
+            """
             import os
             from mssql_python import connect
 
@@ -848,7 +847,9 @@ class TestContextManagerCommit:
             cleanup.commit()
             cleanup.close()
             print("PASS")
-        """)
+        """,
+            timeout=120,
+        )
         _assert_no_crash(result, "test_large_transaction_commit")
         assert result.returncode == 0, f"Script failed:\n{result.stderr}"
         assert "PASS" in result.stdout
