@@ -1698,16 +1698,38 @@ class Connection:
         logger.info("Entering connection context manager.")
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """
         Exit the context manager.
 
-        Closes the connection when exiting the context, ensuring proper
-        resource cleanup. This follows the modern standard used by most
-        database libraries.
+        Implements commit-on-success / rollback-on-exception semantics:
+        - If the block exits cleanly and autocommit is off, the transaction
+          is committed.
+        - If an exception is raised and autocommit is off, the transaction
+          is rolled back.
+        - The connection is always closed when leaving the block.
+
+        If commit() fails, the connection is closed (which triggers rollback)
+        and the commit exception is raised. The original user exception is
+        never masked by cleanup failures.
         """
-        if not self._closed:
-            self.close()
+        if self._closed:
+            return
+        try:
+            if not self.autocommit:
+                if exc_type is None:
+                    self.commit()
+                else:
+                    self.rollback()
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                pass
+            if exc_type is None:
+                raise
+            return
+        self.close()
 
     def __del__(self) -> None:
         """
