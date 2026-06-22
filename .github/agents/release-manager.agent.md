@@ -178,6 +178,8 @@ Immediately after creating the GitHub PR, compose the full release notes using t
 
 Write the draft to a Markdown file at `release-notes-X.X.X.md` in the repo root so the user can review and edit it directly. Present the complete draft to the user for approval. Save the approved `.md` content — it will be used verbatim in Step 9.
 
+> ⚠️ **Keep this file UNTRACKED.** It must NOT be committed into the release PR (GitHub or ADO). The 3-file edits in Steps 3b/5b add files by explicit name — never run `git add .` or `git commit -a` on the `release/X.X.X` branch while this file exists. After Step 9 completes, delete it (`release-notes-X.X.X.md`).
+
 ---
 
 ### STEP 4 — Wait for GitHub PR Approval
@@ -320,7 +322,9 @@ Once confirmed, verify the release is indexed on PyPI before proceeding:
 
 1. **Merge GitHub release PR** (`release/X.X.X` → `main`)
 2. **Create GitHub Release:**
+   > ⚠️ The notes file lives in the **GitHub repo root**, but by this point the working directory is likely the **ADO repo** (Step 5a ran `cd <ADO_REPO_PATH>`). `cd` back to the GitHub repo root first, or pass the file's **absolute path** to `--notes-file`. A bare/`./`-prefixed relative path resolves against the current directory and will fail if you are not in the GitHub repo root.
    ```bash
+   cd <GH_REPO_PATH>   # ensure cwd is the GitHub repo root where release-notes-X.X.X.md was created
    gh release create vX.X.X \
      --repo microsoft/mssql-python \
      --title "Release Notes - Version X.X.X" \
