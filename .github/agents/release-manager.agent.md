@@ -166,7 +166,7 @@ gh pr create \
   --reviewer jahnvi480 --reviewer sumitmsft --reviewer bewithgaurav --reviewer subrata-ms
 ```
 
-PR body must include: `AB#<WORK_ITEM_ID>`, summary of all changes grouped by Enhancements / Bug Fixes, version bump note.
+PR body must include: `AB#<WORK_ITEM_ID>`, a `### Summary` section summarizing all changes grouped by Enhancements / Bug Fixes, and a version bump note. The summary heading must be exactly `### Summary`.
 
 > **Do NOT merge this PR until Step 9.**
 
@@ -176,7 +176,7 @@ PR body must include: `AB#<WORK_ITEM_ID>`, summary of all changes grouped by Enh
 
 Immediately after creating the GitHub PR, compose the full release notes using the **Release Notes Format** below. Fetch each included PR's body (`gh pr view <N> --repo microsoft/mssql-python --json body`) to populate the `What changed / Who benefits / Impact` fields — do not fabricate these from the PR title alone.
 
-Present the complete draft to the user for approval. Save the approved text — it will be used verbatim in Step 9.
+Write the draft to a Markdown file at `release-notes-X.X.X.md` in the repo root so the user can review and edit it directly. Present the complete draft to the user for approval. Save the approved `.md` content — it will be used verbatim in Step 9.
 
 ---
 
@@ -324,7 +324,7 @@ Once confirmed, verify the release is indexed on PyPI before proceeding:
    gh release create vX.X.X \
      --repo microsoft/mssql-python \
      --title "Release Notes - Version X.X.X" \
-     --notes "<approved-draft-from-step-3.5>" \
+     --notes-file release-notes-X.X.X.md \
      --latest
    ```
 3. **Smoke test** — verify the published wheel is installable and correct:
