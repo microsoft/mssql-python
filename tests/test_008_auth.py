@@ -1354,10 +1354,15 @@ class TestServicePrincipalAuth:
             factory_new(spn, sts, "activedirectoryserviceprincipal")
             assert construction_count["n"] == 2
 
-            # Calling the OLD factory again should still hit the OLD cache entry
-            # (it's keyed on the hash of "old-secret"), not construct again.
+            # Calling the OLD factory again: the stale entry was evicted when
+            # new-secret was inserted, so this reconstructs (3 total). This is
+            # the correct behavior: after rotation, the old secret should not
+            # linger in the cache.
             factory_old(spn, sts, "activedirectoryserviceprincipal")
-            assert construction_count["n"] == 2
+            assert construction_count["n"] == 3, (
+                f"Expected 3 constructions (old evicted on rotation), "
+                f"got {construction_count['n']}"
+            )
         finally:
             az.ClientSecretCredential = original
 

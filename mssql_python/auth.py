@@ -244,8 +244,12 @@ class ServicePrincipalAuth:
         if not client_secret:
             raise ValueError("ServicePrincipal auth requires a non-empty client_secret (PWD)")
 
-        def _factory(spn: str, sts_url: str, auth_method: str) -> bytes:
-            # pylint: disable=import-outside-toplevel,unused-argument
+        # Hash once at factory-creation time; client_secret is fixed for the
+        # lifetime of the closure so there is no need to recompute per call.
+        secret_hash = hashlib.sha256(client_secret.encode("utf-8")).hexdigest()
+
+        def _factory(spn: str, sts_url: str, _auth_method: str) -> bytes:
+            # pylint: disable=import-outside-toplevel
             try:
                 from azure.identity import ClientSecretCredential
                 from azure.core.exceptions import ClientAuthenticationError
@@ -273,16 +277,9 @@ class ServicePrincipalAuth:
             try:
                 # Reuse the shared credential cache (introduced for MSI in PR #573)
                 # so SP credentials get the same per-instance token reuse semantics
-                # as the other AD methods.
-                #
-                # The cache key includes a hash of client_secret so a rotated
-                # secret produces a different cache entry. Without this, an
-                # external secret rotation would not invalidate the cached
-                # ClientSecretCredential: azure-identity's internal token cache
-                # would keep returning the previously-issued token (good for
-                # up to ~1 hour) until expiry, masking the rotation. Hashing
-                # avoids storing the raw secret in the dict key.
-                secret_hash = hashlib.sha256(client_secret.encode("utf-8")).hexdigest()
+                # as the other AD methods. secret_hash is computed once in the
+                # outer scope (make_token_factory) so rotation of client_secret
+                # produces a distinct cache key without rehashing per call.
                 cache_key = _credential_cache_key(
                     _AuthInternal.SERVICE_PRINCIPAL,
                     {
@@ -294,6 +291,21 @@ class ServicePrincipalAuth:
                 with _credential_cache_lock:
                     credential = _credential_cache.get(cache_key)
                     if credential is None:
+                        # Evict any stale entry for the same identity but a
+                        # different secret_hash (secret was rotated). Prevents
+                        # unbounded growth and removes the old secret from
+                        # process memory sooner.
+                        stale = [
+                            k for k in _credential_cache
+                            if isinstance(k, tuple)
+                            and len(k) == 2
+                            and k[0] == _AuthInternal.SERVICE_PRINCIPAL
+                            and dict(k[1]).get("tenant_id") == tenant_id
+                            and dict(k[1]).get("client_id") == client_id
+                            and dict(k[1]).get("secret_hash") != secret_hash
+                        ]
+                        for k in stale:
+                            del _credential_cache[k]
                         # Bound the AAD network round-trip. Without explicit
                         # timeouts, azure-identity's defaults can let an
                         # unreachable / slow STS endpoint block the calling
@@ -331,6 +343,9 @@ class ServicePrincipalAuth:
                     "ServicePrincipal token factory: token acquired, length=%d chars",
                     len(token),
                 )
+                # Return bare UTF-16LE JWT bytes. Do NOT length-prefix like
+                # AADAuth.get_token_struct does for the access_token path;
+                # py-core handles the FedAuth length-prefix wrapping itself.
                 return token.encode("utf-16-le")
             except ClientAuthenticationError as e:
                 # Keep the detailed provider error in debug logs only. The
@@ -343,7 +358,7 @@ class ServicePrincipalAuth:
                     str(e),
                 )
                 raise RuntimeError(
-                    "ServicePrincipal authentication failed; " "see debug logs for provider details"
+                    "ServicePrincipal authentication failed; " "see error logs for provider details"
                 ) from None
 
         return _factory
