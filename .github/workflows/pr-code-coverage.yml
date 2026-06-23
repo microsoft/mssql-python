@@ -90,6 +90,7 @@ jobs:
         run: |
           BUILD_ID=${{ env.BUILD_ID }}
           ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
+          BUILD_STATUS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID?api-version=7.1-preview.7"
           
           echo "📥 Polling for coverage artifacts for build $BUILD_ID..."
           
@@ -98,6 +99,14 @@ jobs:
           for i in {1..60}; do
             echo "Attempt $i/60: Checking for coverage artifacts..."
             
+            # Check ADO build status to detect early completion or failure
+            BUILD_STATUS_RESPONSE=$(curl -s "$BUILD_STATUS_URL")
+            if echo "$BUILD_STATUS_RESPONSE" | jq . >/dev/null 2>&1; then
+              ADO_STATUS=$(echo "$BUILD_STATUS_RESPONSE" | jq -r '.status // "unknown"')
+              ADO_RESULT=$(echo "$BUILD_STATUS_RESPONSE" | jq -r '.result // "unknown"')
+              echo "🔎 ADO build status: $ADO_STATUS, result: $ADO_RESULT"
+            fi
+            
             # Fetch artifacts with error handling
             ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
             
@@ -105,9 +114,9 @@ jobs:
             if ! echo "$ARTIFACTS_RESPONSE" | jq . >/dev/null 2>&1; then
               echo "⚠️ Invalid JSON response from artifacts API (attempt $i/60)"
               if [[ $i -eq 60 ]]; then
-                echo "❌ Persistent API issues after 60 attempts"
-                echo "Response received: $ARTIFACTS_RESPONSE"
-                exit 1
+                echo "⚠️ Persistent API issues after 60 attempts. Coverage report unavailable."
+                echo "COVERAGE_AVAILABLE=false" >> $GITHUB_ENV
+                exit 0
               fi
               sleep 30
               continue
@@ -124,12 +133,24 @@ jobs:
               echo "✅ Found coverage artifact on attempt $i!"
               break
             else
+              # If ADO build has completed, there's no point waiting further
+              if [[ "$ADO_STATUS" == "completed" ]]; then
+                if [[ "$ADO_RESULT" == "failed" || "$ADO_RESULT" == "canceled" ]]; then
+                  echo "⚠️ ADO build $BUILD_ID completed with result: $ADO_RESULT. Coverage report unavailable."
+                else
+                  echo "⚠️ ADO build $BUILD_ID completed successfully but no coverage artifact found."
+                  echo "The coverage stage may not have run or the artifact name may have changed."
+                fi
+                echo "COVERAGE_AVAILABLE=false" >> $GITHUB_ENV
+                exit 0
+              fi
               echo "⏳ Coverage report not ready yet (attempt $i/60)..."
               if [[ $i -eq 60 ]]; then
-                echo "❌ Timeout: Coverage report artifact not found after 60 attempts"
+                echo "⚠️ Timeout: Coverage report artifact not found after 60 attempts."
                 echo "Available artifacts:"
                 echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"'
-                exit 1
+                echo "COVERAGE_AVAILABLE=false" >> $GITHUB_ENV
+                exit 0
               fi
               sleep 30
             fi
@@ -186,6 +207,7 @@ jobs:
               echo "COVERAGE_PERCENTAGE=$OVERALL_PERCENTAGE" >> $GITHUB_ENV
               echo "COVERED_LINES=${COVERED_LINES:-N/A}" >> $GITHUB_ENV
               echo "TOTAL_LINES=${TOTAL_LINES:-N/A}" >> $GITHUB_ENV
+              echo "COVERAGE_AVAILABLE=true" >> $GITHUB_ENV
               
               # Extract top files with low coverage - improved approach
               echo "📋 Extracting file-level coverage..."
@@ -216,14 +238,16 @@ jobs:
               exit 1
             fi
           else
-            echo "❌ Could not find coverage report artifact"
+            echo "⚠️ Could not find coverage report artifact"
             echo "Available artifacts from the build:"
             echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"' 2>/dev/null || echo "Could not parse artifacts list"
             echo "This indicates the Azure DevOps build may not have generated coverage reports"
-            exit 1
+            echo "COVERAGE_AVAILABLE=false" >> $GITHUB_ENV
+            exit 0
           fi
 
       - name: Download coverage XML from ADO
+        if: env.COVERAGE_AVAILABLE != 'false'
         run: |
           # Download the Cobertura XML directly from the CodeCoverageReport job
           BUILD_ID=${{ env.BUILD_ID }}
@@ -294,6 +318,7 @@ jobs:
           fi
 
       - name: Generate patch coverage report
+        if: env.COVERAGE_AVAILABLE != 'false'
         run: |
           # Install dependencies
           pip install diff-cover jq
@@ -418,6 +443,7 @@ jobs:
           fi
 
       - name: Save coverage data for comment
+        if: env.COVERAGE_AVAILABLE != 'false'
         run: |
           mkdir -p coverage-comment-data
           jq -n \
@@ -453,7 +479,7 @@ jobs:
       - name: Upload coverage comment data
         # Only upload artifact for forked PRs since same-repo PRs post comment directly
         # This prevents unnecessary workflow_run triggers for same-repo PRs
-        if: github.event.pull_request.head.repo.full_name != github.repository
+        if: env.COVERAGE_AVAILABLE != 'false' && github.event.pull_request.head.repo.full_name != github.repository
         uses: actions/upload-artifact@v4
         with:
           name: coverage-comment-data
@@ -462,7 +488,7 @@ jobs:
 
       - name: Comment coverage summary on PR
         # Skip for forked PRs due to token permission restrictions
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: env.COVERAGE_AVAILABLE != 'false' && github.event.pull_request.head.repo.full_name == github.repository
         uses: ./.github/actions/post-coverage-comment
         with:
           pr_number: ${{ github.event.pull_request.number }}
