@@ -296,7 +296,8 @@ class ServicePrincipalAuth:
                         # unbounded growth and removes the old secret from
                         # process memory sooner.
                         stale = [
-                            k for k in _credential_cache
+                            k
+                            for k in _credential_cache
                             if isinstance(k, tuple)
                             and len(k) == 2
                             and k[0] == _AuthInternal.SERVICE_PRINCIPAL
