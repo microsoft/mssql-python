@@ -35,19 +35,21 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.8.0
+## What's new in v1.9.0
 
 ### Enhancements
 
-- **ActiveDirectoryMSI Support for Bulk Copy** - Adds `Authentication=ActiveDirectoryMSI` support to bulk copy, enabling both system-assigned and user-assigned managed identity authentication for Azure-hosted services (#573).
-- **Row String-Key Indexing** - Row objects now support accessing values by column name as a string key (e.g., `row["col"]`), in addition to integer index and attribute access. Case-insensitive lookup is supported when the cursor's `lowercase` attribute is enabled (#589).
-- **Bundled ODBC Driver Upgrade** - Updated the bundled Microsoft ODBC Driver for SQL Server from 18.5.1.1 to 18.6.2.1 (#569).
+- **Row Objects in Bulk Copy** - `bulkcopy` now accepts `Row` objects (and lists) directly, automatically converting each row to a tuple so data fetched from a query can be bulk-inserted without manual conversion (#615).
 
 ### Bug Fixes
 
-- **Deferred Connect-Attribute Use-After-Free** - Fixed a use-after-free in `Connection.setAttribute` for deferred ODBC attributes (e.g., `SQL_COPT_SS_ACCESS_TOKEN`) that caused SIGBUS on macOS arm64 and authentication failures on Windows and Azure SQL (#596).
-- **Connection String Parsed Multiple Times in Auth Path** - Refactored authentication handling to use dictionary-based parameter processing instead of repeated string parsing, improving reliability and performance (#590).
-- **executemany Type Annotation Regression** - Fixed a typing regression where `Cursor.executemany` rejected valid `list[tuple[...]]` arguments under mypy due to invariant `List` type. The parameter type now uses covariant `Sequence` matching PEP 249 (#586).
+- **macOS / Linux Import Failure** - simdutf is now always statically linked via FetchContent, embedding its symbols into the extension and fixing import failures on machines without simdutf installed at the CI build path (#608).
+- **Incorrect Type Fallback for NULL Parameters** - `SQLDescribeParam` results are now cached per statement when binding `NULL` parameters, fixing incorrect type fallbacks for all-NULL columns and VARBINARY types while also eliminating redundant server round-trips (#614).
+- **executemany Large Decimal Handling** - Fixed a `SQL_C_NUMERIC` type mismatch that caused runtime errors when inserting `Decimal` values outside the SQL Server `MONEY` range via `executemany` (#611).
+- **Exception Pickling** - All DB-API exception subclasses and `ConnectionStringParseError` now implement `__reduce__`, so they survive pickle/unpickle round-trips with all attributes preserved (#616).
+- **PRINT Messages in nextset()** - Diagnostic messages (e.g., SQL Server PRINT output) from subsequent result sets are now captured correctly when `SQL_SUCCESS_WITH_INFO` is returned during `nextset()` (#618).
+- **Row Objects in executemany DAE Path** - `executemany` now converts `Row` objects to tuples in the DAE fallback path, fixing failures when writing to `varchar(max)` columns (#630).
+- **Static Type-Checking of Fetch Methods** - `fetchone`, `fetchmany`, and `fetchall` are no longer reassigned as instance attributes, fixing type-checking failures under `ty` and other static type checkers (#631).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

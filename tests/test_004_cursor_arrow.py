@@ -313,6 +313,83 @@ def test_arrow_long_string(cursor: mssql_python.Cursor):
     assert batch.column(0).to_pylist() == [long_string]
 
 
+@pytest.mark.parametrize("sql_type", ["char(32)", "varchar(32)"])
+@pytest.mark.parametrize("narrow", [True, False])
+def test_arrow_char_utf8_collation_unicode(
+    cursor: mssql_python.Cursor, sql_type: str, narrow: bool
+):
+    table = "#t_arrow_char_decode"
+    collation = "Latin1_General_100_CI_AS_SC_UTF8"
+    expected = [
+        "Grüße",
+        "你好😀",
+        "こんにちは",
+        "Привет",
+        "Hello 世界",
+        "😀😃😄😁",
+        "",
+        None,
+    ]
+    if narrow:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, ctype=mssql_python.SQL_CHAR)
+
+    try:
+        cursor.execute(
+            f"create table {table} (id int primary key, v {sql_type} collate {collation})"
+        )
+    except Exception as exc:
+        pytest.skip(f"UTF-8 collation '{collation}' not supported: {exc}")
+
+    try:
+        for index, value in enumerate(expected, start=1):
+            cursor.execute(f"insert into {table} (id, v) values (?, ?)", index, value)
+        tbl = cursor.execute(f"select v from {table} order by id").arrow()
+        assert tbl.column(0).type.equals(pa.large_string())
+        for expected_val, actual_val in zip(expected, tbl.column(0).to_pylist(), strict=True):
+            if actual_val is not None:
+                actual_val = actual_val.strip()
+            assert expected_val == actual_val
+    finally:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        cursor.execute(f"drop table if exists {table}")
+
+
+@pytest.mark.parametrize("sql_type", ["char(32)", "varchar(32)", "text"])
+@pytest.mark.parametrize("narrow", [True, False])
+def test_arrow_char_cp1252_collation_unicode(
+    cursor: mssql_python.Cursor, sql_type: str, narrow: bool
+):
+    table = "#t_arrow_char_decode"
+    collation = "SQL_Latin1_General_CP1_CI_AS"
+    expected = [
+        "Grüße",
+        "café René!",
+        "naïve café",
+        "Español",
+        "Müller-Öztürk",
+        "Françoise",
+        "",
+        None,
+    ]
+    if narrow:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, ctype=mssql_python.SQL_CHAR)
+
+    cursor.execute(f"create table {table} (id int primary key, v {sql_type} collate {collation})")
+
+    try:
+        for index, value in enumerate(expected, start=1):
+            cursor.execute(f"insert into {table} (id, v) values (?, ?)", index, value)
+        tbl = cursor.execute(f"select v from {table} order by id").arrow()
+        assert tbl.column(0).type.equals(pa.large_string())
+        for expected_val, actual_val in zip(expected, tbl.column(0).to_pylist(), strict=True):
+            if actual_val is not None:
+                actual_val = actual_val.strip()
+            assert expected_val == actual_val
+    finally:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        cursor.execute(f"drop table if exists {table}")
+
+
 def test_rownumber_arrow_batch_interleaved_fetchmany(cursor: mssql_python.Cursor):
     """Verify that arrow_batch and fetchmany can be interleaved
     on the same result set with correct rownumber tracking and values."""

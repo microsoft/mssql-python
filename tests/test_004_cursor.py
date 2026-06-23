@@ -10578,6 +10578,73 @@ def test_setinputsizes_sql_injection_protection(db_connection):
     cursor.execute("DROP TABLE #test_sql_injection")
 
 
+def test_fetch_methods_not_shadowed_on_instance(cursor):
+    """Regression test for GH #620.
+
+    The fetch methods (fetchone/fetchmany/fetchall) must remain regular class
+    methods and never be reassigned as instance attributes. The previous
+    implementation swapped them for closures on the instance while preparing
+    catalog/metadata result sets, which produced a union type that broke static
+    type checkers (e.g. ``ty`` reported a spurious missing ``self`` argument).
+    """
+    fetch_methods = ("fetchone", "fetchmany", "fetchall")
+
+    # Pristine cursor: methods come from the class, not the instance.
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} should not be an instance attribute"
+
+    # A catalog helper historically reassigned the fetch methods. Make sure it
+    # no longer shadows them on the instance.
+    cursor.getTypeInfo().fetchall()
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after getTypeInfo()"
+
+    # A normal execute must also leave the class methods intact, and the
+    # column-name cache populated by the earlier getTypeInfo() call must be
+    # rebuilt so catalog column names do not leak into an ordinary SELECT.
+    cursor.execute("SELECT 1 AS one")
+    rows = cursor.fetchall()
+    assert rows == [[1]]
+    row = rows[0]
+    assert row.one == 1
+    # "TYPE_NAME" belonged to the getTypeInfo() result set. If the cache leaked,
+    # these would resolve to column 0 (returning 1) instead of raising.
+    with pytest.raises(AttributeError):
+        _ = row.TYPE_NAME
+    with pytest.raises(KeyError):
+        _ = row["TYPE_NAME"]
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after execute()"
+
+
+def test_metadata_case_insensitive_access_when_lowercase(db_connection):
+    """Regression test for GH #620 follow-up.
+
+    Catalog result sets must keep case-insensitive column access even when the
+    global ``lowercase`` setting is enabled. With lowercase=True the description
+    names are lowercased, so the cursor must build a lowercase lookup map for
+    metadata rows; otherwise original-cased ODBC names like ``TABLE_NAME`` stop
+    resolving.
+    """
+    original_lowercase = mssql_python.lowercase
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        try:
+            row = cursor.getTypeInfo().fetchone()
+            assert row is not None, "getTypeInfo() should return at least one row"
+            # Lowercase access (the stored casing) must work...
+            lower_value = row.type_name
+            # ...and so must the original ODBC casing, via the lowercase map.
+            assert row.TYPE_NAME == lower_value
+            assert row["TYPE_NAME"] == lower_value
+            assert row["type_name"] == lower_value
+        finally:
+            cursor.close()
+    finally:
+        mssql_python.lowercase = original_lowercase
+
+
 def test_gettypeinfo_all_types(cursor):
     """Test getTypeInfo with no arguments returns all data types"""
     # Get all type information
@@ -16760,4 +16827,117 @@ def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
         assert rows[2][1] == decimal.Decimal("-999999999999999999.654321")
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_multi")
+        db_connection.commit()
+
+
+def test_executemany_row_objects_with_varchar_max_dae(cursor, db_connection):
+    """Test executemany with Row objects and VARCHAR(MAX) DAE fallback (GH-629)."""
+    try:
+        # Create source table with VARCHAR(MAX) column
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_source (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Insert data with large strings (>4000 chars triggers DAE)
+        large_text = "X" * 5000
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (1, large_text))
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (2, large_text))
+        db_connection.commit()
+
+        # Fetch rows as Row objects
+        cursor.execute("SELECT * FROM #pytest_gh629_source")
+        rows = cursor.fetchmany(10)  # Returns Row objects
+        assert len(rows) == 2
+        assert isinstance(rows[0], mssql_python.Row)
+
+        # Create target table
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_target (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # executemany with Row objects should work (triggers DAE + row-by-row fallback)
+        cursor.executemany("INSERT INTO #pytest_gh629_target VALUES (?, ?)", rows)
+        db_connection.commit()
+
+        # Verify data was inserted correctly
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh629_target")
+        assert cursor.fetchone()[0] == 2
+
+        cursor.execute("SELECT id, LEN(large_text) FROM #pytest_gh629_target ORDER BY id")
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == 5000
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_target")
+        db_connection.commit()
+
+
+def test_execute_with_row_object_as_parameters(cursor, db_connection):
+    """Test execute(sql, row) directly with a Row object as parameters (GH-629).
+
+    The fix for GH-629 lives in execute()'s single-argument unwrap: a Row
+    (e.g. from fetchone()) must be unwrapped into individual parameters
+    instead of being treated as one scalar value. This guards that surface
+    directly so a future refactor of the unwrap logic can't silently re-break it.
+    """
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_exec_source (
+                id INT,
+                name VARCHAR(50),
+                large_text VARCHAR(MAX)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_exec_target (
+                id INT,
+                name VARCHAR(50),
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Row 1 stays small (regular bind path); Row 2 has a >4000 char value (DAE path)
+        small_text = "hello"
+        large_text = "X" * 5000
+        cursor.execute(
+            "INSERT INTO #pytest_gh629_exec_source VALUES (?, ?, ?)", (1, "alice", small_text)
+        )
+        cursor.execute(
+            "INSERT INTO #pytest_gh629_exec_source VALUES (?, ?, ?)", (2, "bob", large_text)
+        )
+        db_connection.commit()
+
+        # Fetch as Row objects, then pass each Row directly to execute(sql, row)
+        cursor.execute("SELECT * FROM #pytest_gh629_exec_source ORDER BY id")
+        rows = cursor.fetchall()
+        assert isinstance(rows[0], mssql_python.Row)
+
+        for row in rows:
+            # Passing the Row directly (not tuple(row)) must work after the fix.
+            cursor.execute("INSERT INTO #pytest_gh629_exec_target VALUES (?, ?, ?)", row)
+        db_connection.commit()
+
+        # Verify the round-trip preserved every value
+        cursor.execute(
+            "SELECT id, name, LEN(large_text) FROM #pytest_gh629_exec_target ORDER BY id"
+        )
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == "alice"
+        assert result_rows[0][2] == len(small_text)
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == "bob"
+        assert result_rows[1][2] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_exec_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_exec_target")
         db_connection.commit()
