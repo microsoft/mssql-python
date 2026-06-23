@@ -100,11 +100,15 @@ jobs:
             echo "Attempt $i/60: Checking for coverage artifacts..."
             
             # Check ADO build status to detect early completion or failure
+            ADO_STATUS="unknown"
+            ADO_RESULT="unknown"
             BUILD_STATUS_RESPONSE=$(curl -s "$BUILD_STATUS_URL")
             if echo "$BUILD_STATUS_RESPONSE" | jq . >/dev/null 2>&1; then
               ADO_STATUS=$(echo "$BUILD_STATUS_RESPONSE" | jq -r '.status // "unknown"')
               ADO_RESULT=$(echo "$BUILD_STATUS_RESPONSE" | jq -r '.result // "unknown"')
               echo "🔎 ADO build status: $ADO_STATUS, result: $ADO_RESULT"
+            else
+              echo "⚠️ Could not parse ADO build status response (attempt $i/60)"
             fi
             
             # Fetch artifacts with error handling
