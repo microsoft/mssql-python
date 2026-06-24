@@ -30,6 +30,9 @@ class ConnectionStringParseError(builtins.Exception):
         message = "Connection string parsing failed:\n  " + "\n  ".join(errors)
         super().__init__(message)
 
+    def __reduce__(self):
+        return (self.__class__, (self.errors,))
+
 
 class Exception(builtins.Exception):
     """
@@ -46,6 +49,23 @@ class Exception(builtins.Exception):
             # Errors raised by the driver itself should not have a DDBC error message
             self.message = f"Driver Error: {self.driver_error}"
         super().__init__(self.message)
+
+    def __reduce__(self):
+        # Reconstruct without re-running __init__/truncate_error_message() to avoid
+        # emitting warnings for already-truncated "[Microsoft]..." messages.
+        return (
+            Exception._unpickle,
+            (self.__class__, self.driver_error, self.ddbc_error, self.message),
+        )
+
+    @staticmethod
+    def _unpickle(cls, driver_error: str, ddbc_error: str, message: str):
+        obj = cls.__new__(cls)
+        obj.driver_error = driver_error
+        obj.ddbc_error = ddbc_error
+        obj.message = message
+        builtins.Exception.__init__(obj, message)
+        return obj
 
 
 class Warning(Exception):

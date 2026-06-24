@@ -142,33 +142,33 @@ macOS builds use universal2 binaries and depend on:
 Linux builds support multiple distributions:
 
 **Debian/Ubuntu x86_64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **Debian/Ubuntu ARM64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **RHEL/CentOS x86_64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **RHEL/CentOS ARM64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **SUSE/openSUSE x86_64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 > **Note:** SUSE/openSUSE ARM64 is not supported by Microsoft ODBC Driver 18
 
 **Alpine x86_64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 **Alpine ARM64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libmsodbcsql-18.6.so.2.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
 ## **Python Extension Modules**
@@ -184,3 +184,6 @@ Examples:
 - Linux x86_64: `ddbc_bindings.cp311-x86_64.so`
 - Linux ARM64: `ddbc_bindings.cp311-arm64.so`
 
+# String Handling for Unicode Data
+
+Use std::u16string or the Python C-API when converting between SQLWCHAR data and Python strings. Use simdutf for any pure c++ UTF transcoding. Do not introduce std::wstring in the C++ bindings.
