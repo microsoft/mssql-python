@@ -110,11 +110,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             connection: Database connection object.
             timeout: Query timeout in seconds
         """
+        # Establish the close() invariant *first*, before any statement that
+        # can raise (notably ``_initialize_cursor`` below).  Setting
+        # ``closed=False`` (not True) up front means that if ``__init__``
+        # fails partway — even after ``hstmt`` was allocated — a subsequent
+        # ``close()`` / ``__del__`` will still see a consistent view and
+        # correctly release whatever was allocated.  Pairing it with
+        # ``hstmt=None`` keeps ``close()`` safe when allocation fails before
+        # an HSTMT exists.
+        self.closed: bool = False
+        self.hstmt: Optional[Any] = None
+
         self._connection: "Connection" = connection  # Store as private attribute
         self._timeout: int = timeout
         self._inputsizes: Optional[List[Union[int, Tuple[Any, ...]]]] = None
         # self.connection.autocommit = False
-        self.hstmt: Optional[Any] = None
         self._initialize_cursor()
         self.description: Optional[
             List[
@@ -134,7 +144,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             1  # Default number of rows to fetch at a time is 1, user can change it
         )
         self.buffer_length: int = 1024  # Default buffer length for string data
-        self.closed: bool = False
         self._result_set_empty: bool = False  # Add this initialization
         self.last_executed_stmt: str = ""  # Stores the last statement executed by this cursor
         self.is_stmt_prepared: List[bool] = [
@@ -779,7 +788,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         will be raised if any operation (other than close) is attempted with the cursor.
         This is a deviation from pyodbc, which raises an exception if the cursor is already closed.
         """
-        if self.closed:
+        # ``closed`` may be missing on the instance only if the object was
+        # built via ``Cursor.__new__(Cursor)`` (no ``__init__``).  Normal
+        # construction sets ``self.closed = False`` as the first statement
+        # of ``__init__``, so any partially-initialized instance still has
+        # the attribute.  Treat the no-``__init__`` case as "already closed"
+        # — there's nothing to release — and let GC reap the object cleanly.
+        if getattr(self, "closed", True):
             # Do nothing - not calling _check_closed() here since we want this to be idempotent
             return
 
@@ -3229,10 +3244,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # If interpreter is shutting down, we might not have logging set up
                 import sys
 
-                if sys and sys._is_finalizing():
+                if sys and sys.is_finalizing():
                     # Suppress logging during interpreter shutdown
                     return
-                logger.debug("Exception during cursor cleanup in __del__: %s", e)
+                # ``logger`` could be torn down or have its handlers closed
+                # late in interpreter shutdown; guard so the debug call
+                # cannot itself raise an unraisable exception.
+                if logger is not None:
+                    logger.debug("Exception during cursor cleanup in __del__: %s", e)
 
     def scroll(
         self, value: int, mode: str = "relative"

@@ -402,6 +402,108 @@ print("Cleanup successful")
     assert "Exception" not in result.stderr
 
 
+def test_cursor_del_half_initialized_cursor_no_errors():
+    """Regression: if ``Cursor.__init__`` raises before reaching
+    ``self.closed = False`` (e.g. ``_initialize_cursor`` failure on a bad
+    HSTMT alloc), the half-initialized instance eventually hits ``__del__``.
+
+    Two bugs used to fire in that path and produce a
+    ``PytestUnraisableExceptionWarning`` in CI:
+      * ``close()`` did ``if self.closed:`` and raised
+        ``AttributeError: 'Cursor' object has no attribute 'closed'``;
+      * the ``__del__`` exception handler then did ``sys._is_finalizing()``
+        (typo for ``sys.is_finalizing``) and raised a second AttributeError,
+        masking the first.
+
+    This test fabricates a half-initialized Cursor and asserts that GC
+    completes cleanly with no unraisable exceptions.
+    """
+    import gc
+    import warnings
+    from mssql_python.cursor import Cursor
+
+    # Simulate the state Cursor.__init__ leaves behind when bypassed
+    # entirely via ``Cursor.__new__(Cursor)``: no ``closed`` attribute.
+    # (After the structural fix, real ``__init__`` always sets
+    # ``closed=False`` as its first statement, so this is the only
+    # remaining path that can produce a no-``closed`` instance.)
+    class _BogusConn:
+        pass
+
+    c = Cursor.__new__(Cursor)
+    c._connection = _BogusConn()
+    c.hstmt = None
+    assert "closed" not in c.__dict__, "test fixture must omit 'closed' attribute"
+
+    # close() must tolerate the missing attribute (BUG A fix).
+    c.close()
+
+    # And the __del__ path must not raise either bug A or bug B.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        del c
+        gc.collect()
+
+    offenders = [
+        w
+        for w in caught
+        if "AttributeError" in str(w.message)
+        and ("closed" in str(w.message) or "_is_finalizing" in str(w.message))
+    ]
+    assert not offenders, f"unexpected unraisable exceptions: {[str(w.message) for w in offenders]}"
+
+
+def test_cursor_init_failure_leaves_consistent_state(conn_str, monkeypatch):
+    """Structural-fix regression: ``Cursor.__init__`` must set
+    ``self.closed = False`` and ``self.hstmt = None`` *before* any statement
+    that can raise.  If ``_initialize_cursor`` fails (e.g. HSTMT alloc),
+    the partially-constructed cursor must still be safely closeable and
+    must not leak a server-side handle on the way to the GC.
+
+    Before the fix the partial cursor had no ``closed`` attribute at all,
+    causing ``__del__`` -> ``close()`` to raise ``AttributeError`` and
+    surface as ``PytestUnraisableExceptionWarning`` in CI.
+    """
+    import gc
+    import warnings
+    from mssql_python import connect
+    from mssql_python.cursor import Cursor
+
+    conn = connect(conn_str)
+    try:
+        boom = RuntimeError("simulated HSTMT allocation failure")
+
+        def _raise(self):
+            raise boom
+
+        monkeypatch.setattr(Cursor, "_initialize_cursor", _raise)
+
+        with pytest.raises(RuntimeError, match="simulated HSTMT"):
+            conn.cursor()
+
+        # Force GC of any cursor instance __new__'d during the failed
+        # construction; no unraisable AttributeError must escape.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            gc.collect()
+
+        offenders = [w for w in caught if "AttributeError" in str(w.message)]
+        assert not offenders, (
+            "failed __init__ produced unraisable AttributeError in __del__: "
+            f"{[str(w.message) for w in offenders]}"
+        )
+
+        # Connection must still be usable after the failed cursor creation.
+        # This implicitly verifies _cursors tracking wasn't corrupted.
+        monkeypatch.undo()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        assert cur.fetchone()[0] == 1
+        cur.close()
+    finally:
+        conn.close()
+
+
 def test_cursor_operations_after_close_raise_errors(conn_str):
     """Test that all cursor operations raise appropriate errors after close"""
     conn = connect(conn_str)
