@@ -297,10 +297,58 @@ def test_arrow_table(cursor: mssql_python.Cursor):
 
 def test_arrow_reader(cursor: mssql_python.Cursor):
     reader = cursor.execute("select top 11 1 a from sys.objects").arrow_reader(batch_size=4)
-    assert type(reader) is pa.RecordBatchReader
+    # arrow_reader returns a RecordBatchReader-compatible wrapper (not the
+    # raw pyarrow.RecordBatchReader) so that .close() can actually stop
+    # fetching and release the server-side cursor.  Verify duck-typed
+    # compatibility instead of exact identity.
+    assert hasattr(reader, "schema")
+    assert hasattr(reader, "read_next_batch")
+    assert hasattr(reader, "close")
     batches = list(reader)
     assert [len(b) for b in batches] == [4, 4, 3]
     assert sum(len(b) for b in batches) == 11
+
+
+def test_arrow_reader_close_semantics(cursor: mssql_python.Cursor):
+    """``reader.close()`` must stop fetching, mark the reader closed, leave
+    the parent Cursor usable, be idempotent, and work as a context manager."""
+    reader = cursor.execute("select top 1000 1 a from sys.objects o1, sys.objects o2").arrow_reader(
+        batch_size=10
+    )
+
+    # Drain one batch then close mid-iteration.
+    first = reader.read_next_batch()
+    assert first.num_rows > 0
+    assert reader.closed is False
+
+    reader.close()
+    assert reader.closed is True
+
+    # Further reads raise (pyarrow.ArrowInvalid expected).
+    with pytest.raises(pa.ArrowInvalid):
+        reader.read_next_batch()
+    with pytest.raises(pa.ArrowInvalid):
+        next(iter(reader))
+
+    # close() is idempotent.
+    reader.close()
+    reader.close()
+
+    # Parent cursor must still be usable after the reader was closed.
+    cursor.execute("select 42")
+    row = cursor.fetchone()
+    assert row[0] == 42
+
+
+def test_arrow_reader_context_manager(cursor: mssql_python.Cursor):
+    """Using the reader as a context manager closes it on exit."""
+    with cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2) as reader:
+        assert reader.closed is False
+        _ = reader.read_next_batch()
+    assert reader.closed is True
+    # Cursor remains usable.
+    cursor.execute("select 7")
+    assert cursor.fetchone()[0] == 7
 
 
 def test_arrow_long_string(cursor: mssql_python.Cursor):
