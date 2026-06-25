@@ -133,21 +133,6 @@ class _ArrowReader:
             raise self._arrow_invalid("Reader is closed")
         return self._inner.read_next_batch()
 
-    def read_all(self):
-        if self._closed:
-            raise self._arrow_invalid("Reader is closed")
-        return self._inner.read_all()
-
-    def read_pandas(self, **kwargs):
-        if self._closed:
-            raise self._arrow_invalid("Reader is closed")
-        return self._inner.read_pandas(**kwargs)
-
-    def cast(self, target_schema):  # pyarrow ≥ 14
-        if self._closed:
-            raise self._arrow_invalid("Reader is closed")
-        return self._inner.cast(target_schema)
-
     def __iter__(self):
         return self
 
@@ -2869,8 +2854,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         set is exhausted.
 
         The returned object behaves like ``pyarrow.RecordBatchReader``
-        (``schema``, ``read_next_batch``, ``read_all``, iteration, context
-        manager) but its ``close()`` is fully effective.  Cleanup is driven
+        (``schema``, ``read_next_batch``, iteration, context manager) but
+        its ``close()`` is fully effective.  Cleanup is driven
         by a ``try/finally`` block inside the underlying batch generator, so
         the same teardown — ``SQLCancel`` to unblock any in-flight fetch on
         another thread, ``SQLFreeStmt(SQL_CLOSE)`` to release the server-side
