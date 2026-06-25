@@ -49,7 +49,12 @@ from mssql_python.auth import (
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
-from mssql_python.constants import _RESERVED_PARAMETERS, _KEY_AUTHENTICATION, _KEY_UID
+from mssql_python.constants import (
+    _RESERVED_PARAMETERS,
+    _KEY_AUTHENTICATION,
+    _KEY_UID,
+    _AuthInternal,
+)
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
@@ -344,7 +349,7 @@ class Connection:
                 # Capture credential kwargs (e.g. user-assigned MSI client_id)
                 # from the parsed dict *before* remove_sensitive_params strips UID.
                 credential_kwargs: Optional[Dict[str, str]] = None
-                if auth_type == "msi":
+                if auth_type == _AuthInternal.MSI:
                     uid = (parsed_params.get(_KEY_UID) or "").strip()
                     if uid:
                         credential_kwargs = {"client_id": uid}

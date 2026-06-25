@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Added
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
+- Bulk copy now supports `Authentication=ActiveDirectoryServicePrincipal`
+  via an `entra_id_token_factory` callback registered on the mssql-py-core
+  connection. The callback is invoked by mssql-tds mid-handshake (FedAuth
+  workflow 0x02) so the tenant id can be resolved from the server-supplied
+  STS URL. Requires `mssql-py-core` 0.1.5+. Partial fix for #534.
 
 ### Changed
 - Improved error handling in the connection module.
