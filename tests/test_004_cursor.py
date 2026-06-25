@@ -2184,6 +2184,173 @@ def test_executemany_MIX_NONE_parameter_list(cursor, db_connection):
         db_connection.commit()
 
 
+def test_map_sql_type_none_returns_sql_unknown_type():
+    """Test that _map_sql_type returns SQL_UNKNOWN_TYPE for None params (GH-610).
+
+    None returns SQL_UNKNOWN_TYPE so the C++ BindParameters cache can resolve
+    the correct type via SQLDescribeParam on first call and cache it for
+    subsequent calls.
+    """
+    from unittest.mock import MagicMock
+
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+
+    cursor = MagicMock(spec=mssql_python.Cursor)
+    _map_sql_type = mssql_python.Cursor._map_sql_type.__get__(cursor)
+    params = [None, 42, None]
+
+    sql_type, c_type, col_size, dec_digits, is_dae = _map_sql_type(None, params, 0)
+
+    assert sql_type == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
+    assert c_type == ddbc_sql_const.SQL_C_DEFAULT.value
+    assert col_size == 1
+    assert dec_digits == 0
+    assert is_dae is False
+
+
+# ---------------------------------------------------------
+# GH-610: SQLDescribeParam cache coverage tests
+# ---------------------------------------------------------
+
+
+def test_gh610_execute_null_param_cache_miss(cursor, db_connection):
+    """Cover cache MISS path: first execute with NULL triggers SQLDescribeParam."""
+    cursor.execute("CREATE TABLE #gh610_cov1 (id INT, name VARCHAR(50))")
+    cursor.execute("INSERT INTO #gh610_cov1 VALUES (?, ?)", (1, None))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov1")
+    assert cursor.fetchone()[0] == 1
+    cursor.execute("DROP TABLE #gh610_cov1")
+
+
+def test_gh610_execute_null_param_cache_hit(cursor, db_connection):
+    """Cover cache HIT path: repeated execute with same SQL + NULL."""
+    cursor.execute("CREATE TABLE #gh610_cov2 (id INT, name VARCHAR(50))")
+    # First call: cache miss → SQLDescribeParam
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (1, None))
+    # Second call: cache hit → no SQLDescribeParam
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (2, None))
+    # Third call: cache hit
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (3, None))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov2")
+    assert cursor.fetchone()[0] == 3
+    cursor.execute("DROP TABLE #gh610_cov2")
+
+
+def test_gh610_cache_invalidation_on_new_sql(cursor, db_connection):
+    """Cover InvalidateDescribeCache path: different SQL clears cache."""
+    cursor.execute("CREATE TABLE #gh610_cov3a (val INT)")
+    cursor.execute("CREATE TABLE #gh610_cov3b (val VARCHAR(50))")
+    # First query — cache populated
+    cursor.execute("INSERT INTO #gh610_cov3a VALUES (?)", (None,))
+    # Different SQL — triggers SQLPrepare → InvalidateDescribeCache
+    cursor.execute("INSERT INTO #gh610_cov3b VALUES (?)", (None,))
+    # Back to first — triggers SQLPrepare → InvalidateDescribeCache again
+    cursor.execute("INSERT INTO #gh610_cov3a VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov3a")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("DROP TABLE #gh610_cov3a")
+    cursor.execute("DROP TABLE #gh610_cov3b")
+
+
+def test_gh610_executemany_all_null_column(cursor, db_connection):
+    """Cover BindParameterArray SQL_C_DEFAULT + SQL_UNKNOWN_TYPE path."""
+    cursor.execute("CREATE TABLE #gh610_cov4 (id INT, name VARCHAR(50))")
+    cursor.executemany(
+        "INSERT INTO #gh610_cov4 VALUES (?, ?)",
+        [(1, None), (2, None), (3, None)],
+    )
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov4 WHERE name IS NULL")
+    assert cursor.fetchone()[0] == 3
+    cursor.execute("DROP TABLE #gh610_cov4")
+
+
+def test_gh610_executemany_multiple_all_null_columns(cursor, db_connection):
+    """Cover BindParameterArray with multiple all-NULL columns."""
+    cursor.execute("CREATE TABLE #gh610_cov5 (id INT, a VARCHAR(50), b INT, c VARCHAR(50))")
+    cursor.executemany(
+        "INSERT INTO #gh610_cov5 VALUES (?, ?, ?, ?)",
+        [(1, None, None, None), (2, None, None, None)],
+    )
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov5")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("DROP TABLE #gh610_cov5")
+
+
+def test_gh610_execute_all_null_params(cursor, db_connection):
+    """Cover BindParameters with all params being NULL."""
+    cursor.execute("CREATE TABLE #gh610_cov6 (a INT, b VARCHAR(50))")
+    cursor.execute("INSERT INTO #gh610_cov6 VALUES (?, ?)", (None, None))
+    db_connection.commit()
+    cursor.execute("SELECT * FROM #gh610_cov6")
+    row = cursor.fetchone()
+    assert row[0] is None and row[1] is None
+    cursor.execute("DROP TABLE #gh610_cov6")
+
+
+def test_gh610_setinputsizes_bypasses_cache(cursor, db_connection):
+    """setinputsizes provides type directly — cache not used."""
+    from mssql_python.constants import ConstantsDDBC as C
+
+    cursor.execute("CREATE TABLE #gh610_cov7 (val VARCHAR(50))")
+    cursor.setinputsizes([(C.SQL_VARCHAR.value, 50, 0)])
+    cursor.execute("INSERT INTO #gh610_cov7 VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT val FROM #gh610_cov7")
+    assert cursor.fetchone()[0] is None
+    cursor.execute("DROP TABLE #gh610_cov7")
+
+
+def test_gh610_cache_no_mix_across_different_sql(cursor, db_connection):
+    """Switching SQL on same cursor clears cache — no cross-query type mixing.
+
+    Regression test requested by gargsaumya: execute INSERT INTO t1 VALUES (?)
+    then INSERT INTO t2 VALUES (?, ?) on the same cursor to ensure cache
+    doesn't mix parameter types across different prepared statements.
+    """
+    cursor.execute("CREATE TABLE #gh610_mix1 (val INT)")
+    cursor.execute("CREATE TABLE #gh610_mix2 (a VARCHAR(50), b INT)")
+    # First query — cache populated for 1-param INSERT
+    cursor.execute("INSERT INTO #gh610_mix1 VALUES (?)", (None,))
+    # Different SQL (different param count) — cache must be cleared by re-prepare
+    cursor.execute("INSERT INTO #gh610_mix2 VALUES (?, ?)", (None, None))
+    # Back to first query — cache cleared again, fresh describe
+    cursor.execute("INSERT INTO #gh610_mix1 VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_mix1")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("SELECT COUNT(*) FROM #gh610_mix2")
+    assert cursor.fetchone()[0] == 1
+    cursor.execute("DROP TABLE #gh610_mix1")
+    cursor.execute("DROP TABLE #gh610_mix2")
+
+
+def test_gh610_cache_null_then_nonnull_same_statement(cursor, db_connection):
+    """Cached NULL type does not affect subsequent non-NULL execution.
+
+    Regression test requested by gargsaumya: execute with NULL first (caches
+    fallback type), then execute with non-NULL on same statement. The cache
+    should not interfere because non-NULL params take a different code path
+    (concrete C type, not SQL_C_DEFAULT).
+    """
+    cursor.execute("CREATE TABLE #gh610_nullnon (val INT)")
+    # First call: param is None → SQL_UNKNOWN_TYPE → cache populated
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (None,))
+    # Second call: param is 42 (int) → SQL_C_TINYINT, never hits cache
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (42,))
+    # Third call: param is None again → cache hit
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT val FROM #gh610_nullnon ORDER BY val")
+    rows = [r[0] for r in cursor.fetchall()]
+    assert rows == [None, None, 42]
+    cursor.execute("DROP TABLE #gh610_nullnon")
+
+
 @pytest.mark.skip(reason="Skipping due to commit reliability issues with executemany")
 def test_executemany_concurrent_null_parameters(db_connection):
     """Test executemany with NULL parameters across multiple sequential operations."""
@@ -6452,6 +6619,138 @@ def test_cursor_messages_with_error(cursor):
     assert "After error" in cursor.messages[0][1], "Message should be from after the error"
 
 
+def test_cursor_messages_nextset_multiple_prints(cursor):
+    """Test that PRINT messages from subsequent result sets are captured via nextset().
+
+    Regression test for GH-612: PRINT messages after the first one were lost
+    because nextset() did not capture SQL_SUCCESS_WITH_INFO diagnostics.
+    """
+    cursor.execute("""
+        PRINT 'hi';
+        PRINT 'ih';
+        """)
+
+    # First PRINT is captured by execute()
+    assert len(cursor.messages) == 1, "execute() should capture the first PRINT message"
+    assert "hi" in cursor.messages[0][1]
+
+    # Advance to the next result set — should capture the second PRINT
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1, "nextset() should capture the second PRINT message"
+    assert "ih" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
+def test_cursor_messages_nextset_print_with_select(cursor):
+    """Test PRINT messages interleaved with SELECT result sets via nextset().
+
+    Ensures messages are captured correctly when PRINT and SELECT are mixed.
+    Only messages collected from nextset() itself are checked so the test
+    fails if nextset() drops messages (even if fetchall() would mask it).
+    """
+    cursor.execute("""
+        PRINT 'before select';
+        SELECT 1 AS val;
+        PRINT 'after select';
+        """)
+
+    # First PRINT captured by execute()
+    assert len(cursor.messages) >= 1
+    assert "before select" in cursor.messages[0][1]
+
+    nextset_messages = []
+    all_rows = []
+
+    while cursor.nextset():
+        # Collect only messages produced by nextset() — not by fetchall()
+        nextset_messages.extend(cursor.messages)
+        if cursor.description:
+            all_rows.extend(cursor.fetchall())
+
+    # Also collect messages from the final nextset() that returned False
+    # (trailing PRINT can attach to SQL_NO_DATA)
+    nextset_messages.extend(cursor.messages)
+
+    # Verify the "after select" PRINT was captured by nextset(), not fetchall()
+    combined_text = " ".join(m[1] for m in nextset_messages)
+    assert "after select" in combined_text, "nextset() should capture the trailing PRINT message"
+
+    # Verify the SELECT result was returned
+    assert len(all_rows) == 1
+    assert all_rows[0][0] == 1
+
+
+def test_cursor_messages_nextset_three_prints(cursor):
+    """Test that three consecutive PRINT messages are all captured across nextset() calls."""
+    cursor.execute("""
+        PRINT 'msg1';
+        PRINT 'msg2';
+        PRINT 'msg3';
+        """)
+
+    # First PRINT captured by execute()
+    assert len(cursor.messages) == 1
+    assert "msg1" in cursor.messages[0][1]
+
+    # Second PRINT via nextset()
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1
+    assert "msg2" in cursor.messages[0][1]
+
+    # Third PRINT via nextset()
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1
+    assert "msg3" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
+def test_cursor_messages_nextset_clears_previous(cursor):
+    """Test that nextset() clears messages from the previous result set."""
+    cursor.execute("""
+        PRINT 'first';
+        PRINT 'second';
+        """)
+
+    assert len(cursor.messages) == 1
+    assert "first" in cursor.messages[0][1]
+
+    # After nextset(), messages should only contain the new message
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1, "Previous messages should have been cleared"
+    assert "second" in cursor.messages[0][1]
+    assert not any("first" in m[1] for m in cursor.messages), "Old message should not persist"
+
+
+def test_cursor_messages_nextset_trailing_print(cursor):
+    """Test that a trailing PRINT after the final SELECT is captured.
+
+    The ODBC driver delivers the trailing PRINT as a separate result set
+    (SQL_SUCCESS_WITH_INFO), so nextset() returns True and captures the
+    message.  A second nextset() then returns False (SQL_NO_DATA).
+    This is the most common customer pain point (GH-612).
+    """
+    cursor.execute("""
+        SELECT 1 AS val;
+        PRINT 'trailing';
+        """)
+
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 1
+
+    # The trailing PRINT is delivered as a separate result set
+    assert cursor.nextset()
+    assert len(cursor.messages) >= 1, "Trailing PRINT after final SELECT should be captured"
+    assert "trailing" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
 def test_tables_setup(cursor, db_connection):
     """Create test objects for tables method testing"""
     try:
@@ -10277,6 +10576,73 @@ def test_setinputsizes_sql_injection_protection(db_connection):
 
     # Clean up
     cursor.execute("DROP TABLE #test_sql_injection")
+
+
+def test_fetch_methods_not_shadowed_on_instance(cursor):
+    """Regression test for GH #620.
+
+    The fetch methods (fetchone/fetchmany/fetchall) must remain regular class
+    methods and never be reassigned as instance attributes. The previous
+    implementation swapped them for closures on the instance while preparing
+    catalog/metadata result sets, which produced a union type that broke static
+    type checkers (e.g. ``ty`` reported a spurious missing ``self`` argument).
+    """
+    fetch_methods = ("fetchone", "fetchmany", "fetchall")
+
+    # Pristine cursor: methods come from the class, not the instance.
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} should not be an instance attribute"
+
+    # A catalog helper historically reassigned the fetch methods. Make sure it
+    # no longer shadows them on the instance.
+    cursor.getTypeInfo().fetchall()
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after getTypeInfo()"
+
+    # A normal execute must also leave the class methods intact, and the
+    # column-name cache populated by the earlier getTypeInfo() call must be
+    # rebuilt so catalog column names do not leak into an ordinary SELECT.
+    cursor.execute("SELECT 1 AS one")
+    rows = cursor.fetchall()
+    assert rows == [[1]]
+    row = rows[0]
+    assert row.one == 1
+    # "TYPE_NAME" belonged to the getTypeInfo() result set. If the cache leaked,
+    # these would resolve to column 0 (returning 1) instead of raising.
+    with pytest.raises(AttributeError):
+        _ = row.TYPE_NAME
+    with pytest.raises(KeyError):
+        _ = row["TYPE_NAME"]
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after execute()"
+
+
+def test_metadata_case_insensitive_access_when_lowercase(db_connection):
+    """Regression test for GH #620 follow-up.
+
+    Catalog result sets must keep case-insensitive column access even when the
+    global ``lowercase`` setting is enabled. With lowercase=True the description
+    names are lowercased, so the cursor must build a lowercase lookup map for
+    metadata rows; otherwise original-cased ODBC names like ``TABLE_NAME`` stop
+    resolving.
+    """
+    original_lowercase = mssql_python.lowercase
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        try:
+            row = cursor.getTypeInfo().fetchone()
+            assert row is not None, "getTypeInfo() should return at least one row"
+            # Lowercase access (the stored casing) must work...
+            lower_value = row.type_name
+            # ...and so must the original ODBC casing, via the lowercase map.
+            assert row.TYPE_NAME == lower_value
+            assert row["TYPE_NAME"] == lower_value
+            assert row["type_name"] == lower_value
+        finally:
+            cursor.close()
+    finally:
+        mssql_python.lowercase = original_lowercase
 
 
 def test_gettypeinfo_all_types(cursor):
@@ -16461,4 +16827,117 @@ def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
         assert rows[2][1] == decimal.Decimal("-999999999999999999.654321")
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_multi")
+        db_connection.commit()
+
+
+def test_executemany_row_objects_with_varchar_max_dae(cursor, db_connection):
+    """Test executemany with Row objects and VARCHAR(MAX) DAE fallback (GH-629)."""
+    try:
+        # Create source table with VARCHAR(MAX) column
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_source (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Insert data with large strings (>4000 chars triggers DAE)
+        large_text = "X" * 5000
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (1, large_text))
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (2, large_text))
+        db_connection.commit()
+
+        # Fetch rows as Row objects
+        cursor.execute("SELECT * FROM #pytest_gh629_source")
+        rows = cursor.fetchmany(10)  # Returns Row objects
+        assert len(rows) == 2
+        assert isinstance(rows[0], mssql_python.Row)
+
+        # Create target table
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_target (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # executemany with Row objects should work (triggers DAE + row-by-row fallback)
+        cursor.executemany("INSERT INTO #pytest_gh629_target VALUES (?, ?)", rows)
+        db_connection.commit()
+
+        # Verify data was inserted correctly
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh629_target")
+        assert cursor.fetchone()[0] == 2
+
+        cursor.execute("SELECT id, LEN(large_text) FROM #pytest_gh629_target ORDER BY id")
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == 5000
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_target")
+        db_connection.commit()
+
+
+def test_execute_with_row_object_as_parameters(cursor, db_connection):
+    """Test execute(sql, row) directly with a Row object as parameters (GH-629).
+
+    The fix for GH-629 lives in execute()'s single-argument unwrap: a Row
+    (e.g. from fetchone()) must be unwrapped into individual parameters
+    instead of being treated as one scalar value. This guards that surface
+    directly so a future refactor of the unwrap logic can't silently re-break it.
+    """
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_exec_source (
+                id INT,
+                name VARCHAR(50),
+                large_text VARCHAR(MAX)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_exec_target (
+                id INT,
+                name VARCHAR(50),
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Row 1 stays small (regular bind path); Row 2 has a >4000 char value (DAE path)
+        small_text = "hello"
+        large_text = "X" * 5000
+        cursor.execute(
+            "INSERT INTO #pytest_gh629_exec_source VALUES (?, ?, ?)", (1, "alice", small_text)
+        )
+        cursor.execute(
+            "INSERT INTO #pytest_gh629_exec_source VALUES (?, ?, ?)", (2, "bob", large_text)
+        )
+        db_connection.commit()
+
+        # Fetch as Row objects, then pass each Row directly to execute(sql, row)
+        cursor.execute("SELECT * FROM #pytest_gh629_exec_source ORDER BY id")
+        rows = cursor.fetchall()
+        assert isinstance(rows[0], mssql_python.Row)
+
+        for row in rows:
+            # Passing the Row directly (not tuple(row)) must work after the fix.
+            cursor.execute("INSERT INTO #pytest_gh629_exec_target VALUES (?, ?, ?)", row)
+        db_connection.commit()
+
+        # Verify the round-trip preserved every value
+        cursor.execute(
+            "SELECT id, name, LEN(large_text) FROM #pytest_gh629_exec_target ORDER BY id"
+        )
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == "alice"
+        assert result_rows[0][2] == len(small_text)
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == "bob"
+        assert result_rows[1][2] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_exec_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_exec_target")
         db_connection.commit()
