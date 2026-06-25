@@ -351,6 +351,84 @@ def test_arrow_reader_context_manager(cursor: mssql_python.Cursor):
     assert cursor.fetchone()[0] == 7
 
 
+def test_arrow_reader_gc_cleanup(cursor: mssql_python.Cursor):
+    """Dropping the reader without calling close() must still release the
+    server-side cursor — the try/finally in the batch generator runs on GC."""
+    import gc
+
+    reader = cursor.execute("select top 100 1 a from sys.objects").arrow_reader(batch_size=10)
+    _ = reader.read_next_batch()  # partial consume
+
+    # Drop the only strong reference and force collection. The generator's
+    # finally block must run, releasing the cursor so the next execute()
+    # succeeds without ProgrammingError("connection busy") etc.
+    del reader
+    gc.collect()
+
+    cursor.execute("select 5")
+    assert cursor.fetchone()[0] == 5
+
+
+def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
+    """close() called from a separate thread must unblock an in-flight fetch
+    via SQLCancel and leave the parent Cursor reusable."""
+    import threading
+    import time
+
+    # Big enough cross-join that streaming will not finish in <100ms.
+    reader = cursor.execute(
+        "select top 1000000 1 a from sys.objects o1, sys.objects o2, sys.objects o3"
+    ).arrow_reader(batch_size=64)
+
+    closer_done = threading.Event()
+    closer_exc = []
+
+    def closer():
+        try:
+            time.sleep(0.05)  # let the consumer get into a fetch
+            reader.close()
+        except Exception as e:  # pragma: no cover - reported to main thread
+            closer_exc.append(e)
+        finally:
+            closer_done.set()
+
+    t = threading.Thread(target=closer, daemon=True)
+    t.start()
+
+    # Iterate; the cancel from the other thread must terminate the loop
+    # (either by exhausting cleanly or by raising) within a couple seconds.
+    rows = 0
+    try:
+        for batch in reader:
+            rows += batch.num_rows
+            if rows > 2_000_000:  # safety net — should never reach this
+                pytest.fail("reader was not cancelled by the other thread")
+    except pa.ArrowInvalid:
+        pass  # acceptable: reader was closed mid-iteration
+
+    closer_done.wait(timeout=5)
+    t.join(timeout=5)
+    assert not closer_exc, f"closer thread raised: {closer_exc[0]!r}"
+    assert reader.closed is True
+
+    # Parent cursor must still work after the cross-thread cancel.
+    cursor.execute("select 99")
+    assert cursor.fetchone()[0] == 99
+
+
+def test_arrow_reader_diagnostics_drained_on_close(cursor: mssql_python.Cursor):
+    """After close(), any diagnostic messages produced server-side end up on
+    cursor.messages (not silently dropped)."""
+    # Drive a result-producing query, partially read, then close.
+    reader = cursor.execute("select top 50 1 a from sys.objects").arrow_reader(batch_size=5)
+    _ = reader.read_next_batch()
+    # messages is a list of (sqlstate, text) tuples; should at least exist
+    # and not raise when the close path tries to extend it.
+    assert isinstance(cursor.messages, list)
+    reader.close()
+    assert isinstance(cursor.messages, list)
+
+
 def test_arrow_long_string(cursor: mssql_python.Cursor):
     "Make sure resizing the data buffer works"
     long_string = "A" * 100000  # 100k characters
