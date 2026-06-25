@@ -269,11 +269,6 @@ class ServicePrincipalAuth:
             if not tenant_id:
                 raise RuntimeError(f"Could not extract tenant_id from STS URL: {sts_url!r}")
 
-            logger.info(
-                "ServicePrincipal token factory: acquiring token for tenant=%s, spn=%s",
-                tenant_id,
-                spn,
-            )
             try:
                 # Reuse the shared credential cache (introduced for MSI in PR #573)
                 # so SP credentials get the same per-instance token reuse semantics
