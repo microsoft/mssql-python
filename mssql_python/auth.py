@@ -8,18 +8,19 @@ import hashlib
 import platform
 import struct
 import threading
+import time
 from typing import Tuple, Dict, Optional
 
 from mssql_python.logging import logger
 from mssql_python.constants import (
     AuthType,
-    ConstantsDDBC,
     _AuthInternal,
     _KEY_AUTHENTICATION,
     _KEY_UID,
     _KEY_PWD,
     _KEY_TRUSTED_CONNECTION,
 )
+from mssql_python.exceptions import InterfaceError, OperationalError
 
 # Module-level credential instance cache.
 # Reusing credential objects allows the Azure Identity SDK's built-in
@@ -33,6 +34,12 @@ _credential_cache_lock = threading.Lock()
 
 # Canonical keys to strip when handing an Entra-token connection to ODBC.
 _SENSITIVE_KEYS = frozenset({_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION, _KEY_AUTHENTICATION})
+
+# Azure SQL Database OAuth scope for the Azure **commercial** cloud. Shared by
+# the built-in AADAuth path and the custom token_provider path. Sovereign
+# clouds (Azure US Gov, Azure China, Azure Germany) are out of scope — a token
+# for a different audience is rejected by SQL Server at login.
+_DATABASE_SCOPE = "https://database.windows.net/.default"
 
 # Map Authentication connection-string values to internal short names.
 _AUTH_TYPE_MAP: Dict[str, str] = {
@@ -147,7 +154,7 @@ class AADAuth:
                         auth_type,
                     )
                 credential = _credential_cache[cache_key]
-            raw_token = credential.get_token("https://database.windows.net/.default").token
+            raw_token = credential.get_token(_DATABASE_SCOPE).token
             logger.info(
                 "get_token: Azure AD token acquired successfully - token_length=%d chars",
                 len(raw_token),
@@ -439,55 +446,100 @@ def extract_auth_type(parsed_params: Dict[str, str]) -> Optional[str]:
     return _AUTH_TYPE_MAP.get(auth_value)
 
 
-def _get_token_from_credential(credential: object) -> str:
-    """Internal: call credential.get_token() and return the raw JWT string.
+def _get_token_from_credential(credential: object) -> Tuple[str, Optional[int]]:
+    """Internal: call credential.get_token() and return ``(raw_jwt, expires_on)``.
 
     Centralises the token-acquisition + error-wrapping logic that both
     :func:`acquire_token_from_credential` and
     :func:`acquire_raw_token_from_credential` need.
 
+    ``expires_on`` is the POSIX timestamp (seconds) at which the token
+    expires, taken from the credential's ``AccessToken`` result when present
+    (it is ``None`` if the provider does not supply one). It is captured so
+    callers can log it and reason about token lifetime; the access token
+    itself is a *pre-connect* ODBC attribute and cannot be refreshed on a
+    live connection (see the module docs on token lifecycle).
+
+    Note:
+        The scope is hard-coded to the Azure **commercial** cloud
+        (``https://database.windows.net/.default``). Sovereign clouds
+        (Azure US Government, Azure China, Azure Germany) are **out of
+        scope** for the ``token_provider`` path.
+
     Raises:
-        RuntimeError: If token acquisition fails.
+        InterfaceError: If the provider returns no valid ``.token`` string.
+        OperationalError: If the underlying ``get_token()`` call fails.
     """
+    start_time = time.perf_counter()
     try:
-        raw_token = credential.get_token("https://database.windows.net/.default").token
-        logger.info(
-            "_get_token_from_credential: Token acquired from %s - length=%d chars",
-            type(credential).__name__,
-            len(raw_token),
-        )
-        return raw_token
+        token_result = credential.get_token(_DATABASE_SCOPE)
     except Exception as e:
         logger.error(
-            "_get_token_from_credential: Failed - credential=%s, error=%s",
+            "_get_token_from_credential: get_token() failed - credential=%s, error=%s",
             type(credential).__name__,
             str(e),
         )
-        raise RuntimeError(
-            f"Failed to acquire token from credential " f"({type(credential).__name__}): {e}"
+        # Preserve the original credential exception (e.g. azure-identity
+        # ClientAuthenticationError) as __cause__ for programmatic handling.
+        raise OperationalError(
+            driver_error=(f"Failed to acquire token from credential ({type(credential).__name__})"),
+            ddbc_error=str(e),
         ) from e
 
+    raw_token = getattr(token_result, "token", None)
+    if not isinstance(raw_token, str) or not raw_token:
+        raise InterfaceError(
+            driver_error=(
+                "token_provider.get_token() must return an object with a non-empty "
+                "string '.token' attribute."
+            ),
+            ddbc_error=f"got .token of type {type(raw_token).__name__}",
+        )
 
-def acquire_token_from_credential(credential: object) -> bytes:
+    expires_on = getattr(token_result, "expires_on", None)
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    logger.info(
+        "_get_token_from_credential: Token acquired from %s - length=%d chars, "
+        "expires_on=%s, duration_ms=%.2f",
+        type(credential).__name__,
+        len(raw_token),
+        expires_on,
+        elapsed_ms,
+    )
+    return raw_token, expires_on
+
+
+def acquire_token_from_credential(credential: object) -> Tuple[bytes, Optional[int]]:
     """Acquire an ODBC token struct from a user-supplied credential object.
 
     The credential must follow the Azure ``TokenCredential`` protocol — i.e.
     have a ``.get_token(scope)`` method returning an object with a ``.token``
     attribute (a raw JWT string).
 
+    .. note::
+        The scope is fixed to the Azure **commercial** cloud
+        (``https://database.windows.net/.default``). Sovereign clouds (Azure
+        US Government, Azure China, Azure Germany) are **out of scope** — for
+        those, supply a pre-acquired token via
+        ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`` instead.
+
     Args:
         credential: Any object with a ``.get_token(scope)`` method.
 
     Returns:
-        bytes: ODBC-compatible token struct for ``SQL_COPT_SS_ACCESS_TOKEN``.
+        Tuple[bytes, Optional[int]]: The ODBC token struct for
+        ``SQL_COPT_SS_ACCESS_TOKEN`` and the token's ``expires_on`` POSIX
+        timestamp (``None`` if the provider does not supply one).
 
     Raises:
-        RuntimeError: If token acquisition fails.
+        InterfaceError: If the provider returns no valid ``.token`` string.
+        OperationalError: If the underlying ``get_token()`` call fails.
     """
-    return AADAuth.get_token_struct(_get_token_from_credential(credential))
+    raw_token, expires_on = _get_token_from_credential(credential)
+    return AADAuth.get_token_struct(raw_token), expires_on
 
 
-def acquire_raw_token_from_credential(credential: object) -> str:
+def acquire_raw_token_from_credential(credential: object) -> Tuple[str, Optional[int]]:
     """Acquire a raw JWT string from a user-supplied credential object.
 
     Used by bulk copy, which needs the raw JWT rather than the ODBC struct.
@@ -496,9 +548,12 @@ def acquire_raw_token_from_credential(credential: object) -> str:
         credential: Any object with a ``.get_token(scope)`` method.
 
     Returns:
-        str: Raw JWT token string.
+        Tuple[str, Optional[int]]: The raw JWT token string and the token's
+        ``expires_on`` POSIX timestamp (``None`` if the provider does not
+        supply one).
 
     Raises:
-        RuntimeError: If token acquisition fails.
+        InterfaceError: If the provider returns no valid ``.token`` string.
+        OperationalError: If the underlying ``get_token()`` call fails.
     """
     return _get_token_from_credential(credential)

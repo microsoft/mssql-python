@@ -139,10 +139,10 @@ def _validate_utf16_wchar_compatibility(
 
         # Generate context-appropriate error messages
         if "ctype" in context:
-            driver_error = f"SQL_WCHAR ctype only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR ctype only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR ctype"
         else:
-            driver_error = f"SQL_WCHAR only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR"
 
         raise ProgrammingError(
@@ -271,6 +271,21 @@ class Connection:
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
+            token_provider (object, optional): Advanced token provider for Microsoft Entra ID
+                authentication. Must expose a callable ``.get_token(scope)`` method that returns
+                an object with a ``.token`` attribute.
+
+                This parameter is mutually exclusive with ``Authentication=`` in the connection
+                string and raises ``ValueError`` at connect time when both are provided.
+
+                .. note::
+                    The token scope is fixed to the Azure **commercial** cloud
+                    (``https://database.windows.net/.default``). Sovereign clouds
+                    (e.g. Azure US Government, Azure China, Azure Germany) are
+                    **out of scope** for this parameter — a token acquired for a
+                    different audience will be rejected by SQL Server at login.
+                    For sovereign clouds, acquire the token yourself and pass it
+                    via ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`` instead.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
@@ -343,26 +358,47 @@ class Connection:
         # User-supplied token provider for custom Entra ID authentication.
         # Stored so bulk copy can call .get_token() for a fresh JWT later.
         self._token_provider = None
+        # POSIX timestamp (seconds) at which the current access token expires,
+        # captured from the credential's AccessToken result. None when unknown.
+        # The token is a pre-connect ODBC attribute and cannot be refreshed on
+        # a live connection — this is exposed for diagnostics/logging only.
+        self._token_expires_on: Optional[int] = None
 
         # Custom token_provider= parameter — takes priority, mutually exclusive
         # with Authentication= in the connection string.
         if token_provider is not None:
             if _KEY_AUTHENTICATION in parsed_params:
-                raise ValueError(
-                    "Cannot specify both 'token_provider' parameter and "
-                    "'Authentication' in the connection string. "
-                    "Use one or the other."
+                raise InterfaceError(
+                    driver_error=(
+                        "Cannot specify both 'token_provider' parameter and "
+                        "'Authentication' in the connection string. "
+                        "Use one or the other."
+                    ),
+                    ddbc_error="",
+                )
+            if ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in self._attrs_before:
+                raise InterfaceError(
+                    driver_error=(
+                        "Cannot specify both 'token_provider' parameter and "
+                        "attrs_before[SQL_COPT_SS_ACCESS_TOKEN]. "
+                        "Use one token source."
+                    ),
+                    ddbc_error="",
                 )
             if not callable(getattr(token_provider, "get_token", None)):
-                raise TypeError(
-                    f"token_provider must have a .get_token() method. "
-                    f"Got {type(token_provider).__name__}."
+                raise InterfaceError(
+                    driver_error=(
+                        f"token_provider must have a .get_token() method. "
+                        f"Got {type(token_provider).__name__}."
+                    ),
+                    ddbc_error="",
                 )
             from mssql_python.auth import acquire_token_from_credential
 
-            token = acquire_token_from_credential(token_provider)
+            token, token_expires_on = acquire_token_from_credential(token_provider)
             self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
             self._token_provider = token_provider
+            self._token_expires_on = token_expires_on
             # Strip sensitive params (UID/PWD/Trusted_Connection) since
             # access-token auth is used — same as the Authentication= path.
             sanitized = remove_sensitive_params(parsed_params)

@@ -2947,10 +2947,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             from mssql_python.auth import acquire_raw_token_from_credential
 
             try:
-                raw_token = acquire_raw_token_from_credential(self.connection._token_provider)
-            except RuntimeError as e:
-                raise RuntimeError(
-                    f"Bulk copy failed: unable to acquire token " f"from custom credential: {e}"
+                raw_token, _ = acquire_raw_token_from_credential(self.connection._token_provider)
+            except (OperationalError, InterfaceError) as e:
+                raise OperationalError(
+                    driver_error=(
+                        "Bulk copy failed: unable to acquire token from custom credential"
+                    ),
+                    ddbc_error=str(e),
                 ) from e
             pycore_context["access_token"] = raw_token
             for key in ("authentication", "user_name", "password"):
