@@ -369,6 +369,7 @@ def test_arrow_reader_gc_cleanup(cursor: mssql_python.Cursor):
     assert cursor.fetchone()[0] == 5
 
 
+@pytest.mark.stress  # large cross-join + 50ms timing race — flaky under CI CPU contention
 def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
     """close() called from a separate thread must unblock an in-flight fetch
     via SQLCancel and leave the parent Cursor reusable."""
@@ -408,6 +409,16 @@ def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
 
     closer_done.wait(timeout=5)
     t.join(timeout=5)
+    # Fail loudly if the closer thread did not actually finish — otherwise a
+    # deadlock in close() would silently masquerade as a downstream failure
+    # (or, worse, hang the interpreter while the daemon thread holds the
+    # HSTMT).
+    assert (
+        closer_done.is_set()
+    ), "closer thread did not signal completion within 5s — close() may be deadlocked"
+    assert (
+        not t.is_alive()
+    ), "closer thread is still alive after join(timeout=5) — close() may be deadlocked"
     assert not closer_exc, f"closer thread raised: {closer_exc[0]!r}"
     assert reader.closed is True
 
@@ -427,6 +438,107 @@ def test_arrow_reader_diagnostics_drained_on_close(cursor: mssql_python.Cursor):
     assert isinstance(cursor.messages, list)
     reader.close()
     assert isinstance(cursor.messages, list)
+
+
+def test_arrow_reader_drains_diagnostics_when_close_cursor_succeeds(
+    cursor: mssql_python.Cursor, monkeypatch
+):
+    """SQLFreeStmt(SQL_CLOSE) can return SQL_SUCCESS_WITH_INFO — a success
+    code that still pushes warning records onto the HSTMT diag stack.  The
+    cleanup path must drain diagnostics *unconditionally* after the close
+    attempt, not only when _close_cursor() raises, otherwise those warnings
+    would be silently dropped."""
+    from mssql_python import cursor as cursor_mod
+
+    reader = cursor.execute("select top 10 1 a from sys.objects").arrow_reader(batch_size=5)
+    _ = reader.read_next_batch()
+
+    # Snapshot any pre-close diagnostics already on the cursor so we can
+    # detect *new* records pushed by our monkeypatched drain calls.
+    pre_existing = list(cursor.messages)
+
+    real_drain = cursor_mod.ddbc_bindings.DDBCSQLGetAllDiagRecords
+    call_count = {"n": 0}
+
+    def fake_drain(hstmt):
+        call_count["n"] += 1
+        records = list(real_drain(hstmt))
+        # Inject one synthetic record per call so we can prove both the
+        # pre-close drain AND the post-close (success-path) drain ran.
+        records.append(("01000", f"synthetic warning #{call_count['n']}"))
+        return records
+
+    monkeypatch.setattr(cursor_mod.ddbc_bindings, "DDBCSQLGetAllDiagRecords", fake_drain)
+
+    # _close_cursor() should succeed (no exception); the bug would skip the
+    # post-close drain entirely on that success path.
+    reader.close()
+
+    # Strip the snapshot to look only at messages added by the cleanup path.
+    added = cursor.messages[len(pre_existing) :]
+    synthetic_texts = [m[1] for m in added if isinstance(m, tuple) and len(m) >= 2]
+
+    assert (
+        "synthetic warning #1" in synthetic_texts
+    ), "pre-close drain did not push diagnostics onto cursor.messages"
+    assert "synthetic warning #2" in synthetic_texts, (
+        "post-close drain was skipped on the SQL_CLOSE success path "
+        "(SQL_SUCCESS_WITH_INFO warnings would be lost)"
+    )
+
+
+def test_arrow_reader_close_retries_after_failed_attempt(cursor: mssql_python.Cursor):
+    """If a first close() raises before the generator is released (e.g. another
+    thread held it and gen.close() raised), a subsequent close() must retry
+    the cleanup rather than silently no-op'ing — otherwise the server-side
+    cursor would leak."""
+    reader = cursor.execute("select top 10 1 a from sys.objects").arrow_reader(batch_size=2)
+
+    real_gen = reader._generator
+    assert real_gen is not None
+
+    class FlakyGen:
+        """Generator wrapper: first close() raises and reports gi_frame as
+        still-set (simulating 'generator currently executing on another
+        thread'); second close() delegates to the real generator."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self._closed_calls = 0
+            self.gi_frame = object()  # truthy => 'still alive'
+
+        def close(self):
+            self._closed_calls += 1
+            if self._closed_calls == 1:
+                raise ValueError("generator already executing")
+            # Second call: pretend the other thread released it, delegate.
+            self.gi_frame = None
+            self._inner.close()
+
+    flaky = FlakyGen(real_gen)
+    reader._generator = flaky
+
+    # First close: should mark reader closed (racing reads must raise) but
+    # leave _generator intact so a retry is possible.
+    reader.close()
+    assert reader.closed is True
+    assert reader._generator is flaky, "failed close() must not drop the generator ref"
+    assert reader._cursor is not None, "failed close() must not drop the cursor ref"
+    assert flaky._closed_calls == 1
+
+    # Second close: must retry and complete cleanup this time.
+    reader.close()
+    assert flaky._closed_calls == 2
+    assert reader._generator is None
+    assert reader._cursor is None
+
+    # Third close: now a true no-op (fully cleaned up).
+    reader.close()
+    assert flaky._closed_calls == 2  # not invoked again
+
+    # Parent cursor still usable after the recovered close.
+    cursor.execute("select 7")
+    assert cursor.fetchone()[0] == 7
 
 
 def test_arrow_long_string(cursor: mssql_python.Cursor):

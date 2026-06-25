@@ -151,16 +151,21 @@ class _ArrowReader:
         return False
 
     def __del__(self):
-        # Best-effort cleanup if the user never called close() and the reader
-        # is being garbage-collected.  Skip during interpreter shutdown — the
-        # module globals (pyarrow, ddbc_bindings) may already be torn down,
-        # and touching native code at that point is unsafe.
+        # Best-effort cleanup if the user never called close() (or a previous
+        # close() attempt failed to release the generator and left cleanup
+        # incomplete) and the reader is being garbage-collected.  Skip during
+        # interpreter shutdown — the module globals (pyarrow, ddbc_bindings)
+        # may already be torn down, and touching native code at that point is
+        # unsafe.
         try:
             import sys as _sys
 
             if _sys.is_finalizing():
                 return
-            if not getattr(self, "_closed", True):
+            # Retry whenever the generator is still referenced — covers both
+            # "user never called close()" and "earlier close() raised before
+            # the generator was released".
+            if getattr(self, "_generator", None) is not None:
                 self.close()
         except Exception:  # pylint: disable=broad-exception-caught
             pass
@@ -169,16 +174,28 @@ class _ArrowReader:
 
     def close(self) -> None:
         """Synchronously stop fetching, release the server-side cursor, and
-        reset parent-cursor bookkeeping.  Idempotent.
+        reset parent-cursor bookkeeping.  Idempotent **and retry-safe**:
+        if a previous call raised before the generator was released (for
+        example because another thread was still executing it and
+        ``generator.close()`` raised ``ValueError: generator already
+        executing``), subsequent calls will pick up where the failed call
+        left off rather than silently no-op'ing.
 
         Most of the actual cleanup work lives in the generator's ``finally``
         clause (see ``Cursor.arrow_reader``); this method just unblocks any
         in-flight fetch and closes the generator, which triggers that
         ``finally`` block.
         """
-        if self._closed:
+        # Fast path: cleanup already completed on a previous call.  We use
+        # the *generator* reference — not ``_closed`` — as the completion
+        # marker, because ``_closed`` is flipped early (so racing reads
+        # raise) and must not by itself disable retry of failed cleanup.
+        if self._generator is None and self._cursor is None:
+            self._closed = True
             return
-        # Mark closed first so any racing read raises immediately.
+
+        # Mark closed first so any racing read raises immediately, even if
+        # the cleanup steps below fail and we end up retried later.
         self._closed = True
 
         # SQLCancel (cross-thread safe) — unblocks a fetch running on another
@@ -194,14 +211,21 @@ class _ArrowReader:
 
         # Close the generator — this raises GeneratorExit inside it, which
         # runs the try/finally cleanup block (SQLFreeStmt + diag drain +
-        # cursor bookkeeping reset).
+        # cursor bookkeeping reset).  If close() raises and the generator is
+        # still alive (e.g. another thread is currently executing it), keep
+        # the reference so a subsequent close() / __del__ can retry; only
+        # drop refs once the generator is actually dead.
         gen = self._generator
-        self._generator = None
         if gen is not None:
             try:
                 gen.close()
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.debug("arrow_reader.close: generator.close raised: %s", e)
+                if getattr(gen, "gi_frame", None) is not None:
+                    # Generator still alive — leave _generator (and _cursor,
+                    # so the next retry can re-issue SQLCancel) intact.
+                    return
+            self._generator = None
 
         # Drop strong refs so the wrapper does not extend the lifetime of
         # the parent Cursor or the inner pyarrow reader.
@@ -2907,19 +2931,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # 2) Release the server-side cursor & locks while keeping the
                 #    HSTMT and prepared plan intact, so the parent Cursor can
                 #    be re-executed.
-                close_failed = False
                 try:
                     cur.hstmt._close_cursor()  # pylint: disable=protected-access
                 except Exception as e:  # pylint: disable=broad-exception-caught
-                    close_failed = True
                     logger.debug("arrow_reader cleanup: _close_cursor failed: %s", e)
 
-                # 3) If SQL_CLOSE itself produced diags, pick them up too.
-                if close_failed:
-                    try:
-                        cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                    except Exception:  # pylint: disable=broad-exception-caught
-                        pass
+                # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
+                #    runs unconditionally because SQL_CLOSE can return
+                #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
+                #    warning records on the HSTMT diag stack; the previous
+                #    "only on failure" path would silently drop those.
+                try:
+                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
 
                 # 4) Reset cursor bookkeeping to a clean "no result set"
                 #    state.  rowcount becomes -1 to signal that the prior
