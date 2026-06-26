@@ -482,7 +482,6 @@ class Connection:
         # is an acceptable, correct default. Refreshing the token on a live
         # connection (so pooling could be re-enabled safely) needs native driver
         # support and is tracked as follow-up work.
-        # See docs/DESIGN_TOKEN_PROVIDER_SUPPORT.md.
         if ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in self._attrs_before:
             self._pooling = False
 
