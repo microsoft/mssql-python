@@ -6,7 +6,6 @@ This module handles authentication for the mssql_python package.
 
 import hashlib
 import inspect
-import os
 import platform
 import struct
 import threading
@@ -43,38 +42,6 @@ _SENSITIVE_KEYS = frozenset({_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION, _KEY_A
 # clouds (Azure US Gov, Azure China, Azure Germany) are out of scope — a token
 # for a different audience is rejected by SQL Server at login.
 _DATABASE_SCOPE = "https://database.windows.net/.default"
-
-# Absolute, case-normalized directory of this package, used to attribute
-# warnings to the first caller *outside* the package (see _stacklevel_to_caller).
-_PACKAGE_DIR = os.path.normcase(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _stacklevel_to_caller() -> int:
-    """Return a ``warnings.warn`` stacklevel pointing at the first frame outside
-    this package.
-
-    The token-expiry warning is reached through two different internal call
-    chains — the connect path (via ``acquire_token_from_credential``) and the
-    bulk-copy path (via ``acquire_raw_token_from_credential``) — which sit at
-    different depths. A fixed ``stacklevel`` cannot point at user code for both,
-    so we walk outward until we leave the package. Falls back to 2 if no
-    external frame is found.
-    """
-    frame = inspect.currentframe()
-    try:
-        # Start at the caller of this helper, i.e. the frame that issues warn()
-        # (stacklevel == 1 for that warn() call).
-        frame = frame.f_back if frame else None
-        level = 1
-        while frame is not None:
-            if not os.path.normcase(frame.f_code.co_filename).startswith(_PACKAGE_DIR):
-                return level
-            frame = frame.f_back
-            level += 1
-        return 2
-    finally:
-        # Break the reference cycle created by holding a frame object.
-        del frame
 
 
 @runtime_checkable
@@ -593,7 +560,7 @@ def _get_token_from_credential(credential: "TokenProvider") -> Tuple[str, Option
             f"(expires_on={expires_on} is in the past). The server will likely "
             f"reject the connection.",
             UserWarning,
-            stacklevel=_stacklevel_to_caller(),
+            stacklevel=2,
         )
     elapsed_ms = (time.perf_counter() - start_time) * 1000
     logger.info(
