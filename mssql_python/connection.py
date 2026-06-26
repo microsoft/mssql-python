@@ -144,10 +144,10 @@ def _validate_utf16_wchar_compatibility(
 
         # Generate context-appropriate error messages
         if "ctype" in context:
-            driver_error = f"SQL_WCHAR ctype only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR ctype only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR ctype"
         else:
-            driver_error = f"SQL_WCHAR only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR"
 
         raise ProgrammingError(
