@@ -35,19 +35,16 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.8.0
+## What's new in v1.10.0
 
 ### Enhancements
 
-- **ActiveDirectoryMSI Support for Bulk Copy** - Adds `Authentication=ActiveDirectoryMSI` support to bulk copy, enabling both system-assigned and user-assigned managed identity authentication for Azure-hosted services (#573).
-- **Row String-Key Indexing** - Row objects now support accessing values by column name as a string key (e.g., `row["col"]`), in addition to integer index and attribute access. Case-insensitive lookup is supported when the cursor's `lowercase` attribute is enabled (#589).
-- **Bundled ODBC Driver Upgrade** - Updated the bundled Microsoft ODBC Driver for SQL Server from 18.5.1.1 to 18.6.2.1 (#569).
+- **Active Directory Service Principal for Bulk Copy** - `bulkcopy` now supports `Authentication=ActiveDirectoryServicePrincipal`, acquiring tokens mid-handshake via a registered callback so service principal credentials work for bulk inserts (#576).
 
 ### Bug Fixes
 
-- **Deferred Connect-Attribute Use-After-Free** - Fixed a use-after-free in `Connection.setAttribute` for deferred ODBC attributes (e.g., `SQL_COPT_SS_ACCESS_TOKEN`) that caused SIGBUS on macOS arm64 and authentication failures on Windows and Azure SQL (#596).
-- **Connection String Parsed Multiple Times in Auth Path** - Refactored authentication handling to use dictionary-based parameter processing instead of repeated string parsing, improving reliability and performance (#590).
-- **executemany Type Annotation Regression** - Fixed a typing regression where `Cursor.executemany` rejected valid `list[tuple[...]]` arguments under mypy due to invariant `List` type. The parameter type now uses covariant `Sequence` matching PEP 249 (#586).
+- **Non-ASCII VARCHAR in Arrow Fetch** - The arrow fetch path now requests `SQL_CHAR` data as `SQL_C_WCHAR` (UTF-16LE), ensuring correct results regardless of encoding settings, locale, or operating system (#575).
+- **Bulk Load Connection Timeouts** - Fixed connection timeouts during bulk load operations (#641, via `mssql_py_core` 0.1.5).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
