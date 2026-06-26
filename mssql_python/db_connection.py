@@ -4,9 +4,12 @@ Licensed under the MIT license.
 This module provides a way to create a new connection object to interact with the database.
 """
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, TYPE_CHECKING
 
 from mssql_python.connection import Connection
+
+if TYPE_CHECKING:
+    from mssql_python.auth import TokenProvider
 
 
 def connect(
@@ -15,7 +18,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
-    token_provider: Optional[object] = None,
+    token_provider: Optional["TokenProvider"] = None,
     **kwargs: Any,
 ) -> Connection:
     """
@@ -59,6 +62,11 @@ def connect(
                 from azure.identity import AzureCliCredential
                 conn = mssql_python.connect("Server=s;Database=d",
                                             token_provider=AzureCliCredential())
+
+            Note: the token scope is fixed to the Azure **commercial** cloud
+            (``https://database.windows.net/.default``). Sovereign clouds (Azure US
+            Government, Azure China, Azure Germany) are **out of scope** — acquire the token
+            yourself and pass it via ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`` instead.
     Keyword Args:
         **kwargs: Additional key/value pairs for the connection string.
     Below attributes are not implemented in the internal driver:

@@ -8,6 +8,7 @@ import pytest
 import platform
 import sys
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch, MagicMock
 from mssql_python.auth import (
@@ -1073,6 +1074,13 @@ class TestAcquireTokenFromCredential:
         with pytest.raises(InterfaceError, match="non-empty"):
             acquire_token_from_credential(mock_cred)
 
+    def test_scope_is_commercial_cloud(self):
+        """The scope is hard-coded to the Azure commercial-cloud audience."""
+        mock_cred = MagicMock()
+        mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
+        acquire_token_from_credential(mock_cred)
+        mock_cred.get_token.assert_called_once_with("https://database.windows.net/.default")
+
 
 class TestAcquireRawTokenFromCredential:
     """Tests for the acquire_raw_token_from_credential helper."""
@@ -1262,6 +1270,79 @@ class TestCustomTokenProviderConnect:
             list(executor.map(_open_and_close, range(20)))
 
         assert mock_cred.get_token.call_count == 20
+
+
+class TestTokenProviderValidation:
+    """Tests for token_provider get_token arity validation and the dropped-credential warning."""
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_scope_is_commercial_cloud(self, mock_ddbc_conn):
+        """connect() requests the fixed commercial-cloud scope from the credential."""
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_cred = MagicMock()
+        mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb", token_provider=mock_cred)
+        mock_cred.get_token.assert_called_once_with("https://database.windows.net/.default")
+        conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_get_token_wrong_arity_raises_interface_error(self, mock_ddbc_conn):
+        """A get_token() that cannot accept a scope argument is rejected up-front."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        class ZeroArgCredential:
+            def get_token(self):  # missing scope parameter
+                return MagicMock(token=SAMPLE_TOKEN)
+
+        with pytest.raises(InterfaceError, match="must accept a scope"):
+            connect("Server=test;Database=testdb", token_provider=ZeroArgCredential())
+        mock_ddbc_conn.assert_not_called()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_get_token_with_scope_param_accepted(self, mock_ddbc_conn):
+        """A well-formed get_token(scope) passes arity validation."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        class GoodCredential:
+            def get_token(self, scope):
+                return MagicMock(token=SAMPLE_TOKEN, expires_on=1893456000)
+
+        conn = connect("Server=test;Database=testdb", token_provider=GoodCredential())
+        assert conn._token_expires_on == 1893456000
+        conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_dropped_uid_pwd_emits_warning(self, mock_ddbc_conn):
+        """UID/PWD in the connection string trigger a warning when token_provider is set."""
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_cred = MagicMock()
+        mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
+        from mssql_python import connect
+
+        with pytest.warns(UserWarning, match="credential\\(s\\) are ignored"):
+            conn = connect(
+                "Server=test;Database=testdb;UID=user@test.com;PWD=secret",
+                token_provider=mock_cred,
+            )
+        conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_no_warning_without_dropped_credentials(self, mock_ddbc_conn):
+        """No 'ignored credentials' warning when the connection string has no UID/PWD."""
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_cred = MagicMock()
+        mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
+        from mssql_python import connect
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            conn = connect("Server=test;Database=testdb", token_provider=mock_cred)
+        assert not any("are ignored" in str(w.message) for w in caught)
+        conn.close()
 
 
 class TestParseTenantId:

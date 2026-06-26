@@ -9,7 +9,7 @@ import platform
 import struct
 import threading
 import time
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional, Any, Protocol, runtime_checkable
 
 from mssql_python.logging import logger
 from mssql_python.constants import (
@@ -40,6 +40,22 @@ _SENSITIVE_KEYS = frozenset({_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION, _KEY_A
 # clouds (Azure US Gov, Azure China, Azure Germany) are out of scope — a token
 # for a different audience is rejected by SQL Server at login.
 _DATABASE_SCOPE = "https://database.windows.net/.default"
+
+
+@runtime_checkable
+class TokenProvider(Protocol):
+    """Structural type accepted by the ``token_provider=`` connect parameter.
+
+    Any object exposing a ``get_token(scope, ...)`` method qualifies — notably
+    every ``azure-identity`` credential class (``DefaultAzureCredential``,
+    ``AzureCliCredential``, ``ManagedIdentityCredential``, etc.). The returned
+    object must expose a non-empty ``.token`` (str); an optional
+    ``.expires_on`` (int POSIX timestamp) is captured for diagnostics.
+    """
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> Any:  # pragma: no cover - protocol
+        ...
+
 
 # Map Authentication connection-string values to internal short names.
 _AUTH_TYPE_MAP: Dict[str, str] = {
@@ -446,7 +462,7 @@ def extract_auth_type(parsed_params: Dict[str, str]) -> Optional[str]:
     return _AUTH_TYPE_MAP.get(auth_value)
 
 
-def _get_token_from_credential(credential: object) -> Tuple[str, Optional[int]]:
+def _get_token_from_credential(credential: "TokenProvider") -> Tuple[str, Optional[int]]:
     """Internal: call credential.get_token() and return ``(raw_jwt, expires_on)``.
 
     Centralises the token-acquisition + error-wrapping logic that both
@@ -464,7 +480,8 @@ def _get_token_from_credential(credential: object) -> Tuple[str, Optional[int]]:
         The scope is hard-coded to the Azure **commercial** cloud
         (``https://database.windows.net/.default``). Sovereign clouds
         (Azure US Government, Azure China, Azure Germany) are **out of
-        scope** for the ``token_provider`` path.
+        scope** for the ``token_provider`` path — for those, supply a
+        pre-acquired token via ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]``.
 
     Raises:
         InterfaceError: If the provider returns no valid ``.token`` string.
@@ -509,7 +526,7 @@ def _get_token_from_credential(credential: object) -> Tuple[str, Optional[int]]:
     return raw_token, expires_on
 
 
-def acquire_token_from_credential(credential: object) -> Tuple[bytes, Optional[int]]:
+def acquire_token_from_credential(credential: "TokenProvider") -> Tuple[bytes, Optional[int]]:
     """Acquire an ODBC token struct from a user-supplied credential object.
 
     The credential must follow the Azure ``TokenCredential`` protocol — i.e.
@@ -539,10 +556,15 @@ def acquire_token_from_credential(credential: object) -> Tuple[bytes, Optional[i
     return AADAuth.get_token_struct(raw_token), expires_on
 
 
-def acquire_raw_token_from_credential(credential: object) -> Tuple[str, Optional[int]]:
+def acquire_raw_token_from_credential(credential: "TokenProvider") -> Tuple[str, Optional[int]]:
     """Acquire a raw JWT string from a user-supplied credential object.
 
     Used by bulk copy, which needs the raw JWT rather than the ODBC struct.
+
+    .. note::
+        The scope is fixed to the Azure **commercial** cloud. Sovereign
+        clouds are **out of scope** — see
+        :func:`acquire_token_from_credential`.
 
     Args:
         credential: Any object with a ``.get_token(scope)`` method.
