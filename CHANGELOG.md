@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Added
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
+- New `token_provider=` parameter on `connect()` / `Connection` for Microsoft
+  Entra ID authentication with a custom credential object. Accepts any object
+  exposing a `.get_token(scope)` method (e.g. any `azure-identity` credential
+  such as `DefaultAzureCredential`, `AzureCliCredential`,
+  `ManagedIdentityCredential`). Mutually exclusive with `Authentication=` in
+  the connection string and with `attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`.
+  Bulk copy re-acquires a fresh token from the provider on each operation. The
+  token scope is fixed to the Azure commercial cloud; sovereign clouds are out
+  of scope (supply a pre-acquired token via `attrs_before` instead).
 - Bulk copy now supports `Authentication=ActiveDirectoryServicePrincipal`
   via an `entra_id_token_factory` callback registered on the mssql-py-core
   connection. The callback is invoked by mssql-tds mid-handshake (FedAuth

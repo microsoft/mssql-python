@@ -5,10 +5,12 @@ This module handles authentication for the mssql_python package.
 """
 
 import hashlib
+import inspect
 import platform
 import struct
 import threading
 import time
+import warnings
 from typing import Tuple, Dict, Optional, Any, Protocol, runtime_checkable
 
 from mssql_python.logging import logger
@@ -490,6 +492,21 @@ def _get_token_from_credential(credential: "TokenProvider") -> Tuple[str, Option
     start_time = time.perf_counter()
     try:
         token_result = credential.get_token(_DATABASE_SCOPE)
+    except TypeError as e:
+        # get_token() is called with exactly one positional scope argument, so
+        # a TypeError here almost always means its signature can't accept a
+        # scope (e.g. a zero-arg or keyword-only get_token). Surface that as a
+        # clear, actionable InterfaceError instead of an opaque failure. This
+        # is the call-time source of truth for arity — the connect() path only
+        # *warns* on a suspicious signature so it never blocks a credential
+        # whose signature is merely hard to introspect (partial/decorated).
+        raise InterfaceError(
+            driver_error=(
+                "token_provider.get_token() must accept a scope positional "
+                "argument, e.g. get_token(scope)."
+            ),
+            ddbc_error=str(e),
+        ) from e
     except Exception as e:
         logger.error(
             "_get_token_from_credential: get_token() failed - credential=%s, error=%s",
@@ -503,6 +520,21 @@ def _get_token_from_credential(credential: "TokenProvider") -> Tuple[str, Option
             ddbc_error=str(e),
         ) from e
 
+    # azure.identity.aio (async) credentials return a coroutine from a
+    # synchronous get_token() call. Detect it and fail with an async-specific
+    # message rather than tripping over a missing .token attribute — and close
+    # the coroutine so it doesn't emit a "coroutine was never awaited" warning.
+    if inspect.iscoroutine(token_result):
+        token_result.close()
+        raise InterfaceError(
+            driver_error=(
+                "token_provider.get_token() returned a coroutine, which indicates "
+                "an async credential (e.g. from azure.identity.aio). Use a "
+                "synchronous credential instead."
+            ),
+            ddbc_error=f"got coroutine from {type(credential).__name__}.get_token()",
+        )
+
     raw_token = getattr(token_result, "token", None)
     if not isinstance(raw_token, str) or not raw_token:
         raise InterfaceError(
@@ -514,6 +546,22 @@ def _get_token_from_credential(credential: "TokenProvider") -> Tuple[str, Option
         )
 
     expires_on = getattr(token_result, "expires_on", None)
+    # Warn (don't fail) if the credential handed back an already-expired token:
+    # the server enforces expiry and will reject the login, so surfacing it here
+    # points at the real cause instead of an opaque later failure. Only numeric
+    # POSIX timestamps are checked; bools are excluded to avoid false positives.
+    if (
+        isinstance(expires_on, (int, float))
+        and not isinstance(expires_on, bool)
+        and expires_on < time.time()
+    ):
+        warnings.warn(
+            f"token_provider returned a token that is already expired "
+            f"(expires_on={expires_on} is in the past). The server will likely "
+            f"reject the connection.",
+            UserWarning,
+            stacklevel=2,
+        )
     elapsed_ms = (time.perf_counter() - start_time) * 1000
     logger.info(
         "_get_token_from_credential: Token acquired from %s - length=%d chars, "
