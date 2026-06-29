@@ -11,9 +11,10 @@ import struct
 import threading
 import time
 import warnings
-from typing import Tuple, Dict, Optional, Any
+from typing import Tuple, Dict, Optional, Any, TYPE_CHECKING
 
-from azure.core.credentials import TokenCredential
+if TYPE_CHECKING:
+    from azure.core.credentials import TokenCredential
 
 from mssql_python.logging import logger
 from mssql_python.constants import (
