@@ -1361,10 +1361,9 @@ class TestTokenProviderValidation:
             def get_token(self):  # missing scope parameter
                 return MagicMock(token=SAMPLE_TOKEN)
 
-        # Up-front signature check warns; call-time validation raises the error.
-        with pytest.warns(UserWarning, match="does not appear to accept"):
-            with pytest.raises(InterfaceError, match="must accept a scope"):
-                connect("Server=test;Database=testdb", token_provider=ZeroArgCredential())
+        # No up-front signature inspection: the call-time validation raises.
+        with pytest.raises(InterfaceError, match="must accept a scope"):
+            connect("Server=test;Database=testdb", token_provider=ZeroArgCredential())
         mock_ddbc_conn.assert_not_called()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
@@ -1381,16 +1380,15 @@ class TestTokenProviderValidation:
         assert conn._token_expires_on == 1893456000
         conn.close()
 
-    @patch("mssql_python.connection.inspect.signature", side_effect=ValueError("no signature"))
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_uninspectable_get_token_skips_validation(self, mock_ddbc_conn, _mock_sig):
-        """A get_token whose signature can't be introspected skips arity validation."""
+    def test_uninspectable_get_token_skips_validation(self, mock_ddbc_conn):
+        """A get_token whose signature can't be introspected still works (no signature
+        inspection happens; the real call is the source of truth)."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN, expires_on=1893456000)
         from mssql_python import connect
 
-        # inspect.signature raises -> validation is skipped and connect still succeeds.
         conn = connect("Server=test;Database=testdb", token_provider=mock_cred)
         assert conn._token_expires_on == 1893456000
         conn.close()
@@ -1509,9 +1507,9 @@ class TestTokenProviderValidation:
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_suspicious_signature_warns_but_does_not_block(self, mock_ddbc_conn):
-        """If signature introspection wrongly reports that get_token can't take a
-        scope, connect() must only WARN and still succeed when the real call
-        works (guards against false rejections of partial/decorated credentials)."""
+        """A credential with a hard-to-introspect signature (partial/decorated) is
+        never rejected or warned at connect time — the real call is the source of
+        truth, so it just succeeds when the call works."""
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
 
@@ -1520,12 +1518,10 @@ class TestTokenProviderValidation:
                 return MagicMock(token=SAMPLE_TOKEN, expires_on=1893456000)
 
         cred = WorkingCredential()
-        # Force the up-front bind() check to misfire (report a zero-arg
-        # signature) even though the actual call accepts the scope fine.
-        zero_arg_sig = inspect.signature(lambda: None)
-        with patch("mssql_python.connection.inspect.signature", return_value=zero_arg_sig):
-            with pytest.warns(UserWarning, match="does not appear to accept"):
-                conn = connect("Server=test;Database=testdb", token_provider=cred)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            conn = connect("Server=test;Database=testdb", token_provider=cred)
+        assert not any("does not appear to accept" in str(w.message) for w in caught)
         # Not blocked: the connection succeeded and captured the token.
         assert conn._token_expires_on == 1893456000
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
@@ -1541,10 +1537,9 @@ class TestTokenProviderValidation:
             def get_token(self, *, scope):
                 return MagicMock(token=SAMPLE_TOKEN)
 
-        # Up-front signature check warns; call-time validation raises the error.
-        with pytest.warns(UserWarning, match="does not appear to accept"):
-            with pytest.raises(InterfaceError, match="must accept a scope"):
-                connect("Server=test;Database=testdb", token_provider=KeywordOnlyCredential())
+        # No up-front signature inspection: the call-time validation raises.
+        with pytest.raises(InterfaceError, match="must accept a scope"):
+            connect("Server=test;Database=testdb", token_provider=KeywordOnlyCredential())
         mock_ddbc_conn.assert_not_called()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")

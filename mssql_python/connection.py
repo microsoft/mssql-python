@@ -14,7 +14,6 @@ Resource Management:
 import weakref
 import re
 import codecs
-import inspect
 import warnings
 from typing import Any, Dict, Optional, Union, List, Tuple, Callable, TYPE_CHECKING
 import threading
@@ -551,35 +550,13 @@ class Connection:
                 ),
                 ddbc_error="",
             )
-        # Validate that get_token can accept the scope positional argument.
-        # Inspecting the signature catches obvious arity bugs (e.g. a
-        # zero-arg get_token) up-front. But signature introspection is
-        # unreliable for wrapped/partial/callable-object credentials, so a
-        # suspicious signature only *warns* here — it never blocks the
-        # credential. The authoritative arity check happens at call time in
-        # _get_token_from_credential, which raises a clear InterfaceError if
-        # the scope genuinely cannot be passed. C-implemented or otherwise
-        # un-inspectable callables are skipped entirely.
-        from mssql_python.auth import acquire_token_from_credential, _DATABASE_SCOPE
+        # The get_token() signature is NOT inspected here: inspect.signature()
+        # is unreliable for partial/decorated/C-extension callables and would
+        # produce false warnings on valid credentials. The actual call is the
+        # source of truth — _get_token_from_credential turns a bad signature
+        # (TypeError) into a clear InterfaceError.
+        from mssql_python.auth import acquire_token_from_credential
 
-        try:
-            signature = inspect.signature(get_token)
-        except (ValueError, TypeError):
-            signature = None
-        if signature is not None:
-            try:
-                signature.bind(_DATABASE_SCOPE)
-            except TypeError:
-                warnings.warn(
-                    "token_provider.get_token() does not appear to accept a "
-                    "positional scope argument (expected get_token(scope)). "
-                    "If token acquisition fails, check the credential's "
-                    "get_token() signature.",
-                    UserWarning,
-                    # 3 frames out: warnings.warn -> _configure_token_provider
-                    # -> __init__ -> caller. Keeps the warning on user code.
-                    stacklevel=3,
-                )
         # access-token auth ignores UID/PWD/Trusted_Connection — warn so the
         # user is not surprised that those credentials are silently dropped.
         dropped = [
