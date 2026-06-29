@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Union, TYPE_CHECKING
 from mssql_python.connection import Connection
 
 if TYPE_CHECKING:
-    from mssql_python.auth import TokenProvider
+    from azure.core.credentials import TokenCredential
 
 
 def connect(
@@ -18,7 +18,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
-    token_provider: Optional["TokenProvider"] = None,
+    token_provider: Optional["TokenCredential"] = None,
     **kwargs: Any,
 ) -> Connection:
     """

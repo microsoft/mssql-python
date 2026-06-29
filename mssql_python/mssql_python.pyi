@@ -9,7 +9,7 @@ import datetime
 import logging
 import pyarrow
 
-from mssql_python.auth import TokenProvider
+from azure.core.credentials import TokenCredential
 
 # GLOBALS - DB-API 2.0 Required Module Globals
 # https://www.python.org/dev/peps/pep-0249/#module-interface
@@ -250,7 +250,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
-        token_provider: Optional[TokenProvider] = None,
+        token_provider: Optional[TokenCredential] = None,
         **kwargs: Any,
     ) -> None: ...
 
@@ -294,7 +294,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
-    token_provider: Optional[TokenProvider] = None,
+    token_provider: Optional[TokenCredential] = None,
     **kwargs: Any,
 ) -> Connection: ...
 

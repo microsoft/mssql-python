@@ -24,9 +24,9 @@ from mssql_python.auth import (
     _credential_cache,
     acquire_token_from_credential,
     acquire_raw_token_from_credential,
-    TokenProvider,
     _DATABASE_SCOPE,
 )
+from azure.core.credentials import TokenCredential
 from mssql_python.constants import AuthType, ConstantsDDBC
 from mssql_python.exceptions import InterfaceError, OperationalError
 import secrets
@@ -1649,7 +1649,7 @@ class TestTokenProviderValidation:
 
 
 class TestTokenProviderProtocol:
-    """Tests for the runtime_checkable TokenProvider Protocol."""
+    """Tests for the runtime_checkable azure.core TokenCredential protocol."""
 
     def test_object_with_get_token_is_instance(self):
         """An object exposing get_token satisfies the Protocol at runtime."""
@@ -1658,7 +1658,7 @@ class TestTokenProviderProtocol:
             def get_token(self, *scopes, **kwargs):
                 return MagicMock(token=SAMPLE_TOKEN)
 
-        assert isinstance(Cred(), TokenProvider)
+        assert isinstance(Cred(), TokenCredential)
 
     def test_object_without_get_token_is_not_instance(self):
         """An object missing get_token does not satisfy the Protocol."""
@@ -1667,7 +1667,7 @@ class TestTokenProviderProtocol:
             def something_else(self):
                 return None
 
-        assert not isinstance(NotCred(), TokenProvider)
+        assert not isinstance(NotCred(), TokenCredential)
 
     def test_database_scope_is_commercial_cloud_constant(self):
         """The shared scope constant points at the Azure commercial-cloud audience."""

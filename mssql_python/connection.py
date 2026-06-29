@@ -62,7 +62,7 @@ from mssql_python.constants import (
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
-    from mssql_python.auth import TokenProvider
+    from azure.core.credentials import TokenCredential
 
 # Add SQL_WMETADATA constant for metadata decoding configuration
 SQL_WMETADATA: int = -99  # Special flag for column name decoding
@@ -256,7 +256,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
-        token_provider: Optional["TokenProvider"] = None,
+        token_provider: Optional["TokenCredential"] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -392,7 +392,7 @@ class Connection:
         self._credential_kwargs: Optional[Dict[str, str]] = None
         # User-supplied token provider for custom Entra ID authentication.
         # Stored so bulk copy can call .get_token() for a fresh JWT later.
-        self._token_provider: Optional["TokenProvider"] = None
+        self._token_provider: Optional["TokenCredential"] = None
         # POSIX timestamp (seconds) at which the current access token expires,
         # captured from the credential's AccessToken result. None when unknown.
         # The token is a pre-connect ODBC attribute and cannot be refreshed on
@@ -510,7 +510,7 @@ class Connection:
             )
 
     def _configure_token_provider(
-        self, token_provider: "TokenProvider", parsed_params: Dict[str, str]
+        self, token_provider: "TokenCredential", parsed_params: Dict[str, str]
     ) -> None:
         """Validate a custom ``token_provider`` and apply its access token.
 
