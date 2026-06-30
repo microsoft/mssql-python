@@ -1076,9 +1076,9 @@ def test_gh627_executemany_temp_table_warns(cursor, db_connection):
                 [(1, None), (2, None)],
             )
 
-    assert any("SQLDescribeParam failed" in str(w.message) for w in caught), (
-        f"Expected SQLDescribeParam warning, got: {[str(w.message) for w in caught]}"
-    )
+    assert any(
+        "SQLDescribeParam failed" in str(w.message) for w in caught
+    ), f"Expected SQLDescribeParam warning, got: {[str(w.message) for w in caught]}"
 
     cursor.execute("DROP TABLE IF EXISTS #gh627_em_warn")
     db_connection.commit()

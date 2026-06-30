@@ -541,9 +541,10 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
                         " (0-based). Falling back to SQL_VARCHAR for NULL binding. "
                         "This may cause 'Implicit conversion from data type varchar to varbinary "
                         "is not allowed' errors for BINARY/VARBINARY columns. "
-                        "To fix, call cursor.setinputsizes() with explicit type info for every "
-                        "parameter. Example (2 params): cursor.setinputsizes("
-                        "[(ConstantsDDBC.SQL_INTEGER.value, 0, 0), "
+                        "To fix: from mssql_python.constants import ConstantsDDBC; then call "
+                        "cursor.setinputsizes() with explicit type info for every parameter. "
+                        "Example (2 params): cursor.setinputsizes("
+                        "[(ConstantsDDBC.SQL_INTEGER.value, 10, 0), "
                         "(ConstantsDDBC.SQL_VARBINARY.value, column_size, 0)])",
                     builtins.attr("UserWarning"));
         } catch (const py::error_already_set& e) {
@@ -575,7 +576,8 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
             break;
         }
     }
-    if (!hasUnknownNull) return;
+    if (!hasUnknownNull)
+        return;
 
     for (size_t paramIndex = 0; paramIndex < paramInfos.size(); ++paramIndex) {
         ParamInfo& paramInfo = paramInfos[paramIndex];

@@ -17,9 +17,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Changed
 - Improved error handling in the connection module.
+- **GH-627 behavioral change:** `NULL` parameters for `VARBINARY`/`BINARY`
+  columns on physical tables now succeed silently (previously raised
+  `ProgrammingError` when a non-NULL parameter was bound first). For temp
+  tables where `SQLDescribeParam` cannot determine column metadata, a
+  `UserWarning` is now emitted before the `ProgrammingError`, guiding users
+  to call `cursor.setinputsizes()`. Users running with `-W error` or
+  filtering on `UserWarning` may observe new warnings on temp-table paths.
 
 ### Fixed
 - Bug fix: Resolved issue with connection timeout.
+- **GH-627:** Fixed `SQLDescribeParam` ordinal remapping bug that caused
+  `VARBINARY`/`BINARY` `NULL` bindings to fail when a non-NULL parameter was
+  bound first. The driver now pre-resolves unknown NULL parameter types before
+  any `SQLBindParameter` calls, avoiding ODBC ordinal confusion.
 
 ## [1.0.0-alpha] - 2025-02-24
 
