@@ -359,6 +359,39 @@ class TestPasswordSanitization:
             assert "PWD=***" in sanitized
             assert "secret" not in sanitized
 
+    def test_password_synonym_sanitization(self, cleanup_logger):
+        """The 'password' synonym for PWD should be masked, matching the docstring contract."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;password=secret123;Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "secret123" not in sanitized
+
+    def test_password_synonym_case_insensitive(self, cleanup_logger):
+        """password/Password/PASSWORD should all be masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        test_cases = [
+            "Server=localhost;password=secret;Database=test",
+            "Server=localhost;Password=secret;Database=test",
+            "Server=localhost;PASSWORD=secret;Database=test",
+        ]
+
+        for conn_str in test_cases:
+            sanitized = sanitize_connection_string(conn_str)
+            assert "secret" not in sanitized
+
+    def test_password_synonym_braced_value_with_semicolon(self, cleanup_logger):
+        """password with a braced value containing semicolons must be fully masked."""
+        from mssql_python.helpers import sanitize_connection_string
+
+        conn_str = "Server=localhost;Password={Top;Secret};Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+
+        assert "Top" not in sanitized
+        assert "Secret" not in sanitized
+
     def test_pwd_braced_value_with_semicolon(self, cleanup_logger):
         """PWD with braced value containing semicolons must be fully masked."""
         from mssql_python.helpers import sanitize_connection_string
