@@ -366,7 +366,9 @@ class TestPasswordSanitization:
         conn_str = "Server=localhost;password=secret123;Database=test"
         sanitized = sanitize_connection_string(conn_str)
 
+        assert "password=***" in sanitized
         assert "secret123" not in sanitized
+        assert "redacted" not in sanitized.lower()
 
     def test_password_synonym_case_insensitive(self, cleanup_logger):
         """password/Password/PASSWORD should all be masked."""
@@ -380,7 +382,9 @@ class TestPasswordSanitization:
 
         for conn_str in test_cases:
             sanitized = sanitize_connection_string(conn_str)
+            assert "password=***" in sanitized
             assert "secret" not in sanitized
+            assert "redacted" not in sanitized.lower()
 
     def test_password_synonym_braced_value_with_semicolon(self, cleanup_logger):
         """password with a braced value containing semicolons must be fully masked."""
@@ -389,8 +393,10 @@ class TestPasswordSanitization:
         conn_str = "Server=localhost;Password={Top;Secret};Database=test"
         sanitized = sanitize_connection_string(conn_str)
 
+        assert "password=***" in sanitized
         assert "Top" not in sanitized
         assert "Secret" not in sanitized
+        assert "redacted" not in sanitized.lower()
 
     def test_pwd_braced_value_with_semicolon(self, cleanup_logger):
         """PWD with braced value containing semicolons must be fully masked."""
