@@ -473,7 +473,8 @@ std::string DescribeChar(unsigned char ch) {
 // GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
 // On cache miss, calls SQLDescribeParam and stores the result.
 static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
-    // Check per-handle cache (no mutex — one handle per thread)
+    // Check per-handle cache. ODBC mandates one handle per thread, so no
+    // mutex is needed. Violating this contract causes undefined behavior.
     auto it = handle.describeCache.find(paramIndex);
     if (it != handle.describeCache.end()) {
         LOG("ResolveNullParamType: Cache HIT for hStmt=%p param[%d] "
@@ -512,31 +513,44 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
         //
         // When this fallback causes an error, users should call
         // cursor.setinputsizes() to explicitly specify the parameter type.
-        // Example:
-        //   cursor.setinputsizes([None, (SQL_VARBINARY, 100, 0)])
+        //  Example:
+        //   cursor.setinputsizes([None, (ConstantsDDBC.SQL_VARBINARY.value, 100, 0)])
         //   cursor.execute("INSERT INTO #t (id, data) VALUES (?, ?)", [1, None])
         info = {SQL_VARCHAR, 1, 0};
         LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
                     "param[%d] (rc=%d), falling back to SQL_VARCHAR",
                     paramIndex, rc);
-        // Emit a Python warning so users get actionable guidance.
-        py::module_::import("warnings")
-            .attr("warn")(
-                "SQLDescribeParam failed for parameter index " + std::to_string(paramIndex) +
-                    " (0-based). Falling back to SQL_VARCHAR for NULL binding. "
-                    "This may cause 'Implicit conversion from data type varchar to varbinary "
-                    "is not allowed' errors for BINARY/VARBINARY columns. "
-                    "To fix, call cursor.setinputsizes() with explicit type info for every "
-                    "parameter. Example (2 params): cursor.setinputsizes("
-                    "[(SQL_INTEGER, 0, 0), (SQL_VARBINARY, column_size, 0)])",
-                py::module_::import("builtins").attr("UserWarning"));
     }
 
-    // Cache both successful and fallback results. For fallbacks, this avoids
-    // repeated SQLDescribeParam network calls on statement reuse (same_sql path).
-    // The cache is cleared on SQLPrepare, so if the user changes the SQL or
-    // recreates the table, the next execution will retry SQLDescribeParam.
+    // Cache both successful and fallback results BEFORE emitting warnings.
+    // For fallbacks, this avoids repeated SQLDescribeParam network calls on
+    // statement reuse (same_sql path). The cache is cleared on SQLPrepare,
+    // so if the user changes the SQL or recreates the table, the next
+    // execution will retry SQLDescribeParam.
     handle.describeCache[paramIndex] = info;
+
+    // Emit a Python warning on fallback so users get actionable guidance.
+    // Wrapped in try-catch: if warning emission fails (e.g. interpreter
+    // shutdown), we still return the cached fallback rather than aborting.
+    if (!SQL_SUCCEEDED(rc)) {
+        try {
+            auto builtins = py::module_::import("builtins");
+            py::module_::import("warnings")
+                .attr("warn")(
+                    "SQLDescribeParam failed for parameter index " + std::to_string(paramIndex) +
+                        " (0-based). Falling back to SQL_VARCHAR for NULL binding. "
+                        "This may cause 'Implicit conversion from data type varchar to varbinary "
+                        "is not allowed' errors for BINARY/VARBINARY columns. "
+                        "To fix, call cursor.setinputsizes() with explicit type info for every "
+                        "parameter. Example (2 params): cursor.setinputsizes("
+                        "[(ConstantsDDBC.SQL_INTEGER.value, 0, 0), "
+                        "(ConstantsDDBC.SQL_VARBINARY.value, column_size, 0)])",
+                    builtins.attr("UserWarning"));
+        } catch (const py::error_already_set& e) {
+            LOG_WARNING("ResolveNullParamType: Failed to emit Python warning: %s", e.what());
+        }
+    }
+
     return info;
 }
 
@@ -561,15 +575,16 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
             break;
         }
     }
-    if (!hasUnknownNull)
-        return;
+    if (!hasUnknownNull) return;
+
     for (size_t paramIndex = 0; paramIndex < paramInfos.size(); ++paramIndex) {
         ParamInfo& paramInfo = paramInfos[paramIndex];
         if (paramInfo.paramCType != SQL_C_DEFAULT || paramInfo.paramSQLType != SQL_UNKNOWN_TYPE) {
             continue;
         }
         // For execute(), verify the actual value is None (mixed columns possible).
-        if (params && !py::isinstance<py::none>((*params)[paramIndex])) {
+        if (params && paramIndex < params->size() &&
+            !py::isinstance<py::none>((*params)[paramIndex])) {
             continue;
         }
 

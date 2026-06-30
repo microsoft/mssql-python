@@ -991,20 +991,113 @@ def test_gh627_execute_nonnull_before_null_binary(cursor, db_connection):
         db_connection.commit()
 
 
+def test_gh627_null_varbinary_as_first_param(cursor, db_connection):
+    """GH-627: NULL VARBINARY as first parameter (ordinal 1 resolution)."""
+    table_name = f"pytest_gh627_first_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (data VARBINARY(32) NULL, id INT)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (data, id) VALUES (?, ?)",
+            [None, 1],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data, id FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] is None
+        assert row[1] == 1
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_multiple_null_varbinary_columns(cursor, db_connection):
+    """GH-627: Multiple NULL VARBINARY columns resolved in a single pre-resolve pass."""
+    table_name = f"pytest_gh627_multi_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(
+            f"CREATE TABLE {table_name} (id INT, bin1 VARBINARY(32) NULL, bin2 VARBINARY(64) NULL)"
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, bin1, bin2) VALUES (?, ?, ?)",
+            [1, None, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, bin1, bin2 FROM {table_name}")
+        row = cursor.fetchone()
+        assert row == [1, None, None]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_varbinary_max_null(cursor, db_connection):
+    """GH-627: NULL VARBINARY(MAX) column — MAX has special semantics in
+    sp_describe_undeclared_parameters."""
+    table_name = f"pytest_gh627_max_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(MAX) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row == [1, None]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_executemany_temp_table_warns(cursor, db_connection):
+    """GH-627: executemany with temp table + all-NULL VARBINARY column should
+    emit UserWarning (most common real-world failure scenario)."""
+    import warnings
+
+    from mssql_python.exceptions import ProgrammingError
+
+    cursor.execute("CREATE TABLE #gh627_em_warn (id INT, data VARBINARY(50) NULL)")
+    db_connection.commit()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(ProgrammingError):
+            cursor.executemany(
+                "INSERT INTO #gh627_em_warn (id, data) VALUES (?, ?)",
+                [(1, None), (2, None)],
+            )
+
+    assert any("SQLDescribeParam failed" in str(w.message) for w in caught), (
+        f"Expected SQLDescribeParam warning, got: {[str(w.message) for w in caught]}"
+    )
+
+    cursor.execute("DROP TABLE IF EXISTS #gh627_em_warn")
+    db_connection.commit()
+
+
 def test_gh627_temp_table_null_varbinary_warns(cursor, db_connection):
     """GH-627: Inserting NULL into a temp table VARBINARY column should emit a
     UserWarning about SQLDescribeParam fallback and setinputsizes workaround."""
     import warnings
+
+    from mssql_python.exceptions import ProgrammingError
 
     cursor.execute("CREATE TABLE #gh627_warn (id INT, data VARBINARY(50) NULL)")
     db_connection.commit()
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        try:
+        with pytest.raises(ProgrammingError):
             cursor.execute("INSERT INTO #gh627_warn (id, data) VALUES (?, ?)", [1, None])
-        except Exception:
-            pass  # Expected: implicit conversion error
 
     # At least one warning should mention SQLDescribeParam and setinputsizes
     assert any(
