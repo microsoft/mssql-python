@@ -914,6 +914,31 @@ def test_gh627_executemany_nonnull_before_null_varbinary(cursor, db_connection):
         db_connection.commit()
 
 
+def test_gh627_executemany_mixed_null_nonnull_varbinary(cursor, db_connection):
+    """GH-627: executemany with mixed NULL/non-NULL VARBINARY rows should work.
+    This exercises the non-all-NULL executemany path where individual rows
+    go through BindParameters with both NULL and non-NULL binary values."""
+    table_name = f"pytest_gh627_mixed_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [(1, b"\x01\x02\x03"), (2, None), (3, b"\xaa\xbb\xcc")],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0] == [1, b"\x01\x02\x03"]
+        assert rows[1] == [2, None]
+        assert rows[2] == [3, b"\xaa\xbb\xcc"]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
 def test_gh627_null_then_nonnull_varbinary_reuse(cursor, db_connection):
     """GH-627: Re-executing same SQL with NULL then non-NULL VARBINARY must work
     (prepared statement + cache reuse path)."""

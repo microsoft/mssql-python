@@ -499,7 +499,7 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
 
     DescribedParamInfo info;
     if (SQL_SUCCEEDED(rc)) {
-        info = {type, size, digits, false};
+        info = {type, size, digits};
         LOG("ResolveNullParamType: SQLDescribeParam succeeded for param[%d] "
             "-> sqlType=%d, columnSize=%lu, decimalDigits=%d",
             paramIndex, type, (unsigned long)size, digits);
@@ -515,7 +515,7 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
         // Example:
         //   cursor.setinputsizes([None, (SQL_VARBINARY, 100, 0)])
         //   cursor.execute("INSERT INTO #t (id, data) VALUES (?, ?)", [1, None])
-        info = {SQL_VARCHAR, 1, 0, true};
+        info = {SQL_VARCHAR, 1, 0};
         LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
                     "param[%d] (rc=%d), falling back to SQL_VARCHAR",
                     paramIndex, rc);
@@ -549,6 +549,9 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
 static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
                                        std::vector<ParamInfo>& paramInfos,
                                        const py::list* params = nullptr) {
+    if (paramInfos.empty())
+        return;
+
     // Quick scan: skip entirely if no unknown NULL params exist.
     bool hasUnknownNull = false;
     for (size_t i = 0; i < paramInfos.size(); ++i) {
@@ -560,7 +563,6 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
     }
     if (!hasUnknownNull)
         return;
-
     for (size_t paramIndex = 0; paramIndex < paramInfos.size(); ++paramIndex) {
         ParamInfo& paramInfo = paramInfos[paramIndex];
         if (paramInfo.paramCType != SQL_C_DEFAULT || paramInfo.paramSQLType != SQL_UNKNOWN_TYPE) {
@@ -590,7 +592,6 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
 
     // GH-627: resolve unknown NULL param SQL types before binding any param.
     PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
-
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         ParamInfo& paramInfo = paramInfos[paramIndex];
@@ -740,8 +741,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                // GH-627: SQL type already resolved by PreResolveUnknownNullTypes.
-                dataPtr = nullptr;
+                dataPtr = nullptr;  // GH-627: type resolved by PreResolveUnknownNullTypes.
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                 *strLenOrIndPtr = SQL_NULL_DATA;
                 bufferLength = 0;
@@ -2051,7 +2051,6 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     try {
         // GH-627: resolve unknown NULL array param SQL types before binding any param.
         PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
-
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
             ParamInfo& info = paramInfos[paramIndex];
