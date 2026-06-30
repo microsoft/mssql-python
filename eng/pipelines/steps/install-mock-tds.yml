@@ -3,9 +3,9 @@
 #
 # This is required for tests/test_024_mock_tds_fedauth.py, which guards the
 # deferred SQL_COPT_SS_ACCESS_TOKEN use-after-free fix (PR #596 / issue #594).
-# Without the package the test skips. The backing scripts are best-effort: on a
-# platform with no compatible wheel (e.g. Alpine/musl) they emit a pipeline
-# warning and succeed, so the test simply skips on those legs.
+# Without the package the test skips. The backing scripts are best-effort: if a
+# compatible wheel is ever missing or the sandbox feed is unavailable, they emit
+# a pipeline warning and succeed, so the test simply skips on those legs.
 #
 # Usage:
 #   # Windows (host)

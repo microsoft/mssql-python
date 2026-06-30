@@ -4,11 +4,12 @@
 # Azure Artifacts PyPI feed so that tests/test_024_mock_tds_fedauth.py runs in CI
 # instead of skipping.
 #
-# The package is currently published only as a dev pre-release on a sandbox feed
-# and ships wheels for a limited platform matrix (linux glibc x86_64/aarch64,
-# macOS universal2, Windows amd64/arm64 -- but NOT musllinux/Alpine). To keep
-# pipeline legs green where no compatible wheel exists, a failed install is
-# reported as a pipeline *warning* (not an error): the test then skips cleanly.
+# The package is currently published as a dev pre-release on a sandbox feed and
+# ships wheels for linux glibc (x86_64/aarch64), musllinux/Alpine
+# (x86_64/aarch64), macOS universal2, and Windows (amd64/arm64). To keep
+# pipeline legs green if a compatible wheel is ever missing or the sandbox feed
+# is unavailable, a failed install is reported as a pipeline *warning* (not an
+# error): the test then skips cleanly.
 #
 # The package version is read from eng/versions/mssql-mock-tds.version (required).
 #
@@ -63,5 +64,5 @@ if "$PYTHON" -m pip install \
     exit 0
 fi
 
-warn "Could not install mssql-mock-tds==$PACKAGE_VERSION (no compatible wheel on this platform, e.g. Alpine/musl, or feed unavailable) -- the mock TDS test will skip."
+warn "Could not install mssql-mock-tds==$PACKAGE_VERSION (no compatible wheel on this platform or feed unavailable) -- the mock TDS test will skip."
 exit 0
