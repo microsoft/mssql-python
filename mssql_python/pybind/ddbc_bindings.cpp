@@ -10,6 +10,7 @@
 #include "logger_bridge.hpp"
 #include "utf_utils.h"
 
+
 #include <algorithm>  // std::min
 #include <cctype>
 #include <cstdint>
@@ -18,6 +19,7 @@
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
+
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
