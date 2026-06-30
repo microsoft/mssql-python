@@ -15,7 +15,6 @@
 #include <string>
 #include <vector>
 
-
 namespace py = pybind11;
 using py::literals::operator""_a;
 
@@ -247,6 +246,7 @@ struct DescribedParamInfo {
     SQLSMALLINT sqlType;
     SQLULEN columnSize;
     SQLSMALLINT decimalDigits;
+    bool isFallback = false;  // true when SQLDescribeParam failed and SQL_VARCHAR was used
 };
 
 class SqlHandle {

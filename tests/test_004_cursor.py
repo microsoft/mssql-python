@@ -871,6 +871,170 @@ def test_execute_none_into_varbinary_column(cursor, db_connection):
         drop_table_if_exists(cursor, "#test_varbinary_null")
 
 
+def test_gh627_execute_nonnull_before_null_varbinary(cursor, db_connection):
+    """GH-627: NULL VARBINARY should bind correctly when earlier params are non-NULL."""
+    table_name = f"pytest_gh627_execute_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == 1
+        assert row[1] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_executemany_nonnull_before_null_varbinary(cursor, db_connection):
+    """GH-627: executemany all-NULL VARBINARY column should bind after non-NULL column."""
+    table_name = f"pytest_gh627_executemany_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [(1, None), (2, None), (3, None)],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows == [[1, None], [2, None], [3, None]]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_null_then_nonnull_varbinary_reuse(cursor, db_connection):
+    """GH-627: Re-executing same SQL with NULL then non-NULL VARBINARY must work
+    (prepared statement + cache reuse path)."""
+    table_name = f"pytest_gh627_reuse_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        # First call: NULL — triggers SQLDescribeParam and caches VARBINARY type
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        # Second call: non-NULL — reuses prepared stmt, cache entry should not interfere
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [2, b"\xde\xad\xbe\xef"],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0] == [1, None]
+        assert rows[1][0] == 2
+        assert rows[1][1] == b"\xde\xad\xbe\xef"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_execute_nonnull_before_null_binary(cursor, db_connection):
+    """GH-627: NULL BINARY (fixed-length) should bind correctly when earlier params are non-NULL."""
+    table_name = f"pytest_gh627_binary_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data BINARY(16) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == 1
+        assert row[1] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_temp_table_null_varbinary_warns(cursor, db_connection):
+    """GH-627: Inserting NULL into a temp table VARBINARY column should emit a
+    UserWarning about SQLDescribeParam fallback and setinputsizes workaround."""
+    import warnings
+
+    cursor.execute("CREATE TABLE #gh627_warn (id INT, data VARBINARY(50) NULL)")
+    db_connection.commit()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            cursor.execute("INSERT INTO #gh627_warn (id, data) VALUES (?, ?)", [1, None])
+        except Exception:
+            pass  # Expected: implicit conversion error
+
+    # At least one warning should mention SQLDescribeParam and setinputsizes
+    assert any(
+        "SQLDescribeParam failed" in str(w.message) and "setinputsizes" in str(w.message)
+        for w in caught
+    ), f"Expected SQLDescribeParam warning, got: {[str(w.message) for w in caught]}"
+
+
+def test_gh627_temp_table_setinputsizes_workaround(cursor, db_connection):
+    """GH-627: setinputsizes should resolve NULL VARBINARY binding in temp tables
+    where SQLDescribeParam cannot determine the column type."""
+    cursor.execute("CREATE TABLE #gh627_fix (id INT, data VARBINARY(100) NULL)")
+    db_connection.commit()
+
+    # Use setinputsizes to explicitly declare VARBINARY type (SQL_VARBINARY = -3)
+    cursor.setinputsizes([(4, 10, 0), (-3, 100, 0)])
+    cursor.execute("INSERT INTO #gh627_fix (id, data) VALUES (?, ?)", [1, None])
+    db_connection.commit()
+
+    cursor.execute("SELECT id, data FROM #gh627_fix")
+    row = cursor.fetchone()
+    assert row[0] == 1
+    assert row[1] is None
+
+
+def test_gh627_physical_table_no_fallback_warning(cursor, db_connection):
+    """GH-627: Physical tables should resolve via SQLDescribeParam without
+    triggering the fallback warning (only temp tables/CTEs trigger it)."""
+    import warnings
+
+    table_name = f"pytest_gh627_nocache_{uuid.uuid4().hex}"
+
+    # First: use a physical table where SQLDescribeParam succeeds
+    cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(50) NULL)")
+    db_connection.commit()
+
+    # This should succeed without warnings (SQLDescribeParam works for physical tables)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cursor.execute(f"INSERT INTO {table_name} (id, data) VALUES (?, ?)", [1, None])
+    db_connection.commit()
+
+    # No SQLDescribeParam warning for physical tables
+    describe_warnings = [w for w in caught if "SQLDescribeParam failed" in str(w.message)]
+    assert (
+        len(describe_warnings) == 0
+    ), f"Should not warn for physical tables, got: {[str(w.message) for w in describe_warnings]}"
+
+    cursor.execute(f"SELECT data FROM {table_name}")
+    assert cursor.fetchone()[0] is None
+
+    cursor.execute(f"DROP TABLE {table_name}")
+    db_connection.commit()
+
+
 def test_varbinary_max(cursor, db_connection):
     """Test SQL_VARBINARY with MAX length"""
     try:
