@@ -117,9 +117,7 @@ def _write_test_identity(directory):
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=3650))
-        .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False
-        )
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
         .sign(key, hashes.SHA256())
     )
     pfx = pkcs12.serialize_key_and_certificates(
@@ -174,8 +172,7 @@ def _connect_with_token(server, raw_token):
     import mssql_python
 
     conn_str = (
-        f"Server={server.sql_address};Database=master;"
-        "Encrypt=yes;TrustServerCertificate=yes;"
+        f"Server={server.sql_address};Database=master;" "Encrypt=yes;TrustServerCertificate=yes;"
     )
     attrs_before = {
         ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value: _access_token_struct(raw_token),
