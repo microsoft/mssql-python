@@ -259,8 +259,9 @@ class TestMockServerFedAuth:
         """Two connects on owned buffers must not clobber each other's token.
 
         PR #596 hardened the fix with per-attribute owned buffers. Exercising
-        two sequential connects with different tokens ensures the second token
-        is recorded without invalidating buffer ownership semantics.
+        two sequential connects with different tokens ensures both tokens are
+        recorded byte-for-byte without one connection invalidating the other's
+        buffer ownership.
         """
         first = f"first_{secrets.token_hex(16)}"
         second = f"second_{secrets.token_hex(16)}"
@@ -268,6 +269,18 @@ class TestMockServerFedAuth:
         _connect_with_token(mock_tls_server, first)
         _connect_with_token(mock_tls_server, second)
 
-        assert mock_tls_server.has_received_token(first)
-        assert mock_tls_server.has_received_token(second)
-        assert mock_tls_server.get_last_access_token() == second
+        # Both exact tokens must be present. We deliberately do NOT assert on
+        # get_last_access_token(): the mock stores connections in a HashMap keyed
+        # by client socket address, so "last" reflects non-deterministic hash
+        # ordering, not connect order. Byte-for-byte receipt of *both* distinct
+        # tokens is the property that actually guards the #596 owned buffers.
+        assert mock_tls_server.has_received_token(
+            first
+        ), f"Mock server did not receive the first token {first!r}."
+        assert mock_tls_server.has_received_token(
+            second
+        ), f"Mock server did not receive the second token {second!r}."
+        assert mock_tls_server.connection_count() >= 2, (
+            "Expected at least two recorded connections for two sequential "
+            f"connects, got {mock_tls_server.connection_count()}."
+        )
