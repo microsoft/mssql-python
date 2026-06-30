@@ -987,6 +987,9 @@ def test_gh627_temp_table_null_varbinary_warns(cursor, db_connection):
         for w in caught
     ), f"Expected SQLDescribeParam warning, got: {[str(w.message) for w in caught]}"
 
+    cursor.execute("DROP TABLE IF EXISTS #gh627_warn")
+    db_connection.commit()
+
 
 def test_gh627_temp_table_setinputsizes_workaround(cursor, db_connection):
     """GH-627: setinputsizes should resolve NULL VARBINARY binding in temp tables
@@ -994,8 +997,12 @@ def test_gh627_temp_table_setinputsizes_workaround(cursor, db_connection):
     cursor.execute("CREATE TABLE #gh627_fix (id INT, data VARBINARY(100) NULL)")
     db_connection.commit()
 
-    # Use setinputsizes to explicitly declare VARBINARY type (SQL_VARBINARY = -3)
-    cursor.setinputsizes([(4, 10, 0), (-3, 100, 0)])
+    # Use setinputsizes to explicitly declare types for all parameters
+    from mssql_python.constants import ConstantsDDBC
+
+    cursor.setinputsizes(
+        [(ConstantsDDBC.SQL_INTEGER.value, 10, 0), (ConstantsDDBC.SQL_VARBINARY.value, 100, 0)]
+    )
     cursor.execute("INSERT INTO #gh627_fix (id, data) VALUES (?, ?)", [1, None])
     db_connection.commit()
 
@@ -1003,6 +1010,9 @@ def test_gh627_temp_table_setinputsizes_workaround(cursor, db_connection):
     row = cursor.fetchone()
     assert row[0] == 1
     assert row[1] is None
+
+    cursor.execute("DROP TABLE IF EXISTS #gh627_fix")
+    db_connection.commit()
 
 
 def test_gh627_physical_table_no_fallback_warning(cursor, db_connection):

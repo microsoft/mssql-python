@@ -521,15 +521,15 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
                     paramIndex, rc);
         // Emit a Python warning so users get actionable guidance.
         py::module_::import("warnings")
-            .attr("warn")("SQLDescribeParam failed for parameter index " +
-                              std::to_string(paramIndex) +
-                              ". Falling back to SQL_VARCHAR for NULL binding. "
-                              "This may cause 'Implicit conversion from data type varchar "
-                              "to varbinary is not allowed' errors for BINARY/VARBINARY columns. "
-                              "To fix, use cursor.setinputsizes() to specify the column type "
-                              "before executing. Example: cursor.setinputsizes([(SQL_VARBINARY, "
-                              "column_size, 0)])",
-                          py::module_::import("builtins").attr("UserWarning"));
+            .attr("warn")(
+                "SQLDescribeParam failed for parameter index " + std::to_string(paramIndex) +
+                    " (0-based). Falling back to SQL_VARCHAR for NULL binding. "
+                    "This may cause 'Implicit conversion from data type varchar to varbinary "
+                    "is not allowed' errors for BINARY/VARBINARY columns. "
+                    "To fix, call cursor.setinputsizes() with explicit type info for every "
+                    "parameter. Example (2 params): cursor.setinputsizes("
+                    "[(SQL_INTEGER, 0, 0), (SQL_VARBINARY, column_size, 0)])",
+                py::module_::import("builtins").attr("UserWarning"));
     }
 
     // Cache both successful and fallback results. For fallbacks, this avoids

@@ -862,13 +862,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             When inserting NULL into BINARY/VARBINARY columns in temp tables (#table)
             or table variables, SQLDescribeParam cannot resolve the column type and
             falls back to SQL_VARCHAR. This causes an implicit conversion error from
-            SQL Server. Use setinputsizes to explicitly specify the binary type::
+            SQL Server. Use setinputsizes to explicitly specify types for ALL
+            parameters::
 
-                from mssql_python.constants import SQL_VARBINARY
-                cursor.setinputsizes([None, (SQL_VARBINARY, 100, 0)])
+                from mssql_python.constants import ConstantsDDBC
+                cursor.setinputsizes([
+                    (ConstantsDDBC.SQL_INTEGER.value, 0, 0),
+                    (ConstantsDDBC.SQL_VARBINARY.value, 100, 0)
+                ])
                 cursor.execute("INSERT INTO #t (id, data) VALUES (?, ?)", [1, None])
-
-            Use None in the sizes list to skip type override for a parameter.
 
         Args:
             sizes: A sequence of tuples, one for each parameter. Each tuple contains
