@@ -1,0 +1,69 @@
+# Step template: Install mssql-mock-tds (in-process mock TDS server) from the
+# public mssql-rs_Public Azure Artifacts PyPI feed.
+#
+# This is required for tests/test_024_mock_tds_fedauth.py, which guards the
+# deferred SQL_COPT_SS_ACCESS_TOKEN use-after-free fix (PR #596 / issue #594).
+# Without the package the test skips. The backing scripts are best-effort: on a
+# platform with no compatible wheel (e.g. Alpine/musl) they emit a pipeline
+# warning and succeed, so the test simply skips on those legs.
+#
+# Usage:
+#   # Windows (host)
+#   - template: steps/install-mock-tds.yml
+#     parameters:
+#       platform: windows
+#
+#   # macOS / Linux (host)
+#   - template: steps/install-mock-tds.yml
+#     parameters:
+#       platform: unix
+#
+#   # Inside a Docker container
+#   - template: steps/install-mock-tds.yml
+#     parameters:
+#       platform: container
+#       containerName: test-container-$(distroName)
+#       venvActivate: 'source /opt/venv/bin/activate'
+
+parameters:
+  - name: platform
+    type: string
+    values: [windows, unix, container]
+
+  - name: containerName
+    type: string
+    default: ''
+
+  - name: venvActivate
+    type: string
+    default: 'source /opt/venv/bin/activate'
+
+  - name: displaySuffix
+    type: string
+    default: ''
+
+steps:
+# Windows: run the PowerShell script directly on the host
+- ${{ if eq(parameters.platform, 'windows') }}:
+  - task: PowerShell@2
+    displayName: 'Install mssql-mock-tds${{ parameters.displaySuffix }}'
+    inputs:
+      targetType: 'filePath'
+      filePath: 'eng/scripts/install-mock-tds.ps1'
+
+# Unix host (macOS, Linux without container)
+- ${{ if eq(parameters.platform, 'unix') }}:
+  - script: |
+      chmod +x eng/scripts/install-mock-tds.sh
+      ./eng/scripts/install-mock-tds.sh
+    displayName: 'Install mssql-mock-tds${{ parameters.displaySuffix }}'
+
+# Inside a Docker container
+- ${{ if eq(parameters.platform, 'container') }}:
+  - script: |
+      docker exec ${{ parameters.containerName }} bash -c "
+        ${{ parameters.venvActivate }}
+        chmod +x eng/scripts/install-mock-tds.sh
+        ./eng/scripts/install-mock-tds.sh
+      "
+    displayName: 'Install mssql-mock-tds in ${{ parameters.containerName }}${{ parameters.displaySuffix }}'
