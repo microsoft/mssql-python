@@ -586,6 +586,7 @@ class TestManagedIdentity:
 
         cursor = Cursor.__new__(Cursor)
         cursor._connection = mock_conn
+        cursor._timeout = 0
         cursor.closed = False
         cursor.hstmt = None
 
