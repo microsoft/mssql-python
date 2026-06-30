@@ -64,7 +64,7 @@ except ImportError:
 
 try:
     from cryptography import x509
-    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.primitives.serialization import pkcs12, NoEncryption
     from cryptography.x509.oid import NameOID
@@ -90,13 +90,24 @@ _LOGIN_TIMEOUT_SECONDS = 3
 
 
 def _write_test_identity(directory):
-    """Generate a self-signed TLS identity (PKCS#12) the mock server can load.
+    """Generate a self-signed TLS identity the mock server can load.
 
     The mock server looks for a TLS identity at ``<cwd>/tests/test_certificates``
-    (among a few relative candidates). It prefers ``valid_cert.pem`` + ``key.pem``
-    but those only build a native-tls Identity on non-Windows builds; the
-    ``identity.pfx`` path uses ``load_identity_from_file`` which works on every
-    platform, so we emit only the .pfx.
+    (among a few relative candidates) and resolves it in this order: it first
+    tries ``valid_cert.pem`` + ``key.pem`` via ``create_test_identity`` (OpenSSL,
+    non-Windows only), then falls back to ``identity.pfx`` via
+    ``load_identity_from_file`` with an *empty* password.
+
+    Those two paths need different files per platform:
+
+    * **Non-Windows (Linux, macOS):** emit the PEM pair. ``create_test_identity``
+      re-packs them into a 3DES-encrypted PKCS#12 with a non-empty password,
+      which macOS' Security framework accepts. A password-less ``identity.pfx``
+      would *not* load on macOS -- ``Identity::from_pkcs12`` there rejects an
+      unencrypted PKCS#12 with "The user name or passphrase you entered is not
+      correct.", and we cannot influence the empty password the binding uses.
+    * **Windows:** ``create_test_identity`` is unavailable (no bundled OpenSSL),
+      so emit ``identity.pfx``. Schannel happily loads a password-less PKCS#12.
     """
     cert_dir = os.path.join(directory, "tests", "test_certificates")
     os.makedirs(cert_dir, exist_ok=True)
@@ -120,15 +131,28 @@ def _write_test_identity(directory):
         .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
         .sign(key, hashes.SHA256())
     )
-    pfx = pkcs12.serialize_key_and_certificates(
-        name=b"mock-tds",
-        key=key,
-        cert=cert,
-        cas=None,
-        encryption_algorithm=NoEncryption(),
-    )
-    with open(os.path.join(cert_dir, "identity.pfx"), "wb") as handle:
-        handle.write(pfx)
+
+    if os.name == "nt":
+        pfx = pkcs12.serialize_key_and_certificates(
+            name=b"mock-tds",
+            key=key,
+            cert=cert,
+            cas=None,
+            encryption_algorithm=NoEncryption(),
+        )
+        with open(os.path.join(cert_dir, "identity.pfx"), "wb") as handle:
+            handle.write(pfx)
+    else:
+        cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+        key_pem = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=NoEncryption(),
+        )
+        with open(os.path.join(cert_dir, "valid_cert.pem"), "wb") as handle:
+            handle.write(cert_pem)
+        with open(os.path.join(cert_dir, "key.pem"), "wb") as handle:
+            handle.write(key_pem)
 
 
 def _access_token_struct(raw_token):
