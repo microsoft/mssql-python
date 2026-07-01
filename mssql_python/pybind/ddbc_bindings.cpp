@@ -489,9 +489,16 @@ static DescribedParamInfo ResolveNullParamType(
     SQLULEN size;
     LOG("ResolveNullParamType: Cache MISS for hStmt=%p param[%d], calling "
         "SQLDescribeParam", (void*)hStmt, paramIndex);
-    RETCODE rc = SQLDescribeParam_ptr(
-        hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
-        &type, &size, &digits, &nullable);
+    // SQLDescribeParam may issue a server round-trip
+    // (sp_describe_undeclared_parameters). Release the GIL around it so
+    // in-process Python TCP forwarders can run (issue #565 family).
+    RETCODE rc;
+    {
+        py::gil_scoped_release release;
+        rc = SQLDescribeParam_ptr(
+            hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
+            &type, &size, &digits, &nullable);
+    }
 
     DescribedParamInfo info;
     if (SQL_SUCCEEDED(rc)) {
@@ -1411,8 +1418,21 @@ void SqlHandle::free() {
             return;
         }
 
-        // Handle is valid and not implicitly freed, proceed with normal freeing
-        SQLFreeHandle_ptr(_type, _handle);
+        // Handle is valid and not implicitly freed, proceed with normal freeing.
+        // Release the GIL during the blocking ODBC call (SQLFreeHandle on a STMT
+        // with an open server-side cursor, or on a DBC, performs network I/O).
+        // This is critical when the connection is reached through an in-process
+        // Python TCP forwarder (e.g. paramiko + sshtunnel) - the forwarder
+        // thread needs the GIL to push bytes, so holding it here deadlocks
+        // (issue #565). Only release the GIL if it is actually held AND the
+        // interpreter is not finalizing - gil_scoped_release is unsafe during
+        // shutdown even if PyGILState_Check() reports the GIL as held.
+        if (!pythonShuttingDown && PyGILState_Check()) {
+            py::gil_scoped_release release;
+            SQLFreeHandle_ptr(_type, _handle);
+        } else {
+            SQLFreeHandle_ptr(_type, _handle);
+        }
         _handle = nullptr;
     }
 }
@@ -1427,7 +1447,17 @@ void SqlHandle::close_cursor() {
     if (!SQLFreeStmt_ptr) {
         ThrowStdException("SQLFreeStmt function not loaded");
     }
-    SQLRETURN ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    // Release the GIL during the blocking SQLFreeStmt(SQL_CLOSE) network
+    // round-trip; see issue #565 (in-process forwarder deadlock).
+    // Skip GIL release when the GIL isn't held or the interpreter is
+    // finalizing - gil_scoped_release is unsafe in shutdown.
+    SQLRETURN ret;
+    if (!is_python_finalizing() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    } else {
+        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
         ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
     }
@@ -4628,7 +4658,11 @@ int32_t days_from_civil(int y, int m, int d) {
 }
 
 SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
-                               int arrowBatchSize) {
+                               int arrowBatchSize,
+                               int charCtype) {
+    // Fetch narrow char data as SQL_C_CHAR if on Linux/macOS and configured by the user
+    charCtype = EffectiveCharCtypeForFetch(charCtype, "utf-8");
+
     // An overly large fetch size doesn't seem to help performance
     int fetchSize = 64;
 
@@ -4817,9 +4851,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     ColumnBuffers buffers(numCols, fetchSize);
 
     if (!hasLobColumns && fetchSize > 0) {
-        // Bind columns — Arrow always uses SQL_C_CHAR for VARCHAR because
-        // it processes raw byte buffers directly, not via Python codecs.
-        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, SQL_C_CHAR);
+        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error when binding columns");
             return ret;
@@ -4879,14 +4911,17 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         case SQL_CHAR:
                         case SQL_VARCHAR:
                         case SQL_LONGVARCHAR: {
-                            ret = GetDataVar(hStmt, idxCol + 1, SQL_C_CHAR,
-                                             buffers.charBuffers[idxCol],
-                                             buffers.indicators[idxCol].data());
-                            if (!SQL_SUCCEEDED(ret)) {
-                                LOG("Error fetching CHAR LOB for column %d", idxCol + 1);
-                                return ret;
+                            if (charCtype == SQL_C_CHAR) {
+                                ret = GetDataVar(hStmt, idxCol + 1, SQL_C_CHAR,
+                                                 buffers.charBuffers[idxCol],
+                                                 buffers.indicators[idxCol].data());
+                                if (!SQL_SUCCEEDED(ret)) {
+                                    LOG("Error fetching CHAR LOB data for column %d", idxCol + 1);
+                                    return ret;
+                                }
+                                break;
                             }
-                            break;
+                            // else fall through to SQL_C_WCHAR case
                         }
                         case SQL_SS_XML:
                         case SQL_WCHAR:
@@ -5131,27 +5166,31 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     case SQL_CHAR:
                     case SQL_VARCHAR:
                     case SQL_LONGVARCHAR: {
+                        if (charCtype == SQL_C_CHAR) {
 #if defined(__APPLE__) || defined(__linux__)
-                        uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
+                            uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
 #else
-                        uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                            uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 #endif
-                        auto target_vec = &arrowColumnProducer->varData;
-                        auto start = arrowColumnProducer->varVal[idxRowArrow];
-                        while (target_vec->size() < start + dataLen) {
-                            target_vec->resize(target_vec->size() * 2);
-                        }
+                            auto target_vec = &arrowColumnProducer->varData;
+                            auto start = arrowColumnProducer->varVal[idxRowArrow];
+                            while (target_vec->size() < start + dataLen) {
+                                target_vec->resize(target_vec->size() * 2);
+                            }
 
-                        std::memcpy(&(*target_vec)[start],
-                                    &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize],
-                                    dataLen);
-                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
-                        break;
+                            std::memcpy(&(*target_vec)[start],
+                                        &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize],
+                                        dataLen);
+                            arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
+                            break;
+                        }
+                        // else fall through to SQL_C_WCHAR case
                     }
                     case SQL_SS_XML:
                     case SQL_WCHAR:
                     case SQL_WVARCHAR:
                     case SQL_WLONGVARCHAR: {
+                        // We have previously fetched these as WCHARs, even for SQL_CHAR types.
                         assert(dataLen % sizeof(SQLWCHAR) == 0);
                         auto dataLenW = dataLen / sizeof(SQLWCHAR);
                         auto wcharSource =
@@ -5726,13 +5765,27 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     LOG("SQLFreeHandle_wrap: Free SQL handle type=%d", HandleType);
+    // Guard against a null/None handle being passed from Python - dereferencing
+    // Handle->get() on a null shared_ptr would segfault.
+    if (!Handle || !Handle->get()) {
+        return SQL_INVALID_HANDLE;
+    }
     if (!SQLAllocHandle_ptr) {
         LOG("SQLFreeHandle_wrap: Function pointer not initialized. Loading the "
             "driver.");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    SQLRETURN ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    // Release the GIL during the blocking SQLFreeHandle network round-trip
+    // (see issue #565 - in-process Python TCP forwarder deadlock).
+    // Skip GIL release in shutdown paths where it would crash.
+    SQLRETURN ret;
+    if (!is_python_finalizing() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    } else {
+        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLFreeHandle_wrap: SQLFreeHandle failed with error code - %d", ret);
         return ret;
