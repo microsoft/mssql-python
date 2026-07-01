@@ -489,15 +489,16 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
     SQLSMALLINT type, digits, nullable;
     SQLULEN size;
     LOG("ResolveNullParamType: Cache MISS for hStmt=%p param[%d], calling "
-        "SQLDescribeParam",
-        (void*)hStmt, paramIndex);
+        "SQLDescribeParam", (void*)hStmt, paramIndex);
+    // SQLDescribeParam may issue a server round-trip
+    // (sp_describe_undeclared_parameters). Release the GIL around it so
+    // in-process Python TCP forwarders can run (issue #565 family).
     RETCODE rc;
     {
-        // Release the GIL during the blocking SQLDescribeParam network call.
-        // The driver calls sp_describe_undeclared_parameters on the server.
         py::gil_scoped_release release;
-        rc = SQLDescribeParam_ptr(hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), &type, &size,
-                                  &digits, &nullable);
+        rc = SQLDescribeParam_ptr(
+            hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
+            &type, &size, &digits, &nullable);
     }
 
     DescribedParamInfo info;
@@ -1489,8 +1490,21 @@ void SqlHandle::free() {
             return;
         }
 
-        // Handle is valid and not implicitly freed, proceed with normal freeing
-        SQLFreeHandle_ptr(_type, _handle);
+        // Handle is valid and not implicitly freed, proceed with normal freeing.
+        // Release the GIL during the blocking ODBC call (SQLFreeHandle on a STMT
+        // with an open server-side cursor, or on a DBC, performs network I/O).
+        // This is critical when the connection is reached through an in-process
+        // Python TCP forwarder (e.g. paramiko + sshtunnel) - the forwarder
+        // thread needs the GIL to push bytes, so holding it here deadlocks
+        // (issue #565). Only release the GIL if it is actually held AND the
+        // interpreter is not finalizing - gil_scoped_release is unsafe during
+        // shutdown even if PyGILState_Check() reports the GIL as held.
+        if (!pythonShuttingDown && PyGILState_Check()) {
+            py::gil_scoped_release release;
+            SQLFreeHandle_ptr(_type, _handle);
+        } else {
+            SQLFreeHandle_ptr(_type, _handle);
+        }
         _handle = nullptr;
     }
 }
@@ -1505,7 +1519,17 @@ void SqlHandle::close_cursor() {
     if (!SQLFreeStmt_ptr) {
         ThrowStdException("SQLFreeStmt function not loaded");
     }
-    SQLRETURN ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    // Release the GIL during the blocking SQLFreeStmt(SQL_CLOSE) network
+    // round-trip; see issue #565 (in-process forwarder deadlock).
+    // Skip GIL release when the GIL isn't held or the interpreter is
+    // finalizing - gil_scoped_release is unsafe in shutdown.
+    SQLRETURN ret;
+    if (!is_python_finalizing() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    } else {
+        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
         ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
     }
@@ -5798,13 +5822,27 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     LOG("SQLFreeHandle_wrap: Free SQL handle type=%d", HandleType);
+    // Guard against a null/None handle being passed from Python - dereferencing
+    // Handle->get() on a null shared_ptr would segfault.
+    if (!Handle || !Handle->get()) {
+        return SQL_INVALID_HANDLE;
+    }
     if (!SQLAllocHandle_ptr) {
         LOG("SQLFreeHandle_wrap: Function pointer not initialized. Loading the "
             "driver.");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    SQLRETURN ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    // Release the GIL during the blocking SQLFreeHandle network round-trip
+    // (see issue #565 - in-process Python TCP forwarder deadlock).
+    // Skip GIL release in shutdown paths where it would crash.
+    SQLRETURN ret;
+    if (!is_python_finalizing() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    } else {
+        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLFreeHandle_wrap: SQLFreeHandle failed with error code - %d", ret);
         return ret;
