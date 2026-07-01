@@ -1932,8 +1932,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         }
 
         std::vector<std::shared_ptr<void>> paramBuffers;
-        rc =
-            BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
+        rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
             return rc;
         }
