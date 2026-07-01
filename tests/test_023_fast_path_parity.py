@@ -194,3 +194,95 @@ def test_fast_slow_path_parity(cursor, value, sql_type, column_size):
     fast = _fast_path_roundtrip(cursor, value)
     slow = _slow_path_roundtrip(cursor, value, sql_type=sql_type, column_size=column_size)
     assert fast == slow, f"Fast/slow path divergence for {value!r}: fast={fast!r} slow={slow!r}"
+
+
+# ---------------------------------------------------------------------------
+# Edge case tests (issues caught in rubber-duck review)
+# ---------------------------------------------------------------------------
+
+
+def test_large_bytearray_dae(cursor):
+    """Large bytearray (>8000 bytes) must stream via DAE without crashing.
+    This catches the pybind11 bytes-cast-from-bytearray bug."""
+    large_ba = bytearray(b"\xAB" * 10000)
+    cursor.execute(
+        "SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [large_ba]
+    )
+    result = cursor.fetchone()[0]
+    assert result == 10000
+
+
+def test_large_bytes_dae(cursor):
+    """Large bytes (>8000 bytes) must stream via DAE correctly."""
+    large_b = b"\xCD" * 10000
+    cursor.execute(
+        "SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [large_b]
+    )
+    result = cursor.fetchone()[0]
+    assert result == 10000
+
+
+def test_large_string_dae(cursor):
+    """Large string (>4000 chars) must stream via DAE correctly."""
+    large_str = "x" * 5000
+    cursor.execute("SELECT LEN(?)", [large_str])
+    result = cursor.fetchone()[0]
+    assert result == 5000
+
+
+def test_large_unicode_string_dae(cursor):
+    """Large unicode string (>4000 UTF-16 code units) streams via DAE."""
+    large_str = "\u00e9" * 5000  # é = 1 UTF-16 code unit each
+    cursor.execute("SELECT LEN(?)", [large_str])
+    result = cursor.fetchone()[0]
+    assert result == 5000
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        decimal.Decimal("-922337203685477.5808"),   # MONEY_MIN boundary
+        decimal.Decimal("922337203685477.5807"),    # MONEY_MAX boundary
+        decimal.Decimal("-214748.3648"),            # SMALLMONEY_MIN
+        decimal.Decimal("214748.3647"),             # SMALLMONEY_MAX
+        decimal.Decimal("0.01"),                    # typical money value
+    ],
+)
+def test_decimal_money_boundary(cursor, value):
+    """Decimal values at MONEY/SMALLMONEY boundaries must round-trip correctly."""
+    cursor.execute("SELECT CAST(? AS DECIMAL(38,4))", [value])
+    result = cursor.fetchone()[0]
+    assert result == value, f"MONEY boundary mismatch: sent {value}, got {result}"
+
+
+def test_decimal_outside_money_uses_numeric(cursor):
+    """Decimal outside MONEY range must use SQL_NUMERIC binding."""
+    # One unit above MONEY_MAX
+    value = decimal.Decimal("922337203685477.5808")
+    cursor.execute("SELECT CAST(? AS DECIMAL(38,4))", [value])
+    result = cursor.fetchone()[0]
+    assert result == value
+
+
+def test_decimal_infinity_rejected(cursor):
+    """Decimal('Infinity') must raise, not silently bind as 0."""
+    with pytest.raises(Exception):
+        cursor.execute("SELECT ?", [decimal.Decimal("Infinity")])
+
+
+def test_binary_with_embedded_nulls(cursor):
+    """Binary data with embedded null bytes must not be truncated."""
+    data = b"\x00\x01\x00\x02\x00"
+    cursor.execute(
+        "SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [data]
+    )
+    result = cursor.fetchone()[0]
+    assert result == 5
+
+
+def test_string_with_embedded_nulls(cursor):
+    """String with embedded NUL chars must not be truncated."""
+    value = "hello\x00world"
+    cursor.execute("SELECT LEN(?)", [value])
+    result = cursor.fetchone()[0]
+    assert result == 11

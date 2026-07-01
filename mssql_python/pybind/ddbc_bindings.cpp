@@ -486,9 +486,13 @@ static constexpr int MAX_INLINE_BINARY = 8000;
 // SQL Server maximum numeric precision
 static constexpr int MAX_NUMERIC_PRECISION = 38;
 
-// MONEY range: -922,337,203,685,477.5808 to 922,337,203,685,477.5807
-static constexpr double MONEY_MIN = -922337203685477.5808;
-static constexpr double MONEY_MAX = 922337203685477.5807;
+// MONEY/SMALLMONEY ranges are compared using exact Decimal arithmetic (not
+// double) to avoid boundary misclassification. These string constants are
+// converted to Python Decimal objects at first use via PythonObjectCache.
+static const char* SMALLMONEY_MIN_STR = "-214748.3648";
+static const char* SMALLMONEY_MAX_STR = "214748.3647";
+static const char* MONEY_MIN_STR = "-922337203685477.5808";
+static const char* MONEY_MAX_STR = "922337203685477.5807";
 
 // Platform-specific text C type: unixODBC requires all text as wide chars on
 // Linux/macOS. On Windows the ODBC driver accepts SQL_C_CHAR for ASCII text.
@@ -630,6 +634,7 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
                 // Unicode → SQL_WVARCHAR + SQL_C_WCHAR (wide-char streaming)
                 info.isDAE = true;
                 info.columnSize = 0;
+                info.utf16Len = utf16_len;
                 info.dataPtr = py::reinterpret_borrow<py::object>(py::handle(obj));
                 info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
@@ -673,7 +678,9 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- datetime (must check before date, since datetime is subclass of date) ---
-        if (PyObject_IsInstance(obj, datetime_type) == 1) {
+        int is_datetime = PyObject_IsInstance(obj, datetime_type);
+        if (is_datetime == -1) throw py::error_already_set();
+        if (is_datetime == 1) {
             py::handle h(obj);
             py::object tzinfo = h.attr("tzinfo");
             if (!tzinfo.is_none()) {
@@ -691,7 +698,9 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- date ---
-        if (PyObject_IsInstance(obj, date_type) == 1) {
+        int is_date = PyObject_IsInstance(obj, date_type);
+        if (is_date == -1) throw py::error_already_set();
+        if (is_date == 1) {
             info.paramSQLType = SQL_TYPE_DATE;
             info.paramCType = SQL_C_TYPE_DATE;
             info.columnSize = 10;
@@ -700,7 +709,9 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- time (normalized to string for binding) ---
-        if (PyObject_IsInstance(obj, time_type) == 1) {
+        int is_time = PyObject_IsInstance(obj, time_type);
+        if (is_time == -1) throw py::error_already_set();
+        if (is_time == 1) {
             info.paramSQLType = SQL_TYPE_TIME;
             info.paramCType = PARAM_C_TYPE_TEXT;  // matches slow path (its SQL_C_CHAR is -8 = SQL_C_WCHAR)
             info.columnSize = 16;
@@ -723,7 +734,9 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- Decimal ---
-        if (PyObject_IsInstance(obj, decimal_type) == 1) {
+        int is_decimal = PyObject_IsInstance(obj, decimal_type);
+        if (is_decimal == -1) throw py::error_already_set();
+        if (is_decimal == 1) {
             py::handle h(obj);
             py::object as_tuple = h.attr("as_tuple")();
             py::object exponent_obj = as_tuple.attr("exponent");
@@ -755,16 +768,36 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
 
             // SMALLMONEY/MONEY range — bind as formatted VARCHAR string
             // to match SQL Server's fixed-point money semantics.
-            double dval = h.attr("__float__")().cast<double>();
-            if (dval >= MONEY_MIN && dval <= MONEY_MAX) {
-                py::str formatted = h.attr("__format__")(py::str("f"));
-                info.paramSQLType = SQL_VARCHAR;
-                info.paramCType = PARAM_C_TYPE_TEXT;  // matches slow path
-                Py_ssize_t fmtLen = py::len(formatted);
-                info.columnSize = fmtLen;
-                info.decimalDigits = 0;
-                PyList_SetItem(params.ptr(), i, formatted.release().ptr());
-                continue;
+            // Use exact Decimal comparison (not double) to avoid boundary misclassification.
+            {
+                py::object decimal_mod = py::module_::import("decimal");
+                py::object Decimal = decimal_mod.attr("Decimal");
+                py::object py_param = py::reinterpret_borrow<py::object>(py::handle(obj));
+                py::object sm_min = Decimal(py::str(SMALLMONEY_MIN_STR));
+                py::object sm_max = Decimal(py::str(SMALLMONEY_MAX_STR));
+                py::object m_min = Decimal(py::str(MONEY_MIN_STR));
+                py::object m_max = Decimal(py::str(MONEY_MAX_STR));
+
+                bool in_money_range = false;
+                // Check SMALLMONEY first (subset of MONEY)
+                if (py_param.attr("__ge__")(sm_min).cast<bool>() &&
+                    py_param.attr("__le__")(sm_max).cast<bool>()) {
+                    in_money_range = true;
+                } else if (py_param.attr("__ge__")(m_min).cast<bool>() &&
+                           py_param.attr("__le__")(m_max).cast<bool>()) {
+                    in_money_range = true;
+                }
+
+                if (in_money_range) {
+                    py::str formatted = h.attr("__format__")(py::str("f"));
+                    info.paramSQLType = SQL_VARCHAR;
+                    info.paramCType = PARAM_C_TYPE_TEXT;
+                    Py_ssize_t fmtLen = py::len(formatted);
+                    info.columnSize = fmtLen;
+                    info.decimalDigits = 0;
+                    PyList_SetItem(params.ptr(), i, formatted.release().ptr());
+                    continue;
+                }
             }
 
             // Generic numeric binding via SQL_NUMERIC_STRUCT
@@ -779,7 +812,9 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- UUID ---
-        if (PyObject_IsInstance(obj, uuid_type) == 1) {
+        int is_uuid = PyObject_IsInstance(obj, uuid_type);
+        if (is_uuid == -1) throw py::error_already_set();
+        if (is_uuid == 1) {
             py::handle h(obj);
             py::bytes bytes_le = h.attr("bytes_le");
             info.paramSQLType = SQL_GUID;
@@ -2430,16 +2465,15 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
 // SQLExecuteFast — single C++ pipeline: DetectParamTypes → BindParameters → SQLExecute
 // No ParamInfo objects cross the pybind11 boundary.
 //
-// Always uses SQLPrepare (not ExecDirect) because parameterized queries
-// benefit from prepared plan reuse, and the fast path is only invoked
-// when parameters are present. The use_prepare flag from the caller is
-// acknowledged but overridden — this is a perf-only code path.
+// Honors use_prepare: when true, uses SQLPrepare + SQLExecute (benefiting from
+// plan reuse). When false but already prepared, reuses the existing plan.
+// When false and not prepared, throws (matching slow path behavior).
 // ---------------------------------------------------------------------------
 SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
                               const std::u16string& query,
                               py::list params,
                               py::list is_stmt_prepared,
-                              bool /*use_prepare*/,
+                              bool use_prepare,
                               const py::dict& encoding_settings) {
     if (!statementHandle || !statementHandle->get()) {
         return SQL_INVALID_HANDLE;
@@ -2476,22 +2510,33 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
     // PyList_SetItem (which decrefs the old slot before stealing the new ref),
     // so the function is safe regardless of who owns the list.
 
+    // Run DetectParamTypes BEFORE SQLPrepare so that type-detection errors
+    // (unsupported type, NaN Decimal, precision overflow) don't leave the
+    // cursor in a half-prepared state.
+    std::vector<ParamInfo> paramInfos = DetectParamTypes(params);
+
     RETCODE rc;
     bool already_prepared = is_stmt_prepared[0].cast<bool>();
 
-    // Prepare if needed (fast path always uses prepare for parameterized queries)
+    // Honor use_prepare flag (matching slow path behavior):
+    // - use_prepare=true: prepare now (or reuse if same SQL already prepared)
+    // - use_prepare=false + already prepared: reuse existing plan
+    // - use_prepare=false + not prepared: error (cannot execute unprepared)
     if (!already_prepared) {
-        SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
-        {
-            py::gil_scoped_release release;
-            rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+        if (use_prepare) {
+            SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
+            {
+                py::gil_scoped_release release;
+                rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+            }
+            if (!SQL_SUCCEEDED(rc)) return rc;
+            statementHandle->clearDescribeCache();
+            is_stmt_prepared[0] = py::bool_(true);
+        } else {
+            ThrowStdException("Cannot execute unprepared statement");
         }
-        if (!SQL_SUCCEEDED(rc)) return rc;
-        is_stmt_prepared[0] = py::bool_(true);
     }
 
-    // DetectParamTypes + BindParameters in one shot — ParamInfo stays in C++
-    std::vector<ParamInfo> paramInfos = DetectParamTypes(params);
     std::vector<std::shared_ptr<void>> paramBuffers;
     rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
     if (!SQL_SUCCEEDED(rc)) return rc;
@@ -2567,10 +2612,23 @@ SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
                 }
             } else if (py::isinstance<py::bytes>(pyObj) ||
                        py::isinstance<py::bytearray>(pyObj)) {
-                py::bytes b = pyObj.cast<py::bytes>();
-                std::string s = b;
-                const char* dataPtr = s.data();
-                size_t totalBytes = s.size();
+                // Handle bytes and bytearray separately — pybind11's bytes
+                // caster does not safely convert bytearray.
+                const char* dataPtr = nullptr;
+                size_t totalBytes = 0;
+                std::string bytesStorage;  // lifetime must span the loop
+
+                if (py::isinstance<py::bytes>(pyObj)) {
+                    bytesStorage = pyObj.cast<py::bytes>();
+                    dataPtr = bytesStorage.data();
+                    totalBytes = bytesStorage.size();
+                } else {
+                    // bytearray: use raw buffer access
+                    PyObject* ba = pyObj.ptr();
+                    dataPtr = PyByteArray_AS_STRING(ba);
+                    totalBytes = static_cast<size_t>(PyByteArray_GET_SIZE(ba));
+                }
+
                 for (size_t offset = 0; offset < totalBytes; offset += DAE_CHUNK_SIZE) {
                     size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE),
                                           totalBytes - offset);
