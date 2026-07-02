@@ -1,11 +1,10 @@
 # Step template: Install mssql-mock-tds (in-process mock TDS server) from the
-# public mssql-rs_Public Azure Artifacts PyPI feed.
+# public mssql-rs_Public Azure Artifacts PyPI feed via eng/requirements-mock-tds.txt.
 #
 # This is required for tests/test_024_mock_tds_fedauth.py, which guards the
 # deferred SQL_COPT_SS_ACCESS_TOKEN use-after-free fix (PR #596 / issue #594).
-# Without the package the test skips. The backing scripts are best-effort: if a
-# compatible wheel is ever missing or the sandbox feed is unavailable, they emit
-# a pipeline warning and succeed, so the test simply skips on those legs.
+# The install fails the leg if no compatible wheel is available: the package
+# version and feed are pinned in eng/requirements-mock-tds.txt.
 #
 # Usage:
 #   # Windows (host)
@@ -43,19 +42,16 @@ parameters:
     default: ''
 
 steps:
-# Windows: run the PowerShell script directly on the host
+# Windows host
 - ${{ if eq(parameters.platform, 'windows') }}:
-  - task: PowerShell@2
+  - script: |
+      python -m pip install -r eng/requirements-mock-tds.txt
     displayName: 'Install mssql-mock-tds${{ parameters.displaySuffix }}'
-    inputs:
-      targetType: 'filePath'
-      filePath: 'eng/scripts/install-mock-tds.ps1'
 
 # Unix host (macOS, Linux without container)
 - ${{ if eq(parameters.platform, 'unix') }}:
   - script: |
-      chmod +x eng/scripts/install-mock-tds.sh
-      ./eng/scripts/install-mock-tds.sh
+      python -m pip install -r eng/requirements-mock-tds.txt
     displayName: 'Install mssql-mock-tds${{ parameters.displaySuffix }}'
 
 # Inside a Docker container
@@ -63,7 +59,6 @@ steps:
   - script: |
       docker exec ${{ parameters.containerName }} bash -c "
         ${{ parameters.venvActivate }}
-        chmod +x eng/scripts/install-mock-tds.sh
-        ./eng/scripts/install-mock-tds.sh
+        python -m pip install -r eng/requirements-mock-tds.txt
       "
     displayName: 'Install mssql-mock-tds in ${{ parameters.containerName }}${{ parameters.displaySuffix }}'
