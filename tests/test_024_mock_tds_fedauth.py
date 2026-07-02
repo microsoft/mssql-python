@@ -82,10 +82,9 @@ pytestmark = pytest.mark.skipif(
     ),
 )
 
-# Keep the per-connect wait short: the mock server records the FedAuth token
-# while processing Login7 but does not complete the handshake the way the real
-# ODBC driver expects, so the driver eventually times out. The token has
-# already been captured by then, so a small login timeout keeps the tests fast.
+# Bound each connect so a future protocol change can never hang the suite. With
+# the current mock the FedAuth Login7 is answered and the connection completes
+# quickly; this login timeout is just a safety net.
 _LOGIN_TIMEOUT_SECONDS = 3
 
 
@@ -186,12 +185,43 @@ def mock_tls_server(tmp_path, monkeypatch):
         server.stop()
 
 
+@pytest.fixture(autouse=True)
+def _no_connection_pooling():
+    """Disable connection pooling for the duration of each test.
+
+    The mock records the FedAuth access token only once the client connection
+    is actually closed (its per-connection read loop moves the token into the
+    connection store when the socket goes away). ``mssql_python`` auto-enables
+    ODBC connection pooling on the first ``connect()``, so ``conn.close()`` would
+    merely return the socket to the pool and the mock would never observe the
+    close -- leaving ``has_received_token`` empty. Pooling is a process-global
+    ODBC environment setting, so we toggle it off here and restore the prior
+    configuration afterwards.
+    """
+    from mssql_python.pooling import PoolingManager
+    import mssql_python
+
+    was_enabled = PoolingManager.is_enabled()
+    was_initialized = PoolingManager.is_initialized()
+
+    mssql_python.pooling(enabled=False)
+    try:
+        yield
+    finally:
+        if was_enabled:
+            mssql_python.pooling()
+        elif not was_initialized:
+            PoolingManager._reset_for_testing()
+
+
 def _connect_with_token(server, raw_token):
     """Best-effort connect to *server* using *raw_token* as the access token.
 
-    Returns the captured connection error (if any). The real ODBC driver times
-    out because the mock does not finish the handshake; that is expected and not
-    what these tests assert on -- they assert on the token the server received.
+    Returns the captured connection error (if any). Connection pooling is
+    disabled for these tests (see ``_no_connection_pooling``) so that closing the
+    connection actually tears down the socket and the mock records the token that
+    was transmitted in the Login7 FedAuth feature -- which is what these tests
+    assert on.
     """
     import mssql_python
 
@@ -206,7 +236,8 @@ def _connect_with_token(server, raw_token):
         conn = mssql_python.connect(conn_str, attrs_before=attrs_before)
     except Exception as exc:  # noqa: BLE001 - handshake completion is not under test
         return exc
-    # If a future mock learns to complete the handshake, don't leak the handle.
+    # Close the connection so the mock observes the socket teardown and records
+    # the token from this connect.
     try:
         conn.close()
     except Exception:  # noqa: BLE001
