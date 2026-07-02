@@ -185,43 +185,12 @@ def mock_tls_server(tmp_path, monkeypatch):
         server.stop()
 
 
-@pytest.fixture(autouse=True)
-def _no_connection_pooling():
-    """Disable connection pooling for the duration of each test.
-
-    The mock records the FedAuth access token only once the client connection
-    is actually closed (its per-connection read loop moves the token into the
-    connection store when the socket goes away). ``mssql_python`` auto-enables
-    ODBC connection pooling on the first ``connect()``, so ``conn.close()`` would
-    merely return the socket to the pool and the mock would never observe the
-    close -- leaving ``has_received_token`` empty. Pooling is a process-global
-    ODBC environment setting, so we toggle it off here and restore the prior
-    configuration afterwards.
-    """
-    from mssql_python.pooling import PoolingManager
-    import mssql_python
-
-    was_enabled = PoolingManager.is_enabled()
-    was_initialized = PoolingManager.is_initialized()
-
-    mssql_python.pooling(enabled=False)
-    try:
-        yield
-    finally:
-        if was_enabled:
-            mssql_python.pooling()
-        elif not was_initialized:
-            PoolingManager._reset_for_testing()
-
-
 def _connect_with_token(server, raw_token):
     """Best-effort connect to *server* using *raw_token* as the access token.
 
-    Returns the captured connection error (if any). Connection pooling is
-    disabled for these tests (see ``_no_connection_pooling``) so that closing the
-    connection actually tears down the socket and the mock records the token that
-    was transmitted in the Login7 FedAuth feature -- which is what these tests
-    assert on.
+    Returns the captured connection error (if any). The mock records the token
+    it received in the Login7 FedAuth feature as soon as it parses the login, so
+    these tests assert on the received token.
     """
     import mssql_python
 
@@ -236,8 +205,6 @@ def _connect_with_token(server, raw_token):
         conn = mssql_python.connect(conn_str, attrs_before=attrs_before)
     except Exception as exc:  # noqa: BLE001 - handshake completion is not under test
         return exc
-    # Close the connection so the mock observes the socket teardown and records
-    # the token from this connect.
     try:
         conn.close()
     except Exception:  # noqa: BLE001
@@ -261,8 +228,8 @@ class TestMockServerFedAuth:
 
         self_error = _connect_with_token(mock_tls_server, token)
 
-        # The connection itself may time out (the mock doesn't finish login),
-        # but the token must have been transmitted before that point.
+        # The token is transmitted in Login7 and recorded by the mock as soon as
+        # it parses the login.
         assert mock_tls_server.connection_count() >= 1, (
             "Mock server recorded no connection; the driver never reached "
             f"Login7. Last connect error: {self_error!r}"
@@ -287,31 +254,46 @@ class TestMockServerFedAuth:
         )
 
     def test_distinct_tokens_on_sequential_connects(self, mock_tls_server):
-        """Two connects on owned buffers must not clobber each other's token.
+        """Two connects with owned buffers must not clobber each other's token.
 
-        PR #596 hardened the fix with per-attribute owned buffers. Exercising
-        two sequential connects with different tokens ensures both tokens are
-        recorded byte-for-byte without one connection invalidating the other's
-        buffer ownership.
+        PR #596 hardened the fix with per-attribute owned buffers. Exercising two
+        connects with different tokens ensures each Connection-owned buffer yields
+        its own token byte-for-byte.
+
+        The access token is a *deferred* ODBC connect attribute and is not part of
+        the connection-pool key, so two connects sharing one connection string
+        would be served by the same pooled connection and the second token would
+        never be sent. ``mssql_python`` auto-enables pooling, so we deliberately
+        target two distinct mock servers: different ``Server=host:port`` values
+        give distinct pool keys and force two real logins, one carrying each
+        token.
         """
-        first = f"first_{secrets.token_hex(16)}"
-        second = f"second_{secrets.token_hex(16)}"
+        second_server = mssql_mock_tds.PyMockTdsServer(port=0, tls=True)
+        second_server.start()
+        try:
+            first = f"first_{secrets.token_hex(16)}"
+            second = f"second_{secrets.token_hex(16)}"
 
-        _connect_with_token(mock_tls_server, first)
-        _connect_with_token(mock_tls_server, second)
+            _connect_with_token(mock_tls_server, first)
+            _connect_with_token(second_server, second)
 
-        # Both exact tokens must be present. We deliberately do NOT assert on
-        # get_last_access_token(): the mock stores connections in a HashMap keyed
-        # by client socket address, so "last" reflects non-deterministic hash
-        # ordering, not connect order. Byte-for-byte receipt of *both* distinct
-        # tokens is the property that actually guards the #596 owned buffers.
-        assert mock_tls_server.has_received_token(
-            first
-        ), f"Mock server did not receive the first token {first!r}."
-        assert mock_tls_server.has_received_token(
-            second
-        ), f"Mock server did not receive the second token {second!r}."
-        assert mock_tls_server.connection_count() >= 2, (
-            "Expected at least two recorded connections for two sequential "
-            f"connects, got {mock_tls_server.connection_count()}."
-        )
+            assert mock_tls_server.has_received_token(
+                first
+            ), f"First server did not receive the first token {first!r}."
+            assert second_server.has_received_token(
+                second
+            ), f"Second server did not receive the second token {second!r}."
+
+            # Each connection's owned buffer must carry only its own token: a
+            # clobber (the #596 signature) would leak one token onto the other
+            # server.
+            assert not mock_tls_server.has_received_token(second), (
+                "First server unexpectedly received the second token; the "
+                "per-connection token buffers were clobbered (#596 signature)."
+            )
+            assert not second_server.has_received_token(first), (
+                "Second server unexpectedly received the first token; the "
+                "per-connection token buffers were clobbered (#596 signature)."
+            )
+        finally:
+            second_server.stop()
