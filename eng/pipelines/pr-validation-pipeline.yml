@@ -544,26 +544,6 @@ jobs:
       platform: unix
 
   - script: |
-      # Uninstall system unixODBC before running tests.
-      # This ensures the bundled ODBC driver-manager dylibs are used instead of any
-      # Homebrew-provided unixODBC, proving the wheel is self-contained.
-      echo "Removing Homebrew unixODBC / msodbcsql18 to force use of bundled ODBC libraries..."
-      brew uninstall --ignore-dependencies unixodbc 2>/dev/null || echo "unixODBC not installed via Homebrew"
-      brew uninstall --ignore-dependencies msodbcsql18 2>/dev/null || echo "msodbcsql18 not installed via Homebrew"
-
-      # Remove any leftover driver-manager dylibs from the standard Homebrew locations
-      # (arm64 -> /opt/homebrew/lib, x86_64 -> /usr/local/lib)
-      rm -f /opt/homebrew/lib/libodbcinst.2.dylib /opt/homebrew/lib/libodbc.2.dylib
-      rm -f /usr/local/lib/libodbcinst.2.dylib /usr/local/lib/libodbc.2.dylib
-      echo "Removed system unixODBC libraries"
-
-      # Verify the bundled driver's dependencies (macOS equivalent of ldd is otool -L)
-      ARCH=$(uname -m)
-      echo "Verifying $ARCH macOS driver library dependencies:"
-      otool -L "mssql_python/libs/macos/$ARCH/lib/libmsodbcsql.18.dylib" || echo 'Driver library not found'
-    displayName: 'Uninstall system unixODBC before running tests on macOS'
-
-  - script: |
       echo "Build successful, running tests now"
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'

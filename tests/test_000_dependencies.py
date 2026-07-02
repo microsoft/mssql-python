@@ -6,6 +6,8 @@ This file tests that all required dependencies are present for the current platf
 import pytest
 import platform
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -346,6 +348,64 @@ class TestArchitectureSpecificDependencies:
             assert (
                 libodbcinst_path.exists()
             ), f"macOS {arch} ODBC installer library not found: {libodbcinst_path}"
+
+    @pytest.mark.skipif(dependency_tester.platform_name != "darwin", reason="macOS-specific test")
+    def test_macos_dylibs_have_no_absolute_dependency_paths(self):
+        """Ensure bundled macOS dylibs reference their sibling libraries relocatably.
+
+        Guards against GitHub issue #656: on a fresh Apple Silicon Mac (without
+        ``brew install unixodbc``) loading the driver fails because the arm64
+        ``libmsodbcsql.18.dylib`` hardcodes ``/opt/homebrew/lib/libodbcinst.2.dylib``
+        instead of using ``@loader_path``.
+
+        ``otool -L`` reads the Mach-O load commands of any architecture regardless
+        of the host, so this inspects BOTH the arm64 and x86_64 dylibs even when
+        running on a single-architecture runner (e.g. x86_64 CI). That lets an
+        x86_64 build machine catch the arm64-only packaging bug.
+        """
+        otool = shutil.which("otool")
+        if otool is None:
+            pytest.skip("otool not available on this system")
+
+        problems = []
+        for arch in ["arm64", "x86_64"]:
+            lib_dir = dependency_tester.module_dir / "libs" / "macos" / arch / "lib"
+            if not lib_dir.exists():
+                continue
+
+            # Libraries we ship in this directory. A dependency on any of these
+            # must be relocatable (@loader_path/@rpath), never an absolute path.
+            bundled_names = {p.name for p in lib_dir.glob("*.dylib")}
+
+            for dylib in sorted(lib_dir.glob("*.dylib")):
+                result = subprocess.run(
+                    [otool, "-L", str(dylib)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    problems.append(f"{arch}/{dylib.name}: otool failed: {result.stderr.strip()}")
+                    continue
+
+                # First line of `otool -L` output is the file itself; the rest are deps.
+                for line in result.stdout.splitlines()[1:]:
+                    dep = line.strip().split(" (compatibility")[0].strip()
+                    if not dep:
+                        continue
+
+                    # A sibling bundled library must be referenced relocatably.
+                    if os.path.basename(dep) in bundled_names and dep.startswith("/"):
+                        problems.append(
+                            f"{arch}/{dylib.name} references bundled "
+                            f"'{os.path.basename(dep)}' via absolute path '{dep}' "
+                            f"(expected @loader_path/@rpath)"
+                        )
+
+        assert not problems, (
+            "macOS dylibs contain hardcoded absolute dependency paths that will "
+            "break on machines without Homebrew (see GitHub issue #656):\n  "
+            + "\n  ".join(problems)
+        )
 
     @pytest.mark.skipif(dependency_tester.platform_name != "linux", reason="Linux-specific test")
     def test_linux_distribution_dependencies(self):
