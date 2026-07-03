@@ -1671,6 +1671,50 @@ class TestTokenExpiryCapture:
             assert get_auth_token_info("default") is None
 
 
+class TestDefaultCredentialPoolingWarning:
+    """The one-time DefaultAzureCredential pooling warning uses double-checked
+    locking so concurrent callers emit it at most once."""
+
+    def test_inner_double_check_returns_without_warning(self, monkeypatch):
+        # Simulate a race: the outer check sees the flag unset, but another
+        # thread sets it while we wait on the lock, so the inner check returns
+        # (auth.py line 96) and no warning is emitted by this caller.
+        import mssql_python.auth as auth_mod
+
+        monkeypatch.setattr(auth_mod, "_dac_pooling_warned", False, raising=False)
+        mock_logger = MagicMock()
+        monkeypatch.setattr(auth_mod, "logger", mock_logger)
+
+        class RacingLock:
+            def __enter__(self):
+                auth_mod._dac_pooling_warned = True
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(auth_mod, "_dac_pooling_warned_lock", RacingLock())
+
+        auth_mod._warn_default_credential_pooling()
+
+        mock_logger.warning.assert_not_called()
+
+    def test_warning_emitted_once_when_not_yet_warned(self, monkeypatch):
+        # Baseline: with the flag unset and a normal lock, the warning fires.
+        import threading
+        import mssql_python.auth as auth_mod
+
+        monkeypatch.setattr(auth_mod, "_dac_pooling_warned", False, raising=False)
+        monkeypatch.setattr(auth_mod, "_dac_pooling_warned_lock", threading.Lock())
+        mock_logger = MagicMock()
+        monkeypatch.setattr(auth_mod, "logger", mock_logger)
+
+        auth_mod._warn_default_credential_pooling()
+        auth_mod._warn_default_credential_pooling()
+
+        assert mock_logger.warning.call_count == 1
+
+
 class TestComputeIdentityKey:
     """The per-identity discriminator that makes the native pool key
     identity-aware."""
@@ -1715,6 +1759,19 @@ class TestComputeIdentityKey:
         assert compute_identity_key("default") is None
         assert compute_identity_key("interactive") is None
         assert compute_identity_key("devicecode") is None
+
+    def test_interactive_uses_home_account_id(self):
+        # A stable signed-in account id keys the pool on the account, so a
+        # silent refresh reuses it while a different account gets its own pool.
+        assert compute_identity_key("interactive", home_account_id="acct-xyz") == "acct:acct-xyz"
+
+    def test_devicecode_uses_home_account_id(self):
+        assert compute_identity_key("devicecode", home_account_id="dev-acct") == "acct:dev-acct"
+
+    def test_account_id_preferred_over_token_hash(self):
+        # When both are available the account id wins (stable across refreshes).
+        key = compute_identity_key("interactive", token_struct=b"tok", home_account_id="acct-1")
+        assert key == "acct:acct-1"
 
 
 class TestConnectionPoolKey:
@@ -1899,5 +1956,54 @@ class TestTokenFactoryLazyAcquisition:
             assert conn._token_factory is None
             args, _ = mock_ddbc_conn.call_args
             assert args[4] is None
+        finally:
+            conn.close()
+
+    @patch("mssql_python.connection.get_auth_token_info")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_account_keyed_auth_defers_to_factory(self, mock_ddbc_conn, mock_get_token_info):
+        # Device-code yields a stable home_account_id, so the pool key is
+        # ``acct:<id>`` and token acquisition is deferred to the factory rather
+        # than pinned into attrs_before.
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_get_token_info.return_value = TokenInfo(
+            token_struct=b"dc-token-bytes",
+            expires_on=1893456000,
+            home_account_id="dc-acct-1",
+        )
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDeviceCode")
+        try:
+            assert conn._pool_key.endswith("\x00acct:dc-acct-1")
+            assert conn._token_factory is not None
+            assert self._TOKEN_ATTR not in conn._attrs_before
+            args, _ = mock_ddbc_conn.call_args
+            assert callable(args[4])
+        finally:
+            conn.close()
+
+    @patch("mssql_python.connection.get_auth_token_info")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_factory_returns_none_expiry_when_token_unavailable(
+        self, mock_ddbc_conn, mock_get_token_info
+    ):
+        # If the deferred token acquisition yields nothing, the factory returns
+        # ``(attrs, None)`` with no access token merged into attrs.
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_get_token_info.return_value = TokenInfo(
+            token_struct=b"dc-token-bytes",
+            expires_on=1893456000,
+            home_account_id="dc-acct-2",
+        )
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDeviceCode")
+        try:
+            # Simulate the provider returning nothing on the deferred call.
+            mock_get_token_info.return_value = None
+            attrs, expires_on = conn._token_factory()
+            assert expires_on is None
+            assert self._TOKEN_ATTR not in attrs
         finally:
             conn.close()
