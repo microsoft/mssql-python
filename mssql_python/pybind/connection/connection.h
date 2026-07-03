@@ -98,7 +98,8 @@ class ConnectionHandle {
   public:
     ConnectionHandle(const std::u16string& connStr, bool usePool,
                      const py::dict& attrsBefore = py::dict(),
-                     const std::u16string& poolKey = std::u16string());
+                     const std::u16string& poolKey = std::u16string(),
+                     const py::object& tokenFactory = py::object());
     ~ConnectionHandle();
 
     void close();

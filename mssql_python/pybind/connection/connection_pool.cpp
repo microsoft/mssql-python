@@ -13,7 +13,8 @@ ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
     : _max_size(max_size), _idle_timeout_secs(idle_timeout_secs), _current_size(0) {}
 
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
-                                                    const py::dict& attrs_before) {
+                                                    const py::dict& attrs_before,
+                                                    const py::object& token_factory) {
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
     bool needs_connect = false;
@@ -97,7 +98,18 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
     // Phase 3: Connect the new connection outside the mutex.
     if (needs_connect) {
         try {
-            valid_conn->connect(attrs_before);
+            // Lazy token acquisition (#659): only now, when a physical
+            // connection is actually being opened, do we materialize the
+            // token. On a pool reuse this whole branch is skipped, so a
+            // same-identity hit never acquires a token. The GIL is held here
+            // (connect() releases it only around the ODBC call itself), so
+            // invoking the Python callback is safe.
+            if (token_factory && !token_factory.is_none()) {
+                py::dict connect_attrs = token_factory().cast<py::dict>();
+                valid_conn->connect(connect_attrs);
+            } else {
+                valid_conn->connect(attrs_before);
+            }
         } catch (...) {
             // Connect failed — release the reserved slot
             {
@@ -170,7 +182,8 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
 
 std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::u16string& connStr,
                                                                      const py::dict& attrs_before,
-                                                                     const std::u16string& pool_key) {
+                                                                     const std::u16string& pool_key,
+                                                                     const py::object& token_factory) {
     // Key the pool by pool_key when provided (identity-aware, issue #651),
     // else fall back to the connection string (legacy behavior).
     const std::u16string& key = pool_key.empty() ? connStr : pool_key;
@@ -188,7 +201,7 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
     // during the ODBC connect call; holding _manager_mutex across that would
     // create a mutex/GIL lock-ordering deadlock. connStr (not key) is used to
     // establish new physical connections.
-    return pool->acquire(connStr, attrs_before);
+    return pool->acquire(connStr, attrs_before, token_factory);
 }
 
 void ConnectionPoolManager::returnConnection(const std::u16string& pool_key,

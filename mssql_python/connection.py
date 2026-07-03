@@ -347,6 +347,18 @@ class Connection:
         # distinct identities never share a pooled connection (issue #651).
         self._pool_key: str = ""
 
+        # Optional deferred-attrs callback handed to the native layer. When set,
+        # native invokes it *only* when it actually opens a physical connection
+        # (a pool miss or a non-pooled connect), so a same-identity pool hit
+        # skips token acquisition entirely (issue #659). None means "no deferred
+        # token" — the token (if any) is already in self._attrs_before.
+        #
+        # NOTE: This is an internal, private callback and is intentionally NOT
+        # the public ``token_provider=`` credential parameter proposed in
+        # PR #603 (issue #577). It returns the full connect-attrs dict lazily;
+        # hence the distinct name ``_token_factory``.
+        self._token_factory = None
+
         # Handle Entra ID authentication if specified.
         # The parsed dict is used directly — no re-parsing of the connection string.
         if _KEY_AUTHENTICATION in parsed_params:
@@ -364,9 +376,6 @@ class Connection:
                 # Strip sensitive params and rebuild the connection string.
                 sanitized = remove_sensitive_params(parsed_params)
                 self.connection_str = _ConnectionStringBuilder(sanitized).build()
-                token = get_auth_token(auth_type, credential_kwargs)
-                if token:
-                    self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
                 self._credential_kwargs = credential_kwargs
 
                 # Make the pool key identity-aware so two callers using the
@@ -377,13 +386,48 @@ class Connection:
                 # interactive-non-Windows); ServicePrincipal and Windows
                 # Interactive return None and keep their identity in the
                 # connection string, so they stay on the legacy connStr key.
-                identity = compute_identity_key(auth_type, credential_kwargs, token_struct=token)
+                #
+                # First try to derive the identity *without* a token. For MSI
+                # the client/object id comes straight from the params, so the
+                # pool key is known before any token exists — which lets us
+                # defer token acquisition to a provider callback that native
+                # invokes only on a pool miss (issue #659).
+                identity = compute_identity_key(auth_type, credential_kwargs)
                 if identity:
                     # A real connection string can
                     # never contain \0, so the composite key can never collide
                     # with a bare connStr pool key. std::u16string map keys hold
                     # embedded NULs fine and the key is never used as a C string.
                     self._pool_key = self.connection_str + "\x00" + identity
+
+                    # Lazy token acquisition (#659): native invokes this only
+                    # when it opens a physical connection, so same-identity pool
+                    # hits never pay for a token. The closure reads a copy of the
+                    # base attrs and merges in a freshly acquired token; neither
+                    # auth_type nor credential_kwargs is rebound after this point.
+                    token_attr = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
+                    base_attrs = self._attrs_before
+
+                    def _token_factory():
+                        attrs = dict(base_attrs)
+                        tok = get_auth_token(auth_type, credential_kwargs)
+                        if tok:
+                            attrs[token_attr] = tok
+                        return attrs
+
+                    self._token_factory = _token_factory
+                else:
+                    # Token-dependent identity (DefaultAzureCredential / raw
+                    # token / interactive / device-code): the key is the token
+                    # hash, so the token must be acquired now to compute it.
+                    token = get_auth_token(auth_type, credential_kwargs)
+                    if token:
+                        self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
+                    identity = compute_identity_key(
+                        auth_type, credential_kwargs, token_struct=token
+                    )
+                    if identity:
+                        self._pool_key = self.connection_str + "\x00" + identity
 
             # Store auth type so bulkcopy() can acquire a fresh token later.
             # On Windows Interactive, process_auth_parameters returns None
@@ -426,7 +470,11 @@ class Connection:
         self._pooling = PoolingManager.is_enabled()
         try:
             self._conn = ddbc_bindings.Connection(
-                self.connection_str, self._pooling, self._attrs_before, self._pool_key
+                self.connection_str,
+                self._pooling,
+                self._attrs_before,
+                self._pool_key,
+                self._token_factory,
             )
         except RuntimeError as e:
             _raise_connection_error(e)

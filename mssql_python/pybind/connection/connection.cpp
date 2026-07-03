@@ -514,14 +514,22 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
 }
 
 ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
-                                   const py::dict& attrsBefore, const std::u16string& poolKey)
+                                   const py::dict& attrsBefore, const std::u16string& poolKey,
+                                   const py::object& tokenFactory)
     : _usePool(usePool), _connStr(connStr), _poolKey(poolKey.empty() ? connStr : poolKey) {
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
-                                                                       _poolKey);
+                                                                       _poolKey, tokenFactory);
     } else {
         _conn = std::make_shared<Connection>(_connStr, false);
-        _conn->connect(attrsBefore);
+        // Non-pooled connect still honors the lazy token factory (#659): a
+        // token is materialized only when a physical connection is opened.
+        if (tokenFactory && !tokenFactory.is_none()) {
+            py::dict connect_attrs = tokenFactory().cast<py::dict>();
+            _conn->connect(connect_attrs);
+        } else {
+            _conn->connect(attrsBefore);
+        }
     }
 }
 

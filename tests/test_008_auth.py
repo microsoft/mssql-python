@@ -1590,3 +1590,83 @@ class TestConnectionPoolKey:
         conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
         assert conn._pool_key == ""
         conn.close()
+
+
+class TestTokenFactoryLazyAcquisition:
+    """Part C (#659): when the pool key is known *without* a token (MSI, whose
+    identity is the client id), token acquisition is deferred to a callback the
+    native layer invokes only when it opens a physical connection. A same-
+    identity pool hit therefore never pays for a token. This is an internal
+    ``token_factory`` (5th positional arg to native Connection) and is distinct
+    from the public ``token_provider=`` credential API proposed in PR #603."""
+
+    _TOKEN_ATTR = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
+
+    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_msi_defers_token_acquisition(self, mock_ddbc_conn, mock_get_token):
+        # MSI identity is known from the client id, so the token must NOT be
+        # acquired during __init__ — it is deferred to the token_factory.
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryMSI")
+        try:
+            mock_get_token.assert_not_called()
+            # token_factory is passed as the 5th positional arg and is callable.
+            args, _ = mock_ddbc_conn.call_args
+            assert callable(args[4])
+            # The token is not eagerly placed into attrs_before either.
+            assert self._TOKEN_ATTR not in conn._attrs_before
+        finally:
+            conn.close()
+
+    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_token_factory_materializes_token_on_call(self, mock_ddbc_conn, mock_get_token):
+        # Invoking the factory (as native does on a pool miss) acquires the
+        # token and returns the attrs dict with the access token merged in.
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_get_token.return_value = b"materialized-token-bytes"
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryMSI")
+        try:
+            attrs = conn._token_factory()
+            mock_get_token.assert_called_once()
+            assert attrs[self._TOKEN_ATTR] == b"materialized-token-bytes"
+        finally:
+            conn.close()
+
+    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_token_dependent_auth_has_no_factory(self, mock_ddbc_conn, mock_get_token):
+        # DefaultAzureCredential keys on the token hash, so the token must be
+        # acquired eagerly (to compute the key) and there is no deferred factory.
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_get_token.return_value = b"eager-token-bytes"
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
+        try:
+            mock_get_token.assert_called_once()
+            assert conn._token_factory is None
+            args, _ = mock_ddbc_conn.call_args
+            assert args[4] is None
+            assert conn._attrs_before[self._TOKEN_ATTR] == b"eager-token-bytes"
+        finally:
+            conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_non_token_auth_has_no_factory(self, mock_ddbc_conn):
+        # Plain SQL auth: no identity, no deferred token.
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;UID=sa;PWD=secret")
+        try:
+            assert conn._token_factory is None
+            args, _ = mock_ddbc_conn.call_args
+            assert args[4] is None
+        finally:
+            conn.close()

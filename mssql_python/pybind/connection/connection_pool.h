@@ -19,9 +19,14 @@ class ConnectionPool {
   public:
     ConnectionPool(size_t max_size, int idle_timeout_secs);
 
-    // Acquires a connection from the pool or creates a new one if under limit
+    // Acquires a connection from the pool or creates a new one if under limit.
+    // token_factory, when set, is a Python callable returning the attrs dict
+    // (including the access token) to connect with; it is invoked *only* when a
+    // new physical connection is opened, so a pool hit skips it entirely (#659).
+    // (Internal callback — unrelated to the public token_provider= API of #603.)
     std::shared_ptr<Connection> acquire(const std::u16string& connStr,
-                                        const py::dict& attrs_before = py::dict());
+                                        const py::dict& attrs_before = py::dict(),
+                                        const py::object& token_factory = py::object());
 
     // Returns a connection to the pool for reuse
     void release(std::shared_ptr<Connection> conn);
@@ -49,9 +54,12 @@ class ConnectionPoolManager {
     // The pool is keyed by pool_key when supplied, else by conn_str. conn_str
     // is always used to establish new physical connections. Keying separately
     // keeps distinct Entra identities in distinct pools (issue #651).
-    std::shared_ptr<Connection> acquireConnection(const std::u16string& conn_str,
-                                                  const py::dict& attrs_before = py::dict(),
-                                                  const std::u16string& pool_key = std::u16string());
+    // token_factory is forwarded to ConnectionPool::acquire for lazy token
+    // acquisition on a pool miss (issue #659).
+    std::shared_ptr<Connection> acquireConnection(
+        const std::u16string& conn_str, const py::dict& attrs_before = py::dict(),
+        const std::u16string& pool_key = std::u16string(),
+        const py::object& token_factory = py::object());
 
     // Returns a connection to its original pool, identified by pool_key
     // (the same key passed to acquireConnection).
