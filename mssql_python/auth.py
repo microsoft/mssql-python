@@ -31,6 +31,12 @@ from mssql_python.constants import (
 _credential_cache: Dict[object, object] = {}
 _credential_cache_lock = threading.Lock()
 
+# Stable home_account_id captured the first time an interactive/device-code
+# credential runs authenticate(). Lets later *silent* get_token() acquisitions
+# still key the pool on the account without re-authenticating. Keyed like
+# _credential_cache and guarded by the same lock.
+_account_id_cache: Dict[object, Optional[str]] = {}
+
 # Canonical keys to strip when handing an Entra-token connection to ODBC.
 _SENSITIVE_KEYS = frozenset({_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION, _KEY_AUTHENTICATION})
 
@@ -169,13 +175,16 @@ class AADAuth:
 
     @staticmethod
     def _authenticate_interactive(credential) -> Optional[str]:
-        """Return a stable ``home_account_id`` for an interactive/device-code
-        credential, establishing (or silently reusing) an ``AuthenticationRecord``.
+        """Run the interactive ``authenticate()`` step and return the resulting
+        ``home_account_id``.
 
-        With ``disable_automatic_authentication=True`` the credential's
-        ``authenticate()`` performs the interactive step exactly once and caches
-        the record; a subsequent call for the same account returns without
-        prompting, while a different account produces a new ``home_account_id``
+        This is the *fallback* half of the silent-first pattern: it is invoked
+        only when :meth:`_acquire_token` catches ``AuthenticationRequiredError``
+        from a silent ``get_token()``, i.e. when interactive login is genuinely
+        required (first sign-in or a changed account). ``authenticate()``
+        performs the interactive step and caches the record on the credential,
+        so subsequent silent ``get_token()`` calls for the same account succeed
+        without prompting; a different account yields a new ``home_account_id``
         (rotating the pool key). Returns ``None`` when the SDK / test double does
         not expose ``authenticate()`` or ``home_account_id`` — the caller then
         falls back to the token-hash pool key so the safety invariant still holds.
@@ -208,6 +217,7 @@ class AADAuth:
         # pylint: disable=import-outside-toplevel
         try:
             from azure.identity import (
+                AuthenticationRequiredError,
                 DefaultAzureCredential,
                 DeviceCodeCredential,
                 InteractiveBrowserCredential,
@@ -244,11 +254,12 @@ class AADAuth:
         if auth_type == _AuthInternal.DEFAULT:
             _warn_default_credential_pooling()
 
-        # Interactive / Device-code use the authenticate()/AuthenticationRecord
-        # pattern so we can key the pool on a stable home_account_id:
-        # disable_automatic_authentication makes get_token() refresh silently and
-        # raise AuthenticationRequiredError (instead of prompting) when the
-        # account changes, which we surface as a re-auth via authenticate().
+        # Interactive / Device-code follow a silent-first pattern (see the
+        # get_token() call below): disable_automatic_authentication makes
+        # get_token() acquire silently from the credential's cached account and
+        # raise AuthenticationRequiredError (instead of prompting) when
+        # interactive login is genuinely required, at which point we call
+        # authenticate(). This keeps pooled reconnects prompt-free.
         is_interactive = auth_type in (_AuthInternal.INTERACTIVE, _AuthInternal.DEVICE_CODE)
 
         kwargs = credential_kwargs or {}
@@ -273,9 +284,22 @@ class AADAuth:
 
             home_account_id: Optional[str] = None
             if is_interactive:
-                home_account_id = AADAuth._authenticate_interactive(credential)
+                # Silent-first: try the cached account, and only fall back to
+                # the interactive authenticate() step when the SDK signals it is
+                # actually required. A browser/device-code prompt on every
+                # pooled checkout would defeat pooling for these auth types.
+                with _credential_cache_lock:
+                    home_account_id = _account_id_cache.get(cache_key)
+                try:
+                    access_token = credential.get_token(_SQL_SCOPE)
+                except AuthenticationRequiredError:
+                    home_account_id = AADAuth._authenticate_interactive(credential)
+                    with _credential_cache_lock:
+                        _account_id_cache[cache_key] = home_account_id
+                    access_token = credential.get_token(_SQL_SCOPE)
+            else:
+                access_token = credential.get_token(_SQL_SCOPE)
 
-            access_token = credential.get_token(_SQL_SCOPE)
             raw_token = access_token.token
             # expires_on is a POSIX epoch second on azure-identity's AccessToken.
             # getattr keeps older SDKs / test doubles (which may omit it) working.

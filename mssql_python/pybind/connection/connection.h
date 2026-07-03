@@ -64,6 +64,13 @@ class Connection {
     void setTokenExpiry(long long epochSeconds);
     bool isTokenNearExpiry(int thresholdSecs) const;
 
+    // Returns the raw SQL_COPT_SS_ACCESS_TOKEN bytes this connection last
+    // authenticated with, or an empty string if it never used a token. Used by
+    // expiry-aware checkout to decide whether a freshly minted token differs
+    // from the one the pooled connection already holds: if unchanged, the
+    // healthy connection is reused; only a rotated token forces reopen.
+    std::string currentAccessToken() const;
+
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 

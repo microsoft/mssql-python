@@ -546,6 +546,11 @@ bool Connection::isTokenNearExpiry(int thresholdSecs) const {
     return (now + static_cast<long long>(thresholdSecs)) >= _tokenExpiryEpoch;
 }
 
+std::string Connection::currentAccessToken() const {
+    auto it = _attrBytesBuffers.find(SQL_COPT_SS_ACCESS_TOKEN);
+    return it != _attrBytesBuffers.end() ? it->second : std::string();
+}
+
 ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
                                    const py::dict& attrsBefore, const std::u16string& poolKey,
                                    const py::object& tokenFactory)

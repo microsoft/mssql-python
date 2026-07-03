@@ -5895,6 +5895,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
+    m.def("_pool_count", []() { return ConnectionPoolManager::getInstance().poolCount(); },
+          "Diagnostic: number of connection pools currently tracked (used by tests)");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),

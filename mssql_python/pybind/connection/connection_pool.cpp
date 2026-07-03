@@ -14,6 +14,28 @@
 // token rather than handed out (<=10 min).
 static constexpr int TOKEN_EXPIRY_THRESHOLD_SECS = 300;
 
+// Custom msodbcsql attribute id carrying the Entra access-token struct. Mirrors
+// the definition in connection.cpp; used to compare a freshly minted token
+// against the one a pooled connection already holds during expiry-aware checkout.
+static constexpr long SQL_COPT_SS_ACCESS_TOKEN = 1256;
+
+// Pull the raw access-token bytes out of a connect-attrs dict returned by the
+// token factory, or an empty string if the dict carries no token. Caller must
+// hold the GIL. Keys in the dict are attribute ids (ints).
+static std::string extractAccessToken(const py::dict& attrs) {
+    for (auto item : attrs) {
+        if (py::isinstance<py::int_>(item.first) &&
+            item.first.cast<long>() == SQL_COPT_SS_ACCESS_TOKEN) {
+            try {
+                return item.second.cast<std::string>();
+            } catch (const py::cast_error&) {
+                return std::string();
+            }
+        }
+    }
+    return std::string();
+}
+
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
     : _max_size(max_size),
       _idle_timeout_secs(idle_timeout_secs),
@@ -58,6 +80,12 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
     // mutex.  isAlive() and reset() perform ODBC calls that release the
     // GIL; calling them while holding the mutex would create a mutex/GIL
     // lock-ordering deadlock when multiple threads acquire concurrently.
+    //
+    // Expiry-aware checkout may capture a freshly minted token here so a
+    // rotated-token pool can be reopened without invoking the factory twice.
+    py::dict pending_attrs;
+    long long pending_expiry = 0;
+    bool have_pending_token = false;
     while (true) {
         std::shared_ptr<Connection> candidate;
         {
@@ -82,41 +110,81 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
         }
 
         // Validate the candidate outside the mutex.
+        bool reuse_candidate = false;
         try {
-            // Expiry-aware checkout: if this connection was opened
-            // with an access token that is at/near expiry and we have a factory
-            // to mint a fresh one, do not reuse it — discard and reopen below so
-            // the caller never authenticates with an about-to-expire token.
-            bool token_expiring =
-                token_factory && !token_factory.is_none() &&
-                candidate->isTokenNearExpiry(TOKEN_EXPIRY_THRESHOLD_SECS);
-            if (!token_expiring && candidate->isAlive() && candidate->reset()) {
-                valid_conn = candidate;
-                break;
+            if (token_factory && !token_factory.is_none() &&
+                candidate->isTokenNearExpiry(TOKEN_EXPIRY_THRESHOLD_SECS)) {
+                // Expiry-aware checkout with token compare: the pooled token is
+                // at/near expiry, so mint a fresh one and compare. If the
+                // provider returns the SAME token (its cache is still valid),
+                // the connection is healthy — refresh the recorded expiry and
+                // reuse it rather than needlessly churning. Only a DIFFERENT
+                // (rotated) token forces discard-and-reopen, and we carry the
+                // fresh attrs forward so the reopen below does not invoke the
+                // factory a second time.
+                long long fresh_expiry = 0;
+                py::dict fresh_attrs =
+                    Connection::invokeTokenFactory(token_factory, fresh_expiry);
+                std::string fresh_token = extractAccessToken(fresh_attrs);
+                if (!fresh_token.empty() && fresh_token == candidate->currentAccessToken()) {
+                    candidate->setTokenExpiry(fresh_expiry);
+                    reuse_candidate = candidate->isAlive() && candidate->reset();
+                } else {
+                    // Token rotated — remember the fresh token to reopen with.
+                    pending_attrs = fresh_attrs;
+                    pending_expiry = fresh_expiry;
+                    have_pending_token = true;
+                }
+            } else {
+                reuse_candidate = candidate->isAlive() && candidate->reset();
             }
         } catch (const std::exception& ex) {
             LOG("Candidate connection validation failed: %s", ex.what());
         }
 
-        // Candidate is dead, near token expiry, or reset failed — mark for
+        if (reuse_candidate) {
+            valid_conn = candidate;
+            break;
+        }
+
+        // Candidate is dead, reset failed, or its token rotated — mark for
         // disconnect and decrement the pool size.
         to_disconnect.push_back(candidate);
         {
             std::lock_guard<std::mutex> lock(_mutex);
             if (_current_size > 0) --_current_size;
         }
+
+        // If a rotated token was captured, reserve a slot and reopen with it
+        // immediately instead of churning through the remaining candidates
+        // (which hold the same stale token and would all be discarded anyway).
+        if (have_pending_token) {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_current_size < _max_size) {
+                valid_conn = std::make_shared<Connection>(connStr, true);
+                ++_current_size;
+                needs_connect = true;
+                break;
+            }
+            // Pool momentarily full; fall through and retry the loop.
+        }
     }
 
     // Phase 3: Connect the new connection outside the mutex.
     if (needs_connect) {
         try {
-            // Lazy token acquisition: only now, when a physical
-            // connection is actually being opened, do we materialize the
-            // token. On a pool reuse this whole branch is skipped, so a
-            // same-identity hit never acquires a token. The GIL is held here
-            // (connect() releases it only around the ODBC call itself), so
-            // invoking the Python callback is safe.
-            if (token_factory && !token_factory.is_none()) {
+            if (have_pending_token) {
+                // Reopen with the fresh token captured during expiry-aware
+                // checkout (the previous connection's token had rotated).
+                valid_conn->connect(pending_attrs);
+                valid_conn->setTokenExpiry(pending_expiry);
+            } else if (token_factory && !token_factory.is_none()) {
+                // Lazy token acquisition: only now, when a physical
+                // connection is actually being opened, do we materialize the
+                // token. On a pool reuse this whole branch is skipped, so a
+                // same-identity hit never acquires a token. The GIL is held here
+                // (connect() releases it only around the ODBC call itself), so
+                // invoking the Python callback is safe.
                 long long expiry = 0;
                 py::dict connect_attrs = Connection::invokeTokenFactory(token_factory, expiry);
                 valid_conn->connect(connect_attrs);
@@ -174,10 +242,33 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
 
 bool ConnectionPool::canEvict() {
     std::lock_guard<std::mutex> lock(_mutex);
-    // Only evictable when there are no pooled connections AND no checked-out or
-    // in-flight ones (reserved capacity is zero). This avoids dropping a pool
-    // whose connections are temporarily all in use.
-    return _current_size == 0 && _pool.empty();
+    // Never evict while any connection is checked out or in-flight. Reserved
+    // capacity (_current_size) beyond what is sitting idle in _pool means a
+    // caller still holds one, so the pool must stay.
+    size_t checked_out = (_current_size > _pool.size()) ? (_current_size - _pool.size()) : 0;
+    if (checked_out > 0) {
+        return false;
+    }
+    // Nothing checked out and the pool is empty: safe to drop immediately.
+    if (_pool.empty()) {
+        return true;
+    }
+    // Nothing checked out but idle connections remain. Evict the whole pool
+    // only once EVERY pooled connection has been idle longer than the idle
+    // timeout. This is what reclaims pools for rotating / single-use identities
+    // (e.g. per-request Entra users keyed by token hash): such a pool is never
+    // acquired again, so its idle connection is never pruned by acquire() and
+    // _current_size would otherwise stay > 0 forever. Evaluating the idle
+    // timeout here lets the next acquireConnection() on any key sweep it away.
+    auto now = std::chrono::steady_clock::now();
+    for (const auto& conn : _pool) {
+        auto idle_time =
+            std::chrono::duration_cast<std::chrono::seconds>(now - conn->lastUsed()).count();
+        if (idle_time <= _idle_timeout_secs) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void ConnectionPool::close() {
@@ -212,14 +303,19 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
     // else fall back to the connection string (legacy behavior).
     const std::u16string& key = pool_key.empty() ? connStr : pool_key;
     std::shared_ptr<ConnectionPool> pool;
+    std::vector<std::shared_ptr<ConnectionPool>> evicted;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
-        // Lazy eviction: drop pools that hold no live or in-flight
-        // connections so distinct short-lived identities (e.g. per-request
-        // Entra users) do not accumulate empty pools forever. The pool we are
-        // about to use is skipped so it is never evicted from under us.
+        // Lazy eviction: drop pools whose connections are all idle past the
+        // idle timeout (and none checked out) so distinct short-lived
+        // identities (e.g. per-request Entra users keyed by token hash) do not
+        // accumulate pools forever. canEvict() only inspects state (no ODBC
+        // calls), so it is safe under _manager_mutex; the actual disconnects
+        // happen via close() below, outside the lock. The pool we are about to
+        // use is skipped so it is never evicted from under us.
         for (auto it = _pools.begin(); it != _pools.end();) {
             if (it->first != key && it->second && it->second->canEvict()) {
+                evicted.push_back(it->second);
                 it = _pools.erase(it);
             } else {
                 ++it;
@@ -231,6 +327,16 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
             pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
         }
         pool = pool_ref;
+    }
+    // Close evicted pools outside _manager_mutex: close() disconnects ODBC
+    // handles (releasing the GIL), which must never run while holding
+    // _manager_mutex or we risk a mutex/GIL lock-ordering deadlock.
+    for (auto& evicted_pool : evicted) {
+        try {
+            evicted_pool->close();
+        } catch (const std::exception& ex) {
+            LOG("ConnectionPoolManager: closing evicted pool failed: %s", ex.what());
+        }
     }
     // Call acquire() outside _manager_mutex.  acquire() may release the GIL
     // during the ODBC connect call; holding _manager_mutex across that would
@@ -288,4 +394,9 @@ void ConnectionPoolManager::closePools() {
         }
     }
     _pools.clear();
+}
+
+size_t ConnectionPoolManager::poolCount() {
+    std::lock_guard<std::mutex> lock(_manager_mutex);
+    return _pools.size();
 }

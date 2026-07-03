@@ -21,6 +21,7 @@ from mssql_python.auth import (
     extract_auth_type,
     _credential_cache,
     _credential_cache_lock,
+    _account_id_cache,
 )
 from mssql_python.constants import AuthType, ConstantsDDBC
 import secrets
@@ -103,12 +104,25 @@ def setup_azure_identity():
     class MockClientAuthenticationError(Exception):
         pass
 
+    # Prefer the real AuthenticationRequiredError so production code exercises
+    # the exact exception type it will see in production; fall back to a local
+    # subclass only when azure-identity is not installed (the scenario this mock
+    # exists to cover). Either way the mocked module exposes the same class
+    # object that production imports, so silent-first's except-clause matches.
+    try:
+        from azure.identity import AuthenticationRequiredError as MockAuthenticationRequiredError
+    except ImportError:
+
+        class MockAuthenticationRequiredError(MockClientAuthenticationError):
+            """Local stand-in when azure-identity is unavailable."""
+
     class MockIdentity:
         DefaultAzureCredential = MockDefaultAzureCredential
         DeviceCodeCredential = MockDeviceCodeCredential
         InteractiveBrowserCredential = MockInteractiveBrowserCredential
         ClientSecretCredential = MockClientSecretCredential
         ManagedIdentityCredential = MockManagedIdentityCredential
+        AuthenticationRequiredError = MockAuthenticationRequiredError
 
     class MockCore:
         class exceptions:
@@ -145,10 +159,12 @@ def setup_azure_identity():
 
 @pytest.fixture(autouse=True)
 def clear_credential_cache():
-    """Clear the module-level credential cache between tests."""
+    """Clear the module-level credential and account-id caches between tests."""
     _credential_cache.clear()
+    _account_id_cache.clear()
     yield
     _credential_cache.clear()
+    _account_id_cache.clear()
 
 
 class TestAuthType:
@@ -357,6 +373,224 @@ class TestAADAuth:
             finally:
                 # Restore for next iteration
                 azure_identity.DefaultAzureCredential = original_default
+
+
+class TestSilentFirstInteractive:
+    """Regression tests for the silent-first pattern (interactive / device-code).
+
+    Contract: ``_acquire_token`` must try ``get_token()`` silently first and
+    invoke ``authenticate()`` ONLY when the SDK raises
+    ``AuthenticationRequiredError`` — never on every acquisition. This guards
+    against reverting to the old "authenticate() on every checkout" behavior,
+    which would prompt the user (browser / device code) on each pooled reconnect.
+    """
+
+    def test_silent_success_never_calls_authenticate(self):
+        """When get_token() succeeds silently, authenticate() is never invoked."""
+        az = sys.modules["azure.identity"]
+        original = az.InteractiveBrowserCredential
+
+        class SilentCred:
+            def __init__(self, **kwargs):
+                self.authenticate_calls = 0
+
+            def authenticate(self, **kwargs):
+                self.authenticate_calls += 1
+
+                class R:
+                    home_account_id = "acct"
+
+                return R()
+
+            def get_token(self, scope):
+                class T:
+                    token = SAMPLE_TOKEN
+
+                return T()
+
+        try:
+            az.InteractiveBrowserCredential = SilentCred
+            AADAuth._acquire_token("interactive")
+            cred = _credential_cache["interactive"]
+            assert cred.authenticate_calls == 0, "authenticate() must not run on a silent success"
+        finally:
+            az.InteractiveBrowserCredential = original
+
+    def test_authentication_required_triggers_authenticate_once(self):
+        """AuthenticationRequiredError from the silent get_token() falls back to
+        authenticate() exactly once, then retries get_token() successfully."""
+        az = sys.modules["azure.identity"]
+        original = az.DeviceCodeCredential
+        auth_required = az.AuthenticationRequiredError
+
+        class ChallengeCred:
+            def __init__(self, **kwargs):
+                self.authenticate_calls = 0
+                self.get_token_calls = 0
+
+            def authenticate(self, **kwargs):
+                self.authenticate_calls += 1
+
+                class R:
+                    home_account_id = "device-acct"
+
+                return R()
+
+            def get_token(self, scope):
+                self.get_token_calls += 1
+                if self.get_token_calls == 1:
+                    raise auth_required("interactive authentication required")
+
+                class T:
+                    token = SAMPLE_TOKEN
+
+                return T()
+
+        try:
+            az.DeviceCodeCredential = ChallengeCred
+            _, _, _, home_account_id = AADAuth._acquire_token("devicecode")
+            cred = _credential_cache["devicecode"]
+            # Exactly one interactive step, and get_token tried twice
+            # (silent attempt that raised, then the post-authenticate retry).
+            assert cred.authenticate_calls == 1
+            assert cred.get_token_calls == 2
+            assert home_account_id == "device-acct"
+        finally:
+            az.DeviceCodeCredential = original
+
+    def test_subsequent_acquisitions_are_silent(self):
+        """After the first interactive authenticate(), later acquisitions for
+        the same cached credential acquire silently and never re-prompt."""
+        az = sys.modules["azure.identity"]
+        original = az.InteractiveBrowserCredential
+        auth_required = az.AuthenticationRequiredError
+
+        class OnceChallengeCred:
+            def __init__(self, **kwargs):
+                self.authenticate_calls = 0
+                self.challenged = False
+
+            def authenticate(self, **kwargs):
+                self.authenticate_calls += 1
+
+                class R:
+                    home_account_id = "acct"
+
+                return R()
+
+            def get_token(self, scope):
+                if not self.challenged:
+                    self.challenged = True
+                    raise auth_required("need interactive")
+
+                class T:
+                    token = SAMPLE_TOKEN
+
+                return T()
+
+        try:
+            az.InteractiveBrowserCredential = OnceChallengeCred
+            AADAuth._acquire_token("interactive")  # challenge -> authenticate()
+            AADAuth._acquire_token("interactive")  # silent
+            AADAuth._acquire_token("interactive")  # silent
+            cred = _credential_cache["interactive"]
+            assert cred.authenticate_calls == 1, "authenticate() must run only on the first prompt"
+        finally:
+            az.InteractiveBrowserCredential = original
+
+    def test_home_account_id_is_cached_and_reused(self):
+        """The home_account_id resolved by the interactive step is cached in
+        _account_id_cache and surfaced on subsequent silent acquisitions."""
+        az = sys.modules["azure.identity"]
+        original = az.InteractiveBrowserCredential
+        auth_required = az.AuthenticationRequiredError
+
+        class OnceChallengeCred:
+            def __init__(self, **kwargs):
+                self.challenged = False
+
+            def authenticate(self, **kwargs):
+                class R:
+                    home_account_id = "stable-acct"
+
+                return R()
+
+            def get_token(self, scope):
+                if not self.challenged:
+                    self.challenged = True
+                    raise auth_required("need interactive")
+
+                class T:
+                    token = SAMPLE_TOKEN
+
+                return T()
+
+        try:
+            az.InteractiveBrowserCredential = OnceChallengeCred
+            _, _, _, hid1 = AADAuth._acquire_token("interactive")
+            # The cache now holds the account id for the interactive cache key.
+            assert "stable-acct" in _account_id_cache.values()
+            _, _, _, hid2 = AADAuth._acquire_token("interactive")
+            assert hid1 == "stable-acct"
+            assert hid2 == "stable-acct"
+        finally:
+            az.InteractiveBrowserCredential = original
+
+
+class TestAuthenticateInteractive:
+    """Direct branch coverage for the _authenticate_interactive fallback helper."""
+
+    def test_returns_none_when_credential_has_no_authenticate(self):
+        """A credential/test double lacking authenticate() yields None so the
+        caller falls back to the token-hash pool key."""
+
+        class NoAuth:
+            pass
+
+        assert AADAuth._authenticate_interactive(NoAuth()) is None
+
+    def test_uses_scopes_keyword_when_supported(self):
+        captured = {}
+
+        class Cred:
+            def authenticate(self, **kwargs):
+                captured.update(kwargs)
+
+                class R:
+                    home_account_id = "acct-1"
+
+                return R()
+
+        assert AADAuth._authenticate_interactive(Cred()) == "acct-1"
+        assert "scopes" in captured
+
+    def test_falls_back_to_no_args_when_scopes_rejected(self):
+        """Older/mocked authenticate() signatures that reject the scopes
+        keyword are retried with no arguments."""
+        calls = {"with_scopes": 0, "no_args": 0}
+
+        class Cred:
+            def authenticate(self, *args, **kwargs):
+                if kwargs:
+                    calls["with_scopes"] += 1
+                    raise TypeError("unexpected keyword argument 'scopes'")
+                calls["no_args"] += 1
+
+                class R:
+                    home_account_id = "acct-2"
+
+                return R()
+
+        assert AADAuth._authenticate_interactive(Cred()) == "acct-2"
+        assert calls["with_scopes"] == 1
+        assert calls["no_args"] == 1
+
+    def test_returns_none_when_record_lacks_home_account_id(self):
+        class Cred:
+            def authenticate(self, **kwargs):
+                return object()  # no home_account_id attribute
+
+        assert AADAuth._authenticate_interactive(Cred()) is None
 
 
 class TestProcessAuthParameters:

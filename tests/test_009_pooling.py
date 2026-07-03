@@ -407,6 +407,73 @@ def test_pool_idle_timeout_removes_connections(conn_str):
     )
 
 
+def test_idle_identity_pool_is_evicted_by_later_acquire(conn_str):
+    """Regression test for lazy eviction of idle identity pools.
+
+    David's ask verbatim: "connect as A, wait past idle timeout, connect as B,
+    assert A's pool is gone (today it won't be)."
+
+    Distinct connection strings (differing APP name) key to distinct pools —
+    the same mechanism identity-aware pooling uses (connStr + identity). The old
+    ``canEvict()`` required ``_current_size == 0 && _pool.empty()``, so a pool
+    holding a single *idle* connection (``_current_size == 1``) was never
+    reclaimed: connecting as B would leave A's pool alive forever. The fix makes
+    ``canEvict()`` evaluate the idle timeout, so acquiring B sweeps the
+    aged-out pool A away.
+
+    Run in a subprocess so this test's ``pooling(idle_timeout=1)`` is the first
+    (and therefore effective) call in a clean process, and so ``_pool_count``
+    observes only pools this test created.
+    """
+    _run_in_subprocess(
+        """
+        import os, re, sys, time
+        from mssql_python import connect, pooling, ddbc_bindings
+
+        base = os.environ["DB_CONNECTION_STRING"]
+        # Two distinct pool keys against the same server. The pool key is derived
+        # from the processed connection string, so switching the target database
+        # (master vs tempdb -- both always present) yields two separate pools,
+        # the same way two different identities would.
+        if re.search(r"(?i)database=", base):
+            conn_a = re.sub(r"(?i)database=[^;]*", "Database=master", base)
+            conn_b = re.sub(r"(?i)database=[^;]*", "Database=tempdb", base)
+        else:
+            trimmed = base.rstrip(";")
+            conn_a = trimmed + ";Database=master"
+            conn_b = trimmed + ";Database=tempdb"
+
+        pooling(max_size=2, idle_timeout=1)
+
+        # Identity A: open and return -> pool A now holds one idle connection
+        # (_current_size == 1). Under the old canEvict() this pool could never
+        # be reclaimed.
+        a = connect(conn_a)
+        a.cursor().execute("SELECT 1")
+        a.close()
+        assert ddbc_bindings._pool_count() == 1, (
+            f"expected exactly pool A, got {ddbc_bindings._pool_count()}"
+        )
+
+        # Let pool A's idle connection age past the 1s idle timeout.
+        time.sleep(3)
+
+        # Identity B: acquiring on a different key triggers the manager's lazy
+        # eviction sweep, which must now reclaim the aged-out pool A.
+        b = connect(conn_b)
+        b.cursor().execute("SELECT 1")
+        b.close()
+
+        count = ddbc_bindings._pool_count()
+        assert count == 1, (
+            f"pool A was not evicted: _pool_count()={count} (expected 1, "
+            f"which is only pool B). Under the old canEvict() this would be 2."
+        )
+        """,
+        conn_str,
+    )
+
+
 # =============================================================================
 # Error Handling and Recovery Tests
 # =============================================================================
