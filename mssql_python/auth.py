@@ -101,9 +101,11 @@ class AADAuth:
     ) -> TokenInfo:
         """Acquire a token and return both the ODBC struct and its expiry.
 
-        Used by the connection/pooling path so a pooled connection's token
-        expiry can be tracked and refreshed on checkout (see the
-        identity-aware pooling design, issues #651 / #659).
+        Foundation for expiry-aware pool checkout (identity-aware pooling
+        design, issues #651 / #659): it surfaces ``expires_on`` so a pooled
+        connection's token can eventually be refreshed/discarded near expiry.
+        The checkout-time consumer is a deferred follow-up, so today this is
+        exercised only by tests; production connects use :func:`get_auth_token`.
         """
         token_struct, _, expires_on = AADAuth._acquire_token(auth_type, credential_kwargs)
         return TokenInfo(token_struct=token_struct, expires_on=expires_on)

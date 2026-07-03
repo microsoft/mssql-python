@@ -778,3 +778,58 @@ class TestNativeTokenFactory:
         conn = ddbc_bindings.Connection(conn_str, False, {}, "", None)
         assert conn is not None
         conn.close()
+
+    def test_distinct_pool_keys_do_not_share_connections(self, conn_str):
+        """Different identity keys must never reuse each other's pooled connection.
+
+        This is the cross-identity isolation guarantee behind #651: the native
+        pool is keyed on the (identity-aware) pool key, so a connection opened
+        under identity A's key must not be handed out to identity B. We prove it
+        without real Entra tokens by counting factory invocations: a reuse skips
+        the factory, a miss calls it. If B were wrongly served A's pooled
+        connection, B's factory would never run.
+
+        It also exercises the embedded-NUL separator (``\\x00``) that joins the
+        connection string and the identity discriminator: both keys contain a
+        NUL yet remain distinct, confirming the separator survives the
+        Python ``str`` -> pybind11 ``std::u16string`` conversion and that the
+        full key (not a NUL-truncated prefix) is used for pool lookup.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        from mssql_python import ddbc_bindings
+
+        calls = {"a": 0, "b": 0}
+
+        def factory_a():
+            calls["a"] += 1
+            return {}
+
+        def factory_b():
+            calls["b"] += 1
+            return {}
+
+        key_a = conn_str + "\x00identityA"
+        key_b = conn_str + "\x00identityB"
+
+        # Open + close under identity A: pool miss -> factory A runs once, then
+        # the connection is returned to pool A.
+        conn_a1 = ddbc_bindings.Connection(conn_str, True, {}, key_a, factory_a)
+        assert calls["a"] == 1
+        conn_a1.close()
+
+        # Open under identity B (different key): must be a miss, not a reuse of
+        # A's pooled connection -> factory B runs.
+        conn_b1 = ddbc_bindings.Connection(conn_str, True, {}, key_b, factory_b)
+        assert calls["b"] == 1, (
+            "distinct identity key must not reuse another identity's pooled connection"
+        )
+        conn_b1.close()
+
+        # Re-open under identity A: its own pooled connection is still there ->
+        # pool hit -> factory A is NOT called again.
+        conn_a2 = ddbc_bindings.Connection(conn_str, True, {}, key_a, factory_a)
+        assert calls["a"] == 1, "same identity key should reuse its own pooled connection"
+        conn_a2.close()
+
