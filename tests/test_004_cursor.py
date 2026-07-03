@@ -1058,52 +1058,36 @@ def test_gh627_varbinary_max_null(cursor, db_connection):
         db_connection.commit()
 
 
-def test_gh627_executemany_temp_table_warns(cursor, db_connection):
-    """GH-627: executemany with temp table + all-NULL VARBINARY column should
-    emit UserWarning (most common real-world failure scenario)."""
-    import warnings
-
+def test_gh627_executemany_temp_table_raises(cursor, db_connection):
+    """GH-627: executemany with temp table + all-NULL VARBINARY column raises
+    ProgrammingError due to SQL_VARCHAR fallback (SQLDescribeParam can't resolve
+    temp table metadata). Users should use setinputsizes to work around this."""
     from mssql_python.exceptions import ProgrammingError
 
     cursor.execute("CREATE TABLE #gh627_em_warn (id INT, data VARBINARY(50) NULL)")
     db_connection.commit()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        with pytest.raises(ProgrammingError):
-            cursor.executemany(
-                "INSERT INTO #gh627_em_warn (id, data) VALUES (?, ?)",
-                [(1, None), (2, None)],
-            )
-
-    assert any(
-        "SQLDescribeParam failed" in str(w.message) for w in caught
-    ), f"Expected SQLDescribeParam warning, got: {[str(w.message) for w in caught]}"
+    with pytest.raises(ProgrammingError):
+        cursor.executemany(
+            "INSERT INTO #gh627_em_warn (id, data) VALUES (?, ?)",
+            [(1, None), (2, None)],
+        )
 
     cursor.execute("DROP TABLE IF EXISTS #gh627_em_warn")
     db_connection.commit()
 
 
-def test_gh627_temp_table_null_varbinary_warns(cursor, db_connection):
-    """GH-627: Inserting NULL into a temp table VARBINARY column should emit a
-    UserWarning about SQLDescribeParam fallback and setinputsizes workaround."""
-    import warnings
-
+def test_gh627_temp_table_null_varbinary_raises(cursor, db_connection):
+    """GH-627: Inserting NULL into a temp table VARBINARY column raises
+    ProgrammingError because SQLDescribeParam falls back to SQL_VARCHAR
+    and SQL Server rejects implicit varchar->varbinary conversion."""
     from mssql_python.exceptions import ProgrammingError
 
     cursor.execute("CREATE TABLE #gh627_warn (id INT, data VARBINARY(50) NULL)")
     db_connection.commit()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        with pytest.raises(ProgrammingError):
-            cursor.execute("INSERT INTO #gh627_warn (id, data) VALUES (?, ?)", [1, None])
-
-    # At least one warning should mention SQLDescribeParam and setinputsizes
-    assert any(
-        "SQLDescribeParam failed" in str(w.message) and "setinputsizes" in str(w.message)
-        for w in caught
-    ), f"Expected SQLDescribeParam warning, got: {[str(w.message) for w in caught]}"
+    with pytest.raises(ProgrammingError):
+        cursor.execute("INSERT INTO #gh627_warn (id, data) VALUES (?, ?)", [1, None])
 
     cursor.execute("DROP TABLE IF EXISTS #gh627_warn")
     db_connection.commit()
@@ -1133,34 +1117,22 @@ def test_gh627_temp_table_setinputsizes_workaround(cursor, db_connection):
     db_connection.commit()
 
 
-def test_gh627_physical_table_no_fallback_warning(cursor, db_connection):
-    """GH-627: Physical tables should resolve via SQLDescribeParam without
-    triggering the fallback warning (only temp tables/CTEs trigger it)."""
-    import warnings
-
+def test_gh627_physical_table_null_varbinary_succeeds(cursor, db_connection):
+    """GH-627: Physical tables should resolve via SQLDescribeParam and
+    successfully bind NULL VARBINARY without error."""
     table_name = f"pytest_gh627_nocache_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(50) NULL)")
+        db_connection.commit()
 
-    # First: use a physical table where SQLDescribeParam succeeds
-    cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(50) NULL)")
-    db_connection.commit()
-
-    # This should succeed without warnings (SQLDescribeParam works for physical tables)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
         cursor.execute(f"INSERT INTO {table_name} (id, data) VALUES (?, ?)", [1, None])
-    db_connection.commit()
+        db_connection.commit()
 
-    # No SQLDescribeParam warning for physical tables
-    describe_warnings = [w for w in caught if "SQLDescribeParam failed" in str(w.message)]
-    assert (
-        len(describe_warnings) == 0
-    ), f"Should not warn for physical tables, got: {[str(w.message) for w in describe_warnings]}"
-
-    cursor.execute(f"SELECT data FROM {table_name}")
-    assert cursor.fetchone()[0] is None
-
-    cursor.execute(f"DROP TABLE {table_name}")
-    db_connection.commit()
+        cursor.execute(f"SELECT data FROM {table_name}")
+        assert cursor.fetchone()[0] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
 
 
 def test_varbinary_max(cursor, db_connection):

@@ -514,10 +514,10 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
         // column types but will fail for BINARY/VARBINARY columns due to SQL
         // Server's implicit conversion rules.
         //
-        // When this fallback causes an error, users should call
-        // cursor.setinputsizes() to explicitly specify the parameter type.
-        //  Example:
-        //   cursor.setinputsizes([None, (ConstantsDDBC.SQL_VARBINARY.value, 100, 0)])
+        // Workaround: cursor.setinputsizes() to explicitly specify types.
+        //   from mssql_python.constants import ConstantsDDBC
+        //   cursor.setinputsizes([(ConstantsDDBC.SQL_INTEGER.value, 10, 0),
+        //                         (ConstantsDDBC.SQL_VARBINARY.value, 0, 0)])
         //   cursor.execute("INSERT INTO #t (id, data) VALUES (?, ?)", [1, None])
         info = {SQL_VARCHAR, 1, 0};
         LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
@@ -525,35 +525,14 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
                     paramIndex, rc);
     }
 
-    // Cache both successful and fallback results BEFORE emitting warnings.
-    // For fallbacks, this avoids repeated SQLDescribeParam network calls on
-    // statement reuse (same_sql path). The cache is cleared on SQLPrepare,
-    // so if the user changes the SQL or recreates the table, the next
-    // execution will retry SQLDescribeParam.
+    // Cache both successful and fallback results. For fallbacks, this avoids
+    // repeated SQLDescribeParam network calls on statement reuse. Note: on the
+    // same_sql path clearDescribeCache() is NOT called, so a transient describe
+    // failure is pinned as SQL_VARCHAR for the life of the prepared statement.
+    // This is intentional — retrying a failing describe on every execute would
+    // add latency with no benefit (temp-table metadata won't become resolvable
+    // mid-connection). The cache IS cleared on SQLPrepare (usePrepare path).
     handle.describeCache[paramIndex] = info;
-
-    // Emit a Python warning on fallback so users get actionable guidance.
-    // Wrapped in try-catch: if warning emission fails (e.g. interpreter
-    // shutdown), we still return the cached fallback rather than aborting.
-    if (!SQL_SUCCEEDED(rc)) {
-        try {
-            auto builtins = py::module_::import("builtins");
-            py::module_::import("warnings")
-                .attr("warn")(
-                    "SQLDescribeParam failed for parameter index " + std::to_string(paramIndex) +
-                        " (0-based). Falling back to SQL_VARCHAR for NULL binding. "
-                        "This may cause 'Implicit conversion from data type varchar to varbinary "
-                        "is not allowed' errors for BINARY/VARBINARY columns. "
-                        "To fix: from mssql_python.constants import ConstantsDDBC; then call "
-                        "cursor.setinputsizes() with explicit type info for every parameter. "
-                        "Example (2 params): cursor.setinputsizes("
-                        "[(ConstantsDDBC.SQL_INTEGER.value, 10, 0), "
-                        "(ConstantsDDBC.SQL_VARBINARY.value, column_size, 0)])",
-                    builtins.attr("UserWarning"));
-        } catch (const py::error_already_set& e) {
-            LOG_WARNING("ResolveNullParamType: Failed to emit Python warning: %s", e.what());
-        }
-    }
 
     return info;
 }
@@ -568,18 +547,6 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
                                        std::vector<ParamInfo>& paramInfos,
                                        const py::list* params = nullptr) {
     if (paramInfos.empty())
-        return;
-
-    // Quick scan: skip entirely if no unknown NULL params exist.
-    bool hasUnknownNull = false;
-    for (size_t i = 0; i < paramInfos.size(); ++i) {
-        if (paramInfos[i].paramCType == SQL_C_DEFAULT &&
-            paramInfos[i].paramSQLType == SQL_UNKNOWN_TYPE) {
-            hasUnknownNull = true;
-            break;
-        }
-    }
-    if (!hasUnknownNull)
         return;
 
     for (size_t paramIndex = 0; paramIndex < paramInfos.size(); ++paramIndex) {

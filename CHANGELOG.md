@@ -20,10 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **GH-627 behavioral change:** `NULL` parameters for `VARBINARY`/`BINARY`
   columns on physical tables now succeed silently (previously raised
   `ProgrammingError` when a non-NULL parameter was bound first). For temp
-  tables where `SQLDescribeParam` cannot determine column metadata, a
-  `UserWarning` is now emitted before the `ProgrammingError`, guiding users
-  to call `cursor.setinputsizes()`. Users running with `-W error` or
-  filtering on `UserWarning` may observe new warnings on temp-table paths.
+  tables where `SQLDescribeParam` cannot determine column metadata, the
+  fallback to `SQL_VARCHAR` still produces the same `ProgrammingError` as
+  before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
 - Bug fix: Resolved issue with connection timeout.
