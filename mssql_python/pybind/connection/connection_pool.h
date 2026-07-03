@@ -20,10 +20,13 @@ class ConnectionPool {
     ConnectionPool(size_t max_size, int idle_timeout_secs);
 
     // Acquires a connection from the pool or creates a new one if under limit.
-    // token_factory, when set, is a Python callable returning the attrs dict
+    // token_factory, when set, is a Python callable returning the connect-attrs
     // (including the access token) to connect with; it is invoked *only* when a
-    // new physical connection is opened, so a pool hit skips it entirely (#659).
-    // (Internal callback — unrelated to the public token_provider= API of #603.)
+    // new physical connection is opened, so a pool hit skips it entirely.
+    // (Internal callback — unrelated to the public token_provider= API.)
+    // When token_factory is set, a pooled candidate whose access token is within
+    // the expiry threshold is discarded and reopened so a caller never receives
+    // a connection with an about-to-expire token.
     std::shared_ptr<Connection> acquire(const std::u16string& connStr,
                                         const py::dict& attrs_before = py::dict(),
                                         const py::object& token_factory = py::object());
@@ -33,6 +36,10 @@ class ConnectionPool {
 
     // Closes all connections in the pool, releasing resources
     void close();
+
+    // True when the pool holds no live or in-flight connections and can be
+    // dropped by the manager to reclaim memory (lazy eviction).
+    bool canEvict();
 
   private:
     size_t _max_size;        // Maximum number of connections allowed
@@ -53,9 +60,9 @@ class ConnectionPoolManager {
     // Gets a connection from the appropriate pool (creates one if none exists).
     // The pool is keyed by pool_key when supplied, else by conn_str. conn_str
     // is always used to establish new physical connections. Keying separately
-    // keeps distinct Entra identities in distinct pools (issue #651).
+    // keeps distinct Entra identities in distinct pools.
     // token_factory is forwarded to ConnectionPool::acquire for lazy token
-    // acquisition on a pool miss (issue #659).
+    // acquisition on a pool miss.
     std::shared_ptr<Connection> acquireConnection(
         const std::u16string& conn_str, const py::dict& attrs_before = py::dict(),
         const std::u16string& pool_key = std::u16string(),

@@ -696,7 +696,7 @@ def test_pooling_state_consistency(conn_str):
 
 
 # =============================================================================
-# Native token-factory (lazy token acquisition, #659) integration tests
+# Native token-factory (lazy token acquisition) integration tests
 # =============================================================================
 #
 # These white-box tests drive the native ``ddbc_bindings.Connection``
@@ -713,7 +713,27 @@ def test_pooling_state_consistency(conn_str):
 
 
 class TestNativeTokenFactory:
-    """Integration tests for the native lazy token-factory path (#659)."""
+    """Integration tests for the native lazy token-factory path."""
+
+    @pytest.fixture(autouse=True)
+    def _drain_native_pool(self):
+        """Drain the native connection pool after each test.
+
+        These tests exercise ``ddbc_bindings.Connection`` directly with
+        ``use_pool=True``, bypassing the high-level ``mssql_python.connect()``
+        path that auto-enables :class:`PoolingManager`. Because pooling is never
+        enabled here, the module's ``atexit`` drain (``shutdown_pooling`` in
+        ``pooling.py``, guarded by ``PoolingManager._enabled``) does not run, so
+        pooled connections would otherwise linger in the process-lifetime native
+        pool singleton. Its C++ static destructor runs after the interpreter is
+        finalized, where touching the GIL/ODBC blocks and the process hangs on
+        exit. Draining here (the same call the product makes at exit) keeps the
+        native pool empty so the interpreter can shut down cleanly.
+        """
+        yield
+        from mssql_python import ddbc_bindings
+
+        ddbc_bindings.close_pooling()
 
     def test_pooled_factory_invoked_on_miss_and_skipped_on_reuse(self, conn_str):
         """The factory runs on a pool miss but not on a same-key pool reuse.
@@ -782,7 +802,7 @@ class TestNativeTokenFactory:
     def test_distinct_pool_keys_do_not_share_connections(self, conn_str):
         """Different identity keys must never reuse each other's pooled connection.
 
-        This is the cross-identity isolation guarantee behind #651: the native
+        This is the cross-identity isolation guarantee: the native
         pool is keyed on the (identity-aware) pool key, so a connection opened
         under identity A's key must not be handed out to identity B. We prove it
         without real Entra tokens by counting factory invocations: a reuse skips
@@ -822,9 +842,9 @@ class TestNativeTokenFactory:
         # Open under identity B (different key): must be a miss, not a reuse of
         # A's pooled connection -> factory B runs.
         conn_b1 = ddbc_bindings.Connection(conn_str, True, {}, key_b, factory_b)
-        assert calls["b"] == 1, (
-            "distinct identity key must not reuse another identity's pooled connection"
-        )
+        assert (
+            calls["b"] == 1
+        ), "distinct identity key must not reuse another identity's pooled connection"
         conn_b1.close()
 
         # Re-open under identity A: its own pooled connection is still there ->
@@ -833,3 +853,68 @@ class TestNativeTokenFactory:
         assert calls["a"] == 1, "same identity key should reuse its own pooled connection"
         conn_a2.close()
 
+    def test_pooled_factory_accepts_tuple_return(self, conn_str):
+        """The factory may return ``(attrs, expires_on)``.
+
+        Covers the tuple-unpacking path in Connection::invokeTokenFactory and
+        confirms a token whose expiry is far in the future is still reused on a
+        same-key pool hit (i.e. expiry-aware checkout does not discard it).
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        import time
+
+        from mssql_python import ddbc_bindings
+
+        calls = {"n": 0}
+        far_future = int(time.time()) + 3600  # well beyond the 300s threshold
+
+        def factory():
+            calls["n"] += 1
+            return {}, far_future  # (attrs, expires_on)
+
+        pool_key = conn_str + "\x00mssql_test_tuple_return"
+
+        conn1 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert calls["n"] == 1, "Factory (tuple return) should run once on a pool miss"
+        conn1.close()
+
+        conn2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert calls["n"] == 1, "Non-expiring token must be reused on a same-key pool hit"
+        conn2.close()
+
+    def test_near_expiry_token_refreshed_on_checkout(self, conn_str):
+        """A pooled connection with a near-expiry token is refreshed on checkout.
+
+        Covers the expiry-aware checkout branch: when the
+        factory reports an expiry within the refresh threshold, the pooled
+        candidate is discarded and a fresh connection is opened, so the factory
+        runs again on reuse instead of being skipped.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        import time
+
+        from mssql_python import ddbc_bindings
+
+        calls = {"n": 0}
+        # Expiry inside the 300s refresh threshold => treated as near-expiry.
+        near_expiry = int(time.time()) + 60
+
+        def factory():
+            calls["n"] += 1
+            return {}, near_expiry
+
+        pool_key = conn_str + "\x00mssql_test_651_nearexpiry"
+
+        conn1 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert calls["n"] == 1, "Factory should run once on the initial pool miss"
+        conn1.close()  # returned to the pool, but its token is near expiry
+
+        # Same key, but the pooled connection's token is near expiry, so it must
+        # be discarded and reopened -> factory runs a second time.
+        conn2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert calls["n"] == 2, "Near-expiry pooled connection must be refreshed on checkout"
+        conn2.close()

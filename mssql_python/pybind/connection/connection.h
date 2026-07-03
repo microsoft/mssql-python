@@ -48,6 +48,22 @@ class Connection {
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;
 
+    // Materialize connect-attrs from a Python token-factory callback.
+    // The factory may return either a bare attrs dict (legacy) or a
+    // ``(attrs, expires_on)`` tuple (expiry-aware pooling),
+    // where expires_on is the token's POSIX-epoch expiry or None. Returns the
+    // attrs dict; outExpiryEpoch is set to the expiry, or 0 when unknown.
+    // GIL must be held by the caller (it invokes Python).
+    static py::dict invokeTokenFactory(const py::object& tokenFactory,
+                                       long long& outExpiryEpoch);
+
+    // Record / inspect the pooled access token's expiry so a near-expiry
+    // connection is refreshed on checkout instead of being handed out with a
+    // token about to expire. Epoch seconds; 0 = unknown
+    // (non-token auth), for which isTokenNearExpiry() always returns false.
+    void setTokenExpiry(long long epochSeconds);
+    bool isTokenNearExpiry(int thresholdSecs) const;
+
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 
@@ -69,6 +85,10 @@ class Connection {
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
+    // POSIX-epoch expiry (seconds) of the access token this connection last
+    // authenticated with. 0 means unknown / non-token auth, in which case the
+    // expiry-aware checkout logic never treats the connection as near-expiry.
+    long long _tokenExpiryEpoch = 0;
     // Per-attribute owned buffers for connect attributes whose pointer the
     // driver may dereference *after* SQLSetConnectAttr returns (deferred
     // attributes, e.g. SQL_COPT_SS_ACCESS_TOKEN). Keyed by attribute ID so
@@ -119,7 +139,7 @@ class ConnectionHandle {
     std::u16string _connStr;
     // Key under which this connection's pool is stored. Defaults to _connStr
     // (legacy behavior) but is set to an identity-aware composite key for
-    // Entra access-token auth so distinct identities never share a pool
-    // (issue #651). Empty is never stored; the ctor falls back to _connStr.
+    // Entra access-token auth so distinct identities never share a pool.
+    // Empty is never stored; the ctor falls back to _connStr.
     std::u16string _poolKey;
 };

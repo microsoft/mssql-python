@@ -44,7 +44,7 @@ from mssql_python.auth import (
     extract_auth_type,
     process_auth_parameters,
     remove_sensitive_params,
-    get_auth_token,
+    get_auth_token_info,
     compute_identity_key,
 )
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
@@ -344,19 +344,19 @@ class Connection:
         # Composite, identity-aware pool key. Empty means "key the native pool
         # on the connection string" (legacy behavior, used for non-token auth).
         # For Entra access-token auth it is set to connStr + identity so that
-        # distinct identities never share a pooled connection (issue #651).
+        # distinct identities never share a pooled connection.
         self._pool_key: str = ""
 
         # Optional deferred-attrs callback handed to the native layer. When set,
         # native invokes it *only* when it actually opens a physical connection
         # (a pool miss or a non-pooled connect), so a same-identity pool hit
-        # skips token acquisition entirely (issue #659). None means "no deferred
+        # skips token acquisition entirely. None means "no deferred
         # token" — the token (if any) is already in self._attrs_before.
         #
         # NOTE: This is an internal, private callback and is intentionally NOT
-        # the public ``token_provider=`` credential parameter proposed in
-        # PR #603 (issue #577). It returns the full connect-attrs dict lazily;
-        # hence the distinct name ``_token_factory``.
+        # the public ``token_provider=`` credential parameter. It returns the
+        # full connect-attrs dict lazily; hence the distinct name
+        # ``_token_factory``.
         self._token_factory = None
 
         # Handle Entra ID authentication if specified.
@@ -380,7 +380,7 @@ class Connection:
 
                 # Make the pool key identity-aware so two callers using the
                 # same server but different Entra identities never reuse each
-                # other's authenticated connection (issue #651). auth_type here
+                # other's authenticated connection. auth_type here
                 # is the process_auth_parameters result, which is truthy only
                 # for the token-bearing types (default/devicecode/msi/
                 # interactive-non-Windows); ServicePrincipal and Windows
@@ -391,7 +391,26 @@ class Connection:
                 # the client/object id comes straight from the params, so the
                 # pool key is known before any token exists — which lets us
                 # defer token acquisition to a provider callback that native
-                # invokes only on a pool miss (issue #659).
+                # invokes only on a pool miss.
+                #
+                # The factory returns ``(attrs, expires_on)``: the connect-attrs
+                # dict plus the token's POSIX-epoch expiry (or None). Native
+                # stores the expiry so it can refresh/discard a pooled
+                # connection whose token is near expiry on checkout.
+                token_attr = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
+                base_attrs = self._attrs_before
+
+                def _make_token_factory():
+                    def _token_factory():
+                        attrs = dict(base_attrs)
+                        info = get_auth_token_info(auth_type, credential_kwargs)
+                        if info and info.token_struct:
+                            attrs[token_attr] = info.token_struct
+                            return attrs, info.expires_on
+                        return attrs, None
+
+                    return _token_factory
+
                 identity = compute_identity_key(auth_type, credential_kwargs)
                 if identity:
                     # A real connection string can
@@ -400,34 +419,38 @@ class Connection:
                     # embedded NULs fine and the key is never used as a C string.
                     self._pool_key = self.connection_str + "\x00" + identity
 
-                    # Lazy token acquisition (#659): native invokes this only
+                    # Lazy token acquisition: native invokes this only
                     # when it opens a physical connection, so same-identity pool
-                    # hits never pay for a token. The closure reads a copy of the
-                    # base attrs and merges in a freshly acquired token; neither
-                    # auth_type nor credential_kwargs is rebound after this point.
-                    token_attr = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
-                    base_attrs = self._attrs_before
-
-                    def _token_factory():
-                        attrs = dict(base_attrs)
-                        tok = get_auth_token(auth_type, credential_kwargs)
-                        if tok:
-                            attrs[token_attr] = tok
-                        return attrs
-
-                    self._token_factory = _token_factory
+                    # hits never pay for a token.
+                    self._token_factory = _make_token_factory()
                 else:
-                    # Token-dependent identity (DefaultAzureCredential / raw
-                    # token / interactive / device-code): the key is the token
-                    # hash, so the token must be acquired now to compute it.
-                    token = get_auth_token(auth_type, credential_kwargs)
-                    if token:
-                        self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
+                    # Token/account-dependent identity: acquire once to derive
+                    # the key. Interactive / Device-code yield a stable
+                    # home_account_id (key ``acct:``) so subsequent acquisitions
+                    # can be deferred to the factory (silent refresh reuses the
+                    # pool). DefaultAzureCredential / raw token key on the token
+                    # hash (``tok:``); the pooled connection is bound to that
+                    # exact token, so it is kept in attrs_before with no factory.
+                    info = get_auth_token_info(auth_type, credential_kwargs)
+                    token = info.token_struct if info else None
+                    home_account_id = info.home_account_id if info else None
                     identity = compute_identity_key(
-                        auth_type, credential_kwargs, token_struct=token
+                        auth_type,
+                        credential_kwargs,
+                        token_struct=token,
+                        home_account_id=home_account_id,
                     )
                     if identity:
                         self._pool_key = self.connection_str + "\x00" + identity
+                    if identity and identity.startswith("acct:"):
+                        # Account-stable key: safe to defer to the factory so a
+                        # same-account pool hit skips token acquisition and a
+                        # near-expiry checkout can refresh silently.
+                        self._token_factory = _make_token_factory()
+                    elif token:
+                        # Token-hash key: bind the pooled connection to this
+                        # exact token so its hash always matches the pool key.
+                        self._attrs_before[token_attr] = token
 
             # Store auth type so bulkcopy() can acquire a fresh token later.
             # On Windows Interactive, process_auth_parameters returns None

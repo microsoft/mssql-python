@@ -513,6 +513,39 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
+py::dict Connection::invokeTokenFactory(const py::object& tokenFactory,
+                                        long long& outExpiryEpoch) {
+    outExpiryEpoch = 0;
+    py::object result = tokenFactory();
+    // New contract: factory returns (attrs, expires_on). Remain
+    // backward compatible with the legacy contract where it returned a
+    // bare attrs dict.
+    if (py::isinstance<py::tuple>(result)) {
+        py::tuple parts = result.cast<py::tuple>();
+        py::dict attrs = parts[0].cast<py::dict>();
+        if (parts.size() > 1 && !parts[1].is_none()) {
+            outExpiryEpoch = parts[1].cast<long long>();
+        }
+        return attrs;
+    }
+    return result.cast<py::dict>();
+}
+
+void Connection::setTokenExpiry(long long epochSeconds) {
+    _tokenExpiryEpoch = epochSeconds;
+}
+
+bool Connection::isTokenNearExpiry(int thresholdSecs) const {
+    if (_tokenExpiryEpoch == 0) {
+        return false;  // Unknown / non-token auth: never treated as expiring.
+    }
+    const long long now = static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    return (now + static_cast<long long>(thresholdSecs)) >= _tokenExpiryEpoch;
+}
+
 ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
                                    const py::dict& attrsBefore, const std::u16string& poolKey,
                                    const py::object& tokenFactory)
@@ -522,11 +555,16 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
                                                                        _poolKey, tokenFactory);
     } else {
         _conn = std::make_shared<Connection>(_connStr, false);
-        // Non-pooled connect still honors the lazy token factory (#659): a
-        // token is materialized only when a physical connection is opened.
+        // Non-pooled connect still honors the lazy token factory: a
+        // token is materialized only when a physical connection is opened. The
+        // factory may also carry the token expiry, recorded on the
+        // connection for completeness (a non-pooled connection is never reused,
+        // so expiry-aware checkout does not apply here).
         if (tokenFactory && !tokenFactory.is_none()) {
-            py::dict connect_attrs = tokenFactory().cast<py::dict>();
+            long long expiry = 0;
+            py::dict connect_attrs = Connection::invokeTokenFactory(tokenFactory, expiry);
             _conn->connect(connect_attrs);
+            _conn->setTokenExpiry(expiry);
         } else {
             _conn->connect(attrsBefore);
         }

@@ -8,7 +8,6 @@ import hashlib
 import platform
 import struct
 import threading
-import time
 from typing import Tuple, Dict, NamedTuple, Optional
 
 from mssql_python.logging import logger
@@ -42,11 +41,52 @@ class TokenInfo(NamedTuple):
     ``token_struct`` is the SQL Server / ODBC access-token blob (length-prefixed
     UTF-16LE) placed in ``attrs_before``. ``expires_on`` is the POSIX epoch
     second at which the underlying JWT expires, or ``None`` when the credential
-    did not surface an expiry (older SDKs / test doubles).
+    did not surface an expiry (older SDKs / test doubles). ``home_account_id``
+    is the stable per-account identifier surfaced by ``authenticate()`` for
+    Interactive / Device-code auth (used as the pool's security-context key so
+    a silent token refresh reuses the pool but a different account gets its own
+    pool); ``None`` for auth types that do not expose it.
     """
 
     token_struct: bytes
     expires_on: Optional[int]
+    home_account_id: Optional[str] = None
+
+
+# Scope requested for all SQL Server / Azure SQL access tokens.
+_SQL_SCOPE = "https://database.windows.net/.default"
+
+# One-time guard so the DefaultAzureCredential multi-user pooling caveat is
+# logged at most once per process rather than on every token acquisition.
+_dac_pooling_warned = False
+_dac_pooling_warned_lock = threading.Lock()
+
+
+def _warn_default_credential_pooling() -> None:
+    """Emit a one-time warning that DefaultAzureCredential is not recommended
+    for multi-user connection pooling.
+
+    DefaultAzureCredential walks a credential chain and can silently resolve to
+    a different underlying identity between calls, so we isolate it per token
+    (a new pool whenever the token changes) rather than reusing across
+    identities. Applications that need stable multi-user pooling should use a
+    concrete credential (Managed Identity, Service Principal) or supply their
+    own token provider.
+    """
+    global _dac_pooling_warned  # pylint: disable=global-statement
+    if _dac_pooling_warned:
+        return
+    with _dac_pooling_warned_lock:
+        if _dac_pooling_warned:
+            return
+        _dac_pooling_warned = True
+    logger.warning(
+        "DefaultAzureCredential is not recommended for multi-user connection "
+        "pooling: its credential chain can resolve to different identities "
+        "between calls, so connections are isolated per token (a new pool per "
+        "distinct token). Use a concrete credential (ManagedIdentity / "
+        "ServicePrincipal) or a token provider for stable pooled reuse."
+    )
 
 
 # Map Authentication connection-string values to internal short names.
@@ -92,7 +132,7 @@ class AADAuth:
     @staticmethod
     def get_token(auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None) -> bytes:
         """Get DDBC token struct for the specified authentication type."""
-        token_struct, _, _ = AADAuth._acquire_token(auth_type, credential_kwargs)
+        token_struct, _, _, _ = AADAuth._acquire_token(auth_type, credential_kwargs)
         return token_struct
 
     @staticmethod
@@ -101,14 +141,20 @@ class AADAuth:
     ) -> TokenInfo:
         """Acquire a token and return both the ODBC struct and its expiry.
 
-        Foundation for expiry-aware pool checkout (identity-aware pooling
-        design, issues #651 / #659): it surfaces ``expires_on`` so a pooled
-        connection's token can eventually be refreshed/discarded near expiry.
-        The checkout-time consumer is a deferred follow-up, so today this is
-        exercised only by tests; production connects use :func:`get_auth_token`.
+        Foundation for expiry-aware pool checkout: it surfaces ``expires_on`` so
+        a pooled connection's token can eventually be refreshed/discarded near
+        expiry. Interactive / Device-code additionally surface
+        ``home_account_id`` so the pool can key on a stable account identity
+        across silent refreshes.
         """
-        token_struct, _, expires_on = AADAuth._acquire_token(auth_type, credential_kwargs)
-        return TokenInfo(token_struct=token_struct, expires_on=expires_on)
+        token_struct, _, expires_on, home_account_id = AADAuth._acquire_token(
+            auth_type, credential_kwargs
+        )
+        return TokenInfo(
+            token_struct=token_struct,
+            expires_on=expires_on,
+            home_account_id=home_account_id,
+        )
 
     @staticmethod
     def get_raw_token(auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None) -> str:
@@ -118,14 +164,46 @@ class AADAuth:
         built-in token cache can serve a valid token without a round-trip
         when the previous token has not yet expired.
         """
-        _, raw_token, _ = AADAuth._acquire_token(auth_type, credential_kwargs)
+        _, raw_token, _, _ = AADAuth._acquire_token(auth_type, credential_kwargs)
         return raw_token
+
+    @staticmethod
+    def _authenticate_interactive(credential) -> Optional[str]:
+        """Return a stable ``home_account_id`` for an interactive/device-code
+        credential, establishing (or silently reusing) an ``AuthenticationRecord``.
+
+        With ``disable_automatic_authentication=True`` the credential's
+        ``authenticate()`` performs the interactive step exactly once and caches
+        the record; a subsequent call for the same account returns without
+        prompting, while a different account produces a new ``home_account_id``
+        (rotating the pool key). Returns ``None`` when the SDK / test double does
+        not expose ``authenticate()`` or ``home_account_id`` — the caller then
+        falls back to the token-hash pool key so the safety invariant still holds.
+
+        Real authentication failures (e.g. a cancelled prompt raising
+        ``ClientAuthenticationError``) are allowed to propagate to
+        :meth:`_acquire_token`'s handler rather than being swallowed here.
+        """
+        authenticate = getattr(credential, "authenticate", None)
+        if authenticate is None:
+            return None
+        try:
+            record = authenticate(scopes=[_SQL_SCOPE])
+        except TypeError:
+            # Older/mocked signatures may not accept the scopes keyword.
+            record = authenticate()
+        return getattr(record, "home_account_id", None)
 
     @staticmethod
     def _acquire_token(
         auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None
-    ) -> Tuple[bytes, str, Optional[int]]:
-        """Internal: acquire token and return (ddbc_struct, raw_jwt, expires_on)."""
+    ) -> Tuple[bytes, str, Optional[int], Optional[str]]:
+        """Internal: acquire token and return
+        ``(ddbc_struct, raw_jwt, expires_on, home_account_id)``.
+
+        ``home_account_id`` is populated only for Interactive / Device-code auth
+        (via ``authenticate()``); it is ``None`` for every other auth type.
+        """
         # Import Azure libraries inside method to support test mocking
         # pylint: disable=import-outside-toplevel
         try:
@@ -161,6 +239,18 @@ class AADAuth:
             credential_class.__name__,
         )
 
+        # DefaultAzureCredential is not recommended for multi-user pooling; warn
+        # once so operators understand why these connections isolate per token.
+        if auth_type == _AuthInternal.DEFAULT:
+            _warn_default_credential_pooling()
+
+        # Interactive / Device-code use the authenticate()/AuthenticationRecord
+        # pattern so we can key the pool on a stable home_account_id:
+        # disable_automatic_authentication makes get_token() refresh silently and
+        # raise AuthenticationRequiredError (instead of prompting) when the
+        # account changes, which we surface as a re-auth via authenticate().
+        is_interactive = auth_type in (_AuthInternal.INTERACTIVE, _AuthInternal.DEVICE_CODE)
+
         kwargs = credential_kwargs or {}
         cache_key = _credential_cache_key(auth_type, kwargs)
         try:
@@ -170,14 +260,22 @@ class AADAuth:
                         "get_token: Creating new credential instance for auth_type=%s",
                         auth_type,
                     )
-                    _credential_cache[cache_key] = credential_class(**kwargs)
+                    construct_kwargs: Dict[str, object] = dict(kwargs)
+                    if is_interactive:
+                        construct_kwargs["disable_automatic_authentication"] = True
+                    _credential_cache[cache_key] = credential_class(**construct_kwargs)
                 else:
                     logger.debug(
                         "get_token: Reusing cached credential instance for auth_type=%s",
                         auth_type,
                     )
                 credential = _credential_cache[cache_key]
-            access_token = credential.get_token("https://database.windows.net/.default")
+
+            home_account_id: Optional[str] = None
+            if is_interactive:
+                home_account_id = AADAuth._authenticate_interactive(credential)
+
+            access_token = credential.get_token(_SQL_SCOPE)
             raw_token = access_token.token
             # expires_on is a POSIX epoch second on azure-identity's AccessToken.
             # getattr keeps older SDKs / test doubles (which may omit it) working.
@@ -187,7 +285,7 @@ class AADAuth:
                 len(raw_token),
             )
             token_struct = AADAuth.get_token_struct(raw_token)
-            return token_struct, raw_token, expires_on
+            return token_struct, raw_token, expires_on, home_account_id
         except ClientAuthenticationError as e:
             logger.error(
                 "get_token: Azure AD authentication failed - credential_class=%s, error=%s",
@@ -436,40 +534,14 @@ def remove_sensitive_params(parsed_params: Dict[str, str]) -> Dict[str, str]:
     return {k: v for k, v in parsed_params.items() if k not in _SENSITIVE_KEYS}
 
 
-def get_auth_token(
-    auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None
-) -> Optional[bytes]:
-    """Get DDBC authentication token struct based on auth type."""
-    logger.debug("get_auth_token: Starting - auth_type=%s", auth_type)
-    if not auth_type:
-        logger.debug("get_auth_token: No auth_type specified, returning None")
-        return None
-
-    # Handle platform-specific logic for interactive auth
-    if auth_type == _AuthInternal.INTERACTIVE and platform.system().lower() == "windows":
-        logger.debug("get_auth_token: Windows interactive auth - delegating to native handler")
-        return None  # Let Windows handle AADInteractive natively
-
-    try:
-        token = AADAuth.get_token(auth_type, credential_kwargs)
-        logger.info("get_auth_token: Token acquired successfully - auth_type=%s", auth_type)
-        return token
-    except (ValueError, RuntimeError) as e:
-        logger.warning(
-            "get_auth_token: Token acquisition failed - auth_type=%s, error=%s", auth_type, str(e)
-        )
-        return None
-
-
 def get_auth_token_info(
     auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None
 ) -> Optional[TokenInfo]:
-    """Like :func:`get_auth_token` but also returns the token expiry.
+    """Acquire an access token and return both its ODBC struct and expiry.
 
     Returns ``None`` when there is no auth type or when the driver handles
-    authentication natively (Windows Interactive), matching
-    :func:`get_auth_token`'s contract so callers can treat a ``None`` result
-    as "no Python-acquired token to place in attrs_before".
+    authentication natively (Windows Interactive), so callers can treat a
+    ``None`` result as "no Python-acquired token to place in attrs_before".
     """
     logger.debug("get_auth_token_info: Starting - auth_type=%s", auth_type)
     if not auth_type:
@@ -492,39 +564,15 @@ def get_auth_token_info(
         return None
 
 
-# Default seconds-before-expiry at which a pooled connection's token is
-# considered "near expiry" and refreshed on checkout. Kept conservative
-# (<= 10 min per the identity-aware pooling design); azure-identity's own
-# cache still handles the underlying JWT refresh.
-_TOKEN_EXPIRY_THRESHOLD_SECS = 300
-
-
-def is_token_near_expiry(
-    expires_on: Optional[int],
-    now: Optional[float] = None,
-    threshold_secs: int = _TOKEN_EXPIRY_THRESHOLD_SECS,
-) -> bool:
-    """Return True when a token with POSIX-epoch ``expires_on`` is within
-    ``threshold_secs`` of expiring (or already expired).
-
-    A ``None`` expiry is treated as near-expiry (fail safe): if we cannot
-    prove the pooled token is still valid, force a refresh on checkout.
-    """
-    if expires_on is None:
-        return True
-    if now is None:
-        now = time.time()
-    return (expires_on - now) <= threshold_secs
-
-
 def compute_identity_key(
     auth_type: Optional[str],
     credential_kwargs: Optional[Dict[str, str]] = None,
     token_struct: Optional[bytes] = None,
+    home_account_id: Optional[str] = None,
 ) -> Optional[str]:
     """Build the per-identity discriminator appended to the native pool key.
 
-    This is the heart of the identity-aware pooling fix (#651): today the pool
+    This is the heart of identity-aware pooling: today the pool
     keys only on the sanitized connection string, so two callers using
     different Entra identities but the same server collide onto one pool. The
     discriminator returned here is combined with the connection string to keep
@@ -539,11 +587,14 @@ def compute_identity_key(
         identity, so the pool key is unchanged (fully backward compatible).
       * ``"msi:<client_id>"`` / ``"msi:system"`` — Managed Identity, derived
         from connection params *without* acquiring a token (enables skipping
-        token acquisition on a pool hit, #659).
+        token acquisition on a pool hit).
+      * ``"acct:<home_account_id>"`` — Interactive / Device-code, keyed on the
+        stable account id from ``authenticate()`` so a silent token refresh
+        reuses the pool but a different signed-in account gets its own pool.
       * ``"tok:<sha256>"`` — fail-safe hash of the token struct for auth types
         whose identity is not derivable from params (DefaultAzureCredential,
-        raw token, and — until the cached-record rework lands — interactive /
-        device-code). Requires ``token_struct``; when it is not supplied the
+        raw token, and interactive / device-code when ``home_account_id`` is
+        unavailable). Requires ``token_struct``; when it is not supplied the
         function returns ``None`` to signal "acquire a token, then recompute".
     """
     if not auth_type:
@@ -552,6 +603,11 @@ def compute_identity_key(
     if auth_type == _AuthInternal.MSI:
         client_id = (credential_kwargs or {}).get("client_id")
         return f"msi:{client_id}" if client_id else "msi:system"
+
+    # Interactive / Device-code: prefer the stable account id when available so
+    # silent refreshes reuse the pool; fall back to the token hash otherwise.
+    if auth_type in (_AuthInternal.INTERACTIVE, _AuthInternal.DEVICE_CODE) and home_account_id:
+        return f"acct:{home_account_id}"
 
     if token_struct is not None:
         return "tok:" + hashlib.sha256(token_struct).hexdigest()

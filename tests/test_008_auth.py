@@ -16,10 +16,8 @@ from mssql_python.auth import (
     _parse_tenant_id,
     process_auth_parameters,
     remove_sensitive_params,
-    get_auth_token,
     get_auth_token_info,
     compute_identity_key,
-    is_token_near_expiry,
     extract_auth_type,
     _credential_cache,
     _credential_cache_lock,
@@ -41,11 +39,30 @@ def setup_azure_identity():
         def get_token(self, scope):
             return MockToken()
 
+    class MockAuthenticationRecord:
+        # Minimal stand-in for azure.identity.AuthenticationRecord: only the
+        # public home_account_id is consumed by the pooling key logic.
+        home_account_id = "mock-home-account-id"
+
     class MockDeviceCodeCredential:
+        def __init__(self, **kwargs):
+            # Accept disable_automatic_authentication (and any future kwargs)
+            # the same way real azure-identity credentials do.
+            self._init_kwargs = kwargs
+
+        def authenticate(self, **kwargs):
+            return MockAuthenticationRecord()
+
         def get_token(self, scope):
             return MockToken()
 
     class MockInteractiveBrowserCredential:
+        def __init__(self, **kwargs):
+            self._init_kwargs = kwargs
+
+        def authenticate(self, **kwargs):
+            return MockAuthenticationRecord()
+
         def get_token(self, scope):
             return MockToken()
 
@@ -244,7 +261,7 @@ class TestAADAuth:
 
             # Test different exception types
             class MockCredentialWithTypeError:
-                def __init__(self):
+                def __init__(self, **kwargs):
                     raise TypeError("Invalid argument type passed")
 
             azure_identity.DeviceCodeCredential = MockCredentialWithTypeError
@@ -274,7 +291,7 @@ class TestAADAuth:
 
         # Create a credential that fails during get_token call
         class MockCredentialWithTokenError:
-            def __init__(self):
+            def __init__(self, **kwargs):
                 pass  # Successful initialization
 
             def get_token(self, scope):
@@ -690,7 +707,7 @@ class TestCredentialInstanceCache:
             azure_identity.DefaultAzureCredential = MockCredentialWithRefresh
 
             # First call — gets initial token
-            _, raw_token_1, _ = AADAuth._acquire_token("default")
+            _, raw_token_1, _, _ = AADAuth._acquire_token("default")
             assert raw_token_1 == "initial_token_abc123"
             assert call_count == 1
 
@@ -700,7 +717,7 @@ class TestCredentialInstanceCache:
 
             # Second call — same credential instance, but SDK returns refreshed token
             # (simulating post-expiry refresh)
-            _, raw_token_2, _ = AADAuth._acquire_token("default")
+            _, raw_token_2, _, _ = AADAuth._acquire_token("default")
             assert raw_token_2 == "refreshed_token_xyz789"
             assert call_count == 2
 
@@ -808,41 +825,6 @@ class TestTokenFailureFallthrough:
             # Token should not be in attrs_before since acquisition failed
             assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value not in conn._attrs_before
             conn.close()
-        finally:
-            azure_identity.DefaultAzureCredential = original
-
-
-class TestGetAuthTokenEdgeCases:
-    """Cover the Windows-interactive and token-failure branches."""
-
-    def test_no_auth_type_returns_none(self):
-        result = get_auth_token(None)
-        assert result is None
-
-    def test_empty_auth_type_returns_none(self):
-        result = get_auth_token("")
-        assert result is None
-
-    def test_windows_interactive_returns_none(self, monkeypatch):
-        monkeypatch.setattr(platform, "system", lambda: "Windows")
-        result = get_auth_token("interactive")
-        assert result is None
-
-    def test_token_acquisition_failure_returns_none(self):
-        """When AADAuth.get_token raises, get_auth_token returns None."""
-        import sys
-
-        azure_identity = sys.modules["azure.identity"]
-        original = azure_identity.DefaultAzureCredential
-
-        class FailingCredential:
-            def __init__(self):
-                raise RuntimeError("credential creation exploded")
-
-        try:
-            azure_identity.DefaultAzureCredential = FailingCredential
-            result = get_auth_token("default")
-            assert result is None
         finally:
             azure_identity.DefaultAzureCredential = original
 
@@ -1387,7 +1369,7 @@ class TestServicePrincipalAuth:
 
 
 class TestTokenExpiryCapture:
-    """Foundation for identity-aware pooling (#651 / #659): the acquisition
+    """Foundation for identity-aware pooling: the acquisition
     path must surface the token expiry alongside the ODBC struct."""
 
     def test_get_token_info_returns_tokeninfo(self):
@@ -1457,7 +1439,7 @@ class TestTokenExpiryCapture:
 
 class TestComputeIdentityKey:
     """The per-identity discriminator that makes the native pool key
-    identity-aware (#651)."""
+    identity-aware."""
 
     def test_none_when_no_auth_type(self):
         # No token auth => pool key stays the bare connection string.
@@ -1474,7 +1456,7 @@ class TestComputeIdentityKey:
 
     def test_msi_key_derived_without_token(self):
         # No token_struct supplied, yet MSI still yields a key -> enables
-        # skipping token acquisition on a pool hit (#659).
+        # skipping token acquisition on a pool hit.
         assert compute_identity_key("msi", {"client_id": "cid"}) == "msi:cid"
 
     def test_token_hash_fallback_for_default(self):
@@ -1501,40 +1483,10 @@ class TestComputeIdentityKey:
         assert compute_identity_key("devicecode") is None
 
 
-class TestIsTokenNearExpiry:
-    def test_none_expiry_is_near(self):
-        # Fail safe: unknown expiry forces a refresh.
-        assert is_token_near_expiry(None) is True
-
-    def test_expired_token_is_near(self):
-        assert is_token_near_expiry(1000, now=2000) is True
-
-    def test_token_far_from_expiry(self):
-        assert is_token_near_expiry(now=1000, expires_on=1000 + 3600) is False
-
-    def test_token_within_threshold(self):
-        # 60s left, default 300s threshold => near expiry.
-        assert is_token_near_expiry(expires_on=1060, now=1000) is True
-
-    def test_custom_threshold(self):
-        assert is_token_near_expiry(expires_on=1100, now=1000, threshold_secs=50) is False
-        assert is_token_near_expiry(expires_on=1100, now=1000, threshold_secs=200) is True
-
-    def test_now_defaults_to_wall_clock(self):
-        # When ``now`` is omitted the function reads the wall clock via
-        # time.time() (auth.py line 514). Freeze the clock for determinism and
-        # exercise both sides of the threshold comparison.
-        with patch("mssql_python.auth.time.time", return_value=1000.0):
-            # Expiry an hour out => not near expiry.
-            assert is_token_near_expiry(expires_on=1000 + 3600) is False
-            # Expiry inside the default 300s threshold => near expiry.
-            assert is_token_near_expiry(expires_on=1000 + 100) is True
-
-
 class TestConnectionPoolKey:
     """Part B: Connection.__init__ must build an identity-aware pool key and
     forward it to the native Connection so distinct Entra identities never
-    share a pooled connection (#651), while non-token auth keeps the legacy
+    share a pooled connection, while non-token auth keeps the legacy
     bare-connection-string key (backward compatible)."""
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
@@ -1574,13 +1526,15 @@ class TestConnectionPoolKey:
         assert conn._pool_key == conn.connection_str + f"\x00msi:{client_id}"
         conn.close()
 
-    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.get_auth_token_info")
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_default_auth_pool_key_hashes_token(self, mock_ddbc_conn, mock_get_token):
+    def test_default_auth_pool_key_hashes_token(self, mock_ddbc_conn, mock_get_token_info):
         # When a token is present, the pool key must include its hash so that
         # two different tokens (identities) never collide on the same pool.
         mock_ddbc_conn.return_value = MagicMock()
-        mock_get_token.return_value = b"\x00\x01fake-token-bytes"
+        mock_get_token_info.return_value = TokenInfo(
+            token_struct=b"\x00\x01fake-token-bytes", expires_on=None
+        )
         from mssql_python import connect
 
         conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
@@ -1589,20 +1543,24 @@ class TestConnectionPoolKey:
         assert args[3] == conn._pool_key
         conn.close()
 
-    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.get_auth_token_info")
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_different_tokens_yield_different_pool_keys(self, mock_ddbc_conn, mock_get_token):
+    def test_different_tokens_yield_different_pool_keys(self, mock_ddbc_conn, mock_get_token_info):
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
 
         cs = "Server=test;Database=testdb;Authentication=ActiveDirectoryDefault"
 
-        mock_get_token.return_value = b"identity-A-token"
+        mock_get_token_info.return_value = TokenInfo(
+            token_struct=b"identity-A-token", expires_on=None
+        )
         conn_a = connect(cs)
         key_a = conn_a._pool_key
         conn_a.close()
 
-        mock_get_token.return_value = b"identity-B-token"
+        mock_get_token_info.return_value = TokenInfo(
+            token_struct=b"identity-B-token", expires_on=None
+        )
         conn_b = connect(cs)
         key_b = conn_b._pool_key
         conn_b.close()
@@ -1611,13 +1569,13 @@ class TestConnectionPoolKey:
         assert key_a != key_b
         assert conn_a.connection_str == conn_b.connection_str
 
-    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.get_auth_token_info")
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_default_auth_no_token_keeps_bare_key(self, mock_ddbc_conn, mock_get_token):
+    def test_default_auth_no_token_keeps_bare_key(self, mock_ddbc_conn, mock_get_token_info):
         # Token acquisition failed (returns None): there is no identity to key
         # on, so fall back to the bare connection-string key.
         mock_ddbc_conn.return_value = MagicMock()
-        mock_get_token.return_value = None
+        mock_get_token_info.return_value = None
         from mssql_python import connect
 
         conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
@@ -1626,18 +1584,18 @@ class TestConnectionPoolKey:
 
 
 class TestTokenFactoryLazyAcquisition:
-    """Part C (#659): when the pool key is known *without* a token (MSI, whose
+    """Part C: when the pool key is known *without* a token (MSI, whose
     identity is the client id), token acquisition is deferred to a callback the
     native layer invokes only when it opens a physical connection. A same-
     identity pool hit therefore never pays for a token. This is an internal
     ``token_factory`` (5th positional arg to native Connection) and is distinct
-    from the public ``token_provider=`` credential API proposed in PR #603."""
+    from the public ``token_provider=`` credential API."""
 
     _TOKEN_ATTR = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
 
-    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.get_auth_token_info")
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_msi_defers_token_acquisition(self, mock_ddbc_conn, mock_get_token):
+    def test_msi_defers_token_acquisition(self, mock_ddbc_conn, mock_get_token_info):
         # MSI identity is known from the client id, so the token must NOT be
         # acquired during __init__ — it is deferred to the token_factory.
         mock_ddbc_conn.return_value = MagicMock()
@@ -1645,7 +1603,7 @@ class TestTokenFactoryLazyAcquisition:
 
         conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryMSI")
         try:
-            mock_get_token.assert_not_called()
+            mock_get_token_info.assert_not_called()
             # token_factory is passed as the 5th positional arg and is callable.
             args, _ = mock_ddbc_conn.call_args
             assert callable(args[4])
@@ -1654,35 +1612,41 @@ class TestTokenFactoryLazyAcquisition:
         finally:
             conn.close()
 
-    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.get_auth_token_info")
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_token_factory_materializes_token_on_call(self, mock_ddbc_conn, mock_get_token):
+    def test_token_factory_materializes_token_on_call(self, mock_ddbc_conn, mock_get_token_info):
         # Invoking the factory (as native does on a pool miss) acquires the
-        # token and returns the attrs dict with the access token merged in.
+        # token and returns ``(attrs, expires_on)`` with the access token merged
+        # into attrs.
         mock_ddbc_conn.return_value = MagicMock()
-        mock_get_token.return_value = b"materialized-token-bytes"
+        mock_get_token_info.return_value = TokenInfo(
+            token_struct=b"materialized-token-bytes", expires_on=1893456000
+        )
         from mssql_python import connect
 
         conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryMSI")
         try:
-            attrs = conn._token_factory()
-            mock_get_token.assert_called_once()
+            attrs, expires_on = conn._token_factory()
+            mock_get_token_info.assert_called_once()
             assert attrs[self._TOKEN_ATTR] == b"materialized-token-bytes"
+            assert expires_on == 1893456000
         finally:
             conn.close()
 
-    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.get_auth_token_info")
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_token_dependent_auth_has_no_factory(self, mock_ddbc_conn, mock_get_token):
+    def test_token_dependent_auth_has_no_factory(self, mock_ddbc_conn, mock_get_token_info):
         # DefaultAzureCredential keys on the token hash, so the token must be
         # acquired eagerly (to compute the key) and there is no deferred factory.
         mock_ddbc_conn.return_value = MagicMock()
-        mock_get_token.return_value = b"eager-token-bytes"
+        mock_get_token_info.return_value = TokenInfo(
+            token_struct=b"eager-token-bytes", expires_on=None
+        )
         from mssql_python import connect
 
         conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
         try:
-            mock_get_token.assert_called_once()
+            mock_get_token_info.assert_called_once()
             assert conn._token_factory is None
             args, _ = mock_ddbc_conn.call_args
             assert args[4] is None

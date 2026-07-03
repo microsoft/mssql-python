@@ -9,8 +9,15 @@
 // Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
 
+// Refresh threshold for expiry-aware checkout: a pooled connection whose access
+// token expires within this many seconds is discarded and reopened with a fresh
+// token rather than handed out (<=10 min).
+static constexpr int TOKEN_EXPIRY_THRESHOLD_SECS = 300;
+
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
-    : _max_size(max_size), _idle_timeout_secs(idle_timeout_secs), _current_size(0) {}
+    : _max_size(max_size),
+      _idle_timeout_secs(idle_timeout_secs),
+      _current_size(0) {}
 
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
                                                     const py::dict& attrs_before,
@@ -54,23 +61,21 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
     while (true) {
         std::shared_ptr<Connection> candidate;
         {
-            std::lock_guard<std::mutex> lock(_mutex);
+            std::unique_lock<std::mutex> lock(_mutex);
             if (_pool.empty()) {
                 // No more candidates — try to reserve a slot for a new connection.
                 if (_current_size < _max_size) {
                     valid_conn = std::make_shared<Connection>(connStr, true);
                     ++_current_size;
                     needs_connect = true;
-                } else {
-                    // NOTE: Another thread may be validating a popped candidate
-                    // outside the mutex right now.  If that candidate fails, a
-                    // slot will open up — but we can't wait for it here without
-                    // adding a condition-variable retry loop.  This is an
-                    // acceptable trade-off: transient "pool full" errors under
-                    // heavy contention are rare and callers can retry.
-                    throw std::runtime_error("ConnectionPool::acquire: pool size limit reached");
+                    break;
                 }
-                break;
+                // Pool is full — throw immediately. Another thread may be
+                // validating a popped candidate outside the mutex right now, so
+                // a transient "pool full" is an acceptable trade-off that
+                // callers can retry.
+                throw std::runtime_error(
+                    "ConnectionPool::acquire: pool size limit reached");
             }
             candidate = _pool.front();
             _pool.pop_front();
@@ -78,7 +83,14 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
 
         // Validate the candidate outside the mutex.
         try {
-            if (candidate->isAlive() && candidate->reset()) {
+            // Expiry-aware checkout: if this connection was opened
+            // with an access token that is at/near expiry and we have a factory
+            // to mint a fresh one, do not reuse it — discard and reopen below so
+            // the caller never authenticates with an about-to-expire token.
+            bool token_expiring =
+                token_factory && !token_factory.is_none() &&
+                candidate->isTokenNearExpiry(TOKEN_EXPIRY_THRESHOLD_SECS);
+            if (!token_expiring && candidate->isAlive() && candidate->reset()) {
                 valid_conn = candidate;
                 break;
             }
@@ -86,8 +98,8 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             LOG("Candidate connection validation failed: %s", ex.what());
         }
 
-        // Candidate is dead or reset failed — mark for disconnect and
-        // decrement the pool size.
+        // Candidate is dead, near token expiry, or reset failed — mark for
+        // disconnect and decrement the pool size.
         to_disconnect.push_back(candidate);
         {
             std::lock_guard<std::mutex> lock(_mutex);
@@ -98,15 +110,19 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
     // Phase 3: Connect the new connection outside the mutex.
     if (needs_connect) {
         try {
-            // Lazy token acquisition (#659): only now, when a physical
+            // Lazy token acquisition: only now, when a physical
             // connection is actually being opened, do we materialize the
             // token. On a pool reuse this whole branch is skipped, so a
             // same-identity hit never acquires a token. The GIL is held here
             // (connect() releases it only around the ODBC call itself), so
             // invoking the Python callback is safe.
             if (token_factory && !token_factory.is_none()) {
-                py::dict connect_attrs = token_factory().cast<py::dict>();
+                long long expiry = 0;
+                py::dict connect_attrs = Connection::invokeTokenFactory(token_factory, expiry);
                 valid_conn->connect(connect_attrs);
+                // Record the token expiry so a later checkout can refresh this
+                // connection before the token lapses.
+                valid_conn->setTokenExpiry(expiry);
             } else {
                 valid_conn->connect(attrs_before);
             }
@@ -156,6 +172,14 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
     }
 }
 
+bool ConnectionPool::canEvict() {
+    std::lock_guard<std::mutex> lock(_mutex);
+    // Only evictable when there are no pooled connections AND no checked-out or
+    // in-flight ones (reserved capacity is zero). This avoids dropping a pool
+    // whose connections are temporarily all in use.
+    return _current_size == 0 && _pool.empty();
+}
+
 void ConnectionPool::close() {
     std::vector<std::shared_ptr<Connection>> to_close;
     {
@@ -184,12 +208,23 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
                                                                      const py::dict& attrs_before,
                                                                      const std::u16string& pool_key,
                                                                      const py::object& token_factory) {
-    // Key the pool by pool_key when provided (identity-aware, issue #651),
+    // Key the pool by pool_key when provided (identity-aware),
     // else fall back to the connection string (legacy behavior).
     const std::u16string& key = pool_key.empty() ? connStr : pool_key;
     std::shared_ptr<ConnectionPool> pool;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
+        // Lazy eviction: drop pools that hold no live or in-flight
+        // connections so distinct short-lived identities (e.g. per-request
+        // Entra users) do not accumulate empty pools forever. The pool we are
+        // about to use is skipped so it is never evicted from under us.
+        for (auto it = _pools.begin(); it != _pools.end();) {
+            if (it->first != key && it->second && it->second->canEvict()) {
+                it = _pools.erase(it);
+            } else {
+                ++it;
+            }
+        }
         auto& pool_ref = _pools[key];
         if (!pool_ref) {
             LOG("Creating new connection pool");
@@ -217,6 +252,22 @@ void ConnectionPoolManager::returnConnection(const std::u16string& pool_key,
     // Call release() outside _manager_mutex to avoid deadlock.
     if (pool) {
         pool->release(conn);
+    } else {
+        // No pool is registered under this key (e.g. the pool was lazily
+        // evicted while this connection was checked out, or the key changed).
+        // Disconnect the orphaned connection instead of leaking it:
+        // dropping the shared_ptr alone would keep the ODBC handle
+        // around until GC, and returnConnection is the deterministic close
+        // path. Done outside _manager_mutex (disconnect releases the GIL).
+        if (conn) {
+            try {
+                conn->disconnect();
+            } catch (const std::exception& ex) {
+                LOG("ConnectionPoolManager::returnConnection: disconnect of orphaned "
+                    "connection failed: %s",
+                    ex.what());
+            }
+        }
     }
 }
 
