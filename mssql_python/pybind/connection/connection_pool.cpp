@@ -416,6 +416,9 @@ void ConnectionPoolManager::configure(int max_size, int idle_timeout_secs) {
     std::lock_guard<std::mutex> lock(_manager_mutex);
     _default_max_size = max_size;
     _default_idle_secs = idle_timeout_secs;
+    // Reset the sweep throttle so the new idle timeout takes effect on the very
+    // next acquireConnection() instead of waiting out a stale interval.
+    _last_sweep = std::chrono::steady_clock::time_point{};
 }
 
 void ConnectionPoolManager::closePools() {
@@ -429,6 +432,9 @@ void ConnectionPoolManager::closePools() {
         }
     }
     _pools.clear();
+    // Nothing left to sweep; reset the throttle so a fresh pool set after this
+    // is swept on its next acquireConnection().
+    _last_sweep = std::chrono::steady_clock::time_point{};
 }
 
 size_t ConnectionPoolManager::poolCount() {
