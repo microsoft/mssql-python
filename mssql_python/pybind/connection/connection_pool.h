@@ -91,6 +91,14 @@ class ConnectionPoolManager {
     size_t _default_max_size = 10;
     int _default_idle_secs = 300;
 
+    // Throttle for the lazy-eviction sweep in acquireConnection(). The sweep
+    // iterates every pool (and every idle connection within each) under
+    // _manager_mutex, so running it on literally every connect is an O(pools ×
+    // conns) contention hotspot for many-identity workloads. A pool cannot
+    // become evictable faster than the idle timeout, so sweeping more often
+    // than that buys nothing; we run it at most once per idle-timeout window.
+    std::chrono::steady_clock::time_point _last_sweep{};
+
     // Prevent copying
     ConnectionPoolManager(const ConnectionPoolManager&) = delete;
     ConnectionPoolManager& operator=(const ConnectionPoolManager&) = delete;

@@ -12,7 +12,6 @@
 #include <utility>
 #include <vector>
 
-#define SQL_COPT_SS_ACCESS_TOKEN 1256  // Custom attribute ID for access token
 #define SQL_MAX_SMALL_INT 32767        // Maximum value for SQLSMALLINT
 
 // Logging uses LOG() macro for all diagnostic output

@@ -8,6 +8,14 @@
 #include <mutex>
 #include <unordered_map>
 
+// Custom msodbcsql (SQL Server ODBC) connection-attribute id carrying the Entra
+// access-token struct. It is consumed once at login. Shared single source of
+// truth: connection.cpp applies it, and expiry-aware pooled checkout in
+// connection_pool.cpp uses it to compare a freshly minted token against the one
+// a pooled connection already holds. constexpr at namespace scope has internal
+// linkage, so each translation unit gets its own copy (no ODR issue).
+constexpr long SQL_COPT_SS_ACCESS_TOKEN = 1256;
+
 // Represents a single ODBC database connection.
 // Manages connection handles.
 // Note: This class does NOT implement pooling logic directly.

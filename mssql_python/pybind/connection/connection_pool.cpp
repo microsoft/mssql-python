@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "connection/connection_pool.h"
+#include <algorithm>
 #include <exception>
 #include <memory>
 #include <vector>
@@ -14,14 +15,10 @@
 // token rather than handed out (<=10 min).
 static constexpr int TOKEN_EXPIRY_THRESHOLD_SECS = 300;
 
-// Custom msodbcsql attribute id carrying the Entra access-token struct. Mirrors
-// the definition in connection.cpp; used to compare a freshly minted token
-// against the one a pooled connection already holds during expiry-aware checkout.
-static constexpr long SQL_COPT_SS_ACCESS_TOKEN = 1256;
-
 // Pull the raw access-token bytes out of a connect-attrs dict returned by the
 // token factory, or an empty string if the dict carries no token. Caller must
-// hold the GIL. Keys in the dict are attribute ids (ints).
+// hold the GIL. Keys in the dict are attribute ids (ints). SQL_COPT_SS_ACCESS_TOKEN
+// is defined once in connection.h (shared with connection.cpp).
 static std::string extractAccessToken(const py::dict& attrs) {
     for (auto item : attrs) {
         if (py::isinstance<py::int_>(item.first) &&
@@ -130,10 +127,33 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     candidate->setTokenExpiry(fresh_expiry);
                     reuse_candidate = candidate->isAlive() && candidate->reset();
                 } else {
-                    // Token rotated — remember the fresh token to reopen with.
+                    // Token rotated — remember the fresh token to reopen with,
+                    // and eagerly drain the sibling idle connections that still
+                    // hold the now-stale token. They were all minted from the
+                    // same provider before the rotation, so they are equally
+                    // stale; discarding them together here avoids rediscovering
+                    // each one (and paying another factory compare) on later
+                    // checkouts. No ODBC calls under the mutex — the actual
+                    // disconnects happen in Phase 4, outside the lock.
                     pending_attrs = fresh_attrs;
                     pending_expiry = fresh_expiry;
                     have_pending_token = true;
+                    const std::string stale_token = candidate->currentAccessToken();
+                    if (!stale_token.empty()) {
+                        std::lock_guard<std::mutex> lock(_mutex);
+                        _pool.erase(
+                            std::remove_if(
+                                _pool.begin(), _pool.end(),
+                                [&](const std::shared_ptr<Connection>& sibling) {
+                                    if (sibling->currentAccessToken() == stale_token) {
+                                        to_disconnect.push_back(sibling);
+                                        if (_current_size > 0) --_current_size;
+                                        return true;
+                                    }
+                                    return false;
+                                }),
+                            _pool.end());
+                    }
                 }
             } else {
                 reuse_candidate = candidate->isAlive() && candidate->reset();
@@ -166,7 +186,11 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 needs_connect = true;
                 break;
             }
-            // Pool momentarily full; fall through and retry the loop.
+            // Pool momentarily full; fall through and retry the loop. On the
+            // retry another near-expiry candidate may re-invoke the factory and
+            // overwrite pending_attrs/pending_expiry with a newer token. That
+            // needs a full pool AND a simultaneous rotation, is rare, and is
+            // harmless: we simply reopen with the most recently minted token.
         }
     }
 
@@ -313,12 +337,23 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
         // calls), so it is safe under _manager_mutex; the actual disconnects
         // happen via close() below, outside the lock. The pool we are about to
         // use is skipped so it is never evicted from under us.
-        for (auto it = _pools.begin(); it != _pools.end();) {
-            if (it->first != key && it->second && it->second->canEvict()) {
-                evicted.push_back(it->second);
-                it = _pools.erase(it);
-            } else {
-                ++it;
+        //
+        // The sweep is O(pools × idle-conns) under the global mutex, so it is
+        // throttled: a pool can only become evictable after its connections
+        // sit idle past the idle timeout, so sweeping more often than that
+        // window is pure overhead. Between sweeps we skip straight to the pool
+        // lookup, keeping the hot path cheap under a many-identity connect load.
+        auto now = std::chrono::steady_clock::now();
+        auto sweep_interval = std::chrono::seconds(std::max(1, _default_idle_secs));
+        if (now - _last_sweep >= sweep_interval) {
+            _last_sweep = now;
+            for (auto it = _pools.begin(); it != _pools.end();) {
+                if (it->first != key && it->second && it->second->canEvict()) {
+                    evicted.push_back(it->second);
+                    it = _pools.erase(it);
+                } else {
+                    ++it;
+                }
             }
         }
         auto& pool_ref = _pools[key];

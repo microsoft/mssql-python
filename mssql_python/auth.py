@@ -28,6 +28,15 @@ from mssql_python.constants import (
 #
 # Cache is keyed on (auth_type, sorted credential_kwargs), which is
 # bounded by the distinct credentials a single process ever uses.
+#
+# CAVEAT (interactive / device-code): the key for keyless interactive auth is
+# just the auth type (e.g. "interactive"), so ALL interactive connections in a
+# process share one credential instance and therefore one signed-in account —
+# the first user to authenticate. This is what keeps pooled reconnects silent,
+# but it means interactive/device-code auth cannot isolate multiple end users
+# within a single process. Multi-user apps must bring their own per-user token
+# provider instead of relying on interactive auth. (Documented for users in the
+# Connection Pooling section of README.md.)
 _credential_cache: Dict[object, object] = {}
 _credential_cache_lock = threading.Lock()
 
