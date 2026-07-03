@@ -8,7 +8,8 @@ import hashlib
 import platform
 import struct
 import threading
-from typing import Tuple, Dict, Optional
+import time
+from typing import Tuple, Dict, NamedTuple, Optional
 
 from mssql_python.logging import logger
 from mssql_python.constants import (
@@ -33,6 +34,20 @@ _credential_cache_lock = threading.Lock()
 
 # Canonical keys to strip when handing an Entra-token connection to ODBC.
 _SENSITIVE_KEYS = frozenset({_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION, _KEY_AUTHENTICATION})
+
+
+class TokenInfo(NamedTuple):
+    """Result of an access-token acquisition.
+
+    ``token_struct`` is the SQL Server / ODBC access-token blob (length-prefixed
+    UTF-16LE) placed in ``attrs_before``. ``expires_on`` is the POSIX epoch
+    second at which the underlying JWT expires, or ``None`` when the credential
+    did not surface an expiry (older SDKs / test doubles).
+    """
+
+    token_struct: bytes
+    expires_on: Optional[int]
+
 
 # Map Authentication connection-string values to internal short names.
 _AUTH_TYPE_MAP: Dict[str, str] = {
@@ -77,8 +92,21 @@ class AADAuth:
     @staticmethod
     def get_token(auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None) -> bytes:
         """Get DDBC token struct for the specified authentication type."""
-        token_struct, _ = AADAuth._acquire_token(auth_type, credential_kwargs)
+        token_struct, _, _ = AADAuth._acquire_token(auth_type, credential_kwargs)
         return token_struct
+
+    @staticmethod
+    def get_token_info(
+        auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None
+    ) -> TokenInfo:
+        """Acquire a token and return both the ODBC struct and its expiry.
+
+        Used by the connection/pooling path so a pooled connection's token
+        expiry can be tracked and refreshed on checkout (see the
+        identity-aware pooling design, issues #651 / #659).
+        """
+        token_struct, _, expires_on = AADAuth._acquire_token(auth_type, credential_kwargs)
+        return TokenInfo(token_struct=token_struct, expires_on=expires_on)
 
     @staticmethod
     def get_raw_token(auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None) -> str:
@@ -88,14 +116,14 @@ class AADAuth:
         built-in token cache can serve a valid token without a round-trip
         when the previous token has not yet expired.
         """
-        _, raw_token = AADAuth._acquire_token(auth_type, credential_kwargs)
+        _, raw_token, _ = AADAuth._acquire_token(auth_type, credential_kwargs)
         return raw_token
 
     @staticmethod
     def _acquire_token(
         auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None
-    ) -> Tuple[bytes, str]:
-        """Internal: acquire token and return (ddbc_struct, raw_jwt)."""
+    ) -> Tuple[bytes, str, Optional[int]]:
+        """Internal: acquire token and return (ddbc_struct, raw_jwt, expires_on)."""
         # Import Azure libraries inside method to support test mocking
         # pylint: disable=import-outside-toplevel
         try:
@@ -147,13 +175,17 @@ class AADAuth:
                         auth_type,
                     )
                 credential = _credential_cache[cache_key]
-            raw_token = credential.get_token("https://database.windows.net/.default").token
+            access_token = credential.get_token("https://database.windows.net/.default")
+            raw_token = access_token.token
+            # expires_on is a POSIX epoch second on azure-identity's AccessToken.
+            # getattr keeps older SDKs / test doubles (which may omit it) working.
+            expires_on = getattr(access_token, "expires_on", None)
             logger.info(
                 "get_token: Azure AD token acquired successfully - token_length=%d chars",
                 len(raw_token),
             )
             token_struct = AADAuth.get_token_struct(raw_token)
-            return token_struct, raw_token
+            return token_struct, raw_token, expires_on
         except ClientAuthenticationError as e:
             logger.error(
                 "get_token: Azure AD authentication failed - credential_class=%s, error=%s",
@@ -425,6 +457,106 @@ def get_auth_token(
             "get_auth_token: Token acquisition failed - auth_type=%s, error=%s", auth_type, str(e)
         )
         return None
+
+
+def get_auth_token_info(
+    auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None
+) -> Optional[TokenInfo]:
+    """Like :func:`get_auth_token` but also returns the token expiry.
+
+    Returns ``None`` when there is no auth type or when the driver handles
+    authentication natively (Windows Interactive), matching
+    :func:`get_auth_token`'s contract so callers can treat a ``None`` result
+    as "no Python-acquired token to place in attrs_before".
+    """
+    logger.debug("get_auth_token_info: Starting - auth_type=%s", auth_type)
+    if not auth_type:
+        return None
+
+    if auth_type == _AuthInternal.INTERACTIVE and platform.system().lower() == "windows":
+        logger.debug("get_auth_token_info: Windows interactive auth - delegating to native handler")
+        return None
+
+    try:
+        info = AADAuth.get_token_info(auth_type, credential_kwargs)
+        logger.info("get_auth_token_info: Token acquired successfully - auth_type=%s", auth_type)
+        return info
+    except (ValueError, RuntimeError) as e:
+        logger.warning(
+            "get_auth_token_info: Token acquisition failed - auth_type=%s, error=%s",
+            auth_type,
+            str(e),
+        )
+        return None
+
+
+# Default seconds-before-expiry at which a pooled connection's token is
+# considered "near expiry" and refreshed on checkout. Kept conservative
+# (<= 10 min per the identity-aware pooling design); azure-identity's own
+# cache still handles the underlying JWT refresh.
+_TOKEN_EXPIRY_THRESHOLD_SECS = 300
+
+
+def is_token_near_expiry(
+    expires_on: Optional[int],
+    now: Optional[float] = None,
+    threshold_secs: int = _TOKEN_EXPIRY_THRESHOLD_SECS,
+) -> bool:
+    """Return True when a token with POSIX-epoch ``expires_on`` is within
+    ``threshold_secs`` of expiring (or already expired).
+
+    A ``None`` expiry is treated as near-expiry (fail safe): if we cannot
+    prove the pooled token is still valid, force a refresh on checkout.
+    """
+    if expires_on is None:
+        return True
+    if now is None:
+        now = time.time()
+    return (expires_on - now) <= threshold_secs
+
+
+def compute_identity_key(
+    auth_type: Optional[str],
+    credential_kwargs: Optional[Dict[str, str]] = None,
+    token_struct: Optional[bytes] = None,
+) -> Optional[str]:
+    """Build the per-identity discriminator appended to the native pool key.
+
+    This is the heart of the identity-aware pooling fix (#651): today the pool
+    keys only on the sanitized connection string, so two callers using
+    different Entra identities but the same server collide onto one pool. The
+    discriminator returned here is combined with the connection string to keep
+    distinct identities in distinct pools.
+
+    Design invariant: when a token is present the pool key must NEVER be the
+    bare connection string; the fail-safe is the token hash.
+
+    Return values:
+      * ``None`` — no token auth (SQL / trusted / native ServicePrincipal /
+        Windows Interactive). The connection string alone already isolates the
+        identity, so the pool key is unchanged (fully backward compatible).
+      * ``"msi:<client_id>"`` / ``"msi:system"`` — Managed Identity, derived
+        from connection params *without* acquiring a token (enables skipping
+        token acquisition on a pool hit, #659).
+      * ``"tok:<sha256>"`` — fail-safe hash of the token struct for auth types
+        whose identity is not derivable from params (DefaultAzureCredential,
+        raw token, and — until the cached-record rework lands — interactive /
+        device-code). Requires ``token_struct``; when it is not supplied the
+        function returns ``None`` to signal "acquire a token, then recompute".
+    """
+    if not auth_type:
+        return None
+
+    if auth_type == _AuthInternal.MSI:
+        client_id = (credential_kwargs or {}).get("client_id")
+        return f"msi:{client_id}" if client_id else "msi:system"
+
+    if token_struct is not None:
+        return "tok:" + hashlib.sha256(token_struct).hexdigest()
+
+    # A token-backed auth type whose key needs the token, but none was
+    # supplied yet. Signal the caller to acquire first, then recompute.
+    return None
 
 
 def extract_auth_type(parsed_params: Dict[str, str]) -> Optional[str]:

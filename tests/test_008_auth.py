@@ -12,10 +12,14 @@ from unittest.mock import patch, MagicMock
 from mssql_python.auth import (
     AADAuth,
     ServicePrincipalAuth,
+    TokenInfo,
     _parse_tenant_id,
     process_auth_parameters,
     remove_sensitive_params,
     get_auth_token,
+    get_auth_token_info,
+    compute_identity_key,
+    is_token_near_expiry,
     extract_auth_type,
     _credential_cache,
     _credential_cache_lock,
@@ -686,7 +690,7 @@ class TestCredentialInstanceCache:
             azure_identity.DefaultAzureCredential = MockCredentialWithRefresh
 
             # First call — gets initial token
-            _, raw_token_1 = AADAuth._acquire_token("default")
+            _, raw_token_1, _ = AADAuth._acquire_token("default")
             assert raw_token_1 == "initial_token_abc123"
             assert call_count == 1
 
@@ -696,7 +700,7 @@ class TestCredentialInstanceCache:
 
             # Second call — same credential instance, but SDK returns refreshed token
             # (simulating post-expiry refresh)
-            _, raw_token_2 = AADAuth._acquire_token("default")
+            _, raw_token_2, _ = AADAuth._acquire_token("default")
             assert raw_token_2 == "refreshed_token_xyz789"
             assert call_count == 2
 
@@ -1380,3 +1384,115 @@ class TestServicePrincipalAuth:
         )
         for key in _credential_cache.keys():
             assert secret_marker not in repr(key), f"Raw secret leaked into cache key: {key!r}"
+
+
+class TestTokenExpiryCapture:
+    """Foundation for identity-aware pooling (#651 / #659): the acquisition
+    path must surface the token expiry alongside the ODBC struct."""
+
+    def test_get_token_info_returns_tokeninfo(self):
+        info = AADAuth.get_token_info("default")
+        assert isinstance(info, TokenInfo)
+        assert isinstance(info.token_struct, bytes)
+        assert len(info.token_struct) > 4
+
+    def test_get_token_info_expiry_none_when_absent(self):
+        # The default test double's token object has no expires_on attribute,
+        # so capture must fall back to None rather than raising.
+        info = AADAuth.get_token_info("default")
+        assert info.expires_on is None
+
+    def test_get_token_info_captures_expiry_when_present(self):
+        class MockTokenWithExpiry:
+            token = SAMPLE_TOKEN
+            expires_on = 1_900_000_000
+
+        class MockCredWithExpiry:
+            def get_token(self, scope):
+                return MockTokenWithExpiry()
+
+        import sys
+
+        azure_identity = sys.modules["azure.identity"]
+        original = azure_identity.DefaultAzureCredential
+        azure_identity.DefaultAzureCredential = MockCredWithExpiry
+        try:
+            info = AADAuth.get_token_info("default")
+            assert info.expires_on == 1_900_000_000
+        finally:
+            azure_identity.DefaultAzureCredential = original
+
+    def test_get_auth_token_info_returns_none_without_auth_type(self):
+        assert get_auth_token_info(None) is None
+        assert get_auth_token_info("") is None
+
+    def test_get_auth_token_info_default(self):
+        info = get_auth_token_info("default")
+        assert isinstance(info, TokenInfo)
+        assert isinstance(info.token_struct, bytes)
+
+
+class TestComputeIdentityKey:
+    """The per-identity discriminator that makes the native pool key
+    identity-aware (#651)."""
+
+    def test_none_when_no_auth_type(self):
+        # No token auth => pool key stays the bare connection string.
+        assert compute_identity_key(None) is None
+        assert compute_identity_key("") is None
+
+    def test_msi_user_assigned_uses_client_id(self):
+        key = compute_identity_key("msi", {"client_id": "abc-123"})
+        assert key == "msi:abc-123"
+
+    def test_msi_system_assigned(self):
+        assert compute_identity_key("msi") == "msi:system"
+        assert compute_identity_key("msi", {}) == "msi:system"
+
+    def test_msi_key_derived_without_token(self):
+        # No token_struct supplied, yet MSI still yields a key -> enables
+        # skipping token acquisition on a pool hit (#659).
+        assert compute_identity_key("msi", {"client_id": "cid"}) == "msi:cid"
+
+    def test_token_hash_fallback_for_default(self):
+        token = b"\x00\x01sometokenbytes"
+        key = compute_identity_key("default", token_struct=token)
+        assert key is not None and key.startswith("tok:")
+        assert len(key) == len("tok:") + 64  # sha256 hex
+
+    def test_different_tokens_produce_different_keys(self):
+        k1 = compute_identity_key("default", token_struct=b"token-a")
+        k2 = compute_identity_key("default", token_struct=b"token-b")
+        assert k1 != k2
+
+    def test_same_token_produces_stable_key(self):
+        k1 = compute_identity_key("default", token_struct=b"same")
+        k2 = compute_identity_key("default", token_struct=b"same")
+        assert k1 == k2
+
+    def test_none_when_token_required_but_absent(self):
+        # default/interactive/devicecode need the token to form the key;
+        # without it, signal the caller to acquire then recompute.
+        assert compute_identity_key("default") is None
+        assert compute_identity_key("interactive") is None
+        assert compute_identity_key("devicecode") is None
+
+
+class TestIsTokenNearExpiry:
+    def test_none_expiry_is_near(self):
+        # Fail safe: unknown expiry forces a refresh.
+        assert is_token_near_expiry(None) is True
+
+    def test_expired_token_is_near(self):
+        assert is_token_near_expiry(1000, now=2000) is True
+
+    def test_token_far_from_expiry(self):
+        assert is_token_near_expiry(now=1000, expires_on=1000 + 3600) is False
+
+    def test_token_within_threshold(self):
+        # 60s left, default 300s threshold => near expiry.
+        assert is_token_near_expiry(expires_on=1060, now=1000) is True
+
+    def test_custom_threshold(self):
+        assert is_token_near_expiry(expires_on=1100, now=1000, threshold_secs=50) is False
+        assert is_token_near_expiry(expires_on=1100, now=1000, threshold_secs=200) is True
