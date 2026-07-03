@@ -1431,6 +1431,29 @@ class TestTokenExpiryCapture:
         assert isinstance(info, TokenInfo)
         assert isinstance(info.token_struct, bytes)
 
+    def test_get_auth_token_info_windows_interactive_returns_none(self):
+        # Windows Interactive auth is handled natively by the driver, so the
+        # Python layer must not acquire a token (auth.py line 478).
+        with patch("mssql_python.auth.platform.system", return_value="Windows"):
+            assert get_auth_token_info("interactive") is None
+
+    def test_get_auth_token_info_returns_none_on_runtime_error(self):
+        # A token-acquisition RuntimeError is swallowed and reported as None so
+        # the caller can fall back to the bare pool key (auth.py lines 484-490).
+        with patch(
+            "mssql_python.auth.AADAuth.get_token_info",
+            side_effect=RuntimeError("token endpoint unreachable"),
+        ):
+            assert get_auth_token_info("default") is None
+
+    def test_get_auth_token_info_returns_none_on_value_error(self):
+        # Same swallow-and-return-None contract for ValueError (auth.py 484-490).
+        with patch(
+            "mssql_python.auth.AADAuth.get_token_info",
+            side_effect=ValueError("invalid credential kwargs"),
+        ):
+            assert get_auth_token_info("default") is None
+
 
 class TestComputeIdentityKey:
     """The per-identity discriminator that makes the native pool key
@@ -1496,6 +1519,16 @@ class TestIsTokenNearExpiry:
     def test_custom_threshold(self):
         assert is_token_near_expiry(expires_on=1100, now=1000, threshold_secs=50) is False
         assert is_token_near_expiry(expires_on=1100, now=1000, threshold_secs=200) is True
+
+    def test_now_defaults_to_wall_clock(self):
+        # When ``now`` is omitted the function reads the wall clock via
+        # time.time() (auth.py line 514). Freeze the clock for determinism and
+        # exercise both sides of the threshold comparison.
+        with patch("mssql_python.auth.time.time", return_value=1000.0):
+            # Expiry an hour out => not near expiry.
+            assert is_token_near_expiry(expires_on=1000 + 3600) is False
+            # Expiry inside the default 300s threshold => near expiry.
+            assert is_token_near_expiry(expires_on=1000 + 100) is True
 
 
 class TestConnectionPoolKey:

@@ -693,3 +693,88 @@ def test_pooling_state_consistency(conn_str):
     assert PoolingManager.is_initialized(), "Should remain initialized after disable call"
 
     print("Pooling state consistency verified")
+
+
+# =============================================================================
+# Native token-factory (lazy token acquisition, #659) integration tests
+# =============================================================================
+#
+# These white-box tests drive the native ``ddbc_bindings.Connection``
+# constructor directly with a ``token_factory`` callable. The regular Python
+# unit tests mock the native module, so they never execute the C++ lazy-token
+# branches. Exercising them requires a live server, so these tests are guarded
+# on ``conn_str`` and only run in the integration environment (where they also
+# provide C++ line coverage for the token-factory paths).
+#
+# For a normal SQL-auth connection the credentials live in the connection
+# string, so a factory that returns an empty attrs dict is sufficient to open
+# a real connection while still forcing the C++ code down the ``token_factory``
+# branch.
+
+
+class TestNativeTokenFactory:
+    """Integration tests for the native lazy token-factory path (#659)."""
+
+    def test_pooled_factory_invoked_on_miss_and_skipped_on_reuse(self, conn_str):
+        """The factory runs on a pool miss but not on a same-key pool reuse.
+
+        Covers connection_pool.cpp (token_factory() invocation on the pool-miss
+        connect path) and the pooled acquireConnection branch in connection.cpp.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        from mssql_python import ddbc_bindings
+
+        calls = {"n": 0}
+
+        def factory():
+            calls["n"] += 1
+            return {}  # SQL-auth creds are in conn_str; no attrs needed
+
+        # Unique pool key so this test never collides with other pools.
+        pool_key = conn_str + "\x00mssql_test_659_pooled"
+
+        # First open -> pool miss -> factory materializes the (empty) attrs.
+        conn1 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert calls["n"] == 1, "Factory should be invoked once on a pool miss"
+        conn1.close()  # returns the connection to the pool under pool_key
+
+        # Second open with the same key -> pool hit -> factory is NOT called.
+        conn2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert calls["n"] == 1, "Factory must be skipped on a same-key pool reuse"
+        conn2.close()
+
+    def test_non_pooled_factory_invoked(self, conn_str):
+        """A non-pooled connection still honors the factory.
+
+        Covers the non-pool token_factory branch in connection.cpp.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        from mssql_python import ddbc_bindings
+
+        calls = {"n": 0}
+
+        def factory():
+            calls["n"] += 1
+            return {}
+
+        conn = ddbc_bindings.Connection(conn_str, False, {}, "", factory)
+        assert calls["n"] == 1, "Factory should be invoked for a non-pooled connect"
+        conn.close()
+
+    def test_non_pooled_without_factory_uses_attrs_before(self, conn_str):
+        """A non-pooled connection with no factory connects via attrs_before.
+
+        Covers the non-pool ``else`` (no factory) branch in connection.cpp.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        from mssql_python import ddbc_bindings
+
+        conn = ddbc_bindings.Connection(conn_str, False, {}, "", None)
+        assert conn is not None
+        conn.close()
