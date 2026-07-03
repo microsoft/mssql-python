@@ -45,12 +45,17 @@ class ConnectionPoolManager {
 
     void configure(int max_size, int idle_timeout);
 
-    // Gets a connection from the appropriate pool (creates one if none exists)
+    // Gets a connection from the appropriate pool (creates one if none exists).
+    // The pool is keyed by pool_key when supplied, else by conn_str. conn_str
+    // is always used to establish new physical connections. Keying separately
+    // keeps distinct Entra identities in distinct pools (issue #651).
     std::shared_ptr<Connection> acquireConnection(const std::u16string& conn_str,
-                                                  const py::dict& attrs_before = py::dict());
+                                                  const py::dict& attrs_before = py::dict(),
+                                                  const std::u16string& pool_key = std::u16string());
 
-    // Returns a connection to its original pool
-    void returnConnection(const std::u16string& conn_str, std::shared_ptr<Connection> conn);
+    // Returns a connection to its original pool, identified by pool_key
+    // (the same key passed to acquireConnection).
+    void returnConnection(const std::u16string& pool_key, std::shared_ptr<Connection> conn);
 
     // Closes all pools and their connections
     void closePools();

@@ -1496,3 +1496,97 @@ class TestIsTokenNearExpiry:
     def test_custom_threshold(self):
         assert is_token_near_expiry(expires_on=1100, now=1000, threshold_secs=50) is False
         assert is_token_near_expiry(expires_on=1100, now=1000, threshold_secs=200) is True
+
+
+class TestConnectionPoolKey:
+    """Part B: Connection.__init__ must build an identity-aware pool key and
+    forward it to the native Connection so distinct Entra identities never
+    share a pooled connection (#651), while non-token auth keeps the legacy
+    bare-connection-string key (backward compatible)."""
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_no_pool_key_for_non_token_auth(self, mock_ddbc_conn):
+        # Plain SQL auth (no Authentication=) => identity key None => pool key
+        # stays empty so the native layer keys on the connection string.
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;UID=sa;PWD=secret")
+        assert conn._pool_key == ""
+        # Native Connection received the empty pool key as the 4th positional arg.
+        args, _ = mock_ddbc_conn.call_args
+        assert args[3] == ""
+        conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_system_assigned_msi_pool_key(self, mock_ddbc_conn):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryMSI")
+        assert conn._pool_key == conn.connection_str + "\x00msi:system"
+        args, _ = mock_ddbc_conn.call_args
+        assert args[3] == conn._pool_key
+        conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_user_assigned_msi_pool_key_uses_client_id(self, mock_ddbc_conn):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        client_id = "11111111-2222-3333-4444-555555555555"
+        conn = connect(
+            f"Server=test;Database=testdb;Authentication=ActiveDirectoryMSI;UID={client_id}"
+        )
+        assert conn._pool_key == conn.connection_str + f"\x00msi:{client_id}"
+        conn.close()
+
+    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_default_auth_pool_key_hashes_token(self, mock_ddbc_conn, mock_get_token):
+        # When a token is present, the pool key must include its hash so that
+        # two different tokens (identities) never collide on the same pool.
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_get_token.return_value = b"\x00\x01fake-token-bytes"
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
+        assert conn._pool_key.startswith(conn.connection_str + "\x00tok:")
+        args, _ = mock_ddbc_conn.call_args
+        assert args[3] == conn._pool_key
+        conn.close()
+
+    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_different_tokens_yield_different_pool_keys(self, mock_ddbc_conn, mock_get_token):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        cs = "Server=test;Database=testdb;Authentication=ActiveDirectoryDefault"
+
+        mock_get_token.return_value = b"identity-A-token"
+        conn_a = connect(cs)
+        key_a = conn_a._pool_key
+        conn_a.close()
+
+        mock_get_token.return_value = b"identity-B-token"
+        conn_b = connect(cs)
+        key_b = conn_b._pool_key
+        conn_b.close()
+
+        # Same connection string, different identity => different pool key.
+        assert key_a != key_b
+        assert conn_a.connection_str == conn_b.connection_str
+
+    @patch("mssql_python.connection.get_auth_token")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_default_auth_no_token_keeps_bare_key(self, mock_ddbc_conn, mock_get_token):
+        # Token acquisition failed (returns None): there is no identity to key
+        # on, so fall back to the bare connection-string key.
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_get_token.return_value = None
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
+        assert conn._pool_key == ""
+        conn.close()

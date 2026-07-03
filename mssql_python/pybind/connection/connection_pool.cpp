@@ -169,11 +169,15 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
 }
 
 std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::u16string& connStr,
-                                                                     const py::dict& attrs_before) {
+                                                                     const py::dict& attrs_before,
+                                                                     const std::u16string& pool_key) {
+    // Key the pool by pool_key when provided (identity-aware, issue #651),
+    // else fall back to the connection string (legacy behavior).
+    const std::u16string& key = pool_key.empty() ? connStr : pool_key;
     std::shared_ptr<ConnectionPool> pool;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
-        auto& pool_ref = _pools[connStr];
+        auto& pool_ref = _pools[key];
         if (!pool_ref) {
             LOG("Creating new connection pool");
             pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
@@ -182,16 +186,17 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
     }
     // Call acquire() outside _manager_mutex.  acquire() may release the GIL
     // during the ODBC connect call; holding _manager_mutex across that would
-    // create a mutex/GIL lock-ordering deadlock.
+    // create a mutex/GIL lock-ordering deadlock. connStr (not key) is used to
+    // establish new physical connections.
     return pool->acquire(connStr, attrs_before);
 }
 
-void ConnectionPoolManager::returnConnection(const std::u16string& conn_str,
+void ConnectionPoolManager::returnConnection(const std::u16string& pool_key,
                                              const std::shared_ptr<Connection> conn) {
     std::shared_ptr<ConnectionPool> pool;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
-        auto it = _pools.find(conn_str);
+        auto it = _pools.find(pool_key);
         if (it != _pools.end()) {
             pool = it->second;
         }

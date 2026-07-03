@@ -45,6 +45,7 @@ from mssql_python.auth import (
     process_auth_parameters,
     remove_sensitive_params,
     get_auth_token,
+    compute_identity_key,
 )
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
@@ -340,6 +341,12 @@ class Connection:
         # them because UID is already gone.
         self._credential_kwargs: Optional[Dict[str, str]] = None
 
+        # Composite, identity-aware pool key. Empty means "key the native pool
+        # on the connection string" (legacy behavior, used for non-token auth).
+        # For Entra access-token auth it is set to connStr + identity so that
+        # distinct identities never share a pooled connection (issue #651).
+        self._pool_key: str = ""
+
         # Handle Entra ID authentication if specified.
         # The parsed dict is used directly — no re-parsing of the connection string.
         if _KEY_AUTHENTICATION in parsed_params:
@@ -361,6 +368,22 @@ class Connection:
                 if token:
                     self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
                 self._credential_kwargs = credential_kwargs
+
+                # Make the pool key identity-aware so two callers using the
+                # same server but different Entra identities never reuse each
+                # other's authenticated connection (issue #651). auth_type here
+                # is the process_auth_parameters result, which is truthy only
+                # for the token-bearing types (default/devicecode/msi/
+                # interactive-non-Windows); ServicePrincipal and Windows
+                # Interactive return None and keep their identity in the
+                # connection string, so they stay on the legacy connStr key.
+                identity = compute_identity_key(auth_type, credential_kwargs, token_struct=token)
+                if identity:
+                    # A real connection string can
+                    # never contain \0, so the composite key can never collide
+                    # with a bare connStr pool key. std::u16string map keys hold
+                    # embedded NULs fine and the key is never used as a C string.
+                    self._pool_key = self.connection_str + "\x00" + identity
 
             # Store auth type so bulkcopy() can acquire a fresh token later.
             # On Windows Interactive, process_auth_parameters returns None
@@ -403,7 +426,7 @@ class Connection:
         self._pooling = PoolingManager.is_enabled()
         try:
             self._conn = ddbc_bindings.Connection(
-                self.connection_str, self._pooling, self._attrs_before
+                self.connection_str, self._pooling, self._attrs_before, self._pool_key
             )
         except RuntimeError as e:
             _raise_connection_error(e)

@@ -97,7 +97,8 @@ class Connection {
 class ConnectionHandle {
   public:
     ConnectionHandle(const std::u16string& connStr, bool usePool,
-                     const py::dict& attrsBefore = py::dict());
+                     const py::dict& attrsBefore = py::dict(),
+                     const std::u16string& poolKey = std::u16string());
     ~ConnectionHandle();
 
     void close();
@@ -115,4 +116,9 @@ class ConnectionHandle {
     std::shared_ptr<Connection> _conn;
     bool _usePool;
     std::u16string _connStr;
+    // Key under which this connection's pool is stored. Defaults to _connStr
+    // (legacy behavior) but is set to an identity-aware composite key for
+    // Entra access-token auth so distinct identities never share a pool
+    // (issue #651). Empty is never stored; the ctor falls back to _connStr.
+    std::u16string _poolKey;
 };

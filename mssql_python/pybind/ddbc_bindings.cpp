@@ -5880,8 +5880,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              "Internal: close the cursor without freeing the prepared statement");
 
     py::class_<ConnectionHandle>(m, "Connection")
-        .def(py::init<const std::u16string&, bool, const py::dict&>(), py::arg("conn_str"),
-             py::arg("use_pool"), py::arg("attrs_before") = py::dict())
+        .def(py::init<const std::u16string&, bool, const py::dict&, const std::u16string&>(),
+             py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict(),
+             py::arg("pool_key") = std::u16string())
         .def("close", &ConnectionHandle::close, "Close the connection")
         .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")

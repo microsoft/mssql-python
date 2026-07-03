@@ -514,10 +514,11 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
 }
 
 ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
-                                   const py::dict& attrsBefore)
-    : _usePool(usePool), _connStr(connStr) {
+                                   const py::dict& attrsBefore, const std::u16string& poolKey)
+    : _usePool(usePool), _connStr(connStr), _poolKey(poolKey.empty() ? connStr : poolKey) {
     if (_usePool) {
-        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
+        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
+                                                                       _poolKey);
     } else {
         _conn = std::make_shared<Connection>(_connStr, false);
         _conn->connect(attrsBefore);
@@ -535,7 +536,7 @@ void ConnectionHandle::close() {
         ThrowStdException("Connection object is not initialized");
     }
     if (_usePool) {
-        ConnectionPoolManager::getInstance().returnConnection(_connStr, _conn);
+        ConnectionPoolManager::getInstance().returnConnection(_poolKey, _conn);
     } else {
         _conn->disconnect();
     }
