@@ -474,13 +474,14 @@ std::string DescribeChar(unsigned char ch) {
 
 // GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
 // On cache miss, calls SQLDescribeParam and stores the result.
-static DescribedParamInfo ResolveNullParamType(
-        SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
-    // Check per-handle cache (no mutex — one handle per thread)
+static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
+    // Check per-handle cache. ODBC mandates one handle per thread, so no
+    // mutex is needed. Violating this contract causes undefined behavior.
     auto it = handle.describeCache.find(paramIndex);
     if (it != handle.describeCache.end()) {
         LOG("ResolveNullParamType: Cache HIT for hStmt=%p param[%d] "
-            "-> sqlType=%d", (void*)hStmt, paramIndex, it->second.sqlType);
+            "-> sqlType=%d",
+            (void*)hStmt, paramIndex, it->second.sqlType);
         return it->second;
     }
 
@@ -489,9 +490,16 @@ static DescribedParamInfo ResolveNullParamType(
     SQLULEN size;
     LOG("ResolveNullParamType: Cache MISS for hStmt=%p param[%d], calling "
         "SQLDescribeParam", (void*)hStmt, paramIndex);
-    RETCODE rc = SQLDescribeParam_ptr(
-        hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
-        &type, &size, &digits, &nullable);
+    // SQLDescribeParam may issue a server round-trip
+    // (sp_describe_undeclared_parameters). Release the GIL around it so
+    // in-process Python TCP forwarders can run (issue #565 family).
+    RETCODE rc;
+    {
+        py::gil_scoped_release release;
+        rc = SQLDescribeParam_ptr(
+            hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
+            &type, &size, &digits, &nullable);
+    }
 
     DescribedParamInfo info;
     if (SQL_SUCCEEDED(rc)) {
@@ -500,15 +508,63 @@ static DescribedParamInfo ResolveNullParamType(
             "-> sqlType=%d, columnSize=%lu, decimalDigits=%d",
             paramIndex, type, (unsigned long)size, digits);
     } else {
+        // SQLDescribeParam failed — typically happens with temp tables (#table),
+        // table variables, or complex CTEs where the driver cannot determine
+        // parameter metadata.  Fall back to SQL_VARCHAR which works for most
+        // column types but will fail for BINARY/VARBINARY columns due to SQL
+        // Server's implicit conversion rules.
+        //
+        // Workaround: cursor.setinputsizes() to explicitly specify types.
+        //   from mssql_python.constants import ConstantsDDBC
+        //   cursor.setinputsizes([(ConstantsDDBC.SQL_INTEGER.value, 10, 0),
+        //                         (ConstantsDDBC.SQL_VARBINARY.value, 0, 0)])
+        //   cursor.execute("INSERT INTO #t (id, data) VALUES (?, ?)", [1, None])
         info = {SQL_VARCHAR, 1, 0};
         LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
                     "param[%d] (rc=%d), falling back to SQL_VARCHAR",
                     paramIndex, rc);
     }
 
-    // Store in per-handle cache
+    // Cache both successful and fallback results. For fallbacks, this avoids
+    // repeated SQLDescribeParam network calls on statement reuse. Note: on the
+    // same_sql path clearDescribeCache() is NOT called, so a transient describe
+    // failure is pinned as SQL_VARCHAR for the life of the prepared statement.
+    // This is intentional — retrying a failing describe on every execute would
+    // add latency with no benefit (temp-table metadata won't become resolvable
+    // mid-connection). The cache IS cleared on SQLPrepare (usePrepare path).
     handle.describeCache[paramIndex] = info;
+
     return info;
+}
+
+// GH-627: Resolve unknown NULL SQL types before any SQLBindParameter calls.
+// Some drivers remap parameter ordinals during describe when parameters have
+// already been bound, so interleaving describe+bind can fail for binary NULLs.
+// When `params` is provided (execute path), an additional py::none check is
+// performed; for executemany (array path), SQL_C_DEFAULT already guarantees
+// all values in that column are NULL, so no Python-level check is needed.
+static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
+                                       std::vector<ParamInfo>& paramInfos,
+                                       const py::list* params = nullptr) {
+    if (paramInfos.empty())
+        return;
+
+    for (size_t paramIndex = 0; paramIndex < paramInfos.size(); ++paramIndex) {
+        ParamInfo& paramInfo = paramInfos[paramIndex];
+        if (paramInfo.paramCType != SQL_C_DEFAULT || paramInfo.paramSQLType != SQL_UNKNOWN_TYPE) {
+            continue;
+        }
+        // For execute(), verify the actual value is None (mixed columns possible).
+        if (params && paramIndex < params->size() &&
+            !py::isinstance<py::none>((*params)[paramIndex])) {
+            continue;
+        }
+
+        auto resolved = ResolveNullParamType(handle, hStmt, static_cast<int>(paramIndex));
+        paramInfo.paramSQLType = resolved.sqlType;
+        paramInfo.columnSize = resolved.columnSize;
+        paramInfo.decimalDigits = resolved.decimalDigits;
+    }
 }
 
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
@@ -520,6 +576,9 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
     LOG("BindParameters: Starting parameter binding for statement handle %p "
         "with %zu parameters",
         (void*)hStmt, params.size());
+
+    // GH-627: resolve unknown NULL param SQL types before binding any param.
+    PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         ParamInfo& paramInfo = paramInfos[paramIndex];
@@ -669,23 +728,10 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                // GH-610: Resolve SQL type for NULL params via per-handle cache.
-                SQLSMALLINT sqlType = paramInfo.paramSQLType;
-                SQLULEN columnSize = paramInfo.columnSize;
-                SQLSMALLINT decimalDigits = paramInfo.decimalDigits;
-                if (sqlType == SQL_UNKNOWN_TYPE) {
-                    auto resolved = ResolveNullParamType(handle, hStmt, paramIndex);
-                    sqlType = resolved.sqlType;
-                    columnSize = resolved.columnSize;
-                    decimalDigits = resolved.decimalDigits;
-                }
-                dataPtr = nullptr;
+                dataPtr = nullptr;  // GH-627: type resolved by PreResolveUnknownNullTypes.
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                 *strLenOrIndPtr = SQL_NULL_DATA;
                 bufferLength = 0;
-                paramInfo.paramSQLType = sqlType;
-                paramInfo.columnSize = columnSize;
-                paramInfo.decimalDigits = decimalDigits;
                 break;
             }
             case SQL_C_STINYINT:
@@ -1411,8 +1457,21 @@ void SqlHandle::free() {
             return;
         }
 
-        // Handle is valid and not implicitly freed, proceed with normal freeing
-        SQLFreeHandle_ptr(_type, _handle);
+        // Handle is valid and not implicitly freed, proceed with normal freeing.
+        // Release the GIL during the blocking ODBC call (SQLFreeHandle on a STMT
+        // with an open server-side cursor, or on a DBC, performs network I/O).
+        // This is critical when the connection is reached through an in-process
+        // Python TCP forwarder (e.g. paramiko + sshtunnel) - the forwarder
+        // thread needs the GIL to push bytes, so holding it here deadlocks
+        // (issue #565). Only release the GIL if it is actually held AND the
+        // interpreter is not finalizing - gil_scoped_release is unsafe during
+        // shutdown even if PyGILState_Check() reports the GIL as held.
+        if (!pythonShuttingDown && PyGILState_Check()) {
+            py::gil_scoped_release release;
+            SQLFreeHandle_ptr(_type, _handle);
+        } else {
+            SQLFreeHandle_ptr(_type, _handle);
+        }
         _handle = nullptr;
     }
 }
@@ -1427,7 +1486,17 @@ void SqlHandle::close_cursor() {
     if (!SQLFreeStmt_ptr) {
         ThrowStdException("SQLFreeStmt function not loaded");
     }
-    SQLRETURN ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    // Release the GIL during the blocking SQLFreeStmt(SQL_CLOSE) network
+    // round-trip; see issue #565 (in-process forwarder deadlock).
+    // Skip GIL release when the GIL isn't held or the interpreter is
+    // finalizing - gil_scoped_release is unsafe in shutdown.
+    SQLRETURN ret;
+    if (!is_python_finalizing() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    } else {
+        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
         ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
     }
@@ -1989,6 +2058,8 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     std::vector<std::shared_ptr<void>> tempBuffers;
 
     try {
+        // GH-627: resolve unknown NULL array param SQL types before binding any param.
+        PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
             ParamInfo& info = paramInfos[paramIndex];
@@ -2566,20 +2637,10 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                 }
                 case SQL_C_DEFAULT: {
                     // Handle NULL parameters - all values in this column should be NULL
+                    // GH-627: SQL type already resolved by PreResolveUnknownNullTypes.
                     LOG("BindParameterArray: Binding SQL_C_DEFAULT (NULL) array - param_index=%d, "
-                        "count=%zu",
-                        paramIndex, paramSetSize);
-
-                    // GH-610: Resolve SQL type for all-NULL columns via per-handle cache.
-                    SQLSMALLINT resolvedSqlType = info.paramSQLType;
-                    SQLULEN resolvedColSize = info.columnSize;
-                    SQLSMALLINT resolvedDecDigits = info.decimalDigits;
-                    if (resolvedSqlType == SQL_UNKNOWN_TYPE) {
-                        auto resolved = ResolveNullParamType(handle, hStmt, paramIndex);
-                        resolvedSqlType = resolved.sqlType;
-                        resolvedColSize = resolved.columnSize;
-                        resolvedDecDigits = resolved.decimalDigits;
-                    }
+                        "count=%zu, resolvedSqlType=%d",
+                        paramIndex, paramSetSize, info.paramSQLType);
 
                     char* nullBuffer = AllocateParamBufferArray<char>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
@@ -2591,14 +2652,6 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
 
                     dataPtr = nullBuffer;
                     bufferLength = 1;
-
-                    // Override info fields so SQLBindParameter below uses resolved type
-                    info.paramSQLType = resolvedSqlType;
-                    info.columnSize = resolvedColSize;
-                    info.decimalDigits = resolvedDecDigits;
-
-                    LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d, "
-                        "resolvedSqlType=%d", paramIndex, resolvedSqlType);
                     break;
                 }
                 default: {
@@ -5735,13 +5788,27 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     LOG("SQLFreeHandle_wrap: Free SQL handle type=%d", HandleType);
+    // Guard against a null/None handle being passed from Python - dereferencing
+    // Handle->get() on a null shared_ptr would segfault.
+    if (!Handle || !Handle->get()) {
+        return SQL_INVALID_HANDLE;
+    }
     if (!SQLAllocHandle_ptr) {
         LOG("SQLFreeHandle_wrap: Function pointer not initialized. Loading the "
             "driver.");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    SQLRETURN ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    // Release the GIL during the blocking SQLFreeHandle network round-trip
+    // (see issue #565 - in-process Python TCP forwarder deadlock).
+    // Skip GIL release in shutdown paths where it would crash.
+    SQLRETURN ret;
+    if (!is_python_finalizing() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    } else {
+        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLFreeHandle_wrap: SQLFreeHandle failed with error code - %d", ret);
         return ret;
