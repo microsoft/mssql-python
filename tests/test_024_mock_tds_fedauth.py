@@ -44,6 +44,7 @@ import datetime
 import os
 import secrets
 import struct
+import sys
 
 import pytest
 
@@ -74,13 +75,30 @@ except ImportError:
     CRYPTOGRAPHY_AVAILABLE = False
 
 
-pytestmark = pytest.mark.skipif(
-    not (MOCK_TDS_AVAILABLE and CRYPTOGRAPHY_AVAILABLE),
-    reason=(
-        "Requires the 'mssql-mock-tds' package and 'cryptography'. "
-        "Install mssql-mock-tds from the mssql-rs public feed to run these tests."
+pytestmark = [
+    pytest.mark.skipif(
+        not (MOCK_TDS_AVAILABLE and CRYPTOGRAPHY_AVAILABLE),
+        reason=(
+            "Requires the 'mssql-mock-tds' package and 'cryptography'. "
+            "Install mssql-mock-tds from the mssql-rs public feed to run these tests."
+        ),
     ),
-)
+    pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason=(
+            "mssql-mock-tds serves TLS via native-tls, which on macOS uses "
+            "SecureTransport (Security.framework). The msodbcsql client cannot "
+            "complete the TDS-wrapped TLS handshake against a SecureTransport "
+            "server and fails with SSL Provider error 0x80090308 "
+            "(SEC_E_INVALID_TOKEN), so the connection never reaches Login7. The "
+            "server-side TLS stack is the only variable that differs from the "
+            "passing Linux (OpenSSL) and Windows (Schannel) legs. Re-enable once "
+            "the mock serves TLS via OpenSSL/rustls on macOS. The #596 buffer "
+            "ownership fix lives in cross-platform driver code and is still "
+            "covered on Linux and Windows."
+        ),
+    ),
+]
 
 # Bound each connect so a future protocol change can never hang the suite. With
 # the current mock the FedAuth Login7 is answered and the connection completes
