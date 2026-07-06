@@ -540,11 +540,17 @@ py::dict Connection::invokeTokenFactory(const py::object& tokenFactory,
     // bare attrs dict.
     if (py::isinstance<py::tuple>(result)) {
         py::tuple parts = result.cast<py::tuple>();
-        py::dict attrs = parts[0].cast<py::dict>();
-        if (parts.size() > 1 && !parts[1].is_none()) {
-            outExpiryEpoch = parts[1].cast<long long>();
+        // Defensive: a well-formed factory always returns at least (attrs,).
+        // Guard the index so a misbehaving/empty tuple falls through to the
+        // cast below (which raises a clear tuple->dict error) instead of an
+        // out-of-range access on parts[0].
+        if (parts.size() >= 1) {
+            py::dict attrs = parts[0].cast<py::dict>();
+            if (parts.size() > 1 && !parts[1].is_none()) {
+                outExpiryEpoch = parts[1].cast<long long>();
+            }
+            return attrs;
         }
-        return attrs;
     }
     return result.cast<py::dict>();
 }
@@ -567,6 +573,16 @@ bool Connection::isTokenNearExpiry(int thresholdSecs) const {
 std::string Connection::currentAccessToken() const {
     auto it = _attrBytesBuffers.find(SQL_COPT_SS_ACCESS_TOKEN);
     return it != _attrBytesBuffers.end() ? it->second : std::string();
+}
+
+bool Connection::accessTokenEquals(const std::string& token) const {
+    auto it = _attrBytesBuffers.find(SQL_COPT_SS_ACCESS_TOKEN);
+    if (it == _attrBytesBuffers.end()) {
+        // No token on this connection; matches only an empty comparand,
+        // mirroring currentAccessToken() == token semantics.
+        return token.empty();
+    }
+    return it->second == token;
 }
 
 ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,

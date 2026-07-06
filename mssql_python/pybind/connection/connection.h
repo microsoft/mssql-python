@@ -79,6 +79,13 @@ class Connection {
     // healthy connection is reused; only a rotated token forces reopen.
     std::string currentAccessToken() const;
 
+    // True if this connection's last access token equals `token`, compared in
+    // place against the internal buffer (no copy). Used by the sibling-drain
+    // sweep so rotating one token does not copy every pooled connection's token
+    // per comparison. Matches currentAccessToken() == token semantics (a
+    // connection with no token matches only an empty comparand).
+    bool accessTokenEquals(const std::string& token) const;
+
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 

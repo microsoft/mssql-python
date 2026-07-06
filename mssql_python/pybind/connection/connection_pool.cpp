@@ -164,6 +164,17 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     // that may expire mid-query over avoiding the churn.
                     candidate->setTokenExpiry(fresh_expiry);
                     reuse_candidate = candidate->isAlive() && candidate->reset();
+                    if (!reuse_candidate) {
+                        // The token is still valid but the socket is dead
+                        // (isAlive()/reset() failed). We already minted the
+                        // fresh attrs, so carry them forward and let Phase 3
+                        // reopen with them instead of invoking the factory a
+                        // second time. No sibling drain: siblings hold the same
+                        // still-valid token and remain reusable.
+                        pending_attrs = fresh_attrs;
+                        pending_expiry = fresh_expiry;
+                        have_pending_token = true;
+                    }
                 } else {
                     // Token rotated, or the "fresh" token is still at/near
                     // expiry (or has an unknown expiry): discard and reopen with
@@ -185,7 +196,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                             std::remove_if(
                                 _pool.begin(), _pool.end(),
                                 [&](const std::shared_ptr<Connection>& sibling) {
-                                    if (sibling->currentAccessToken() == stale_token) {
+                                    if (sibling->accessTokenEquals(stale_token)) {
                                         to_disconnect.push_back(sibling);
                                         if (_current_size > 0) --_current_size;
                                         return true;

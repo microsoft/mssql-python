@@ -420,26 +420,27 @@ class Connection:
                         ) from e
 
                 def _make_token_factory():
-                    def _token_factory():
-                        attrs = dict(base_attrs)
-                        info = _acquire_token_info()
-                        if info and info.token_struct:
-                            attrs[token_attr] = info.token_struct
-                            return attrs, info.expires_on
-                        # Fail closed: a token-backed pool must never open a
-                        # physical connection without the token it is meant to
-                        # carry. get_auth_token_info already raises when
-                        # acquisition fails; this guards the empty-token edge so
-                        # native never connects with Authentication= stripped.
-                        raise InterfaceError(
-                            driver_error=(
-                                "Unable to acquire an Entra ID access token for "
-                                f"authentication type '{auth_type}'."
-                            ),
-                            ddbc_error="Token factory produced no usable token.",
-                        )
-
-                    return _token_factory
+                    # Deferred connect-attrs provider handed to native. Native
+                    # invokes it only when it actually opens a physical
+                    # connection (a pool miss or non-pooled connect), so a
+                    # same-identity pool hit never pays for a token.
+                    attrs = dict(base_attrs)
+                    info = _acquire_token_info()
+                    if info and info.token_struct:
+                        attrs[token_attr] = info.token_struct
+                        return attrs, info.expires_on
+                    # Fail closed: a token-backed pool must never open a
+                    # physical connection without the token it is meant to
+                    # carry. get_auth_token_info already raises when
+                    # acquisition fails; this guards the empty-token edge so
+                    # native never connects with Authentication= stripped.
+                    raise InterfaceError(
+                        driver_error=(
+                            "Unable to acquire an Entra ID access token for "
+                            f"authentication type '{auth_type}'."
+                        ),
+                        ddbc_error="Token factory produced no usable token.",
+                    )
 
                 identity = compute_identity_key(auth_type, credential_kwargs)
                 if identity:
@@ -452,7 +453,7 @@ class Connection:
                     # Lazy token acquisition: native invokes this only
                     # when it opens a physical connection, so same-identity pool
                     # hits never pay for a token.
-                    self._token_factory = _make_token_factory()
+                    self._token_factory = _make_token_factory
                 else:
                     # Token/account-dependent identity: acquire once to derive
                     # the key. Interactive / Device-code yield a stable
@@ -476,7 +477,7 @@ class Connection:
                         # Account-stable key: safe to defer to the factory so a
                         # same-account pool hit skips token acquisition and a
                         # near-expiry checkout can refresh silently.
-                        self._token_factory = _make_token_factory()
+                        self._token_factory = _make_token_factory
                     elif token:
                         # Token-hash key: bind the pooled connection to this
                         # exact token so its hash always matches the pool key.
