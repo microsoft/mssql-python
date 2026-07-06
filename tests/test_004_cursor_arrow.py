@@ -89,14 +89,19 @@ def get_arrow_test_data(include_lobs: bool, batch_length: int):
             ],
         ),
         (
-            pa.time32("s"),
+            pa.time64("ns"),
             "time(0)",
             [time(12, 0, 5, 0), None, time(23, 59, 59, 0), time(0, 0, 0, 0)],
         ),
         (
-            pa.time32("s"),
+            pa.time64("ns"),
             "time(7)",
             [time(12, 0, 5, 0), None, time(23, 59, 59, 0), time(0, 0, 0, 0)],
+        ),
+        (
+            pa.time64("ns"),
+            "time(7)",
+            [time(12, 0, 5, 123456), None, time(23, 59, 59, 123456), time(0, 0, 0, 0)],
         ),
         (
             pa.timestamp("us"),
@@ -187,14 +192,6 @@ def _test_arrow_test_data(cursor: mssql_python.Cursor, arrow_test_data, fetch_le
 
     # Validate that Parquet serialization/deserialization does not detect any issues
     tbl = pa.Table.from_batches([ret])
-    # for some reason parquet converts seconds to milliseconds in time32
-    for i_col, col in enumerate(tbl.columns):
-        if col.type == pa.time32("s"):
-            tbl = tbl.set_column(
-                i_col,
-                tbl.schema.field(i_col).name,
-                col.cast(pa.time32("ms")),
-            )
     buffer = io.BytesIO()
     pq.write_table(tbl, buffer)
     buffer.seek(0)
@@ -314,6 +311,83 @@ def test_arrow_long_string(cursor: mssql_python.Cursor):
     assert batch.num_rows == 1
     assert batch.num_columns == 1
     assert batch.column(0).to_pylist() == [long_string]
+
+
+@pytest.mark.parametrize("sql_type", ["char(32)", "varchar(32)"])
+@pytest.mark.parametrize("narrow", [True, False])
+def test_arrow_char_utf8_collation_unicode(
+    cursor: mssql_python.Cursor, sql_type: str, narrow: bool
+):
+    table = "#t_arrow_char_decode"
+    collation = "Latin1_General_100_CI_AS_SC_UTF8"
+    expected = [
+        "Grüße",
+        "你好😀",
+        "こんにちは",
+        "Привет",
+        "Hello 世界",
+        "😀😃😄😁",
+        "",
+        None,
+    ]
+    if narrow:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, ctype=mssql_python.SQL_CHAR)
+
+    try:
+        cursor.execute(
+            f"create table {table} (id int primary key, v {sql_type} collate {collation})"
+        )
+    except Exception as exc:
+        pytest.skip(f"UTF-8 collation '{collation}' not supported: {exc}")
+
+    try:
+        for index, value in enumerate(expected, start=1):
+            cursor.execute(f"insert into {table} (id, v) values (?, ?)", index, value)
+        tbl = cursor.execute(f"select v from {table} order by id").arrow()
+        assert tbl.column(0).type.equals(pa.large_string())
+        for expected_val, actual_val in zip(expected, tbl.column(0).to_pylist(), strict=True):
+            if actual_val is not None:
+                actual_val = actual_val.strip()
+            assert expected_val == actual_val
+    finally:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        cursor.execute(f"drop table if exists {table}")
+
+
+@pytest.mark.parametrize("sql_type", ["char(32)", "varchar(32)", "text"])
+@pytest.mark.parametrize("narrow", [True, False])
+def test_arrow_char_cp1252_collation_unicode(
+    cursor: mssql_python.Cursor, sql_type: str, narrow: bool
+):
+    table = "#t_arrow_char_decode"
+    collation = "SQL_Latin1_General_CP1_CI_AS"
+    expected = [
+        "Grüße",
+        "café René!",
+        "naïve café",
+        "Español",
+        "Müller-Öztürk",
+        "Françoise",
+        "",
+        None,
+    ]
+    if narrow:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, ctype=mssql_python.SQL_CHAR)
+
+    cursor.execute(f"create table {table} (id int primary key, v {sql_type} collate {collation})")
+
+    try:
+        for index, value in enumerate(expected, start=1):
+            cursor.execute(f"insert into {table} (id, v) values (?, ?)", index, value)
+        tbl = cursor.execute(f"select v from {table} order by id").arrow()
+        assert tbl.column(0).type.equals(pa.large_string())
+        for expected_val, actual_val in zip(expected, tbl.column(0).to_pylist(), strict=True):
+            if actual_val is not None:
+                actual_val = actual_val.strip()
+            assert expected_val == actual_val
+    finally:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        cursor.execute(f"drop table if exists {table}")
 
 
 def test_rownumber_arrow_batch_interleaved_fetchmany(cursor: mssql_python.Cursor):

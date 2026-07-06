@@ -215,6 +215,21 @@ endif()
 
 message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
+include(FetchContent)
+message(STATUS "Downloading simdutf v8.2.0 source archive with FetchContent")
+set(simdutf_fetchcontent_args
+    URL https://github.com/simdutf/simdutf/archive/refs/tags/v8.2.0.tar.gz
+    URL_HASH SHA256=033a91b1d7d1cb818c1eff49e61faaa1b64a3a530d59ef9efef0195e56bda8b1
+)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+    list(APPEND simdutf_fetchcontent_args DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+endif()
+FetchContent_Declare(simdutf ${simdutf_fetchcontent_args})
+set(SIMDUTF_TESTS OFF CACHE BOOL "Disable simdutf tests" FORCE)
+set(SIMDUTF_TOOLS OFF CACHE BOOL "Disable simdutf tools" FORCE)
+set(SIMDUTF_BENCHMARKS OFF CACHE BOOL "Disable simdutf benchmarks" FORCE)
+FetchContent_MakeAvailable(simdutf)
+
 set(DDBC_SOURCE "ddbc_bindings.cpp")
 message(STATUS "Using standard source file: ${DDBC_SOURCE}")
 # Include connection module and logger bridge
@@ -292,6 +307,8 @@ else()
         endif()
     endif()
 endif()
+
+target_link_libraries(ddbc_bindings PRIVATE simdutf::simdutf)
 
 # Compiler definitions
 target_compile_definitions(ddbc_bindings PRIVATE 

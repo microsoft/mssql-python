@@ -68,13 +68,11 @@ stages:
           # =========================
           # PYTHON INSTALLATION
           # =========================
-          # UsePythonVersion@0 supports Python 3.10-3.14 on macOS
-          # No need for NuGet download like Windows (3.14 is in Azure Pipelines registry)
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
               addToPath: true
-            displayName: 'Use Python ${{ parameters.pythonVersion }} (Universal2)'
+            displayName: 'Use Python ${{ parameters.pythonVersion }}'
             continueOnError: false
           
           # =========================
@@ -203,6 +201,19 @@ stages:
               python -m pip install --upgrade pip wheel setuptools
               python setup.py bdist_wheel
             displayName: 'Build wheel package'
+          
+          # Retag wheel to universal2 — the .so binary is already universal2 (CMake cross-compiles
+          # both arm64 + x86_64), but bdist_wheel may tag as x86_64 when the Python interpreter
+          # lacks universal2 support (e.g. Python 3.10 from UsePythonVersion@0 is x86_64-only).
+          # Same approach used in mssql-tds Rust pipeline (build-python-wheels-template.yml).
+          - script: |
+              for whl in dist/*.whl; do
+                echo "Retagging: $(basename $whl)"
+                wheel tags --platform-tag macosx_15_0_universal2 --remove "$whl"
+              done
+              echo "Wheels after retag:"
+              ls -lh dist/
+            displayName: 'Ensure universal2 platform tag'
           
           # =========================
           # ARTIFACT PUBLISHING

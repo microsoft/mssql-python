@@ -31,6 +31,45 @@ COVERAGE_MODE=false
 if [[ "${1:-}" == "codecov" || "${1:-}" == "--coverage" ]]; then
     COVERAGE_MODE=true
     echo "[MODE] Enabling Clang coverage instrumentation"
+    
+    # For coverage builds, join multi-line LOG statements to simplify LCOV filtering
+    # Original source is backed up and must be restored by generate_codecov.sh after analysis
+    echo "[ACTION] Preparing source for coverage build (joining LOG statements)"
+    
+    # Save current directory
+    ORIGINAL_DIR=$(pwd)
+    
+    # Create backup using tar to preserve directory structure
+    BACKUP_FILE="${ORIGINAL_DIR}/.source_backup_coverage.tar.gz"
+    echo "[INFO] Creating backup of source files"
+    tar -czf "$BACKUP_FILE" --exclude='build' --exclude='.source_backup*' \
+        $(find . -maxdepth 2 -type f \( -name "*.cpp" -o -name "*.h*" \) -o -type d -name connection) 2>/dev/null || true
+    
+    if [[ ! -f "$BACKUP_FILE" ]]; then
+        echo "[ERROR] Failed to create source backup"
+        exit 1
+    fi
+    
+    # Join LOG statements using the helper script
+    SCRIPT_PATH="${ORIGINAL_DIR}/../../eng/scripts/join_logs_for_coverage.py"
+    if [[ -f "$SCRIPT_PATH" ]]; then
+        python3 "$SCRIPT_PATH" "$ORIGINAL_DIR"
+        if [[ $? -eq 0 ]]; then
+            echo "[SUCCESS] LOG statements joined for coverage build"
+            echo "[INFO] Original source backed up to $BACKUP_FILE"
+            echo "[IMPORTANT] Run 'tar -xzf $BACKUP_FILE' in $(pwd) to restore after coverage analysis"
+        else
+            echo "[ERROR] Failed to join LOG statements"
+            # Restore backup and exit
+            tar -xzf "$BACKUP_FILE" 2>/dev/null
+            rm -f "$BACKUP_FILE"
+            exit 1
+        fi
+    else
+        echo "[WARNING] join_logs_for_coverage.py not found at $SCRIPT_PATH"
+        echo "[WARNING] Continuing with original source (LOG filtering may be incomplete)"
+        rm -f "$BACKUP_FILE"  # No need for backup if not joining
+    fi
 fi
 
 # Get Python version from active interpreter
@@ -142,7 +181,7 @@ fi
 
 # TODO: Linux-specific: use patchelf to set RPATH of the driver .so file
 # Currently added Driver SO files right now are already patched
-# patchelf --set-rpath '$ORIGIN' libmsodbcsql-18.5.so.1.1
+# patchelf --set-rpath '$ORIGIN' libmsodbcsql-18.6.so.2.1
 # This command sets the RPATH of the specified .so file to the directory containing the file (similar to Windows)
 # Needed since libodbcinst.so.2 is located in the same directory and needs to be resolved
 

@@ -38,6 +38,9 @@ zypper install -y libltdl7 libkrb5-3 libgssapi-krb5-2
 # For SUSE/openSUSE
 zypper install -y libltdl7
 
+# For Azure Linux
+tdnf distro-sync && tdnf install -y libtool-ltdl krb5-libs glibc-iconv
+
 pip install mssql-python
 ```
 

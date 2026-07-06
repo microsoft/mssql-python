@@ -5,10 +5,16 @@
 
 import pytest
 
-# Skip the entire module when mssql_py_core can't be loaded at runtime
-# (e.g. manylinux_2_28 build containers where glibc is too old for the .so).
+# Skip the entire module when mssql_py_core can't be loaded (e.g. it's not
+# installed, or its native extension fails to load in some build containers).
+# exc_type=ImportError is required because pytest 9.1 changed importorskip's
+# default to only skip on ModuleNotFoundError, so a module that is found but
+# fails to import its native extension would otherwise be raised as a collection
+# error instead of being skipped. The skip reason is left to pytest so it
+# reports the actual underlying import error.
 mssql_py_core = pytest.importorskip(
-    "mssql_py_core", reason="mssql_py_core not loadable (glibc too old?)"
+    "mssql_py_core",
+    exc_type=ImportError,
 )
 
 
@@ -99,9 +105,6 @@ def test_bulkcopy_without_database_parameter(conn_str):
     parser = _ConnectionStringParser(validate_keywords=False)
     params = parser._parse(conn_str)
 
-    # Save the original database name to use it explicitly in our operations
-    original_database = params.get("database")
-
     # Remove DATABASE parameter if present (case-insensitive, handles all synonyms)
     params.pop("database", None)
 
@@ -119,15 +122,32 @@ def test_bulkcopy_without_database_parameter(conn_str):
         current_db = cursor.fetchone()[0]
         assert current_db is not None, "Should be connected to a database"
 
-        # If original database was specified, switch to it to ensure we have permissions
-        if original_database:
-            cursor.execute(f"USE [{original_database}]")
+        # Skip on Azure SQL Database (EngineEdition 5): bulkcopy internally
+        # opens a second connection via mssql_py_core using the stored
+        # connection string.  Without a DATABASE keyword that second
+        # connection cannot resolve the target table on Azure SQL.
+        cursor.execute("SELECT CAST(SERVERPROPERTY('EngineEdition') AS INT)")
+        engine_edition = cursor.fetchone()[0]
+        if engine_edition == 5:
+            pytest.skip(
+                "bulkcopy uses a separate internal connection; without "
+                "DATABASE in the connection string it cannot resolve "
+                "table metadata on Azure SQL"
+            )
 
-        # Create test table in the current database
+        # Use unqualified table names — the table is created in whatever
+        # database we connected to.  Three-part names ([db].[schema].[table])
+        # are NOT supported on Azure SQL, and the default database (often
+        # master) may deny CREATE TABLE on other CI environments, so we
+        # skip gracefully when the current database doesn't allow DDL.
         table_name = "mssql_python_bulkcopy_no_db_test"
-        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
-        cursor.execute(f"CREATE TABLE {table_name} (id INT, name VARCHAR(50), value FLOAT)")
-        conn.commit()
+
+        try:
+            cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+            cursor.execute(f"CREATE TABLE {table_name} (id INT, name VARCHAR(50), value FLOAT)")
+            conn.commit()
+        except Exception as e:
+            pytest.skip(f"Cannot create table in default database '{current_db}': {e}")
 
         # Prepare test data
         data = [
@@ -137,12 +157,7 @@ def test_bulkcopy_without_database_parameter(conn_str):
         ]
 
         # Perform bulkcopy - this should NOT raise ValueError about missing DATABASE
-        # Note: bulkcopy creates its own connection, so we need to use fully qualified table name
-        # if we had a database in the original connection string
-        bulkcopy_table_name = (
-            f"[{original_database}].[dbo].{table_name}" if original_database else table_name
-        )
-        result = cursor.bulkcopy(bulkcopy_table_name, data, timeout=60)
+        result = cursor.bulkcopy(table_name, data, timeout=60)
 
         # Verify result
         assert result is not None
@@ -296,3 +311,146 @@ def test_bulkcopy_with_server_synonyms(conn_str):
         cursor.close()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------
+# GH-482: Regression tests for bulkcopy Row acceptance
+# ---------------------------------------------------------
+
+
+def test_bulkcopy_fetchmany_row_objects(cursor):
+    """Regression test: fetchmany() Row objects piped directly into bulkcopy (GH-482).
+
+    This is the primary use case from the customer report — table-to-table
+    copy where fetchmany returns Row objects that bulkcopy must accept.
+    """
+    source_table = "mssql_python_bcp_row_src"
+    target_table = "mssql_python_bcp_row_tgt"
+
+    try:
+        # Setup source table with data
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"CREATE TABLE {source_table} (id INT, name NVARCHAR(50), val FLOAT)")
+        cursor.connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {source_table} VALUES (?, ?, ?)",
+            [(1, "Alice", 10.5), (2, "Bob", 20.75), (3, "Charlie", 30.25)],
+        )
+        cursor.connection.commit()
+
+        # Setup empty target table
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.execute(f"CREATE TABLE {target_table} (id INT, name NVARCHAR(50), val FLOAT)")
+        cursor.connection.commit()
+
+        # Fetch Row objects from source
+        cursor.execute(f"SELECT id, name, val FROM {source_table} ORDER BY id")
+        rows = cursor.fetchmany(100)  # Returns list[Row]
+        assert len(rows) == 3
+
+        # Pipe Row objects directly into bulkcopy — this is the GH-482 fix
+        result = cursor.bulkcopy(target_table, rows, timeout=60)
+        assert result["rows_copied"] == 3
+
+        # Verify data landed correctly
+        cursor.execute(f"SELECT id, name, val FROM {target_table} ORDER BY id")
+        target_rows = cursor.fetchall()
+        assert len(target_rows) == 3
+        assert target_rows[0][0] == 1 and target_rows[0][1] == "Alice"
+        assert target_rows[1][0] == 2 and target_rows[1][1] == "Bob"
+        assert target_rows[2][0] == 3 and target_rows[2][1] == "Charlie"
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_fetchall_row_objects(cursor):
+    """Regression test: fetchall() Row objects piped directly into bulkcopy (GH-482)."""
+    source_table = "mssql_python_bcp_fetchall_src"
+    target_table = "mssql_python_bcp_fetchall_tgt"
+
+    try:
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"CREATE TABLE {source_table} (id INT, txt VARCHAR(20))")
+        cursor.connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {source_table} VALUES (?, ?)",
+            [(1, "row1"), (2, "row2")],
+        )
+        cursor.connection.commit()
+
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.execute(f"CREATE TABLE {target_table} (id INT, txt VARCHAR(20))")
+        cursor.connection.commit()
+
+        # fetchall returns list[Row]
+        cursor.execute(f"SELECT id, txt FROM {source_table} ORDER BY id")
+        rows = cursor.fetchall()
+
+        result = cursor.bulkcopy(target_table, rows, timeout=60)
+        assert result["rows_copied"] == 2
+
+        cursor.execute(f"SELECT id, txt FROM {target_table} ORDER BY id")
+        target_rows = cursor.fetchall()
+        assert len(target_rows) == 2
+        assert target_rows[0][1] == "row1"
+        assert target_rows[1][1] == "row2"
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_rejects_list_rows(cursor):
+    """Regression test: list rows are rejected since Rust only accepts PyTuple (GH-482)."""
+    table_name = "mssql_python_bcp_list_reject"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT)")
+        cursor.connection.commit()
+
+        # list rows should raise TypeError — Rust rejects PyList
+        with pytest.raises(TypeError, match="tuples or Row objects"):
+            cursor.bulkcopy(table_name, [[1], [2], [3]], timeout=60)
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_tuple_passthrough(cursor):
+    """Regression test: tuple rows still work as before (GH-482 doesn't break existing)."""
+    table_name = "mssql_python_bcp_tuple_pass"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name VARCHAR(20))")
+        cursor.connection.commit()
+
+        data = [(1, "Alice"), (2, "Bob")]
+        result = cursor.bulkcopy(table_name, data, timeout=60)
+        assert result["rows_copied"] == 2
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_empty_iterator(cursor):
+    """Regression test: empty iterator doesn't crash (GH-482)."""
+    table_name = "mssql_python_bcp_empty"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT)")
+        cursor.connection.commit()
+
+        result = cursor.bulkcopy(table_name, [], timeout=60)
+        assert result["rows_copied"] == 0
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()

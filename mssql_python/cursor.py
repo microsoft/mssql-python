@@ -12,10 +12,11 @@ Resource Management:
 # pylint: disable=too-many-lines  # Large file due to comprehensive DB-API 2.0 implementation
 
 import decimal
+import logging
 import uuid
 import datetime
 import warnings
-from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
+from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
 from mssql_python.logging import logger
@@ -141,16 +142,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             False
         ]  # Indicates if last_executed_stmt was prepared by ddbc shim.
         # Is a list instead of a bool coz bools in Python are immutable.
-
-        # Initialize attributes that may be defined later to avoid pylint warnings
-        # Note: _original_fetch* methods are not initialized here as they need to be
-        # conditionally set based on hasattr() checks
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
 
         self._rownumber = -1  # DB-API extension: last returned row index, -1 before first
 
+        # Column-name -> index map for the current result set. For catalog/metadata
+        # result sets this also carries lowercase and friendly aliases (see
+        # _prepare_metadata_result_set).
         self._cached_column_map = None
+        self._cached_column_map_lower = None
         self._cached_converter_map = None
         self._uuid_str_indices = None  # Pre-computed UUID column indices for str conversion
         # Cache the effective native_uuid setting for this cursor's connection.
@@ -161,7 +162,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._skip_increment_for_next_fetch = (
             False  # Track if we need to skip incrementing the row index
         )
-        self.messages = []  # Store diagnostic messages
+        self.messages: List[Tuple[str, str]] = []  # Store diagnostic messages
 
     def _is_unicode_string(self, param: str) -> bool:
         """
@@ -412,6 +413,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         logger.debug("_map_sql_type: Mapping param index=%d, type=%s", i, type(param).__name__)
         if param is None:
             logger.debug("_map_sql_type: NULL parameter - index=%d", i)
+            # GH-610: Send SQL_UNKNOWN_TYPE to C++ where the describe-cache
+            # in BindParameters / BindParameterArray resolves the correct
+            # type via SQLDescribeParam (cached after first call).
             return (
                 ddbc_sql_const.SQL_UNKNOWN_TYPE.value,
                 ddbc_sql_const.SQL_C_DEFAULT.value,
@@ -748,6 +752,24 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Reinitialize the statement handle
         self._initialize_cursor()
+        self.is_stmt_prepared = [False]
+
+    def _soft_reset_cursor(self) -> None:
+        """Lightweight reset: close cursor and unbind params without freeing the HSTMT.
+
+        Preserves the prepared statement plan on the server so repeated
+        executions of the same SQL skip SQLPrepare entirely.
+        """
+        if self.hstmt:
+            ret = ddbc_bindings.DDBCSQLResetStmt(self.hstmt)
+            try:
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+            except Exception:
+                logger.warning("_soft_reset_cursor failed; falling back to full reset")
+                self._reset_cursor()
+                self.last_executed_stmt = ""
+                return
+        self._clear_rownumber()
 
     def close(self) -> None:
         """
@@ -792,6 +814,25 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 ddbc_error="",
             )
 
+    def _capture_diagnostics(self, ret: int) -> None:
+        """Append diagnostic messages to self.messages when the return code
+        indicates records may be present.
+
+        Captures on SQL_SUCCESS_WITH_INFO (info/warning messages) and
+        SQL_NO_DATA (trailing diagnostics attached by SQLMoreResults,
+        e.g. a PRINT after the final result set).
+
+        Skips SQL_SUCCESS to avoid the ~10 ms overhead of scanning the
+        driver's internal state when no records exist.  SQL_ERROR is
+        handled separately by check_error() which extracts diagnostics
+        and raises.
+        """
+        if self.hstmt and ret in (
+            ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value,
+            ddbc_sql_const.SQL_NO_DATA.value,
+        ):
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+
     def _ensure_pyarrow(self) -> Any:
         """
         Import and return pyarrow or raise ImportError accordingly.
@@ -817,6 +858,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # specify that parameters are for NVARCHAR(50) and DECIMAL(18,4) columns
         cursor.setinputsizes([(SQL_WVARCHAR, 50, 0), (SQL_DECIMAL, 18, 4)])
         cursor.executemany(sql, params)
+
+        Note:
+            When inserting NULL into BINARY/VARBINARY columns in temp tables (#table)
+            or table variables, SQLDescribeParam cannot resolve the column type and
+            falls back to SQL_VARCHAR. This causes an implicit conversion error from
+            SQL Server. Use setinputsizes to explicitly specify types for ALL
+            parameters::
+
+                from mssql_python.constants import ConstantsDDBC
+                cursor.setinputsizes([
+                    (ConstantsDDBC.SQL_INTEGER.value, 0, 0),
+                    (ConstantsDDBC.SQL_VARBINARY.value, 100, 0)
+                ])
+                cursor.execute("INSERT INTO #t (id, data) VALUES (?, ?)", [1, None])
 
         Args:
             sizes: A sequence of tuples, one for each parameter. Each tuple contains
@@ -949,6 +1004,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             else:
                 # For non-NULL parameters, determine the appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
+
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503).
+                # The generic mapping returns SQL_C_NUMERIC which requires NumericData
+                # structs, but setinputsizes declares fixed precision/scale that may
+                # differ from per-value precision, causing misinterpretation. String
+                # binding lets ODBC convert using the declared columnSize/decimalDigits.
+                if sql_type in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    c_type = ddbc_sql_const.SQL_C_CHAR.value
+                    if isinstance(parameter, decimal.Decimal):
+                        parameters_list[i] = format(parameter, "f")
+                        parameter = parameters_list[i]
 
                 # Check if this should be a DAE (data at execution) parameter
                 # For string types with large column sizes
@@ -1092,6 +1161,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Build column map locally first, then assign to cache
             column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             self._cached_column_map = column_map
+            self._cached_column_map_lower = (
+                {k.lower(): v for k, v in column_map.items()} if get_settings().lowercase else None
+            )
 
         # Fallback to legacy column name map if no cached map
         column_map = column_map or getattr(self, "_column_name_map", None)
@@ -1099,7 +1171,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Get cached converter map
         converter_map = getattr(self, "_cached_converter_map", None)
 
-        return column_map, converter_map
+        return column_map, converter_map, self._cached_column_map_lower
 
     def _map_data_type(self, sql_type):
         """
@@ -1338,20 +1410,22 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Log the actual query being executed
         logger.debug("Executing query: %s", operation)
 
-        # Restore original fetch methods if they exist
-        if hasattr(self, "_original_fetchone"):
-            logger.debug("execute: Restoring original fetch methods")
-            self.fetchone = self._original_fetchone
-            self.fetchmany = self._original_fetchmany
-            self.fetchall = self._original_fetchall
-            del self._original_fetchone
-            del self._original_fetchmany
-            del self._original_fetchall
-
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
-            logger.debug("execute: Resetting cursor state")
-            self._reset_cursor()
+            if self.hstmt:
+                self._soft_reset_cursor()
+            else:
+                self._reset_cursor()
+        else:
+            # Close just the ODBC cursor (not the statement handle) so the
+            # prepared plan can be reused.  SQLFreeStmt(SQL_CLOSE) releases
+            # the cursor associated with hstmt without destroying the
+            # prepared statement, which is the standard ODBC pattern for
+            # re-executing a prepared query.
+            if self.hstmt:
+                logger.debug("execute: Closing cursor for re-execution (reset_cursor=False)")
+                self.hstmt._close_cursor()
+                self._clear_rownumber()
 
         # Clear any previous messages
         self.messages = []
@@ -1387,22 +1461,38 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # Check if single parameter is a nested container that should be unwrapped
                 # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
                 if isinstance(parameters, tuple) and len(parameters) == 1:
-                    # Could be either (value,) for single param or ((tuple),) for nested
-                    # Check if it's a nested container
                     if isinstance(parameters[0], (tuple, list, dict)):
                         actual_params = parameters[0]
+                    elif isinstance(parameters[0], Row):
+                        # A Row (e.g. from fetchone()) is a sequence of column values.
+                        # Normalize it to a tuple so the downstream binding logic, which
+                        # only handles tuple/list/dict, can unwrap it into individual
+                        # parameters instead of treating the whole Row as one value.
+                        actual_params = tuple(parameters[0])
                     else:
                         actual_params = parameters
+
+                    # Convert parameters based on detected style
+                    operation, converted_params = detect_and_convert_parameters(
+                        operation, actual_params
+                    )
+
+                    # Convert back to list format expected by the binding code
+                    parameters = list(converted_params)
                 else:
                     actual_params = parameters
 
-                # Convert parameters based on detected style
-                operation, converted_params = detect_and_convert_parameters(
-                    operation, actual_params
-                )
-
-                # Convert back to list format expected by the binding code
-                parameters = list(converted_params)
+                    # Skip detect_and_convert_parameters when re-executing the same SQL —
+                    # the parameter style (qmark vs pyformat) won't change between calls.
+                    if operation == self.last_executed_stmt and isinstance(
+                        actual_params, (tuple, list)
+                    ):
+                        parameters = list(actual_params)
+                    else:
+                        operation, converted_params = detect_and_convert_parameters(
+                            operation, actual_params
+                        )
+                        parameters = list(converted_params)
             else:
                 parameters = []
 
@@ -1431,27 +1521,28 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
                     parameters_type.append(paraminfo)
 
-        # TODO: Use a more sophisticated string compare that handles redundant spaces etc.
-        #       Also consider storing last query's hash instead of full query string. This will help
-        #       in low-memory conditions
-        #       (Ex: huge number of parallel queries with huge query string sizes)
-        if operation != self.last_executed_stmt:
-            # Executing a new statement. Reset is_stmt_prepared to false
+        # Prepare caching: skip SQLPrepare when re-executing the same SQL
+        # with parameters. The HSTMT is reused via _soft_reset_cursor, so the
+        # server-side plan from the previous SQLPrepare is still valid.
+        same_sql = parameters and operation == self.last_executed_stmt and self.is_stmt_prepared[0]
+        if not same_sql:
             self.is_stmt_prepared = [False]
+        effective_use_prepare = use_prepare and not same_sql
 
-        for i, param in enumerate(parameters):
-            logger.debug(
-                """Parameter number: %s, Parameter: %s,
-                Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                i + 1,
-                param,
-                str(type(param)),
-                parameters_type[i].paramSQLType,
-                parameters_type[i].paramCType,
-                parameters_type[i].columnSize,
-                parameters_type[i].decimalDigits,
-                parameters_type[i].inputOutputType,
-            )
+        if logger.isEnabledFor(logging.DEBUG):
+            for i, param in enumerate(parameters):
+                logger.debug(
+                    """Parameter number: %s, Parameter: %s,
+                    Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                    i + 1,
+                    param,
+                    str(type(param)),
+                    parameters_type[i].paramSQLType,
+                    parameters_type[i].paramCType,
+                    parameters_type[i].columnSize,
+                    parameters_type[i].decimalDigits,
+                    parameters_type[i].inputOutputType,
+                )
 
         with perf_phase("py::execute::cpp_call"):
             ret = ddbc_bindings.DDBCSQLExecute(
@@ -1460,7 +1551,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 parameters,
                 parameters_type,
                 self.is_stmt_prepared,
-                use_prepare,
+                effective_use_prepare,
                 encoding_settings,
             )
         # Check return code
@@ -1475,8 +1566,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
         with perf_phase("py::execute::diag_records"):
-            if self.hstmt:
-                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            self._capture_diagnostics(ret)
 
         self.last_executed_stmt = operation
 
@@ -1503,12 +1593,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._cached_column_map = {
                 col_desc[0]: i for i, col_desc in enumerate(self.description)
             }
+            self._cached_column_map_lower = (
+                {k.lower(): v for k, v in self._cached_column_map.items()}
+                if get_settings().lowercase
+                else None
+            )
             self._cached_converter_map = self._build_converter_map()
             self._uuid_str_indices = self._compute_uuid_str_indices()
         else:
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
             self._cached_column_map = None
+            self._cached_column_map_lower = None
             self._cached_converter_map = None
             self._uuid_str_indices = None
 
@@ -1523,8 +1619,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Prepares a metadata result set by:
         1. Retrieving column metadata if not provided
         2. Initializing the description attribute
-        3. Setting up column name mappings
-        4. Creating wrapper fetch methods with column mapping support
+        3. Setting up column name mappings (including any specialized aliases)
+           so the standard fetch methods return rows keyed by catalog columns
 
         Args:
             column_metadata (list, optional): Pre-fetched column metadata.
@@ -1557,94 +1653,45 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self.description and fallback_description:
             self.description = fallback_description
 
-        # Define column names in ODBC standard order
-        self._column_map = {}  # pylint: disable=attribute-defined-outside-init
-        for i, (name, *_) in enumerate(self.description):
-            # Add standard name
-            self._column_map[name] = i
-            # Add lowercase alias
-            self._column_map[name.lower()] = i
+        # Build the column-name -> index map for this metadata result set.
+        # Both the exact name and its lowercase alias are stored so that rows
+        # support case-insensitive lookup regardless of the global ``lowercase``
+        # setting (catalog column names are well-known and case-stable).
+        # ``self.description`` is None when DDBCSQLDescribeCol failed above and no
+        # fallback_description was supplied (e.g. getTypeInfo()); guard with ``or ()``
+        # so the cursor simply yields no rows instead of raising TypeError here.
+        column_map = {}
+        for i, (name, *_) in enumerate(self.description or ()):
+            column_map[name] = i
+            column_map[name.lower()] = i
 
-        # If specialized mapping is provided, handle it differently
+        # Some catalog helpers expose additional friendly aliases (e.g. ODBC 2.x
+        # vs 3.x column names) via a specialized mapping. Merge them in so they
+        # resolve to the same column indices.
         if specialized_mapping:
-            # Define specialized fetch methods that use the custom mapping
-            def fetchone_with_specialized_mapping():
-                row = self._original_fetchone()
-                if row is not None:
-                    merged_map = getattr(row, "_column_map", {}).copy()
-                    merged_map.update(specialized_mapping)
-                    row._column_map = merged_map
-                return row
+            column_map.update(specialized_mapping)
 
-            def fetchmany_with_specialized_mapping(size=None):
-                rows = self._original_fetchmany(size)
-                for row in rows:
-                    merged_map = getattr(row, "_column_map", {}).copy()
-                    merged_map.update(specialized_mapping)
-                    row._column_map = merged_map
-                return rows
+        # Route the map through the shared fetch path. The standard fetchone/
+        # fetchmany/fetchall methods read these cached maps when constructing Row
+        # objects, so metadata rows pick up the catalog column names without any
+        # per-call method reassignment (the previous approach broke static type
+        # checking - see GH #620).
+        self._cached_column_map = column_map
+        # Mirror execute(): when ``lowercase`` is enabled the description names are
+        # already lowercased, so build the lowercase lookup map (including any
+        # specialized aliases) to keep case-insensitive access working for catalog
+        # rows (e.g. row.TABLE_NAME when lowercase=True).
+        self._cached_column_map_lower = (
+            {k.lower(): v for k, v in column_map.items()} if get_settings().lowercase else None
+        )
 
-            def fetchall_with_specialized_mapping():
-                rows = self._original_fetchall()
-                for row in rows:
-                    merged_map = getattr(row, "_column_map", {}).copy()
-                    merged_map.update(specialized_mapping)
-                    row._column_map = merged_map
-                return rows
+        # Initialize rownumber tracking so fetchone() and iteration work
+        self._reset_rownumber()
 
-            # Save original fetch methods
-            if not hasattr(self, "_original_fetchone"):
-                self._original_fetchone = (
-                    self.fetchone
-                )  # pylint: disable=attribute-defined-outside-init
-                self._original_fetchmany = (
-                    self.fetchmany
-                )  # pylint: disable=attribute-defined-outside-init
-                self._original_fetchall = (
-                    self.fetchall
-                )  # pylint: disable=attribute-defined-outside-init
-
-            # Use specialized mapping methods
-            self.fetchone = fetchone_with_specialized_mapping
-            self.fetchmany = fetchmany_with_specialized_mapping
-            self.fetchall = fetchall_with_specialized_mapping
-        else:
-            # Standard column mapping
-            # Remember original fetch methods (store only once)
-            if not hasattr(self, "_original_fetchone"):
-                self._original_fetchone = (
-                    self.fetchone
-                )  # pylint: disable=attribute-defined-outside-init
-                self._original_fetchmany = (
-                    self.fetchmany
-                )  # pylint: disable=attribute-defined-outside-init
-                self._original_fetchall = (
-                    self.fetchall
-                )  # pylint: disable=attribute-defined-outside-init
-
-                # Create wrapper fetch methods that add column mappings
-                def fetchone_with_mapping():
-                    row = self._original_fetchone()
-                    if row is not None:
-                        row._column_map = self._column_map
-                    return row
-
-                def fetchmany_with_mapping(size=None):
-                    rows = self._original_fetchmany(size)
-                    for row in rows:
-                        row._column_map = self._column_map
-                    return rows
-
-                def fetchall_with_mapping():
-                    rows = self._original_fetchall()
-                    for row in rows:
-                        row._column_map = self._column_map
-                    return rows
-
-                # Replace fetch methods
-                self.fetchone = fetchone_with_mapping
-                self.fetchmany = fetchmany_with_mapping
-                self.fetchall = fetchall_with_mapping
+        # Metadata methods produce a new result set, so rowcount is unknown
+        # until rows are fetched. Reset it to avoid exposing a stale value
+        # from a previous statement.
+        self.rowcount = -1
 
         # Return the cursor itself for method chaining
         return self
@@ -1961,7 +2008,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
-    def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> tuple[list, int]:
+    def _transpose_rowwise_to_columnwise(
+        self,
+        seq_of_parameters: Sequence[Sequence[Any]],
+    ) -> tuple[list, int]:
         """
         Convert sequence of rows (row-wise) into list of columns (column-wise),
         for array binding via ODBC. Works with both iterables and generators.
@@ -2002,19 +2052,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             sample_value: Representative value for type inference and modified_row.
             min_val: Minimum for integers (None otherwise).
             max_val: Maximum for integers (None otherwise).
+            max_decimal_formatted_len: Maximum len(format(d, 'f')) across all
+                Decimal values in the column (0 when no Decimals are present).
+                Used by executemany to correct the SQL_VARCHAR column size when
+                the sample value's formatted string is shorter than another
+                value's (e.g. positive sample vs negative row value) (GH-557).
         """
         non_nulls = [v for v in column if v is not None]
         if not non_nulls:
-            return None, None, None
+            return None, None, None, 0
 
         int_values = [v for v in non_nulls if isinstance(v, int)]
         if int_values:
             min_val, max_val = min(int_values), max(int_values)
             sample_value = max(int_values, key=abs)
-            return sample_value, min_val, max_val
+            return sample_value, min_val, max_val, 0
 
         sample_value = None
+        max_decimal_formatted_len = 0
         for v in non_nulls:
+            if isinstance(v, decimal.Decimal):
+                max_decimal_formatted_len = max(max_decimal_formatted_len, len(format(v, "f")))
             if not sample_value:
                 sample_value = v
             elif isinstance(v, (str, bytes, bytearray)) and isinstance(
@@ -2068,10 +2126,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # If comparing Decimal to non-Decimal, prefer Decimal for better type inference
                 sample_value = v
 
-        return sample_value, None, None
+        return sample_value, None, None, max_decimal_formatted_len
 
     def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-        self, operation: str, seq_of_parameters: List[Sequence[Any]]
+        self,
+        operation: str,
+        seq_of_parameters: Union[Sequence[Sequence[Any]], Sequence[Mapping[str, Any]]],
     ) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
@@ -2174,7 +2234,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if hasattr(seq_of_parameters, "__getitem__")
                 else []
             )
-            sample_value, min_val, max_val = self._compute_column_type(column)
+            sample_value, min_val, max_val, _ = self._compute_column_type(column)
 
             if self._inputsizes and col_index < len(self._inputsizes):
                 # Use explicitly set input sizes
@@ -2185,6 +2245,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
                 # Determine appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
+
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
+                if sql_type in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    c_type = ddbc_sql_const.SQL_C_CHAR.value
 
                 # Check if this should be a DAE (data at execution) parameter based on column size
                 if sample_value is not None:
@@ -2243,7 +2310,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     if hasattr(seq_of_parameters, "__getitem__")
                     else []
                 )
-                sample_value, min_val, max_val = self._compute_column_type(column)
+                sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(column)
 
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
@@ -2255,14 +2322,35 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     max_val=max_val,
                 )
 
-                # For executemany with all-NULL columns, SQL_UNKNOWN_TYPE doesn't work
-                # with array binding. Fall back to SQL_VARCHAR as a safe default.
-                if (
-                    sample_value is None
-                    and paraminfo.paramSQLType == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
+                # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
+                # where BindParameterArray resolves the correct type via the
+                # SQLDescribeParam cache.  The previous SQL_VARCHAR hardcoded
+                # fallback was removed because it broke VARBINARY columns.
+
+                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding.
+                # _map_sql_type may return SQL_C_NUMERIC (expecting NumericData structs)
+                # but the conversion loop below converts all Decimal values to strings.
+                # The C type must match the actual data to avoid:
+                #   RuntimeError: Parameter's object type does not match parameter's C type
+                if paraminfo.paramSQLType in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
                 ):
-                    paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
-                    paraminfo.columnSize = 1
+                    paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
+                    # Ensure columnSize accommodates the longest string representation
+                    if max_decimal_len > paraminfo.columnSize:
+                        paraminfo.columnSize = max_decimal_len
+
+                # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
+                # The sample value's formatted string may be shorter than another
+                # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
+                # max_decimal_len was already computed during _compute_column_type
+                # so no extra iteration is needed.
+                if (
+                    paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
+                    and max_decimal_len > paraminfo.columnSize
+                ):
+                    paraminfo.columnSize = max_decimal_len
 
                 # Special handling for binary data in auto-detected types
                 if paraminfo.paramSQLType in (
@@ -2316,17 +2404,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
                 ):
                     processed_row[i] = format(val, "f")
-                # Existing numeric conversion
+                # Convert all values to string for DECIMAL/NUMERIC columns (GH-503)
                 elif parameters_type[i].paramSQLType in (
                     ddbc_sql_const.SQL_DECIMAL.value,
                     ddbc_sql_const.SQL_NUMERIC.value,
-                ) and not isinstance(val, decimal.Decimal):
-                    try:
-                        processed_row[i] = decimal.Decimal(str(val))
-                    except Exception as e:  # pylint: disable=broad-exception-caught
-                        raise ValueError(
-                            f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
-                        ) from e
+                ):
+                    if isinstance(val, decimal.Decimal):
+                        processed_row[i] = format(val, "f")
+                    else:
+                        try:
+                            processed_row[i] = format(decimal.Decimal(str(val)), "f")
+                        except Exception as e:  # pylint: disable=broad-exception-caught
+                            raise ValueError(
+                                f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
+                            ) from e
             processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
@@ -2382,12 +2473,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._cached_column_map = {
                     col_desc[0]: i for i, col_desc in enumerate(self.description)
                 }
+                self._cached_column_map_lower = (
+                    {k.lower(): v for k, v in self._cached_column_map.items()}
+                    if get_settings().lowercase
+                    else None
+                )
                 self._cached_converter_map = self._build_converter_map()
                 self._uuid_str_indices = self._compute_uuid_str_indices()
             else:
                 self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
                 self._clear_rownumber()
                 self._cached_column_map = None
+                self._cached_column_map_lower = None
                 self._cached_converter_map = None
                 self._uuid_str_indices = None
         finally:
@@ -2413,8 +2510,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 ret = ddbc_bindings.DDBCSQLFetchOne(
                     self.hstmt,
                     row_data,
-                    char_decoding.get("encoding", "utf-8"),
+                    char_decoding.get("encoding", "utf-16le"),
                     wchar_decoding.get("encoding", "utf-16le"),
+                    char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
                 )
 
             with perf_phase("py::fetchone::diag_records"):
@@ -2438,7 +2536,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
             with perf_phase("py::fetchone::row_wrap"):
                 return Row(
                     row_data,
@@ -2446,6 +2544,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     cursor=self,
                     converter_map=converter_map,
                     uuid_str_indices=self._uuid_str_indices,
+                    column_map_lower=column_map_lower,
                 )
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
@@ -2482,8 +2581,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self.hstmt,
                     rows_data,
                     size,
-                    char_decoding.get("encoding", "utf-8"),
+                    char_decoding.get("encoding", "utf-16le"),
                     wchar_decoding.get("encoding", "utf-16le"),
+                    char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
                 )
 
             with perf_phase("py::fetchmany::diag_records"):
@@ -2503,7 +2603,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
@@ -2515,6 +2615,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         cursor=self,
                         converter_map=converter_map,
                         uuid_str_indices=uuid_idx,
+                        column_map_lower=column_map_lower,
                     )
                     for row_data in rows_data
                 ]
@@ -2543,8 +2644,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 ret = ddbc_bindings.DDBCSQLFetchAll(
                     self.hstmt,
                     rows_data,
-                    char_decoding.get("encoding", "utf-8"),
+                    char_decoding.get("encoding", "utf-16le"),
                     wchar_decoding.get("encoding", "utf-16le"),
+                    char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
                 )
 
             # Check for errors
@@ -2566,7 +2668,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = self._next_row_index
 
             # Get column and converter maps
-            column_map, converter_map = self._get_column_and_converter_maps()
+            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
@@ -2578,6 +2680,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         cursor=self,
                         converter_map=converter_map,
                         uuid_str_indices=uuid_idx,
+                        column_map_lower=column_map_lower,
                     )
                     for row_data in rows_data
                 ]
@@ -2603,7 +2706,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._reset_rownumber()
 
         capsules = []
-        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, max(batch_size, 0))
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        char_c_type = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(
+            self.hstmt, capsules, max(batch_size, 0), char_c_type
+        )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
@@ -2673,12 +2780,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         return pyarrow.RecordBatchReader.from_batches(schema, batch_generator())
 
-    def nextset(self) -> Union[bool, None]:
+    def nextset(self) -> Optional[bool]:
         """
         Skip to the next available result set.
 
         Returns:
-            True if there is another result set, None otherwise.
+            True if there is another result set, False otherwise.
+            Note: PEP 249 specifies True/None; we return True/False
+            for backward compatibility with existing callers and pyodbc
+            parity. The signature is Optional[bool] to keep the door
+            open for a future migration to True/None semantics.
 
         Raises:
             Error: If the previous call to execute did not produce any result set.
@@ -2691,12 +2802,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Clear cached column and converter maps for the new result set
         self._cached_column_map = None
+        self._cached_column_map_lower = None
         self._cached_converter_map = None
         self._uuid_str_indices = None
 
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+        # Capture diagnostic messages (e.g. PRINT output) — handles both
+        # SQL_SUCCESS_WITH_INFO and SQL_NO_DATA (trailing PRINT after the
+        # final result set).  Without this, messages from subsequent result
+        # sets are silently lost (GH-612).
+        self._capture_diagnostics(ret)
 
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             logger.debug("nextset: No more result sets available")
@@ -2717,6 +2835,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._cached_column_map = {
                     col_desc[0]: i for i, col_desc in enumerate(self.description)
                 }
+                self._cached_column_map_lower = (
+                    {k.lower(): v for k, v in self._cached_column_map.items()}
+                    if get_settings().lowercase
+                    else None
+                )
                 self._cached_converter_map = self._build_converter_map()
                 self._uuid_str_indices = self._compute_uuid_str_indices()
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -2733,7 +2856,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     def bulkcopy(
         self,
         table_name: str,
-        data: Iterable[Union[Tuple, List]],
+        data: Iterable[Union[Tuple, "Row"]],
         batch_size: int = 0,
         timeout: int = 30,
         column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
@@ -2751,11 +2874,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             table_name: Target table name (can include schema, e.g., 'dbo.MyTable').
                 The table must exist and the user must have INSERT permissions.
 
-            data: Iterable of tuples or lists containing row data to be inserted.
+            data: Iterable of tuples or Row objects containing row data to be inserted.
+                Row objects from fetchone/fetchmany/fetchall are automatically
+                converted to tuples. Lists and other types are not accepted.
 
                 Data Format Requirements:
                 - Each element in the iterable represents one row
-                - Each row should be a tuple or list of column values
+                - Each row should be a tuple or Row object
                 - Column order must match the target table's column order (by ordinal
                   position), unless column_mappings is specified
                 - The number of values in each row must match the number of columns
@@ -2871,24 +2996,62 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
         if self.connection._auth_type:
             # Fresh token acquisition for mssql-py-core connection
-            from mssql_python.auth import AADAuth
+            from mssql_python.auth import AADAuth, ServicePrincipalAuth
+            from mssql_python.constants import _AuthInternal
 
-            try:
-                raw_token = AADAuth.get_raw_token(self.connection._auth_type)
-            except (RuntimeError, ValueError) as e:
-                raise RuntimeError(
-                    f"Bulk copy failed: unable to acquire Azure AD token "
-                    f"for auth_type '{self.connection._auth_type}': {e}"
-                ) from e
-            pycore_context["access_token"] = raw_token
-            # Token replaces credential fields — py-core's validator rejects
-            # access_token combined with authentication/user_name/password.
-            for key in ("authentication", "user_name", "password"):
-                pycore_context.pop(key, None)
-            logger.debug(
-                "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
-                self.connection._auth_type,
-            )
+            if self.connection._auth_type == _AuthInternal.SERVICE_PRINCIPAL:
+                # Callback-based path: tenant_id is only known from the STS URL
+                # the server returns mid-handshake, so we register a factory
+                # that py-core invokes during FedAuth (workflow 0x02).
+                # Cert-based ServicePrincipal is not supported on this path.
+                client_id = params.get("uid", "")
+                client_secret = params.get("pwd", "")
+                if not client_id or not client_secret:
+                    raise RuntimeError(
+                        "Bulk copy with Authentication=ActiveDirectoryServicePrincipal "
+                        "currently supports client-secret only. "
+                        "Provide UID (client_id) and PWD (client_secret) in the "
+                        "connection string."
+                    )
+                try:
+                    factory = ServicePrincipalAuth.make_token_factory(client_id, client_secret)
+                except (RuntimeError, ValueError) as e:
+                    raise RuntimeError(
+                        f"Bulk copy failed: unable to build ServicePrincipal token factory: {e}"
+                    ) from e
+                pycore_context["entra_id_token_factory"] = factory
+                # Keep authentication/user_name/password in pycore_context —
+                # py-core's auth validator + transformer need them to resolve
+                # the auth method to ActiveDirectoryServicePrincipal before
+                # the factory is dispatched at handshake time.
+                logger.debug("Bulk copy: registered ServicePrincipal token factory")
+            else:
+                # Pre-acquired token path. Used for Default, DeviceCode,
+                # Interactive (non-Windows), MSI (system- or user-assigned),
+                # and any other AD method whose tenant_id is discoverable
+                # client-side via Azure Identity SDK. credential kwargs
+                # (e.g. user-assigned MSI client_id) were captured by
+                # Connection.__init__ before remove_sensitive_params stripped
+                # UID from connection_str. re-parsing here would miss them.
+                try:
+                    raw_token = AADAuth.get_raw_token(
+                        self.connection._auth_type,
+                        self.connection._credential_kwargs,
+                    )
+                except (RuntimeError, ValueError) as e:
+                    raise RuntimeError(
+                        f"Bulk copy failed: unable to acquire Azure AD token "
+                        f"for auth_type '{self.connection._auth_type}': {e}"
+                    ) from e
+                pycore_context["access_token"] = raw_token
+                # Token replaces credential fields — py-core's validator rejects
+                # access_token combined with authentication/user_name/password.
+                for key in ("authentication", "user_name", "password"):
+                    pycore_context.pop(key, None)
+                logger.debug(
+                    "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
+                    self.connection._auth_type,
+                )
 
         pycore_connection = None
         pycore_cursor = None
@@ -2899,11 +3062,35 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
             pycore_cursor = pycore_connection.cursor()
 
+            # Enforce the bulkcopy type contract: only tuple and Row accepted.
+            # Created to support the fetchone/fetchmany/fetchall -> bulkcopy
+            # pipeline where Row objects need conversion to native tuples.
+            # Rust (mssql_py_core) requires PyTuple via cast::<PyTuple>() and
+            # rejects all other types including list. Row objects are converted
+            # using direct _values access (4x faster than __iter__ protocol).
+            # Uses itertools.chain for C-level iteration (avoids Python
+            # generator frame overhead on the tuple passthrough path).
+            def _prepare_row_iterator(iterable):
+                from itertools import chain
+
+                it = iter(iterable)
+                first = next(it, None)
+                if first is None:
+                    return iter(())
+                if isinstance(first, tuple):
+                    return chain((first,), it)
+                if isinstance(first, Row):
+                    return (tuple(item._values) for item in chain((first,), it))
+                raise TypeError(
+                    f"bulkcopy data rows must be tuples or Row objects, "
+                    f"got {type(first).__name__}"
+                )
+
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             result = pycore_cursor.bulkcopy(
                 table_name,
-                iter(data),
+                _prepare_row_iterator(data),
                 batch_size=batch_size,
                 timeout=timeout,
                 column_mappings=column_mappings,
@@ -2938,9 +3125,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise type(e)(str(e)) from None
 
         finally:
-            # Clear sensitive data to minimize memory exposure
+            # Clear sensitive data to minimize memory exposure. The
+            # entra_id_token_factory closure captures client_secret, so drop
+            # our dict reference to it (Rust still holds an Arc until the
+            # connection is dropped, but at least we don't keep an extra ref).
             if pycore_context:
-                for key in ("password", "user_name", "access_token"):
+                for key in (
+                    "password",
+                    "user_name",
+                    "access_token",
+                    "entra_id_token_factory",
+                ):
                     pycore_context.pop(key, None)
             # Clean up bulk copy resources
             for resource in (pycore_cursor, pycore_connection):

@@ -20,10 +20,10 @@ import threading
 import mssql_python
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
-    sanitize_connection_string,
     sanitize_user_input,
     validate_attribute_value,
 )
+from mssql_python.connection_string_parser import sanitize_connection_string
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
@@ -38,12 +38,23 @@ from mssql_python.exceptions import (
     InternalError,
     ProgrammingError,
     NotSupportedError,
+    sqlstate_to_exception,
 )
-from mssql_python.auth import extract_auth_type, process_connection_string
+from mssql_python.auth import (
+    extract_auth_type,
+    process_auth_parameters,
+    remove_sensitive_params,
+    get_auth_token,
+)
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
-from mssql_python.constants import _RESERVED_PARAMETERS
+from mssql_python.constants import (
+    _RESERVED_PARAMETERS,
+    _KEY_AUTHENTICATION,
+    _KEY_UID,
+    _AuthInternal,
+)
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
@@ -56,6 +67,42 @@ INFO_TYPE_STRING_THRESHOLD: int = 10000
 # UTF-16 encoding variants that should use SQL_WCHAR by default
 # Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
 UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
+
+_SQLSTATE_RE = re.compile(r"^SQLSTATE:([A-Z0-9]{0,5}):(.*)", re.DOTALL)
+
+
+def _raise_connection_error(e: RuntimeError) -> None:
+    """Map a RuntimeError from the C++ pybind layer to the correct DB-API 2.0 exception.
+
+    Connection::checkError() throws "SQLSTATE:XXXXX:<odbc_message>" so the SQLSTATE
+    can be mapped via sqlstate_to_exception(), consistent with cursor-level error handling.
+    """
+    error_msg = str(e)
+    match = _SQLSTATE_RE.match(error_msg)
+    if match:
+        sqlstate, ddbc_error = match.group(1), match.group(2)
+        # Handle malformed SQLSTATE prefix (empty or invalid code)
+        if not sqlstate or len(sqlstate) != 5:
+            logger.error("Connection error (malformed SQLSTATE): %s", ddbc_error)
+            raise OperationalError(
+                driver_error="Connection operation failed",
+                ddbc_error=ddbc_error,
+            ) from None
+        exc = sqlstate_to_exception(sqlstate, ddbc_error)
+        if exc is None:
+            logger.error("Unknown SQLSTATE %s, raising DatabaseError", sqlstate)
+            raise DatabaseError(
+                driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
+                ddbc_error=ddbc_error,
+            ) from None
+        logger.error("Connection error (SQLSTATE %s): %s", sqlstate, ddbc_error)
+        raise exc from None
+    # Fallback: no SQLSTATE prefix — e.g. "Connection handle not allocated"
+    logger.error("Connection error: %s", error_msg)
+    raise OperationalError(
+        driver_error="Connection operation failed",
+        ddbc_error=error_msg,
+    ) from None
 
 
 def _validate_utf16_wchar_compatibility(
@@ -250,7 +297,9 @@ class Connection:
             raise ValueError("native_uuid must be a boolean value or None")
         self._native_uuid = native_uuid
 
-        self.connection_str = self._construct_connection_string(connection_str, **kwargs)
+        self.connection_str, parsed_params = self._construct_connection_string(
+            connection_str, **kwargs
+        )
         self._attrs_before = attrs_before or {}
 
         # Initialize encoding settings with defaults for Python 3
@@ -261,10 +310,14 @@ class Connection:
         }
 
         # Initialize decoding settings with Python 3 defaults
+        # SQL_CHAR default uses SQL_WCHAR ctype so the ODBC driver returns
+        # UTF-16 data for VARCHAR columns. This avoids encoding mismatches on
+        # Windows where the driver returns raw bytes in the server's native
+        # code page (e.g. CP-1252) that may fail to decode as UTF-8.
         self._decoding_settings = {
             ConstantsDDBC.SQL_CHAR.value: {
-                "encoding": "utf-8",
-                "ctype": ConstantsDDBC.SQL_CHAR.value,
+                "encoding": "utf-16le",
+                "ctype": ConstantsDDBC.SQL_WCHAR.value,
             },
             ConstantsDDBC.SQL_WCHAR.value: {
                 "encoding": "utf-16le",
@@ -280,20 +333,39 @@ class Connection:
         # We intentionally do NOT cache the token — a fresh one is acquired
         # each time bulkcopy() is called to avoid expired-token errors.
         self._auth_type = None
+        # Credential constructor kwargs (e.g. user-assigned MSI client_id)
+        # captured at __init__ time before remove_sensitive_params strips UID
+        # from self.connection_str. bulkcopy() re-uses these when acquiring a
+        # fresh token; re-parsing self.connection_str at that point would miss
+        # them because UID is already gone.
+        self._credential_kwargs: Optional[Dict[str, str]] = None
 
-        # Check if the connection string contains authentication parameters
-        # This is important for processing the connection string correctly.
-        # If authentication is specified, it will be processed to handle
-        # different authentication types like interactive, device code, etc.
-        if re.search(r"authentication", self.connection_str, re.IGNORECASE):
-            connection_result = process_connection_string(self.connection_str)
-            self.connection_str = connection_result[0]
-            if connection_result[1]:
-                self._attrs_before.update(connection_result[1])
+        # Handle Entra ID authentication if specified.
+        # The parsed dict is used directly — no re-parsing of the connection string.
+        if _KEY_AUTHENTICATION in parsed_params:
+            auth_type = process_auth_parameters(parsed_params)
+
+            if auth_type:
+                # Capture credential kwargs (e.g. user-assigned MSI client_id)
+                # from the parsed dict *before* remove_sensitive_params strips UID.
+                credential_kwargs: Optional[Dict[str, str]] = None
+                if auth_type == _AuthInternal.MSI:
+                    uid = (parsed_params.get(_KEY_UID) or "").strip()
+                    if uid:
+                        credential_kwargs = {"client_id": uid}
+
+                # Strip sensitive params and rebuild the connection string.
+                sanitized = remove_sensitive_params(parsed_params)
+                self.connection_str = _ConnectionStringBuilder(sanitized).build()
+                token = get_auth_token(auth_type, credential_kwargs)
+                if token:
+                    self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
+                self._credential_kwargs = credential_kwargs
+
             # Store auth type so bulkcopy() can acquire a fresh token later.
-            # On Windows Interactive, process_connection_string returns None
-            # (DDBC handles auth natively), so fall back to the connection string.
-            self._auth_type = connection_result[2] or extract_auth_type(self.connection_str)
+            # On Windows Interactive, process_auth_parameters returns None
+            # (DDBC handles auth natively), so fall back to extract_auth_type.
+            self._auth_type = auth_type or extract_auth_type(parsed_params)
 
         self._closed = False
         self._timeout = timeout
@@ -329,9 +401,12 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
-        self._conn = ddbc_bindings.Connection(
-            self.connection_str, self._pooling, self._attrs_before
-        )
+        try:
+            self._conn = ddbc_bindings.Connection(
+                self.connection_str, self._pooling, self._attrs_before
+            )
+        except RuntimeError as e:
+            _raise_connection_error(e)
         self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
@@ -350,24 +425,25 @@ class Connection:
                 f"Unexpected error during connection registration: {type(e).__name__}: {e}"
             )
 
-    def _construct_connection_string(self, connection_str: str = "", **kwargs: Any) -> str:
+    def _construct_connection_string(
+        self, connection_str: str = "", **kwargs: Any
+    ) -> Tuple[str, Dict[str, str]]:
         """
         Construct the connection string by parsing, validating, and merging parameters.
 
-        This method performs a 6-step process:
         1. Parse and validate the base connection_str (validates against allowlist)
         2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         3. Merge kwargs (which override connection_str params after normalization)
-        4. Build connection string from normalized, merged params
-        5. Add Driver and APP parameters (always controlled by the driver)
-        6. Return the final connection string
+        4. Add Driver and APP (always controlled by the driver)
+        5. Build and return the final connection string + parameter dictionary
 
         Args:
             connection_str (str): The base connection string.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
-            str: The constructed and validated connection string.
+            Tuple[str, Dict[str, str]]: The constructed connection string and
+                the normalized parameter dictionary.
         """
 
         # Step 1: Parse base connection string with allowlist validation
@@ -397,20 +473,16 @@ class Connection:
             else:
                 logger.warning(f"Ignoring unknown connection parameter from kwargs: {key}")
 
-        # Step 4: Build connection string with merged params
-        builder = _ConnectionStringBuilder(normalized_params)
+        # Step 4: Add Driver and APP (always controlled by the driver).
+        normalized_params["Driver"] = "ODBC Driver 18 for SQL Server"
+        normalized_params["APP"] = "MSSQL-Python"
 
-        # Step 5: Add Driver and APP parameters (always controlled by the driver)
-        # These maintain existing behavior: Driver is always hardcoded, APP is always MSSQL-Python
-        builder.add_param("Driver", "ODBC Driver 18 for SQL Server")
-        builder.add_param("APP", "MSSQL-Python")
-
-        # Step 6: Build final string
-        conn_str = builder.build()
+        # Step 5: Build final connection string
+        conn_str = _ConnectionStringBuilder(normalized_params).build()
 
         logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
 
-        return conn_str
+        return conn_str, normalized_params
 
     @property
     def timeout(self) -> int:
@@ -452,7 +524,10 @@ class Connection:
         Returns:
             bool: True if autocommit is enabled, False otherwise.
         """
-        return self._conn.get_autocommit()
+        try:
+            return self._conn.get_autocommit()
+        except RuntimeError as e:
+            _raise_connection_error(e)
 
     @autocommit.setter
     def autocommit(self, value: bool) -> None:
@@ -492,7 +567,10 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while setting the autocommit mode.
         """
-        self._conn.set_autocommit(value)
+        try:
+            self._conn.set_autocommit(value)
+        except RuntimeError as e:
+            _raise_connection_error(e)
 
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
@@ -643,9 +721,13 @@ class Connection:
             sqltype (int): The SQL type being configured: SQL_CHAR, SQL_WCHAR, or SQL_WMETADATA.
                 SQL_WMETADATA is a special flag for configuring column name decoding.
             encoding (str, optional): The Python encoding to use when decoding the data.
-                If None, uses default encoding based on sqltype.
+                If None, defaults to ``'utf-16le'`` for all sqltypes (SQL_CHAR,
+                SQL_WCHAR, and SQL_WMETADATA), matching the connection-level
+                defaults set in ``Connection.__init__``. Passing ``encoding=None``
+                therefore resets the sqltype to its initial default.
             ctype (int, optional): The C data type to request from SQLGetData:
-                SQL_CHAR or SQL_WCHAR. If None, uses default based on encoding.
+                SQL_CHAR or SQL_WCHAR. If None, uses default based on encoding
+                (SQL_WCHAR for UTF-16 variants, SQL_CHAR otherwise).
 
         Returns:
             None
@@ -655,7 +737,10 @@ class Connection:
             InterfaceError: If the connection is closed.
 
         Example:
-            # Configure SQL_CHAR to use UTF-8 decoding
+            # Reset SQL_CHAR to the connection default (utf-16le + SQL_WCHAR ctype)
+            cnxn.setdecoding(mssql_python.SQL_CHAR)
+
+            # Configure SQL_CHAR to use UTF-8 decoding (opt-in, non-default)
             cnxn.setdecoding(mssql_python.SQL_CHAR, encoding='utf-8')
 
             # Configure column metadata decoding
@@ -691,12 +776,15 @@ class Connection:
                 ),
             )
 
-        # Set default encoding based on sqltype if not provided
+        # Set default encoding based on sqltype if not provided.
+        # All sqltypes default to UTF-16LE to match Connection.__init__ defaults.
+        # SQL_CHAR uses utf-16le + SQL_WCHAR ctype so the ODBC driver returns
+        # UTF-16 data for VARCHAR columns, avoiding encoding mismatches on
+        # Windows where the driver may otherwise return raw bytes in the
+        # server's native code page (e.g. CP-1252). This makes
+        # ``setdecoding(SQL_CHAR)`` with no arguments a true reset-to-defaults.
         if encoding is None:
-            if sqltype == ConstantsDDBC.SQL_CHAR.value:
-                encoding = "utf-8"  # Default for SQL_CHAR in Python 3
-            else:  # SQL_WCHAR or SQL_WMETADATA
-                encoding = "utf-16le"  # Default for SQL_WCHAR in Python 3
+            encoding = "utf-16le"
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
@@ -1477,7 +1565,10 @@ class Connection:
             )
 
         # Commit the current transaction
-        self._conn.commit()
+        try:
+            self._conn.commit()
+        except RuntimeError as e:
+            _raise_connection_error(e)
         logger.info("Transaction committed successfully.")
 
     def rollback(self) -> None:
@@ -1500,7 +1591,10 @@ class Connection:
             )
 
         # Roll back the current transaction
-        self._conn.rollback()
+        try:
+            self._conn.rollback()
+        except RuntimeError as e:
+            _raise_connection_error(e)
         logger.info("Transaction rolled back successfully.")
 
     def close(self) -> None:
@@ -1556,7 +1650,11 @@ class Connection:
                     # For autocommit True, this is not necessary as each statement is
                     # committed immediately
                     logger.debug("Rolling back uncommitted changes before closing connection.")
-                    self._conn.rollback()
+                    try:
+                        self._conn.rollback()
+                    except RuntimeError as e:
+                        # Handle C++ layer RuntimeError with proper DB-API exception mapping
+                        _raise_connection_error(e)
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
                 self._conn.close()

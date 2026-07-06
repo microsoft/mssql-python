@@ -332,11 +332,28 @@ class GetInfoConstants(Enum):
 
 
 class AuthType(Enum):
-    """Constants for authentication types"""
+    """Constants for authentication types (public/ODBC connection-string form)."""
 
     INTERACTIVE = "activedirectoryinteractive"
     DEVICE_CODE = "activedirectorydevicecode"
     DEFAULT = "activedirectorydefault"
+    MSI = "activedirectorymsi"
+    SERVICE_PRINCIPAL = "activedirectoryserviceprincipal"
+
+
+class _AuthInternal:
+    """Internal short-form auth identifiers used after normalization.
+
+    Paired with :class:`AuthType` (the public ODBC-string form) by
+    ``mssql_python.auth._AUTH_TYPE_MAP``. Adding a new auth mode requires
+    one entry here, one in ``AuthType``, and one in ``_AUTH_TYPE_MAP``.
+    """
+
+    DEFAULT = "default"
+    DEVICE_CODE = "devicecode"
+    INTERACTIVE = "interactive"
+    MSI = "msi"
+    SERVICE_PRINCIPAL = "serviceprincipal"
 
 
 class SQLTypes:
@@ -517,6 +534,14 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     # internally.
     "packetsize": "PacketSize",
 }
+
+# Canonical normalized key names produced by _ConnectionStringParser._normalize_params.
+# Consumer code should reference these instead of hard-coding raw strings so that
+# a rename in _ALLOWED_CONNECTION_STRING_PARAMS is caught at import time.
+_KEY_AUTHENTICATION = "Authentication"
+_KEY_UID = "UID"
+_KEY_PWD = "PWD"
+_KEY_TRUSTED_CONNECTION = "Trusted_Connection"
 
 
 def get_info_constants() -> Dict[str, int]:

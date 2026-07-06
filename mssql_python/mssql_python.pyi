@@ -4,7 +4,7 @@ Licensed under the MIT license.
 Type stubs for mssql_python package - based on actual public API
 """
 
-from typing import Any, Dict, List, Optional, Union, Tuple, Sequence, Callable, Iterator
+from typing import Any, Dict, List, Mapping, Optional, Union, Tuple, Sequence, Callable, Iterator
 import datetime
 import logging
 import pyarrow
@@ -192,7 +192,11 @@ class Cursor:
         use_prepare: bool = True,
         reset_cursor: bool = True,
     ) -> "Cursor": ...
-    def executemany(self, operation: str, seq_of_parameters: List[Sequence[Any]]) -> None: ...
+    def executemany(
+        self,
+        operation: str,
+        seq_of_parameters: Union[Sequence[Sequence[Any]], Sequence[Mapping[str, Any]]],
+    ) -> None: ...
     def fetchone(self) -> Optional[Row]: ...
     def fetchmany(self, size: Optional[int] = None) -> List[Row]: ...
     def fetchall(self) -> List[Row]: ...

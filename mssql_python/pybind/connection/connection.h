@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <mutex>
+#include <unordered_map>
 
 // Represents a single ODBC database connection.
 // Manages connection handles.
@@ -21,7 +22,7 @@
 
 class Connection {
   public:
-    Connection(const std::wstring& connStr, bool fromPool);
+    Connection(const std::u16string& connStr, bool fromPool);
 
     ~Connection();
 
@@ -63,13 +64,18 @@ class Connection {
     void checkError(SQLRETURN ret) const;
     void applyAttrsBefore(const py::dict& attrs_before);
 
-    std::wstring _connStr;
+    std::u16string _connStr;
     bool _fromPool = false;
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
-    std::wstring wstrStringBuffer;  // wstr buffer for string attribute setting
-    std::string strBytesBuffer;     // string buffer for byte attributes setting
+    // Per-attribute owned buffers for connect attributes whose pointer the
+    // driver may dereference *after* SQLSetConnectAttr returns (deferred
+    // attributes, e.g. SQL_COPT_SS_ACCESS_TOKEN). Keyed by attribute ID so
+    // that setting a second deferred attribute does not invalidate the
+    // pointer the driver stashed for the first. See issue #594.
+    std::unordered_map<SQLINTEGER, std::u16string> _attrStringBuffers;
+    std::unordered_map<SQLINTEGER, std::string>    _attrBytesBuffers;
 
     // Track child statement handles to mark them as implicitly freed when connection closes
     // Uses weak_ptr to avoid circular references and allow normal cleanup
@@ -90,7 +96,7 @@ class Connection {
 
 class ConnectionHandle {
   public:
-    ConnectionHandle(const std::string& connStr, bool usePool,
+    ConnectionHandle(const std::u16string& connStr, bool usePool,
                      const py::dict& attrsBefore = py::dict());
     ~ConnectionHandle();
 
@@ -108,5 +114,5 @@ class ConnectionHandle {
   private:
     std::shared_ptr<Connection> _conn;
     bool _usePool;
-    std::wstring _connStr;
+    std::u16string _connStr;
 };

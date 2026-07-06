@@ -35,23 +35,17 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.4.0
+## What's new in v1.10.0
 
-### Features
+### Enhancements
 
-- **Bulk Copy Support** - High-performance bulk data loading API is now publicly available with support for large-scale ETL workloads, configurable batch sizes, column mappings, and identity/constraint handling.
-- **Spatial Type Support** - Added support for geography, geometry, and hierarchyid spatial types.
-- **mssql-py-core Upgrade** - Upgraded to mssql-py-core version 0.1.0 with enhanced connection string parameter support.
-- **Type Annotations** - Added py.typed marker for improved type checking support.
-- **Azure SQL Database Testing** - Added Azure SQL Database to PR validation pipeline matrix.
+- **Active Directory Service Principal for Bulk Copy** - `bulkcopy` now supports `Authentication=ActiveDirectoryServicePrincipal`, acquiring tokens mid-handshake via a registered callback so service principal credentials work for bulk inserts (#576).
 
 ### Bug Fixes
 
-- **VARCHAR Encoding Fix** - Fixed VARCHAR fetch failures when data length equals column size with non-ASCII CP1252 characters.
-- **Segmentation Fault Fix** - Fixed segmentation fault when interleaving fetchmany and fetchone calls.
-- **Date/Time Type Mappings** - Aligned date/time type code mappings with ODBC 18 driver source.
-- **Pipeline Updates** - Updated OneBranch pipelines for new 1ES images and pool selection.
- 
+- **Non-ASCII VARCHAR in Arrow Fetch** - The arrow fetch path now requests `SQL_CHAR` data as `SQL_C_WCHAR` (UTF-16LE), ensuring correct results regardless of encoding settings, locale, or operating system (#575).
+- **Bulk Load Connection Timeouts** - Fixed connection timeouts during bulk load operations (#641, via `mssql_py_core` 0.1.5).
+
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
 If you have any feedback, questions or need support please mail us at mssql-python@microsoft.com.
