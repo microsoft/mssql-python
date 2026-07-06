@@ -1043,7 +1043,12 @@ class TestTokenFailureFallthrough:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_connect_raises_on_credential_failure(self, mock_ddbc_conn):
         """When auth type is detected but token acquisition fails, connect()
-        must surface a clear error instead of proceeding without a token."""
+        must surface a clear error instead of proceeding without a token.
+
+        The underlying Azure failure (RuntimeError from AADAuth) is re-wrapped
+        at the DB-API boundary as InterfaceError so callers get a consistent,
+        catchable driver exception.
+        """
         mock_ddbc_conn.return_value = MagicMock()
         import sys
 
@@ -1058,7 +1063,7 @@ class TestTokenFailureFallthrough:
             azure_identity.DefaultAzureCredential = CredentialThatAlwaysFails
             from mssql_python import connect
 
-            with pytest.raises(RuntimeError):
+            with pytest.raises(InterfaceError):
                 connect("Server=test;Authentication=ActiveDirectoryDefault;Database=testdb")
         finally:
             azure_identity.DefaultAzureCredential = original

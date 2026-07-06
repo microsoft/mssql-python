@@ -152,6 +152,16 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     // back would defeat the very refresh this checkout intended
                     // (the token could expire mid-query). Those cases fall
                     // through to discard-and-reopen below.
+                    //
+                    // Narrow edge: a MISBEHAVING provider that repeatedly hands
+                    // back the same token still inside the threshold makes every
+                    // checkout discard + reopen (and get the same near-expiry
+                    // token) — pure churn, no benefit. This is acceptable: a
+                    // well-behaved azure-identity credential refreshes
+                    // proactively (returning a token with a fresh, far-out
+                    // expiry) before the threshold, so the safe-reuse path above
+                    // is taken in practice. We favor never handing out a token
+                    // that may expire mid-query over avoiding the churn.
                     candidate->setTokenExpiry(fresh_expiry);
                     reuse_candidate = candidate->isAlive() && candidate->reset();
                 } else {

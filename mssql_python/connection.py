@@ -400,10 +400,29 @@ class Connection:
                 token_attr = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
                 base_attrs = self._attrs_before
 
+                def _acquire_token_info():
+                    # DB-API boundary: get_auth_token_info fails closed by
+                    # letting the underlying Azure error propagate as a
+                    # ValueError (unsupported auth type) or RuntimeError
+                    # (credential/network/auth failure). Re-wrap those as a
+                    # DB-API 2.0 InterfaceError so every auth failure surfaced
+                    # from connect() / the token factory is a consistent,
+                    # catchable driver exception rather than a bare RuntimeError.
+                    try:
+                        return get_auth_token_info(auth_type, credential_kwargs)
+                    except (RuntimeError, ValueError) as e:
+                        raise InterfaceError(
+                            driver_error=(
+                                "Failed to acquire an Entra ID access token for "
+                                f"authentication type '{auth_type}': {e}"
+                            ),
+                            ddbc_error=str(e),
+                        ) from e
+
                 def _make_token_factory():
                     def _token_factory():
                         attrs = dict(base_attrs)
-                        info = get_auth_token_info(auth_type, credential_kwargs)
+                        info = _acquire_token_info()
                         if info and info.token_struct:
                             attrs[token_attr] = info.token_struct
                             return attrs, info.expires_on
@@ -442,7 +461,7 @@ class Connection:
                     # pool). DefaultAzureCredential / raw token key on the token
                     # hash (``tok:``); the pooled connection is bound to that
                     # exact token, so it is kept in attrs_before with no factory.
-                    info = get_auth_token_info(auth_type, credential_kwargs)
+                    info = _acquire_token_info()
                     token = info.token_struct if info else None
                     home_account_id = info.home_account_id if info else None
                     identity = compute_identity_key(
