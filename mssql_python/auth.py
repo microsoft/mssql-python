@@ -572,9 +572,17 @@ def get_auth_token_info(
 ) -> Optional[TokenInfo]:
     """Acquire an access token and return both its ODBC struct and expiry.
 
-    Returns ``None`` when there is no auth type or when the driver handles
+    Returns ``None`` only when there is no auth type or when the driver handles
     authentication natively (Windows Interactive), so callers can treat a
     ``None`` result as "no Python-acquired token to place in attrs_before".
+
+    For every other (token-backed) auth type this **fails closed**: an
+    acquisition error from :meth:`AADAuth.get_token_info` (``ValueError`` for an
+    unsupported auth type, ``RuntimeError`` for a credential/network/auth
+    failure) is allowed to propagate. Swallowing it and returning ``None`` would
+    let the caller fall through to an ODBC connect with ``Authentication=``
+    stripped and no token attached, which either surfaces a confusing login
+    error or — worse — authenticates as an unintended identity.
     """
     logger.debug("get_auth_token_info: Starting - auth_type=%s", auth_type)
     if not auth_type:
@@ -584,17 +592,9 @@ def get_auth_token_info(
         logger.debug("get_auth_token_info: Windows interactive auth - delegating to native handler")
         return None
 
-    try:
-        info = AADAuth.get_token_info(auth_type, credential_kwargs)
-        logger.info("get_auth_token_info: Token acquired successfully - auth_type=%s", auth_type)
-        return info
-    except (ValueError, RuntimeError) as e:
-        logger.warning(
-            "get_auth_token_info: Token acquisition failed - auth_type=%s, error=%s",
-            auth_type,
-            str(e),
-        )
-        return None
+    info = AADAuth.get_token_info(auth_type, credential_kwargs)
+    logger.info("get_auth_token_info: Token acquired successfully - auth_type=%s", auth_type)
+    return info
 
 
 def compute_identity_key(

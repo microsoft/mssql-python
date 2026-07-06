@@ -83,7 +83,7 @@ class PoolingManager:
                 cls._enabled and not cls._pools_closed
             ):  # Only cleanup if enabled and not already closed
                 logger.info("PoolingManager.disable: Closing connection pools")
-                ddbc_bindings.close_pooling()
+                ddbc_bindings.disable_pooling()
                 logger.info("PoolingManager.disable: Connection pools closed successfully")
             else:
                 logger.debug("PoolingManager.disable: Pooling already disabled or closed")

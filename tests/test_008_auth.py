@@ -24,6 +24,7 @@ from mssql_python.auth import (
     _account_id_cache,
 )
 from mssql_python.constants import AuthType, ConstantsDDBC
+from mssql_python.exceptions import InterfaceError
 import secrets
 
 SAMPLE_TOKEN = secrets.token_hex(44)
@@ -1034,12 +1035,15 @@ class TestProcessAuthParametersEdgeCases:
 
 
 class TestTokenFailureFallthrough:
-    """Verify that connect() succeeds without a token when credential creation fails."""
+    """Token acquisition must fail *closed*: when a token-backed auth type is
+    detected but the credential cannot be created / the token cannot be
+    acquired, connect() must raise rather than silently opening a connection
+    with Authentication= stripped and no token attached."""
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_connect_proceeds_without_token_on_credential_failure(self, mock_ddbc_conn):
-        """When auth type is detected but token acquisition fails,
-        the connection should still be attempted (just without a token)."""
+    def test_connect_raises_on_credential_failure(self, mock_ddbc_conn):
+        """When auth type is detected but token acquisition fails, connect()
+        must surface a clear error instead of proceeding without a token."""
         mock_ddbc_conn.return_value = MagicMock()
         import sys
 
@@ -1054,11 +1058,8 @@ class TestTokenFailureFallthrough:
             azure_identity.DefaultAzureCredential = CredentialThatAlwaysFails
             from mssql_python import connect
 
-            conn = connect("Server=test;Authentication=ActiveDirectoryDefault;Database=testdb")
-            assert conn._auth_type == "default"
-            # Token should not be in attrs_before since acquisition failed
-            assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value not in conn._attrs_before
-            conn.close()
+            with pytest.raises(RuntimeError):
+                connect("Server=test;Authentication=ActiveDirectoryDefault;Database=testdb")
         finally:
             azure_identity.DefaultAzureCredential = original
 
@@ -1653,22 +1654,24 @@ class TestTokenExpiryCapture:
         with patch("mssql_python.auth.platform.system", return_value="Windows"):
             assert get_auth_token_info("interactive") is None
 
-    def test_get_auth_token_info_returns_none_on_runtime_error(self):
-        # A token-acquisition RuntimeError is swallowed and reported as None so
-        # the caller can fall back to the bare pool key (auth.py lines 484-490).
+    def test_get_auth_token_info_raises_on_runtime_error(self):
+        # A token-acquisition RuntimeError must propagate (fail closed) so the
+        # caller never falls through to a token-less connect.
         with patch(
             "mssql_python.auth.AADAuth.get_token_info",
             side_effect=RuntimeError("token endpoint unreachable"),
         ):
-            assert get_auth_token_info("default") is None
+            with pytest.raises(RuntimeError, match="token endpoint unreachable"):
+                get_auth_token_info("default")
 
-    def test_get_auth_token_info_returns_none_on_value_error(self):
-        # Same swallow-and-return-None contract for ValueError (auth.py 484-490).
+    def test_get_auth_token_info_raises_on_value_error(self):
+        # Same fail-closed contract for ValueError (unsupported auth type, etc.).
         with patch(
             "mssql_python.auth.AADAuth.get_token_info",
             side_effect=ValueError("invalid credential kwargs"),
         ):
-            assert get_auth_token_info("default") is None
+            with pytest.raises(ValueError, match="invalid credential kwargs"):
+                get_auth_token_info("default")
 
 
 class TestDefaultCredentialPoolingWarning:
@@ -1862,16 +1865,16 @@ class TestConnectionPoolKey:
 
     @patch("mssql_python.connection.get_auth_token_info")
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_default_auth_no_token_keeps_bare_key(self, mock_ddbc_conn, mock_get_token_info):
-        # Token acquisition failed (returns None): there is no identity to key
-        # on, so fall back to the bare connection-string key.
+    def test_default_auth_no_token_fails_closed(self, mock_ddbc_conn, mock_get_token_info):
+        # Token acquisition yielded nothing usable: there is no identity to key
+        # on and no token to attach, so connect() must fail closed rather than
+        # open a token-less connection on the bare connection-string key.
         mock_ddbc_conn.return_value = MagicMock()
         mock_get_token_info.return_value = None
         from mssql_python import connect
 
-        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
-        assert conn._pool_key == ""
-        conn.close()
+        with pytest.raises(InterfaceError):
+            connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
 
 
 class TestTokenFactoryLazyAcquisition:
@@ -1985,11 +1988,10 @@ class TestTokenFactoryLazyAcquisition:
 
     @patch("mssql_python.connection.get_auth_token_info")
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_factory_returns_none_expiry_when_token_unavailable(
-        self, mock_ddbc_conn, mock_get_token_info
-    ):
-        # If the deferred token acquisition yields nothing, the factory returns
-        # ``(attrs, None)`` with no access token merged into attrs.
+    def test_factory_raises_when_token_unavailable(self, mock_ddbc_conn, mock_get_token_info):
+        # If the deferred token acquisition yields nothing, the factory must
+        # fail closed (raise) so native never opens a pooled connection with
+        # Authentication= stripped and no token attached.
         mock_ddbc_conn.return_value = MagicMock()
         mock_get_token_info.return_value = TokenInfo(
             token_struct=b"dc-token-bytes",
@@ -2002,9 +2004,8 @@ class TestTokenFactoryLazyAcquisition:
         try:
             # Simulate the provider returning nothing on the deferred call.
             mock_get_token_info.return_value = None
-            attrs, expires_on = conn._token_factory()
-            assert expires_on is None
-            assert self._TOKEN_ATTR not in attrs
+            with pytest.raises(InterfaceError):
+                conn._token_factory()
         finally:
             conn.close()
 

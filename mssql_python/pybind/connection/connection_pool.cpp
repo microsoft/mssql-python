@@ -3,6 +3,7 @@
 
 #include "connection/connection_pool.h"
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <memory>
 #include <vector>
@@ -14,6 +15,22 @@
 // token expires within this many seconds is discarded and reopened with a fresh
 // token rather than handed out (<=5 min).
 static constexpr int TOKEN_EXPIRY_THRESHOLD_SECS = 300;
+
+// True only when *expiryEpoch* is a known POSIX-second expiry that is safely
+// beyond now + thresholdSecs. A zero/negative (unknown/missing) expiry is
+// treated as NOT safe so the caller fails closed rather than reusing a token it
+// cannot prove is still valid. Caller need not hold any lock; reads the wall
+// clock only.
+static bool tokenExpirySafelyBeyond(long long expiryEpoch, int thresholdSecs) {
+    if (expiryEpoch <= 0) {
+        return false;
+    }
+    const long long now = static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    return (now + static_cast<long long>(thresholdSecs)) < expiryEpoch;
+}
 
 // Pull the raw access-token bytes out of a connect-attrs dict returned by the
 // token factory, or an empty string if the dict carries no token. Caller must
@@ -123,11 +140,24 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 py::dict fresh_attrs =
                     Connection::invokeTokenFactory(token_factory, fresh_expiry);
                 std::string fresh_token = extractAccessToken(fresh_attrs);
-                if (!fresh_token.empty() && fresh_token == candidate->currentAccessToken()) {
+                if (!fresh_token.empty() &&
+                    fresh_token == candidate->currentAccessToken() &&
+                    tokenExpirySafelyBeyond(fresh_expiry, TOKEN_EXPIRY_THRESHOLD_SECS)) {
+                    // Same token AND its refreshed expiry is safely beyond the
+                    // threshold: the provider's cache is still valid and the
+                    // connection is healthy, so refresh the recorded expiry and
+                    // reuse. We deliberately do NOT reuse when the returned
+                    // expiry is unknown (<=0) or still inside the threshold —
+                    // extending the recorded expiry and handing the connection
+                    // back would defeat the very refresh this checkout intended
+                    // (the token could expire mid-query). Those cases fall
+                    // through to discard-and-reopen below.
                     candidate->setTokenExpiry(fresh_expiry);
                     reuse_candidate = candidate->isAlive() && candidate->reset();
                 } else {
-                    // Token rotated — remember the fresh token to reopen with,
+                    // Token rotated, or the "fresh" token is still at/near
+                    // expiry (or has an unknown expiry): discard and reopen with
+                    // the fresh attrs. Remember the fresh token to reopen with,
                     // and eagerly drain the sibling idle connections that still
                     // hold the now-stale token. They were all minted from the
                     // same provider before the rotation, so they are equally
@@ -330,6 +360,16 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
     std::vector<std::shared_ptr<ConnectionPool>> evicted;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
+        // Pooling disabled (a concurrent disable_pooling() disarmed us): decline
+        // to create or hand out a pool. Because this check and the pool creation
+        // below share _manager_mutex with the setAccepting(false) in
+        // disable_pooling(), the decision is atomic — a connect either creates
+        // its pool before the disable (and closePools() then reaps it) or sees
+        // _accepting == false here and never creates one. The caller
+        // (ConnectionHandle) falls back to a non-pooled connection.
+        if (!_accepting) {
+            return nullptr;
+        }
         // Lazy eviction: drop pools whose connections are all idle past the
         // idle timeout (and none checked out) so distinct short-lived
         // identities (e.g. per-request Entra users keyed by token hash) do not
@@ -348,7 +388,17 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
         if (now - _last_sweep >= sweep_interval) {
             _last_sweep = now;
             for (auto it = _pools.begin(); it != _pools.end();) {
-                if (it->first != key && it->second && it->second->canEvict()) {
+                // Only evict a pool that no one else is holding: use_count == 1
+                // means the map is the sole owner. An in-flight acquirer copies
+                // its pool shared_ptr while holding _manager_mutex (same section
+                // as this sweep) and keeps that copy across the unlocked
+                // acquire(); returnConnection() likewise takes a ref under the
+                // mutex before releasing. Either bumps use_count above 1 for the
+                // whole window, so this guard prevents evicting — and then
+                // closing (disconnecting) — a pool a peer thread has already
+                // selected but not yet finished using.
+                if (it->first != key && it->second && it->second.use_count() == 1 &&
+                    it->second->canEvict()) {
                     evicted.push_back(it->second);
                     it = _pools.erase(it);
                 } else {
@@ -454,4 +504,9 @@ void ConnectionPoolManager::closePools() {
 size_t ConnectionPoolManager::poolCount() {
     std::lock_guard<std::mutex> lock(_manager_mutex);
     return _pools.size();
+}
+
+void ConnectionPoolManager::setAccepting(bool accepting) {
+    std::lock_guard<std::mutex> lock(_manager_mutex);
+    _accepting = accepting;
 }

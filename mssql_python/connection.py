@@ -407,7 +407,18 @@ class Connection:
                         if info and info.token_struct:
                             attrs[token_attr] = info.token_struct
                             return attrs, info.expires_on
-                        return attrs, None
+                        # Fail closed: a token-backed pool must never open a
+                        # physical connection without the token it is meant to
+                        # carry. get_auth_token_info already raises when
+                        # acquisition fails; this guards the empty-token edge so
+                        # native never connects with Authentication= stripped.
+                        raise InterfaceError(
+                            driver_error=(
+                                "Unable to acquire an Entra ID access token for "
+                                f"authentication type '{auth_type}'."
+                            ),
+                            ddbc_error="Token factory produced no usable token.",
+                        )
 
                     return _token_factory
 
@@ -456,6 +467,20 @@ class Connection:
                         # A driver-acquired DAC/raw token is reused until the
                         # connection dies; see the pooling notes in the README.
                         self._attrs_before[token_attr] = token
+                    else:
+                        # Fail closed: a token-backed auth type reached here but
+                        # we could derive neither a deferred factory nor an
+                        # eager token, so connecting now would strip
+                        # Authentication= and open with no token (potentially
+                        # authenticating as an unintended identity). Surface a
+                        # clear error instead of silently falling through.
+                        raise InterfaceError(
+                            driver_error=(
+                                "Unable to acquire an Entra ID access token for "
+                                f"authentication type '{auth_type}'."
+                            ),
+                            ddbc_error="Token acquisition returned no usable token.",
+                        )
 
             # Store auth type so bulkcopy() can acquire a fresh token later.
             # On Windows Interactive, process_auth_parameters returns None

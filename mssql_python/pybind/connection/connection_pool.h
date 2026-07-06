@@ -63,10 +63,20 @@ class ConnectionPoolManager {
     // keeps distinct Entra identities in distinct pools.
     // token_factory is forwarded to ConnectionPool::acquire for lazy token
     // acquisition on a pool miss.
+    //
+    // Returns nullptr when pooling is not currently accepting new pools (i.e. a
+    // concurrent disable won the race). The enabled-check and the pool creation
+    // share _manager_mutex, so this decision is atomic with respect to
+    // closePools(): the caller must fall back to a non-pooled connection.
     std::shared_ptr<Connection> acquireConnection(
         const std::u16string& conn_str, const py::dict& attrs_before = py::dict(),
         const std::u16string& pool_key = std::u16string(),
         const py::object& token_factory = py::object());
+
+    // Arms (true) or disarms (false) new-pool creation. Disarming, done under
+    // _manager_mutex, guarantees that any acquireConnection() serialized after
+    // it declines to create a pool, closing the disable()-vs-connect() race.
+    void setAccepting(bool accepting);
 
     // Returns a connection to its original pool, identified by pool_key
     // (the same key passed to acquireConnection).
@@ -90,6 +100,14 @@ class ConnectionPoolManager {
     std::mutex _manager_mutex;
     size_t _default_max_size = 10;
     int _default_idle_secs = 300;
+
+    // When false, acquireConnection() refuses to create/hand out pools so a
+    // connect racing a disable() cannot resurrect a pool after closePools()
+    // cleared the map. Read and written only under _manager_mutex. Defaults to
+    // true so direct native pool use (and auto-enable) works without an
+    // explicit enable_pooling() call; only disable_pooling() disarms it, and
+    // enable_pooling() re-arms it.
+    bool _accepting = true;
 
     // Throttle for the lazy-eviction sweep in acquireConnection(). The sweep
     // iterates every pool (and every idle connection within each) under

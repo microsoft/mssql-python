@@ -557,7 +557,15 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
                                                                        _poolKey, tokenFactory);
-    } else {
+        // acquireConnection returns nullptr when pooling was disabled out from
+        // under us (a disable_pooling() won the race). Fall back to a non-pooled
+        // connection and flip _usePool so close() disconnects it directly rather
+        // than trying to return it to a pool that no longer exists.
+        if (!_conn) {
+            _usePool = false;
+        }
+    }
+    if (!_usePool) {
         _conn = std::make_shared<Connection>(_connStr, false);
         // Non-pooled connect still honors the lazy token factory: a
         // token is materialized only when a physical connection is opened. The

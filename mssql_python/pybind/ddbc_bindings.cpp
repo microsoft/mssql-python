@@ -5837,8 +5837,13 @@ SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
 
 static std::once_flag pooling_init_flag;
 void enable_pooling(int maxSize, int idleTimeout) {
+    // configure() locks in the default max_size/idle_timeout for the process and
+    // must run exactly once, but re-arming must happen on every enable so a
+    // disable_pooling() -> enable_pooling() cycle resumes pooling (the
+    // std::call_once body would otherwise be skipped on the second enable).
     std::call_once(pooling_init_flag,
                    [&]() { ConnectionPoolManager::getInstance().configure(maxSize, idleTimeout); });
+    ConnectionPoolManager::getInstance().setAccepting(true);
 }
 
 // Thread-safe decimal separator setting
@@ -5918,6 +5923,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
+    m.def("disable_pooling", []() {
+        // Disarm new-pool creation *before* closing so a connect racing this
+        // disable cannot resurrect a pool after the map is cleared: any
+        // acquireConnection serialized after setAccepting(false) declines and
+        // falls back to a non-pooled connection. closePools() then reaps every
+        // pool created before the disarm.
+        auto& manager = ConnectionPoolManager::getInstance();
+        manager.setAccepting(false);
+        manager.closePools();
+    }, "Disable global connection pooling and close all pools");
     m.def("_pool_count", []() { return ConnectionPoolManager::getInstance().poolCount(); },
           "Diagnostic: number of connection pools currently tracked (used by tests)");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");

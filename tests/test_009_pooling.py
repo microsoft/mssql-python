@@ -474,6 +474,167 @@ def test_idle_identity_pool_is_evicted_by_later_acquire(conn_str):
     )
 
 
+def test_pool_full_raises_when_max_size_reached(conn_str):
+    """Acquiring past ``max_size`` on a busy pool raises rather than blocking.
+
+    Covers the "pool size limit reached" throw in ``ConnectionPool::acquire``:
+    with ``max_size == 1`` and the single slot already checked out, a second
+    acquire on the same key finds the pool empty and no free capacity, so it
+    raises immediately (the pool never blocks waiting for a return).
+
+    Run in a subprocess so ``pooling(max_size=1, ...)`` is the first (and thus
+    effective) call in a clean process — the C++ pool config is locked in via
+    ``std::call_once`` for the lifetime of a process.
+    """
+    _run_in_subprocess(
+        """
+        import os, sys
+        from mssql_python import connect, pooling
+
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+        pooling(max_size=1, idle_timeout=30)
+
+        # Fill the single slot and keep it checked out.
+        held = connect(conn_str)
+        held.cursor().execute("SELECT 1")
+
+        # A second acquire on the same pool key has no free capacity and no
+        # idle connection to hand back -> it must raise, not hang.
+        try:
+            second = connect(conn_str)
+        except Exception as exc:
+            assert "pool size limit reached" in str(exc).lower() or "pool" in str(exc).lower(), (
+                f"unexpected error for a full pool: {exc!r}"
+            )
+        else:
+            second.close()
+            held.close()
+            raise AssertionError("expected a full-pool error, but the acquire succeeded")
+
+        held.close()
+        """,
+        conn_str,
+    )
+
+
+def test_checked_out_pool_is_not_evicted(conn_str):
+    """A pool with a checked-out connection is never swept, even when aged out.
+
+    Covers the "checked out" guard in ``ConnectionPool::canEvict``: reserved
+    capacity beyond what is sitting idle in the pool means a caller still holds a
+    connection, so the eviction sweep must leave that pool alone regardless of
+    the idle timeout.
+
+    Run in a subprocess so ``pooling(idle_timeout=1)`` is the effective config
+    and ``_pool_count`` observes only this test's pools.
+    """
+    _run_in_subprocess(
+        """
+        import os, re, sys, time
+        from mssql_python import connect, pooling, ddbc_bindings
+
+        base = os.environ["DB_CONNECTION_STRING"]
+        # Two distinct pool keys against the same server (see the idle-eviction
+        # test): switching the target database yields two separate pools.
+        if re.search(r"(?i)database=", base):
+            conn_a = re.sub(r"(?i)database=[^;]*", "Database=master", base)
+            conn_b = re.sub(r"(?i)database=[^;]*", "Database=tempdb", base)
+        else:
+            trimmed = base.rstrip(";")
+            conn_a = trimmed + ";Database=master"
+            conn_b = trimmed + ";Database=tempdb"
+
+        pooling(max_size=2, idle_timeout=1)
+
+        # Identity A: open and KEEP OPEN. The connection is checked out, so pool
+        # A's reserved capacity exceeds its idle contents (_current_size == 1,
+        # _pool empty) — canEvict() must refuse to reclaim it.
+        a = connect(conn_a)
+        a.cursor().execute("SELECT 1")
+
+        # Age past the 1s idle timeout, then acquire on a different key to run
+        # the manager's eviction sweep over pool A.
+        time.sleep(3)
+        b = connect(conn_b)
+        b.cursor().execute("SELECT 1")
+
+        count = ddbc_bindings._pool_count()
+        assert count == 2, (
+            f"checked-out pool A must survive the sweep: _pool_count()={count} "
+            f"(expected 2: pools A and B)."
+        )
+
+        a.close()
+        b.close()
+        """,
+        conn_str,
+    )
+
+
+def test_disable_during_concurrent_connects_leaves_no_pool(conn_str):
+    """Disabling pooling amid concurrent connects leaves no escaped pool.
+
+    Regression test for the disable()-vs-connect() race. A connect reads the
+    (unlocked) enabled flag; before the fix, one that read it as True could
+    create a native pool just after ``disable()`` cleared the map, leaving a
+    pool alive for the life of the process. The native manager now disarms
+    new-pool creation under ``_manager_mutex`` before closing, so a raced
+    connect either had its pool reaped by the close or is declined and falls
+    back to a non-pooled connection. Once the storm settles, ``_pool_count()``
+    must be 0.
+
+    Run in a subprocess so the enable -> concurrent connect/disable lifecycle is
+    isolated from other tests (pooling config is process-global).
+    """
+    _run_in_subprocess(
+        """
+        import os, sys, threading, time
+        from mssql_python import connect, pooling, ddbc_bindings
+        from mssql_python.pooling import PoolingManager
+
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+        pooling(max_size=8, idle_timeout=30)
+
+        stop = threading.Event()
+        errors = []
+
+        def worker():
+            while not stop.is_set():
+                try:
+                    c = connect(conn_str)
+                    c.cursor().execute("SELECT 1")
+                    c.close()
+                except Exception as exc:
+                    errors.append(repr(exc))
+                    return
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+
+        # Let pools populate, then disable while the workers are hammering so
+        # some connects race the disable.
+        time.sleep(0.2)
+        PoolingManager.disable()
+
+        # Keep the workers running after the disable so late connects exercise
+        # the disarmed path (they must fall back to non-pooled, creating no pool).
+        time.sleep(0.3)
+        stop.set()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"workers hit connection errors: {errors}"
+        count = ddbc_bindings._pool_count()
+        assert count == 0, (
+            f"a pool escaped disable(): _pool_count()={count} (expected 0). "
+            f"A connect that raced the disable resurrected a pool."
+        )
+        """,
+        conn_str,
+    )
+
+
 # =============================================================================
 # Error Handling and Recovery Tests
 # =============================================================================
@@ -797,9 +958,16 @@ class TestNativeTokenFactory:
         exit. Draining here (the same call the product makes at exit) keeps the
         native pool empty so the interpreter can shut down cleanly.
         """
-        yield
         from mssql_python import ddbc_bindings
 
+        # These tests drive ``ddbc_bindings.Connection`` with ``use_pool=True``
+        # directly, so the native manager must be armed to accept new pools. An
+        # earlier test may have called ``pooling(enabled=False)``, which now
+        # disarms the native manager (the disable-vs-connect race fix); re-arm
+        # here so pooled reuse works. ``enable_pooling`` re-arms accepting
+        # without re-running the one-time size/idle-timeout configuration.
+        ddbc_bindings.enable_pooling(100, 600)
+        yield
         ddbc_bindings.close_pooling()
 
     def test_pooled_factory_invoked_on_miss_and_skipped_on_reuse(self, conn_str):
@@ -985,3 +1153,122 @@ class TestNativeTokenFactory:
         conn2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
         assert calls["n"] == 2, "Near-expiry pooled connection must be refreshed on checkout"
         conn2.close()
+
+    def test_near_expiry_factory_token_bytes_are_extracted(self, conn_str):
+        """A refreshed factory that returns token bytes drives token extraction.
+
+        Covers the ``extractAccessToken`` loop body in connection_pool.cpp: the
+        earlier near-expiry tests hand back an empty attrs dict, so the loop that
+        scans the dict for the ``SQL_COPT_SS_ACCESS_TOKEN`` (1256) entry never
+        iterates. Here the refresh call returns a dict *with* that token key, so
+        the C++ extracts the bytes and takes the token-rotation branch (fresh
+        token != the pooled connection's empty token). The reopen with a bogus
+        token against a SQL-auth server is expected to fail; we only need the
+        extraction + rotation branch to execute, which it does before the reopen.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        import time
+
+        from mssql_python import ddbc_bindings
+
+        # ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN — the attr id the C++ scans for.
+        SQL_COPT_SS_ACCESS_TOKEN = 1256
+        calls = {"n": 0}
+        near_expiry = int(time.time()) + 60  # inside the 300s refresh threshold
+
+        def factory():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Initial pool miss: SQL-auth creds are in conn_str, so an empty
+                # attrs dict opens a real connection (its token stays empty).
+                return {}, near_expiry
+            # Refresh on checkout: hand back a token so extractAccessToken()
+            # iterates its loop body and pulls the bytes out.
+            return {SQL_COPT_SS_ACCESS_TOKEN: b"rotated-token-bytes"}, near_expiry
+
+        pool_key = conn_str + "\x00mssql_test_token_bytes"
+
+        conn1 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert calls["n"] == 1, "Factory should run once on the initial pool miss"
+        conn1.close()  # returned to the pool with an empty token, near expiry
+
+        # Same key: the pooled token is near expiry, so the factory is invoked
+        # again and now returns real token bytes. The C++ extracts them, sees a
+        # rotated (different) token, and reopens with it — which the SQL-auth
+        # server rejects. The extraction + rotation branch has already run.
+        with pytest.raises(Exception):
+            ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert calls["n"] == 2, "Near-expiry checkout must re-invoke the factory"
+
+    def test_orphaned_connection_is_disconnected_on_return(self, conn_str):
+        """Returning a connection whose pool was evicted disconnects it cleanly.
+
+        Covers the orphan branch of ``ConnectionPoolManager::returnConnection``:
+        when a checked-out connection is returned but no pool is registered under
+        its key (here because ``close_pooling()`` cleared the pool map while the
+        connection was still out), the manager must disconnect the orphan rather
+        than leak the ODBC handle.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        from mssql_python import ddbc_bindings
+
+        def factory():
+            return {}
+
+        pool_key = conn_str + "\x00mssql_test_orphan_return"
+
+        # Check a connection out of the pool, then drop the whole pool map while
+        # it is still held. The pool under pool_key no longer exists.
+        conn = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        ddbc_bindings.close_pooling()
+
+        # Returning it now finds no pool -> the orphan-disconnect path runs.
+        conn.close()
+
+    def test_disabled_manager_creates_no_pool(self, conn_str):
+        """A pooled-style connect after disable_pooling() creates no pool.
+
+        Regression test for the disable()-vs-connect() race: ``disable_pooling()``
+        disarms the native manager under ``_manager_mutex`` before clearing the
+        pool map, so any ``acquireConnection`` serialized after it declines
+        (returns nullptr) and the connection transparently falls back to a
+        non-pooled one. A connect can therefore never resurrect a pool after a
+        disable, so ``_pool_count()`` stays 0. The non-pooled fallback still
+        honors the token factory.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        from mssql_python import ddbc_bindings
+
+        try:
+            # Arm, then disable: disarm new-pool creation and close everything.
+            ddbc_bindings.enable_pooling(10, 600)
+            ddbc_bindings.disable_pooling()
+            assert ddbc_bindings._pool_count() == 0, "disable must leave no pools"
+
+            calls = {"n": 0}
+
+            def factory():
+                calls["n"] += 1
+                return {}
+
+            pool_key = conn_str + "\x00mssql_test_disabled_nopool"
+
+            # use_pool=True, but the manager is disarmed -> non-pooled fallback.
+            conn = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+            assert calls["n"] == 1, "non-pooled fallback must still invoke the factory"
+            assert (
+                ddbc_bindings._pool_count() == 0
+            ), "a disabled manager must not create a pool for a racing connect"
+            conn.close()
+            assert (
+                ddbc_bindings._pool_count() == 0
+            ), "returning the fallback connection must not create a pool"
+        finally:
+            # Re-arm so sibling tests pool normally again.
+            ddbc_bindings.enable_pooling(10, 600)
