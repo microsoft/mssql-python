@@ -548,6 +548,24 @@ class Connection:
         # key is never the bare connStr" invariant).
         if not self._pool_key:
             _raw_token = self._attrs_before.get(ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value)
+            if _raw_token is not None and not isinstance(_raw_token, (bytes, bytearray)):
+                # Fail closed: an access token supplied as anything other than
+                # raw bytes (e.g. a str) cannot be hashed into an identity-aware
+                # pool key, so it would fall through with the bare connStr key
+                # and two callers passing different str tokens against the same
+                # server could share a pooled, authenticated connection. Reject
+                # it up front with a clear DB-API error instead of relying on
+                # ODBC to mangle/reject the byte-struct downstream. The native
+                # setAttribute() enforces the same rule, so the invariant holds
+                # at both boundaries.
+                raise InterfaceError(
+                    driver_error=(
+                        "SQL_COPT_SS_ACCESS_TOKEN must be supplied as bytes (the "
+                        "raw [length][UTF-16LE token] struct), not "
+                        f"{type(_raw_token).__name__}."
+                    ),
+                    ddbc_error="Non-binary access token attribute rejected.",
+                )
             if isinstance(_raw_token, (bytes, bytearray)):
                 _token_identity = compute_identity_key("default", token_struct=bytes(_raw_token))
                 if _token_identity:

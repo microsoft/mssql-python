@@ -297,6 +297,25 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
 
+    // Fail closed on a non-binary access token. SQL_COPT_SS_ACCESS_TOKEN (1256)
+    // MUST be the raw [DWORD byte-length][UTF-16LE token] struct passed as
+    // bytes/bytearray. If a caller supplies it as a py::str, the str->UTF-16
+    // cast in the string branch below would mangle that struct; worse, the
+    // Python identity-aware pool-key logic only hashes bytes/bytearray tokens,
+    // so a str token slips through with the bare connection-string pool key and
+    // two callers passing different str tokens against the same server could
+    // share a pooled, authenticated connection. Reject any non-binary token at
+    // this native boundary so the cross-identity invariant ("a token is present
+    // => the pool key is never the bare connStr") holds regardless of how the
+    // Connection was constructed.
+    if (attribute == SQL_COPT_SS_ACCESS_TOKEN && !py::isinstance<py::bytes>(value) &&
+        !py::isinstance<py::bytearray>(value)) {
+        LOG("Rejecting non-binary SQL_COPT_SS_ACCESS_TOKEN (attribute=%d): access token "
+            "must be bytes/bytearray",
+            attribute);
+        return SQL_ERROR;
+    }
+
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
         int64_t longValue = value.cast<int64_t>();

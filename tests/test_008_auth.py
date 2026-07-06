@@ -2023,6 +2023,38 @@ class TestRawAccessTokenPoolKey:
 
     _TOKEN_ATTR = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
 
+    @pytest.mark.parametrize(
+        "bad_token",
+        [
+            "a-str-token",  # the exact str bypass called out in review
+            12345,  # int
+            memoryview(b"\x04\x00\x00\x00tok"),  # memoryview is not bytes/bytearray
+            ["not", "bytes"],  # list
+        ],
+        ids=["str", "int", "memoryview", "list"],
+    )
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_non_binary_access_token_fails_closed(self, mock_ddbc_conn, bad_token):
+        """A non-bytes access token is rejected up front with InterfaceError.
+
+        Adversarial case: a caller supplies attr 1256 as a ``str`` (or any
+        non-binary type). The Python identity-key logic only hashes
+        bytes/bytearray, so without this guard a str token would fall through
+        with the bare connStr pool key and two callers with different str tokens
+        against the same server could share a pooled connection. The guard fails
+        closed *before* any physical connect, so nothing is ever pooled under a
+        shared key. The native ``setAttribute`` enforces the same rule.
+        """
+        from mssql_python import connect
+
+        with pytest.raises(InterfaceError, match="SQL_COPT_SS_ACCESS_TOKEN"):
+            connect(
+                "Server=test;Database=testdb;UID=sa;PWD=secret",
+                attrs_before={self._TOKEN_ATTR: bad_token},
+            )
+        # Fail closed: the guard raises before the native Connection is built.
+        mock_ddbc_conn.assert_not_called()
+
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_raw_token_sets_token_hash_pool_key(self, mock_ddbc_conn):
         import hashlib

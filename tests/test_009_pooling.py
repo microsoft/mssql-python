@@ -1230,6 +1230,85 @@ class TestNativeTokenFactory:
             ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
         assert calls["n"] == 2, "Near-expiry checkout must re-invoke the factory"
 
+    def test_factory_token_unknown_expiry_is_reused(self, conn_str):
+        """A factory reporting no expiry (``None``) or epoch ``0`` leaves the
+        pooled connection with an *unknown* expiry, which the native checkout
+        treats as "not near expiry" and therefore reuses.
+
+        This pins down the current epoch-0 semantics (``isTokenNearExpiry``
+        returns ``false`` for a 0/unknown expiry, connection.cpp): the factory
+        runs once on the miss and is skipped on the same-key hit. Treating an
+        unknown expiry as *unsafe* for token-backed factory pools is tracked as
+        an optional hardening follow-up, not current behavior.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        from mssql_python import ddbc_bindings
+
+        for expiry in (None, 0):
+            calls = {"n": 0}
+
+            def factory(_expiry=expiry):
+                calls["n"] += 1
+                return {}, _expiry
+
+            pool_key = conn_str + f"\x00mssql_test_unknown_expiry_{expiry}"
+
+            conn1 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+            assert calls["n"] == 1, "Factory should run once on the initial pool miss"
+            conn1.close()
+
+            conn2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+            assert calls["n"] == 1, "Unknown/zero expiry is currently treated as safe and reused"
+            conn2.close()
+
+    def test_factory_raises_on_near_expiry_checkout_recovers_pool(self, conn_str):
+        """A factory that raises while refreshing a near-expiry pooled connection
+        must not leak the reserved pool slot.
+
+        Covers the exception path of the expiry-aware checkout: prime the pool
+        with a near-expiry connection, then make the refresh factory raise on
+        the next checkout. The connect fails (exception propagates), but the
+        reserved slot is released under the pool mutex, so a subsequent connect
+        under the same key still succeeds instead of finding the pool wedged or
+        exhausted.
+        """
+        if not conn_str:
+            pytest.skip("Live database connection required")
+
+        import time
+
+        from mssql_python import ddbc_bindings
+
+        near_expiry = int(time.time()) + 60  # inside the 300s refresh threshold
+        state = {"raise_on_checkout": False, "n": 0}
+
+        def factory():
+            state["n"] += 1
+            if state["raise_on_checkout"]:
+                raise RuntimeError("token refresh failed mid-checkout")
+            return {}, near_expiry
+
+        pool_key = conn_str + "\x00mssql_test_factory_raise_recover"
+
+        # Prime the pool with a near-expiry pooled connection.
+        conn1 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert state["n"] == 1
+        conn1.close()
+
+        # Next checkout is near-expiry -> factory runs to refresh, but raises.
+        state["raise_on_checkout"] = True
+        with pytest.raises(Exception):
+            ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+
+        # The reserved slot must have been released: a healthy factory can still
+        # open a connection under the same key (pool is neither wedged nor full).
+        state["raise_on_checkout"] = False
+        conn3 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+        assert conn3 is not None, "pool slot must be recovered after a factory failure"
+        conn3.close()
+
     def test_orphaned_connection_is_disconnected_on_return(self, conn_str):
         """Returning a connection whose pool was evicted disconnects it cleanly.
 
