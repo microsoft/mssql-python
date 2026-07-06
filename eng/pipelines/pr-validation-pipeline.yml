@@ -234,7 +234,7 @@ jobs:
     parameters:
       platform: windows
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: windows
 
@@ -547,7 +547,7 @@ jobs:
     parameters:
       platform: unix
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: unix
 
@@ -807,7 +807,7 @@ jobs:
       containerName: test-container-$(distroName)
       venvActivate: 'source /opt/venv/bin/activate'
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-$(distroName)
@@ -1138,7 +1138,7 @@ jobs:
       containerName: test-container-$(distroName)-$(archName)
       venvActivate: 'source /opt/venv/bin/activate'
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-$(distroName)-$(archName)
@@ -1358,7 +1358,7 @@ jobs:
       containerName: test-container-rhel9
       venvActivate: 'source myvenv/bin/activate'
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-rhel9
@@ -1589,7 +1589,7 @@ jobs:
       containerName: test-container-rhel9-arm64
       venvActivate: 'source myvenv/bin/activate'
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-rhel9-arm64
@@ -1828,7 +1828,7 @@ jobs:
       containerName: test-container-alpine
       venvActivate: 'source /workspace/venv/bin/activate'
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-alpine
@@ -2085,7 +2085,7 @@ jobs:
       containerName: test-container-alpine-arm64
       venvActivate: 'source /workspace/venv/bin/activate'
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-alpine-arm64
@@ -2442,7 +2442,7 @@ jobs:
     parameters:
       platform: unix
 
-  - template: steps/install-mock-tds.yml
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: unix
 
