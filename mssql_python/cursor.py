@@ -1471,28 +1471,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         actual_params = tuple(parameters[0])
                     else:
                         actual_params = parameters
-
-                    # Convert parameters based on detected style
-                    operation, converted_params = detect_and_convert_parameters(
-                        operation, actual_params
-                    )
-
-                    # Convert back to list format expected by the binding code
-                    parameters = list(converted_params)
                 else:
                     actual_params = parameters
 
-                    # Skip detect_and_convert_parameters when re-executing the same SQL —
-                    # the parameter style (qmark vs pyformat) won't change between calls.
-                    if operation == self.last_executed_stmt and isinstance(
-                        actual_params, (tuple, list)
-                    ):
-                        parameters = list(actual_params)
-                    else:
-                        operation, converted_params = detect_and_convert_parameters(
-                            operation, actual_params
-                        )
-                        parameters = list(converted_params)
+                # Skip detect_and_convert_parameters when re-executing the same SQL —
+                # the parameter style (qmark vs pyformat) won't change between calls.
+                if operation == self.last_executed_stmt and isinstance(
+                    actual_params, (tuple, list)
+                ):
+                    parameters = list(actual_params)
+                else:
+                    operation, converted_params = detect_and_convert_parameters(
+                        operation, actual_params
+                    )
+                    parameters = list(converted_params)
             else:
                 parameters = []
 
