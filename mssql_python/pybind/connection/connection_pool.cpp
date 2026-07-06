@@ -12,7 +12,7 @@
 
 // Refresh threshold for expiry-aware checkout: a pooled connection whose access
 // token expires within this many seconds is discarded and reopened with a fresh
-// token rather than handed out (<=10 min).
+// token rather than handed out (<=5 min).
 static constexpr int TOKEN_EXPIRY_THRESHOLD_SECS = 300;
 
 // Pull the raw access-token bytes out of a connect-attrs dict returned by the
@@ -422,19 +422,33 @@ void ConnectionPoolManager::configure(int max_size, int idle_timeout_secs) {
 }
 
 void ConnectionPoolManager::closePools() {
-    std::lock_guard<std::mutex> lock(_manager_mutex);
-    // Keep _manager_mutex held for the full close operation so that
-    // acquireConnection()/returnConnection() cannot create or use pools
-    // while closePools() is in progress.
-    for (auto& [conn_str, pool] : _pools) {
-        if (pool) {
+    // Mirror the eviction-sweep pattern: under the mutex, move every pool into
+    // a local vector and clear the map, then release the mutex before closing.
+    // close() disconnects ODBC handles (releasing the GIL), which must never
+    // run while holding _manager_mutex or we risk a mutex/GIL lock-ordering
+    // deadlock with a concurrent acquireConnection()/returnConnection().
+    std::vector<std::shared_ptr<ConnectionPool>> to_close;
+    {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        to_close.reserve(_pools.size());
+        for (auto& [conn_str, pool] : _pools) {
+            if (pool) {
+                to_close.push_back(pool);
+            }
+        }
+        _pools.clear();
+        // Nothing left to sweep; reset the throttle so a fresh pool set after
+        // this is swept on its next acquireConnection().
+        _last_sweep = std::chrono::steady_clock::time_point{};
+    }
+    // Close each pool outside _manager_mutex.
+    for (auto& pool : to_close) {
+        try {
             pool->close();
+        } catch (const std::exception& ex) {
+            LOG("ConnectionPoolManager::closePools: closing pool failed: %s", ex.what());
         }
     }
-    _pools.clear();
-    // Nothing left to sweep; reset the throttle so a fresh pool set after this
-    // is swept on its next acquireConnection().
-    _last_sweep = std::chrono::steady_clock::time_point{};
 }
 
 size_t ConnectionPoolManager::poolCount() {

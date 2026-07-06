@@ -2007,3 +2007,103 @@ class TestTokenFactoryLazyAcquisition:
             assert self._TOKEN_ATTR not in attrs
         finally:
             conn.close()
+
+
+class TestRawAccessTokenPoolKey:
+    """A raw SQL_COPT_SS_ACCESS_TOKEN in attrs_before (no ``Authentication=``
+    keyword — the documented msodbcsql raw-token / token_provider pattern) must
+    still isolate the pool per token, or two callers with different tokens
+    against the same server would share a pooled connection."""
+
+    _TOKEN_ATTR = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_raw_token_sets_token_hash_pool_key(self, mock_ddbc_conn):
+        import hashlib
+
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        token = b"raw-access-token-bytes"
+        conn = connect(
+            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            attrs_before={self._TOKEN_ATTR: token},
+        )
+        try:
+            expected = "tok:" + hashlib.sha256(token).hexdigest()
+            assert conn._pool_key.endswith("\x00" + expected)
+            assert conn._pool_key != ""
+        finally:
+            conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_different_raw_tokens_get_distinct_pool_keys(self, mock_ddbc_conn):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn_a = connect(
+            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            attrs_before={self._TOKEN_ATTR: b"token-A"},
+        )
+        conn_b = connect(
+            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            attrs_before={self._TOKEN_ATTR: b"token-B"},
+        )
+        try:
+            assert conn_a._pool_key != conn_b._pool_key
+        finally:
+            conn_a.close()
+            conn_b.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_same_raw_token_gets_stable_pool_key(self, mock_ddbc_conn):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn_a = connect(
+            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            attrs_before={self._TOKEN_ATTR: b"same-token"},
+        )
+        conn_b = connect(
+            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            attrs_before={self._TOKEN_ATTR: b"same-token"},
+        )
+        try:
+            assert conn_a._pool_key == conn_b._pool_key
+        finally:
+            conn_a.close()
+            conn_b.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_bytearray_raw_token_is_handled(self, mock_ddbc_conn):
+        import hashlib
+
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        token = bytearray(b"bytearray-token")
+        conn = connect(
+            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            attrs_before={self._TOKEN_ATTR: token},
+        )
+        try:
+            expected = "tok:" + hashlib.sha256(bytes(token)).hexdigest()
+            assert conn._pool_key.endswith("\x00" + expected)
+        finally:
+            conn.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_no_token_leaves_pool_key_empty(self, mock_ddbc_conn):
+        # Plain SQL auth with no token: pool key stays empty (legacy connStr
+        # keying), so the raw-token guard does not disturb existing behavior.
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect(
+            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            attrs_before={1256000: 30},  # some unrelated non-token attribute
+        )
+        try:
+            assert conn._pool_key == ""
+        finally:
+            conn.close()

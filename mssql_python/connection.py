@@ -450,6 +450,11 @@ class Connection:
                     elif token:
                         # Token-hash key: bind the pooled connection to this
                         # exact token so its hash always matches the pool key.
+                        # No token factory is attached, so this pool is NOT
+                        # expiry-aware — the near-expiry refresh in the native
+                        # layer only runs for factory-backed (msi:/acct:) pools.
+                        # A driver-acquired DAC/raw token is reused until the
+                        # connection dies; see the pooling notes in the README.
                         self._attrs_before[token_attr] = token
 
             # Store auth type so bulkcopy() can acquire a fresh token later.
@@ -486,6 +491,23 @@ class Connection:
 
         # Initialize search escape character
         self._searchescape = None
+
+        # Safety net for the raw access-token pattern: a caller may pass
+        # SQL_COPT_SS_ACCESS_TOKEN directly in attrs_before with no
+        # Authentication= keyword (the documented msodbcsql raw-token pattern),
+        # or via the public token_provider= API. That path never runs the
+        # identity-key logic above, so without this guard the pool key would
+        # stay empty and two callers with different raw tokens against the same
+        # server would share a pool — handing user B user A's authenticated
+        # connection on a pool hit. Bind the pool key to the token hash so
+        # distinct tokens never collide (upholds the "a token is present =>
+        # key is never the bare connStr" invariant).
+        if not self._pool_key:
+            _raw_token = self._attrs_before.get(ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value)
+            if isinstance(_raw_token, (bytes, bytearray)):
+                _token_identity = compute_identity_key("default", token_struct=bytes(_raw_token))
+                if _token_identity:
+                    self._pool_key = self.connection_str + "\x00" + _token_identity
 
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
