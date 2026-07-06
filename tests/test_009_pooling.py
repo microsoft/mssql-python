@@ -896,6 +896,34 @@ def test_pooling_enable_disable_cycle(conn_str):
     print("All enable/disable cycles completed successfully")
 
 
+def test_reenable_rearms_disable_guard(conn_str):
+    """After enable -> disable -> enable, a second disable() must actually
+    disarm the native manager (call disable_pooling) rather than being skipped.
+
+    Regression for the state-sync bug where enable() did not reset
+    _pools_closed, so the second disable() saw _pools_closed=True and skipped
+    ddbc_bindings.disable_pooling(), leaving the native manager accepting while
+    the Python side believed pooling was off.
+    """
+    from unittest.mock import patch
+
+    PoolingManager._reset_for_testing()
+    try:
+        PoolingManager.enable()
+        PoolingManager.disable()
+        # Re-enable: this must re-arm the guard (reset _pools_closed to False).
+        PoolingManager.enable()
+        assert PoolingManager._pools_closed is False
+
+        with patch("mssql_python.pooling.ddbc_bindings.disable_pooling") as mock_disable:
+            PoolingManager.disable()
+            mock_disable.assert_called_once()
+        assert PoolingManager.is_enabled() is False
+        assert PoolingManager._pools_closed is True
+    finally:
+        PoolingManager._reset_for_testing()
+
+
 def test_pooling_state_consistency(conn_str):
     """Test that pooling state remains consistent across operations."""
     print("Testing pooling state consistency...")
