@@ -99,6 +99,17 @@ extends:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
 
             steps:
+              - task: PowerShell@2
+                displayName: 'Preflight: verify odbcBuildDefinitionId is configured'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    if ('$(odbcBuildDefinitionId)' -eq '0' -or [string]::IsNullOrWhiteSpace('$(odbcBuildDefinitionId)')) {
+                      Write-Error "odbcBuildDefinitionId is still the '0' placeholder. Set it to the registered 'Build-Release-ODBC-Pipeline' build definition ID before releasing, otherwise the artifact download below fails cryptically."
+                      exit 1
+                    }
+                    Write-Host "odbcBuildDefinitionId = $(odbcBuildDefinitionId)"
+
               - task: DownloadPipelineArtifact@2
                 displayName: 'Download Consolidated ODBC Artifacts'
                 inputs:
