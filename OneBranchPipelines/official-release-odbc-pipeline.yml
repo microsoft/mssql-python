@@ -8,7 +8,7 @@
 # source and that this package has no debug symbols to publish.
 #
 # This pipeline is ALWAYS Official. It is runnable the moment ESRP onboarding of the
-# `mssql-python-odbc` project name lands and the two TODO(infra) values below are set.
+# `mssql-python-odbc` project name lands and the two infra values below are set.
 # =========================================================================================
 
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)-Release-ODBC
@@ -28,7 +28,7 @@ variables:
   - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
   # Shared ESRP identity — same group used by the mssql-python release pipeline.
   - group: 'ESRP Federated Creds (AME)'
-  # TODO(infra): set to the ADO build definition ID of 'Build-Release-ODBC-Pipeline'
+  # Infra setup: set to the ADO build definition ID of 'Build-Release-ODBC-Pipeline'
   # once it is registered (the mssql-python build definition is 2199). Left as 0 so the
   # pipeline compiles; the download tasks will fail at runtime until this is set.
   - name: odbcBuildDefinitionId
@@ -44,7 +44,7 @@ resources:
   # Reference to the ODBC build pipeline (select a run in the UI when releasing).
   pipelines:
     - pipeline: buildPipeline
-      source: 'Build-Release-ODBC-Pipeline'  # TODO(infra): match the registered build pipeline name.
+      source: 'Build-Release-ODBC-Pipeline'  # Infra setup: match the registered build pipeline name.
       trigger: none
 
 extends:
@@ -141,7 +141,8 @@ extends:
                       exit 1
                     }
                     if ($wheels.Count -ne 7) {
-                      Write-Warning "Expected 7 ODBC wheels but found $($wheels.Count)"
+                      Write-Error "Expected 7 ODBC wheels but found $($wheels.Count)"
+                      exit 1
                     }
                     Write-Host "All wheels verified successfully!"
 

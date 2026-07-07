@@ -54,10 +54,10 @@ jobs:
           WHEEL_COUNT=$(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)
           echo "Total wheel count: $WHEEL_COUNT (expected ${{ parameters.expectedWheelCount }})"
           if [ "$WHEEL_COUNT" -ne "${{ parameters.expectedWheelCount }}" ]; then
-            echo "WARNING: expected ${{ parameters.expectedWheelCount }} wheels but found $WHEEL_COUNT"
-          else
-            echo "SUCCESS: all ${{ parameters.expectedWheelCount }} ODBC wheels consolidated."
+            echo "ERROR: expected ${{ parameters.expectedWheelCount }} wheels but found $WHEEL_COUNT" >&2
+            exit 1
           fi
+          echo "SUCCESS: all ${{ parameters.expectedWheelCount }} ODBC wheels consolidated."
         displayName: 'Consolidate ODBC wheels'
 
       - task: PublishPipelineArtifact@1

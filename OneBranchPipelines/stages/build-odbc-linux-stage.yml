@@ -123,9 +123,10 @@ stages:
                   # Pick any available CPython from the PyPA image.
                   PY=$(ls -d /opt/python/cp312-cp312/bin/python 2>/dev/null || ls -d /opt/python/cp3*/bin/python | head -1)
                   echo "Using: $($PY --version)"
-                  $PY -m pip install -q -U pip setuptools wheel
+                  $PY -m pip install -q -U pip setuptools wheel twine
                   cd /workspace
                   $PY setup_odbc.py bdist_wheel
+                  $PY -m twine check /workspace/dist/*.whl
                   echo "Produced wheels:"; ls -lh /workspace/dist/*.whl
                 '
             displayName: 'Build ODBC wheel in container'
@@ -134,6 +135,11 @@ stages:
               set -euxo pipefail
               cp -v $(Build.SourcesDirectory)/dist/*.whl $(ob_outputDirectory)/wheels/
             displayName: 'Stage wheel artifact'
+
+          - script: |
+              docker rm -f build-$(LINUX_TAG)-$(ARCH) || true
+            displayName: 'Stop and remove build container'
+            condition: always()
 
           - task: PublishPipelineArtifact@1
             displayName: 'Publish ODBC Linux Artifact'
