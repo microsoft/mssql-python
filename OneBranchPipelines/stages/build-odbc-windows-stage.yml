@@ -1,0 +1,125 @@
+# ODBC Windows Single Configuration Stage Template
+# Builds the platform-specific `mssql-python-odbc` wheel for ONE Windows architecture.
+#
+# Unlike the mssql-python build, this package ships ONLY pre-built ODBC driver
+# binaries (data) — there is NO compiled Python extension. A single
+# `py3-none-<platform>` wheel therefore serves every supported Python version
+# (3.10+), so this stage does NOT use a per-Python-version matrix and does NOT
+# run pytest against SQL Server. The driver binaries are already committed under
+# `mssql_python/libs/`, so `checkout: self` is all that is needed; `setup_odbc.py`
+# packages the current platform's subtree.
+parameters:
+  # Stage identifier (e.g., 'ODBC_Win_x64').
+  - name: stageName
+    type: string
+  # Job identifier within the stage.
+  - name: jobName
+    type: string
+    default: 'BuildWheel'
+  # Target architecture: 'x64' (AMD64) or 'arm64' (ARM64).
+  - name: architecture
+    type: string
+  # OneBranch build type: 'Official' (production) or 'NonOfficial' (dev/test).
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+  # Any supported interpreter can produce the Python-agnostic wheel.
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'ODBC Windows ${{ parameters.architecture }}'
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Build ODBC Wheel - Windows ${{ parameters.architecture }}'
+        # Reuse the same custom 1ES Windows pool as the mssql-python build.
+        pool:
+          type: windows
+          isCustom: true
+          name: Python-1ES-pool
+          demands:
+          - imageOverride -equals PYTHON-1ES-MMS2022
+        timeoutInMinutes: 60
+
+        variables:
+          # OneBranch output directory for artifacts.
+          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+          # OneBranch-required variable (unused on Windows stages).
+          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          # Drives the wheel platform tag in setup_odbc.py (get_platform_info()).
+          targetArch: ${{ parameters.architecture }}
+
+        steps:
+          # Driver binaries live in mssql_python/libs (committed); shallow checkout is enough.
+          - checkout: self
+            fetchDepth: 1
+
+          # The ARM64 wheel is pure data, so it can be produced on an x64 host — there is
+          # no native compilation and hence no ARM64 python.lib cross-compile machinery.
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+              architecture: 'x64'
+              addToPath: true
+            displayName: 'Use Python ${{ parameters.pythonVersion }}'
+
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              python -m pip install --upgrade pip
+              python -m pip install setuptools wheel build twine
+            displayName: 'Install build tooling'
+
+          # Build the platform-specific, Python-agnostic wheel. ARCHITECTURE controls the
+          # platform tag (win_amd64 / win_arm64). No native compilation happens here —
+          # setup_odbc.py only packages the driver binaries from mssql_python/libs.
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              $env:ARCHITECTURE = "${{ parameters.architecture }}"
+              python setup_odbc.py bdist_wheel
+              Write-Host "Produced wheels:"
+              Get-ChildItem dist\*.whl | ForEach-Object { Write-Host "  - $($_.Name)" }
+            displayName: 'Build ODBC wheel (ARCHITECTURE=${{ parameters.architecture }})'
+
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              python -m twine check dist\*.whl
+            displayName: 'twine check wheel'
+
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\dist'
+              Contents: '*.whl'
+              TargetFolder: '$(ob_outputDirectory)\wheels'
+            displayName: 'Stage wheel artifact'
+
+          # OneBranch requires artifact naming: drop_<stageName>_<jobName>.
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish ODBC Windows Artifact'
+            inputs:
+              targetPath: '$(ob_outputDirectory)'
+              artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
+              publishLocation: 'pipeline'
+
+          # Component Governance + OneBranch AntiMalware notification.
+          - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self
+            parameters:
+              scanPath: '$(ob_outputDirectory)'
+              artifactType: 'pkg'
+
+          # Scan the redistributed driver binaries + wheel for malware (Official only).
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - ODBC Wheel (Official)'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  SessionTimeout: 60
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1

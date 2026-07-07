@@ -1,0 +1,163 @@
+# ODBC Linux Single Configuration Stage Template
+# Builds the platform-specific `mssql-python-odbc` wheel for ONE libc/arch combo
+# (manylinux_2_28 or musllinux_1_2 x x86_64 or aarch64).
+#
+# Data-only package: no native compilation, no per-Python matrix, no pytest.
+# A PyPA build container is still used so `platform.libc_ver()` reports the right
+# libc and the wheel is tagged manylinux_2_28_* or musllinux_1_2_* correctly.
+# aarch64 wheels are produced under QEMU emulation. Driver binaries come from the
+# committed mssql_python/libs/ tree that is bind-mounted into the container.
+parameters:
+  # Stage identifier (e.g., 'ODBC_Linux_manylinux_2_28_x86_64').
+  - name: stageName
+    type: string
+  - name: jobName
+    type: string
+    default: 'BuildWheel'
+  # Distribution type: 'manylinux_2_28' (glibc 2.28+) or 'musllinux' (musl libc).
+  - name: linuxTag
+    type: string
+  # CPU architecture: 'x86_64' (AMD64) or 'aarch64' (ARM64).
+  - name: arch
+    type: string
+  # Docker platform for QEMU emulation: 'linux/amd64' or 'linux/arm64'.
+  - name: dockerPlatform
+    type: string
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'ODBC Linux ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Build ODBC Wheel - ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+        # Reuse the same custom 1ES Linux pool as the mssql-python build.
+        pool:
+          type: linux
+          isCustom: true
+          name: Python-1ES-pool
+          demands:
+          - imageOverride -equals PYTHON-1ES-UB2404
+        timeoutInMinutes: 60
+
+        variables:
+          # BinSkim needs ICU libs not present in manylinux/musllinux containers.
+          - name: ob_sdl_binskim_enabled
+            value: false
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          - name: LINUX_TAG
+            value: ${{ parameters.linuxTag }}
+          - name: ARCH
+            value: ${{ parameters.arch }}
+          - name: DOCKER_PLATFORM
+            value: ${{ parameters.dockerPlatform }}
+
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - bash: |
+              set -e
+              if ! docker info > /dev/null 2>&1; then
+                echo "Starting Docker daemon..."
+                sudo dockerd > docker.log 2>&1 &
+                sleep 10
+              fi
+              docker --version
+            displayName: 'Setup and start Docker daemon'
+
+          - script: |
+              sudo apt-get install -y qemu-user-static
+            displayName: 'Enable QEMU (for aarch64)'
+
+          - script: |
+              rm -rf $(ob_outputDirectory)/wheels
+              mkdir -p $(ob_outputDirectory)/wheels
+            displayName: 'Prepare artifact directories'
+
+          - task: AzureCLI@2
+            displayName: 'Login to ACR (tdslibrs)'
+            inputs:
+              azureSubscription: 'Magnitude Test-mssql-rs-mssql-python'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az acr login --name tdslibrs
+
+          - script: |
+              set -euxo pipefail
+              # Same PyPA images as the mssql-python Linux build (mirrored into ACR).
+              if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
+                IMAGE="tdslibrs.azurecr.io/import/python-build/manylinux_2_28_$(ARCH):latest"
+              elif [[ "$(LINUX_TAG)" == "musllinux" ]]; then
+                IMAGE="tdslibrs.azurecr.io/import/python-build/musllinux_1_2_$(ARCH):latest"
+              else
+                echo "ERROR: Unsupported LINUX_TAG '$(LINUX_TAG)'. Expected: manylinux_2_28 or musllinux" >&2
+                exit 1
+              fi
+              docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
+                --platform $(DOCKER_PLATFORM) \
+                -v $(Build.SourcesDirectory):/workspace \
+                -w /workspace \
+                $IMAGE tail -f /dev/null
+            displayName: 'Start $(LINUX_TAG) $(ARCH) container'
+
+          # Build the single py3-none wheel inside the container. Any CPython works; no
+          # compilation runs. setup_odbc.py's get_platform_info() auto-detects musl via
+          # platform.libc_ver(): on musllinux images it ALWAYS emits musllinux_1_2_<arch>
+          # and ignores MANYLINUX_TAG. MANYLINUX_TAG is only consulted on glibc images, so
+          # hardcoding "manylinux_2_28" below is correct for both image families.
+          - script: |
+              set -euxo pipefail
+              if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
+              docker exec \
+                -e targetArch="$(ARCH)" \
+                -e MANYLINUX_TAG="manylinux_2_28" \
+                build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc '
+                  set -eux
+                  # Pick any available CPython from the PyPA image.
+                  PY=$(ls -d /opt/python/cp312-cp312/bin/python 2>/dev/null || ls -d /opt/python/cp3*/bin/python | head -1)
+                  echo "Using: $($PY --version)"
+                  $PY -m pip install -q -U pip setuptools wheel
+                  cd /workspace
+                  $PY setup_odbc.py bdist_wheel
+                  echo "Produced wheels:"; ls -lh /workspace/dist/*.whl
+                '
+            displayName: 'Build ODBC wheel in container'
+
+          - script: |
+              set -euxo pipefail
+              cp -v $(Build.SourcesDirectory)/dist/*.whl $(ob_outputDirectory)/wheels/
+            displayName: 'Stage wheel artifact'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish ODBC Linux Artifact'
+            inputs:
+              targetPath: '$(ob_outputDirectory)'
+              artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
+              publishLocation: 'pipeline'
+
+          - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self
+            parameters:
+              scanPath: '$(ob_outputDirectory)'
+              artifactType: 'pkg'
+
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - ODBC Wheel (Official)'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  SessionTimeout: 60
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1

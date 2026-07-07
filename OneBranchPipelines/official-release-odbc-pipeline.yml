@@ -1,0 +1,227 @@
+# =========================================================================================
+# OneBranch Official Release Pipeline for mssql-python-odbc
+# =========================================================================================
+# Downloads the consolidated wheels from the ODBC build pipeline and publishes them to
+# PyPI via ESRP, using the SAME shared ESRP identity as mssql-python (variable group
+# 'ESRP Federated Creds (AME)'). The EsrpRelease task is identical to the mssql-python
+# release (same inputs and FolderLocation); the only differences are the build pipeline
+# source and that this package has no debug symbols to publish.
+#
+# This pipeline is ALWAYS Official. It is runnable the moment ESRP onboarding of the
+# `mssql-python-odbc` project name lands and the two TODO(infra) values below are set.
+# =========================================================================================
+
+name: $(Year:YY)$(DayOfYear)$(Rev:.r)-Release-ODBC
+
+# Manual trigger only — releases should be deliberate.
+trigger: none
+pr: none
+
+parameters:
+  - name: releaseToPyPI
+    displayName: 'Release to PyPI (Production)'
+    type: boolean
+    default: false  # Safety: default false to prevent accidental releases.
+
+variables:
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
+  # Shared ESRP identity — same group used by the mssql-python release pipeline.
+  - group: 'ESRP Federated Creds (AME)'
+  # TODO(infra): set to the ADO build definition ID of 'Build-Release-ODBC-Pipeline'
+  # once it is registered (the mssql-python build definition is 2199). Left as 0 so the
+  # pipeline compiles; the download tasks will fail at runtime until this is set.
+  - name: odbcBuildDefinitionId
+    value: '0'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'OneBranch.Pipelines/GovernedTemplates'
+      ref: 'refs/heads/main'
+
+  # Reference to the ODBC build pipeline (select a run in the UI when releasing).
+  pipelines:
+    - pipeline: buildPipeline
+      source: 'Build-Release-ODBC-Pipeline'  # TODO(infra): match the registered build pipeline name.
+      trigger: none
+
+extends:
+  template: 'v2/OneBranch.Official.CrossPlat.yml@templates'
+
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Version: '2022'
+
+    globalSdl:
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)\.gdn\.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)\.gdn\.gdnsuppress
+        suppressionSet: default
+
+      # Artifacts were already scanned during the build; this pipeline only republishes.
+      binskim:
+        enabled: false
+        justificationForDisabling: 'Release pipeline only republishes pre-scanned wheels; no binaries are built here.'
+      credscan:
+        enabled: true
+      policheck:
+        enabled: true
+        break: true
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
+      publishLogs:
+        enabled: true
+      tsa:
+        enabled: true
+        configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
+
+    stages:
+      - stage: ReleasePackages
+        displayName: 'Release mssql-python-odbc to PyPI'
+
+        jobs:
+          # Job 1: Download + validate the consolidated wheels (custom pool).
+          - job: PrepAndValidate
+            displayName: 'Download and Validate Artifacts'
+
+            pool:
+              type: windows
+              isCustom: true
+              name: Python-1ES-pool
+              demands:
+              - imageOverride -equals PYTHON-1ES-MMS2022
+
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+
+            steps:
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download Consolidated ODBC Artifacts'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: $(odbcBuildDefinitionId)
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)
+                  artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+                  targetPath: '$(Build.SourcesDirectory)/artifacts'
+
+              - task: PowerShell@2
+                displayName: 'List and Verify Downloaded Wheels'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    $wheelsPath = "$(Build.SourcesDirectory)/artifacts/dist"
+                    if (-not (Test-Path $wheelsPath)) {
+                      Write-Error "Wheel directory not found at: $wheelsPath"
+                      exit 1
+                    }
+                    $wheels = Get-ChildItem -Path $wheelsPath -Filter "*.whl"
+                    Write-Host "Total wheel files found: $($wheels.Count)"
+
+                    $allValid = $true
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem
+                    foreach ($wheel in $wheels) {
+                      try {
+                        $zip = [System.IO.Compression.ZipFile]::OpenRead($wheel.FullName)
+                        $entryCount = $zip.Entries.Count
+                        $zip.Dispose()
+                        Write-Host "  OK  $($wheel.Name) ($entryCount entries)"
+                      } catch {
+                        Write-Error "  BAD $($wheel.Name): $_"
+                        $allValid = $false
+                      }
+                    }
+                    if (-not $allValid) {
+                      Write-Error "One or more wheel files are corrupted"
+                      exit 1
+                    }
+                    if ($wheels.Count -ne 7) {
+                      Write-Warning "Expected 7 ODBC wheels but found $($wheels.Count)"
+                    }
+                    Write-Host "All wheels verified successfully!"
+
+              # Dry-run summary (when release is disabled).
+              - ${{ if eq(parameters.releaseToPyPI, false) }}:
+                  - task: PowerShell@2
+                    displayName: 'Dry Run - Release Skipped'
+                    inputs:
+                      targetType: 'inline'
+                      script: |
+                        Write-Host "===================================="
+                        Write-Host "DRY RUN MODE - No Release Performed"
+                        Write-Host "Package: mssql-python-odbc"
+                        Write-Host "===================================="
+                        Write-Host "To perform an actual release:"
+                        Write-Host "1. Set 'releaseToPyPI' parameter to true"
+                        Write-Host "2. Re-run pipeline"
+
+          # Job 2: ESRP Release (releaseJob on 1ES hosted pool — required by OneBranch policy).
+          # EsrpRelease is not allowed in custom pools; must use templateContext.type: releaseJob.
+          - ${{ if eq(parameters.releaseToPyPI, true) }}:
+            - job: PyPIRelease
+              displayName: 'ESRP Release to PyPI'
+              dependsOn: PrepAndValidate
+
+              templateContext:
+                type: releaseJob
+                isProduction: true
+
+              pool:
+                type: windows
+
+              variables:
+                ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+                WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
+
+              steps:
+                - task: DownloadPipelineArtifact@2
+                  displayName: 'Download Artifacts from ODBC Build Pipeline'
+                  inputs:
+                    buildType: 'specific'
+                    project: '$(System.TeamProject)'
+                    definition: $(odbcBuildDefinitionId)
+                    buildVersionToDownload: 'specific'
+                    buildId: $(resources.pipeline.buildPipeline.runID)
+                    artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+                    targetPath: '$(Build.SourcesDirectory)/artifacts'
+
+                # ESRP release task — identical to the mssql-python release pipeline
+                # (same shared ESRP identity and PyPI publish inputs).
+                - task: EsrpRelease@9
+                  displayName: 'ESRP Release to PyPI'
+                  inputs:
+                    connectedservicename: '$(ESRPConnectedServiceName)'
+                    usemanagedidentity: true
+                    keyvaultname: '$(AuthAKVName)'
+                    signcertname: '$(AuthSignCertName)'
+                    clientid: '$(EsrpClientId)'
+                    Intent: 'PackageDistribution'
+                    ContentType: 'PyPI'
+                    ContentSource: 'Folder'
+                    FolderLocation: '$(Build.SourcesDirectory)/artifacts/dist'
+                    WaitForReleaseCompletion: true
+                    Owners: '$(owner)'
+                    Approvers: '$(approver)'
+                    ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+                    MainPublisher: 'ESRPRELPACMAN'
+                    DomainTenantId: '$(DomainTenantId)'
+
+                - task: PowerShell@2
+                  displayName: 'Release Summary'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      Write-Host "===================================="
+                      Write-Host "ESRP Release Completed"
+                      Write-Host "Package: mssql-python-odbc"
+                      Write-Host "Target: PyPI"
+                      Write-Host "===================================="
+                      Write-Host "Next steps:"
+                      Write-Host "1. Verify release in the ESRP portal"
+                      Write-Host "2. Wait for approval workflow completion"
+                      Write-Host "3. Verify on PyPI: https://pypi.org/project/mssql-python-odbc/"

@@ -1,0 +1,107 @@
+# ODBC macOS Single Configuration Stage Template
+# Builds the universal2 `mssql-python-odbc` wheel (arm64 + x86_64 driver binaries in
+# one wheel).
+#
+# Data-only package: no native compilation, no per-Python matrix, no pytest.
+# `setup_odbc.py` returns the macosx_15_0_universal2 platform tag and copies both
+# macOS arch subtrees from mssql_python/libs, so a single build serves both slices.
+parameters:
+  # Stage identifier (e.g., 'ODBC_MacOS_universal2').
+  - name: stageName
+    type: string
+  - name: jobName
+    type: string
+    default: 'BuildWheel'
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'ODBC macOS Universal2'
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Build ODBC Wheel - macOS Universal2'
+        # macOS pools declare as 'linux' type (Azure Pipelines quirk).
+        pool:
+          type: linux
+          isCustom: true
+          name: Azure Pipelines
+          vmImage: 'macOS-14'
+        timeoutInMinutes: 60
+
+        variables:
+          # BinSkim targets PE binaries; macOS uses Mach-O, so disable it here.
+          - name: ob_sdl_binskim_enabled
+            value: false
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          # OneBranch-required variable (unused on macOS stages).
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+              addToPath: true
+            displayName: 'Use Python ${{ parameters.pythonVersion }}'
+
+          - script: |
+              set -e
+              python -m pip install --upgrade pip
+              python -m pip install setuptools wheel build twine
+            displayName: 'Install build tooling'
+
+          # get_platform_info() forces the macosx_15_0_universal2 tag; sync_libs() copies
+          # both arm64 + x86_64 driver subtrees, so no post-build retag is required.
+          - script: |
+              set -e
+              python setup_odbc.py bdist_wheel
+              echo "Produced wheels:"; ls -lh dist/*.whl
+            displayName: 'Build ODBC wheel (universal2)'
+
+          - script: |
+              set -e
+              python -m twine check dist/*.whl
+            displayName: 'twine check wheel'
+
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)/dist'
+              Contents: '*.whl'
+              TargetFolder: '$(ob_outputDirectory)/wheels'
+            displayName: 'Stage wheel artifact'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish ODBC macOS Artifact'
+            inputs:
+              targetPath: '$(ob_outputDirectory)'
+              artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
+              publishLocation: 'pipeline'
+
+          - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self
+            parameters:
+              scanPath: '$(ob_outputDirectory)'
+              artifactType: 'pkg'
+
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - ODBC Wheel (Official)'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  SessionTimeout: 60
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1
