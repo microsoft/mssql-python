@@ -144,6 +144,7 @@ extends:
         justificationForDisabling: 'No first-party native binaries are produced by this pipeline.'
       armory:
         enabled: false
+        justificationForDisabling: 'This pipeline only packages pre-built driver binaries; no first-party native code is built. Wheels are malware-scanned per stage.'
       codeql:
         enabled: false
         justificationForDisabling: 'This pipeline only packages pre-built driver binaries; no first-party source is compiled.'
