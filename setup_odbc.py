@@ -212,6 +212,27 @@ setup(
     url="https://github.com/microsoft/mssql-python",
     license="MIT",
     packages=[PACKAGE_NAME],
+    # vcredist / VC++ runtime (deliberate divergence from the main wheel's SHAPE,
+    # not a behavior change): unlike setup.py we do NOT exclude
+    # ``libs/<plat>/vcredist/``. This is intentional and consistent with what the
+    # main wheel actually ships:
+    #   * The main mssql-python wheel still ships the VC++ runtime
+    #     (``msvcp140.dll``) -- build.bat copies it out of
+    #     ``libs/windows/<arch>/vcredist/`` to the package root next to the
+    #     compiled ``ddbc_bindings`` extension, and setup.py then excludes the
+    #     now-duplicate ``vcredist/`` folder. That exclusion is DE-DUPLICATION,
+    #     not a licensing/size-driven removal of the runtime.
+    #   * This package is pure driver-binary data with no compiled extension, so
+    #     there is no package-root ``.pyd`` to relocate the runtime beside. We
+    #     therefore keep ``msvcp140.dll`` in its original ``vcredist/`` folder
+    #     (with its license text) so the driver binaries and the runtime they
+    #     were built against travel together and the wheel stays self-contained.
+    # This does not create a Phase-2 runtime skew: the driver's ``msvcp140.dll``
+    # dependency is satisfied in-process by the mssql-python extension module
+    # (built ``/MD``, which loads ``msvcp140.dll`` from beside the ``.pyd``), so
+    # the external-package and bundled-libs paths behave identically. This copy
+    # is completeness + attribution, which is also why GetOdbcLibsBaseDir()'s
+    # completeness check does not need to verify vcredist.
     package_data={
         PACKAGE_NAME: [
             "libs/*",
