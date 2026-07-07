@@ -48,8 +48,6 @@ stages:
           ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
           # OneBranch-required variable (unused on Windows stages).
           LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
-          # Drives the wheel platform tag in setup_odbc.py (get_platform_info()).
-          targetArch: ${{ parameters.architecture }}
 
         steps:
           # Driver binaries live in mssql_python/libs (committed); shallow checkout is enough.
