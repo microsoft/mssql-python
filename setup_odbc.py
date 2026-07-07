@@ -18,10 +18,12 @@ full release matrix.
 """
 
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
 
+import setuptools
 from setuptools import setup
 from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
@@ -30,6 +32,29 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 PACKAGE_NAME = "mssql_python_odbc"
 PACKAGE_DIR = PROJECT_ROOT / PACKAGE_NAME
 BUNDLED_LIBS_ROOT = PROJECT_ROOT / "mssql_python" / "libs"
+
+# The driver binaries are packaged via the recursive ``libs/**/*`` glob in
+# ``package_data`` below. Support for ``**`` recursive globs in ``package_data``
+# landed in setuptools 62.3.0; with an older setuptools the glob silently
+# matches nothing and the wheel ships WITHOUT any driver binaries. The ``libs/``
+# tree is gitignored, so ``include_package_data`` cannot recover the files from
+# version control either -- a stale setuptools would produce a broken-but-quiet
+# wheel. Fail fast instead.
+MIN_SETUPTOOLS = (62, 3, 0)
+
+
+def _require_min_setuptools() -> None:
+    raw = setuptools.__version__
+    parts = tuple(int(m) for m in re.findall(r"\d+", raw)[:3])
+    parts += (0,) * (3 - len(parts))
+    if parts < MIN_SETUPTOOLS:
+        raise SystemExit(
+            "setup_odbc.py requires setuptools >= "
+            f"{'.'.join(map(str, MIN_SETUPTOOLS))} to package the ODBC driver "
+            "binaries via the recursive 'libs/**/*' glob; found setuptools "
+            f"{raw}. Upgrade with:\n"
+            '    python -m pip install --upgrade "setuptools>=62.3.0"'
+        )
 
 
 class BinaryDistribution(Distribution):
@@ -167,6 +192,8 @@ class CustomBdistWheel(bdist_wheel):
         sync_libs()
         bdist_wheel.run(self)
 
+
+_require_min_setuptools()
 
 setup(
     name="mssql-python-odbc",

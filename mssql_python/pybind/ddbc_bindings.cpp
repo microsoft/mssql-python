@@ -1145,6 +1145,13 @@ std::string GetDriverPathCpp(const std::string& moduleDir);
 
 std::string GetOdbcLibsBaseDir() {
     namespace fs = std::filesystem;
+    // This function calls into the Python C-API (py::module::import, attribute
+    // access, casts), so it must run with the GIL held. It is a no-op when the
+    // GIL is already held — which it is at the sole current call site, during
+    // module initialization — but acquiring it here self-documents the C-API
+    // dependency and keeps a future GIL-released caller from turning this into a
+    // hard crash.
+    py::gil_scoped_acquire gil;
     try {
         py::object module = py::module::import("mssql_python_odbc");
         py::object module_path = module.attr("__file__");
@@ -1292,6 +1299,16 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
         platform = "debian_ubuntu";  // Default to debian_ubuntu for other distros
     }
 
+    // NOTE (version coupling): the Linux driver filename is pinned to the exact
+    // msodbcsql minor version (18.6 -> libmsodbcsql-18.6.so.2.1), matching the
+    // binaries bundled under mssql_python/libs and shipped by the standalone
+    // mssql_python_odbc package. If those driver binaries are upgraded (e.g. to
+    // 18.7) this literal MUST be updated in lockstep: GetOdbcLibsBaseDir() calls
+    // fs::exists() on this exact path to decide whether the external package is
+    // "complete", so a stale name would make it silently fall back to the
+    // bundled libs. (The macOS/Windows paths below key off the major version
+    // only and are more forgiving.) Tracked for the Phase 3 driver-version-
+    // agnostic resolution work.
     fs::path driverPath =
         basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.6.so.2.1";
     return driverPath.string();
