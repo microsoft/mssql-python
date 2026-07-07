@@ -201,12 +201,6 @@ setup(
     ],
     zip_safe=False,
     distclass=BinaryDistribution,
-    exclude_package_data={
-        PACKAGE_NAME: [
-            "libs/windows/*/vcredist/*",
-            "libs/windows/*/vcredist/**/*",
-        ],
-    },
     cmdclass={
         "bdist_wheel": CustomBdistWheel,
     },
