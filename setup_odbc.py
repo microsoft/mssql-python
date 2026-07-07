@@ -203,8 +203,8 @@ setup(
     distclass=BinaryDistribution,
     exclude_package_data={
         PACKAGE_NAME: [
-            "libs/*/vcredist/*",
-            "libs/*/vcredist/**/*",
+            "libs/windows/*/vcredist/*",
+            "libs/windows/*/vcredist/**/*",
         ],
     },
     cmdclass={

@@ -49,12 +49,21 @@ def _package_dir():
 
 
 def _libs_present():
-    return os.path.isdir(mssql_python_odbc.get_libs_dir())
+    """True only when this platform's driver binary is actually present.
+
+    Checks for the driver file rather than just the ``libs/`` directory, so a
+    stray or empty ``libs/`` in a dev checkout makes the driver tests skip
+    cleanly instead of failing. Mirrors the C++ resolver, which falls back to
+    the bundled libs unless the external package ships a real driver binary.
+    """
+    try:
+        return os.path.isfile(mssql_python_odbc.get_driver_path())
+    except OSError:
+        return False
 
 
 _NO_LIBS_REASON = (
-    "ODBC libs not present in package (fresh checkout, or not built/synced for "
-    "this platform)"
+    "ODBC libs not present in package (fresh checkout, or not built/synced for " "this platform)"
 )
 
 
@@ -71,7 +80,7 @@ class TestLibsDir:
     def test_libs_dir_under_package(self):
         libs_dir = mssql_python_odbc.get_libs_dir()
         assert os.path.basename(libs_dir) == "libs"
-        assert libs_dir.startswith(_package_dir())
+        assert os.path.normcase(libs_dir).startswith(os.path.normcase(_package_dir()))
 
 
 class TestArchDetection:
@@ -136,7 +145,5 @@ class TestPythonCppParity:
             return os.path.normcase(os.path.normpath(p))
 
         assert norm(py_path) == norm(cpp_path), (
-            "Python/C++ driver path mismatch:\n"
-            f"  python={py_path}\n"
-            f"  cpp   ={cpp_path}"
+            "Python/C++ driver path mismatch:\n" f"  python={py_path}\n" f"  cpp   ={cpp_path}"
         )

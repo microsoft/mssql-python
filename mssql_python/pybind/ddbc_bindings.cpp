@@ -1138,6 +1138,11 @@ std::string GetModuleDirectory() {
 // Alpine/musl-safe precisely because it is a separate pure package: it cannot
 // trigger the partially-initialized-module circular import that motivated
 // resolving these paths in C++ in the first place.
+//
+// (`GetDriverPathCpp` is defined further below; forward-declared here so we can
+// verify the external package actually ships this platform's driver binary.)
+std::string GetDriverPathCpp(const std::string& moduleDir);
+
 std::string GetOdbcLibsBaseDir() {
     namespace fs = std::filesystem;
     try {
@@ -1146,17 +1151,38 @@ std::string GetOdbcLibsBaseDir() {
         std::string module_file = module_path.cast<std::string>();
 
         fs::path parentDir = fs::path(module_file).parent_path();
-        LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
-            parentDir.string().c_str());
-        return parentDir.string();
-    } catch (const py::error_already_set& e) {
-        // External package not installed. pybind11 has already fetched and
-        // cleared the CPython error indicator when constructing this
-        // exception, so it is safe to import `mssql_python` again below.
-        LOG("GetOdbcLibsBaseDir: mssql_python_odbc not available (%s); "
+
+        // Only treat the external package as authoritative if it actually ships
+        // this platform's driver binary. In a source/dev checkout (and in CI)
+        // the package is importable from the repo root but its `libs/` tree is
+        // gitignored and absent; in that case fall back to the bundled
+        // `mssql_python` libs so driver resolution still points at a real binary.
+        std::error_code ec;
+        if (fs::exists(GetDriverPathCpp(parentDir.string()), ec)) {
+            LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
+                parentDir.string().c_str());
+            return parentDir.string();
+        }
+        LOG("GetOdbcLibsBaseDir: mssql_python_odbc present at '%s' but has no driver binary; "
             "falling back to bundled libs in mssql_python",
-            e.what());
+            parentDir.string().c_str());
         return GetModuleDirectory();
+    } catch (const py::error_already_set& e) {
+        if (e.matches(PyExc_ModuleNotFoundError)) {
+            // Expected in Phase 2 when the standalone package is not installed.
+            // pybind11 has already fetched and cleared the CPython error
+            // indicator, so re-importing `mssql_python` below is safe.
+            LOG("GetOdbcLibsBaseDir: mssql_python_odbc not installed (%s); "
+                "falling back to bundled libs in mssql_python",
+                e.what());
+            return GetModuleDirectory();
+        }
+        // A different import-time error means the package is installed but
+        // broken; surface it instead of silently masking the real problem.
+        LOG("GetOdbcLibsBaseDir: importing mssql_python_odbc failed unexpectedly (%s); "
+            "re-raising",
+            e.what());
+        throw;
     }
 }
 

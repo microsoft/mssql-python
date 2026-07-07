@@ -39,8 +39,9 @@ def get_libs_dir() -> str:
     """Return the absolute path to this package's ``libs/`` directory.
 
     This is the root under which the platform-specific ODBC binaries live
-    (``libs/<platform>/<arch>/...``). It is the base the native loader appends
-    ``libs`` to when resolving the driver.
+    (``libs/<platform>/<arch>/...``). The parent of this path (the package
+    directory) is the base the native loader appends ``libs`` to when resolving
+    the driver.
     """
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs")
 
