@@ -1,0 +1,68 @@
+# Consolidate ODBC Artifacts Job Template
+# Downloads the per-platform `mssql-python-odbc` wheels from all build stages and
+# consolidates them into a single dist/ folder for the release pipeline to publish.
+# Expected: 7 wheels (2 Windows + 1 macOS universal2 + 4 Linux).
+parameters:
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+  - name: expectedWheelCount
+    type: number
+    default: 7
+
+jobs:
+  - job: ConsolidateArtifacts
+    displayName: 'Consolidate All ODBC Platform Artifacts'
+    condition: succeeded()
+
+    pool:
+      type: linux
+      isCustom: true
+      name: Azure Pipelines
+      vmImage: 'ubuntu-latest'
+
+    variables:
+      # Consolidation only moves files; no binaries to scan.
+      - name: ob_sdl_binskim_enabled
+        value: false
+      - name: ob_outputDirectory
+        value: '$(Build.ArtifactStagingDirectory)'
+
+    steps:
+      - checkout: self
+        fetchDepth: 1
+
+      # Download ALL artifacts from the current build (one per platform stage).
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download All ODBC Platform Artifacts'
+        inputs:
+          buildType: 'current'
+          targetPath: '$(Pipeline.Workspace)/all-artifacts'
+
+      - bash: |
+          set -e
+          mkdir -p $(ob_outputDirectory)/dist
+
+          echo "Finding all .whl files..."
+          find $(Pipeline.Workspace)/all-artifacts -name "*.whl" -exec ls -lh {} \;
+
+          echo "Copying all wheels to consolidated dist/..."
+          find $(Pipeline.Workspace)/all-artifacts -name "*.whl" -exec cp -v {} $(ob_outputDirectory)/dist/ \;
+
+          echo "Consolidated wheels:"
+          ls -lh $(ob_outputDirectory)/dist/
+          WHEEL_COUNT=$(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)
+          echo "Total wheel count: $WHEEL_COUNT (expected ${{ parameters.expectedWheelCount }})"
+          if [ "$WHEEL_COUNT" -ne "${{ parameters.expectedWheelCount }}" ]; then
+            echo "WARNING: expected ${{ parameters.expectedWheelCount }} wheels but found $WHEEL_COUNT"
+          else
+            echo "SUCCESS: all ${{ parameters.expectedWheelCount }} ODBC wheels consolidated."
+          fi
+        displayName: 'Consolidate ODBC wheels'
+
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Consolidated ODBC Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          artifact: 'drop_Consolidate_ConsolidateArtifacts'
+          publishLocation: 'pipeline'
