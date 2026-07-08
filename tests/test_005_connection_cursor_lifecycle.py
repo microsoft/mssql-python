@@ -403,10 +403,9 @@ print("Cleanup successful")
 
 
 def test_cursor_del_half_initialized_cursor_no_errors():
-    """Regression: if ``Cursor.__init__`` raises before reaching
-    ``self.closed = False`` (e.g. ``_initialize_cursor`` failure on a bad
-    HSTMT alloc), the half-initialized instance eventually hits ``__del__``.
-
+    """Regression: ``Cursor.__del__`` / ``close()`` must tolerate Cursor instances
+    missing the ``closed`` attribute (e.g. objects created via ``Cursor.__new__``),
+    so GC does not emit unraisable exceptions.
     Two bugs used to fire in that path and produce a
     ``PytestUnraisableExceptionWarning`` in CI:
       * ``close()`` did ``if self.closed:`` and raised
