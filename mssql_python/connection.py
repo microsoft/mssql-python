@@ -1731,7 +1731,11 @@ class Connection:
             try:
                 self.close()
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to close connection after failed "
+                    "commit/rollback in context manager.",
+                    exc_info=True,
+                )
             if exc_type is None:
                 raise
             return
@@ -1740,6 +1744,10 @@ class Connection:
         except Exception:
             if exc_type is None:
                 raise
+            logger.warning(
+                "Failed to close connection in context manager.",
+                exc_info=True,
+            )
 
     def __del__(self) -> None:
         """
