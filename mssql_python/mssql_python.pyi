@@ -4,7 +4,7 @@ Licensed under the MIT license.
 Type stubs for mssql_python package - based on actual public API
 """
 
-from typing import Any, Dict, List, Mapping, Optional, Union, Tuple, Sequence, Callable, Iterator
+from typing import Any, Dict, List, Mapping, Optional, Union, Tuple, Sequence, Callable, Iterator, Iterable
 import datetime
 import logging
 import pyarrow
@@ -208,6 +208,37 @@ class Cursor:
     def arrow_batch(self, batch_size: int = 8192) -> pyarrow.RecordBatch: ...
     def arrow(self, batch_size: int = 8192) -> pyarrow.Table: ...
     def arrow_reader(self, batch_size: int = 8192) -> pyarrow.RecordBatchReader: ...
+
+    # Bulk Copy
+    def bulkcopy(
+        self,
+        table_name: str,
+        data: Iterable[Union[Tuple[Any, ...], Row]],
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
+    ) -> Dict[str, Any]: ...
+    def bulkcopy_arrow(
+        self,
+        table_name: str,
+        source: Any,
+        *,
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
+    ) -> Dict[str, Any]: ...
 
 # DB-API 2.0 Connection Object
 # https://www.python.org/dev/peps/pep-0249/#connection-objects
