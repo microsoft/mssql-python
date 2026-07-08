@@ -79,6 +79,27 @@ stages:
               TargetFolder: '$(ob_outputDirectory)/wheels'
             displayName: 'Stage wheel artifact'
 
+          # Guard against a data wheel that packaged no driver binary (twine check
+          # would still pass). The driver filename contains 'msodbcsql' on every platform.
+          - script: |
+              set -eu
+              wheel_dir="$(ob_outputDirectory)/wheels"
+              matches=$(ls "$wheel_dir"/*.whl 2>/dev/null || true)
+              if [ -z "$matches" ]; then
+                echo "ERROR: no wheels found to verify in $wheel_dir" >&2
+                exit 1
+              fi
+              for whl in $matches; do
+                echo "Verifying ODBC driver binary present in: $whl"
+                if python -m zipfile -l "$whl" | grep -qi 'msodbcsql'; then
+                  echo "OK: $whl contains the ODBC driver binary"
+                else
+                  echo "ERROR: ODBC driver binary (msodbcsql*) missing from $whl" >&2
+                  exit 1
+                fi
+              done
+            displayName: 'Assert wheel contains ODBC driver binary'
+
           - task: PublishPipelineArtifact@1
             displayName: 'Publish ODBC macOS Artifact'
             inputs:

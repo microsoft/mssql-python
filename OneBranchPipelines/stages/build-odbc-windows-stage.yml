@@ -92,6 +92,28 @@ stages:
               TargetFolder: '$(ob_outputDirectory)\wheels'
             displayName: 'Stage wheel artifact'
 
+          # Guard against a data wheel that packaged no driver binary (twine check
+          # would still pass). The driver DLL name contains 'msodbcsql' on every platform.
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              $wheels = Get-ChildItem -Path "$(ob_outputDirectory)\wheels" -Filter "*.whl"
+              if ($wheels.Count -eq 0) {
+                Write-Error "No wheels found to verify in $(ob_outputDirectory)\wheels"
+                exit 1
+              }
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              foreach ($whl in $wheels) {
+                $zip = [System.IO.Compression.ZipFile]::OpenRead($whl.FullName)
+                $hasDriver = $zip.Entries | Where-Object { $_.FullName -match 'msodbcsql' }
+                $zip.Dispose()
+                if (-not $hasDriver) {
+                  Write-Error "ODBC driver binary (msodbcsql*) missing from $($whl.Name)"
+                  exit 1
+                }
+                Write-Host "OK: $($whl.Name) contains the ODBC driver binary"
+              }
+            displayName: 'Assert wheel contains ODBC driver binary'
+
           # OneBranch requires artifact naming: drop_<stageName>_<jobName>.
           - task: PublishPipelineArtifact@1
             displayName: 'Publish ODBC Windows Artifact'
