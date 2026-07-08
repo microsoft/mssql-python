@@ -64,5 +64,8 @@ jobs:
         displayName: 'Publish Consolidated ODBC Artifacts'
         inputs:
           targetPath: '$(ob_outputDirectory)'
-          artifact: 'drop_Consolidate_ConsolidateArtifacts'
+          # Distinct name so it does not collide with the mssql-python consolidate
+          # artifact (drop_Consolidate_ConsolidateArtifacts) in the same build run.
+          # Matches the OneBranch auto-name for a stage named `ConsolidateOdbc`.
+          artifact: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
           publishLocation: 'pipeline'
