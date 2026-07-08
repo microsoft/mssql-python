@@ -477,15 +477,13 @@ def test_cursor_init_failure_leaves_consistent_state(conn_str, monkeypatch):
 
         monkeypatch.setattr(Cursor, "_initialize_cursor", _raise)
 
-        with pytest.raises(RuntimeError, match="simulated HSTMT"):
-            conn.cursor()
-
         # Force GC of any cursor instance __new__'d during the failed
         # construction; no unraisable AttributeError must escape.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
+            with pytest.raises(RuntimeError, match="simulated HSTMT"):
+                conn.cursor()
             gc.collect()
-
         offenders = [w for w in caught if "AttributeError" in str(w.message)]
         assert not offenders, (
             "failed __init__ produced unraisable AttributeError in __del__: "
