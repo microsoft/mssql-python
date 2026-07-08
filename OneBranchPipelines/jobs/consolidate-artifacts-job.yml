@@ -29,13 +29,20 @@ jobs:
       - checkout: self
         fetchDepth: 1
       
-      # Download ALL artifacts from current build
-      # Matrix jobs publish as: Windows_<JobId>, macOS_<JobId>, Linux_<JobId>
-      # This downloads all of them automatically (27 total artifacts)
+      # Download only the mssql-python platform-stage artifacts from the current build.
+      # The build definition now ALSO produces mssql-python-odbc artifacts (drop_ODBC_*)
+      # in the SAME run, so we scope this download with itemPattern to the mssql-python
+      # stages (drop_Win_*, drop_MacOS_*, drop_Linux_*). Without this, the odbc wheels
+      # would be swept into this package's dist/ and shipped to the mssql-python PyPI
+      # project. The odbc wheels are consolidated separately (ConsolidateOdbc stage).
       - task: DownloadPipelineArtifact@2
         displayName: 'Download All Platform Artifacts'
         inputs:
           buildType: 'current'
+          itemPattern: |
+            drop_Win_*/**
+            drop_MacOS_*/**
+            drop_Linux_*/**
           targetPath: '$(Pipeline.Workspace)/all-artifacts'
       
       # Consolidate all wheels into single dist/ directory
