@@ -16,15 +16,6 @@ LIBMSODBCSQL_PATH="$LIB_DIR/libmsodbcsql.18.dylib"
 LIBODBCINST_PATH="$LIB_DIR/libodbcinst.2.dylib"
 LIBLTDL_PATH="$LIB_DIR/libltdl.7.dylib"
 
-echo "Initial configuration:"
-otool -L "$LIBMSODBCSQL_PATH"
-otool -L "$LIBODBCINST_PATH"
-if [ -f "$LIBLTDL_PATH" ]; then
-  otool -L "$LIBLTDL_PATH"
-fi
-
-echo "Configuring dylibs in: $LIB_DIR"
-
 # Check if the directories and files exist
 if [ ! -d "$LIB_DIR" ]; then
   echo "Note: library directory doesn't exist, skipping: $LIB_DIR"
@@ -40,6 +31,15 @@ if [ ! -f "$LIBODBCINST_PATH" ]; then
   echo "Error: libodbcinst.2.dylib not found at: $LIBODBCINST_PATH"
   exit 1
 fi
+
+echo "Initial configuration:"
+otool -L "$LIBMSODBCSQL_PATH"
+otool -L "$LIBODBCINST_PATH"
+if [ -f "$LIBLTDL_PATH" ]; then
+  otool -L "$LIBLTDL_PATH"
+fi
+
+echo "Configuring dylibs in: $LIB_DIR"
 
 # Get the existing library paths which are linked to the dylibs
 echo "Reading dependencies from libmsodbcsql.18.dylib..."
