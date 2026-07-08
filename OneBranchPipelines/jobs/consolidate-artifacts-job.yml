@@ -1,7 +1,7 @@
 # Consolidate Artifacts Job Template
 # Downloads artifacts from all platform build stages and consolidates into single dist/ folder
-# Works with individual stage artifacts (15 stages total: 7 Windows + 4 macOS + 4 Linux)
-# Each Linux stage builds 4 Python versions, resulting in 27 total wheels
+# Works with individual stage artifacts (18 stages total: 9 Windows + 5 macOS + 4 Linux)
+# Each Linux stage builds 5 Python versions (3.10-3.14), resulting in 34 total wheels
 parameters:
   - name: oneBranchType
     type: string
@@ -75,12 +75,12 @@ jobs:
           echo ""
           WHEEL_COUNT=$(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)
           echo "Total wheel count: $WHEEL_COUNT"
-          echo "Expected: 27 wheels (7 Windows + 4 macOS + 16 Linux)"
+          echo "Expected: 34 wheels (9 Windows + 5 macOS + 20 Linux)"
           
-          if [ "$WHEEL_COUNT" -ne 27 ]; then
-            echo "WARNING: Expected 27 wheels but found $WHEEL_COUNT"
+          if [ "$WHEEL_COUNT" -ne 34 ]; then
+            echo "WARNING: Expected 34 wheels but found $WHEEL_COUNT"
           else
-            echo "SUCCESS: All 27 wheels consolidated!"
+            echo "SUCCESS: All 34 wheels consolidated!"
           fi
         displayName: 'Consolidate wheels from all platforms'
       
