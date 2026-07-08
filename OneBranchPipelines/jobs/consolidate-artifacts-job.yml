@@ -77,8 +77,13 @@ jobs:
           echo "Total wheel count: $WHEEL_COUNT"
           echo "Expected: 34 wheels (9 Windows + 5 macOS + 20 Linux)"
           
+          # Hard-fail on a wheel-count mismatch (symmetric with the odbc consolidate job).
+          # A mismatch means a build stage silently produced a partial set (e.g. a missing
+          # Python version) or the build matrix changed without updating this count.
+          # Update the expected 34 whenever the Windows/macOS/Linux build matrix changes.
           if [ "$WHEEL_COUNT" -ne 34 ]; then
-            echo "WARNING: Expected 34 wheels but found $WHEEL_COUNT"
+            echo "ERROR: Expected 34 wheels but found $WHEEL_COUNT" >&2
+            exit 1
           else
             echo "SUCCESS: All 34 wheels consolidated!"
           fi
