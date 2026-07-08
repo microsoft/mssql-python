@@ -138,6 +138,33 @@ parameters:
       - { tag: 'musllinux', arch: 'x86_64', platform: 'linux/amd64' }
       - { tag: 'musllinux', arch: 'aarch64', platform: 'linux/arm64' }
 
+  # =========================
+  # ODBC PACKAGE CONFIGURATIONS (mssql-python-odbc)
+  # =========================
+  # The standalone mssql-python-odbc package ships ONLY pre-built ODBC driver
+  # binaries (data) — there is NO compiled extension — so ONE py3-none-<platform>
+  # wheel per platform serves every supported Python version. Hence there is no
+  # per-Python matrix here: 7 wheels total (2 Windows + 1 macOS + 4 Linux).
+  # These stages build alongside the mssql-python wheels and are consolidated
+  # SEPARATELY (see the ConsolidateOdbc stage) so the release pipeline can publish
+  # mssql-python and mssql-python-odbc independently.
+  - name: odbcWindowsConfigs
+    type: object
+    default:
+      - { arch: 'x64' }
+      - { arch: 'arm64' }
+  - name: odbcMacosConfigs
+    type: object
+    default:
+      - { name: 'universal2' }
+  - name: odbcLinuxConfigs
+    type: object
+    default:
+      - { tag: 'manylinux_2_28', arch: 'x86_64', platform: 'linux/amd64' }
+      - { tag: 'manylinux_2_28', arch: 'aarch64', platform: 'linux/arm64' }
+      - { tag: 'musllinux', arch: 'x86_64', platform: 'linux/amd64' }
+      - { tag: 'musllinux', arch: 'aarch64', platform: 'linux/arm64' }
+
 # =========================
 # PIPELINE VARIABLES
 # =========================
@@ -338,8 +365,10 @@ extends:
     # =========================
     # PIPELINE STAGES
     # =========================
-    # Total stages: 9 Windows + 5 macOS + 4 Linux + 1 Consolidate = 19 stages
-    # Stages run in parallel (no dependencies between platform builds)
+    # mssql-python: 9 Windows + 5 macOS + 4 Linux + 1 Consolidate = 19 stages
+    # mssql-python-odbc: 2 Windows + 1 macOS + 4 Linux + 1 ConsolidateOdbc = 8 stages
+    # Total: 27 stages. All build stages run in parallel; each Consolidate* stage
+    # waits only on its own package's build stages.
     stages:
       # =========================
       # WINDOWS BUILD STAGES
@@ -466,3 +495,64 @@ extends:
 
       # Note: Symbol publishing handled directly in Windows build stages
       # PDB files uploaded to Microsoft Symbol Server for debugging
+
+      # =========================================================================
+      # ODBC PACKAGE BUILD STAGES (mssql-python-odbc)
+      # =========================================================================
+      # 7 data-only wheels (no native compile, no pytest) built from setup_odbc.py.
+      # They run in parallel with the mssql-python stages and are consolidated by a
+      # SEPARATE ConsolidateOdbc stage so the release pipeline can ship each package
+      # independently. SDL "just works": these wheels contain the SAME ODBC driver
+      # binaries already scanned in mssql_python/libs by the main build — no new
+      # first-party native code is introduced.
+      #
+      # ODBC Windows stages (2): ODBC_Win_x64, ODBC_Win_arm64
+      - ${{ each config in parameters.odbcWindowsConfigs }}:
+          - template: /OneBranchPipelines/stages/build-odbc-windows-stage.yml@self
+            parameters:
+              stageName: ODBC_Win_${{ config.arch }}
+              jobName: BuildWheel
+              architecture: ${{ config.arch }}
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+
+      # ODBC macOS stage (1): ODBC_MacOS_universal2
+      - ${{ each config in parameters.odbcMacosConfigs }}:
+          - template: /OneBranchPipelines/stages/build-odbc-macos-stage.yml@self
+            parameters:
+              stageName: ODBC_MacOS_${{ config.name }}
+              jobName: BuildWheel
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+
+      # ODBC Linux stages (4): manylinux_2_28 x86_64/aarch64, musllinux x86_64/aarch64
+      - ${{ each config in parameters.odbcLinuxConfigs }}:
+          - template: /OneBranchPipelines/stages/build-odbc-linux-stage.yml@self
+            parameters:
+              stageName: ODBC_Linux_${{ config.tag }}_${{ config.arch }}
+              jobName: BuildWheel
+              linuxTag: ${{ config.tag }}
+              arch: ${{ config.arch }}
+              dockerPlatform: ${{ config.platform }}
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+
+      # =========================================================================
+      # CONSOLIDATE ODBC STAGE
+      # =========================================================================
+      # Collects the 7 mssql-python-odbc wheels into a single dist/ folder and
+      # publishes them as `drop_ConsolidateOdbc_ConsolidateArtifacts` (distinct from
+      # the mssql-python `drop_Consolidate_ConsolidateArtifacts`). The release
+      # pipeline selects one artifact based on its `releasePackage` parameter.
+      - stage: ConsolidateOdbc
+        displayName: 'Consolidate All ODBC Artifacts'
+        dependsOn:
+          - ODBC_Win_x64
+          - ODBC_Win_arm64
+          - ODBC_MacOS_universal2
+          - ODBC_Linux_manylinux_2_28_x86_64
+          - ODBC_Linux_manylinux_2_28_aarch64
+          - ODBC_Linux_musllinux_x86_64
+          - ODBC_Linux_musllinux_aarch64
+        jobs:
+          - template: /OneBranchPipelines/jobs/consolidate-odbc-artifacts-job.yml@self
+            parameters:
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+              expectedWheelCount: 7
