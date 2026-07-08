@@ -10,6 +10,7 @@ combined with those fields (ODBC parity).
 """
 
 import secrets
+from enum import IntEnum
 from unittest.mock import MagicMock, patch
 
 SAMPLE_TOKEN = secrets.token_hex(44)
@@ -173,3 +174,30 @@ class TestBulkcopyConnectTimeout:
         captured = _capture_bulkcopy_context(cursor)
 
         assert captured.get("connect_timeout") == 45
+
+    @patch("mssql_python.cursor.logger")
+    def test_intenum_timeout_forwarded_as_plain_int(self, mock_logger):
+        """IntEnum (accepted by the public setter) is forwarded, normalised to int."""
+        mock_logger.is_debug_enabled = False
+
+        class _T(IntEnum):
+            thirty = 30
+
+        cursor = _make_cursor("Server=localhost;Database=testdb;UID=sa;PWD=pwd", None)
+        cursor._timeout = _T.thirty
+
+        captured = _capture_bulkcopy_context(cursor)
+
+        assert captured.get("connect_timeout") == 30
+        assert type(captured.get("connect_timeout")) is int
+
+    @patch("mssql_python.cursor.logger")
+    def test_bool_timeout_not_forwarded(self, mock_logger):
+        """bool is a subclass of int but must not be treated as a timeout."""
+        mock_logger.is_debug_enabled = False
+        cursor = _make_cursor("Server=localhost;Database=testdb;UID=sa;PWD=pwd", None)
+        cursor._timeout = True
+
+        captured = _capture_bulkcopy_context(cursor)
+
+        assert "connect_timeout" not in captured

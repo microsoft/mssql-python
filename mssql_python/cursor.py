@@ -2944,11 +2944,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Forward the cursor's query timeout to py-core so the bulkcopy
         # connection uses the same limit instead of py-core's compiled-in 15s
         # default. _timeout is the snapshot taken at cursor creation (same value
-        # _set_timeout uses); 0 means "no override", so py-core keeps its default.
-        # type-is-int guard keeps bool/mocked values from leaking through.
+        # _set_timeout uses). Accept any int the public Connection.timeout setter
+        # accepts (including IntEnum) but exclude bool, then normalise to a plain
+        # int so py-core's u32 extract is unambiguous. 0 stays a "no override":
+        # py-core's default connect path treats 0 as no deadline, but its TCP
+        # attempt path turns 0 into a 0ms timeout that fails instantly, so we
+        # leave 0 unset and let py-core apply its own 15s default.
         connect_timeout = self._timeout
-        if type(connect_timeout) is int and connect_timeout > 0:
-            pycore_context["connect_timeout"] = connect_timeout
+        if isinstance(connect_timeout, int) and not isinstance(connect_timeout, bool):
+            if connect_timeout > 0:
+                pycore_context["connect_timeout"] = int(connect_timeout)
 
         # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
         if self.connection._auth_type:
