@@ -34,12 +34,12 @@ PACKAGE_DIR = PROJECT_ROOT / PACKAGE_NAME
 BUNDLED_LIBS_ROOT = PROJECT_ROOT / "mssql_python" / "libs"
 
 # The driver binaries are packaged via the recursive ``libs/**/*`` glob in
-# ``package_data`` below. Support for ``**`` recursive globs in ``package_data``
-# landed in setuptools 62.3.0; with an older setuptools the glob silently
-# matches nothing and the wheel ships WITHOUT any driver binaries. The ``libs/``
-# tree is gitignored, so ``include_package_data`` cannot recover the files from
-# version control either -- a stale setuptools would produce a broken-but-quiet
-# wheel. Fail fast instead.
+# ``package_data`` below, which enumerates files from the copied
+# ``mssql_python_odbc/libs/`` subtree on disk (not from version control).
+# Support for ``**`` recursive globs in ``package_data`` landed in setuptools
+# 62.3.0; with an older setuptools the glob silently matches nothing and the
+# wheel ships WITHOUT any driver binaries. Fail fast instead of producing a
+# broken-but-quiet wheel.
 MIN_SETUPTOOLS = (62, 3, 0)
 
 
