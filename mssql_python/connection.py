@@ -14,6 +14,7 @@ Resource Management:
 import weakref
 import re
 import codecs
+import warnings
 from typing import Any, Dict, Optional, Union, List, Tuple, Callable, TYPE_CHECKING
 import threading
 
@@ -53,11 +54,14 @@ from mssql_python.constants import (
     _RESERVED_PARAMETERS,
     _KEY_AUTHENTICATION,
     _KEY_UID,
+    _KEY_PWD,
+    _KEY_TRUSTED_CONNECTION,
     _AuthInternal,
 )
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
+    from azure.core.credentials import TokenCredential
 
 # Add SQL_WMETADATA constant for metadata decoding configuration
 SQL_WMETADATA: int = -99  # Special flag for column name decoding
@@ -139,10 +143,10 @@ def _validate_utf16_wchar_compatibility(
 
         # Generate context-appropriate error messages
         if "ctype" in context:
-            driver_error = f"SQL_WCHAR ctype only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR ctype only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR ctype"
         else:
-            driver_error = f"SQL_WCHAR only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR"
 
         raise ProgrammingError(
@@ -251,6 +255,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
+        token_provider: Optional["TokenCredential"] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -270,12 +275,53 @@ class Connection:
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
+            token_provider (object, optional): Advanced token provider for Microsoft Entra ID
+                authentication. Must expose a callable ``.get_token(scope)`` method that returns
+                an object with a ``.token`` attribute.
+
+                This parameter is mutually exclusive with ``Authentication=`` in the connection
+                string and with ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]``; supplying more than
+                one token source raises ``InterfaceError`` at connect time.
+
+                If ``UID``/``PWD``/``Trusted_Connection`` are also present in the connection
+                string they are ignored (access-token auth wins) and a warning is emitted.
+
+                .. note::
+                    The token scope is fixed to the Azure **commercial** cloud
+                    (``https://database.windows.net/.default``). Sovereign clouds (Azure US
+                    Government, Azure China, Azure Germany) are **out of scope** for this
+                    parameter — a token acquired for a different audience is rejected by SQL
+                    Server at login. For sovereign clouds, acquire the token yourself and pass
+                    it via ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`` instead.
+
+                .. note::
+                    Connection pooling is automatically disabled for any access-token
+                    connection (``token_provider=``, built-in ``Authentication=ActiveDirectory*``,
+                    or a raw ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]``). The native pool keys
+                    on the sanitized connection string only, so different principals sharing the
+                    same server/database would otherwise collide in one pool bucket and could be
+                    handed each other's authenticated connection. Disabling pooling keeps each
+                    principal isolated.
+
+                .. note::
+                    Token lifecycle limitations: the access token is a *pre-connect* ODBC
+                    attribute, so it cannot be refreshed on a live connection. Long-lived
+                    connections must be recycled by the application once the token nears expiry,
+                    and Continuous Access Evaluation (CAE) claims challenges are not handled.
+                    These require native driver support and are tracked as follow-up work.
+                    Interactive credentials (e.g. ``InteractiveBrowserCredential``) block
+                    ``connect()`` until the user completes sign-in; prefer non-interactive
+                    credentials in server contexts.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
             None
 
         Raises:
+            InterfaceError: If ``token_provider`` is misused (combined with another token
+                source, or lacking a valid ``.get_token`` method), or the credential returns
+                no valid token.
+            OperationalError: If acquiring a token from ``token_provider`` fails.
             ValueError: If the connection string is invalid or connection fails.
 
         This method sets up the initial state for the connection object,
@@ -300,7 +346,11 @@ class Connection:
         self.connection_str, parsed_params = self._construct_connection_string(
             connection_str, **kwargs
         )
-        self._attrs_before = attrs_before or {}
+        # Shallow-copy so we never mutate the caller's dict (e.g. when the
+        # token_provider path injects SQL_COPT_SS_ACCESS_TOKEN). Mutating the
+        # caller's object would leak the access token into user state and break
+        # re-using the same attrs_before dict across multiple connections.
+        self._attrs_before = dict(attrs_before) if attrs_before else {}
 
         # Initialize encoding settings with defaults for Python 3
         # Python 3 only has str (which is Unicode), so we use utf-16le by default
@@ -339,10 +389,23 @@ class Connection:
         # fresh token; re-parsing self.connection_str at that point would miss
         # them because UID is already gone.
         self._credential_kwargs: Optional[Dict[str, str]] = None
+        # User-supplied token provider for custom Entra ID authentication.
+        # Stored so bulk copy can call .get_token() for a fresh JWT later.
+        self._token_provider: Optional["TokenCredential"] = None
+        # POSIX timestamp (seconds) at which the current access token expires,
+        # captured from the credential's AccessToken result. None when unknown.
+        # The token is a pre-connect ODBC attribute and cannot be refreshed on
+        # a live connection — this is exposed for diagnostics/logging only.
+        self._token_expires_on: Optional[int] = None
+
+        # Custom token_provider= parameter — takes priority, mutually exclusive
+        # with Authentication= in the connection string.
+        if token_provider is not None:
+            self._configure_token_provider(token_provider, parsed_params)
 
         # Handle Entra ID authentication if specified.
         # The parsed dict is used directly — no re-parsing of the connection string.
-        if _KEY_AUTHENTICATION in parsed_params:
+        elif _KEY_AUTHENTICATION in parsed_params:
             auth_type = process_auth_parameters(parsed_params)
 
             if auth_type:
@@ -401,6 +464,26 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
+
+        # Access-token connections must NOT be pooled. The native pool is keyed
+        # on the (sanitized) connection string only, and the access token lives
+        # in attrs_before — which is applied solely when a *new* physical
+        # connection is created and is never re-applied when a pooled connection
+        # is reused. With pooling on, two different principals that share the
+        # same Server/Database collapse into the same pool bucket, so one caller
+        # can be handed another caller's already-authenticated connection
+        # (silent identity confusion / privilege escalation). This affects every
+        # access-token path: a raw SQL_COPT_SS_ACCESS_TOKEN supplied directly in
+        # attrs_before, built-in Authentication=ActiveDirectory* auth, and the
+        # token_provider= credential — they all funnel the token through
+        # attrs_before. Disabling pooling for these connections keeps each
+        # principal isolated. The same-principal reuse case loses pooling, which
+        # is an acceptable, correct default. Refreshing the token on a live
+        # connection (so pooling could be re-enabled safely) needs native driver
+        # support and is tracked as follow-up work.
+        if ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in self._attrs_before:
+            self._pooling = False
+
         try:
             self._conn = ddbc_bindings.Connection(
                 self.connection_str, self._pooling, self._attrs_before
@@ -424,6 +507,80 @@ class Connection:
             logger.error(
                 f"Unexpected error during connection registration: {type(e).__name__}: {e}"
             )
+
+    def _configure_token_provider(
+        self, token_provider: "TokenCredential", parsed_params: Dict[str, str]
+    ) -> None:
+        """Validate a custom ``token_provider`` and apply its access token.
+
+        Acquires a token from ``token_provider.get_token()`` and injects it as
+        the ``SQL_COPT_SS_ACCESS_TOKEN`` pre-connect attribute, then strips any
+        sensitive params from the connection string. Mutually exclusive with
+        ``Authentication=`` and a manual ``attrs_before`` access token.
+
+        Raises:
+            InterfaceError: If ``token_provider`` is combined with another token
+                source, or lacks a ``get_token(scope)`` method.
+            OperationalError: If acquiring a token from ``token_provider`` fails.
+        """
+        if _KEY_AUTHENTICATION in parsed_params:
+            raise InterfaceError(
+                driver_error=(
+                    "Cannot specify both 'token_provider' parameter and "
+                    "'Authentication' in the connection string. "
+                    "Use one or the other."
+                ),
+                ddbc_error="",
+            )
+        if ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in self._attrs_before:
+            raise InterfaceError(
+                driver_error=(
+                    "Cannot specify both 'token_provider' parameter and "
+                    "attrs_before[SQL_COPT_SS_ACCESS_TOKEN]. "
+                    "Use one token source."
+                ),
+                ddbc_error="",
+            )
+        get_token = getattr(token_provider, "get_token", None)
+        if not callable(get_token):
+            raise InterfaceError(
+                driver_error=(
+                    f"token_provider must have a .get_token() method. "
+                    f"Got {type(token_provider).__name__}."
+                ),
+                ddbc_error="",
+            )
+        # The get_token() signature is NOT inspected here: inspect.signature()
+        # is unreliable for partial/decorated/C-extension callables and would
+        # produce false warnings on valid credentials. The actual call is the
+        # source of truth — _get_token_from_credential turns a bad signature
+        # (TypeError) into a clear InterfaceError.
+        from mssql_python.auth import acquire_token_from_credential
+
+        # access-token auth ignores UID/PWD/Trusted_Connection — warn so the
+        # user is not surprised that those credentials are silently dropped.
+        dropped = [
+            key for key in (_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION) if key in parsed_params
+        ]
+        if dropped:
+            warnings.warn(
+                "token_provider is set, so the following connection-string "
+                f"credential(s) are ignored: {', '.join(sorted(dropped))}. "
+                "Remove them to silence this warning.",
+                UserWarning,
+                # 3 frames out: warnings.warn -> _configure_token_provider ->
+                # __init__ -> caller (connect()/Connection()). Keeps the warning
+                # pointed at user code, not this internal helper.
+                stacklevel=3,
+            )
+        token, token_expires_on = acquire_token_from_credential(token_provider)
+        self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
+        self._token_provider = token_provider
+        self._token_expires_on = token_expires_on
+        # Strip sensitive params (UID/PWD/Trusted_Connection) since
+        # access-token auth is used — same as the Authentication= path.
+        sanitized = remove_sensitive_params(parsed_params)
+        self.connection_str = _ConnectionStringBuilder(sanitized).build()
 
     def _construct_connection_string(
         self, connection_str: str = "", **kwargs: Any

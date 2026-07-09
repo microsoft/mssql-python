@@ -2956,7 +2956,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         pycore_context = connstr_to_pycore_params(params)
 
         # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
-        if self.connection._auth_type:
+        if self.connection._token_provider is not None:
+            # User-supplied credential — use it directly for a fresh token.
+            from mssql_python.auth import acquire_raw_token_from_credential
+
+            try:
+                raw_token, _ = acquire_raw_token_from_credential(self.connection._token_provider)
+            except (OperationalError, InterfaceError) as e:
+                raise OperationalError(
+                    driver_error=(
+                        "Bulk copy failed: unable to acquire token from custom credential"
+                    ),
+                    ddbc_error=str(e),
+                ) from e
+            pycore_context["access_token"] = raw_token
+            for key in ("authentication", "user_name", "password"):
+                pycore_context.pop(key, None)
+            logger.debug(
+                "Bulk copy: acquired fresh token from custom credential (%s)",
+                type(self.connection._token_provider).__name__,
+            )
+        elif self.connection._auth_type:
             # Fresh token acquisition for mssql-py-core connection
             from mssql_python.auth import AADAuth, ServicePrincipalAuth
             from mssql_python.constants import _AuthInternal
