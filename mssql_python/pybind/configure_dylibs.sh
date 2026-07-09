@@ -2,36 +2,24 @@
 # Script to configure dylib paths for macOS
 # This script fixes the library paths in the ODBC driver dylibs and codesigns them
 
-# Function to get the current architecture
-get_mac_platform_architecture() {
-  arch=$(uname -m)
-  echo "$arch"
-}
-
 # Directory structure setup
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Get platform and configure paths
-ARCH=$(get_mac_platform_architecture)
+# The universal2 wheel bundles a per-arch copy of the driver dylibs, so every
+# bundled arch must be configured, not just the build host's ($(uname -m)).
+# install_name_tool and codesign both work cross-arch. Fixing only the host arch
+# is what shipped the broken arm64 driver in issue #656.
+for ARCH in arm64 x86_64; do
 LIB_DIR="$PROJECT_DIR/libs/macos/$ARCH/lib"
 LIBMSODBCSQL_PATH="$LIB_DIR/libmsodbcsql.18.dylib"
 LIBODBCINST_PATH="$LIB_DIR/libodbcinst.2.dylib"
 LIBLTDL_PATH="$LIB_DIR/libltdl.7.dylib"
 
-echo "Initial configuration:"
-otool -L "$LIBMSODBCSQL_PATH"
-otool -L "$LIBODBCINST_PATH"
-if [ -f "$LIBLTDL_PATH" ]; then
-  otool -L "$LIBLTDL_PATH"
-fi
-
-echo "Configuring dylibs in: $LIB_DIR"
-
 # Check if the directories and files exist
 if [ ! -d "$LIB_DIR" ]; then
-  echo "Error: Library directory doesn't exist: $LIB_DIR"
-  exit 1
+  echo "Note: library directory doesn't exist, skipping: $LIB_DIR"
+  continue
 fi
 
 if [ ! -f "$LIBMSODBCSQL_PATH" ]; then
@@ -43,6 +31,15 @@ if [ ! -f "$LIBODBCINST_PATH" ]; then
   echo "Error: libodbcinst.2.dylib not found at: $LIBODBCINST_PATH"
   exit 1
 fi
+
+echo "Initial configuration:"
+otool -L "$LIBMSODBCSQL_PATH"
+otool -L "$LIBODBCINST_PATH"
+if [ -f "$LIBLTDL_PATH" ]; then
+  otool -L "$LIBLTDL_PATH"
+fi
+
+echo "Configuring dylibs in: $LIB_DIR"
 
 # Get the existing library paths which are linked to the dylibs
 echo "Reading dependencies from libmsodbcsql.18.dylib..."
@@ -114,10 +111,11 @@ if [ -f "$LIBLTDL_PATH" ]; then
   codesign -s - -f "$LIBLTDL_PATH" 2>/dev/null
 fi
 
-echo "Library configuration complete!"
+echo "Library configuration complete for $ARCH!"
 echo "Final configuration:"
 otool -L "$LIBMSODBCSQL_PATH"
 otool -L "$LIBODBCINST_PATH"
 if [ -f "$LIBLTDL_PATH" ]; then
   otool -L "$LIBLTDL_PATH"
 fi
+done
