@@ -69,6 +69,22 @@ parameters:
     displayName: 'Run SDL Security Tasks'
     type: boolean
     default: true
+
+  # Which package to build. Both are produced from this same pipeline but are
+  # fully independent stage groups, so building only one halves the run time and
+  # lets you run two builds (one per package) concurrently.
+  #   mssql-python       -> Windows/macOS/Linux wheels + Consolidate
+  #   mssql-python-odbc  -> ODBC data wheels + ConsolidateOdbc
+  #   both               -> everything (previous default behaviour)
+  # Scheduled (daily) builds use this default too, so they build mssql-python only.
+  - name: buildPackage
+    displayName: 'Package to Build'
+    type: string
+    values:
+      - 'mssql-python'
+      - 'mssql-python-odbc'
+      - 'both'
+    default: 'mssql-python'
   
   # =========================
   # PLATFORM CONFIGURATIONS
@@ -384,16 +400,18 @@ extends:
       # 5. Builds wheel
       # 6. Publishes artifacts (wheels + PYD + PDB)
       # 7. ESRP malware scanning
-      - ${{ each config in parameters.windowsConfigs }}:
-          - template: /OneBranchPipelines/stages/build-windows-single-stage.yml@self
-            parameters:
-              stageName: Win_py${{ config.pyVer }}_${{ config.arch }}
-              jobName: BuildWheel
-              # Convert pyVer '310' → pythonVersion '3.10'
-              pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
-              shortPyVer: ${{ config.pyVer }}
-              architecture: ${{ config.arch }}
-              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+      # Gate: build mssql-python stages unless an odbc-only build was requested
+      - ${{ if ne(parameters.buildPackage, 'mssql-python-odbc') }}:
+        - ${{ each config in parameters.windowsConfigs }}:
+            - template: /OneBranchPipelines/stages/build-windows-single-stage.yml@self
+              parameters:
+                stageName: Win_py${{ config.pyVer }}_${{ config.arch }}
+                jobName: BuildWheel
+                # Convert pyVer '310' → pythonVersion '3.10'
+                pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
+                shortPyVer: ${{ config.pyVer }}
+                architecture: ${{ config.arch }}
+                oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
       # =========================
       # MACOS BUILD STAGES
@@ -410,15 +428,16 @@ extends:
       # 6. Builds wheel
       # 7. Publishes artifacts (wheels + .so)
       # 8. ESRP malware scanning
-      - ${{ each config in parameters.macosConfigs }}:
-          - template: /OneBranchPipelines/stages/build-macos-single-stage.yml@self
-            parameters:
-              stageName: MacOS_py${{ config.pyVer }}
-              jobName: BuildWheel
-              # Convert pyVer '310' → pythonVersion '3.10'
-              pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
-              shortPyVer: ${{ config.pyVer }}
-              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+      - ${{ if ne(parameters.buildPackage, 'mssql-python-odbc') }}:
+        - ${{ each config in parameters.macosConfigs }}:
+            - template: /OneBranchPipelines/stages/build-macos-single-stage.yml@self
+              parameters:
+                stageName: MacOS_py${{ config.pyVer }}
+                jobName: BuildWheel
+                # Convert pyVer '310' → pythonVersion '3.10'
+                pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
+                shortPyVer: ${{ config.pyVer }}
+                oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
       # =========================
       # LINUX BUILD STAGES
@@ -440,15 +459,16 @@ extends:
       #    d. Runs pytest against SQL Server
       # 4. Publishes artifacts (all 5 wheels)
       # 5. Component Governance + AntiMalware scanning
-      - ${{ each config in parameters.linuxConfigs }}:
-          - template: /OneBranchPipelines/stages/build-linux-single-stage.yml@self
-            parameters:
-              stageName: Linux_${{ config.tag }}_${{ config.arch }}
-              jobName: BuildWheels
-              linuxTag: ${{ config.tag }}
-              arch: ${{ config.arch }}
-              dockerPlatform: ${{ config.platform }}
-              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+      - ${{ if ne(parameters.buildPackage, 'mssql-python-odbc') }}:
+        - ${{ each config in parameters.linuxConfigs }}:
+            - template: /OneBranchPipelines/stages/build-linux-single-stage.yml@self
+              parameters:
+                stageName: Linux_${{ config.tag }}_${{ config.arch }}
+                jobName: BuildWheels
+                linuxTag: ${{ config.tag }}
+                arch: ${{ config.arch }}
+                dockerPlatform: ${{ config.platform }}
+                oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
       # =========================
       # CONSOLIDATE STAGE
@@ -462,36 +482,37 @@ extends:
       # - dist/bindings/macOS/*.so (macOS universal2 binaries)
       # - dist/bindings/Linux/*.so (Linux native extensions)
       # This stage also runs final BinSkim scan on all binaries
-      - stage: Consolidate
-        displayName: 'Consolidate All Artifacts'
-        dependsOn:
-          # Windows dependencies (9 stages)
-          - Win_py310_x64
-          - Win_py311_x64
-          - Win_py312_x64
-          - Win_py313_x64
-          - Win_py314_x64
-          - Win_py311_arm64
-          - Win_py312_arm64
-          - Win_py313_arm64
-          - Win_py314_arm64
-          # macOS dependencies (5 stages)
-          - MacOS_py310
-          - MacOS_py311
-          - MacOS_py312
-          - MacOS_py313
-          - MacOS_py314
-          # Linux dependencies (4 stages)
-          - Linux_manylinux_2_28_x86_64
-          - Linux_manylinux_2_28_aarch64
-          - Linux_musllinux_x86_64
-          - Linux_musllinux_aarch64
-        jobs:
-          - template: /OneBranchPipelines/jobs/consolidate-artifacts-job.yml@self
-            parameters:
-              # CRITICAL: Use effectiveOneBranchType to ensure scheduled builds run as 'Official'
-              # Using parameters.oneBranchType would break scheduled builds (they'd run as 'NonOfficial')
-              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+      - ${{ if ne(parameters.buildPackage, 'mssql-python-odbc') }}:
+        - stage: Consolidate
+          displayName: 'Consolidate All Artifacts'
+          dependsOn:
+            # Windows dependencies (9 stages)
+            - Win_py310_x64
+            - Win_py311_x64
+            - Win_py312_x64
+            - Win_py313_x64
+            - Win_py314_x64
+            - Win_py311_arm64
+            - Win_py312_arm64
+            - Win_py313_arm64
+            - Win_py314_arm64
+            # macOS dependencies (5 stages)
+            - MacOS_py310
+            - MacOS_py311
+            - MacOS_py312
+            - MacOS_py313
+            - MacOS_py314
+            # Linux dependencies (4 stages)
+            - Linux_manylinux_2_28_x86_64
+            - Linux_manylinux_2_28_aarch64
+            - Linux_musllinux_x86_64
+            - Linux_musllinux_aarch64
+          jobs:
+            - template: /OneBranchPipelines/jobs/consolidate-artifacts-job.yml@self
+              parameters:
+                # CRITICAL: Use effectiveOneBranchType to ensure scheduled builds run as 'Official'
+                # Using parameters.oneBranchType would break scheduled builds (they'd run as 'NonOfficial')
+                oneBranchType: '${{ variables.effectiveOneBranchType }}'
 
       # Note: Symbol publishing handled directly in Windows build stages
       # PDB files uploaded to Microsoft Symbol Server for debugging
@@ -507,32 +528,36 @@ extends:
       # first-party native code is introduced.
       #
       # ODBC Windows stages (2): ODBC_Win_x64, ODBC_Win_arm64
-      - ${{ each config in parameters.odbcWindowsConfigs }}:
-          - template: /OneBranchPipelines/stages/build-odbc-windows-stage.yml@self
-            parameters:
-              stageName: ODBC_Win_${{ config.arch }}
-              jobName: BuildWheel
-              architecture: ${{ config.arch }}
-              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+      # Gate: build mssql-python-odbc stages unless an mssql-python-only build was requested
+      - ${{ if ne(parameters.buildPackage, 'mssql-python') }}:
+        - ${{ each config in parameters.odbcWindowsConfigs }}:
+            - template: /OneBranchPipelines/stages/build-odbc-windows-stage.yml@self
+              parameters:
+                stageName: ODBC_Win_${{ config.arch }}
+                jobName: BuildWheel
+                architecture: ${{ config.arch }}
+                oneBranchType: '${{ variables.effectiveOneBranchType }}'
 
       # ODBC macOS stage (1): ODBC_MacOS_universal2
-      - ${{ each config in parameters.odbcMacosConfigs }}:
-          - template: /OneBranchPipelines/stages/build-odbc-macos-stage.yml@self
-            parameters:
-              stageName: ODBC_MacOS_${{ config.name }}
-              jobName: BuildWheel
-              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+      - ${{ if ne(parameters.buildPackage, 'mssql-python') }}:
+        - ${{ each config in parameters.odbcMacosConfigs }}:
+            - template: /OneBranchPipelines/stages/build-odbc-macos-stage.yml@self
+              parameters:
+                stageName: ODBC_MacOS_${{ config.name }}
+                jobName: BuildWheel
+                oneBranchType: '${{ variables.effectiveOneBranchType }}'
 
       # ODBC Linux stages (4): manylinux_2_28 x86_64/aarch64, musllinux x86_64/aarch64
-      - ${{ each config in parameters.odbcLinuxConfigs }}:
-          - template: /OneBranchPipelines/stages/build-odbc-linux-stage.yml@self
-            parameters:
-              stageName: ODBC_Linux_${{ config.tag }}_${{ config.arch }}
-              jobName: BuildWheel
-              linuxTag: ${{ config.tag }}
-              arch: ${{ config.arch }}
-              dockerPlatform: ${{ config.platform }}
-              oneBranchType: '${{ variables.effectiveOneBranchType }}'
+      - ${{ if ne(parameters.buildPackage, 'mssql-python') }}:
+        - ${{ each config in parameters.odbcLinuxConfigs }}:
+            - template: /OneBranchPipelines/stages/build-odbc-linux-stage.yml@self
+              parameters:
+                stageName: ODBC_Linux_${{ config.tag }}_${{ config.arch }}
+                jobName: BuildWheel
+                linuxTag: ${{ config.tag }}
+                arch: ${{ config.arch }}
+                dockerPlatform: ${{ config.platform }}
+                oneBranchType: '${{ variables.effectiveOneBranchType }}'
 
       # =========================================================================
       # CONSOLIDATE ODBC STAGE
@@ -541,18 +566,19 @@ extends:
       # publishes them as `drop_ConsolidateOdbc_ConsolidateArtifacts` (distinct from
       # the mssql-python `drop_Consolidate_ConsolidateArtifacts`). The release
       # pipeline selects one artifact based on its `releasePackage` parameter.
-      - stage: ConsolidateOdbc
-        displayName: 'Consolidate All ODBC Artifacts'
-        dependsOn:
-          - ODBC_Win_x64
-          - ODBC_Win_arm64
-          - ODBC_MacOS_universal2
-          - ODBC_Linux_manylinux_2_28_x86_64
-          - ODBC_Linux_manylinux_2_28_aarch64
-          - ODBC_Linux_musllinux_x86_64
-          - ODBC_Linux_musllinux_aarch64
-        jobs:
-          - template: /OneBranchPipelines/jobs/consolidate-odbc-artifacts-job.yml@self
-            parameters:
-              oneBranchType: '${{ variables.effectiveOneBranchType }}'
-              expectedWheelCount: 7
+      - ${{ if ne(parameters.buildPackage, 'mssql-python') }}:
+        - stage: ConsolidateOdbc
+          displayName: 'Consolidate All ODBC Artifacts'
+          dependsOn:
+            - ODBC_Win_x64
+            - ODBC_Win_arm64
+            - ODBC_MacOS_universal2
+            - ODBC_Linux_manylinux_2_28_x86_64
+            - ODBC_Linux_manylinux_2_28_aarch64
+            - ODBC_Linux_musllinux_x86_64
+            - ODBC_Linux_musllinux_aarch64
+          jobs:
+            - template: /OneBranchPipelines/jobs/consolidate-odbc-artifacts-job.yml@self
+              parameters:
+                oneBranchType: '${{ variables.effectiveOneBranchType }}'
+                expectedWheelCount: 7
