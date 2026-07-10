@@ -7,6 +7,26 @@ trigger:
       - main
 
 jobs:
+# Shift-left secret scanning: run the 1ES Secret Scanning (SEC101 / SPMI) engine
+# on every PR so credential leaks (e.g. SEC101/037 SqlLegacyCredentials) are caught
+# pre-merge, instead of surfacing later at the GitHub->ADO sync push-protection gate.
+- job: SecretScan
+  displayName: 'Secret Scan (shift-left SEC101)'
+  pool:
+    vmImage: 'windows-latest'
+  steps:
+  - task: 1ESSecretScanning@1
+    displayName: 'Run 1ES Secret Scanning'
+    inputs:
+      Action: 'analyze'
+      Target: '$(Build.SourcesDirectory)\*'
+      Rules: 'GetClean'
+      Recurse: true
+  - task: PostAnalysis@2
+    displayName: 'Fail build if secrets detected'
+    inputs:
+      GdnBreakAllTools: true
+
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
   pool:
