@@ -12,6 +12,16 @@ pr: none
 
 # Parameters for DUMMY release pipeline
 parameters:
+  # Which package to test-release. Both are produced by the same build pipeline
+  # (definition 2199); this switches the consolidated artifact and messaging.
+  - name: releasePackage
+    displayName: '[TEST] Package to Release'
+    type: string
+    values:
+      - 'mssql-python'
+      - 'mssql-python-odbc'
+    default: 'mssql-python'
+
   - name: publishSymbols
     displayName: '[TEST] Publish Symbols to Symbol Servers'
     type: boolean
@@ -31,6 +41,16 @@ variables:
   # Variable groups
   - group: 'ESRP Federated Creds (AME)'  # Contains ESRP signing credentials
   - group: 'Symbols Publishing'  # Contains SymbolServer, SymbolTokenUri variables
+
+  # Select which consolidated artifact to download based on the target package.
+  # Both are produced by the same build pipeline (definition 2199):
+  #   mssql-python       -> drop_Consolidate_ConsolidateArtifacts
+  #   mssql-python-odbc  -> drop_ConsolidateOdbc_ConsolidateArtifacts
+  - name: consolidatedArtifactName
+    ${{ if eq(parameters.releasePackage, 'mssql-python-odbc') }}:
+      value: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+    ${{ else }}:
+      value: 'drop_Consolidate_ConsolidateArtifacts'
 
 # OneBranch resources
 resources:
@@ -114,7 +134,7 @@ extends:
                   definition: 2199  # Build-Release-Package-Pipeline definition ID
                   buildVersionToDownload: 'specific'
                   buildId: $(resources.pipeline.buildPipeline.runID)  # Use the build run selected in UI
-                  artifactName: 'drop_Consolidate_ConsolidateArtifacts'  # Consolidated artifact with dist/ and symbols/
+                  artifactName: '${{ variables.consolidatedArtifactName }}'  # mssql-python or mssql-python-odbc consolidated wheels
                   targetPath: '$(Build.SourcesDirectory)/artifacts'
               
               # Step 2: List downloaded artifacts for verification
@@ -175,13 +195,15 @@ extends:
                     Write-Host "Symbols: $(if ($symbols) { $symbols.Count } else { 0 }) files"
                     Write-Host "====================================="
               
-              # Step 3: Validate mssql-py-core is a stable version (no dev/alpha/beta/rc)
-              - task: PowerShell@2
-                displayName: '[TEST] Validate mssql-py-core is a stable version'
-                inputs:
-                  targetType: 'filePath'
-                  filePath: '$(Build.SourcesDirectory)\OneBranchPipelines\scripts\validate-release-versions.ps1'
-                  arguments: '-VersionFile "$(Build.SourcesDirectory)\artifacts\dist\mssql-py-core.version"'
+              # Step 3: Validate mssql-py-core is a stable version (mssql-python only;
+              # the mssql-python-odbc package ships no mssql-py-core.version file)
+              - ${{ if eq(parameters.releasePackage, 'mssql-python') }}:
+                  - task: PowerShell@2
+                    displayName: '[TEST] Validate mssql-py-core is a stable version'
+                    inputs:
+                      targetType: 'filePath'
+                      filePath: '$(Build.SourcesDirectory)\OneBranchPipelines\scripts\validate-release-versions.ps1'
+                      arguments: '-VersionFile "$(Build.SourcesDirectory)\artifacts\dist\mssql-py-core.version"'
 
               # Step 4: Verify wheel integrity
               - task: PowerShell@2
@@ -217,8 +239,8 @@ extends:
                     
                     Write-Host "`nAll wheels verified successfully!"
               
-              # Step 5: Publish Symbols (if enabled and symbols exist)
-              - ${{ if eq(parameters.publishSymbols, true) }}:
+              # Step 5: Publish Symbols (if enabled and symbols exist; mssql-python only)
+              - ${{ if and(eq(parameters.publishSymbols, true), eq(parameters.releasePackage, 'mssql-python')) }}:
                   - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
                     parameters:
                       SymbolsFolder: '$(Build.SourcesDirectory)/symbols'
@@ -233,7 +255,7 @@ extends:
                         Write-Host "===================================="
                         Write-Host "⚠️  TEST PIPELINE - DRY RUN MODE  ⚠️"
                         Write-Host "===================================="
-                        Write-Host "Package: mssql-python (TEST)"
+                        Write-Host "Package: ${{ parameters.releasePackage }} (TEST)"
                         Write-Host ""
                         Write-Host "Actions performed:"
                         Write-Host "✓ Downloaded wheels from build pipeline"
@@ -280,7 +302,7 @@ extends:
                     definition: 2199
                     buildVersionToDownload: 'specific'
                     buildId: $(resources.pipeline.buildPipeline.runID)
-                    artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+                    artifactName: '${{ variables.consolidatedArtifactName }}'
                     targetPath: '$(Build.SourcesDirectory)/artifacts'
                 
                 # ⚠️ IMPORTANT: Uses Maven ContentType for testing - NOT PyPI!
@@ -313,7 +335,7 @@ extends:
                       Write-Host "===================================="
                       Write-Host "⚠️  TEST PIPELINE - DUMMY RELEASE COMPLETED  ⚠️"
                       Write-Host "===================================="
-                      Write-Host "Package: mssql-python (TEST)"
+                      Write-Host "Package: ${{ parameters.releasePackage }} (TEST)"
                       Write-Host "ContentType: Maven (NOT PyPI - Safe for Testing)"
                       Write-Host "Owners: $(owner)"
                       Write-Host "Approvers: $(approver)"
