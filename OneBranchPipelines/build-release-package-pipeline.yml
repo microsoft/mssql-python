@@ -76,7 +76,8 @@ parameters:
   #   mssql-python       -> Windows/macOS/Linux wheels + Consolidate
   #   mssql-python-odbc  -> ODBC data wheels + ConsolidateOdbc
   #   both               -> everything (previous default behaviour)
-  # Scheduled (daily) builds use this default too, so they build mssql-python only.
+  # Scheduled (daily) builds ignore this and always build 'both' (see
+  # effectiveBuildPackage below) so the nightly keeps producing every artifact.
   - name: buildPackage
     displayName: 'Package to Build'
     type: string
@@ -192,6 +193,14 @@ variables:
       value: 'Official'
     ${{ else }}:
       value: '${{ parameters.oneBranchType }}'
+
+  # Determine which package(s) to build: scheduled (nightly) builds always build
+  # 'both' so every artifact keeps refreshing; manual/PR builds honour the parameter.
+  - name: effectiveBuildPackage
+    ${{ if eq(variables['Build.Reason'], 'Schedule') }}:
+      value: 'both'
+    ${{ else }}:
+      value: '${{ parameters.buildPackage }}'
   
   # Variable template imports
   # Each file provides specific variable groups:
@@ -401,7 +410,7 @@ extends:
       # 6. Publishes artifacts (wheels + PYD + PDB)
       # 7. ESRP malware scanning
       # Gate: build mssql-python stages unless an odbc-only build was requested
-      - ${{ if ne(parameters.buildPackage, 'mssql-python-odbc') }}:
+      - ${{ if ne(variables.effectiveBuildPackage, 'mssql-python-odbc') }}:
         - ${{ each config in parameters.windowsConfigs }}:
             - template: /OneBranchPipelines/stages/build-windows-single-stage.yml@self
               parameters:
@@ -428,7 +437,7 @@ extends:
       # 6. Builds wheel
       # 7. Publishes artifacts (wheels + .so)
       # 8. ESRP malware scanning
-      - ${{ if ne(parameters.buildPackage, 'mssql-python-odbc') }}:
+      - ${{ if ne(variables.effectiveBuildPackage, 'mssql-python-odbc') }}:
         - ${{ each config in parameters.macosConfigs }}:
             - template: /OneBranchPipelines/stages/build-macos-single-stage.yml@self
               parameters:
@@ -459,7 +468,7 @@ extends:
       #    d. Runs pytest against SQL Server
       # 4. Publishes artifacts (all 5 wheels)
       # 5. Component Governance + AntiMalware scanning
-      - ${{ if ne(parameters.buildPackage, 'mssql-python-odbc') }}:
+      - ${{ if ne(variables.effectiveBuildPackage, 'mssql-python-odbc') }}:
         - ${{ each config in parameters.linuxConfigs }}:
             - template: /OneBranchPipelines/stages/build-linux-single-stage.yml@self
               parameters:
@@ -482,7 +491,7 @@ extends:
       # - dist/bindings/macOS/*.so (macOS universal2 binaries)
       # - dist/bindings/Linux/*.so (Linux native extensions)
       # This stage also runs final BinSkim scan on all binaries
-      - ${{ if ne(parameters.buildPackage, 'mssql-python-odbc') }}:
+      - ${{ if ne(variables.effectiveBuildPackage, 'mssql-python-odbc') }}:
         - stage: Consolidate
           displayName: 'Consolidate All Artifacts'
           dependsOn:
@@ -529,7 +538,7 @@ extends:
       #
       # ODBC Windows stages (2): ODBC_Win_x64, ODBC_Win_arm64
       # Gate: build mssql-python-odbc stages unless an mssql-python-only build was requested
-      - ${{ if ne(parameters.buildPackage, 'mssql-python') }}:
+      - ${{ if ne(variables.effectiveBuildPackage, 'mssql-python') }}:
         - ${{ each config in parameters.odbcWindowsConfigs }}:
             - template: /OneBranchPipelines/stages/build-odbc-windows-stage.yml@self
               parameters:
@@ -539,7 +548,7 @@ extends:
                 oneBranchType: '${{ variables.effectiveOneBranchType }}'
 
       # ODBC macOS stage (1): ODBC_MacOS_universal2
-      - ${{ if ne(parameters.buildPackage, 'mssql-python') }}:
+      - ${{ if ne(variables.effectiveBuildPackage, 'mssql-python') }}:
         - ${{ each config in parameters.odbcMacosConfigs }}:
             - template: /OneBranchPipelines/stages/build-odbc-macos-stage.yml@self
               parameters:
@@ -548,7 +557,7 @@ extends:
                 oneBranchType: '${{ variables.effectiveOneBranchType }}'
 
       # ODBC Linux stages (4): manylinux_2_28 x86_64/aarch64, musllinux x86_64/aarch64
-      - ${{ if ne(parameters.buildPackage, 'mssql-python') }}:
+      - ${{ if ne(variables.effectiveBuildPackage, 'mssql-python') }}:
         - ${{ each config in parameters.odbcLinuxConfigs }}:
             - template: /OneBranchPipelines/stages/build-odbc-linux-stage.yml@self
               parameters:
@@ -566,7 +575,7 @@ extends:
       # publishes them as `drop_ConsolidateOdbc_ConsolidateArtifacts` (distinct from
       # the mssql-python `drop_Consolidate_ConsolidateArtifacts`). The release
       # pipeline selects one artifact based on its `releasePackage` parameter.
-      - ${{ if ne(parameters.buildPackage, 'mssql-python') }}:
+      - ${{ if ne(variables.effectiveBuildPackage, 'mssql-python') }}:
         - stage: ConsolidateOdbc
           displayName: 'Consolidate All ODBC Artifacts'
           dependsOn:
