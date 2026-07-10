@@ -196,7 +196,7 @@ extends:
                     Write-Host "====================================="
               
               # Step 3: Validate mssql-py-core is a stable version (mssql-python only;
-              # the mssql-python-odbc package ships no mssql-py-core.version file)
+              # mssql-python-odbc ships no mssql-py-core.version file)
               - ${{ if eq(parameters.releasePackage, 'mssql-python') }}:
                   - task: PowerShell@2
                     displayName: '[TEST] Validate mssql-py-core is a stable version'
@@ -204,6 +204,49 @@ extends:
                       targetType: 'filePath'
                       filePath: '$(Build.SourcesDirectory)\OneBranchPipelines\scripts\validate-release-versions.ps1'
                       arguments: '-VersionFile "$(Build.SourcesDirectory)\artifacts\dist\mssql-py-core.version"'
+
+                  # Guard: the released mssql-python wheel MUST depend on the pinned
+                  # mssql-python-odbc package. Catches releasing from a PRE-pin build
+                  # (e.g. the wrong build run), which would ship a driver-less package
+                  # that breaks 'pip install mssql-python'. By design this FAILS on a
+                  # pre-pin build. Update $expectedVersion when the odbc pin bumps.
+                  - task: PowerShell@2
+                    displayName: '[TEST] Validate mssql-python-odbc pin in wheel metadata'
+                    inputs:
+                      targetType: 'inline'
+                      script: |
+                        $ErrorActionPreference = 'Stop'
+                        $expectedVersion = '18.6.0'
+                        $wheels = Get-ChildItem -Path "$(Build.SourcesDirectory)/artifacts/dist" -Filter "mssql_python-*.whl"
+                        if ($wheels.Count -eq 0) {
+                          Write-Error "No mssql_python-*.whl found in artifacts/dist to validate the odbc pin."
+                          exit 1
+                        }
+                        Add-Type -AssemblyName System.IO.Compression.FileSystem
+                        $wheel = $wheels[0].FullName
+                        Write-Host "Inspecting wheel metadata: $wheel"
+                        $zip = [System.IO.Compression.ZipFile]::OpenRead($wheel)
+                        $metaEntry = $zip.Entries | Where-Object { $_.FullName -match '\.dist-info/METADATA$' } | Select-Object -First 1
+                        if (-not $metaEntry) {
+                          $zip.Dispose()
+                          Write-Error "METADATA not found inside $wheel"
+                          exit 1
+                        }
+                        $reader = New-Object System.IO.StreamReader($metaEntry.Open())
+                        $metadata = $reader.ReadToEnd()
+                        $reader.Dispose()
+                        $zip.Dispose()
+                        $odbcLines = ($metadata -split "`n") | Where-Object { $_ -match 'Requires-Dist:\s*mssql[-_]python[-_]odbc' }
+                        if ($odbcLines) {
+                          Write-Host "odbc dependency in metadata:"
+                          $odbcLines | ForEach-Object { Write-Host "  $($_.Trim())" }
+                        }
+                        $pinRegex = 'Requires-Dist:\s*mssql[-_]python[-_]odbc\s*==\s*' + [regex]::Escape($expectedVersion)
+                        if ($metadata -notmatch $pinRegex) {
+                          Write-Error "mssql-python wheel does not pin mssql-python-odbc==$expectedVersion. Are you releasing from the POST-pin build? mssql-python must depend on the pinned odbc package before release."
+                          exit 1
+                        }
+                        Write-Host "OK: wheel depends on mssql-python-odbc==$expectedVersion"
 
               # Step 4: Verify wheel integrity
               - task: PowerShell@2
@@ -261,7 +304,7 @@ extends:
                         Write-Host "✓ Downloaded wheels from build pipeline"
                         Write-Host "✓ Verified wheel integrity"
                         Write-Host "✓ Downloaded symbols from build pipeline"
-                        if ("${{ parameters.publishSymbols }}" -eq "True") {
+                        if ("${{ parameters.publishSymbols }}" -eq "True" -and "${{ parameters.releasePackage }}" -eq "mssql-python") {
                           Write-Host "✓ Published symbols to SqlClientDrivers org"
                         }
                         Write-Host "✗ ESRP dummy release NOT performed (parameter disabled)"
@@ -339,7 +382,7 @@ extends:
                       Write-Host "ContentType: Maven (NOT PyPI - Safe for Testing)"
                       Write-Host "Owners: $(owner)"
                       Write-Host "Approvers: $(approver)"
-                      Write-Host "Symbols Published: ${{ parameters.publishSymbols }}"
+                      Write-Host "Symbols Published: $(if ('${{ parameters.publishSymbols }}' -eq 'True' -and '${{ parameters.releasePackage }}' -eq 'mssql-python') { 'True' } else { 'False' })"
                       Write-Host "====================================="
                       Write-Host ""
                       Write-Host "⚠️ IMPORTANT: This was a DUMMY release using Maven ContentType"
@@ -348,7 +391,7 @@ extends:
                       Write-Host "What was tested:"
                       Write-Host "✓ Artifact download from build pipeline"
                       Write-Host "✓ Wheel integrity verification"
-                      if ("${{ parameters.publishSymbols }}" -eq "True") {
+                      if ("${{ parameters.publishSymbols }}" -eq "True" -and "${{ parameters.releasePackage }}" -eq "mssql-python") {
                         Write-Host "✓ Symbol publishing to SqlClientDrivers org"
                       }
                       Write-Host "✓ ESRP release workflow (Maven ContentType)"
