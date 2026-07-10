@@ -216,7 +216,7 @@ extends:
                       targetType: 'inline'
                       script: |
                         $ErrorActionPreference = 'Stop'
-                        $expectedVersion = '18.6.0'
+                        $expectedVersion = '18.6.2'
                         $wheels = Get-ChildItem -Path "$(Build.SourcesDirectory)/artifacts/dist" -Filter "mssql_python-*.whl"
                         if ($wheels.Count -eq 0) {
                           Write-Error "No mssql_python-*.whl found in artifacts/dist to validate the odbc pin."
