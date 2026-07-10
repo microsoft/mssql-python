@@ -69,7 +69,7 @@ _NO_LIBS_REASON = (
 
 class TestOdbcPackageMetadata:
     def test_version_is_driver_version(self):
-        assert mssql_python_odbc.__version__ == "18.6.0"
+        assert mssql_python_odbc.__version__ == "18.6.2"
 
     def test_public_api_present(self):
         assert callable(mssql_python_odbc.get_driver_path)

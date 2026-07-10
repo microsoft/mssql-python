@@ -197,7 +197,7 @@ _require_min_setuptools()
 
 setup(
     name="mssql-python-odbc",
-    version="18.6.0",
+    version="18.6.2",
     description=(
         "Internal implementation package for mssql-python: Microsoft ODBC "
         "Driver 18 for SQL Server binaries. Not intended for direct use."

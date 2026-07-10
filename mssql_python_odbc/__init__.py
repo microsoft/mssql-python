@@ -24,7 +24,7 @@ import sys
 __all__ = ["get_driver_path", "get_libs_dir", "__version__"]
 
 # Version tracks the bundled Microsoft ODBC Driver 18 for SQL Server release.
-__version__ = "18.6.0"
+__version__ = "18.6.2"
 
 # Driver shared-library file names per platform (must match the names produced
 # by the ODBC driver packaging and expected by the native loader).
