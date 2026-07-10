@@ -35,16 +35,15 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.10.0
-
-### Enhancements
-
-- **Active Directory Service Principal for Bulk Copy** - `bulkcopy` now supports `Authentication=ActiveDirectoryServicePrincipal`, acquiring tokens mid-handshake via a registered callback so service principal credentials work for bulk inserts (#576).
+## What's new in v1.11.0
 
 ### Bug Fixes
 
-- **Non-ASCII VARCHAR in Arrow Fetch** - The arrow fetch path now requests `SQL_CHAR` data as `SQL_C_WCHAR` (UTF-16LE), ensuring correct results regardless of encoding settings, locale, or operating system (#575).
-- **Bulk Load Connection Timeouts** - Fixed connection timeouts during bulk load operations (#641, via `mssql_py_core` 0.1.5).
+- **SSH-Tunnel / In-Process Forwarder Deadlock** - The driver now releases the GIL around blocking ODBC teardown calls (`SQLFreeHandle`/`SQLFreeStmt`) and `SQLDescribeParam`, preventing deadlocks when the connection is routed through an in-process Python TCP forwarder (#604).
+- **BINARY/VARBINARY NULL Parameters in Temp Tables** - Unknown NULL parameter types are now pre-resolved before binding, with actionable `setinputsizes` guidance, fixing errors when inserting NULL binary values into temp tables or table variables (#654).
+- **Context Manager Transaction Semantics** - The `Connection` context manager now commits on clean exit and rolls back on exception (with `autocommit=False`), matching the documented behavior (#639).
+- **macOS Apple Silicon Import Failure** - Bundled macOS ODBC dylibs are now configured for all shipped architectures, so `import mssql_python` works on Apple Silicon without requiring a separate `brew install unixodbc` (#661).
+- **Service Principal Bulk Copy Freeze** - Fixed a GIL-deadlock that froze `bulkcopy` when authenticating with a service principal (#666, via `mssql_py_core` 0.1.6).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
