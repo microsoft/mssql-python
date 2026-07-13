@@ -53,10 +53,19 @@ foreach ($file in $sarifFiles) {
     }
 
     foreach ($run in @($sarif.runs)) {
-        $sec = @(@($run.results) | Where-Object { $_.ruleId -match '^SEC101' })
-        Write-Host "  $($file.Name): $(@($run.results).Count) result(s), $($sec.Count) SEC101"
+        $rules = @($run.tool.driver.rules)
+        Write-Host "  $($file.Name): $(@($run.results).Count) result(s), $($rules.Count) rule(s) in driver"
         foreach ($result in @($run.results)) {
-            if ($result.ruleId -notmatch '^SEC101') { continue }
+            # Resolve the rule id across SARIF variants: result.ruleId, result.rule.id,
+            # or result.ruleIndex -> tool.driver.rules[index].id
+            $rid = $result.ruleId
+            if (-not $rid -and $result.rule) { $rid = $result.rule.id }
+            if (($rid -notmatch 'SEC101') -and ($null -ne $result.ruleIndex) -and $rules.Count -gt 0) {
+                $idx = [int]$result.ruleIndex
+                if ($idx -ge 0 -and $idx -lt $rules.Count) { $rid = $rules[$idx].id }
+            }
+            Write-Host "    result: ruleId='$($result.ruleId)' ruleIndex='$($result.ruleIndex)' resolved='$rid'"
+            if ($rid -notmatch 'SEC101') { continue }
 
             foreach ($loc in @($result.locations)) {
                 $uri = $loc.physicalLocation.artifactLocation.uri
@@ -74,7 +83,7 @@ foreach ($file in $sarifFiles) {
 
                 $line = $loc.physicalLocation.region.startLine
                 $msg = $result.message.text
-                $violations.Add("${rel}:${line}  $($result.ruleId)  $msg")
+                $violations.Add("${rel}:${line}  ${rid}  $msg")
             }
         }
     }
