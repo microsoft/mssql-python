@@ -1882,16 +1882,51 @@ class Connection:
         logger.info("Entering connection context manager.")
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """
         Exit the context manager.
 
-        Closes the connection when exiting the context, ensuring proper
-        resource cleanup. This follows the modern standard used by most
-        database libraries.
+        Implements commit-on-success / rollback-on-exception semantics:
+        - If the block exits cleanly and autocommit is off, the transaction
+          is committed.
+        - If an exception is raised and autocommit is off, the transaction
+          is rolled back.
+        - The connection is always closed when leaving the block.
+
+        If commit() fails on clean exit, the connection is closed and the
+        commit exception is raised. On exception exit, cleanup failures
+        (rollback or close) are suppressed so the original user exception
+        propagates unchanged.
         """
-        if not self._closed:
+        if self._closed:
+            return
+        try:
+            if not self.autocommit:
+                if exc_type is None:
+                    self.commit()
+                else:
+                    self.rollback()
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                logger.warning(
+                    "Failed to close connection after failed "
+                    "commit/rollback in context manager.",
+                    exc_info=True,
+                )
+            if exc_type is None:
+                raise
+            return
+        try:
             self.close()
+        except Exception:
+            if exc_type is None:
+                raise
+            logger.warning(
+                "Failed to close connection in context manager.",
+                exc_info=True,
+            )
 
     def __del__(self) -> None:
         """
