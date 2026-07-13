@@ -359,3 +359,467 @@ def test_100_concurrent_async_selects_on_single_mars_connection(conn_str, _async
         f"{CONCURRENT_TASKS} cursors (semaphore={CONCURRENT_LIMIT}) "
         f"completed in {elapsed:.2f}s"
     )
+
+
+# ============================================================================
+# Additional stability tests (cases 1, 2, 4, 6, 7, 8, 9, 10, 11, 12)
+# ============================================================================
+# These tests exercise the async surface across several axes: long queries,
+# large result sets, event-loop non-blocking behavior, multi-batch fetches,
+# and sequential vs concurrent invocation patterns. All safe patterns use
+# one connection per concurrent task (see block comment on
+# test_100_concurrent_async_selects for why).
+#
+# Tunables (env-overridable):
+#   ASYNC_TEST_LARGE_ROWS          rows for the large-result-set test (default 5000)
+#   ASYNC_TEST_STRESS_CONCURRENCY  N for the 1000-task stress test (default 1000)
+#   ASYNC_TEST_WAITFOR_SECONDS     server-side delay for long-query tests (default 2)
+# ============================================================================
+
+LARGE_ROWS = int(os.getenv("ASYNC_TEST_LARGE_ROWS", "5000"))
+# The fetch-heartbeat test needs a materially slower fetch (multi-hundred ms)
+# for the 10 ms heartbeat to have time to tick a meaningful number of times.
+# Default to ~10× LARGE_ROWS so even a fast local SQL Server produces enough
+# TDS traffic to keep the fetch worker thread busy for a while.
+HB_FETCH_ROWS = int(os.getenv("ASYNC_TEST_HB_FETCH_ROWS", "50000"))
+STRESS_CONCURRENCY = int(os.getenv("ASYNC_TEST_STRESS_CONCURRENCY", "1000"))
+WAITFOR_SECONDS = int(os.getenv("ASYNC_TEST_WAITFOR_SECONDS", "2"))
+WAITFOR_SQL = f"WAITFOR DELAY '00:00:0{WAITFOR_SECONDS}'"
+
+
+# ---------- Case 1: Execute long-running query asynchronously --------------
+
+
+def test_execute_async_long_running_query(conn_str, _async_capable):
+    """Run a ~2-second server-side WAITFOR through execute_async and verify
+    the row afterward comes back correctly.
+
+    Establishes that the polling loop survives realistic query durations
+    (many polling iterations of SQL_STILL_EXECUTING) and doesn't lose the
+    result set.
+    """
+
+    async def _run():
+        conn = connect(conn_str)
+        try:
+            cur = conn.cursor()
+            try:
+                start = time.perf_counter()
+                await cur.execute_async(f"{WAITFOR_SQL}; SELECT 42 AS n")
+                elapsed = time.perf_counter() - start
+                row = await cur.fetch_async()
+                return elapsed, row
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+
+    elapsed, row = asyncio.run(_run())
+    assert row is not None and row[0] == 42
+    assert elapsed >= WAITFOR_SECONDS - 0.2, (
+        f"execute_async returned too quickly ({elapsed:.2f}s < {WAITFOR_SECONDS}s) — "
+        f"WAITFOR was probably not honored"
+    )
+
+
+# ---------- Case 2: Event loop continues while query executes --------------
+
+
+def test_event_loop_progresses_during_execute_async(conn_str, _async_capable):
+    """A background heartbeat coroutine must keep ticking while a long query
+    is being polled by the C++ executor thread.
+
+    Proves that ``execute_async`` does NOT starve the asyncio event loop:
+    the polling loop runs in the run_in_executor worker thread with the
+    GIL released, so the main thread's event loop stays free to schedule
+    other coroutines.
+    """
+
+    async def _run():
+        conn = connect(conn_str)
+        heartbeats = 0
+
+        async def heartbeat():
+            nonlocal heartbeats
+            while True:
+                await asyncio.sleep(0.01)  # 10ms tick
+                heartbeats += 1
+
+        hb_task = asyncio.create_task(heartbeat())
+        try:
+            cur = conn.cursor()
+            try:
+                await cur.execute_async(f"{WAITFOR_SQL}; SELECT 1")
+                _ = await cur.fetch_async()
+            finally:
+                cur.close()
+        finally:
+            hb_task.cancel()
+            try:
+                await hb_task
+            except asyncio.CancelledError:
+                pass
+            conn.close()
+        return heartbeats
+
+    heartbeats = asyncio.run(_run())
+    # Expect ~100 ticks/second × WAITFOR_SECONDS with plenty of margin for
+    # scheduling jitter. A value < ~30 (i.e. 15% of ideal) indicates the
+    # event loop was starved.
+    min_expected = max(30, WAITFOR_SECONDS * 30)
+    assert heartbeats >= min_expected, (
+        f"event loop appears to have been blocked: only {heartbeats} heartbeats "
+        f"in {WAITFOR_SECONDS}s (expected >= {min_expected}) — "
+        f"execute_async is probably not releasing the event loop"
+    )
+    print(
+        f"\n[async POC] heartbeat during {WAITFOR_SECONDS}s execute_async: "
+        f"{heartbeats} ticks (>= {min_expected} required)"
+    )
+
+
+# ---------- Case 4: 1000 async executes on different connections -----------
+
+
+@pytest.mark.stress
+def test_1000_async_executes_on_different_connections(conn_str, _async_capable):
+    """Scale the connection-per-task workload up to 1000 tasks.
+
+    Marked ``stress`` (excluded from the default pytest run per pytest.ini)
+    because opening 1000 connections stresses SQL Server's login-handshake
+    queue and the local machine's ephemeral port pool. Bounded by
+    ``ASYNC_TEST_MAX_INFLIGHT`` (default 16) so at most that many are being
+    established at any instant.
+    """
+
+    async def _one_query(idx: int, sem: asyncio.Semaphore):
+        async with sem:
+            conn = connect(conn_str)
+            try:
+                cur = conn.cursor()
+                try:
+                    await cur.execute_async("SELECT ? AS idx", idx)
+                    row = await cur.fetch_async()
+                    assert row is not None and row[0] == idx
+                    return idx
+                finally:
+                    cur.close()
+            finally:
+                conn.close()
+
+    async def _run():
+        sem = asyncio.Semaphore(CONCURRENT_LIMIT)
+        start = time.perf_counter()
+        results = await asyncio.gather(
+            *[_one_query(i, sem) for i in range(STRESS_CONCURRENCY)]
+        )
+        return results, time.perf_counter() - start
+
+    results, elapsed = asyncio.run(_run())
+    assert sorted(results) == list(range(STRESS_CONCURRENCY))
+    print(
+        f"\n[async POC stress] {STRESS_CONCURRENCY} async queries "
+        f"(semaphore={CONCURRENT_LIMIT}) completed in {elapsed:.2f}s"
+    )
+
+
+# ---------- Case 6: Fetch multiple rows asynchronously ---------------------
+
+
+def test_fetch_async_returns_batch_of_rows(conn_str, _async_capable):
+    """``fetch_async(size=N)`` should return a ``List[Row]`` with the first N
+    rows of the result set."""
+
+    async def _run():
+        conn = connect(conn_str)
+        try:
+            cur = conn.cursor()
+            try:
+                # Simple VALUES clause yields 5 rows deterministically.
+                await cur.execute_async(
+                    "SELECT * FROM (VALUES (1),(2),(3),(4),(5)) AS t(n)"
+                )
+                rows = await cur.fetch_async(5)
+                return rows
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+
+    rows = asyncio.run(_run())
+    assert isinstance(rows, list) and len(rows) == 5
+    assert [r[0] for r in rows] == [1, 2, 3, 4, 5]
+
+
+# ---------- Case 7: Fetch large result set ---------------------------------
+
+
+def test_fetch_async_large_result_set(conn_str, _async_capable):
+    """``fetch_async(-1)`` should return all rows for a large result set.
+
+    Uses a CROSS JOIN of ``sys.all_objects`` to generate ``LARGE_ROWS``
+    rows, which produces a multi-KB result set spanning multiple TDS
+    packets. Verifies the async fetch path handles multi-batch responses
+    correctly.
+    """
+
+    async def _run():
+        conn = connect(conn_str)
+        try:
+            cur = conn.cursor()
+            try:
+                await cur.execute_async(
+                    f"SELECT TOP {LARGE_ROWS} "
+                    f"ROW_NUMBER() OVER (ORDER BY a.object_id) AS n, "
+                    f"CAST(a.name AS NVARCHAR(128)) AS obj_name "
+                    f"FROM sys.all_objects a CROSS JOIN sys.all_objects b"
+                )
+                rows = await cur.fetch_async(-1)
+                return rows
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+
+    rows = asyncio.run(_run())
+    assert len(rows) == LARGE_ROWS, f"expected {LARGE_ROWS} rows, got {len(rows)}"
+    # Row numbering is 1..LARGE_ROWS and sequential.
+    assert rows[0][0] == 1
+    assert rows[-1][0] == LARGE_ROWS
+    # Spot-check that name column decoded correctly (non-empty string).
+    assert isinstance(rows[0][1], str) and len(rows[0][1]) > 0
+
+
+# ---------- Case 8: Fetch does not block event loop ------------------------
+
+
+def test_event_loop_progresses_during_fetch_async(conn_str, _async_capable):
+    """A background heartbeat must keep ticking during a large ``fetch_async``.
+
+    Symmetric to test_event_loop_progresses_during_execute_async but for
+    the fetch path. The fetch runs in an executor thread with the GIL
+    released, so the event loop should stay live.
+
+    Uses ``HB_FETCH_ROWS`` (default 50000) rather than ``LARGE_ROWS`` so the
+    fetch is long enough (multi-hundred ms typical) for the 10 ms heartbeat
+    to tick a meaningful number of times.
+    """
+
+    async def _run():
+        conn = connect(conn_str)
+        heartbeats = 0
+
+        async def heartbeat():
+            nonlocal heartbeats
+            while True:
+                await asyncio.sleep(0.01)
+                heartbeats += 1
+
+        try:
+            cur = conn.cursor()
+            try:
+                # Prep the result set synchronously (fast). The interesting
+                # timing is on fetch, not execute.
+                await cur.execute_async(
+                    f"SELECT TOP {HB_FETCH_ROWS} "
+                    f"ROW_NUMBER() OVER (ORDER BY a.object_id) AS n, "
+                    f"CAST(a.name AS NVARCHAR(128)) AS obj_name "
+                    f"FROM sys.all_objects a CROSS JOIN sys.all_objects b"
+                )
+                hb_task = asyncio.create_task(heartbeat())
+                fetch_start = time.perf_counter()
+                rows = await cur.fetch_async(-1)
+                fetch_elapsed = time.perf_counter() - fetch_start
+                hb_task.cancel()
+                try:
+                    await hb_task
+                except asyncio.CancelledError:
+                    pass
+                return rows, heartbeats, fetch_elapsed
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+
+    rows, heartbeats, fetch_elapsed = asyncio.run(_run())
+    assert len(rows) == HB_FETCH_ROWS
+    # If the fetch completes in less than ~50 ms the test is inconclusive
+    # (the heartbeat's 10 ms timer may not have fired even once even in an
+    # ideal system). Skip the tick-count assertion in that regime — a
+    # sub-50 ms fetch on a local SQL Server means the event loop wasn't
+    # blocked long enough to matter either way.
+    if fetch_elapsed < 0.05:
+        pytest.skip(
+            f"fetch_async completed too fast ({fetch_elapsed*1000:.0f}ms) to "
+            f"meaningfully measure event-loop responsiveness — increase "
+            f"ASYNC_TEST_HB_FETCH_ROWS on faster hardware"
+        )
+    # Require at least ~1 tick per 30 ms of fetch (very loose to tolerate CI
+    # jitter). If the event loop were fully blocked we'd expect 0 ticks.
+    min_expected = max(1, int(fetch_elapsed * 30))
+    assert heartbeats >= min_expected, (
+        f"event loop blocked during fetch_async: {heartbeats} ticks in "
+        f"{fetch_elapsed*1000:.0f}ms (>= {min_expected} required)"
+    )
+    print(
+        f"\n[async POC] heartbeat during {HB_FETCH_ROWS}-row fetch_async "
+        f"({fetch_elapsed*1000:.0f}ms): {heartbeats} ticks"
+    )
+
+
+# ---------- Case 9: Multiple concurrent execute_async operations ----------
+
+
+def test_multiple_concurrent_execute_async_small_batch(conn_str, _async_capable):
+    """A small variant of the connection-per-task pattern (N=10).
+
+    Complementary to the 100-task test — kept small so it's included in
+    quick smoke runs. Each task uses its own connection; concurrent
+    execute on cursors sharing a DBC is intentionally NOT tested here
+    because it hits the ODBC no-MARS restriction (see block comment on
+    test_100_concurrent_async_selects_on_single_mars_connection).
+    """
+    N = 10
+
+    async def _one(idx):
+        conn = connect(conn_str)
+        try:
+            cur = conn.cursor()
+            try:
+                await cur.execute_async("SELECT ? AS v", idx * 10)
+                row = await cur.fetch_async()
+                return row[0]
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+
+    async def _run():
+        return await asyncio.gather(*[_one(i) for i in range(N)])
+
+    results = asyncio.run(_run())
+    assert sorted(results) == [i * 10 for i in range(N)]
+
+
+# ---------- Case 10: Execute async then fetch async -----------------------
+
+
+def test_execute_async_followed_by_fetch_async(conn_str, _async_capable):
+    """Verify the natural ``execute_async`` → ``fetch_async`` sequence for
+    each of the three ``fetch_async`` modes on the SAME cursor.
+
+    Distinct from ``test_single_execute_async_and_fetch_async`` (which
+    exercises only the single-row mode) by covering all of size=None,
+    size=positive, and size=-1 on the SAME cursor after independent
+    executes.
+    """
+
+    async def _run():
+        conn = connect(conn_str)
+        try:
+            cur = conn.cursor()
+            try:
+                # Mode 1: size=None → single Row
+                await cur.execute_async("SELECT 100 AS v")
+                r = await cur.fetch_async()
+                assert r is not None and r[0] == 100
+
+                # Mode 2: size=positive → List[Row]
+                await cur.execute_async(
+                    "SELECT * FROM (VALUES (1),(2),(3)) AS t(n)"
+                )
+                rows = await cur.fetch_async(3)
+                assert [x[0] for x in rows] == [1, 2, 3]
+
+                # Mode 3: size=-1 → List[Row] (all)
+                await cur.execute_async(
+                    "SELECT * FROM (VALUES ('a'),('b'),('c'),('d')) AS t(s)"
+                )
+                rows = await cur.fetch_async(-1)
+                assert [x[0] for x in rows] == ["a", "b", "c", "d"]
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+
+    asyncio.run(_run())
+
+
+# ---------- Case 11: Multiple concurrent fetch_async ----------------------
+
+
+def test_multiple_concurrent_fetch_async_across_connections(conn_str, _async_capable):
+    """N connections, each with a pre-executed statement, then
+    ``fetch_async`` fired concurrently across all of them.
+
+    Complements the execute-side concurrency tests: this exercises the
+    fetch code path (DDBCSQLFetchOneAsync) under concurrent gather. Uses
+    one connection per task so each fetch operates on its own DBC (safe
+    per the root-cause investigation).
+    """
+    N = 20
+
+    async def _worker(idx):
+        conn = connect(conn_str)
+        cur = None
+        try:
+            cur = conn.cursor()
+            # Execute first (sequentially per task), then fetch in the
+            # concurrent phase below.
+            await cur.execute_async("SELECT ? AS v", idx * 7)
+            return cur, conn  # keep alive for the fetch phase
+        except Exception:
+            if cur is not None:
+                cur.close()
+            conn.close()
+            raise
+
+    async def _run():
+        # Phase 1: prepare N cursors with statements ready to fetch.
+        prep = await asyncio.gather(*[_worker(i) for i in range(N)])
+        # prep is [(cur, conn), ...]
+        try:
+            # Phase 2: concurrent fetch_async across all N.
+            rows = await asyncio.gather(*[c.fetch_async() for c, _ in prep])
+            return [r[0] for r in rows]
+        finally:
+            for c, conn in prep:
+                c.close()
+                conn.close()
+
+    results = asyncio.run(_run())
+    assert sorted(results) == [i * 7 for i in range(N)]
+
+
+# ---------- Case 12: Sequential execute_async calls -----------------------
+
+
+def test_sequential_execute_async_on_same_cursor(conn_str, _async_capable):
+    """Run multiple ``execute_async`` calls back-to-back on the SAME cursor.
+
+    Verifies that the ``AsyncEnableGuard`` correctly toggles
+    ``SQL_ATTR_ASYNC_ENABLE`` OFF at the end of each call, so subsequent
+    async executes on the same HSTMT are not affected by leftover state.
+    Also verifies that ``_finalize_execute_async`` correctly resets cursor
+    metadata (description, rowcount, column cache) between calls.
+    """
+
+    async def _run():
+        conn = connect(conn_str)
+        try:
+            cur = conn.cursor()
+            try:
+                for i in range(5):
+                    await cur.execute_async("SELECT ? AS v", i)
+                    row = await cur.fetch_async()
+                    assert row is not None
+                    assert row[0] == i, f"call {i}: got {row[0]}"
+                    # Second fetch_async on the exhausted result set
+                    # returns None (consistent with sync fetchone semantics).
+                    assert await cur.fetch_async() is None
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+
+    asyncio.run(_run())
