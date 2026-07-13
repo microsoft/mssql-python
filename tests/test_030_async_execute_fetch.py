@@ -222,6 +222,25 @@ def test_100_concurrent_async_selects(conn_str, _async_capable):
 # (mssql_python/constants.py). This test therefore *skips* on the current
 # driver but is kept so that whenever MARS is added to the allowlist it
 # starts running automatically. See the try/except around connect() below.
+#
+# **WARNING** — during POC development we prototyped adding MARS to the
+# allowlist and confirmed empirically that the combination
+#
+#     MARS + SQL_ATTR_ASYNC_ENABLE + concurrent execute across multiple
+#     HSTMTs on one DBC (concurrency >= 2)
+#
+# **crashes the interpreter with SIGSEGV** inside the ODBC driver
+# (segfault reproduces reliably at concurrency=2, N=5, on
+# msodbcsql18 against SQL Server 2022). Sequential MARS-async and
+# Semaphore=1 (serialized) both work fine — the failure is specific to
+# multi-threaded concurrent SQLExecute on HSTMTs that share a single DBC
+# under async mode. Before enabling MARS in the mssql-python allowlist,
+# this crash MUST be investigated (likely a driver-side race that is
+# tickled by our polling loop's thread-pool offload pattern), or the
+# same-connection concurrent async path must be blocked at the
+# mssql-python layer to prevent users from tripping the segfault. Until
+# then, the connection-per-task pattern (test 3 above) is the supported
+# way to run concurrent async workloads.
 # ============================================================================
 
 
