@@ -64,7 +64,6 @@ foreach ($file in $sarifFiles) {
                 $idx = [int]$result.ruleIndex
                 if ($idx -ge 0 -and $idx -lt $rules.Count) { $rid = $rules[$idx].id }
             }
-            Write-Host "    result: ruleId='$($result.ruleId)' ruleIndex='$($result.ruleIndex)' resolved='$rid'"
             if ($rid -notmatch 'SEC101') { continue }
 
             foreach ($loc in @($result.locations)) {
