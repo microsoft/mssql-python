@@ -54,6 +54,12 @@ class Connection {
     // Get information about the driver and data source
     py::object getInfo(SQLUSMALLINT infoType) const;
 
+    // POC (async query execution): probe driver's ODBC async support.
+    // Returns a dict describing SQL_ASYNC_MODE and the SQL_ASYNC_STMT_FUNCTIONS
+    // / SQL_ASYNC_DBC_FUNCTIONS bitmasks. Uses fixed-size SQLGetInfo calls so
+    // the numeric values are returned as proper ints, not raw bytes.
+    py::dict getAsyncCapability() const;
+
     SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
 
     // Add getter for DBC handle for error reporting
@@ -110,6 +116,9 @@ class ConnectionHandle {
 
     // Get information about the driver and data source
     py::object getInfo(SQLUSMALLINT infoType) const;
+
+    // POC (async query execution): probe driver's ODBC async support.
+    py::dict getAsyncCapability() const;
 
   private:
     std::shared_ptr<Connection> _conn;
