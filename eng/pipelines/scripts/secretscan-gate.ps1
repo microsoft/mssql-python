@@ -22,11 +22,24 @@ $ErrorActionPreference = 'Stop'
 # .config/CredScanSuppressions.json). Matched against repo-relative, '/'-normalized paths.
 $excludedPrefixes = @('tests/', 'benchmarks/', 'eng/', 'OneBranchPipelines/', '.gdn/', '.git/')
 
-$sarifFiles = Get-ChildItem -Path $SearchRoot -Recurse -Filter '*.sarif' -ErrorAction SilentlyContinue
+# The scanner writes its SARIF under <BuildDir>/.gdn/.r/**. That directory is
+# hidden, so a plain -Recurse would skip it (and could match an unrelated empty
+# SARIF elsewhere) - search the known dir first, with -Force, then fall back.
+$sarifFiles = @()
+$gdnResults = Join-Path $SearchRoot '.gdn/.r'
+if (Test-Path $gdnResults) {
+    $sarifFiles = @(Get-ChildItem -Path $gdnResults -Recurse -Filter '*.sarif' -Force -ErrorAction SilentlyContinue)
+}
+if (-not $sarifFiles) {
+    $sarifFiles = @(Get-ChildItem -Path $SearchRoot -Recurse -Filter '*.sarif' -Force -ErrorAction SilentlyContinue)
+}
 if (-not $sarifFiles) {
     Write-Host "No SARIF output found under '$SearchRoot' - secret scanner did not produce results."
     exit 0
 }
+
+Write-Host "Found $($sarifFiles.Count) SARIF file(s):"
+$sarifFiles | ForEach-Object { Write-Host "  $($_.FullName)" }
 
 $srcNorm = ($SourcesDir -replace '\\', '/').TrimEnd('/')
 $violations = New-Object System.Collections.Generic.List[string]
@@ -40,6 +53,8 @@ foreach ($file in $sarifFiles) {
     }
 
     foreach ($run in @($sarif.runs)) {
+        $sec = @(@($run.results) | Where-Object { $_.ruleId -match '^SEC101' })
+        Write-Host "  $($file.Name): $(@($run.results).Count) result(s), $($sec.Count) SEC101"
         foreach ($result in @($run.results)) {
             if ($result.ruleId -notmatch '^SEC101') { continue }
 
