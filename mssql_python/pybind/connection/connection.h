@@ -3,6 +3,7 @@
 
 #pragma once
 #include "../ddbc_bindings.h"
+#include <atomic>
 #include <memory>
 #include <string>
 #include <mutex>
@@ -54,6 +55,12 @@ class Connection {
     // Get information about the driver and data source
     py::object getInfo(SQLUSMALLINT infoType) const;
 
+    // Async POC: returns true iff the driver advertises statement-level (or
+    // higher) async support via SQLGetInfo(SQL_ASYNC_MODE). Result is cached
+    // per-connection after the first successful call because SQL_ASYNC_MODE
+    // is a static driver capability.
+    bool isAsyncCapable() const;
+
     SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
 
     // Add getter for DBC handle for error reporting
@@ -92,6 +99,15 @@ class Connection {
     // Prevents data races between allocStatementHandle() and disconnect(),
     // or concurrent GC finalizers running from different threads
     mutable std::mutex _childHandlesMutex;
+
+    // Async POC: cached result of SQLGetInfo(SQL_ASYNC_MODE).
+    //   -1  = uncached
+    //    0  = SQL_AM_NONE (no async)
+    //    1  = SQL_AM_CONNECTION
+    //    2  = SQL_AM_STATEMENT
+    // Written at most once per connection; atomic to avoid a mutex on the
+    // read path (called once per execute_async / fetch_async invocation).
+    mutable std::atomic<int> _asyncModeCache{-1};
 };
 
 class ConnectionHandle {
@@ -110,6 +126,9 @@ class ConnectionHandle {
 
     // Get information about the driver and data source
     py::object getInfo(SQLUSMALLINT infoType) const;
+
+    // Async POC: forwards to Connection::isAsyncCapable().
+    bool isAsyncCapable() const;
 
   private:
     std::shared_ptr<Connection> _conn;

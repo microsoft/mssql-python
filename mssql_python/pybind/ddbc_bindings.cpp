@@ -13,11 +13,13 @@
 
 #include <algorithm>  // std::min
 #include <cctype>
+#include <chrono>   // std::chrono (async polling backoff)
 #include <cstdint>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
+#include <thread>   // std::this_thread::sleep_for (async polling backoff)
 #include <utility>  // std::forward
 
 
@@ -1806,6 +1808,141 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
     return ret;
 }
 
+// ---------------------------------------------------------------------------
+// Async POC helpers (statement-level async via SQL_ATTR_ASYNC_ENABLE + polling)
+// ---------------------------------------------------------------------------
+// These helpers underpin the upcoming Cursor.execute_async / Cursor.fetch_async
+// bindings. They are intentionally usable from the existing sync path with
+// asyncMode=false (a no-op path), so we share one code path for both.
+
+// Backoff parameters for the polling loop. Defaults tuned for typical LAN
+// SQL Server round-trips; caller can override per invocation.
+struct PollingConfig {
+    double initial_ms = 0.5;   // first sleep interval
+    double max_ms = 20.0;      // capped exponential backoff ceiling
+    double multiplier = 1.5;   // geometric growth factor
+};
+
+// RAII guard: enables SQL_ATTR_ASYNC_ENABLE on construction, disables on
+// destruction. Only enables if `enable` is true AND the driver accepts the
+// attribute; otherwise the destructor is a no-op. Ensures the async flag
+// never leaks onto a statement handle that a later sync call reuses.
+class AsyncEnableGuard {
+  public:
+    AsyncEnableGuard(SQLHSTMT hStmt, bool enable) : _hStmt(hStmt), _enabled(false) {
+        if (enable && _hStmt && SQLSetStmtAttr_ptr) {
+            SQLRETURN rc = SQLSetStmtAttr_ptr(
+                _hStmt, SQL_ATTR_ASYNC_ENABLE,
+                reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(SQL_ASYNC_ENABLE_ON)),
+                0);
+            if (SQL_SUCCEEDED(rc)) {
+                _enabled = true;
+            } else {
+                LOG("AsyncEnableGuard: SQLSetStmtAttr(SQL_ATTR_ASYNC_ENABLE, ON) "
+                    "failed - SQLRETURN=%d, hStmt=%p",
+                    rc, (void*)_hStmt);
+            }
+        }
+    }
+
+    ~AsyncEnableGuard() {
+        if (_enabled && _hStmt && SQLSetStmtAttr_ptr) {
+            SQLRETURN rc = SQLSetStmtAttr_ptr(
+                _hStmt, SQL_ATTR_ASYNC_ENABLE,
+                reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(SQL_ASYNC_ENABLE_OFF)),
+                0);
+            if (!SQL_SUCCEEDED(rc)) {
+                LOG("AsyncEnableGuard: SQLSetStmtAttr(SQL_ATTR_ASYNC_ENABLE, OFF) "
+                    "failed - SQLRETURN=%d, hStmt=%p",
+                    rc, (void*)_hStmt);
+            }
+        }
+    }
+
+    bool enabled() const { return _enabled; }
+
+    AsyncEnableGuard(const AsyncEnableGuard&) = delete;
+    AsyncEnableGuard& operator=(const AsyncEnableGuard&) = delete;
+    AsyncEnableGuard(AsyncEnableGuard&&) = delete;
+    AsyncEnableGuard& operator=(AsyncEnableGuard&&) = delete;
+
+  private:
+    SQLHSTMT _hStmt;
+    bool _enabled;
+};
+
+// Executes the provided ODBC call once (sync) or in a polling loop that keeps
+// re-invoking it while it returns SQL_STILL_EXECUTING (async).
+//
+// IMPORTANT: The caller MUST release the GIL before invoking this helper when
+// asyncMode == true, so the sleep_for periods don't block the Python event
+// loop running in the calling thread's asyncio task.
+//
+// `callOnce` is any callable returning SQLRETURN (typically a lambda that
+// captures the statement handle and calls SQLExecute / SQLExecDirect / SQLFetch).
+template <typename Fn>
+inline SQLRETURN ExecuteWithPolling(Fn callOnce, bool asyncMode,
+                                     const PollingConfig& cfg = PollingConfig{}) {
+    SQLRETURN ret = callOnce();
+    if (!asyncMode) {
+        return ret;
+    }
+    double sleep_ms = cfg.initial_ms;
+    while (ret == SQL_STILL_EXECUTING) {
+        std::this_thread::sleep_for(
+            std::chrono::microseconds(static_cast<long long>(sleep_ms * 1000.0)));
+        sleep_ms = std::min(sleep_ms * cfg.multiplier, cfg.max_ms);
+        ret = callOnce();
+    }
+    return ret;
+}
+
+// Prepares the statement (if requested) and binds all parameters. Returns
+// the SQLRETURN from the last ODBC call; on non-success the caller should
+// short-circuit before invoking SQLExecute.
+//
+// `paramBuffers` is an OUT parameter: it accumulates heap-owned buffers that
+// MUST remain in scope until SQLExecute completes, because ODBC keeps raw
+// pointers into them across the SQLBindParameter / SQLExecute boundary.
+//
+// GIL: SQLPrepare is called with the GIL released (matches previous inline
+// behavior); BindParameters requires the GIL (inspects py::list contents).
+SQLRETURN PrepareAndBind(SqlHandlePtr statementHandle, SQLHANDLE hStmt, SQLWCHAR* queryPtr,
+                         const py::list& params, std::vector<ParamInfo>& paramInfos,
+                         py::list& isStmtPrepared, bool usePrepare,
+                         std::vector<std::shared_ptr<void>>& paramBuffers,
+                         const std::string& charEncoding) {
+    // isStmtPrepared is a single-element list carrying a bool by reference
+    // (Python bools are immutable, so we can't pass the raw bool by ref).
+    assert(isStmtPrepared.size() == 1);
+
+    SQLRETURN rc = SQL_SUCCESS;
+    if (usePrepare) {
+        {
+            // Release the GIL during the blocking SQLPrepare network call.
+            py::gil_scoped_release release;
+            rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            LOG("PrepareAndBind: SQLPrepare failed - SQLRETURN=%d, statement_handle=%p",
+                rc, (void*)hStmt);
+            return rc;
+        }
+        // GH-610: Clear per-handle describe cache (new prepare = new param types)
+        statementHandle->clearDescribeCache();
+        isStmtPrepared[0] = py::cast(true);
+    } else {
+        // Caller opted out of preparing; the plan must already exist on hStmt.
+        bool isStmtPreparedAsBool = isStmtPrepared[0].cast<bool>();
+        if (!isStmtPreparedAsBool) {
+            ThrowStdException("Cannot execute unprepared statement");
+        }
+    }
+
+    rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
+    return rc;
+}
+
 // Executes the provided query. If the query is parametrized, it prepares the
 // statement and binds the parameters. Otherwise, it executes the query
 // directly. 'usePrepare' parameter can be used to disable the prepare step for
@@ -1849,9 +1986,14 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         // according to DDBC documentation -
         // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
         {
-            // Release the GIL during the blocking ODBC call
+            // Release the GIL during the blocking ODBC call. Routed through
+            // ExecuteWithPolling for parity with the upcoming async path; with
+            // asyncMode=false it is a straight one-shot call (identical to the
+            // previous inline SQLExecDirect invocation).
             py::gil_scoped_release release;
-            rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
+            rc = ExecuteWithPolling(
+                [&]() { return SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS); },
+                /*asyncMode=*/false);
         }
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
             LOG("SQLExecute: Direct execution failed (non-parameterized query) "
@@ -1860,54 +2002,28 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         }
         return rc;
     } else {
-        // isStmtPrepared is a list instead of a bool coz bools in Python are
-        // immutable. Hence, we can't pass around bools by reference & modify
-        // them. Therefore, isStmtPrepared must be a list with exactly one bool
-        // element
-        assert(isStmtPrepared.size() == 1);
-        if (usePrepare) {
-            {
-                // Release the GIL during the blocking SQLPrepare network call.
-                py::gil_scoped_release release;
-                rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
-            }
-            if (!SQL_SUCCEEDED(rc)) {
-                LOG("SQLExecute: SQLPrepare failed - SQLRETURN=%d, "
-                    "statement_handle=%p",
-                    rc, (void*)hStmt);
-                return rc;
-            }
-            // GH-610: Clear per-handle describe cache (new prepare = new param types)
-            statementHandle->clearDescribeCache();
-            isStmtPrepared[0] = py::cast(true);
-        } else {
-            // Make sure the statement has been prepared earlier if we're not
-            // preparing now
-            bool isStmtPreparedAsBool = isStmtPrepared[0].cast<bool>();
-            if (!isStmtPreparedAsBool) {
-                // TODO: Print the query
-                ThrowStdException("Cannot execute unprepared statement");
-            }
-        }
-
-        // This vector manages the heap memory allocated for parameter buffers.
-        // It must be in scope until SQLExecute is done.
         // Extract char encoding from encodingSettings dictionary
         std::string charEncoding = "utf-8";  // default
         if (encodingSettings.contains("encoding")) {
             charEncoding = encodingSettings["encoding"].cast<std::string>();
         }
 
+        // This vector manages the heap memory allocated for parameter buffers.
+        // It must remain in scope until SQLExecute (and any DAE loop) completes.
         std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
+        rc = PrepareAndBind(statementHandle, hStmt, queryPtr, params, paramInfos,
+                            isStmtPrepared, usePrepare, paramBuffers, charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
             return rc;
         }
 
         {
             // Release the GIL during the blocking SQLExecute network call.
+            // Routed through ExecuteWithPolling for parity with the upcoming
+            // async path; asyncMode=false collapses to a single call.
             py::gil_scoped_release release;
-            rc = SQLExecute_ptr(hStmt);
+            rc = ExecuteWithPolling([&]() { return SQLExecute_ptr(hStmt); },
+                                    /*asyncMode=*/false);
         }
         if (rc == SQL_NEED_DATA) {
             LOG("SQLExecute: SQL_NEED_DATA received - Starting DAE "
@@ -5913,7 +6029,11 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"), py::arg("value"),
              "Set connection attribute")
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
-        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
+        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"))
+        .def("is_async_capable", &ConnectionHandle::isAsyncCapable,
+             "Async POC: returns True iff the driver advertises statement-level "
+             "or connection-level async support via SQLGetInfo(SQL_ASYNC_MODE). "
+             "Result is cached per-connection.");
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
