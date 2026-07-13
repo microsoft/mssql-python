@@ -22,10 +22,11 @@ jobs:
       Target: '$(Build.SourcesDirectory)\*'
       Rules: 'GetClean'
       Recurse: true
-  - task: PostAnalysis@2
-    displayName: 'Fail build if secrets detected'
+  - task: PowerShell@2
+    displayName: 'Fail build if secrets detected in shipping source'
     inputs:
-      GdnBreakAllTools: true
+      filePath: '$(Build.SourcesDirectory)/eng/pipelines/scripts/secretscan-gate.ps1'
+      pwsh: false
 
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
