@@ -1947,14 +1947,22 @@ SQLRETURN PrepareAndBind(SqlHandlePtr statementHandle, SQLHANDLE hStmt, SQLWCHAR
 // statement and binds the parameters. Otherwise, it executes the query
 // directly. 'usePrepare' parameter can be used to disable the prepare step for
 // queries that might already be prepared in a previous call.
-SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
-                          const py::list& params, std::vector<ParamInfo>& paramInfos,
-                          py::list& isStmtPrepared, const bool usePrepare,
-                          const py::dict& encodingSettings) {
+//
+// Internal implementation shared by sync (SQLExecute_wrap) and async
+// (SQLExecuteAsync_wrap) entry points. When asyncMode=true, SQL_ATTR_ASYNC_ENABLE
+// is turned on via AsyncEnableGuard for the duration of this call, and the
+// SQLExecute / SQLExecDirect call is driven through ExecuteWithPolling so the
+// caller thread stays responsive between polls. Data-At-Execution parameters
+// are rejected up-front in async mode (async DAE is out of scope for the POC).
+static SQLRETURN SQLExecute_impl(const SqlHandlePtr statementHandle,
+                                 const std::u16string& query, const py::list& params,
+                                 std::vector<ParamInfo>& paramInfos, py::list& isStmtPrepared,
+                                 const bool usePrepare, const py::dict& encodingSettings,
+                                 bool asyncMode, const PollingConfig& pollCfg) {
     LOG("SQLExecute: Executing %s query - statement_handle=%p, "
-        "param_count=%zu, query_length=%zu chars",
+        "param_count=%zu, query_length=%zu chars, async=%d",
         (params.size() > 0 ? "parameterized" : "direct"), (void*)statementHandle->get(),
-        params.size(), query.length());
+        params.size(), query.length(), asyncMode ? 1 : 0);
     if (!SQLPrepare_ptr) {
         LOG("SQLExecute: Function pointer not initialized, loading driver");
         DriverLoader::getInstance().loadDriver();  // Load the driver
@@ -1965,6 +1973,21 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         // TODO: This should be a special internal exception, that python wont
         // relay to users as is
         ThrowStdException("Number of parameters and paramInfos do not match");
+    }
+
+    // Async POC: reject Data-At-Execution parameters up-front. DAE requires
+    // the SQL_NEED_DATA loop below, which is not safe to drive alongside
+    // SQL_STILL_EXECUTING polling. Callers must fall back to sync execute for
+    // large VARBINARY(MAX) / NVARCHAR(MAX) parameter values.
+    if (asyncMode) {
+        for (const auto& info : paramInfos) {
+            if (info.isDAE) {
+                ThrowStdException(
+                    "Data-At-Execution (DAE) parameters are not supported with "
+                    "async execution in this POC. Use sync execute for large "
+                    "VARBINARY(MAX) / NVARCHAR(MAX) parameters.");
+            }
+        }
     }
 
     RETCODE rc;
@@ -1979,6 +2002,11 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY, (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
     }
 
+    // Async POC: enable SQL_ATTR_ASYNC_ENABLE for the duration of this call.
+    // When asyncMode=false the guard is a no-op (constructor + destructor skip
+    // the SQLSetStmtAttr calls entirely).
+    AsyncEnableGuard asyncGuard(hStmt, asyncMode);
+
     SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
     if (params.size() == 0) {
         // Execute statement directly if the statement is not parametrized. This
@@ -1986,14 +2014,13 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         // according to DDBC documentation -
         // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
         {
-            // Release the GIL during the blocking ODBC call. Routed through
-            // ExecuteWithPolling for parity with the upcoming async path; with
-            // asyncMode=false it is a straight one-shot call (identical to the
-            // previous inline SQLExecDirect invocation).
+            // Release the GIL during the blocking ODBC call. In async mode
+            // ExecuteWithPolling re-invokes SQLExecDirect while it returns
+            // SQL_STILL_EXECUTING, with backoff sleeps between polls.
             py::gil_scoped_release release;
             rc = ExecuteWithPolling(
                 [&]() { return SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS); },
-                /*asyncMode=*/false);
+                asyncMode, pollCfg);
         }
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
             LOG("SQLExecute: Direct execution failed (non-parameterized query) "
@@ -2018,12 +2045,12 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         }
 
         {
-            // Release the GIL during the blocking SQLExecute network call.
-            // Routed through ExecuteWithPolling for parity with the upcoming
-            // async path; asyncMode=false collapses to a single call.
+            // Release the GIL during the blocking SQLExecute network call. In
+            // async mode ExecuteWithPolling handles SQL_STILL_EXECUTING with
+            // backoff sleeps between polls.
             py::gil_scoped_release release;
             rc = ExecuteWithPolling([&]() { return SQLExecute_ptr(hStmt); },
-                                    /*asyncMode=*/false);
+                                    asyncMode, pollCfg);
         }
         if (rc == SQL_NEED_DATA) {
             LOG("SQLExecute: SQL_NEED_DATA received - Starting DAE "
@@ -2161,6 +2188,33 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
         return rc;
     }
+}
+
+// Sync wrapper (exposed as DDBCSQLExecute). Existing pybind binding target;
+// signature unchanged for source and ABI compatibility with all sync callers.
+SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
+                          const py::list& params, std::vector<ParamInfo>& paramInfos,
+                          py::list& isStmtPrepared, const bool usePrepare,
+                          const py::dict& encodingSettings) {
+    return SQLExecute_impl(statementHandle, query, params, paramInfos, isStmtPrepared,
+                           usePrepare, encodingSettings,
+                           /*asyncMode=*/false, PollingConfig{});
+}
+
+// Async wrapper (exposed as DDBCSQLExecuteAsync). Called from Cursor.execute_async
+// via loop.run_in_executor so the polling loop runs on a background thread with
+// the GIL released, keeping the asyncio event loop responsive.
+SQLRETURN SQLExecuteAsync_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
+                               const py::list& params, std::vector<ParamInfo>& paramInfos,
+                               py::list& isStmtPrepared, const bool usePrepare,
+                               const py::dict& encodingSettings, double poll_initial_ms,
+                               double poll_max_ms) {
+    PollingConfig cfg;
+    cfg.initial_ms = poll_initial_ms;
+    cfg.max_ms = poll_max_ms;
+    // multiplier stays at the PollingConfig default (1.5)
+    return SQLExecute_impl(statementHandle, query, params, paramInfos, isStmtPrepared,
+                           usePrepare, encodingSettings, /*asyncMode=*/true, cfg);
 }
 
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
@@ -4122,17 +4176,27 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
+//
+// Async POC: when asyncMode=true, the SQLFetchScroll network call is driven
+// through ExecuteWithPolling so it can return SQL_STILL_EXECUTING. The caller
+// is responsible for having installed SQL_ATTR_ASYNC_ENABLE on hStmt (via
+// AsyncEnableGuard) before calling this function.
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
                          const std::vector<SQLUSMALLINT>& lobColumns,
                          const std::string& charEncoding = "utf-16le",
-                         int charCtype = SQL_C_WCHAR) {
+                         int charCtype = SQL_C_WCHAR,
+                         bool asyncMode = false,
+                         const PollingConfig& pollCfg = PollingConfig{}) {
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
     {
-        // Release the GIL during the blocking ODBC fetch
+        // Release the GIL during the blocking ODBC fetch. In async mode
+        // ExecuteWithPolling handles SQL_STILL_EXECUTING with backoff.
         py::gil_scoped_release release;
-        ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+        ret = ExecuteWithPolling(
+            [&]() { return SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0); },
+            asyncMode, pollCfg);
     }
     if (ret == SQL_NO_DATA) {
         LOG("FetchBatchData: No data to fetch");
@@ -4586,15 +4650,24 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
 // the result set and populates the provided Python list with the row data. If
 // there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs
 // during fetching, it throws a runtime error.
-SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize,
-                         const std::string& charEncoding = "utf-16le",
-                         const std::string& wcharEncoding = "utf-16le",
-                         int charCtype = SQL_C_WCHAR) {
+//
+// Internal implementation shared by sync (FetchMany_wrap) and async
+// (FetchManyAsync_wrap) entry points. In async mode SQL_ATTR_ASYNC_ENABLE is
+// installed for the duration of this call and each SQLFetch is polled.
+static SQLRETURN FetchMany_impl(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize,
+                                const std::string& charEncoding,
+                                const std::string& wcharEncoding, int charCtype,
+                                bool asyncMode, const PollingConfig& pollCfg) {
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
+
+    // Async POC: enable SQL_ATTR_ASYNC_ENABLE for the duration of this call.
+    // No-op when asyncMode=false.
+    AsyncEnableGuard asyncGuard(hStmt, asyncMode);
+
     // Retrieve column count
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
 
@@ -4626,9 +4699,11 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             lobColumns.size());
         while (numRowsFetched < (SQLULEN)fetchSize) {
             {
-                // Release GIL during the blocking fetch
+                // Release GIL during the blocking fetch. In async mode
+                // ExecuteWithPolling handles SQL_STILL_EXECUTING with backoff.
                 py::gil_scoped_release release;
-                ret = SQLFetch_ptr(hStmt);
+                ret = ExecuteWithPolling([&]() { return SQLFetch_ptr(hStmt); },
+                                         asyncMode, pollCfg);
             }
             if (ret == SQL_NO_DATA)
                 break;
@@ -4658,7 +4733,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
     ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
-                         charEncoding, charCtype);
+                         charEncoding, charCtype, asyncMode, pollCfg);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("FetchMany_wrap: Error when fetching data - SQLRETURN=%d", ret);
         return ret;
@@ -4672,6 +4747,26 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
     return ret;
+}
+
+// Sync wrapper (exposed as DDBCSQLFetchMany). Existing pybind binding target.
+SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize,
+                         const std::string& charEncoding = "utf-16le",
+                         const std::string& wcharEncoding = "utf-16le",
+                         int charCtype = SQL_C_WCHAR) {
+    return FetchMany_impl(StatementHandle, rows, fetchSize, charEncoding, wcharEncoding,
+                          charCtype, /*asyncMode=*/false, PollingConfig{});
+}
+
+// Async wrapper (exposed as DDBCSQLFetchManyAsync).
+SQLRETURN FetchManyAsync_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize,
+                              const std::string& charEncoding, const std::string& wcharEncoding,
+                              int charCtype, double poll_initial_ms, double poll_max_ms) {
+    PollingConfig cfg;
+    cfg.initial_ms = poll_initial_ms;
+    cfg.max_ms = poll_max_ms;
+    return FetchMany_impl(StatementHandle, rows, fetchSize, charEncoding, wcharEncoding,
+                          charCtype, /*asyncMode=*/true, cfg);
 }
 
 // GetDataVar - Progressively fetches variable-length column data using SQLGetData.
@@ -5705,15 +5800,25 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
 // populates the provided Python list with the row data. If there are no more
 // rows to fetch, it returns SQL_NO_DATA. If an error occurs during fetching, it
 // throws a runtime error.
-SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
-                        const std::string& charEncoding = "utf-16le",
-                        const std::string& wcharEncoding = "utf-16le",
-                        int charCtype = SQL_C_WCHAR) {
+//
+// Internal implementation shared by sync (FetchAll_wrap) and async
+// (FetchAllAsync_wrap) entry points. In async mode SQL_ATTR_ASYNC_ENABLE is
+// installed for the duration of this call and each SQLFetch / SQLFetchScroll
+// call is polled via ExecuteWithPolling.
+static SQLRETURN FetchAll_impl(SqlHandlePtr StatementHandle, py::list& rows,
+                               const std::string& charEncoding,
+                               const std::string& wcharEncoding, int charCtype,
+                               bool asyncMode, const PollingConfig& pollCfg) {
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
+
+    // Async POC: enable SQL_ATTR_ASYNC_ENABLE for the duration of this call.
+    // No-op when asyncMode=false.
+    AsyncEnableGuard asyncGuard(hStmt, asyncMode);
+
     // Retrieve column count
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
 
@@ -5745,9 +5850,11 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
             lobColumns.size());
         while (true) {
             {
-                // Release GIL during the blocking fetch
+                // Release GIL during the blocking fetch. In async mode
+                // ExecuteWithPolling handles SQL_STILL_EXECUTING with backoff.
                 py::gil_scoped_release release;
-                ret = SQLFetch_ptr(hStmt);
+                ret = ExecuteWithPolling([&]() { return SQLFetch_ptr(hStmt); },
+                                         asyncMode, pollCfg);
             }
             if (ret == SQL_NO_DATA)
                 break;
@@ -5818,7 +5925,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
     while (ret != SQL_NO_DATA) {
         ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
-                             charEncoding, charCtype);
+                             charEncoding, charCtype, asyncMode, pollCfg);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             LOG("FetchAll_wrap: Error when fetching data - SQLRETURN=%d", ret);
             return ret;
@@ -5833,6 +5940,26 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
     return ret;
+}
+
+// Sync wrapper (exposed as DDBCSQLFetchAll). Existing pybind binding target.
+SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
+                        const std::string& charEncoding = "utf-16le",
+                        const std::string& wcharEncoding = "utf-16le",
+                        int charCtype = SQL_C_WCHAR) {
+    return FetchAll_impl(StatementHandle, rows, charEncoding, wcharEncoding, charCtype,
+                         /*asyncMode=*/false, PollingConfig{});
+}
+
+// Async wrapper (exposed as DDBCSQLFetchAllAsync).
+SQLRETURN FetchAllAsync_wrap(SqlHandlePtr StatementHandle, py::list& rows,
+                             const std::string& charEncoding, const std::string& wcharEncoding,
+                             int charCtype, double poll_initial_ms, double poll_max_ms) {
+    PollingConfig cfg;
+    cfg.initial_ms = poll_initial_ms;
+    cfg.max_ms = poll_max_ms;
+    return FetchAll_impl(StatementHandle, rows, charEncoding, wcharEncoding, charCtype,
+                         /*asyncMode=*/true, cfg);
 }
 
 // FetchOne_wrap - Fetches a single row of data from the result set.
@@ -5851,15 +5978,25 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 // result set and populates the provided Python list with the row data. If there
 // are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs during
 // fetching, it throws a runtime error.
-SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
-                        const std::string& charEncoding = "utf-16le",
-                        const std::string& wcharEncoding = "utf-16le",
-                        int charCtype = SQL_C_WCHAR) {
+//
+// Internal implementation shared by sync (FetchOne_wrap) and async
+// (FetchOneAsync_wrap) entry points. In async mode SQL_ATTR_ASYNC_ENABLE is
+// installed via AsyncEnableGuard and the SQLFetch call is polled via
+// ExecuteWithPolling. Note: for LOB streams SQLGetData_wrap runs inline and
+// does NOT poll — non-LOB fetches are the primary async path today.
+static SQLRETURN FetchOne_impl(SqlHandlePtr StatementHandle, py::list& row,
+                               const std::string& charEncoding,
+                               const std::string& wcharEncoding, int charCtype,
+                               bool asyncMode, const PollingConfig& pollCfg) {
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
+
+    // Async POC: enable SQL_ATTR_ASYNC_ENABLE for the duration of this call.
+    // No-op when asyncMode=false.
+    AsyncEnableGuard asyncGuard(hStmt, asyncMode);
 
     // Unbind any columns from previous fetch operations (e.g., fetchmany)
     // to avoid conflicts with SQLGetData. SQLGetData cannot be used on
@@ -5868,9 +6005,11 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
 
     // Assume hStmt is already allocated and a query has been executed
     {
-        // Release the GIL during the blocking ODBC fetch
+        // Release the GIL during the blocking ODBC fetch. In async mode
+        // ExecuteWithPolling re-invokes SQLFetch while it returns
+        // SQL_STILL_EXECUTING, with backoff sleeps between polls.
         py::gil_scoped_release release;
-        ret = SQLFetch_ptr(hStmt);
+        ret = ExecuteWithPolling([&]() { return SQLFetch_ptr(hStmt); }, asyncMode, pollCfg);
     }
     if (SQL_SUCCEEDED(ret)) {
         // Retrieve column count
@@ -5885,6 +6024,28 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
         LOG("FetchOne_wrap: Error when fetching data - SQLRETURN=%d", ret);
     }
     return ret;
+}
+
+// Sync wrapper (exposed as DDBCSQLFetchOne). Existing pybind binding target;
+// keeps the original signature and default arguments unchanged.
+SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
+                        const std::string& charEncoding = "utf-16le",
+                        const std::string& wcharEncoding = "utf-16le",
+                        int charCtype = SQL_C_WCHAR) {
+    return FetchOne_impl(StatementHandle, row, charEncoding, wcharEncoding, charCtype,
+                         /*asyncMode=*/false, PollingConfig{});
+}
+
+// Async wrapper (exposed as DDBCSQLFetchOneAsync). Called from Cursor.fetch_async
+// via loop.run_in_executor.
+SQLRETURN FetchOneAsync_wrap(SqlHandlePtr StatementHandle, py::list& row,
+                             const std::string& charEncoding, const std::string& wcharEncoding,
+                             int charCtype, double poll_initial_ms, double poll_max_ms) {
+    PollingConfig cfg;
+    cfg.initial_ms = poll_initial_ms;
+    cfg.max_ms = poll_max_ms;
+    return FetchOne_impl(StatementHandle, row, charEncoding, wcharEncoding, charCtype,
+                         /*asyncMode=*/true, cfg);
 }
 
 // Wrap SQLMoreResults
@@ -6062,6 +6223,46 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set",
           py::arg("StatementHandle"), py::arg("rows"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR);
+
+    // ------------------------------------------------------------------------
+    // Async POC: statement-level async execute + fetch via polling loop.
+    // Called from Python's Cursor.execute_async / Cursor.fetch_async through
+    // loop.run_in_executor, so the polling loop runs on a background thread
+    // with the GIL released and the asyncio event loop stays responsive.
+    //
+    // Each *Async binding takes two extra float args:
+    //   poll_initial_ms: first sleep interval between SQL_STILL_EXECUTING polls
+    //   poll_max_ms:     capped exponential backoff ceiling
+    // The multiplier (1.5x) is fixed at the C++ default for this POC.
+    //
+    // Note: DDBCSQLExecuteAsync rejects DAE (Data-At-Execution) parameters
+    // up-front - use sync execute for large VARBINARY(MAX) / NVARCHAR(MAX).
+    // ------------------------------------------------------------------------
+    m.def("DDBCSQLExecuteAsync", &SQLExecuteAsync_wrap,
+          "Prepare and execute a T-SQL statement with statement-level async polling",
+          py::arg("statementHandle"), py::arg("query"), py::arg("params"),
+          py::arg("paramInfos"), py::arg("isStmtPrepared"), py::arg("usePrepare"),
+          py::arg("encodingSettings"), py::arg("poll_initial_ms") = 0.5,
+          py::arg("poll_max_ms") = 20.0);
+    m.def("DDBCSQLFetchOneAsync", &FetchOneAsync_wrap,
+          "Fetch one row from the result set with statement-level async polling",
+          py::arg("StatementHandle"), py::arg("row"),
+          py::arg("charEncoding") = "utf-16le", py::arg("wcharEncoding") = "utf-16le",
+          py::arg("charCtype") = SQL_C_WCHAR, py::arg("poll_initial_ms") = 0.5,
+          py::arg("poll_max_ms") = 20.0);
+    m.def("DDBCSQLFetchManyAsync", &FetchManyAsync_wrap,
+          "Fetch many rows from the result set with statement-level async polling",
+          py::arg("StatementHandle"), py::arg("rows"), py::arg("fetchSize"),
+          py::arg("charEncoding") = "utf-16le", py::arg("wcharEncoding") = "utf-16le",
+          py::arg("charCtype") = SQL_C_WCHAR, py::arg("poll_initial_ms") = 0.5,
+          py::arg("poll_max_ms") = 20.0);
+    m.def("DDBCSQLFetchAllAsync", &FetchAllAsync_wrap,
+          "Fetch all rows from the result set with statement-level async polling",
+          py::arg("StatementHandle"), py::arg("rows"),
+          py::arg("charEncoding") = "utf-16le", py::arg("wcharEncoding") = "utf-16le",
+          py::arg("charCtype") = SQL_C_WCHAR, py::arg("poll_initial_ms") = 0.5,
+          py::arg("poll_max_ms") = 20.0);
+
     m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap,
           "Fetch an arrow batch of given length from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
