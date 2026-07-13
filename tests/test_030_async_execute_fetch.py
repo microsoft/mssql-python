@@ -198,3 +198,145 @@ def test_100_concurrent_async_selects(conn_str, _async_capable):
         f"\n[async POC] {CONCURRENT_TASKS} concurrent queries "
         f"(semaphore={CONCURRENT_LIMIT}) completed in {elapsed:.2f}s"
     )
+
+
+# ============================================================================
+# MARS variant: same workload on ONE MARS-enabled connection with N cursors
+# ============================================================================
+# Complements the one-connection-per-task test above. Here we open ONE
+# connection with MultipleActiveResultSets=Yes and create N cursors from it,
+# then fire the same 100 concurrent execute_async + fetch_async pairs.
+#
+# Important distinctions from the connection-per-task variant:
+#  * All requests share a single DBC handle and a single underlying TCP
+#    socket. The ODBC driver multiplexes concurrent statements via MARS.
+#    This is materially different from true network-level parallelism —
+#    execution is interleaved rather than simultaneous.
+#  * Exercises the per-HSTMT SQL_ATTR_ASYNC_ENABLE / AsyncEnableGuard path
+#    when many HSTMTs share one DBC, which is the "N cursors on 1 conn"
+#    pattern documented in async POC spec §4.5.
+#
+# NOTE on current status: as of this commit, mssql-python's connection
+# string parser rejects both ``MultipleActiveResultSets`` and
+# ``MARS_Connection`` — neither is in _ALLOWED_CONNECTION_STRING_PARAMS
+# (mssql_python/constants.py). This test therefore *skips* on the current
+# driver but is kept so that whenever MARS is added to the allowlist it
+# starts running automatically. See the try/except around connect() below.
+# ============================================================================
+
+
+def _with_mars(conn_str: str) -> str:
+    """Return ``conn_str`` with MultipleActiveResultSets=Yes appended, or the
+    original string if the caller already set a MARS keyword.
+
+    Returns an empty string as a sentinel when the caller explicitly *disabled*
+    MARS — the caller should then skip the test rather than override the
+    user's choice.
+    """
+    lower = conn_str.lower()
+    if "multipleactiveresultsets=yes" in lower or "mars_connection=yes" in lower:
+        return conn_str
+    if "multipleactiveresultsets=no" in lower or "mars_connection=no" in lower:
+        return ""  # sentinel — caller skips
+    sep = "" if conn_str.rstrip().endswith(";") else ";"
+    return f"{conn_str}{sep}MultipleActiveResultSets=Yes"
+
+
+def test_100_concurrent_async_selects_on_single_mars_connection(conn_str, _async_capable):
+    """N async SELECTs concurrently on ONE MARS-enabled connection (N cursors).
+
+    Complements ``test_100_concurrent_async_selects``. That test opens one
+    connection per task; this one opens ONE connection with
+    ``MultipleActiveResultSets=Yes`` and creates N cursors on it, then fires
+    the same workload through ``asyncio.gather``.
+
+    Correctness assertions match the connection-per-task variant: every task
+    must return its own index, proving that MARS + per-HSTMT
+    ``SQL_ATTR_ASYNC_ENABLE`` toggling doesn't cross-wire results between
+    cursors sharing a single DBC.
+
+    Note: MARS multiplexes over one TCP socket, so this is interleaved
+    (not truly parallel) execution — expect a different wall-clock profile
+    than the connection-per-task variant.
+
+    Skipped today because the mssql-python connection-string allowlist does
+    not include MARS keywords (see block comment above); designed to
+    auto-enable when MARS is added.
+    """
+    mars_conn_str = _with_mars(conn_str)
+    if not mars_conn_str:
+        pytest.skip(
+            "DB_CONNECTION_STRING explicitly disables MARS — cannot run "
+            "the same-connection concurrency test"
+        )
+
+    # Verify the driver accepts the MARS keyword. Skip cleanly if the current
+    # mssql-python version rejects it in the allowlist (see block comment).
+    try:
+        _probe_conn = connect(mars_conn_str)
+        _probe_conn.close()
+    except Exception as e:
+        msg = str(e).lower()
+        if "multipleactiveresultsets" in msg or "mars_connection" in msg or "unknown keyword" in msg:
+            pytest.skip(
+                f"mssql-python does not currently accept MARS in the connection "
+                f"string allowlist — skipping same-connection concurrency test. "
+                f"Underlying error: {e}"
+            )
+        raise
+
+    async def _one_query(idx: int, cur, sem: asyncio.Semaphore):
+        async with sem:
+            await cur.execute_async(
+                "SELECT ? AS idx, CAST(? AS NVARCHAR(16)) AS label",
+                idx,
+                f"task-{idx}",
+            )
+            row = await cur.fetch_async()
+            assert row is not None, f"task {idx}: fetch_async returned None"
+            assert row[0] == idx, f"task {idx}: got idx={row[0]}, expected {idx}"
+            assert row[1] == f"task-{idx}", (
+                f"task {idx}: got label={row[1]!r}, expected 'task-{idx}'"
+            )
+            return idx
+
+    async def _run():
+        conn = connect(mars_conn_str)
+        try:
+            cursors = [conn.cursor() for _ in range(CONCURRENT_TASKS)]
+            try:
+                sem = asyncio.Semaphore(CONCURRENT_LIMIT)
+                start = time.perf_counter()
+                results = await asyncio.gather(
+                    *[_one_query(i, cursors[i], sem) for i in range(CONCURRENT_TASKS)]
+                )
+                elapsed = time.perf_counter() - start
+                return results, elapsed
+            finally:
+                for c in cursors:
+                    c.close()
+        finally:
+            conn.close()
+
+    results, elapsed = asyncio.run(_run())
+
+    # Every task returned its own index — proves no cross-wiring between
+    # HSTMTs that share a single DBC via MARS.
+    assert sorted(results) == list(range(CONCURRENT_TASKS)), (
+        f"missing / duplicate task indices in MARS results "
+        f"(got {len(results)} results, unique={len(set(results))})"
+    )
+
+    # Loose sanity bound; NOT a perf assertion (MARS interleaves over one
+    # socket, so this is expected to be slower than the connection-per-task
+    # variant, but nowhere near WALL_CLOCK_BUDGET_SECONDS).
+    assert elapsed < WALL_CLOCK_BUDGET_SECONDS, (
+        f"{CONCURRENT_TASKS} async queries on 1 MARS conn took {elapsed:.1f}s "
+        f"(>{WALL_CLOCK_BUDGET_SECONDS}s budget) — likely a hang or serialization bug"
+    )
+
+    print(
+        f"\n[async POC MARS] {CONCURRENT_TASKS} async queries on 1 MARS conn, "
+        f"{CONCURRENT_TASKS} cursors (semaphore={CONCURRENT_LIMIT}) "
+        f"completed in {elapsed:.2f}s"
+    )
