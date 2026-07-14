@@ -45,6 +45,14 @@ class PerformanceCounter {
 private:
     std::unordered_map<std::string, PerfStats> counters_;
     std::vector<TimelineEvent> timeline_;
+    // Intentional design decision: a single global mutex guards the counters.
+    // It is only taken when profiling is enabled (record() early-returns before
+    // the lock when disabled), so the default OFF path pays nothing. The target
+    // use case is single-threaded diagnostics (a user reproduces a slow query
+    // and sends a dump), where the lock is uncontended and negligible against
+    // microsecond-scale timers. Multithreaded profiling would contend this lock;
+    // if that ever becomes a real need, switch to thread_local accumulation
+    // merged at get_stats(). Not worth the added complexity today.
     std::mutex mutex_;
     bool enabled_ = false;
     bool timeline_enabled_ = false;
