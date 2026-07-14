@@ -19,6 +19,7 @@
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
+#include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
 
 //-------------------------------------------------------------------------------------------------
@@ -119,10 +120,19 @@ static py::object date_class;
 static py::object time_class;
 static py::object decimal_class;
 static py::object uuid_class;
+static PyObject* money_min = nullptr;
+static PyObject* money_max = nullptr;
+static PyObject* smallmoney_min = nullptr;
+static PyObject* smallmoney_max = nullptr;
 static bool cache_initialized = false;
 
 void initialize() {
     if (!cache_initialized) {
+        PyDateTime_IMPORT;
+        if (PyDateTimeAPI == nullptr) {
+            throw py::error_already_set();
+        }
+
         auto datetime_module = py::module_::import("datetime");
         datetime_class = datetime_module.attr("datetime");
         date_class = datetime_module.attr("date");
@@ -133,6 +143,23 @@ void initialize() {
 
         auto uuid_module = py::module_::import("uuid");
         uuid_class = uuid_module.attr("UUID");
+
+        PyObject* Decimal = decimal_class.ptr();
+        smallmoney_min = PyObject_CallFunction(Decimal, "s", "-214748.3648");
+        smallmoney_max = PyObject_CallFunction(Decimal, "s", "214748.3647");
+        money_min = PyObject_CallFunction(Decimal, "s", "-922337203685477.5808");
+        money_max = PyObject_CallFunction(Decimal, "s", "922337203685477.5807");
+        if (!smallmoney_min || !smallmoney_max || !money_min || !money_max) {
+            Py_XDECREF(smallmoney_min);
+            Py_XDECREF(smallmoney_max);
+            Py_XDECREF(money_min);
+            Py_XDECREF(money_max);
+            smallmoney_min = nullptr;
+            smallmoney_max = nullptr;
+            money_min = nullptr;
+            money_max = nullptr;
+            throw py::error_already_set();
+        }
 
         cache_initialized = true;
     }
@@ -486,14 +513,6 @@ static constexpr int MAX_INLINE_BINARY = 8000;
 // SQL Server maximum numeric precision
 static constexpr int MAX_NUMERIC_PRECISION = 38;
 
-// MONEY/SMALLMONEY ranges are compared using exact Decimal arithmetic (not
-// double) to avoid boundary misclassification. These string constants are
-// converted to Python Decimal objects at first use via PythonObjectCache.
-static const char* SMALLMONEY_MIN_STR = "-214748.3648";
-static const char* SMALLMONEY_MAX_STR = "214748.3647";
-static const char* MONEY_MIN_STR = "-922337203685477.5808";
-static const char* MONEY_MAX_STR = "922337203685477.5807";
-
 // Platform-specific text C type: unixODBC requires all text as wide chars on
 // Linux/macOS. On Windows the ODBC driver accepts SQL_C_CHAR for ASCII text.
 // This matches the Python slow path's behavior (its SQL_C_CHAR constant is
@@ -530,14 +549,11 @@ static py::object build_numeric_data(const py::object& decimal_param);
 std::vector<ParamInfo> DetectParamTypes(py::list& params) {
     PythonObjectCache::initialize();
 
-    const Py_ssize_t n = py::len(params);
+    const Py_ssize_t n = PyList_GET_SIZE(params.ptr());
     std::vector<ParamInfo> infos(n);
 
     PyObject* decimal_type = PythonObjectCache::get_decimal_class().ptr();
-    PyObject* uuid_type    = PythonObjectCache::get_uuid_class().ptr();
-    PyObject* datetime_type = PythonObjectCache::get_datetime_class().ptr();
-    PyObject* date_type    = PythonObjectCache::get_date_class().ptr();
-    PyObject* time_type    = PythonObjectCache::get_time_class().ptr();
+    PyObject* uuid_type = PythonObjectCache::get_uuid_class().ptr();
 
     for (Py_ssize_t i = 0; i < n; ++i) {
         ParamInfo& info = infos[i];
@@ -569,15 +585,15 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             int overflow = 0;
             int64_t val = PyLong_AsLongLongAndOverflow(obj, &overflow);
             if (overflow == 0 && !PyErr_Occurred()) {
-                if (val >= 0 && val <= 255) {
+                if (val >= 0 && val <= UINT8_MAX) {
                     info.paramSQLType = SQL_TINYINT;
                     info.paramCType = SQL_C_TINYINT;
                     info.columnSize = 3;
-                } else if (val >= -32768 && val <= 32767) {
+                } else if (val >= INT16_MIN && val <= INT16_MAX) {
                     info.paramSQLType = SQL_SMALLINT;
                     info.paramCType = SQL_C_SHORT;
                     info.columnSize = 5;
-                } else if (val >= -2147483648LL && val <= 2147483647LL) {
+                } else if (val >= INT32_MIN && val <= INT32_MAX) {
                     info.paramSQLType = SQL_INTEGER;
                     info.paramCType = SQL_C_LONG;
                     info.columnSize = 10;
@@ -621,9 +637,10 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
                 }
             }
 
-            bool is_unicode = (kind > PyUnicode_1BYTE_KIND) ||
-                              (PyUnicode_IS_COMPACT_ASCII(obj) == 0 && kind == PyUnicode_1BYTE_KIND
-                               && PyUnicode_MAX_CHAR_VALUE(obj) > 127);
+            bool is_unicode =
+                (kind > PyUnicode_1BYTE_KIND) ||
+                (PyUnicode_IS_COMPACT_ASCII(obj) == 0 && kind == PyUnicode_1BYTE_KIND &&
+                 PyUnicode_MAX_CHAR_VALUE(obj) > 127);
 
             if (utf16_len > MAX_INLINE_CHAR) {
                 // DAE path: match slow-path types exactly.
@@ -662,8 +679,7 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
 
         // --- bytes / bytearray (allow subclasses) ---
         if (PyBytes_Check(obj) || PyByteArray_Check(obj)) {
-            Py_ssize_t length =
-                PyBytes_Check(obj) ? PyBytes_Size(obj) : PyByteArray_Size(obj);
+            Py_ssize_t length = PyBytes_Check(obj) ? PyBytes_Size(obj) : PyByteArray_Size(obj);
             info.paramSQLType = SQL_VARBINARY;
             info.paramCType = SQL_C_BINARY;
             info.decimalDigits = 0;
@@ -678,12 +694,12 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- datetime (must check before date, since datetime is subclass of date) ---
-        int is_datetime = PyObject_IsInstance(obj, datetime_type);
-        if (is_datetime == -1) throw py::error_already_set();
-        if (is_datetime == 1) {
-            py::handle h(obj);
-            py::object tzinfo = h.attr("tzinfo");
-            if (!tzinfo.is_none()) {
+        if (PyDateTime_Check(obj)) {
+            PyObject* tzinfo = PyObject_GetAttrString(obj, "tzinfo");
+            if (!tzinfo) throw py::error_already_set();
+            bool has_tz = (tzinfo != Py_None);
+            Py_DECREF(tzinfo);
+            if (has_tz) {
                 info.paramSQLType = SQL_SS_TIMESTAMPOFFSET;
                 info.paramCType = SQL_C_SS_TIMESTAMPOFFSET;
                 info.columnSize = 34;
@@ -698,9 +714,7 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- date ---
-        int is_date = PyObject_IsInstance(obj, date_type);
-        if (is_date == -1) throw py::error_already_set();
-        if (is_date == 1) {
+        if (PyDate_Check(obj)) {
             info.paramSQLType = SQL_TYPE_DATE;
             info.paramCType = SQL_C_TYPE_DATE;
             info.columnSize = 10;
@@ -709,27 +723,26 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         }
 
         // --- time (normalized to string for binding) ---
-        int is_time = PyObject_IsInstance(obj, time_type);
-        if (is_time == -1) throw py::error_already_set();
-        if (is_time == 1) {
+        if (PyTime_Check(obj)) {
             info.paramSQLType = SQL_TYPE_TIME;
-            info.paramCType = PARAM_C_TYPE_TEXT;  // matches slow path (its SQL_C_CHAR is -8 = SQL_C_WCHAR)
+            info.paramCType =
+                PARAM_C_TYPE_TEXT;  // matches slow path (its SQL_C_CHAR is -8 = SQL_C_WCHAR)
             info.columnSize = 16;
             info.decimalDigits = 6;
-            py::handle h(obj);
-            int hour = h.attr("hour").cast<int>();
-            int minute = h.attr("minute").cast<int>();
-            int second = h.attr("second").cast<int>();
-            int microsecond = h.attr("microsecond").cast<int>();
+            int hour = PyDateTime_TIME_GET_HOUR(obj);
+            int minute = PyDateTime_TIME_GET_MINUTE(obj);
+            int second = PyDateTime_TIME_GET_SECOND(obj);
+            int microsecond = PyDateTime_TIME_GET_MICROSECOND(obj);
             // Always include microseconds (matches Python's isoformat(timespec="microseconds")).
             char buf[32];
             snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%06d", hour, minute, second, microsecond);
-            py::str time_str(buf);
-            Py_ssize_t time_len = py::len(time_str);
+            PyObject* time_str = PyUnicode_FromString(buf);
+            if (!time_str) throw py::error_already_set();
+            Py_ssize_t time_len = PyUnicode_GET_LENGTH(time_str);
             info.columnSize = std::max<SQLULEN>(info.columnSize, time_len);
             // PyList_SetItem (lowercase) decrefs the old slot before stealing the new
             // reference, so this is safe even if `params` is shared with the caller.
-            PyList_SetItem(params.ptr(), i, time_str.release().ptr());
+            PyList_SetItem(params.ptr(), i, time_str);
             continue;
         }
 
@@ -737,28 +750,50 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         int is_decimal = PyObject_IsInstance(obj, decimal_type);
         if (is_decimal == -1) throw py::error_already_set();
         if (is_decimal == 1) {
-            py::handle h(obj);
-            py::object as_tuple = h.attr("as_tuple")();
-            py::object exponent_obj = as_tuple.attr("exponent");
+            PyObject* as_tuple = PyObject_CallMethod(obj, "as_tuple", NULL);
+            if (!as_tuple) throw py::error_already_set();
+
+            PyObject* exponent_obj = PyObject_GetAttrString(as_tuple, "exponent");
+            if (!exponent_obj) {
+                Py_DECREF(as_tuple);
+                throw py::error_already_set();
+            }
 
             // NaN / Infinity / sNaN: refuse rather than silently writing 0.
-            if (py::isinstance<py::str>(exponent_obj)) {
+            if (PyUnicode_Check(exponent_obj)) {
+                Py_DECREF(exponent_obj);
+                Py_DECREF(as_tuple);
                 throw py::value_error(
                     "Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC");
             }
 
-            py::tuple digits = as_tuple.attr("digits").cast<py::tuple>();
-            int num_digits = static_cast<int>(py::len(digits));
-            int exponent = exponent_obj.cast<int>();
+            PyObject* digits_obj = PyObject_GetAttrString(as_tuple, "digits");
+            if (!digits_obj) {
+                Py_DECREF(exponent_obj);
+                Py_DECREF(as_tuple);
+                throw py::error_already_set();
+            }
+
+            Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj);
+            int exponent = static_cast<int>(PyLong_AsLong(exponent_obj));
+            Py_DECREF(exponent_obj);
+            if (exponent == -1 && PyErr_Occurred()) {
+                Py_DECREF(digits_obj);
+                Py_DECREF(as_tuple);
+                throw py::error_already_set();
+            }
+
             int precision;
             if (exponent >= 0)
-                precision = num_digits + exponent;
+                precision = static_cast<int>(num_digits) + exponent;
             else if ((-exponent) <= num_digits)
-                precision = num_digits;
+                precision = static_cast<int>(num_digits);
             else
                 precision = -exponent;
 
             if (precision > MAX_NUMERIC_PRECISION) {
+                Py_DECREF(digits_obj);
+                Py_DECREF(as_tuple);
                 throw py::value_error(
                     "Precision of the numeric value is too high. "
                     "The maximum precision supported by SQL Server is " +
@@ -769,41 +804,53 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
             // SMALLMONEY/MONEY range — bind as formatted VARCHAR string
             // to match SQL Server's fixed-point money semantics.
             // Use exact Decimal comparison (not double) to avoid boundary misclassification.
-            {
-                py::object decimal_mod = py::module_::import("decimal");
-                py::object Decimal = decimal_mod.attr("Decimal");
-                py::object py_param = py::reinterpret_borrow<py::object>(py::handle(obj));
-                py::object sm_min = Decimal(py::str(SMALLMONEY_MIN_STR));
-                py::object sm_max = Decimal(py::str(SMALLMONEY_MAX_STR));
-                py::object m_min = Decimal(py::str(MONEY_MIN_STR));
-                py::object m_max = Decimal(py::str(MONEY_MAX_STR));
-
-                bool in_money_range = false;
-                // Check SMALLMONEY first (subset of MONEY)
-                if (py_param.attr("__ge__")(sm_min).cast<bool>() &&
-                    py_param.attr("__le__")(sm_max).cast<bool>()) {
-                    in_money_range = true;
-                } else if (py_param.attr("__ge__")(m_min).cast<bool>() &&
-                           py_param.attr("__le__")(m_max).cast<bool>()) {
+            bool in_money_range = false;
+            int cmp_ge = PyObject_RichCompareBool(obj, PythonObjectCache::smallmoney_min, Py_GE);
+            int cmp_le = PyObject_RichCompareBool(obj, PythonObjectCache::smallmoney_max, Py_LE);
+            if (cmp_ge == -1 || cmp_le == -1) {
+                Py_DECREF(digits_obj);
+                Py_DECREF(as_tuple);
+                throw py::error_already_set();
+            }
+            if (cmp_ge == 1 && cmp_le == 1) {
+                in_money_range = true;
+            } else {
+                cmp_ge = PyObject_RichCompareBool(obj, PythonObjectCache::money_min, Py_GE);
+                cmp_le = PyObject_RichCompareBool(obj, PythonObjectCache::money_max, Py_LE);
+                if (cmp_ge == -1 || cmp_le == -1) {
+                    Py_DECREF(digits_obj);
+                    Py_DECREF(as_tuple);
+                    throw py::error_already_set();
+                }
+                if (cmp_ge == 1 && cmp_le == 1) {
                     in_money_range = true;
                 }
+            }
 
-                if (in_money_range) {
-                    py::str formatted = h.attr("__format__")(py::str("f"));
-                    info.paramSQLType = SQL_VARCHAR;
-                    info.paramCType = PARAM_C_TYPE_TEXT;
-                    Py_ssize_t fmtLen = py::len(formatted);
-                    info.columnSize = fmtLen;
-                    info.decimalDigits = 0;
-                    PyList_SetItem(params.ptr(), i, formatted.release().ptr());
-                    continue;
+            if (in_money_range) {
+                PyObject* formatted = PyObject_CallMethod(obj, "__format__", "s", "f");
+                if (!formatted) {
+                    Py_DECREF(digits_obj);
+                    Py_DECREF(as_tuple);
+                    throw py::error_already_set();
                 }
+                info.paramSQLType = SQL_VARCHAR;
+                info.paramCType = PARAM_C_TYPE_TEXT;
+                info.columnSize = PyUnicode_GET_LENGTH(formatted);
+                info.decimalDigits = 0;
+                Py_DECREF(digits_obj);
+                Py_DECREF(as_tuple);
+                PyList_SetItem(params.ptr(), i, formatted);
+                continue;
             }
 
             // Generic numeric binding via SQL_NUMERIC_STRUCT
             info.paramSQLType = SQL_NUMERIC;
             info.paramCType = SQL_C_NUMERIC;
-            py::object numeric_data = build_numeric_data(py::reinterpret_borrow<py::object>(h));
+            Py_DECREF(digits_obj);
+            Py_DECREF(as_tuple);
+            py::object numeric_data =
+                build_numeric_data(py::reinterpret_borrow<py::object>(py::handle(obj)));
             NumericData nd = numeric_data.cast<NumericData>();
             info.columnSize = nd.precision;
             info.decimalDigits = nd.scale;
@@ -815,13 +862,13 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
         int is_uuid = PyObject_IsInstance(obj, uuid_type);
         if (is_uuid == -1) throw py::error_already_set();
         if (is_uuid == 1) {
-            py::handle h(obj);
-            py::bytes bytes_le = h.attr("bytes_le");
+            PyObject* bytes_le = PyObject_GetAttrString(obj, "bytes_le");
+            if (!bytes_le) throw py::error_already_set();
             info.paramSQLType = SQL_GUID;
             info.paramCType = SQL_C_GUID;
             info.columnSize = 16;
             info.decimalDigits = 0;
-            PyList_SetItem(params.ptr(), i, bytes_le.release().ptr());
+            PyList_SetItem(params.ptr(), i, bytes_le);
             continue;
         }
 
@@ -835,17 +882,50 @@ std::vector<ParamInfo> DetectParamTypes(py::list& params) {
 
 // Helper: build SQL_NUMERIC_STRUCT from Python Decimal
 static py::object build_numeric_data(const py::object& decimal_param) {
-    py::object as_tuple = decimal_param.attr("as_tuple")();
-    py::tuple digits = as_tuple.attr("digits").cast<py::tuple>();
-    int sign_val = as_tuple.attr("sign").cast<int>();
-    py::object exponent_obj = as_tuple.attr("exponent");
+    PyObject* as_tuple = PyObject_CallMethod(decimal_param.ptr(), "as_tuple", NULL);
+    if (!as_tuple) throw py::error_already_set();
 
-    int exponent = 0;
-    if (py::isinstance<py::int_>(exponent_obj)) {
-        exponent = exponent_obj.cast<int>();
+    PyObject* digits_obj = PyObject_GetAttrString(as_tuple, "digits");
+    if (!digits_obj) {
+        Py_DECREF(as_tuple);
+        throw py::error_already_set();
+    }
+    PyObject* sign_obj = PyObject_GetAttrString(as_tuple, "sign");
+    if (!sign_obj) {
+        Py_DECREF(digits_obj);
+        Py_DECREF(as_tuple);
+        throw py::error_already_set();
+    }
+    PyObject* exponent_obj = PyObject_GetAttrString(as_tuple, "exponent");
+    if (!exponent_obj) {
+        Py_DECREF(sign_obj);
+        Py_DECREF(digits_obj);
+        Py_DECREF(as_tuple);
+        throw py::error_already_set();
     }
 
-    int num_digits = static_cast<int>(py::len(digits));
+    int sign_val = static_cast<int>(PyLong_AsLong(sign_obj));
+    Py_DECREF(sign_obj);
+    if (sign_val == -1 && PyErr_Occurred()) {
+        Py_DECREF(exponent_obj);
+        Py_DECREF(digits_obj);
+        Py_DECREF(as_tuple);
+        throw py::error_already_set();
+    }
+
+    int exponent = 0;
+    if (PyLong_Check(exponent_obj)) {
+        exponent = static_cast<int>(PyLong_AsLong(exponent_obj));
+        if (exponent == -1 && PyErr_Occurred()) {
+            Py_DECREF(exponent_obj);
+            Py_DECREF(digits_obj);
+            Py_DECREF(as_tuple);
+            throw py::error_already_set();
+        }
+    }
+    Py_DECREF(exponent_obj);
+
+    int num_digits = static_cast<int>(PyTuple_GET_SIZE(digits_obj));
     int precision, scale;
     if (exponent >= 0) {
         precision = num_digits + exponent;
@@ -857,31 +937,118 @@ static py::object build_numeric_data(const py::object& decimal_param) {
     precision = std::max(1, std::min(precision, MAX_NUMERIC_PRECISION));
     scale = std::min(scale, precision);
 
-    py::object py_zero = py::int_(0);
-    py::object int_val = py_zero;
-    for (auto d : digits) {
-        int_val = int_val * py::int_(10) + d.cast<py::int_>();
-    }
-    if (exponent > 0) {
-        py::object multiplier = py::int_(1);
-        for (int j = 0; j < exponent; ++j)
-            multiplier = multiplier * py::int_(10);
-        int_val = int_val * multiplier;
+    PyObject* py_ten = PyLong_FromLong(10);
+    PyObject* int_val = PyLong_FromLong(0);
+    if (!py_ten || !int_val) {
+        Py_XDECREF(int_val);
+        Py_XDECREF(py_ten);
+        Py_DECREF(digits_obj);
+        Py_DECREF(as_tuple);
+        throw py::error_already_set();
     }
 
-    py::object abs_val = int_val.attr("__abs__")();
-    py::bytes val_bytes = abs_val.attr("to_bytes")(py::int_(16), py::str("little"));
-    std::string val_str = val_bytes.cast<std::string>();
+    const Py_ssize_t digit_count = PyTuple_GET_SIZE(digits_obj);
+    for (Py_ssize_t i = 0; i < digit_count; ++i) {
+        PyObject* digit_obj = PyTuple_GET_ITEM(digits_obj, i);
+        long digit = PyLong_AsLong(digit_obj);
+        if (digit == -1 && PyErr_Occurred()) {
+            Py_DECREF(int_val);
+            Py_DECREF(py_ten);
+            Py_DECREF(digits_obj);
+            Py_DECREF(as_tuple);
+            throw py::error_already_set();
+        }
+
+        PyObject* multiplied = PyNumber_Multiply(int_val, py_ten);
+        Py_DECREF(int_val);
+        if (!multiplied) {
+            Py_DECREF(py_ten);
+            Py_DECREF(digits_obj);
+            Py_DECREF(as_tuple);
+            throw py::error_already_set();
+        }
+
+        PyObject* py_digit = PyLong_FromLong(digit);
+        if (!py_digit) {
+            Py_DECREF(multiplied);
+            Py_DECREF(py_ten);
+            Py_DECREF(digits_obj);
+            Py_DECREF(as_tuple);
+            throw py::error_already_set();
+        }
+
+        int_val = PyNumber_Add(multiplied, py_digit);
+        Py_DECREF(multiplied);
+        Py_DECREF(py_digit);
+        if (!int_val) {
+            Py_DECREF(py_ten);
+            Py_DECREF(digits_obj);
+            Py_DECREF(as_tuple);
+            throw py::error_already_set();
+        }
+    }
+
+    if (exponent > 0) {
+        PyObject* multiplier = PyLong_FromLong(1);
+        if (!multiplier) {
+            Py_DECREF(int_val);
+            Py_DECREF(py_ten);
+            Py_DECREF(digits_obj);
+            Py_DECREF(as_tuple);
+            throw py::error_already_set();
+        }
+        for (int j = 0; j < exponent; ++j) {
+            PyObject* next_multiplier = PyNumber_Multiply(multiplier, py_ten);
+            Py_DECREF(multiplier);
+            if (!next_multiplier) {
+                Py_DECREF(int_val);
+                Py_DECREF(py_ten);
+                Py_DECREF(digits_obj);
+                Py_DECREF(as_tuple);
+                throw py::error_already_set();
+            }
+            multiplier = next_multiplier;
+        }
+        PyObject* scaled_val = PyNumber_Multiply(int_val, multiplier);
+        Py_DECREF(multiplier);
+        Py_DECREF(int_val);
+        if (!scaled_val) {
+            Py_DECREF(py_ten);
+            Py_DECREF(digits_obj);
+            Py_DECREF(as_tuple);
+            throw py::error_already_set();
+        }
+        int_val = scaled_val;
+    }
+
+    PyObject* abs_val = PyNumber_Absolute(int_val);
+    Py_DECREF(int_val);
+    Py_DECREF(py_ten);
+    Py_DECREF(digits_obj);
+    Py_DECREF(as_tuple);
+    if (!abs_val) throw py::error_already_set();
+
+    PyObject* val_bytes = PyObject_CallMethod(abs_val, "to_bytes", "is", 16, "little");
+    Py_DECREF(abs_val);
+    if (!val_bytes) throw py::error_already_set();
+
+    char* val_buf = nullptr;
+    Py_ssize_t val_size = 0;
+    if (PyBytes_AsStringAndSize(val_bytes, &val_buf, &val_size) == -1) {
+        Py_DECREF(val_bytes);
+        throw py::error_already_set();
+    }
 
     NumericData nd;
     nd.precision = static_cast<SQLCHAR>(precision);
     nd.scale = static_cast<SQLSCHAR>(scale);
     nd.sign = (sign_val == 0) ? 1 : 0;
     std::memset(&nd.val[0], 0, SQL_MAX_NUMERIC_LEN);
-    size_t copy_len = std::min(val_str.size(), static_cast<size_t>(SQL_MAX_NUMERIC_LEN));
-    if (copy_len > 0 && val_str.data() != nullptr) {
-        std::memcpy(&nd.val[0], val_str.data(), copy_len);
+    size_t copy_len = std::min(static_cast<size_t>(val_size), static_cast<size_t>(SQL_MAX_NUMERIC_LEN));
+    if (copy_len > 0 && val_buf != nullptr) {
+        std::memcpy(&nd.val[0], val_buf, copy_len);
     }
+    Py_DECREF(val_bytes);
 
     return py::cast(nd);
 }
