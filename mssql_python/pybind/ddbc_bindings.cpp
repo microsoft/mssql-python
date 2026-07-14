@@ -299,8 +299,30 @@ struct ParamInfo {
 
     ParamInfo() = default;
     ~ParamInfo() { Py_XDECREF(dataPtr); }
-    ParamInfo(const ParamInfo&) = delete;
-    ParamInfo& operator=(const ParamInfo&) = delete;
+    // Copy needed by pybind11 type_caster for the legacy path (std::vector<ParamInfo>&).
+    ParamInfo(const ParamInfo& other)
+        : inputOutputType(other.inputOutputType), paramCType(other.paramCType),
+          paramSQLType(other.paramSQLType), columnSize(other.columnSize),
+          decimalDigits(other.decimalDigits), strLenOrInd(other.strLenOrInd),
+          isDAE(other.isDAE), dataPtr(other.dataPtr), utf16Len(other.utf16Len) {
+        Py_XINCREF(dataPtr);
+    }
+    ParamInfo& operator=(const ParamInfo& other) {
+        if (this != &other) {
+            Py_XDECREF(dataPtr);
+            inputOutputType = other.inputOutputType;
+            paramCType = other.paramCType;
+            paramSQLType = other.paramSQLType;
+            columnSize = other.columnSize;
+            decimalDigits = other.decimalDigits;
+            strLenOrInd = other.strLenOrInd;
+            isDAE = other.isDAE;
+            dataPtr = other.dataPtr;
+            utf16Len = other.utf16Len;
+            Py_XINCREF(dataPtr);
+        }
+        return *this;
+    }
     ParamInfo(ParamInfo&& other) noexcept
         : inputOutputType(other.inputOutputType), paramCType(other.paramCType),
           paramSQLType(other.paramSQLType), columnSize(other.columnSize),
