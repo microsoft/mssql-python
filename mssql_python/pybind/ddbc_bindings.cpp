@@ -141,53 +141,67 @@ void initialize() {
             throw py::error_already_set();
         }
 
-        // Cache datetime.datetime, datetime.date, datetime.time for isinstance
-        // checks in DetectParamTypes. Single import, then borrowed refs held
-        // for process lifetime (module-level statics, never decremented).
-        PyObject* datetime_module = PyImport_ImportModule("datetime");
-        if (!datetime_module) throw py::error_already_set();
-        datetime_class = PyObject_GetAttrString(datetime_module, "datetime");
-        date_class = PyObject_GetAttrString(datetime_module, "date");
-        time_class = PyObject_GetAttrString(datetime_module, "time");
-        Py_DECREF(datetime_module);
-        if (!datetime_class || !date_class || !time_class)
-            throw py::error_already_set();
+        try {
+            // Cache datetime.datetime, datetime.date, datetime.time for isinstance
+            // checks in DetectParamTypes. Single import, then borrowed refs held
+            // for process lifetime (module-level statics, never decremented).
+            PyObject* datetime_module = PyImport_ImportModule("datetime");
+            if (!datetime_module) throw py::error_already_set();
+            datetime_class = PyObject_GetAttrString(datetime_module, "datetime");
+            date_class = PyObject_GetAttrString(datetime_module, "date");
+            time_class = PyObject_GetAttrString(datetime_module, "time");
+            Py_DECREF(datetime_module);
+            if (!datetime_class || !date_class || !time_class) {
+                throw py::error_already_set();
+            }
 
-        PyObject* decimal_module = PyImport_ImportModule("decimal");
-        if (!decimal_module) throw py::error_already_set();
-        decimal_class = PyObject_GetAttrString(decimal_module, "Decimal");
-        Py_DECREF(decimal_module);
-        if (!decimal_class) throw py::error_already_set();
+            PyObject* decimal_module = PyImport_ImportModule("decimal");
+            if (!decimal_module) throw py::error_already_set();
+            decimal_class = PyObject_GetAttrString(decimal_module, "Decimal");
+            Py_DECREF(decimal_module);
+            if (!decimal_class) throw py::error_already_set();
 
-        PyObject* uuid_module = PyImport_ImportModule("uuid");
-        if (!uuid_module) throw py::error_already_set();
-        uuid_class = PyObject_GetAttrString(uuid_module, "UUID");
-        Py_DECREF(uuid_module);
-        if (!uuid_class) throw py::error_already_set();
+            PyObject* uuid_module = PyImport_ImportModule("uuid");
+            if (!uuid_module) throw py::error_already_set();
+            uuid_class = PyObject_GetAttrString(uuid_module, "UUID");
+            Py_DECREF(uuid_module);
+            if (!uuid_class) throw py::error_already_set();
 
-        // Pre-compute MONEY/SMALLMONEY boundary Decimals once. DetectParamTypes
-        // uses PyObject_RichCompareBool against these to classify Decimal params
-        // into MONEY vs NUMERIC — doing exact Decimal comparison (not float cast)
-        // avoids boundary misclassification at the edges.
-        PyObject* Decimal = decimal_class;
-        smallmoney_min = PyObject_CallFunction(Decimal, "s", "-214748.3648");
-        smallmoney_max = PyObject_CallFunction(Decimal, "s", "214748.3647");
-        money_min = PyObject_CallFunction(Decimal, "s", "-922337203685477.5808");
-        money_max = PyObject_CallFunction(Decimal, "s", "922337203685477.5807");
-        if (!smallmoney_min || !smallmoney_max || !money_min || !money_max) {
-            // Partial creation — clean up whichever succeeded before throwing.
+            // Pre-compute MONEY/SMALLMONEY boundary Decimals once. DetectParamTypes
+            // uses PyObject_RichCompareBool against these to classify Decimal params
+            // into MONEY vs NUMERIC — doing exact Decimal comparison (not float cast)
+            // avoids boundary misclassification at the edges.
+            PyObject* Decimal = decimal_class;
+            smallmoney_min = PyObject_CallFunction(Decimal, "s", "-214748.3648");
+            smallmoney_max = PyObject_CallFunction(Decimal, "s", "214748.3647");
+            money_min = PyObject_CallFunction(Decimal, "s", "-922337203685477.5808");
+            money_max = PyObject_CallFunction(Decimal, "s", "922337203685477.5807");
+            if (!smallmoney_min || !smallmoney_max || !money_min || !money_max) {
+                throw py::error_already_set();
+            }
+
+            cache_initialized = true;
+        } catch (...) {
+            Py_XDECREF(datetime_class);
+            Py_XDECREF(date_class);
+            Py_XDECREF(time_class);
+            Py_XDECREF(decimal_class);
+            Py_XDECREF(uuid_class);
             Py_XDECREF(smallmoney_min);
             Py_XDECREF(smallmoney_max);
             Py_XDECREF(money_min);
             Py_XDECREF(money_max);
+            datetime_class = nullptr;
+            date_class = nullptr;
+            time_class = nullptr;
+            decimal_class = nullptr;
+            uuid_class = nullptr;
             smallmoney_min = nullptr;
             smallmoney_max = nullptr;
             money_min = nullptr;
             money_max = nullptr;
-            throw py::error_already_set();
+            throw;
         }
-
-        cache_initialized = true;
     }
 }
 
@@ -570,6 +584,23 @@ SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
 
 namespace {
 
+// Ensures parameter bindings are always reset before local bound buffers go out
+// of scope, preventing dangling APD pointers on error/exception paths.
+struct ParamResetGuard {
+    SQLHSTMT hStmt;
+    bool active = false;
+
+    explicit ParamResetGuard(SQLHSTMT stmtHandle) : hStmt(stmtHandle) {}
+
+    ~ParamResetGuard() {
+        if (active && SQLFreeStmt_ptr) {
+            SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+        }
+    }
+
+    void arm() { active = true; }
+};
+
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
     switch (cType) {
         STRINGIFY_FOR_CASE(SQL_C_CHAR);
@@ -929,6 +960,13 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 throw py::error_already_set();
             }
 
+            if (!PyTuple_Check(digits_obj)) {
+                Py_DECREF(digits_obj);
+                Py_DECREF(exponent_obj);
+                Py_DECREF(as_tuple);
+                throw py::type_error("Decimal.as_tuple().digits must be a tuple");
+            }
+
             Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj);
             int exponent = static_cast<int>(PyLong_AsLong(exponent_obj));
             Py_DECREF(exponent_obj);
@@ -1093,6 +1131,12 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
         }
     }
     Py_DECREF(exponent_obj);
+
+    if (!PyTuple_Check(digits_obj)) {
+        Py_DECREF(digits_obj);
+        Py_DECREF(as_tuple);
+        throw py::type_error("Decimal.as_tuple().digits must be a tuple");
+    }
 
     int num_digits = static_cast<int>(PyTuple_GET_SIZE(digits_obj));
     int precision, scale;
@@ -2662,6 +2706,8 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
         if (!SQL_SUCCEEDED(rc)) {
             return rc;
         }
+        ParamResetGuard resetGuard(hStmt);
+        resetGuard.arm();
 
         {
             // Release the GIL during the blocking SQLExecute network call.
@@ -2804,11 +2850,6 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                 rc, (void*)hStmt);
             return rc;
         }
-
-        // Unbind the bound buffers for all parameters coz the buffers' memory
-        // will be freed when this function exits (parambuffers goes out of
-        // scope)
-        rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
         return rc;
     }
 }
@@ -2892,6 +2933,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     std::vector<std::shared_ptr<void>> paramBuffers;
     rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
     if (!SQL_SUCCEEDED(rc)) return rc;
+    ParamResetGuard resetGuard(hStmt);
+    resetGuard.arm();
 
     {
         py::gil_scoped_release release;
@@ -3002,11 +3045,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 
     if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
 
-    // Preserve the execute return code (e.g. SQL_SUCCESS_WITH_INFO) — don't
-    // let the SQLFreeStmt return value clobber what the caller needs to see.
-    SQLRETURN exec_rc = rc;
-    SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-    return exec_rc;
+    return rc;
 }
 
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
