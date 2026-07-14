@@ -3175,7 +3175,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self,
         table_name: str,
         source,
-        *,
         batch_size: int = 0,
         timeout: int = 30,
         column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,

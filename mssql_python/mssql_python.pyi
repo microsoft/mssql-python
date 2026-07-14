@@ -228,7 +228,6 @@ class Cursor:
         self,
         table_name: str,
         source: Any,
-        *,
         batch_size: int = 0,
         timeout: int = 30,
         column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,

@@ -63,6 +63,7 @@ def _cursor_with_conn(connection_str, auth_type=None, credential_kwargs=None):
     cursor._connection = mock_conn
     cursor.closed = True  # keep __del__ a no-op during GC teardown
     cursor.hstmt = None
+    cursor._timeout = 0  # timeout snapshot _build_pycore_context reads (0 = no override)
     return cursor
 
 
@@ -368,6 +369,22 @@ class TestBulkcopyArrowDispatch:
         assert kwargs["batch_size"] == 7
         assert kwargs["timeout"] == 15
         assert kwargs["column_mappings"] == ["a"]
+
+    @patch("mssql_python.cursor.logger")
+    def test_batch_size_timeout_accept_positional(self, mock_logger):
+        """D13: batch_size/timeout are positional-or-keyword (parity with bulkcopy)."""
+        mock_logger.is_debug_enabled = False
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
+        module, pyc_cursor, _, _ = _mock_pycore()
+        src = pa.table({"a": [1, 2]})
+
+        with patch.dict("sys.modules", {"mssql_py_core": module}):
+            cur.bulkcopy_arrow("dbo.t", src, 7, 15)
+
+        _, kwargs = pyc_cursor.bulkcopy_arrow.call_args
+        assert kwargs["batch_size"] == 7
+        assert kwargs["timeout"] == 15
+
 
     @patch("mssql_python.cursor.logger")
     def test_sensitive_fields_cleared_after_success(self, mock_logger):
