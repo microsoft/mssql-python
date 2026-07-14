@@ -221,24 +221,14 @@ void ConnectionPoolManager::configure(int max_size, int idle_timeout_secs) {
 }
 
 void ConnectionPoolManager::closePools() {
-    std::vector<std::shared_ptr<ConnectionPool>> pools_to_close;
-    {
-        std::lock_guard<std::mutex> lock(_manager_mutex);
-        // Detach the pools under the lock so acquireConnection()/returnConnection()
-        // immediately start fresh and cannot use the pools being closed.
-        for (auto& [conn_str, pool] : _pools) {
-            if (pool) {
-                pools_to_close.push_back(pool);
-            }
+    std::lock_guard<std::mutex> lock(_manager_mutex);
+    // Keep _manager_mutex held for the full close operation so that
+    // acquireConnection()/returnConnection() cannot create or use pools
+    // while closePools() is in progress.
+    for (auto& [conn_str, pool] : _pools) {
+        if (pool) {
+            pool->close();
         }
-        _pools.clear();
     }
-    // Close outside _manager_mutex (#671): pool->close() disconnects connections,
-    // which emit log records (acquiring the GIL) and release/reacquire the GIL
-    // around the blocking ODBC disconnect. Holding _manager_mutex across a GIL
-    // acquisition deadlocks a thread that holds the GIL and is waiting on
-    // _manager_mutex.
-    for (auto& pool : pools_to_close) {
-        pool->close();
-    }
+    _pools.clear();
 }
