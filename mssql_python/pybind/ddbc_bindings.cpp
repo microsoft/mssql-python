@@ -1046,7 +1046,12 @@ static py::object build_numeric_data(const py::object& decimal_param) {
     std::memset(&nd.val[0], 0, SQL_MAX_NUMERIC_LEN);
     size_t copy_len = std::min(static_cast<size_t>(val_size), static_cast<size_t>(SQL_MAX_NUMERIC_LEN));
     if (copy_len > 0 && val_buf != nullptr) {
-        std::memcpy(&nd.val[0], val_buf, copy_len);
+#ifdef _MSC_VER
+        memcpy_s(&nd.val[0], SQL_MAX_NUMERIC_LEN, val_buf, copy_len);
+#else
+        // copy_len is bounded to SQL_MAX_NUMERIC_LEN above — safe by construction
+        std::memcpy(&nd.val[0], val_buf, copy_len);  // NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+#endif
     }
     Py_DECREF(val_bytes);
 
