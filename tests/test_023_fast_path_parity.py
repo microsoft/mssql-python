@@ -1,6 +1,6 @@
 """
-Parity tests: assert that fast path (C++ DetectParamTypes + DDBCSQLExecuteFast)
-and slow path (Python _map_sql_type + DDBCSQLExecute) produce identical query
+Parity tests: assert that the primary path (C++ DetectParamTypes + DDBCSQLExecute)
+and legacy path (Python _map_sql_type + DDBCSQLExecuteLegacy) produce identical query
 results for representative parameter types.
 
 Uses the project's `cursor` fixture from conftest.py so the tests work in any

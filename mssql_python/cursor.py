@@ -1506,14 +1506,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        # Fast path: when no inputsizes override, do type detection + bind + execute
+        # Primary path: when no inputsizes override, do type detection + bind + execute
         # entirely in C++. ParamInfo never crosses the pybind11 boundary.
         use_fast_path = parameters and not (
             self._inputsizes and any(s is not None for s in self._inputsizes)
         )
 
         if use_fast_path:
-            ret = ddbc_bindings.DDBCSQLExecuteFast(
+            ret = ddbc_bindings.DDBCSQLExecute(
                 self.hstmt,
                 operation,
                 parameters,
@@ -1522,7 +1522,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 encoding_settings,
             )
         else:
-            # Slow path: Python-side type detection (used when setinputsizes overrides are present)
+            # Legacy path: Python-side type detection (used when setinputsizes overrides are present)
             parameters_type = []
             if parameters:
                 param_info = ddbc_bindings.ParamInfo
@@ -1545,7 +1545,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         parameters_type[i].inputOutputType,
                     )
 
-            ret = ddbc_bindings.DDBCSQLExecute(
+            ret = ddbc_bindings.DDBCSQLExecuteLegacy(
                 self.hstmt,
                 operation,
                 parameters,

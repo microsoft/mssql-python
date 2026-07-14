@@ -2396,7 +2396,7 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
 // statement and binds the parameters. Otherwise, it executes the query
 // directly. 'usePrepare' parameter can be used to disable the prepare step for
 // queries that might already be prepared in a previous call.
-SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
+SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                           const py::list& params, std::vector<ParamInfo>& paramInfos,
                           py::list& isStmtPrepared, const bool usePrepare,
                           const py::dict& encodingSettings) {
@@ -2641,7 +2641,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
 // plan reuse). When false but already prepared, reuses the existing plan.
 // When false and not prepared, throws (matching slow path behavior).
 // ---------------------------------------------------------------------------
-SQLRETURN SQLExecuteFast_wrap(const SqlHandlePtr statementHandle,
+SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                               const std::u16string& query,
                               py::list params,
                               py::list is_stmt_prepared,
@@ -6697,11 +6697,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
-    m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements",
+    m.def("DDBCSQLExecuteLegacy", &SQLExecuteLegacy_wrap,
+          "Legacy path: accepts pre-built ParamInfo from Python (used with setinputsizes)",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),
           py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
-    m.def("DDBCSQLExecuteFast", &SQLExecuteFast_wrap,
-          "Fast path: DetectParamTypes + BindParameters + SQLExecute all in C++",
+    m.def("DDBCSQLExecute", &SQLExecute_wrap,
+          "Primary path: DetectParamTypes + BindParameters + SQLExecute all in C++",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"),
           py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",
