@@ -1371,10 +1371,12 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
 
                     std::string* strParam =
                         AllocateParamBuffer<std::string>(paramBuffers, encodedStr);
-                    dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
-                    bufferLength = strParam->size() + 1;
+                    dataPtr = const_cast<void*>(static_cast<const void*>(strParam->data()));
+                    bufferLength = strParam->size();
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                    *strLenOrIndPtr = SQL_NTS;
+                    // Use explicit byte length instead of SQL_NTS so embedded NUL chars
+                    // aren't treated as string terminators (e.g., "hello\x00world").
+                    *strLenOrIndPtr = static_cast<SQLLEN>(strParam->size());
                 }
                 break;
             }
@@ -1439,7 +1441,9 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                     dataPtr = sqlwcharBuffer->data();
                     bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                    *strLenOrIndPtr = SQL_NTS;
+                    // Use explicit byte length instead of SQL_NTS so embedded NUL chars
+                    // aren't treated as string terminators.
+                    *strLenOrIndPtr = static_cast<SQLLEN>(sqlwcharBuffer->size() * sizeof(SQLWCHAR));
                 }
                 break;
             }
