@@ -615,6 +615,8 @@ jobs:
   - script: |
       echo "Installing ODBC Driver 18 for pyodbc..."
       brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
+      # Newer Homebrew refuses to load formulae from third-party taps unless the tap is trusted
+      brew trust microsoft/mssql-release || echo "brew trust failed; attempting install anyway"
       HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 || echo "ODBC Driver 18 install failed — pyodbc benchmarks will be skipped"
       pip install pyodbc
       echo "Running performance benchmarks..."
