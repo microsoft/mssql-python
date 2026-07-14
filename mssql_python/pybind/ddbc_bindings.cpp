@@ -138,32 +138,32 @@ void initialize() {
     if (!cache_initialized) {
         PyDateTime_IMPORT;
         if (PyDateTimeAPI == nullptr) {
-            throw py::error_already_set();  // LCOV_EXCL_LINE
+            throw py::error_already_set();
         }
 
         // Cache datetime.datetime, datetime.date, datetime.time for isinstance
         // checks in DetectParamTypes. Single import, then borrowed refs held
         // for process lifetime (module-level statics, never decremented).
         PyObject* datetime_module = PyImport_ImportModule("datetime");
-        if (!datetime_module) throw py::error_already_set();  // LCOV_EXCL_LINE
+        if (!datetime_module) throw py::error_already_set();
         datetime_class = PyObject_GetAttrString(datetime_module, "datetime");
         date_class = PyObject_GetAttrString(datetime_module, "date");
         time_class = PyObject_GetAttrString(datetime_module, "time");
         Py_DECREF(datetime_module);
         if (!datetime_class || !date_class || !time_class)
-            throw py::error_already_set();  // LCOV_EXCL_LINE
+            throw py::error_already_set();
 
         PyObject* decimal_module = PyImport_ImportModule("decimal");
-        if (!decimal_module) throw py::error_already_set();  // LCOV_EXCL_LINE
+        if (!decimal_module) throw py::error_already_set();
         decimal_class = PyObject_GetAttrString(decimal_module, "Decimal");
         Py_DECREF(decimal_module);
-        if (!decimal_class) throw py::error_already_set();  // LCOV_EXCL_LINE
+        if (!decimal_class) throw py::error_already_set();
 
         PyObject* uuid_module = PyImport_ImportModule("uuid");
-        if (!uuid_module) throw py::error_already_set();  // LCOV_EXCL_LINE
+        if (!uuid_module) throw py::error_already_set();
         uuid_class = PyObject_GetAttrString(uuid_module, "UUID");
         Py_DECREF(uuid_module);
-        if (!uuid_class) throw py::error_already_set();  // LCOV_EXCL_LINE
+        if (!uuid_class) throw py::error_already_set();
 
         // Pre-compute MONEY/SMALLMONEY boundary Decimals once. DetectParamTypes
         // uses PyObject_RichCompareBool against these to classify Decimal params
@@ -184,7 +184,7 @@ void initialize() {
             smallmoney_max = nullptr;
             money_min = nullptr;
             money_max = nullptr;
-            throw py::error_already_set();  // LCOV_EXCL_LINE
+            throw py::error_already_set();
         }
 
         cache_initialized = true;
@@ -205,13 +205,11 @@ PyObject* get_datetime_class() {
     if (cache_initialized && datetime_class) {
         return datetime_class;
     }
-    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("datetime");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "datetime");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
-    // LCOV_EXCL_STOP
 }
 
 py::object get_datetime_class_obj() {
@@ -224,13 +222,11 @@ PyObject* get_date_class() {
     if (cache_initialized && date_class) {
         return date_class;
     }
-    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("datetime");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "date");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
-    // LCOV_EXCL_STOP
 }
 
 py::object get_date_class_obj() {
@@ -243,13 +239,11 @@ PyObject* get_time_class() {
     if (cache_initialized && time_class) {
         return time_class;
     }
-    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("datetime");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "time");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
-    // LCOV_EXCL_STOP
 }
 
 py::object get_time_class_obj() {
@@ -262,13 +256,11 @@ PyObject* get_decimal_class() {
     if (cache_initialized && decimal_class) {
         return decimal_class;
     }
-    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("decimal");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "Decimal");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
-    // LCOV_EXCL_STOP
 }
 
 py::object get_decimal_class_obj() {
@@ -281,13 +273,11 @@ PyObject* get_uuid_class() {
     if (cache_initialized && uuid_class) {
         return uuid_class;
     }
-    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("uuid");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "UUID");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
-    // LCOV_EXCL_STOP
 }
 
 py::object get_uuid_class_obj() {
@@ -334,7 +324,6 @@ struct ParamInfo {
     // Copy/move assignment and move constructor below are required for
     // std::vector<ParamInfo> resize/reallocation and pybind11's type_caster.
     // They manually manage dataPtr refcounts since ParamInfo owns a strong ref.
-    // LCOV_EXCL_START — exercised by STL internals, not directly testable.
     ParamInfo& operator=(const ParamInfo& other) {
         if (this != &other) {
             Py_XDECREF(dataPtr);
@@ -374,7 +363,6 @@ struct ParamInfo {
         }
         return *this;
     }
-    // LCOV_EXCL_STOP
 };
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -907,7 +895,9 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             info.columnSize = std::max<SQLULEN>(info.columnSize, time_len);
             // PyList_SetItem (lowercase) decrefs the old slot before stealing the new
             // reference; safe here because cursor.py already passed a fresh list copy.
-            PyList_SetItem(params, i, time_str);
+            if (PyList_SetItem(params, i, time_str) != 0) {
+                throw py::error_already_set();
+            }
             continue;
         }
 
@@ -921,7 +911,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             PyObject* exponent_obj = PyObject_GetAttrString(as_tuple, "exponent");
             if (!exponent_obj) {
                 Py_DECREF(as_tuple);
-                throw py::error_already_set();  // LCOV_EXCL_LINE
+                throw py::error_already_set();
             }
 
             // NaN / Infinity / sNaN: refuse rather than silently writing 0.
@@ -936,7 +926,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (!digits_obj) {
                 Py_DECREF(exponent_obj);
                 Py_DECREF(as_tuple);
-                throw py::error_already_set();  // LCOV_EXCL_LINE
+                throw py::error_already_set();
             }
 
             Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj);
@@ -945,7 +935,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (exponent == -1 && PyErr_Occurred()) {
                 Py_DECREF(digits_obj);
                 Py_DECREF(as_tuple);
-                throw py::error_already_set();  // LCOV_EXCL_LINE
+                throw py::error_already_set();
             }
 
             int precision;
@@ -976,7 +966,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (cmp_ge == -1 || cmp_le == -1) {
                 Py_DECREF(digits_obj);
                 Py_DECREF(as_tuple);
-                throw py::error_already_set();  // LCOV_EXCL_LINE
+                throw py::error_already_set();
             }
             if (cmp_ge == 1 && cmp_le == 1) {
                 in_money_range = true;
@@ -986,7 +976,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 if (cmp_ge == -1 || cmp_le == -1) {
                     Py_DECREF(digits_obj);
                     Py_DECREF(as_tuple);
-                    throw py::error_already_set();  // LCOV_EXCL_LINE
+                    throw py::error_already_set();
                 }
                 if (cmp_ge == 1 && cmp_le == 1) {
                     in_money_range = true;
@@ -1006,7 +996,9 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 info.decimalDigits = 0;
                 Py_DECREF(digits_obj);
                 Py_DECREF(as_tuple);
-                PyList_SetItem(params, i, formatted);
+                if (PyList_SetItem(params, i, formatted) != 0) {
+                    throw py::error_already_set();
+                }
                 continue;
             }
 
@@ -1021,7 +1013,11 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             info.decimalDigits = nd.scale;
             // Store NumericData as a Python object in the param list for the binder.
             py::object numeric_obj = py::cast(nd);
-            PyList_SetItem(params, i, numeric_obj.release().ptr());
+            PyObject* raw = numeric_obj.release().ptr();
+            if (PyList_SetItem(params, i, raw) != 0) {
+                Py_DECREF(raw);
+                throw py::error_already_set();
+            }
             continue;
         }
 
@@ -1035,7 +1031,10 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             info.paramCType = SQL_C_GUID;
             info.columnSize = 16;
             info.decimalDigits = 0;
-            PyList_SetItem(params, i, bytes_le);
+            if (PyList_SetItem(params, i, bytes_le) != 0) {
+                Py_DECREF(bytes_le);
+                throw py::error_already_set();
+            }
             continue;
         }
 
@@ -2770,8 +2769,11 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                         dataPtr = bytesStorage.data();
                         totalBytes = bytesStorage.size();
                     } else {
-                        dataPtr = PyByteArray_AS_STRING(pyObj);
-                        totalBytes = static_cast<size_t>(PyByteArray_GET_SIZE(pyObj));
+                        // bytearray is mutable — copy to stable buffer before streaming
+                        bytesStorage.assign(PyByteArray_AS_STRING(pyObj),
+                                            static_cast<size_t>(PyByteArray_GET_SIZE(pyObj)));
+                        dataPtr = bytesStorage.data();
+                        totalBytes = bytesStorage.size();
                     }
                     const size_t chunkSize = DAE_CHUNK_SIZE;
                     for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
@@ -2974,9 +2976,11 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     dataPtr = bytesStorage.data();
                     totalBytes = bytesStorage.size();
                 } else {
-                    // bytearray: use raw buffer access
-                    dataPtr = PyByteArray_AS_STRING(pyObj);
-                    totalBytes = static_cast<size_t>(PyByteArray_GET_SIZE(pyObj));
+                    // bytearray is mutable — copy to stable buffer before streaming
+                    bytesStorage.assign(PyByteArray_AS_STRING(pyObj),
+                                        static_cast<size_t>(PyByteArray_GET_SIZE(pyObj)));
+                    dataPtr = bytesStorage.data();
+                    totalBytes = bytesStorage.size();
                 }
 
                 for (size_t offset = 0; offset < totalBytes; offset += DAE_CHUNK_SIZE) {
