@@ -280,3 +280,25 @@ def test_string_with_embedded_nulls(cursor):
     cursor.execute("SELECT LEN(?)", [value])
     result = cursor.fetchone()[0]
     assert result == 11
+
+
+def test_integer_overflow_detected(cursor):
+    """Integers beyond int64 range trigger overflow detection in C++ and bind as BIGINT.
+    SQL Server cannot store values outside [-2^63, 2^63-1] in BIGINT, so these raise."""
+    with pytest.raises(Exception):
+        cursor.execute("SELECT ?", [2**63])
+    with pytest.raises(Exception):
+        cursor.execute("SELECT ?", [-(2**63) - 1])
+
+
+@pytest.mark.parametrize("value", [decimal.Decimal("NaN"), decimal.Decimal("sNaN")])
+def test_decimal_nan_variants_rejected(cursor, value):
+    """Decimal NaN variants must raise, not silently bind as 0."""
+    with pytest.raises(Exception):
+        cursor.execute("SELECT ?", [value])
+
+
+def test_decimal_precision_overflow_rejected(cursor):
+    """Decimals beyond SQL Server's max precision must raise."""
+    with pytest.raises(Exception):
+        cursor.execute("SELECT ?", [decimal.Decimal("123456789012345678901234567890123456789")])

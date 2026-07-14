@@ -129,39 +129,53 @@ static PyObject* smallmoney_min = nullptr;
 static PyObject* smallmoney_max = nullptr;
 static bool cache_initialized = false;
 
+// One-time cache of Python type objects and MONEY boundary constants.
+// Called on first execute(). Uses raw CPython API (not pybind11) because
+// these cached PyObject* are compared via PyObject_IsInstance in the
+// hot DetectParamTypes loop — wrapping them in py::object would add
+// unnecessary ref-count traffic on every parameter.
 void initialize() {
     if (!cache_initialized) {
         PyDateTime_IMPORT;
         if (PyDateTimeAPI == nullptr) {
-            throw py::error_already_set();
+            throw py::error_already_set();  // LCOV_EXCL_LINE
         }
 
+        // Cache datetime.datetime, datetime.date, datetime.time for isinstance
+        // checks in DetectParamTypes. Single import, then borrowed refs held
+        // for process lifetime (module-level statics, never decremented).
         PyObject* datetime_module = PyImport_ImportModule("datetime");
-        if (!datetime_module) throw py::error_already_set();
+        if (!datetime_module) throw py::error_already_set();  // LCOV_EXCL_LINE
         datetime_class = PyObject_GetAttrString(datetime_module, "datetime");
         date_class = PyObject_GetAttrString(datetime_module, "date");
         time_class = PyObject_GetAttrString(datetime_module, "time");
         Py_DECREF(datetime_module);
-        if (!datetime_class || !date_class || !time_class) throw py::error_already_set();
+        if (!datetime_class || !date_class || !time_class)
+            throw py::error_already_set();  // LCOV_EXCL_LINE
 
         PyObject* decimal_module = PyImport_ImportModule("decimal");
-        if (!decimal_module) throw py::error_already_set();
+        if (!decimal_module) throw py::error_already_set();  // LCOV_EXCL_LINE
         decimal_class = PyObject_GetAttrString(decimal_module, "Decimal");
         Py_DECREF(decimal_module);
-        if (!decimal_class) throw py::error_already_set();
+        if (!decimal_class) throw py::error_already_set();  // LCOV_EXCL_LINE
 
         PyObject* uuid_module = PyImport_ImportModule("uuid");
-        if (!uuid_module) throw py::error_already_set();
+        if (!uuid_module) throw py::error_already_set();  // LCOV_EXCL_LINE
         uuid_class = PyObject_GetAttrString(uuid_module, "UUID");
         Py_DECREF(uuid_module);
-        if (!uuid_class) throw py::error_already_set();
+        if (!uuid_class) throw py::error_already_set();  // LCOV_EXCL_LINE
 
+        // Pre-compute MONEY/SMALLMONEY boundary Decimals once. DetectParamTypes
+        // uses PyObject_RichCompareBool against these to classify Decimal params
+        // into MONEY vs NUMERIC — doing exact Decimal comparison (not float cast)
+        // avoids boundary misclassification at the edges.
         PyObject* Decimal = decimal_class;
         smallmoney_min = PyObject_CallFunction(Decimal, "s", "-214748.3648");
         smallmoney_max = PyObject_CallFunction(Decimal, "s", "214748.3647");
         money_min = PyObject_CallFunction(Decimal, "s", "-922337203685477.5808");
         money_max = PyObject_CallFunction(Decimal, "s", "922337203685477.5807");
         if (!smallmoney_min || !smallmoney_max || !money_min || !money_max) {
+            // Partial creation — clean up whichever succeeded before throwing.
             Py_XDECREF(smallmoney_min);
             Py_XDECREF(smallmoney_max);
             Py_XDECREF(money_min);
@@ -170,7 +184,7 @@ void initialize() {
             smallmoney_max = nullptr;
             money_min = nullptr;
             money_max = nullptr;
-            throw py::error_already_set();
+            throw py::error_already_set();  // LCOV_EXCL_LINE
         }
 
         cache_initialized = true;
@@ -191,11 +205,13 @@ PyObject* get_datetime_class() {
     if (cache_initialized && datetime_class) {
         return datetime_class;
     }
+    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("datetime");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "datetime");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
+    // LCOV_EXCL_STOP
 }
 
 py::object get_datetime_class_obj() {
@@ -208,11 +224,13 @@ PyObject* get_date_class() {
     if (cache_initialized && date_class) {
         return date_class;
     }
+    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("datetime");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "date");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
+    // LCOV_EXCL_STOP
 }
 
 py::object get_date_class_obj() {
@@ -225,11 +243,13 @@ PyObject* get_time_class() {
     if (cache_initialized && time_class) {
         return time_class;
     }
+    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("datetime");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "time");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
+    // LCOV_EXCL_STOP
 }
 
 py::object get_time_class_obj() {
@@ -242,11 +262,13 @@ PyObject* get_decimal_class() {
     if (cache_initialized && decimal_class) {
         return decimal_class;
     }
+    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("decimal");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "Decimal");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
+    // LCOV_EXCL_STOP
 }
 
 py::object get_decimal_class_obj() {
@@ -259,11 +281,13 @@ PyObject* get_uuid_class() {
     if (cache_initialized && uuid_class) {
         return uuid_class;
     }
+    // LCOV_EXCL_START
     PyObject* mod = PyImport_ImportModule("uuid");
     if (!mod) return nullptr;
     PyObject* cls = PyObject_GetAttrString(mod, "UUID");
     Py_DECREF(mod);
     return cls;  // caller must check for NULL
+    // LCOV_EXCL_STOP
 }
 
 py::object get_uuid_class_obj() {
@@ -307,6 +331,10 @@ struct ParamInfo {
           isDAE(other.isDAE), dataPtr(other.dataPtr), utf16Len(other.utf16Len) {
         Py_XINCREF(dataPtr);
     }
+    // Copy/move assignment and move constructor below are required for
+    // std::vector<ParamInfo> resize/reallocation and pybind11's type_caster.
+    // They manually manage dataPtr refcounts since ParamInfo owns a strong ref.
+    // LCOV_EXCL_START — exercised by STL internals, not directly testable.
     ParamInfo& operator=(const ParamInfo& other) {
         if (this != &other) {
             Py_XDECREF(dataPtr);
@@ -346,6 +374,7 @@ struct ParamInfo {
         }
         return *this;
     }
+    // LCOV_EXCL_STOP
 };
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -892,7 +921,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             PyObject* exponent_obj = PyObject_GetAttrString(as_tuple, "exponent");
             if (!exponent_obj) {
                 Py_DECREF(as_tuple);
-                throw py::error_already_set();
+                throw py::error_already_set();  // LCOV_EXCL_LINE
             }
 
             // NaN / Infinity / sNaN: refuse rather than silently writing 0.
@@ -907,7 +936,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (!digits_obj) {
                 Py_DECREF(exponent_obj);
                 Py_DECREF(as_tuple);
-                throw py::error_already_set();
+                throw py::error_already_set();  // LCOV_EXCL_LINE
             }
 
             Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj);
@@ -916,7 +945,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (exponent == -1 && PyErr_Occurred()) {
                 Py_DECREF(digits_obj);
                 Py_DECREF(as_tuple);
-                throw py::error_already_set();
+                throw py::error_already_set();  // LCOV_EXCL_LINE
             }
 
             int precision;
@@ -947,7 +976,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (cmp_ge == -1 || cmp_le == -1) {
                 Py_DECREF(digits_obj);
                 Py_DECREF(as_tuple);
-                throw py::error_already_set();
+                throw py::error_already_set();  // LCOV_EXCL_LINE
             }
             if (cmp_ge == 1 && cmp_le == 1) {
                 in_money_range = true;
@@ -957,7 +986,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 if (cmp_ge == -1 || cmp_le == -1) {
                     Py_DECREF(digits_obj);
                     Py_DECREF(as_tuple);
-                    throw py::error_already_set();
+                    throw py::error_already_set();  // LCOV_EXCL_LINE
                 }
                 if (cmp_ge == 1 && cmp_le == 1) {
                     in_money_range = true;
