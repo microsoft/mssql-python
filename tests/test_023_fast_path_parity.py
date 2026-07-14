@@ -204,20 +204,16 @@ def test_fast_slow_path_parity(cursor, value, sql_type, column_size):
 def test_large_bytearray_dae(cursor):
     """Large bytearray (>8000 bytes) must stream via DAE without crashing.
     This catches the pybind11 bytes-cast-from-bytearray bug."""
-    large_ba = bytearray(b"\xAB" * 10000)
-    cursor.execute(
-        "SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [large_ba]
-    )
+    large_ba = bytearray(b"\xab" * 10000)
+    cursor.execute("SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [large_ba])
     result = cursor.fetchone()[0]
     assert result == 10000
 
 
 def test_large_bytes_dae(cursor):
     """Large bytes (>8000 bytes) must stream via DAE correctly."""
-    large_b = b"\xCD" * 10000
-    cursor.execute(
-        "SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [large_b]
-    )
+    large_b = b"\xcd" * 10000
+    cursor.execute("SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [large_b])
     result = cursor.fetchone()[0]
     assert result == 10000
 
@@ -241,11 +237,11 @@ def test_large_unicode_string_dae(cursor):
 @pytest.mark.parametrize(
     "value",
     [
-        decimal.Decimal("-922337203685477.5808"),   # MONEY_MIN boundary
-        decimal.Decimal("922337203685477.5807"),    # MONEY_MAX boundary
-        decimal.Decimal("-214748.3648"),            # SMALLMONEY_MIN
-        decimal.Decimal("214748.3647"),             # SMALLMONEY_MAX
-        decimal.Decimal("0.01"),                    # typical money value
+        decimal.Decimal("-922337203685477.5808"),  # MONEY_MIN boundary
+        decimal.Decimal("922337203685477.5807"),  # MONEY_MAX boundary
+        decimal.Decimal("-214748.3648"),  # SMALLMONEY_MIN
+        decimal.Decimal("214748.3647"),  # SMALLMONEY_MAX
+        decimal.Decimal("0.01"),  # typical money value
     ],
 )
 def test_decimal_money_boundary(cursor, value):
@@ -273,9 +269,7 @@ def test_decimal_infinity_rejected(cursor):
 def test_binary_with_embedded_nulls(cursor):
     """Binary data with embedded null bytes must not be truncated."""
     data = b"\x00\x01\x00\x02\x00"
-    cursor.execute(
-        "SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [data]
-    )
+    cursor.execute("SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [data])
     result = cursor.fetchone()[0]
     assert result == 5
 
