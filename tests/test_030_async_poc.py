@@ -189,3 +189,86 @@ class TestAsyncCancel:
             )
         finally:
             await cur.close()
+
+
+# ---------------------------------------------------------------------------
+# TestAsyncScale — many concurrent connections against the Rust runtime
+# ---------------------------------------------------------------------------
+class TestAsyncScale:
+    """Scale tests for the async POC — 100 concurrent connections.
+
+    Each task opens a fresh :class:`AsyncConnection`, runs a single query
+    and closes. This exercises:
+
+    * the process-wide Tokio runtime under load,
+    * the pyo3-async-runtimes → asyncio bridge with 100 futures in flight,
+    * GIL discipline — the row decode / connection lifecycle must not
+      serialise the event loop,
+    * SQL Server's ability to handle 100 concurrent sessions from a single
+      Python process (well within default limits, but worth exercising).
+
+    Marked ``slow`` so ``pytest -m "not slow"`` can skip them if a runner
+    is memory-constrained.
+    """
+
+    @pytest.mark.slow
+    async def test_hundred_connections_correctness(self, async_conn_str):
+        """100 tasks, each picking a distinct constant. All must round-trip."""
+        n_tasks = 100
+
+        async def one(idx: int) -> tuple:
+            async with await mssql_python.connect_async(async_conn_str) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"SELECT {idx}")
+                    return await cur.fetchone()
+
+        start = time.monotonic()
+        results = await asyncio.gather(*(one(i) for i in range(n_tasks)))
+        elapsed = time.monotonic() - start
+
+        expected = [(i,) for i in range(n_tasks)]
+        assert results == expected, (
+            f"one or more of {n_tasks} tasks returned an unexpected value"
+        )
+        # 100 sequential connect+select+close cycles would take many seconds
+        # on any reasonable runner; the parallel run should finish comfortably
+        # inside a generous ceiling. This is a scalability sanity check —
+        # tighten with data once we have baselines.
+        assert elapsed < 30, (
+            f"100 concurrent connections took {elapsed:.3f}s (>30s ceiling)"
+        )
+        print(f"[scale.correctness] 100 connections in {elapsed:.3f}s")
+
+    @pytest.mark.slow
+    async def test_hundred_connections_true_parallelism(self, async_conn_str):
+        """100 tasks each running a 200 ms server WAITFOR.
+
+        If the pipeline truly runs in parallel, wall time is bounded by
+        (200 ms + connect overhead) times a small multiplier — not by the
+        200 ms × 100 = 20 s serial baseline.
+        """
+        n_tasks = 100
+
+        async def one() -> tuple:
+            async with await mssql_python.connect_async(async_conn_str) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("WAITFOR DELAY '00:00:00.200'; SELECT 1")
+                    return await cur.fetchone()
+
+        start = time.monotonic()
+        results = await asyncio.gather(*(one() for _ in range(n_tasks)))
+        elapsed = time.monotonic() - start
+
+        assert results == [(1,)] * n_tasks
+        # Serial baseline is ~20s. Parallel target is well under that; the
+        # tokio multi-thread runtime + non-blocking futures should finish
+        # inside a few seconds. Ceiling picked to leave headroom for slow
+        # SQL Server startup on CI.
+        assert elapsed < 10, (
+            f"100 x 200 ms WAITFORs took {elapsed:.3f}s "
+            f"(expected << 20 s serial baseline)"
+        )
+        print(
+            f"[scale.parallel] 100 x 200 ms WAITFORs in {elapsed:.3f}s "
+            f"(serial baseline ~20s)"
+        )
