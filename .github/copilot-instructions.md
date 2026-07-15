@@ -1,274 +1,94 @@
-# Copilot Instructions for mssql-python
+# mssql-python — Copilot instructions
 
-## Repository Overview
+mssql-python is Microsoft's pip-installable Python driver for SQL Server, Azure SQL, and Azure Synapse. It is DB API 2.0 (PEP 249) compliant. The core is a C++ pybind11 native extension (`ddbc_bindings`) built with CMake and wrapped by a pure-Python package; bulk copy is backed by a separate Rust/TDS core (`mssql_py_core`). Platform-specific wheels ship for Windows (x64, ARM64), macOS (x64, ARM64), and Linux (x64, ARM64). Python 3.10+. The ODBC driver is bundled in the wheel — no external driver manager is required.
 
-**mssql-python** is a Python driver for Microsoft SQL Server and Azure SQL databases that leverages Direct Database Connectivity (DDBC). It's built using **pybind11** and **CMake** to create native extensions, providing DB API 2.0 compliant database access with enhanced Pythonic features.
+## Architecture
 
-- **Size**: Medium-scale project (~750KB total)
-- **Languages**: Python (main), C++ (native bindings), CMake (build system)
-- **Target Platforms**: Windows (x64, ARM64), macOS (Universal2), Linux (x86_64, ARM64)
-- **Python Versions**: 3.10+
-- **Key Dependencies**: pybind11, azure-identity, Microsoft ODBC Driver 18
+Call stack, top to bottom:
 
-## Development Workflows
+1. **Pure-Python API** — `mssql_python/` (`connection.py`, `cursor.py`, `row.py`, `pooling.py`, `auth.py`, `exceptions.py`, type coercion). This is the DB API 2.0 surface.
+2. **Extension loader** — `mssql_python/ddbc_bindings.py` detects platform/architecture and loads the correct native binary.
+3. **pybind11 binding layer** — `mssql_python/pybind/` (`ddbc_bindings.cpp`/`.h`, `connection/`, `logger_bridge.*`, `unix_utils.*`), compiled to `ddbc_bindings.cp{ver}-{arch}.{so|pyd}` in `mssql_python/`.
+4. **ODBC driver stack → SQL Server.** Bulk copy takes a different path: it uses `mssql_py_core` (TDS) directly, not ODBC.
 
-This repository includes detailed prompt files for common tasks. Reference these with `#`:
+Paths you will touch:
 
-| Task | Prompt | When to Use |
-|------|--------|-------------|
-| First-time setup | `#setup-dev-env` | New machine, fresh clone |
-| Build C++ extension | `#build-ddbc` | After modifying .cpp/.h files |
-| Run tests | `#run-tests` | Validating changes |
-| Create PR | `#create-pr` | Ready to submit changes |
+- `mssql_python/pybind/CMakeLists.txt` — all platform/architecture build conditionals live here.
+- `mssql_python/pybind/build.sh` / `build.bat` — build entry points; `configure_dylibs.sh` fixes macOS dylib paths.
+- `mssql_python/libs/{windows,macos,linux}/...` — prebuilt ODBC binaries. **NEVER hand-edit these.**
+- `setup.py` / `pyproject.toml` — packaging and wheel/platform tagging.
+- `mssql_python/mssql_python.pyi` + `mssql_python/py.typed` — PEP 561 type stubs. Update stubs when the public API changes.
+- `tests/` — mostly-numbered `test_NNN_*.py` files (a live-SQL-Server integration suite plus no-DB dependency checks).
 
-**Workflow order for new contributors:**
-1. `#setup-dev-env` — Set up venv and dependencies
-2. `#build-ddbc` — Build native extension
-3. Make your changes
-4. `#run-tests` — Validate
-5. `#create-pr` — Submit
+## Development workflow
 
-## Build System and Validation
+Validated, step-by-step guides live in `.github/prompts/` — use them instead of rediscovering commands:
 
-### Prerequisites
-**Always install these before building:**
-```bash
-# All platforms
-pip install -r requirements.txt
+- `setup-dev-env.prompt.md` — venv, dependencies, ODBC headers, `DB_CONNECTION_STRING`, SQL Server.
+- `build-ddbc.prompt.md` — build the C++ extension.
+- `run-tests.prompt.md` — pytest categories and markers.
+- `create-pr.prompt.md` — the PR flow (title / issue-link / summary confirmations).
 
-# Windows: Requires Visual Studio Build Tools with "Desktop development with C++" workload
-# macOS: brew install cmake && brew install msodbcsql18
-# Linux: Install cmake, python3-dev, and ODBC driver per distribution
-```
+Core facts:
 
-### Building the Project
+- **ALWAYS build the native extension before running Python tests.** Importing `mssql_python` needs the compiled `.so`/`.pyd`. Build with `cd mssql_python/pybind && ./build.sh` (or `build.bat` on Windows; pass `x64|arm64` as needed).
+- **Tests need a live SQL Server** reachable through the `DB_CONNECTION_STRING` env var. `tests/test_000_dependencies.py` runs with no DB; most others require one.
+- macOS wheels are universal2 (arm64 and x86_64); when touching dylib/rpath setup (`configure_dylibs.sh`), make sure both slices are handled, not just the build host.
 
-**CRITICAL**: The project requires building native extensions before testing. Extensions are platform-specific (`.pyd` on Windows, `.so` on macOS/Linux).
-
-#### Windows Build:
-```bash
-cd mssql_python/pybind
-build.bat [x64|x86|arm64]  # Defaults to x64 if not specified
-```
-
-#### macOS Build:
-```bash
-cd mssql_python/pybind
-./build.sh  # Creates universal2 binary (ARM64 + x86_64)
-```
-
-#### Linux Build:
-```bash
-cd mssql_python/pybind
-./build.sh  # Detects architecture automatically
-```
-
-**Build Output**: Creates `ddbc_bindings.cp{python_version}-{architecture}.{so|pyd}` in the `mssql_python/` directory.
-
-### Testing
-
-**IMPORTANT**: Tests require a SQL Server connection via `DB_CONNECTION_STRING` environment variable.
+## Validation gate (run before you finish — this mirrors CI)
 
 ```bash
-# Run all tests with coverage
-python -m pytest -v --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-
-# Run specific test files
-python -m pytest tests/test_000_dependencies.py -v  # Dependency checks
-python -m pytest tests/test_001_globals.py -v      # Basic functionality
+black --check --line-length=100 mssql_python/ tests/     # BLOCKING in CI
+python -m pytest -v                                       # 'stress' marker excluded by default
 ```
 
-**Test Dependencies**: Tests require building the native extension first. The dependency test (`test_000_dependencies.py`) validates that all platform-specific libraries exist.
+- **`pr-format-check` (BLOCKING):** PR title must start with one of `FEAT: FIX: DOC: CHORE: STYLE: REFACTOR: RELEASE:`; the body must link a work item/issue and have a `### Summary` of at least 10 characters.
+- `flake8`, `pylint`, `mypy`, `clang-format`, and `cpplint` run but are **informational**, not blocking.
+- The authoritative cross-platform validation runs on **Azure DevOps** (broader OS / Python / arch coverage than the GitHub checks); consult the specific pipeline in `eng/pipelines/` for the exact matrix rather than assuming full coverage. A coverage bot posts a report comment on the PR.
 
-### Linting and Code Quality
+## Code standards
 
-```bash
-# Python formatting
-black --check --line-length=100 mssql_python/ tests/
+**Python**
 
-# C++ formatting
-clang-format -style=file -i mssql_python/pybind/*.cpp mssql_python/pybind/*.h
+- Black, line length 100. DB API 2.0 semantics take priority.
+- Catch specific exceptions (`DatabaseError`, `IntegrityError`, `OperationalError`, …), **never a bare `except:`** — flake8 ignores E722, but the team enforces this in review.
+- Use context managers for connections and cursors. Update `__all__` **and** `mssql_python/mssql_python.pyi` when changing the public API. Add a `tests/test_*.py` case for every fix.
 
-# Coverage reporting (configured in .coveragerc)
-python -m pytest --cov=. --cov-report=html
-```
+**C++ / pybind11** (`mssql_python/pybind/`) — hazards to respect:
 
-## Project Architecture
+- **Process-shutdown ordering for Python handles.** Destructors of static `py::object` caches (e.g. the datetime/decimal class cache in `ddbc_bindings.cpp`) run after Python finalizes; an ODBC or threading call from a destructor after the GIL is gone can deadlock or crash the whole test suite at exit. Guard shutdown cleanup with `Py_IsInitialized()`, register cleanup via `atexit`, and prefer not to add new static Python handles.
+- **Don't let a failed initialization escape as a half-built object.** `Connection::setAttribute` returns `SQLRETURN`; `applyAttrsBefore` checks it and raises via `ThrowStdException` before the connection is exposed. Follow that pattern — translate a failing return into an exception rather than handing back a partially-initialized object.
+- **Handle every shipped architecture, not just `$(uname -m)`.** Universal2 bundles arm64 and x86_64; dylib/rpath work that only touches the host arch ships a broken slice for the other. Verify both.
+- Hot paths favor the raw CPython API (with correct refcounting and `PyErr_Occurred()` checks) over pybind11 per-cell calls.
 
-### Core Components
+## Testing conventions
 
-```
-mssql_python/
-├── __init__.py                    # Package initialization, connection registry, cleanup
-├── connection.py                  # DB API 2.0 connection object
-├── cursor.py                      # DB API 2.0 cursor object
-├── db_connection.py               # connect() function implementation
-├── auth.py                        # Microsoft Entra ID authentication
-├── pooling.py                     # Connection pooling implementation
-├── logging.py                     # Logging configuration
-├── exceptions.py                  # Exception hierarchy
-├── connection_string_builder.py   # Connection string construction
-├── connection_string_parser.py    # Connection string parsing
-├── parameter_helper.py            # Query parameter handling
-├── row.py                         # Row object implementation
-├── type.py                        # DB API 2.0 type objects
-├── constants.py                   # ODBC constants
-├── helpers.py                     # Utility functions and settings
-├── ddbc_bindings.py               # Platform-specific extension loader with architecture detection
-├── mssql_python.pyi               # Type stubs for IDE support
-├── py.typed                       # PEP 561 type marker
-└── pybind/                        # Native extension source
-    ├── ddbc_bindings.cpp          # Main C++ binding code
-    ├── ddbc_bindings.h            # Header for bindings
-    ├── CMakeLists.txt             # Cross-platform build configuration
-    ├── build.sh/.bat              # Platform-specific build scripts
-    ├── configure_dylibs.sh        # macOS dylib configuration
-    ├── logger_bridge.cpp/.hpp     # Python logging bridge
-    ├── unix_utils.cpp/.h          # Unix platform utilities
-    └── connection/                # Connection management
-        ├── connection.cpp/.h      # Connection implementation
-        └── connection_pool.cpp/.h # Connection pooling
-```
+- Test files are mostly numbered `test_NNN_*.py`; `tests/test_000_dependencies.py` runs without a DB, most others need a live SQL Server. `-m "not stress"` is the default.
+- Run segfault-prone or ODBC/pool global-state tests in an **isolated subprocess** so a crash or shared state cannot poison the rest of the suite.
+- **Assert the contract, not just the output.** If a change's value is "we now call X once," assert the call/round-trip count — a correctness-only test won't catch a perf regression.
+- For global type-mapping changes, add typed-NULL integration cases (VARBINARY, UNIQUEIDENTIFIER, XML, DECIMAL, stored-proc params) before applying the optimization broadly.
 
-### Platform-Specific Libraries
+## Security and credentials
 
-```
-mssql_python/libs/
-├── windows/{x64,x86,arm64}/          # Windows ODBC drivers and dependencies
-├── macos/{arm64,x86_64}/lib/         # macOS dylibs
-└── linux/{debian_ubuntu,rhel,suse,alpine}/{x86_64,arm64}/lib/  # Linux distributions
-```
+- **Committed connection strings that contain `UID`/`PWD` must use `SERVER=localhost` (or `127.0.0.1`) with dummy values.** Real remote or Azure credentials come only from secrets or the `DB_CONNECTION_STRING` env var, and are never committed. Automated credential scanning (see `.config/CredScanSuppressions.json`, `.gdn/`) can block unsafe patterns.
+- Do **not** put `Driver=` in a connection string — the bundled driver is selected automatically.
+- `TrustServerCertificate=yes` is local-development only; never suggest it in remote or production examples.
 
-### Configuration Files
+## Contributing
 
-- **`.clang-format`**: C++ formatting (LLVM style, 100 column limit)
-- **`.coveragerc`**: Coverage configuration
-- **`requirements.txt`**: Development dependencies
-- **`setup.py`**: Package configuration with platform detection
-- **`pyproject.toml`**: Modern Python packaging configuration
-- **`.gitignore`**: Excludes build artifacts (*.so, *.pyd, build/, __pycache__)
+- Branch naming: `<name>/<short-kebab-description>` (e.g. `bewithgaurav/fix-656-macos-dylib`).
+- Link exactly one reference in the PR body: maintainers use `AB#<id>` (ADO auto-close); external contributors use plain `#<N>` — **never `Closes #N`**.
+- Stage specific files; **never `git add .`**. Never commit build artifacts (`*.so`, `*.pyd`, `*.dll`, `*.dylib`) or a virtual environment.
+- Keep changes surgical — fix the requested thing, leave unrelated code alone, and do not add stray files.
 
-## CI/CD Pipeline Details
+## Working effectively in this repo
 
-### GitHub Workflows
-- **`devskim.yml`**: Security scanning (runs on PRs and main)
-- **`pr-format-check.yml`**: PR validation (title format, GitHub issue/ADO work item links)
-- **`lint-check.yml`**: Python (Black) and C++ (clang-format) linting
-- **`pr-code-coverage.yml`**: Code coverage reporting
-- **`forked-pr-coverage.yml`**: Coverage for forked PRs
+- **Reproduce before you claim.** Build and run a live repro against a real SQL Server before asserting a bug exists or that a fix works. Do not ship code-only assessments.
+- Understand the linked issue and existing review threads before changing code.
+- Search existing issues and PRs before opening a new one — do not create duplicates.
+- Do not post PR or issue comments as part of a change unless explicitly asked.
+- Verify that mutating git/gh operations actually landed (re-read the branch or PR) before reporting done.
 
-### Azure DevOps Pipelines (`eng/pipelines/`)
-- **`pr-validation-pipeline.yml`**: Comprehensive testing across all platforms
-- **`build-whl-pipeline.yml`**: Wheel building for distribution
-- **Platform Coverage**: Windows (LocalDB), macOS (Docker SQL Server), Linux (Ubuntu, Debian, RHEL, Alpine) with both x86_64 and ARM64
+## Trust these instructions
 
-### Build Matrix
-The CI system tests:
-- **Python versions**: 3.10, 3.11, 3.12, 3.13
-- **Windows**: x64, ARM64 architectures
-- **macOS**: Universal2 (ARM64 + x86_64)
-- **Linux**: Multiple distributions (Debian, Ubuntu, RHEL, Alpine) on x86_64 and ARM64
-
-## Common Build Issues and Workarounds
-
-### macOS-Specific Issues
-- **dylib path configuration**: Run `configure_dylibs.sh` after building to fix library paths
-- **codesigning**: Script automatically codesigns libraries for compatibility
-
-### Linux Distribution Differences
-- **Debian/Ubuntu**: Use `apt-get install python3-dev cmake pybind11-dev`
-- **RHEL**: Requires enabling CodeReady Builder repository for development tools
-- **Alpine**: Uses musl libc, requires special handling in build scripts
-
-### Windows Build Dependencies
-- **Visual Studio Build Tools**: Must include "Desktop development with C++" workload
-- **Architecture Detection**: Build scripts auto-detect target architecture from environment
-
-### Known Limitations (from TODOs)
-- Linux RPATH configuration pending for driver .so files
-- Some Unicode support gaps in executemany operations
-- Platform-specific test dependencies in exception handling
-
-## Architecture Detection and Loading
-
-The `ddbc_bindings.py` module handles architecture detection:
-- **Windows**: Normalizes `win64/amd64/x64` → `x64`, `win32/x86` → `x86`, `arm64` → `arm64`
-- **macOS**: Runtime architecture detection, always loads from universal2 binary
-- **Linux**: Maps `x64/amd64` → `x86_64`, `arm64/aarch64` → `arm64`
-
-## Exception Hierarchy
-
-Critical for error handling guidance:
-
-```
-Exception (base)
-├── Warning
-└── Error
-    ├── InterfaceError          # Driver/interface issues
-    └── DatabaseError
-        ├── DataError            # Invalid data processing
-        ├── OperationalError     # Connection/timeout issues
-        ├── IntegrityError       # Constraint violations
-        ├── InternalError        # Internal driver/database errors
-        ├── ProgrammingError     # SQL syntax errors
-        └── NotSupportedError    # Unsupported features/operations
-```
-
-## Critical Anti-Patterns (DO NOT)
-
-- **NEVER** hardcode connection strings - always use `DB_CONNECTION_STRING` env var for tests
-- **NEVER** use `pyodbc` imports - this driver doesn't require external ODBC
-- **NEVER** modify files in `mssql_python/libs/` - these are pre-built binaries
-- **NEVER** skip `conn.commit()` after INSERT/UPDATE/DELETE operations
-- **NEVER** use bare `except:` blocks - always catch specific exceptions
-- **NEVER** leave connections open - use context managers or explicit `close()`
-
-## When Modifying Code
-
-### Python Changes
-- Preserve existing error handling patterns from `exceptions.py`
-- Use context managers (`with`) for all connection/cursor operations
-- Update `__all__` exports if adding public API
-- Add corresponding test in `tests/test_*.py`
-- Follow Black formatting (line length 100)
-
-### C++ Changes
-- Follow RAII patterns for resource management
-- Use `py::gil_scoped_release` for blocking ODBC operations
-- Update `mssql_python.pyi` type stubs if changing Python API
-- Follow `.clang-format` style (LLVM style, 100 column limit)
-
-## Code Quality
-
-- **Keep it tight**: Minimal code to solve the problem. No duplicate logic, no redundant validation.
-- **Comments explain why, not what**: Don't restate what the code does. Comment intent, edge cases, and non-obvious decisions.
-- **One-line docstrings**: For test functions and simple helpers. No "Validates:" bullet lists or "Note:" paragraphs.
-- **Docstring examples must match the API**: If the signature changes, update the examples.
-- **Catch specific exceptions**: Use `DatabaseError`, `IntegrityError`, etc. — never `except Exception` or bare `except:`.
-- **Let the test framework work**: Don't wrap test bodies in `try/except: pytest.fail()`. Let pytest show the real traceback.
-- **Assertions must match claims**: If a test says "all types", check all of them. Cover the case that motivated the fix.
-- **No stale references**: If you reference a file, function, or prompt — verify it exists first.
-
-## Debugging Quick Reference
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `ImportError: ddbc_bindings` | Extension not built | Run `#build-ddbc` |
-| Connection timeout | Missing env var | Set `DB_CONNECTION_STRING` |
-| `dylib not found` (macOS) | Library paths | Run `configure_dylibs.sh` |
-| `ODBC Driver not found` | Missing driver | Install Microsoft ODBC Driver 18 |
-| `ModuleNotFoundError` | Not in venv | Run `#setup-dev-env` |
-
-## Contributing Guidelines
-
-### PR Requirements
-- **Title Format**: Must start with `FEAT:`, `CHORE:`, `FIX:`, `DOC:`, `STYLE:`, `REFACTOR:`, or `RELEASE:`
-- **Issue Linking**: Must link to either GitHub issue or ADO work item
-- **Summary**: Minimum 10 characters of meaningful content under "### Summary"
-
-### Development Workflow
-1. **Always build native extensions first** before running tests
-2. **Use virtual environments** for dependency isolation
-3. **Test on target platform** before submitting PRs
-4. **Check CI pipeline results** for cross-platform compatibility
-
+Trust the commands, paths, and conventions above — they were validated against the current repository. Only fall back to searching the codebase when something here is missing or proves incorrect, and when you find a gap, update these instructions.
