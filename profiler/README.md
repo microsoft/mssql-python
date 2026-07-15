@@ -1,88 +1,135 @@
-# mssql-python profiler
+# Profiler (internal)
 
-Unified Python + C++ performance instrumentation for the mssql-python driver.
+A performance profiler for developing the mssql-python driver. It shows where
+time goes inside a database call, split across the two layers the driver is
+built from:
 
-Timers on both layers are merged into a single sorted view. Python-layer entries use a `py::` prefix, C++ entries have no prefix — so you can immediately see where time is spent across the boundary.
+- the **Python layer** (`mssql_python/cursor.py` and friends), and
+- the **native C++ layer** (`mssql_python/pybind/`, compiled into `ddbc_bindings`).
 
-## Quick start
+A normal Python profiler (cProfile, py-spy) sees the whole C++ layer as one
+opaque block. This tool instruments both layers with named timers, so you can
+see, for example, that a slow query spent its time in native parameter binding
+rather than in Python.
+
+This is a **development / internal tool.** It is not built into released wheels
+and is not meant for end users (yet).
+
+## How the timers are named
+
+Every timer has a prefix telling you which layer it belongs to:
+
+- `py::...`   — a phase in the Python layer (e.g. `py::execute::cpp_call`)
+- `ddbc::...` — a function in the native C++ layer (e.g. `ddbc::FetchAll_wrap`)
+
+## Step 1: build with profiling turned on
+
+Profiling is **off by default** and compiled out of normal builds (zero cost in
+the shipped driver). To get a profiling build, set one environment variable
+before building the C++ extension:
 
 ```bash
-# Set connection string
-export DB_CONNECTION_STRING="Server=localhost,1433;Database=master;UID=sa;Pwd=...;Encrypt=no;TrustServerCertificate=yes;"
+# macOS / Linux
+cd mssql_python/pybind
+ENABLE_PROFILING=1 bash build.sh
 
-# Run all scenarios
-python -m profiler
-
-# Run specific scenarios
-python -m profiler --scenarios fetchall insertmanyvalues
-
-# List available scenarios
-python -m profiler --list
-
-# Pass connection string directly
-python -m profiler --conn-str "Server=..."
+# Windows
+cd mssql_python\pybind
+set ENABLE_PROFILING=1
+build.bat
 ```
 
-## Programmatic usage
+Without `ENABLE_PROFILING`, the native `ddbc_bindings.profiling` module does not
+exist and the C++ timers do nothing.
+
+## Step 2: run the profiler
+
+You need a SQL Server to run against. Point `DB_CONNECTION_STRING` at it:
+
+```bash
+export DB_CONNECTION_STRING="Server=localhost,1433;Database=master;UID=sa;Pwd=...;Encrypt=no;TrustServerCertificate=yes;"
+```
+
+Then either use the command-line runner, or drive it from Python.
+
+### Option A: command-line runner
+
+```bash
+python -m profiler --list                     # show the built-in scenarios
+python -m profiler --scenarios select fetchall  # run specific ones
+python -m profiler --script my_repro.py       # run your own script (see below)
+```
+
+`--script` runs any Python file with a live `conn` and `cursor` already created
+for you, and reports whatever timers it hits. This is how you profile a specific
+slow query you are trying to diagnose:
 
 ```python
-from profiler import Profiler
-
-with Profiler("Server=localhost,1433;...") as p:
-    results = p.run("fetchall", "insertmanyvalues")
-    # results is a list of dicts with keys: title, wall_ms, cpp, py, detail
+# my_repro.py  —  `conn` and `cursor` are provided
+cursor.execute("SELECT ... your slow query ...")
+cursor.fetchall()
 ```
 
-## Available scenarios
+### Option B: from Python directly
 
-| Name | What it measures |
-|---|---|
-| `connect` | Connection establishment |
-| `select` | `cursor.execute()` SELECT + `fetchall()` (100 rows) |
-| `insert` | 100 individual `cursor.execute()` INSERTs (9 params each) |
-| `executemany` | `cursor.executemany()` with 5K rows |
-| `fetchall` | `cursor.fetchall()` on 50K rows |
-| `fetchone` | `cursor.fetchone()` loop over 1K rows |
-| `fetchmany` | `cursor.fetchmany(1000)` loop over 50K rows |
-| `commit_rollback` | 100 commits + 100 rollbacks |
-| `arrow` | `cursor.fetch_arrow()` on 50K rows |
-| `insertmanyvalues` | SQLAlchemy pattern — 100K rows via batched `cursor.execute()` with 2000 params/call |
+If you want the raw numbers without the runner, enable both layers, run your
+code, then read the stats:
 
-## Architecture
+```python
+from mssql_python import perf_timer          # Python layer
+from mssql_python import ddbc_bindings        # native layer (profiling build only)
 
-```
-profiler/
-├── __init__.py     # Public API: Profiler class
-├── __main__.py     # CLI entry point (python -m profiler)
-├── core.py         # Profiler orchestration, connection management
-├── scenarios.py    # Self-contained benchmark functions
-├── reporter.py     # Stats merging and table formatting
-└── README.md
+perf_timer.enable()
+ddbc_bindings.profiling.enable()
 
-mssql_python/
-└── perf_timer.py   # Python-layer instrumentation (lives in the library)
+# ... run your queries ...
+
+py_stats  = perf_timer.get_stats()            # {name: {calls, total_us, min_us, max_us}}
+cpp_stats = ddbc_bindings.profiling.get_stats()
+
+perf_timer.reset()                            # clear when done
+ddbc_bindings.profiling.reset()
 ```
 
-**`perf_timer.py`** is the in-library instrumentation — `perf_phase()` context managers and `perf_start()`/`perf_stop()` pairs embedded in `cursor.py`. It's compile-time-toggled: when disabled (`_enabled = False`), each timer is a single `if` check (~20ns).
+## Reading the output
 
-**`profiler/`** is the runner — it enables both layers, executes scenarios, collects stats, and reports.
+Each timer reports four numbers:
 
-## Output format
+- `calls`    — how many times it ran
+- `total_us` — total microseconds spent inside it
+- `min_us` / `max_us` — fastest and slowest single call
 
-Both layers report `{calls, total_us, min_us, max_us}` per timer. The reporter merges and sorts by `total_us` descending:
+The runner merges both layers into one table sorted by total time, so the
+biggest cost is at the top. A `py::` timer that wraps a `ddbc::` call (e.g.
+`py::execute::cpp_call` around `ddbc::SQLExecute_wrap`) lets you see the
+Python-to-C++ boundary cost as the difference between the two.
 
+There is also a timeline view (`--timeline`, or `get_timeline()`), which returns
+each timer event in the order it happened with a start offset — useful for
+seeing the sequence and nesting of a single slow operation rather than just
+totals.
+
+## Adding a timer
+
+To time a new spot in the code:
+
+**Python** — wrap the block:
+
+```python
+from mssql_python.perf_timer import perf_phase
+
+with perf_phase("py::my_area::my_step"):
+    ...  # the code you want to measure
 ```
-====================================================================================
-INSERTMANYVALUES (100,000 rows, 2000 params/call)
-====================================================================================
-  Function                                         Calls    Total(ms)      Avg(us)
-  ---------------------------------------------------------------------------------
-  py::execute::param_type_detection                  100       2009.3      20092.6    <-- Python
-  py::execute::cpp_call                              100       1414.6      14146.1    <-- Python
-  SQLExecute_wrap                                    100       1367.6      13676.3    <-- C++
-  py::execute::diag_records                          100        962.2       9621.5    <-- Python
-  SQLGetAllDiagRecords                               100        961.0       9610.3    <-- C++
-  BindParameters                                     100        189.4       1893.9    <-- C++
+
+**C++** — add one line at the top of the scope (RAII, stops automatically):
+
+```cpp
+void MyFunction(...) {
+    PERF_TIMER("MyFunction");   // becomes ddbc::MyFunction
+    ...
+}
 ```
 
-The `py::execute::cpp_call` timer wraps the C++ call from the Python side — so `cpp_call - SQLExecute_wrap` = pybind11 boundary crossing overhead.
+`PERF_TIMER` compiles to nothing unless the build has `ENABLE_PROFILING`, so
+adding timers costs nothing in released builds.
