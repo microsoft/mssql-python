@@ -408,15 +408,19 @@ class TestArchitectureSpecificDependencies:
             return absolute_hits, relocatable_hits
 
         problems = []
+        checked_arches = []
         for arch in ["arm64", "x86_64"]:
             lib_dir = dependency_tester.module_dir / "libs" / "macos" / arch / "lib"
             driver = lib_dir / "libmsodbcsql.18.dylib"
             if not driver.exists():
                 continue
+            checked_arches.append(arch)
 
             bundled = {p.name: p for p in lib_dir.glob("*.dylib")}
 
-            # Breadth-first walk of the driver's bundled load chain.
+            # Depth-first walk of the driver's bundled load chain (queue.pop() is
+            # LIFO). Order does not matter here: we visit every reachable bundled
+            # dylib and collect all absolute-path problems regardless of traversal.
             visited, queue = set(), [driver]
             while queue:
                 current = queue.pop()
@@ -437,6 +441,14 @@ class TestArchitectureSpecificDependencies:
                     )
                 for base in relocatable_hits:
                     queue.append(bundled[base])
+
+        # Fail loudly instead of passing vacuously if no bundled driver was found
+        # to validate (e.g. the packaging layout changed).
+        assert checked_arches, (
+            "no bundled macOS driver found to validate under "
+            "libs/macos/{arm64,x86_64}/lib/libmsodbcsql.18.dylib "
+            "(packaging layout may have changed)"
+        )
 
         assert not problems, (
             "macOS driver load chain contains hardcoded absolute dependency paths "
