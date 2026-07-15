@@ -389,9 +389,7 @@ class TestArchitectureSpecificDependencies:
             self-references and are skipped by ignoring deps whose basename equals
             the file's own name.
             """
-            result = subprocess.run(
-                [otool, "-L", str(dylib_path)], capture_output=True, text=True
-            )
+            result = subprocess.run([otool, "-L", str(dylib_path)], capture_output=True, text=True)
             if result.returncode != 0:
                 return None, None
 
