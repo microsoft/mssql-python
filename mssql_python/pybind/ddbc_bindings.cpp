@@ -107,6 +107,37 @@ PyObject* get_time_class();
 py::object get_time_class_obj();
 }
 
+// RAII guard for automatic PyObject cleanup on scope exit.
+// Tracks a small set of PyObject* refs and decrefs them in destructor.
+class PyObjGuard {
+    PyObject* refs[8] = {};
+    int count = 0;
+
+public:
+    void track(PyObject* obj) {
+        for (int i = 0; i < count; ++i) {
+            if (refs[i] == nullptr) {
+                refs[i] = obj;
+                return;
+            }
+        }
+        if (count < 8) refs[count++] = obj;
+    }
+
+    void release(PyObject* obj) {
+        for (int i = 0; i < count; ++i) {
+            if (refs[i] == obj) {
+                refs[i] = nullptr;
+                return;
+            }
+        }
+    }
+
+    ~PyObjGuard() {
+        for (int i = count - 1; i >= 0; --i) Py_XDECREF(refs[i]);
+    }
+};
+
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
 // Logging Infrastructure:
@@ -128,6 +159,24 @@ static PyObject* money_max = nullptr;
 static PyObject* smallmoney_min = nullptr;
 static PyObject* smallmoney_max = nullptr;
 static bool cache_initialized = false;
+
+static PyObject* import_attr(const char* module_name, const char* attr_name) {
+    PyObject* mod = PyImport_ImportModule(module_name);
+    if (!mod) throw py::error_already_set();
+    PyObject* attr = PyObject_GetAttrString(mod, attr_name);
+    Py_DECREF(mod);
+    if (!attr) throw py::error_already_set();
+    return attr;
+}
+
+static PyObject* get_cached_class(PyObject* cached, const char* module_name, const char* attr_name) {
+    if (cache_initialized && cached) return cached;
+    PyObject* mod = PyImport_ImportModule(module_name);
+    if (!mod) return nullptr;
+    PyObject* cls = PyObject_GetAttrString(mod, attr_name);
+    Py_DECREF(mod);
+    return cls;
+}
 
 // One-time cache of Python type objects and MONEY boundary constants.
 // Called on first execute(). Uses raw CPython API (not pybind11) because
@@ -155,17 +204,8 @@ void initialize() {
                 throw py::error_already_set();
             }
 
-            PyObject* decimal_module = PyImport_ImportModule("decimal");
-            if (!decimal_module) throw py::error_already_set();
-            decimal_class = PyObject_GetAttrString(decimal_module, "Decimal");
-            Py_DECREF(decimal_module);
-            if (!decimal_class) throw py::error_already_set();
-
-            PyObject* uuid_module = PyImport_ImportModule("uuid");
-            if (!uuid_module) throw py::error_already_set();
-            uuid_class = PyObject_GetAttrString(uuid_module, "UUID");
-            Py_DECREF(uuid_module);
-            if (!uuid_class) throw py::error_already_set();
+            decimal_class = import_attr("decimal", "Decimal");
+            uuid_class = import_attr("uuid", "UUID");
 
             // Pre-compute MONEY/SMALLMONEY boundary Decimals once. DetectParamTypes
             // uses PyObject_RichCompareBool against these to classify Decimal params
@@ -216,14 +256,7 @@ static py::object wrap_cached_or_imported(PyObject* obj) {
 // Returns cached type. Fallback import only for edge case where cache wasn't initialized
 // (e.g., called from legacy path before any fast-path execute).
 PyObject* get_datetime_class() {
-    if (cache_initialized && datetime_class) {
-        return datetime_class;
-    }
-    PyObject* mod = PyImport_ImportModule("datetime");
-    if (!mod) return nullptr;
-    PyObject* cls = PyObject_GetAttrString(mod, "datetime");
-    Py_DECREF(mod);
-    return cls;  // caller must check for NULL
+    return get_cached_class(datetime_class, "datetime", "datetime");
 }
 
 py::object get_datetime_class_obj() {
@@ -233,14 +266,7 @@ py::object get_datetime_class_obj() {
 // Returns cached type. Fallback import only for edge case where cache wasn't initialized
 // (e.g., called from legacy path before any fast-path execute).
 PyObject* get_date_class() {
-    if (cache_initialized && date_class) {
-        return date_class;
-    }
-    PyObject* mod = PyImport_ImportModule("datetime");
-    if (!mod) return nullptr;
-    PyObject* cls = PyObject_GetAttrString(mod, "date");
-    Py_DECREF(mod);
-    return cls;  // caller must check for NULL
+    return get_cached_class(date_class, "datetime", "date");
 }
 
 py::object get_date_class_obj() {
@@ -250,14 +276,7 @@ py::object get_date_class_obj() {
 // Returns cached type. Fallback import only for edge case where cache wasn't initialized
 // (e.g., called from legacy path before any fast-path execute).
 PyObject* get_time_class() {
-    if (cache_initialized && time_class) {
-        return time_class;
-    }
-    PyObject* mod = PyImport_ImportModule("datetime");
-    if (!mod) return nullptr;
-    PyObject* cls = PyObject_GetAttrString(mod, "time");
-    Py_DECREF(mod);
-    return cls;  // caller must check for NULL
+    return get_cached_class(time_class, "datetime", "time");
 }
 
 py::object get_time_class_obj() {
@@ -267,14 +286,7 @@ py::object get_time_class_obj() {
 // Returns cached type. Fallback import only for edge case where cache wasn't initialized
 // (e.g., called from legacy path before any fast-path execute).
 PyObject* get_decimal_class() {
-    if (cache_initialized && decimal_class) {
-        return decimal_class;
-    }
-    PyObject* mod = PyImport_ImportModule("decimal");
-    if (!mod) return nullptr;
-    PyObject* cls = PyObject_GetAttrString(mod, "Decimal");
-    Py_DECREF(mod);
-    return cls;  // caller must check for NULL
+    return get_cached_class(decimal_class, "decimal", "Decimal");
 }
 
 py::object get_decimal_class_obj() {
@@ -284,14 +296,7 @@ py::object get_decimal_class_obj() {
 // Returns cached type. Fallback import only for edge case where cache wasn't initialized
 // (e.g., called from legacy path before any fast-path execute).
 PyObject* get_uuid_class() {
-    if (cache_initialized && uuid_class) {
-        return uuid_class;
-    }
-    PyObject* mod = PyImport_ImportModule("uuid");
-    if (!mod) return nullptr;
-    PyObject* cls = PyObject_GetAttrString(mod, "UUID");
-    Py_DECREF(mod);
-    return cls;  // caller must check for NULL
+    return get_cached_class(uuid_class, "uuid", "UUID");
 }
 
 py::object get_uuid_class_obj() {
@@ -922,43 +927,32 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
         if (is_decimal == 1) {
             PyObject* as_tuple = PyObject_CallMethod(obj, "as_tuple", NULL);
             if (!as_tuple) throw py::error_already_set();
+            PyObjGuard guard;
+            guard.track(as_tuple);
 
             PyObject* exponent_obj = PyObject_GetAttrString(as_tuple, "exponent");
-            if (!exponent_obj) {
-                Py_DECREF(as_tuple);
-                throw py::error_already_set();
-            }
+            if (!exponent_obj) throw py::error_already_set();
+            guard.track(exponent_obj);
 
             // NaN / Infinity / sNaN: refuse rather than silently writing 0.
             if (PyUnicode_Check(exponent_obj)) {
-                Py_DECREF(exponent_obj);
-                Py_DECREF(as_tuple);
                 throw py::value_error(
                     "Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC");
             }
 
             PyObject* digits_obj = PyObject_GetAttrString(as_tuple, "digits");
-            if (!digits_obj) {
-                Py_DECREF(exponent_obj);
-                Py_DECREF(as_tuple);
-                throw py::error_already_set();
-            }
+            if (!digits_obj) throw py::error_already_set();
+            guard.track(digits_obj);
 
             if (!PyTuple_Check(digits_obj)) {
-                Py_DECREF(digits_obj);
-                Py_DECREF(exponent_obj);
-                Py_DECREF(as_tuple);
                 throw py::type_error("Decimal.as_tuple().digits must be a tuple");
             }
 
             Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj);
             int exponent = static_cast<int>(PyLong_AsLong(exponent_obj));
+            guard.release(exponent_obj);
             Py_DECREF(exponent_obj);
-            if (exponent == -1 && PyErr_Occurred()) {
-                Py_DECREF(digits_obj);
-                Py_DECREF(as_tuple);
-                throw py::error_already_set();
-            }
+            if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
 
             int precision;
             if (exponent >= 0)
@@ -969,8 +963,6 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 precision = -exponent;
 
             if (precision > MAX_NUMERIC_PRECISION) {
-                Py_DECREF(digits_obj);
-                Py_DECREF(as_tuple);
                 throw py::value_error(
                     "Precision of the numeric value is too high. "
                     "The maximum precision supported by SQL Server is " +
@@ -985,21 +977,13 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             bool in_money_range = false;
             int cmp_ge = PyObject_RichCompareBool(obj, PythonObjectCache::smallmoney_min, Py_GE);
             int cmp_le = PyObject_RichCompareBool(obj, PythonObjectCache::smallmoney_max, Py_LE);
-            if (cmp_ge == -1 || cmp_le == -1) {
-                Py_DECREF(digits_obj);
-                Py_DECREF(as_tuple);
-                throw py::error_already_set();
-            }
+            if (cmp_ge == -1 || cmp_le == -1) throw py::error_already_set();
             if (cmp_ge == 1 && cmp_le == 1) {
                 in_money_range = true;
             } else {
                 cmp_ge = PyObject_RichCompareBool(obj, PythonObjectCache::money_min, Py_GE);
                 cmp_le = PyObject_RichCompareBool(obj, PythonObjectCache::money_max, Py_LE);
-                if (cmp_ge == -1 || cmp_le == -1) {
-                    Py_DECREF(digits_obj);
-                    Py_DECREF(as_tuple);
-                    throw py::error_already_set();
-                }
+                if (cmp_ge == -1 || cmp_le == -1) throw py::error_already_set();
                 if (cmp_ge == 1 && cmp_le == 1) {
                     in_money_range = true;
                 }
@@ -1007,16 +991,14 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
 
             if (in_money_range) {
                 PyObject* formatted = PyObject_CallMethod(obj, "__format__", "s", "f");
-                if (!formatted) {
-                    Py_DECREF(digits_obj);
-                    Py_DECREF(as_tuple);
-                    throw py::error_already_set();
-                }
+                if (!formatted) throw py::error_already_set();
                 info.paramSQLType = SQL_VARCHAR;
                 info.paramCType = PARAM_C_TYPE_TEXT;
                 info.columnSize = PyUnicode_GET_LENGTH(formatted);
                 info.decimalDigits = 0;
+                guard.release(digits_obj);
                 Py_DECREF(digits_obj);
+                guard.release(as_tuple);
                 Py_DECREF(as_tuple);
                 if (PyList_SetItem(params, i, formatted) != 0) {
                     throw py::error_already_set();
@@ -1028,7 +1010,9 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             // object in the param list so BindParameters can extract it as NumericData.
             info.paramSQLType = SQL_NUMERIC;
             info.paramCType = SQL_C_NUMERIC;
+            guard.release(digits_obj);
             Py_DECREF(digits_obj);
+            guard.release(as_tuple);
             Py_DECREF(as_tuple);
             NumericData nd = build_numeric_data(obj);
             info.columnSize = nd.precision;
@@ -1075,50 +1059,33 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
 static NumericData build_numeric_data(PyObject* decimal_param) {
     PyObject* as_tuple = PyObject_CallMethod(decimal_param, "as_tuple", NULL);
     if (!as_tuple) throw py::error_already_set();
+    PyObjGuard guard;
+    guard.track(as_tuple);
 
     PyObject* digits_obj = PyObject_GetAttrString(as_tuple, "digits");
-    if (!digits_obj) {
-        Py_DECREF(as_tuple);
-        throw py::error_already_set();
-    }
+    if (!digits_obj) throw py::error_already_set();
+    guard.track(digits_obj);
     PyObject* sign_obj = PyObject_GetAttrString(as_tuple, "sign");
-    if (!sign_obj) {
-        Py_DECREF(digits_obj);
-        Py_DECREF(as_tuple);
-        throw py::error_already_set();
-    }
+    if (!sign_obj) throw py::error_already_set();
+    guard.track(sign_obj);
     PyObject* exponent_obj = PyObject_GetAttrString(as_tuple, "exponent");
-    if (!exponent_obj) {
-        Py_DECREF(sign_obj);
-        Py_DECREF(digits_obj);
-        Py_DECREF(as_tuple);
-        throw py::error_already_set();
-    }
+    if (!exponent_obj) throw py::error_already_set();
+    guard.track(exponent_obj);
 
     int sign_val = static_cast<int>(PyLong_AsLong(sign_obj));
+    guard.release(sign_obj);
     Py_DECREF(sign_obj);
-    if (sign_val == -1 && PyErr_Occurred()) {
-        Py_DECREF(exponent_obj);
-        Py_DECREF(digits_obj);
-        Py_DECREF(as_tuple);
-        throw py::error_already_set();
-    }
+    if (sign_val == -1 && PyErr_Occurred()) throw py::error_already_set();
 
     int exponent = 0;
     if (PyLong_Check(exponent_obj)) {
         exponent = static_cast<int>(PyLong_AsLong(exponent_obj));
-        if (exponent == -1 && PyErr_Occurred()) {
-            Py_DECREF(exponent_obj);
-            Py_DECREF(digits_obj);
-            Py_DECREF(as_tuple);
-            throw py::error_already_set();
-        }
+        if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
     }
+    guard.release(exponent_obj);
     Py_DECREF(exponent_obj);
 
     if (!PyTuple_Check(digits_obj)) {
-        Py_DECREF(digits_obj);
-        Py_DECREF(as_tuple);
         throw py::type_error("Decimal.as_tuple().digits must be a tuple");
     }
 
@@ -1136,11 +1103,9 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
 
     PyObject* py_ten = PyLong_FromLong(10);
     PyObject* int_val = PyLong_FromLong(0);
+    guard.track(py_ten);
+    guard.track(int_val);
     if (!py_ten || !int_val) {
-        Py_XDECREF(int_val);
-        Py_XDECREF(py_ten);
-        Py_DECREF(digits_obj);
-        Py_DECREF(as_tuple);
         throw py::error_already_set();
     }
 
@@ -1148,91 +1113,70 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
     for (Py_ssize_t i = 0; i < digit_count; ++i) {
         PyObject* digit_obj = PyTuple_GET_ITEM(digits_obj, i);
         long digit = PyLong_AsLong(digit_obj);
-        if (digit == -1 && PyErr_Occurred()) {
-            Py_DECREF(int_val);
-            Py_DECREF(py_ten);
-            Py_DECREF(digits_obj);
-            Py_DECREF(as_tuple);
-            throw py::error_already_set();
-        }
+        if (digit == -1 && PyErr_Occurred()) throw py::error_already_set();
 
         PyObject* multiplied = PyNumber_Multiply(int_val, py_ten);
+        guard.track(multiplied);
+        guard.release(int_val);
         Py_DECREF(int_val);
-        if (!multiplied) {
-            Py_DECREF(py_ten);
-            Py_DECREF(digits_obj);
-            Py_DECREF(as_tuple);
-            throw py::error_already_set();
-        }
+        if (!multiplied) throw py::error_already_set();
 
         PyObject* py_digit = PyLong_FromLong(digit);
-        if (!py_digit) {
-            Py_DECREF(multiplied);
-            Py_DECREF(py_ten);
-            Py_DECREF(digits_obj);
-            Py_DECREF(as_tuple);
-            throw py::error_already_set();
-        }
+        if (!py_digit) throw py::error_already_set();
+        guard.track(py_digit);
 
         int_val = PyNumber_Add(multiplied, py_digit);
+        guard.track(int_val);
+        guard.release(multiplied);
         Py_DECREF(multiplied);
+        guard.release(py_digit);
         Py_DECREF(py_digit);
-        if (!int_val) {
-            Py_DECREF(py_ten);
-            Py_DECREF(digits_obj);
-            Py_DECREF(as_tuple);
-            throw py::error_already_set();
-        }
+        if (!int_val) throw py::error_already_set();
     }
 
     if (exponent > 0) {
         PyObject* multiplier = PyLong_FromLong(1);
-        if (!multiplier) {
-            Py_DECREF(int_val);
-            Py_DECREF(py_ten);
-            Py_DECREF(digits_obj);
-            Py_DECREF(as_tuple);
-            throw py::error_already_set();
-        }
+        if (!multiplier) throw py::error_already_set();
+        guard.track(multiplier);
         for (int j = 0; j < exponent; ++j) {
             PyObject* next_multiplier = PyNumber_Multiply(multiplier, py_ten);
+            guard.track(next_multiplier);
+            guard.release(multiplier);
             Py_DECREF(multiplier);
-            if (!next_multiplier) {
-                Py_DECREF(int_val);
-                Py_DECREF(py_ten);
-                Py_DECREF(digits_obj);
-                Py_DECREF(as_tuple);
-                throw py::error_already_set();
-            }
+            if (!next_multiplier) throw py::error_already_set();
             multiplier = next_multiplier;
         }
         PyObject* scaled_val = PyNumber_Multiply(int_val, multiplier);
+        guard.track(scaled_val);
+        guard.release(multiplier);
         Py_DECREF(multiplier);
+        guard.release(int_val);
         Py_DECREF(int_val);
-        if (!scaled_val) {
-            Py_DECREF(py_ten);
-            Py_DECREF(digits_obj);
-            Py_DECREF(as_tuple);
-            throw py::error_already_set();
-        }
+        if (!scaled_val) throw py::error_already_set();
         int_val = scaled_val;
     }
 
     PyObject* abs_val = PyNumber_Absolute(int_val);
+    guard.track(abs_val);
+    guard.release(int_val);
     Py_DECREF(int_val);
+    guard.release(py_ten);
     Py_DECREF(py_ten);
+    guard.release(digits_obj);
     Py_DECREF(digits_obj);
+    guard.release(as_tuple);
     Py_DECREF(as_tuple);
     if (!abs_val) throw py::error_already_set();
 
     PyObject* val_bytes = PyObject_CallMethod(abs_val, "to_bytes", "is", 16, "little");
+    guard.track(val_bytes);
+    guard.release(abs_val);
     Py_DECREF(abs_val);
     if (!val_bytes) throw py::error_already_set();
 
     char* val_buf = nullptr;
     Py_ssize_t val_size = 0;
     if (PyBytes_AsStringAndSize(val_bytes, &val_buf, &val_size) == -1) {
-        Py_DECREF(val_bytes);
         throw py::error_already_set();
     }
 
@@ -1250,9 +1194,22 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
         std::memcpy(&nd.val[0], val_buf, copy_len);  // NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
 #endif
     }
+    guard.release(val_bytes);
     Py_DECREF(val_bytes);
 
     return nd;
+}
+
+template<typename PutDataFn>
+static SQLRETURN stream_dae_chunks(const void* data, size_t total_bytes, PutDataFn put_data_fn) {
+    const char* bytes = static_cast<const char*>(data);
+    for (size_t offset = 0; offset < total_bytes; offset += DAE_CHUNK_SIZE) {
+        size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE), total_bytes - offset);
+        SQLRETURN rc = put_data_fn(
+            static_cast<SQLPOINTER>(const_cast<char*>(bytes + offset)), static_cast<SQLLEN>(len));
+        if (!SQL_SUCCEEDED(rc)) return rc;
+    }
+    return SQL_SUCCESS;
 }
 
 // GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
@@ -2731,27 +2688,13 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                     if (matchedInfo->paramCType == SQL_C_WCHAR) {
                         std::u16string utf16 =
                             py::reinterpret_borrow<py::str>(py::handle(pyObj)).cast<std::u16string>();
-                        size_t totalChars = utf16.size();
-                        const SQLWCHAR* dataPtr = reinterpretU16stringAsSqlWChar(utf16);
-                        size_t offset = 0;
-                        size_t chunkChars = DAE_CHUNK_SIZE / sizeof(SQLWCHAR);
-                        while (offset < totalChars) {
-                            size_t len = std::min(chunkChars, totalChars - offset);
-                            size_t lenBytes = len * sizeof(SQLWCHAR);
-                            if (lenBytes >
-                                static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
-                                ThrowStdException("Chunk size exceeds maximum "
-                                                  "allowed by SQLLEN");
-                            }
-                            rc = putData((SQLPOINTER)(dataPtr + offset),
-                                         static_cast<SQLLEN>(lenBytes));
-                            if (!SQL_SUCCEEDED(rc)) {
-                                LOG("SQLExecute: SQLPutData failed for "
-                                    "SQL_C_WCHAR chunk - offset=%zu",
-                                    offset, totalChars, lenBytes, rc);
-                                return rc;
-                            }
-                            offset += len;
+                        rc = stream_dae_chunks(
+                            reinterpretU16stringAsSqlWChar(utf16),
+                            utf16.size() * sizeof(SQLWCHAR),
+                            putData);
+                        if (!SQL_SUCCEEDED(rc)) {
+                            LOG("SQLExecute: SQLPutData failed for SQL_C_WCHAR DAE streaming");
+                            return rc;
                         }
                     } else if (matchedInfo->paramCType == SQL_C_CHAR) {
                         // Encode the string using the specified encoding
@@ -2768,21 +2711,10 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                             throw;
                         }
 
-                        size_t totalBytes = encodedStr.size();
-                        const char* dataPtr = encodedStr.data();
-                        size_t offset = 0;
-                        size_t chunkBytes = DAE_CHUNK_SIZE;
-                        while (offset < totalBytes) {
-                            size_t len = std::min(chunkBytes, totalBytes - offset);
-
-                            rc = putData((SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
-                            if (!SQL_SUCCEEDED(rc)) {
-                                LOG("SQLExecute: SQLPutData failed for "
-                                    "SQL_C_CHAR chunk - offset=%zu",
-                                    offset, totalBytes, len, rc);
-                                return rc;
-                            }
-                            offset += len;
+                        rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
+                        if (!SQL_SUCCEEDED(rc)) {
+                            LOG("SQLExecute: SQLPutData failed for SQL_C_CHAR DAE streaming");
+                            return rc;
                         }
                     } else {
                         ThrowStdException("Unsupported C type for str in DAE");
@@ -2802,16 +2734,11 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                         dataPtr = bytesStorage.data();
                         totalBytes = bytesStorage.size();
                     }
-                    const size_t chunkSize = DAE_CHUNK_SIZE;
-                    for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
-                        size_t len = std::min(chunkSize, totalBytes - offset);
-                        rc = putData((SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
-                        if (!SQL_SUCCEEDED(rc)) {
-                            LOG("SQLExecute: SQLPutData failed for "
-                                "binary/bytes chunk - offset=%zu",
-                                offset, totalBytes, len, rc);
-                            return rc;
-                        }
+
+                    rc = stream_dae_chunks(dataPtr, totalBytes, putData);
+                    if (!SQL_SUCCEEDED(rc)) {
+                        LOG("SQLExecute: SQLPutData failed for binary/bytes DAE streaming");
+                        return rc;
                     }
                 } else {
                     ThrowStdException("DAE only supported for str or bytes");
@@ -2930,6 +2857,10 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     // GIL is released around each ODBC call to match slow-path concurrency.
     if (rc == SQL_NEED_DATA) {
         SQLPOINTER paramToken = nullptr;
+        auto putData = [&](SQLPOINTER data, SQLLEN len) {
+            py::gil_scoped_release release;
+            return SQLPutData_ptr(hStmt, data, len);
+        };
         while (true) {
             {
                 py::gil_scoped_release release;
@@ -2958,35 +2889,18 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 if (matchedInfo->paramCType == SQL_C_WCHAR) {
                     std::u16string u16 =
                         py::reinterpret_borrow<py::str>(py::handle(pyObj)).cast<std::u16string>();
-                    const SQLWCHAR* dataPtr = reinterpretU16stringAsSqlWChar(u16);
-                    size_t totalChars = u16.size();
-                    size_t chunkChars = DAE_CHUNK_SIZE / sizeof(SQLWCHAR);
-                    for (size_t offset = 0; offset < totalChars; offset += chunkChars) {
-                        size_t len = std::min(chunkChars, totalChars - offset);
-                        {
-                            py::gil_scoped_release release;
-                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                                static_cast<SQLLEN>(len * sizeof(SQLWCHAR)));
-                        }
-                        if (!SQL_SUCCEEDED(rc)) return rc;
-                    }
+                    rc = stream_dae_chunks(
+                        reinterpretU16stringAsSqlWChar(u16),
+                        u16.size() * sizeof(SQLWCHAR),
+                        putData);
+                    if (!SQL_SUCCEEDED(rc)) return rc;
                 } else if (matchedInfo->paramCType == SQL_C_CHAR) {
                     std::string encodedStr;
                     py::object encoded = py::reinterpret_borrow<py::object>(py::handle(pyObj))
                                              .attr("encode")(charEncoding, "strict");
                     encodedStr = encoded.cast<std::string>();
-                    const char* dataPtr = encodedStr.data();
-                    size_t totalBytes = encodedStr.size();
-                    for (size_t offset = 0; offset < totalBytes; offset += DAE_CHUNK_SIZE) {
-                        size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE),
-                                              totalBytes - offset);
-                        {
-                            py::gil_scoped_release release;
-                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                                static_cast<SQLLEN>(len));
-                        }
-                        if (!SQL_SUCCEEDED(rc)) return rc;
-                    }
+                    rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
+                    if (!SQL_SUCCEEDED(rc)) return rc;
                 } else {
                     ThrowStdException("SQLExecuteFast: unsupported C type for str in DAE");
                 }
@@ -3009,16 +2923,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     totalBytes = bytesStorage.size();
                 }
 
-                for (size_t offset = 0; offset < totalBytes; offset += DAE_CHUNK_SIZE) {
-                    size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE),
-                                          totalBytes - offset);
-                    {
-                        py::gil_scoped_release release;
-                        rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset),
-                                            static_cast<SQLLEN>(len));
-                    }
-                    if (!SQL_SUCCEEDED(rc)) return rc;
-                }
+                rc = stream_dae_chunks(dataPtr, totalBytes, putData);
+                if (!SQL_SUCCEEDED(rc)) return rc;
             } else {
                 ThrowStdException("SQLExecuteFast: DAE only supported for str or bytes");
             }
