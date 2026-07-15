@@ -194,81 +194,190 @@ class TestAsyncCancel:
 # ---------------------------------------------------------------------------
 # TestAsyncScale — many concurrent connections against the Rust runtime
 # ---------------------------------------------------------------------------
+_ROWS_PER_TASK: int = 50
+
+
+def _complex_long_running_query(task_id: int, wait_ms: int) -> str:
+    """T-SQL that is both non-trivial and predictably verifiable per row.
+
+    Structure:
+      * ``WAITFOR DELAY`` prefix — makes each batch a **long-running**
+        statement so the parallel wall-time assertion is meaningful.
+      * Recursive CTE emitting ``_ROWS_PER_TASK`` rows.
+      * Five computed columns exercising the row-decode pipeline:
+        - ``task_id``   INT      — the interpolated task id (identity check).
+        - ``n``         INT      — 1..ROWS_PER_TASK (row order).
+        - ``square``    INT      — ``n * n`` (integer arithmetic).
+        - ``label``     NVARCHAR — per-row string, checked exactly.
+        - ``root``      FLOAT    — ``SQRT(n)`` (floating-point decode).
+
+    ``task_id`` is interpolated into the SQL text because the POC does not
+    yet support parameterised queries. Every value is server-computed so
+    driver-side tampering would surface as a mismatch.
+    """
+    return f"""
+        WAITFOR DELAY '00:00:00.{wait_ms:03d}';
+        WITH nums AS (
+            SELECT CAST(1 AS INT) AS n
+            UNION ALL
+            SELECT n + 1 FROM nums WHERE n < {_ROWS_PER_TASK}
+        )
+        SELECT
+            CAST({task_id} AS INT) AS task_id,
+            n,
+            n * n AS square,
+            CAST(N'task-' + CAST({task_id} AS nvarchar(8))
+                 + N'-row-' + CAST(n AS nvarchar(8))
+                 AS nvarchar(40)) AS label,
+            CAST(SQRT(CAST(n AS FLOAT)) AS FLOAT) AS root
+        FROM nums
+        OPTION (MAXRECURSION {_ROWS_PER_TASK});
+    """
+
+
+def _verify_task_rows(task_id: int, rows: list) -> None:
+    """Row-by-row validation for :func:`_complex_long_running_query`."""
+    import math
+
+    assert len(rows) == _ROWS_PER_TASK, (
+        f"task {task_id} returned {len(rows)} rows, expected {_ROWS_PER_TASK}"
+    )
+    for expected_n, row in enumerate(rows, start=1):
+        assert len(row) == 5, (
+            f"task {task_id} row {expected_n} has {len(row)} columns, expected 5"
+        )
+        got_task_id, got_n, got_square, got_label, got_root = row
+        assert got_task_id == task_id, (
+            f"task {task_id} row {expected_n}: task_id={got_task_id!r}"
+        )
+        assert got_n == expected_n, (
+            f"task {task_id}: row {expected_n} had n={got_n!r}"
+        )
+        assert got_square == expected_n * expected_n, (
+            f"task {task_id} row {expected_n}: square={got_square!r}, "
+            f"expected {expected_n * expected_n}"
+        )
+        assert got_label == f"task-{task_id}-row-{expected_n}", (
+            f"task {task_id} row {expected_n}: label={got_label!r}"
+        )
+        assert isinstance(got_root, float), (
+            f"task {task_id} row {expected_n}: "
+            f"expected FLOAT to decode as Python float, got {type(got_root).__name__}"
+        )
+        assert abs(got_root - math.sqrt(expected_n)) < 1e-9, (
+            f"task {task_id} row {expected_n}: "
+            f"root={got_root!r}, expected {math.sqrt(expected_n)!r}"
+        )
+
+
 class TestAsyncScale:
-    """Scale tests for the async POC — 100 concurrent connections.
+    """Scale tests for the async POC — 100 concurrent connections running
+    a complex, long-running SELECT with full per-row data verification.
 
-    Each task opens a fresh :class:`AsyncConnection`, runs a single query
-    and closes. This exercises:
+    Each task opens a fresh :class:`AsyncConnection`, runs a query that:
 
-    * the process-wide Tokio runtime under load,
-    * the pyo3-async-runtimes → asyncio bridge with 100 futures in flight,
-    * GIL discipline — the row decode / connection lifecycle must not
-      serialise the event loop,
-    * SQL Server's ability to handle 100 concurrent sessions from a single
-      Python process (well within default limits, but worth exercising).
+      * server-waits (``WAITFOR DELAY``) — long-running behaviour,
+      * emits ``_ROWS_PER_TASK`` rows from a recursive CTE,
+      * has five computed columns of three distinct types (int, nvarchar,
+        float) so every row can be validated exactly.
 
-    Marked ``slow`` so ``pytest -m "not slow"`` can skip them if a runner
-    is memory-constrained.
+    Every value is server-computed, so any driver-side corruption (wrong
+    column order, truncated string, wrong float bits, wrong integer
+    width) surfaces as an assertion failure.
+
+    Exercises simultaneously:
+      * the process-wide Tokio runtime under load,
+      * the pyo3-async-runtimes → asyncio bridge with 100 futures in flight,
+      * GIL discipline — row decode of 5 000 rows over 100 connections must
+        not serialise the event loop,
+      * streaming ``fetchone`` correctness across many rows per connection.
+
+    Marked ``slow`` so ``pytest -m "not slow"`` can skip them.
     """
 
     @pytest.mark.slow
-    async def test_hundred_connections_correctness(self, async_conn_str):
-        """100 tasks, each picking a distinct constant. All must round-trip."""
+    async def test_hundred_connections_complex_query_correctness(
+        self, async_conn_str
+    ):
+        """100 tasks, complex long-running query, every row checked."""
         n_tasks = 100
+        # Modest wait keeps this test's wall time low while still making
+        # the batch "long-running" from the driver's point of view.
+        wait_ms = 100
 
-        async def one(idx: int) -> tuple:
+        async def one(task_id: int) -> list:
             async with await mssql_python.connect_async(async_conn_str) as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute(f"SELECT {idx}")
-                    return await cur.fetchone()
+                    await cur.execute(
+                        _complex_long_running_query(task_id, wait_ms=wait_ms),
+                        timeout_sec=60,
+                    )
+                    rows: list = []
+                    while (r := await cur.fetchone()) is not None:
+                        rows.append(r)
+                    return rows
 
         start = time.monotonic()
         results = await asyncio.gather(*(one(i) for i in range(n_tasks)))
         elapsed = time.monotonic() - start
 
-        expected = [(i,) for i in range(n_tasks)]
-        assert results == expected, (
-            f"one or more of {n_tasks} tasks returned an unexpected value"
+        # Per-task, per-row verification: server-computed values must match
+        # driver-decoded values exactly for every one of the 5 000 rows.
+        for task_id, rows in enumerate(results):
+            _verify_task_rows(task_id, rows)
+
+        total_rows = n_tasks * _ROWS_PER_TASK
+        # 100 connections x ~100 ms wait + query = ~10 s serial baseline.
+        # Parallel budget must be comfortably below that.
+        assert elapsed < 10, (
+            f"100 concurrent complex-query connections took {elapsed:.3f}s "
+            f"(>10s ceiling; serial baseline ~10s)"
         )
-        # 100 sequential connect+select+close cycles would take many seconds
-        # on any reasonable runner; the parallel run should finish comfortably
-        # inside a generous ceiling. This is a scalability sanity check —
-        # tighten with data once we have baselines.
-        assert elapsed < 30, (
-            f"100 concurrent connections took {elapsed:.3f}s (>30s ceiling)"
+        print(
+            f"[scale.complex-correctness] 100 conns x {_ROWS_PER_TASK} rows "
+            f"= {total_rows} rows in {elapsed:.3f}s "
+            f"({total_rows / elapsed:.0f} rows/s)"
         )
-        print(f"[scale.correctness] 100 connections in {elapsed:.3f}s")
 
     @pytest.mark.slow
-    async def test_hundred_connections_true_parallelism(self, async_conn_str):
-        """100 tasks each running a 200 ms server WAITFOR.
+    async def test_hundred_connections_long_running_parallelism(
+        self, async_conn_str
+    ):
+        """100 tasks each running a 200 ms + complex CTE query.
 
-        If the pipeline truly runs in parallel, wall time is bounded by
-        (200 ms + connect overhead) times a small multiplier — not by the
-        200 ms × 100 = 20 s serial baseline.
+        Serial baseline is ~20 s (100 × 200 ms just for the WAITFOR).
+        Parallel target is well under that. Every row is still verified —
+        this is not just a wall-time assertion.
         """
         n_tasks = 100
+        wait_ms = 200
 
-        async def one() -> tuple:
+        async def one(task_id: int) -> list:
             async with await mssql_python.connect_async(async_conn_str) as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute("WAITFOR DELAY '00:00:00.200'; SELECT 1")
-                    return await cur.fetchone()
+                    await cur.execute(
+                        _complex_long_running_query(task_id, wait_ms=wait_ms),
+                        timeout_sec=60,
+                    )
+                    rows: list = []
+                    while (r := await cur.fetchone()) is not None:
+                        rows.append(r)
+                    return rows
 
         start = time.monotonic()
-        results = await asyncio.gather(*(one() for _ in range(n_tasks)))
+        results = await asyncio.gather(*(one(i) for i in range(n_tasks)))
         elapsed = time.monotonic() - start
 
-        assert results == [(1,)] * n_tasks
-        # Serial baseline is ~20s. Parallel target is well under that; the
-        # tokio multi-thread runtime + non-blocking futures should finish
-        # inside a few seconds. Ceiling picked to leave headroom for slow
-        # SQL Server startup on CI.
+        for task_id, rows in enumerate(results):
+            _verify_task_rows(task_id, rows)
+
+        total_rows = n_tasks * _ROWS_PER_TASK
         assert elapsed < 10, (
-            f"100 x 200 ms WAITFORs took {elapsed:.3f}s "
+            f"100 x (200 ms WAITFOR + complex CTE) took {elapsed:.3f}s "
             f"(expected << 20 s serial baseline)"
         )
         print(
-            f"[scale.parallel] 100 x 200 ms WAITFORs in {elapsed:.3f}s "
-            f"(serial baseline ~20s)"
+            f"[scale.long-running-parallel] 100 conns x {_ROWS_PER_TASK} rows "
+            f"= {total_rows} rows in {elapsed:.3f}s "
+            f"(serial baseline ~20s, {total_rows / elapsed:.0f} rows/s)"
         )
