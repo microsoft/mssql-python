@@ -61,7 +61,8 @@ from .connection_string_builder import _ConnectionStringBuilder
 from .cursor import Cursor
 
 # Async POC surface (execute_async + fetchone_async only)
-from .aio import AsyncConnection, AsyncCursor, connect_async
+from .connection_async import AsyncConnection, connect_async
+from .cursor_async import AsyncCursor
 
 # Row Objects
 from .row import Row
