@@ -99,6 +99,14 @@ mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 
+# Optional performance profiling instrumentation (off by default).
+# Enable with: ENABLE_PROFILING=1 bash build.sh
+PROFILING_FLAG=""
+if [[ "${ENABLE_PROFILING:-}" == "1" || "${ENABLE_PROFILING:-}" == "ON" ]]; then
+    PROFILING_FLAG="-DENABLE_PROFILING=ON"
+    echo "[MODE] Building WITH profiling instrumentation (ENABLE_PROFILING=ON)"
+fi
+
 # Configure CMake (with Clang coverage instrumentation on Linux only - codecov is not supported for macOS)
 echo "[DIAGNOSTIC] Running CMake configure"
 if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
@@ -108,14 +116,15 @@ if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
           -DCMAKE_CXX_COMPILER=clang++ \
           -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
           -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+          $PROFILING_FLAG \
           "${SOURCE_DIR}"
 else
     if [[ "$OS" == "macOS" ]]; then
         echo "[ACTION] Configuring for macOS (default build)"
-        cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
+        cmake -DMACOS_STRING_FIX=ON $PROFILING_FLAG "${SOURCE_DIR}"
     else
         echo "[ACTION] Configuring for Linux with architecture: $DETECTED_ARCH"
-        cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"
+        cmake -DARCHITECTURE="$DETECTED_ARCH" $PROFILING_FLAG "${SOURCE_DIR}"
     fi
 fi
 

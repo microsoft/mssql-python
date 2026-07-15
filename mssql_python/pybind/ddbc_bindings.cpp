@@ -6055,7 +6055,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
               return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
           });
 
-    // Add profiling submodule
+    // Add profiling submodule (only in profiling builds; compiled out by default)
+#ifdef ENABLE_PROFILING
     auto profiling = m.def_submodule("profiling", "Performance profiling");
     profiling.def("enable", []() { mssql_profiling::PerformanceCounter::instance().enable(); }, 
                   "Enable performance profiling");
@@ -6075,6 +6076,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                   "Enable timeline recording (resets epoch)");
     profiling.def("disable_timeline", []() { mssql_profiling::PerformanceCounter::instance().disable_timeline(); },
                   "Disable timeline recording");
+#endif  // ENABLE_PROFILING
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
