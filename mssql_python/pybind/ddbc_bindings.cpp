@@ -1191,7 +1191,7 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
         memcpy_s(&nd.val[0], SQL_MAX_NUMERIC_LEN, val_buf, copy_len);
 #else
         // copy_len is bounded to SQL_MAX_NUMERIC_LEN above — safe by construction
-        std::memcpy(&nd.val[0], val_buf, copy_len);  // NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+        std::memcpy(&nd.val[0], val_buf, copy_len);  // DevSkim: ignore DS121708
 #endif
     }
     guard.release(val_bytes);
