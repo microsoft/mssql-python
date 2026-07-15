@@ -544,6 +544,36 @@ jobs:
       platform: unix
 
   - script: |
+      # Uninstall any system/Homebrew ODBC before tests so pytest exercises the
+      # driver and driver manager bundled in the wheel, not a system copy. Mirrors
+      # the Linux jobs. Every command is guarded so this is a no-op when nothing is
+      # installed (the hosted runner may or may not ship unixODBC).
+      echo "Removing Homebrew ODBC packages (if installed)..."
+      brew uninstall --ignore-dependencies --force msodbcsql18 mssql-tools18 unixodbc 2>/dev/null \
+        || echo "  no Homebrew ODBC packages to remove"
+
+      echo "Removing leftover driver-manager dylibs and config from Homebrew prefixes..."
+      for prefix in /opt/homebrew /usr/local; do
+        rm -f "$prefix"/lib/libodbc.*.dylib "$prefix"/lib/libodbcinst.*.dylib \
+              "$prefix"/lib/libodbc.dylib "$prefix"/lib/libodbcinst.dylib
+        rm -rf "$prefix"/opt/msodbcsql18 "$prefix"/opt/unixodbc
+        rm -f "$prefix"/etc/odbcinst.ini "$prefix"/etc/odbc.ini
+      done
+      rm -f /etc/odbcinst.ini /etc/odbc.ini "$HOME/.odbcinst.ini" "$HOME/.odbc.ini"
+
+      echo "Confirming no system unixODBC driver manager remains on the default search path:"
+      if ls /opt/homebrew/lib/libodbc.*.dylib /usr/local/lib/libodbc.*.dylib 2>/dev/null; then
+        echo "  WARNING: a system libodbc is still present"
+      else
+        echo "  none found (good)"
+      fi
+
+      echo "Verifying the bundled x86_64 driver load chain is intact:"
+      otool -L mssql_python/libs/macos/x86_64/lib/libmsodbcsql.18.dylib \
+        || echo "  bundled driver not found"
+    displayName: 'Uninstall system ODBC Driver before running tests on macOS'
+
+  - script: |
       echo "Build successful, running tests now"
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
@@ -615,6 +645,8 @@ jobs:
   - script: |
       echo "Installing ODBC Driver 18 for pyodbc..."
       brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
+      # Newer Homebrew refuses to load formulae from third-party taps unless the tap is trusted
+      brew trust microsoft/mssql-release || echo "brew trust failed; attempting install anyway"
       HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 || echo "ODBC Driver 18 install failed — pyodbc benchmarks will be skipped"
       pip install pyodbc
       echo "Running performance benchmarks..."
