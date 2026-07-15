@@ -124,6 +124,7 @@ public:
         if (count < 8) refs[count++] = obj;
     }
 
+    // release() hands ownership back to a caller that decrefs immediately, avoiding double-decref in ~PyObjGuard().
     void release(PyObject* obj) {
         for (int i = 0; i < count; ++i) {
             if (refs[i] == obj) {
@@ -169,6 +170,7 @@ static PyObject* import_attr(const char* module_name, const char* attr_name) {
     return attr;
 }
 
+// Fall back to import here because legacy paths can reach these lookups before initialize_cache() has populated globals.
 static PyObject* get_cached_class(PyObject* cached, const char* module_name, const char* attr_name) {
     if (cache_initialized && cached) return cached;
     PyObject* mod = PyImport_ImportModule(module_name);
@@ -955,6 +957,9 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
 
             int precision;
+            // Precision is total base-10 digits after applying Decimal's exponent: positive exponents
+            // add trailing zeros, in-range negative exponents keep the original digit count, and larger
+            // negative exponents force leading fractional zeros such as Decimal("0.001") -> precision 3.
             if (exponent >= 0)
                 precision = static_cast<int>(num_digits) + exponent;
             else if ((-exponent) <= num_digits)
@@ -970,6 +975,8 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                     std::to_string(precision) + ".");
             }
 
+            // Check SMALLMONEY first, then widen to MONEY, so common small values keep the narrowest
+            // exact range while still accepting larger fixed-point values supported by SQL Server.
             // MONEY/SMALLMONEY: SQL Server stores these as fixed-point integers internally.
             // We bind as formatted VARCHAR (e.g., "214748.3647") because SQL_C_NUMERIC can't
             // represent the exact money range without precision loss on certain ODBC drivers.
@@ -1057,11 +1064,14 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
 // Takes raw PyObject* (must be a Decimal instance). Returns NumericData directly —
 // the caller stores it as a Python capsule via PyList_SetItem for the binder to consume.
 static NumericData build_numeric_data(PyObject* decimal_param) {
+    // Decimal.as_tuple() exposes the canonical pieces we need: sign, coefficient digits, and exponent.
     PyObject* as_tuple = PyObject_CallMethod(decimal_param, "as_tuple", NULL);
     if (!as_tuple) throw py::error_already_set();
     PyObjGuard guard;
     guard.track(as_tuple);
 
+    // Step 1-4: unpack Decimal(sign, digits, exponent) and validate that digits is the tuple form
+    // promised by Decimal.as_tuple(); the remaining logic works purely from these normalized parts.
     PyObject* digits_obj = PyObject_GetAttrString(as_tuple, "digits");
     if (!digits_obj) throw py::error_already_set();
     guard.track(digits_obj);
@@ -1089,6 +1099,9 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
         throw py::type_error("Decimal.as_tuple().digits must be a tuple");
     }
 
+    // Step 5: SQL Server precision counts all stored decimal digits, while scale is just the fractional
+    // digits. A positive exponent means trailing zeros move into the integer part; a negative exponent
+    // means scale = -exponent and precision must still cover leading fractional zeros such as 0.001.
     int num_digits = static_cast<int>(PyTuple_GET_SIZE(digits_obj));
     int precision, scale;
     if (exponent >= 0) {
@@ -1101,6 +1114,8 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
     precision = std::max(1, std::min(precision, MAX_NUMERIC_PRECISION));
     scale = std::min(scale, precision);
 
+    // Step 6: build the mantissa with Python bigint math so we preserve every Decimal digit; a fixed
+    // C++ integer would overflow long before SQL Server's 38-digit NUMERIC limit.
     PyObject* py_ten = PyLong_FromLong(10);
     PyObject* int_val = PyLong_FromLong(0);
     guard.track(py_ten);
@@ -1134,6 +1149,8 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
         if (!int_val) throw py::error_already_set();
     }
 
+    // Step 7: a positive Decimal exponent means the tuple digits omit trailing zeros, so Decimal("123e2")
+    // must become integer mantissa 12300 before packing.
     if (exponent > 0) {
         PyObject* multiplier = PyLong_FromLong(1);
         if (!multiplier) throw py::error_already_set();
@@ -1156,6 +1173,7 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
         int_val = scaled_val;
     }
 
+    // Step 8: SQL_NUMERIC_STRUCT stores magnitude and sign separately, so encode only the absolute value.
     PyObject* abs_val = PyNumber_Absolute(int_val);
     guard.track(abs_val);
     guard.release(int_val);
@@ -1168,6 +1186,8 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
     Py_DECREF(as_tuple);
     if (!abs_val) throw py::error_already_set();
 
+    // Step 9: SQL_NUMERIC_STRUCT::val is a 16-byte little-endian unsigned integer buffer, so ask
+    // Python's bigint to serialize directly into that wire format instead of reimplementing base conversion.
     PyObject* val_bytes = PyObject_CallMethod(abs_val, "to_bytes", "is", 16, "little");
     guard.track(val_bytes);
     guard.release(abs_val);
@@ -1180,6 +1200,8 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
         throw py::error_already_set();
     }
 
+    // Step 10: pack precision/scale plus the 16-byte little-endian magnitude. SQL uses sign=1 for
+    // positive and sign=0 for negative, which is the inverse of Decimal.as_tuple().sign.
     NumericData nd;
     nd.precision = static_cast<SQLCHAR>(precision);
     nd.scale = static_cast<SQLSCHAR>(scale);
@@ -1201,6 +1223,7 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
 }
 
 template<typename PutDataFn>
+// The callable hides whether the caller wraps SQLPutData with GIL management; chunk sizing stays shared.
 static SQLRETURN stream_dae_chunks(const void* data, size_t total_bytes, PutDataFn put_data_fn) {
     const char* bytes = static_cast<const char*>(data);
     for (size_t offset = 0; offset < total_bytes; offset += DAE_CHUNK_SIZE) {
