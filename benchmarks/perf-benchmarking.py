@@ -284,8 +284,13 @@ def print_results(
     print("=" * 100)
 
     if has_baseline:
-        print("(vs main uses each run's normalized score = mssql-python time relative to")
-        print(" pyodbc on the same runner, which cancels runner speed; metric = median)")
+        baseline_has_norm = any(v.get("norm") is not None for v in baseline.values())
+        if baseline_has_norm:
+            print("(vs main = normalized score: mssql-python time relative to pyodbc on the")
+            print(" same runner, which cancels runner speed. metric = median)")
+        else:
+            print("(vs main = raw median vs main. baseline predates the normalized score, so")
+            print(" runner-speed differences are NOT cancelled this run. metric = median)")
         hdr = (
             f"\n{'Scenario':<40} {'main':<10} {'this PR':<10} {'pyodbc':<10} "
             f"{'vs main':<16} {'vs pyodbc':<16}"
@@ -354,27 +359,31 @@ def print_results(
         rpct = int(REGRESSION_THRESHOLD * 100)
         hpct = int(HIGHLIGHT_THRESHOLD * 100)
 
+        def _fmt_change(old, new, normed):
+            # normalized entries are unitless scores; raw-median entries are seconds.
+            if normed:
+                return f"{old:.3f} -> {new:.3f} (normalized score)"
+            return f"{old:.4f}s -> {new:.4f}s"
+
         print(f"\n{'='*100}")
         if regressions:
-            print(f"REGRESSIONS (>{rpct}% slower than main, normalized)")
+            print(f"REGRESSIONS (>{rpct}% slower than main)")
             print("=" * 100)
             for name, old, new, normed in regressions:
                 factor = new / old if old else 0
-                unit = "" if normed else "s"
-                print(f"  {name}: {old:.4f}{unit} -> {new:.4f}{unit} ({factor:.2f}x slower)")
+                print(f"  {name}: {_fmt_change(old, new, normed)} ({factor:.2f}x slower)")
         else:
-            print(f"REGRESSIONS (>{rpct}% slower than main, normalized): None detected")
+            print(f"REGRESSIONS (>{rpct}% slower than main): None detected")
 
         print(f"\n{'='*100}")
         if highlights:
-            print(f"HIGHLIGHTS (>{hpct}% faster than main, normalized)")
+            print(f"HIGHLIGHTS (>{hpct}% faster than main)")
             print("=" * 100)
             for name, old, new, normed in highlights:
                 factor = old / new if new else 0
-                unit = "" if normed else "s"
-                print(f"  {name}: {old:.4f}{unit} -> {new:.4f}{unit} ({factor:.2f}x faster)")
+                print(f"  {name}: {_fmt_change(old, new, normed)} ({factor:.2f}x faster)")
         else:
-            print(f"HIGHLIGHTS (>{hpct}% faster than main, normalized): None")
+            print(f"HIGHLIGHTS (>{hpct}% faster than main): None")
 
     print(f"\n{'='*100}\n")
 
