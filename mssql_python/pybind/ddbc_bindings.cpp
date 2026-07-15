@@ -584,22 +584,6 @@ SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
 
 namespace {
 
-// Ensures parameter bindings are always reset before local bound buffers go out
-// of scope, preventing dangling APD pointers on error/exception paths.
-struct ParamResetGuard {
-    SQLHSTMT hStmt;
-    bool active = false;
-
-    explicit ParamResetGuard(SQLHSTMT stmtHandle) : hStmt(stmtHandle) {}
-
-    ~ParamResetGuard() {
-        if (active && SQLFreeStmt_ptr) {
-            SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-        }
-    }
-
-    void arm() { active = true; }
-};
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
     switch (cType) {
@@ -2706,9 +2690,6 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
         if (!SQL_SUCCEEDED(rc)) {
             return rc;
         }
-        ParamResetGuard resetGuard(hStmt);
-        resetGuard.arm();
-
         {
             // Release the GIL during the blocking SQLExecute network call.
             py::gil_scoped_release release;
@@ -2850,6 +2831,10 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                 rc, (void*)hStmt);
             return rc;
         }
+
+        // Unbind parameter buffers before they go out of scope.
+        // Not called on error paths — diagnostics must remain readable.
+        SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
         return rc;
     }
 }
@@ -2933,8 +2918,6 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     std::vector<std::shared_ptr<void>> paramBuffers;
     rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
     if (!SQL_SUCCEEDED(rc)) return rc;
-    ParamResetGuard resetGuard(hStmt);
-    resetGuard.arm();
 
     {
         py::gil_scoped_release release;
@@ -3045,7 +3028,11 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 
     if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
 
-    return rc;
+    // Unbind parameter buffers before they go out of scope.
+    // Not called on error paths — diagnostics must remain readable.
+    SQLRETURN exec_rc = rc;
+    SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    return exec_rc;
 }
 
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
