@@ -6,8 +6,8 @@ from a cursor fetch operation.
 """
 
 import decimal
+import uuid as _uuid
 from typing import Any
-from mssql_python.helpers import get_settings
 from mssql_python.logging import logger
 
 
@@ -26,7 +26,15 @@ class Row:
         print(row.column_name)  # Access by column name (case sensitivity varies)
     """
 
-    def __init__(self, values, column_map, cursor=None, converter_map=None):
+    def __init__(
+        self,
+        values,
+        column_map,
+        cursor=None,
+        converter_map=None,
+        uuid_str_indices=None,
+        column_map_lower=None,
+    ):
         """
         Initialize a Row object with values and pre-built column map.
         Args:
@@ -34,6 +42,12 @@ class Row:
             column_map: Pre-built column name to index mapping (shared across rows)
             cursor: Optional cursor reference (for backward compatibility and lowercase access)
             converter_map: Pre-computed converter map (shared across rows for performance)
+            uuid_str_indices: Tuple of column indices whose uuid.UUID values should be
+                converted to str. Pre-computed once per result set when native_uuid=False.
+                None means no conversion (native_uuid=True, the default).
+            column_map_lower: Pre-built lowercase column map for O(1) case-insensitive
+                lookups. Built once per result set in the cursor when lowercase is enabled;
+                None when lowercase is off (the default). Shared across all rows.
         """
         # Apply output converters if available using pre-computed converter map
         if converter_map:
@@ -48,8 +62,35 @@ class Row:
         else:
             self._values = values
 
+        # Convert UUID columns to str when native_uuid=False.
+        # uuid_str_indices is pre-computed once at execute() time, so this is
+        # O(num_uuid_columns) per row — zero cost when native_uuid=True (the default).
+        if uuid_str_indices:
+            self._stringify_uuids(uuid_str_indices)
+
         self._column_map = column_map
         self._cursor = cursor
+        # Lowercase map is pre-built once per result set in the cursor and shared
+        # across all rows. None when lowercase is off (the default) — zero cost.
+        self._column_map_lower = column_map_lower
+
+    def _stringify_uuids(self, indices):
+        """
+        Convert uuid.UUID values at the given column indices to uppercase str in-place.
+
+        This is only called when native_uuid=False. It operates directly on
+        self._values to avoid creating an extra list copy.
+        """
+        vals = self._values
+        # If values are still the original list (no converters), we need a mutable copy
+        if not isinstance(vals, list):
+            vals = list(vals)
+            self._values = vals
+
+        for i in indices:
+            v = vals[i]
+            if v is not None and isinstance(v, _uuid.UUID):
+                vals[i] = str(v).upper()
 
     def _apply_output_converters(self, values, cursor):
         """
@@ -128,9 +169,22 @@ class Row:
 
         return converted_values
 
-    def __getitem__(self, index: int) -> Any:
-        """Allow accessing by numeric index: row[0]"""
-        return self._values[index]
+    def __getitem__(self, index) -> Any:
+        """Allow accessing by numeric index (row[0]) or column name (row["col"])."""
+        if isinstance(index, str):
+            if index in self._column_map:
+                return self._values[self._column_map[index]]
+            # O(1) case-insensitive lookup when lowercase is enabled
+            if self._column_map_lower is not None:
+                idx = self._column_map_lower.get(index.lower())
+                if idx is not None:
+                    return self._values[idx]
+            raise KeyError(f"Row has no column '{index}'")
+        if isinstance(index, (int, slice)):
+            return self._values[index]
+        raise TypeError(
+            f"Row indices must be integers, slices, or strings, not {type(index).__name__}"
+        )
 
     def __getattr__(self, name: str) -> Any:
         """
@@ -147,12 +201,11 @@ class Row:
         if name in self._column_map:
             return self._values[self._column_map[name]]
 
-        # If lowercase is enabled on the cursor, try case-insensitive lookup
-        if hasattr(self._cursor, "lowercase") and self._cursor.lowercase:
-            name_lower = name.lower()
-            for col_name in self._column_map:
-                if col_name.lower() == name_lower:
-                    return self._values[self._column_map[col_name]]
+        # O(1) case-insensitive lookup when lowercase is enabled
+        if self._column_map_lower is not None:
+            idx = self._column_map_lower.get(name.lower())
+            if idx is not None:
+                return self._values[idx]
 
         raise AttributeError(f"Row has no attribute '{name}'")
 

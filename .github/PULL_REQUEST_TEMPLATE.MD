@@ -38,6 +38,9 @@ STYLE: (short-description)
 > For Refactor, without any feature changes
 REFACTOR: (short-description)
 
+> For performance improvements
+PERF: (short-description)
+
 > For release related changes, without any feature changes
 RELEASE: #<RELEASE_VERSION> (short-description) 
 

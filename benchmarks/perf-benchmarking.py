@@ -1,24 +1,38 @@
 """
-Performance Benchmarking Script for mssql-python vs pyodbc
+Performance Benchmarking: mssql-python vs pyodbc
 
-This script runs comprehensive performance tests comparing mssql-python with pyodbc
-across multiple query types and scenarios. Each test is run multiple times to calculate
-average execution times, minimum, maximum, and standard deviation.
+Runs scenarios (fetch queries + insertmanyvalues), compares mssql-python against pyodbc,
+and optionally against a baseline JSON from the main branch.
 
 Usage:
-    python benchmarks/perf-benchmarking.py
+    python benchmarks/perf-benchmarking.py                          # 2-col: PR vs pyodbc
+    python benchmarks/perf-benchmarking.py --baseline baseline.json # 3-col: main vs PR vs pyodbc
+    python benchmarks/perf-benchmarking.py --json results.json      # save results to JSON
 
-Requirements:
-    - pyodbc
-    - mssql_python
-    - Valid SQL Server connection
+Environment:
+    DB_CONNECTION_STRING  — required, e.g. Server=localhost;Database=...;Uid=sa;Pwd=...;TrustServerCertificate=yes
+
+Methodology (variance control):
+    Each scenario runs NUM_ITERATIONS timed passes and reports the median, discarding
+    the first WARMUP_ITERATIONS samples (cold cache / plan compile). The "vs main"
+    comparison uses a normalized score instead of raw time: each run expresses
+    mssql-python's time relative to pyodbc measured on the same runner (see
+    normalized_score()). Because pyodbc is a pinned build, dividing by it cancels the
+    runner's raw speed, so scores are comparable across CI runs even on different
+    hardware -- which is the dominant source of run-to-run noise. Measured on ~11
+    historical main runs, normalization roughly halves variance on the I/O-bound
+    scenarios (CV 18%->8%, 11%->5%) and trims it on the rest; the gate threshold is
+    set above the residual.
 """
 
+import argparse
+import json
 import os
 import sys
 import time
 import statistics
-from typing import List, Tuple
+from datetime import datetime, timezone
+from typing import List, Optional
 
 # Add parent directory to path to import local mssql_python
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -28,339 +42,543 @@ from mssql_python import connect
 
 # Configuration
 CONN_STR = os.getenv("DB_CONNECTION_STRING")
+CONN_STR_PYODBC = None
 
-if not CONN_STR:
-    print(
-        "Error: The environment variable DB_CONNECTION_STRING is not set. Please set it to a valid SQL Server connection string and try again."
-    )
-    sys.exit(1)
+NUM_ITERATIONS = 10
+WARMUP_ITERATIONS = 1  # first N timed samples are discarded (no extra DB passes)
+MIN_SAMPLES = 3        # need at least this many successful samples to gate
+INSERTMANY_ROWS = 100_000
+INSERTMANY_BATCH_SIZE = 1000
 
-# Ensure pyodbc connection string has ODBC driver specified
-if CONN_STR and "Driver=" not in CONN_STR:
-    CONN_STR_PYODBC = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
-else:
-    CONN_STR_PYODBC = CONN_STR
+# Regression/highlight gate thresholds, applied to the normalized score (see
+# normalized_score()). Because that score cancels machine-to-machine speed, the
+# residual historical CI variance is only ~5-15% CV per scenario, so the threshold
+# is set above that; real perf changes move numbers by 30%+, well clear of it. Tunable.
+REGRESSION_THRESHOLD = 0.20
+HIGHLIGHT_THRESHOLD = 0.20
 
-NUM_ITERATIONS = 10  # Number of times to run each test for averaging
 
-# SQL Queries
-COMPLEX_JOIN_AGGREGATION = """
-    SELECT
-        p.ProductID,
-        p.Name AS ProductName,
-        pc.Name AS Category,
-        psc.Name AS Subcategory,
-        COUNT(sod.SalesOrderDetailID) AS TotalOrders,
-        SUM(sod.OrderQty) AS TotalQuantity,
-        SUM(sod.LineTotal) AS TotalRevenue,
-        AVG(sod.UnitPrice) AS AvgPrice
-    FROM Sales.SalesOrderDetail sod
-    INNER JOIN Production.Product p ON sod.ProductID = p.ProductID
-    INNER JOIN Production.ProductSubcategory psc ON p.ProductSubcategoryID = psc.ProductSubcategoryID
-    INNER JOIN Production.ProductCategory pc ON psc.ProductCategoryID = pc.ProductCategoryID
-    GROUP BY p.ProductID, p.Name, pc.Name, psc.Name
-    HAVING SUM(sod.LineTotal) > 10000
-    ORDER BY TotalRevenue DESC;
-"""
+def _init_conn_strings():
+    global CONN_STR, CONN_STR_PYODBC
+    if not CONN_STR:
+        print(
+            "Error: The environment variable DB_CONNECTION_STRING is not set. "
+            "Please set it to a valid SQL Server connection string and try again."
+        )
+        sys.exit(1)
+    if "Driver=" not in CONN_STR:
+        CONN_STR_PYODBC = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
+    else:
+        CONN_STR_PYODBC = CONN_STR
+        # mssql-python manages its own driver and rejects Driver= in the
+        # connection string.  Strip it so both drivers can share one env var.
+        parts = [p for p in CONN_STR.split(";") if not p.strip().lower().startswith("driver=")]
+        CONN_STR = ";".join(parts)
 
-LARGE_DATASET = """
-    SELECT
-        soh.SalesOrderID,
-        soh.OrderDate,
-        soh.DueDate,
-        soh.ShipDate,
-        soh.Status,
-        soh.SubTotal,
-        soh.TaxAmt,
-        soh.Freight,
-        soh.TotalDue,
-        c.CustomerID,
-        p.FirstName,
-        p.LastName,
-        a.AddressLine1,
-        a.City,
-        sp.Name AS StateProvince,
-        cr.Name AS Country
-    FROM Sales.SalesOrderHeader soh
-    INNER JOIN Sales.Customer c ON soh.CustomerID = c.CustomerID
-    INNER JOIN Person.Person p ON c.PersonID = p.BusinessEntityID
-    INNER JOIN Person.BusinessEntityAddress bea ON p.BusinessEntityID = bea.BusinessEntityID
-    INNER JOIN Person.Address a ON bea.AddressID = a.AddressID
-    INNER JOIN Person.StateProvince sp ON a.StateProvinceID = sp.StateProvinceID
-    INNER JOIN Person.CountryRegion cr ON sp.CountryRegionCode = cr.CountryRegionCode
-    WHERE soh.OrderDate >= '2013-01-01';
-"""
-
-VERY_LARGE_DATASET = """
-SELECT
-    sod.SalesOrderID,
-    sod.SalesOrderDetailID,
-    sod.ProductID,
-    sod.OrderQty,
-    sod.UnitPrice,
-    sod.LineTotal,
-    p.Name AS ProductName,
-    p.ProductNumber,
-    p.Color,
-    p.ListPrice,
-    n1.number AS RowMultiplier1
-FROM Sales.SalesOrderDetail sod
-CROSS JOIN (SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS number
-            FROM Sales.SalesOrderDetail) n1
-INNER JOIN Production.Product p ON sod.ProductID = p.ProductID;
-"""
-
-SUBQUERY_WITH_CTE = """
-    WITH SalesSummary AS (
-        SELECT
-            soh.SalesPersonID,
-            YEAR(soh.OrderDate) AS OrderYear,
-            SUM(soh.TotalDue) AS YearlyTotal
-        FROM Sales.SalesOrderHeader soh
-        WHERE soh.SalesPersonID IS NOT NULL
-        GROUP BY soh.SalesPersonID, YEAR(soh.OrderDate)
-    ),
-    RankedSales AS (
-        SELECT
-            SalesPersonID,
-            OrderYear,
-            YearlyTotal,
-            RANK() OVER (PARTITION BY OrderYear ORDER BY YearlyTotal DESC) AS SalesRank
-        FROM SalesSummary
-    )
-    SELECT
-        rs.SalesPersonID,
-        p.FirstName,
-        p.LastName,
-        rs.OrderYear,
-        rs.YearlyTotal,
-        rs.SalesRank
-    FROM RankedSales rs
-    INNER JOIN Person.Person p ON rs.SalesPersonID = p.BusinessEntityID
-    WHERE rs.SalesRank <= 10
-    ORDER BY rs.OrderYear DESC, rs.SalesRank;
-"""
 
 
 class BenchmarkResult:
-    """Class to store and calculate benchmark statistics"""
-
     def __init__(self, name: str):
         self.name = name
         self.times: List[float] = []
         self.row_count: int = 0
 
     def add_time(self, elapsed: float, rows: int = 0):
-        """Add a timing result"""
         self.times.append(elapsed)
         if rows > 0:
             self.row_count = rows
 
     @property
-    def avg_time(self) -> float:
-        """Calculate average time"""
+    def avg(self) -> float:
         return statistics.mean(self.times) if self.times else 0.0
 
     @property
-    def min_time(self) -> float:
-        """Get minimum time"""
+    def median(self) -> float:
+        return statistics.median(self.times) if self.times else 0.0
+
+    @property
+    def min(self) -> float:
         return min(self.times) if self.times else 0.0
 
     @property
-    def max_time(self) -> float:
-        """Get maximum time"""
+    def max(self) -> float:
         return max(self.times) if self.times else 0.0
 
     @property
-    def std_dev(self) -> float:
-        """Calculate standard deviation"""
+    def stddev(self) -> float:
         return statistics.stdev(self.times) if len(self.times) > 1 else 0.0
 
-    def __str__(self) -> str:
-        """Format results as string"""
-        return (
-            f"{self.name}:\n"
-            f"  Avg: {self.avg_time:.4f}s | Min: {self.min_time:.4f}s | "
-            f"Max: {self.max_time:.4f}s | StdDev: {self.std_dev:.4f}s | "
-            f"Rows: {self.row_count}"
-        )
+    def to_dict(self) -> dict:
+        return {
+            "avg": round(self.avg, 6),
+            "median": round(self.median, 6),
+            "min": round(self.min, 6),
+            "max": round(self.max, 6),
+            "stddev": round(self.stddev, 6),
+            "rows": self.row_count,
+            "iterations": len(self.times),
+        }
 
 
-def run_benchmark_pyodbc(query: str, name: str, iterations: int) -> BenchmarkResult:
-    """Run a benchmark using pyodbc"""
-    result = BenchmarkResult(f"{name} (pyodbc)")
+# ---------------------------------------------------------------------------
+# Fetch scenario runners
+# ---------------------------------------------------------------------------
 
+def run_fetch_pyodbc(query: str, name: str, iterations: int) -> BenchmarkResult:
+    result = BenchmarkResult(name)
     for i in range(iterations):
+        conn = None
         try:
-            start_time = time.time()
             conn = pyodbc.connect(CONN_STR_PYODBC)
             cursor = conn.cursor()
+            start = time.perf_counter()
             cursor.execute(query)
             rows = cursor.fetchall()
-            elapsed = time.time() - start_time
-
-            result.add_time(elapsed, len(rows))
-
-            cursor.close()
-            conn.close()
+            elapsed = time.perf_counter() - start
+            if i >= WARMUP_ITERATIONS:
+                result.add_time(elapsed, len(rows))
         except Exception as e:
-            print(f"  Error in iteration {i+1}: {e}")
-            continue
-
+            print(f"    pyodbc error: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     return result
 
 
-def run_benchmark_mssql_python(query: str, name: str, iterations: int) -> BenchmarkResult:
-    """Run a benchmark using mssql-python"""
-    result = BenchmarkResult(f"{name} (mssql-python)")
-
+def run_fetch_mssql(query: str, name: str, iterations: int) -> BenchmarkResult:
+    result = BenchmarkResult(name)
     for i in range(iterations):
+        conn = None
         try:
-            start_time = time.time()
             conn = connect(CONN_STR)
             cursor = conn.cursor()
+            start = time.perf_counter()
             cursor.execute(query)
             rows = cursor.fetchall()
-            elapsed = time.time() - start_time
-
-            result.add_time(elapsed, len(rows))
-
-            cursor.close()
-            conn.close()
+            elapsed = time.perf_counter() - start
+            if i >= WARMUP_ITERATIONS:
+                result.add_time(elapsed, len(rows))
         except Exception as e:
-            print(f"  Error in iteration {i+1}: {e}")
-            continue
-
+            print(f"    mssql-python error: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     return result
 
 
-def calculate_speedup(
-    pyodbc_result: BenchmarkResult, mssql_python_result: BenchmarkResult
-) -> float:
-    """Calculate speedup factor"""
-    if mssql_python_result.avg_time == 0:
-        return 0.0
-    return pyodbc_result.avg_time / mssql_python_result.avg_time
+# ---------------------------------------------------------------------------
+# Insertmanyvalues scenario
+# ---------------------------------------------------------------------------
+
+def _build_batch_sql(batch_size: int) -> str:
+    placeholders = ",".join(["(?,?)"] * batch_size)
+    return f"INSERT INTO #bench_insert VALUES {placeholders}"
 
 
-def print_comparison(pyodbc_result: BenchmarkResult, mssql_python_result: BenchmarkResult):
-    """Print detailed comparison of results"""
-    speedup = calculate_speedup(pyodbc_result, mssql_python_result)
+def _generate_rows(total: int) -> list:
+    return [(i, f"value_{i}") for i in range(total)]
 
-    print(f"\n{'='*80}")
-    print(f"BENCHMARK: {pyodbc_result.name.split(' (')[0]}")
-    print(f"{'='*80}")
-    print(f"\npyodbc:")
-    print(f"  Avg: {pyodbc_result.avg_time:.4f}s")
-    print(f"  Min: {pyodbc_result.min_time:.4f}s")
-    print(f"  Max: {pyodbc_result.max_time:.4f}s")
-    print(f"  StdDev: {pyodbc_result.std_dev:.4f}s")
-    print(f"  Rows: {pyodbc_result.row_count}")
 
-    print(f"\nmssql-python:")
-    print(f"  Avg: {mssql_python_result.avg_time:.4f}s")
-    print(f"  Min: {mssql_python_result.min_time:.4f}s")
-    print(f"  Max: {mssql_python_result.max_time:.4f}s")
-    print(f"  StdDev: {mssql_python_result.std_dev:.4f}s")
-    print(f"  Rows: {mssql_python_result.row_count}")
+def _run_insertmany(conn_factory, conn_str, name: str, iterations: int) -> BenchmarkResult:
+    result = BenchmarkResult(name)
+    batch_sql = _build_batch_sql(INSERTMANY_BATCH_SIZE)
+    all_rows = _generate_rows(INSERTMANY_ROWS)
 
-    print(f"\nPerformance:")
-    if speedup > 1:
-        print(f"  mssql-python is {speedup:.2f}x FASTER than pyodbc")
-    elif speedup < 1 and speedup > 0:
-        print(f"  mssql-python is {1/speedup:.2f}x SLOWER than pyodbc")
+    # Pre-build flat param lists per batch
+    batches = []
+    for start in range(0, INSERTMANY_ROWS, INSERTMANY_BATCH_SIZE):
+        chunk = all_rows[start : start + INSERTMANY_BATCH_SIZE]
+        flat = []
+        for row in chunk:
+            flat.extend(row)
+        batches.append(flat)
+
+    for i in range(iterations):
+        conn = None
+        try:
+            conn = conn_factory(conn_str)
+            cursor = conn.cursor()
+            cursor.execute(
+                "IF OBJECT_ID('tempdb..#bench_insert') IS NOT NULL DROP TABLE #bench_insert; "
+                "CREATE TABLE #bench_insert (id INT, val VARCHAR(100))"
+            )
+
+            start = time.perf_counter()
+            for flat_params in batches:
+                cursor.execute(batch_sql, flat_params)
+            elapsed = time.perf_counter() - start
+
+            if i >= WARMUP_ITERATIONS:
+                result.add_time(elapsed, INSERTMANY_ROWS)
+        except Exception as e:
+            print(f"    {name} error: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    return result
+
+
+def run_insertmany_pyodbc(iterations: int) -> BenchmarkResult:
+    return _run_insertmany(
+        lambda cs: pyodbc.connect(cs), CONN_STR_PYODBC,
+        "Insertmanyvalues (100K rows)", iterations,
+    )
+
+
+def run_insertmany_mssql(iterations: int) -> BenchmarkResult:
+    return _run_insertmany(
+        lambda cs: connect(cs), CONN_STR,
+        "Insertmanyvalues (100K rows)", iterations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Output formatting
+# ---------------------------------------------------------------------------
+
+def _ratio_str(a: float, b: float) -> str:
+    """Return 'Nx faster/slower' comparing a to b (lower is better)."""
+    if a == 0 or b == 0:
+        return "N/A"
+    if a <= b:
+        factor = b / a
+        return f"{factor:.1f}x faster"
     else:
-        print(f"  Unable to calculate speedup")
+        factor = a / b
+        return f"{factor:.1f}x slower"
 
-    print(f"  Time difference: {(pyodbc_result.avg_time - mssql_python_result.avg_time):.4f}s")
+
+def normalized_score(mssql_median: float, pyodbc_median: float) -> Optional[float]:
+    """Runner-independent score for one scenario: how long mssql-python took
+    relative to pyodbc on the same runner (mssql-python median / pyodbc median).
+
+    pyodbc is a pinned build, so it soaks up the runner's raw speed. Expressing
+    mssql-python's time as a multiple of pyodbc's cancels machine-to-machine speed
+    differences, so two scores are comparable across CI runs even on different
+    hardware. Lower is better; None when pyodbc has no valid measurement.
+    """
+    return (mssql_median / pyodbc_median) if pyodbc_median > 0 else None
+
+
+def print_results(
+    results: List[tuple],
+    baseline: Optional[dict],
+):
+    has_baseline = baseline is not None
+
+    # Header
+    print("\n" + "=" * 100)
+    if has_baseline:
+        print("RESULTS: main (baseline) vs this PR vs pyodbc")
+    else:
+        print("RESULTS: this PR vs pyodbc")
+    print("=" * 100)
+
+    if has_baseline:
+        baseline_has_norm = any(v.get("norm") is not None for v in baseline.values())
+        if baseline_has_norm:
+            print("(vs main = normalized score: mssql-python time relative to pyodbc on the")
+            print(" same runner, which cancels runner speed. metric = median)")
+        else:
+            print("(vs main = raw median vs main. baseline predates the normalized score, so")
+            print(" runner-speed differences are NOT cancelled this run. metric = median)")
+        hdr = (
+            f"\n{'Scenario':<40} {'main':<10} {'this PR':<10} {'pyodbc':<10} "
+            f"{'vs main':<16} {'vs pyodbc':<16}"
+        )
+    else:
+        hdr = f"\n{'Scenario':<40} {'this PR':<10} {'pyodbc':<10} {'vs pyodbc':<16}"
+    print(hdr)
+    print("-" * 100)
+
+    regressions = []
+    highlights = []
+
+    for name, mssql_result, pyodbc_result in results:
+        pr_med = mssql_result.median
+        py_med = pyodbc_result.median
+
+        if has_baseline and name in baseline:
+            b = baseline[name]
+            main_med = b.get("median", b.get("avg", 0.0))
+            # main's normalized score, stored in the baseline by save_json().
+            main_score = b.get("norm")
+            # this PR's normalized score, computed from this run's own numbers.
+            pr_score = normalized_score(pr_med, py_med)
+            enough = (len(mssql_result.times) >= MIN_SAMPLES
+                      and len(pyodbc_result.times) >= MIN_SAMPLES)
+            vs_pyodbc = _ratio_str(pr_med, py_med)
+
+            if main_score is not None and pr_score is not None and enough:
+                # Both scores are runner-independent (each divides out its own
+                # runner's pyodbc), so comparing them is a fair PR-vs-main check
+                # even when the two runs landed on different hardware.
+                vs_main = _ratio_str(pr_score, main_score)
+                if pr_score > main_score * (1 + REGRESSION_THRESHOLD):
+                    regressions.append((name, main_score, pr_score, True))
+                if pr_score < main_score * (1 - HIGHLIGHT_THRESHOLD):
+                    highlights.append((name, main_score, pr_score, True))
+            elif main_med > 0 and pr_med > 0 and len(mssql_result.times) >= MIN_SAMPLES:
+                # Fallback to raw wall-clock: baseline predates the normalized
+                # score, or pyodbc had no valid run to normalize against.
+                vs_main = _ratio_str(pr_med, main_med)
+                if pr_med > main_med * (1 + REGRESSION_THRESHOLD):
+                    regressions.append((name, main_med, pr_med, False))
+                if pr_med < main_med * (1 - HIGHLIGHT_THRESHOLD):
+                    highlights.append((name, main_med, pr_med, False))
+            else:
+                # Too few samples / no usable baseline -> show, don't gate.
+                vs_main = "inconclusive"
+
+            print(
+                f"{name:<40} {main_med:<10.4f} {pr_med:<10.4f} {py_med:<10.4f} "
+                f"{vs_main:<16} {vs_pyodbc:<16}"
+            )
+        else:
+            vs_pyodbc = _ratio_str(pr_med, py_med)
+            if has_baseline:
+                print(
+                    f"{name:<40} {'N/A':<10} {pr_med:<10.4f} {py_med:<10.4f} "
+                    f"{'N/A':<16} {vs_pyodbc:<16}"
+                )
+            else:
+                print(f"{name:<40} {pr_med:<10.4f} {py_med:<10.4f} {vs_pyodbc:<16}")
+
+    print("-" * 100)
+
+    if has_baseline:
+        rpct = int(REGRESSION_THRESHOLD * 100)
+        hpct = int(HIGHLIGHT_THRESHOLD * 100)
+
+        def _fmt_change(old, new, normed):
+            # normalized entries are unitless scores; raw-median entries are seconds.
+            if normed:
+                return f"{old:.3f} -> {new:.3f} (normalized score)"
+            return f"{old:.4f}s -> {new:.4f}s"
+
+        print(f"\n{'='*100}")
+        if regressions:
+            print(f"REGRESSIONS (>{rpct}% slower than main)")
+            print("=" * 100)
+            for name, old, new, normed in regressions:
+                factor = new / old if old else 0
+                print(f"  {name}: {_fmt_change(old, new, normed)} ({factor:.2f}x slower)")
+        else:
+            print(f"REGRESSIONS (>{rpct}% slower than main): None detected")
+
+        print(f"\n{'='*100}")
+        if highlights:
+            print(f"HIGHLIGHTS (>{hpct}% faster than main)")
+            print("=" * 100)
+            for name, old, new, normed in highlights:
+                factor = old / new if new else 0
+                print(f"  {name}: {_fmt_change(old, new, normed)} ({factor:.2f}x faster)")
+        else:
+            print(f"HIGHLIGHTS (>{hpct}% faster than main): None")
+
+    print(f"\n{'='*100}\n")
+
+
+# ---------------------------------------------------------------------------
+# JSON I/O
+# ---------------------------------------------------------------------------
+
+def save_json(results: List[tuple], path: str):
+    data = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "iterations": NUM_ITERATIONS,
+        "scenarios": {},
+    }
+    for name, mssql_result, pyodbc_result in results:
+        data["scenarios"][name] = {
+            "mssql_python": mssql_result.to_dict(),
+            "pyodbc": pyodbc_result.to_dict(),
+        }
+    # For baseline consumption, store per-scenario metrics plus the normalized score
+    # (see normalized_score()). PR runs compare their own normalized score against the
+    # stored `norm` so that runner-to-runner speed differences cancel out.
+    data["baseline"] = {}
+    for name, mssql_result, pyodbc_result in results:
+        entry = mssql_result.to_dict()
+        py_med = pyodbc_result.median
+        entry["pyodbc_median"] = round(py_med, 6)
+        score = normalized_score(mssql_result.median, py_med)
+        entry["norm"] = round(score, 6) if score is not None else None
+        data["baseline"][name] = entry
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"Results saved to {path}")
+
+
+def load_baseline(path: str) -> Optional[dict]:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        baseline = data.get("baseline")
+        return baseline if baseline else None
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"  Warning: could not parse baseline {path}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+FETCH_SCENARIOS = [
+    (
+        "Complex Join Aggregation",
+        """
+        SELECT p.ProductID, p.Name AS ProductName, pc.Name AS Category,
+               psc.Name AS Subcategory, COUNT(sod.SalesOrderDetailID) AS TotalOrders,
+               SUM(sod.OrderQty) AS TotalQuantity, SUM(sod.LineTotal) AS TotalRevenue,
+               AVG(sod.UnitPrice) AS AvgPrice
+        FROM Sales.SalesOrderDetail sod
+        INNER JOIN Production.Product p ON sod.ProductID = p.ProductID
+        INNER JOIN Production.ProductSubcategory psc ON p.ProductSubcategoryID = psc.ProductSubcategoryID
+        INNER JOIN Production.ProductCategory pc ON psc.ProductCategoryID = pc.ProductCategoryID
+        GROUP BY p.ProductID, p.Name, pc.Name, psc.Name
+        HAVING SUM(sod.LineTotal) > 10000
+        ORDER BY TotalRevenue DESC
+        """,
+    ),
+    (
+        "Large Dataset Retrieval",
+        """
+        SELECT soh.SalesOrderID, soh.OrderDate, soh.DueDate, soh.ShipDate, soh.Status,
+               soh.SubTotal, soh.TaxAmt, soh.Freight, soh.TotalDue, c.CustomerID,
+               p.FirstName, p.LastName, a.AddressLine1, a.City,
+               sp.Name AS StateProvince, cr.Name AS Country
+        FROM Sales.SalesOrderHeader soh
+        INNER JOIN Sales.Customer c ON soh.CustomerID = c.CustomerID
+        INNER JOIN Person.Person p ON c.PersonID = p.BusinessEntityID
+        INNER JOIN Person.BusinessEntityAddress bea ON p.BusinessEntityID = bea.BusinessEntityID
+        INNER JOIN Person.Address a ON bea.AddressID = a.AddressID
+        INNER JOIN Person.StateProvince sp ON a.StateProvinceID = sp.StateProvinceID
+        INNER JOIN Person.CountryRegion cr ON sp.CountryRegionCode = cr.CountryRegionCode
+        WHERE soh.OrderDate >= '2013-01-01'
+        """,
+    ),
+    (
+        "Very Large Dataset (1.2M rows)",
+        """
+        SELECT sod.SalesOrderID, sod.SalesOrderDetailID, sod.ProductID,
+               sod.OrderQty, sod.UnitPrice, sod.LineTotal,
+               p.Name AS ProductName, p.ProductNumber, p.Color, p.ListPrice,
+               n1.number AS RowMultiplier1
+        FROM Sales.SalesOrderDetail sod
+        CROSS JOIN (SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS number
+                    FROM Sales.SalesOrderDetail) n1
+        INNER JOIN Production.Product p ON sod.ProductID = p.ProductID
+        """,
+    ),
+    (
+        "Subquery with CTE",
+        """
+        WITH SalesSummary AS (
+            SELECT soh.SalesPersonID, YEAR(soh.OrderDate) AS OrderYear,
+                   SUM(soh.TotalDue) AS YearlyTotal
+            FROM Sales.SalesOrderHeader soh
+            WHERE soh.SalesPersonID IS NOT NULL
+            GROUP BY soh.SalesPersonID, YEAR(soh.OrderDate)
+        ),
+        RankedSales AS (
+            SELECT SalesPersonID, OrderYear, YearlyTotal,
+                   RANK() OVER (PARTITION BY OrderYear ORDER BY YearlyTotal DESC) AS SalesRank
+            FROM SalesSummary
+        )
+        SELECT rs.SalesPersonID, p.FirstName, p.LastName,
+               rs.OrderYear, rs.YearlyTotal, rs.SalesRank
+        FROM RankedSales rs
+        INNER JOIN Person.Person p ON rs.SalesPersonID = p.BusinessEntityID
+        WHERE rs.SalesRank <= 10
+        ORDER BY rs.OrderYear DESC, rs.SalesRank
+        """,
+    ),
+]
 
 
 def main():
-    """Main benchmark runner"""
-    print("=" * 80)
-    print("PERFORMANCE BENCHMARKING: mssql-python vs pyodbc")
-    print("=" * 80)
-    print(f"\nConfiguration:")
-    print(f"  Iterations per test: {NUM_ITERATIONS}")
-    print(f"  Database: AdventureWorks2022")
-    print(f"\n")
+    parser = argparse.ArgumentParser(description="mssql-python performance benchmarks")
+    parser.add_argument("--json", metavar="PATH", help="Save results to JSON file")
+    parser.add_argument("--baseline", metavar="PATH", help="Load baseline JSON from main branch")
+    args = parser.parse_args()
 
-    # Define benchmarks
-    benchmarks = [
-        (COMPLEX_JOIN_AGGREGATION, "Complex Join Aggregation"),
-        (LARGE_DATASET, "Large Dataset Retrieval"),
-        (VERY_LARGE_DATASET, "Very Large Dataset (1.2M rows)"),
-        (SUBQUERY_WITH_CTE, "Subquery with CTE"),
-    ]
+    _init_conn_strings()
 
-    # Store all results for summary
-    all_results: List[Tuple[BenchmarkResult, BenchmarkResult]] = []
+    baseline = load_baseline(args.baseline)
 
-    # Run each benchmark
-    for query, name in benchmarks:
-        print(f"\nRunning: {name}")
-        print(f"  Testing with pyodbc... ", end="", flush=True)
-        pyodbc_result = run_benchmark_pyodbc(query, name, NUM_ITERATIONS)
-        print(f"OK (avg: {pyodbc_result.avg_time:.4f}s)")
+    print("=" * 100)
+    if baseline:
+        print("PERFORMANCE BENCHMARKING: mssql-python PR vs main vs pyodbc")
+    else:
+        if args.baseline:
+            print("PERFORMANCE BENCHMARKING: mssql-python vs pyodbc")
+            print("  (baseline file not found — showing 2-column comparison)")
+        else:
+            print("PERFORMANCE BENCHMARKING: mssql-python vs pyodbc")
+    print("=" * 100)
+    print(f"  Iterations: {NUM_ITERATIONS} (first {WARMUP_ITERATIONS} discarded as warmup, metric: median)")
+    if baseline:
+        print(f"  Baseline: {args.baseline}")
+    print()
 
-        print(f"  Testing with mssql-python... ", end="", flush=True)
-        mssql_python_result = run_benchmark_mssql_python(query, name, NUM_ITERATIONS)
-        print(f"OK (avg: {mssql_python_result.avg_time:.4f}s)")
+    all_results: List[tuple] = []
 
-        all_results.append((pyodbc_result, mssql_python_result))
+    # Fetch scenarios (require AdventureWorks)
+    for name, query in FETCH_SCENARIOS:
+        print(f"Running: {name}")
+        print(f"  pyodbc...       ", end="", flush=True)
+        py_result = run_fetch_pyodbc(query, name, NUM_ITERATIONS)
+        if py_result.times:
+            print(f"OK ({py_result.median:.4f}s)")
+        else:
+            print("FAILED")
 
-    # Print detailed comparisons
-    print("\n\n" + "=" * 80)
-    print("DETAILED RESULTS")
-    print("=" * 80)
+        print(f"  mssql-python... ", end="", flush=True)
+        ms_result = run_fetch_mssql(query, name, NUM_ITERATIONS)
+        if ms_result.times:
+            print(f"OK ({ms_result.median:.4f}s)")
+        else:
+            print("FAILED")
 
-    for pyodbc_result, mssql_python_result in all_results:
-        print_comparison(pyodbc_result, mssql_python_result)
+        all_results.append((name, ms_result, py_result))
 
-    # Print summary table
-    print("\n\n" + "=" * 80)
-    print("SUMMARY TABLE")
-    print("=" * 80)
-    print(f"\n{'Benchmark':<35} {'pyodbc (s)':<15} {'mssql-python (s)':<20} {'Speedup'}")
-    print("-" * 80)
+    # Insertmanyvalues scenario (uses temp table, no AdventureWorks needed)
+    insert_name = "Insertmanyvalues (100K rows)"
+    print(f"\nRunning: {insert_name}")
+    print(f"  pyodbc...       ", end="", flush=True)
+    py_insert = run_insertmany_pyodbc(NUM_ITERATIONS)
+    if py_insert.times:
+        print(f"OK ({py_insert.median:.4f}s)")
+    else:
+        print("FAILED")
 
-    total_pyodbc = 0.0
-    total_mssql_python = 0.0
+    print(f"  mssql-python... ", end="", flush=True)
+    ms_insert = run_insertmany_mssql(NUM_ITERATIONS)
+    if ms_insert.times:
+        print(f"OK ({ms_insert.median:.4f}s)")
+    else:
+        print("FAILED")
 
-    for pyodbc_result, mssql_python_result in all_results:
-        name = pyodbc_result.name.split(" (")[0]
-        speedup = calculate_speedup(pyodbc_result, mssql_python_result)
+    all_results.append((insert_name, ms_insert, py_insert))
 
-        total_pyodbc += pyodbc_result.avg_time
-        total_mssql_python += mssql_python_result.avg_time
+    # Output
+    print_results(all_results, baseline)
 
-        print(
-            f"{name:<35} {pyodbc_result.avg_time:<15.4f} {mssql_python_result.avg_time:<20.4f} {speedup:.2f}x"
-        )
-
-    print("-" * 80)
-    print(
-        f"{'TOTAL':<35} {total_pyodbc:<15.4f} {total_mssql_python:<20.4f} "
-        f"{total_pyodbc/total_mssql_python if total_mssql_python > 0 else 0:.2f}x"
-    )
-
-    # Overall conclusion
-    overall_speedup = total_pyodbc / total_mssql_python if total_mssql_python > 0 else 0
-    print(f"\n{'='*80}")
-    print("OVERALL CONCLUSION")
-    print("=" * 80)
-    if overall_speedup > 1:
-        print(f"\nmssql-python is {overall_speedup:.2f}x FASTER than pyodbc on average")
-        print(
-            f"Total time saved: {total_pyodbc - total_mssql_python:.4f}s ({((total_pyodbc - total_mssql_python)/total_pyodbc*100):.1f}%)"
-        )
-    elif overall_speedup < 1 and overall_speedup > 0:
-        print(f"\nmssql-python is {1/overall_speedup:.2f}x SLOWER than pyodbc on average")
-        print(
-            f"Total time difference: {total_mssql_python - total_pyodbc:.4f}s ({((total_mssql_python - total_pyodbc)/total_mssql_python*100):.1f}%)"
-        )
-
-    print(f"\n{'='*80}\n")
+    if args.json:
+        save_json(all_results, args.json)
 
 
 if __name__ == "__main__":

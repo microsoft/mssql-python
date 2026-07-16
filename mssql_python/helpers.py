@@ -41,19 +41,20 @@ def check_error(handle_type: int, handle: Any, ret: int) -> None:
 def sanitize_connection_string(conn_str: str) -> str:
     """
     Sanitize the connection string by removing sensitive information.
+
+    Delegates to the parser-based implementation in connection_string_parser
+    which correctly handles ODBC braced values (e.g. PWD={Top;Secret}).
+
     Args:
         conn_str (str): The connection string to sanitize.
     Returns:
         str: The sanitized connection string.
     """
-    logger.debug(
-        "sanitize_connection_string: Sanitizing connection string (length=%d)", len(conn_str)
+    from mssql_python.connection_string_parser import (
+        sanitize_connection_string as _sanitize,
     )
-    # Remove sensitive information from the connection string, Pwd section
-    # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
-    sanitized = re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
-    logger.debug("sanitize_connection_string: Password fields masked")
-    return sanitized
+
+    return _sanitize(conn_str)
 
 
 def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
@@ -360,13 +361,17 @@ class Settings:
     Settings class for mssql_python package configuration.
 
     This class holds global settings that affect the behavior of the package,
-    including lowercase column names, decimal separator.
+    including lowercase column names, decimal separator, and UUID handling.
     """
 
     def __init__(self) -> None:
         self.lowercase: bool = False
         # Use the pre-determined separator - no locale access here
         self.decimal_separator: str = _default_decimal_separator
+        # Controls whether UNIQUEIDENTIFIER columns return uuid.UUID (True)
+        # or str (False). Default True returns native uuid.UUID objects.
+        # Set to False to return str for pyodbc-compatible migration.
+        self.native_uuid: bool = True
 
 
 # Global settings instance

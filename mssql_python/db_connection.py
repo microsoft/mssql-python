@@ -14,6 +14,7 @@ def connect(
     autocommit: bool = False,
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
+    native_uuid: Optional[bool] = None,
     **kwargs: Any,
 ) -> Connection:
     """
@@ -22,10 +23,18 @@ def connect(
     Args:
         connection_str (str): The connection string to connect to.
         autocommit (bool): If True, causes a commit to be performed after each SQL statement.
-    TODO: Add the following parameters to the function signature:
+        attrs_before (dict, optional): A dictionary of connection attributes to set before
+                                      connecting.
         timeout (int): The timeout for the connection attempt, in seconds.
-        readonly (bool): If True, the connection is set to read-only.
-        attrs_before (dict): A dictionary of connection attributes to set before connecting.
+        native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
+            uuid.UUID objects (True) or str (False) for this connection.
+            - True: UNIQUEIDENTIFIER columns return uuid.UUID objects.
+            - False: UNIQUEIDENTIFIER columns return str (pyodbc-compatible).
+            - None (default): Uses the module-level ``mssql_python.native_uuid`` setting (True).
+
+            This per-connection override is useful for migration from pyodbc:
+            connections that need string UUIDs can pass native_uuid=False, while the default (True)
+            returns native uuid.UUID objects.
     Keyword Args:
         **kwargs: Additional key/value pairs for the connection string.
     Below attributes are not implemented in the internal driver:
@@ -44,6 +53,11 @@ def connect(
     transactions, and closing the connection.
     """
     conn = Connection(
-        connection_str, autocommit=autocommit, attrs_before=attrs_before, timeout=timeout, **kwargs
+        connection_str,
+        autocommit=autocommit,
+        attrs_before=attrs_before,
+        timeout=timeout,
+        native_uuid=native_uuid,
+        **kwargs,
     )
     return conn

@@ -14,9 +14,11 @@ from datetime import datetime, date, time, timedelta, timezone
 import time as time_module
 import decimal
 from contextlib import closing
+import threading
 import mssql_python
 import uuid
 import re
+from unittest.mock import patch
 from conftest import is_azure_sql_connection
 
 # Setup test table
@@ -303,7 +305,7 @@ def test_insert_nvarchar_column(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Nvarchar column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE #pytest_single_column")
+        drop_table_if_exists(cursor, "#pytest_single_column")
         db_connection.commit()
 
 
@@ -324,8 +326,204 @@ def test_insert_time_column(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Time column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE #pytest_single_column")
+        drop_table_if_exists(cursor, "#pytest_single_column")
         db_connection.commit()
+
+
+def test_insert_time_column_preserves_microseconds(cursor, db_connection):
+    """Test TIME fractional seconds round-trip for datetime.time values."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_microseconds")
+        cursor.execute("CREATE TABLE #pytest_time_microseconds (time_column TIME(6))")
+        db_connection.commit()
+
+        original_value = time(14, 30, 15, 234567)
+        cursor.execute(
+            "INSERT INTO #pytest_time_microseconds (time_column) VALUES (?)",
+            [original_value],
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_microseconds")
+        row = cursor.fetchone()
+        assert row is not None, "Expected one row"
+        assert row[0] == original_value, "TIME microseconds were not preserved"
+        assert row[0].microsecond == 234567, "Expected microseconds to round-trip"
+    except Exception as e:
+        pytest.fail(f"TIME microseconds round-trip failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_microseconds")
+        db_connection.commit()
+
+
+def test_time_column_with_null(cursor, db_connection):
+    """Test TIME(2) column with NULL values — exercises NULL branch in SQLGetData path."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_null")
+        cursor.execute("CREATE TABLE #pytest_time_null (id INT, time_column TIME(2))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_time_null VALUES (1, '10:30:00.00')")
+        cursor.execute("INSERT INTO #pytest_time_null VALUES (2, NULL)")
+        cursor.execute("INSERT INTO #pytest_time_null VALUES (3, '23:59:59.99')")
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_null ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3
+        assert rows[0][0] == time(10, 30, 0)
+        assert rows[1][0] is None, "NULL TIME should be returned as None"
+        assert rows[2][0] == time(23, 59, 59, 990000)
+    except Exception as e:
+        pytest.fail(f"TIME with NULL test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_null")
+        db_connection.commit()
+
+
+def test_time_column_null_fetchone(cursor, db_connection):
+    """Test fetchone on a NULL TIME value — exercises NULL branch in per-row SQLGetData path."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_null_one")
+        cursor.execute("CREATE TABLE #pytest_time_null_one (time_column TIME(2))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_time_null_one VALUES (NULL)")
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_null_one")
+        row = cursor.fetchone()
+        assert row is not None, "Expected one row"
+        assert row[0] is None, "NULL TIME should be returned as None"
+    except Exception as e:
+        pytest.fail(f"TIME NULL fetchone test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_null_one")
+        db_connection.commit()
+
+
+def test_time_column_no_fractional_seconds(cursor, db_connection):
+    """Test TIME(0) column without fractional seconds — exercises dotPos==npos branch."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_nofrac")
+        cursor.execute("CREATE TABLE #pytest_time_nofrac (time_column TIME(0))")
+        db_connection.commit()
+        cursor.execute(
+            "INSERT INTO #pytest_time_nofrac (time_column) VALUES (?)", [time(8, 15, 30)]
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_nofrac")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == time(8, 15, 30)
+    except Exception as e:
+        pytest.fail(f"TIME(0) no fractional seconds test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_nofrac")
+        db_connection.commit()
+
+
+def test_time_column_batch_fetch(cursor, db_connection):
+    """Test fetching multiple TIME(6) rows via fetchall — exercises batch/column-bound path."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_batch")
+        cursor.execute("CREATE TABLE #pytest_time_batch (id INT, time_column TIME(6))")
+        db_connection.commit()
+
+        expected = [
+            time(0, 0, 0),
+            time(6, 30, 0, 123456),
+            time(12, 0, 0),
+            time(18, 45, 59, 999999),
+            time(23, 59, 59, 0),
+        ]
+        for i, t in enumerate(expected):
+            cursor.execute("INSERT INTO #pytest_time_batch (id, time_column) VALUES (?, ?)", [i, t])
+        db_connection.commit()
+
+        cursor.execute("SELECT time_column FROM #pytest_time_batch ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == len(expected)
+        for i, row in enumerate(rows):
+            assert row[0] == expected[i], f"Row {i}: expected {expected[i]}, got {row[0]}"
+    except Exception as e:
+        pytest.fail(f"TIME batch fetch test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_batch")
+        db_connection.commit()
+
+
+def test_time_executemany(cursor, db_connection):
+    """Test executemany with TIME column — exercises cursor.py time→isoformat conversion."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_time_execmany")
+        cursor.execute("CREATE TABLE #pytest_time_execmany (id INT, time_column TIME(6))")
+        db_connection.commit()
+
+        values = [
+            (1, time(9, 0, 0)),
+            (2, time(14, 30, 15, 234567)),
+            (3, time(23, 59, 59, 999999)),
+        ]
+        cursor.executemany(
+            "INSERT INTO #pytest_time_execmany (id, time_column) VALUES (?, ?)", values
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, time_column FROM #pytest_time_execmany ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3
+        for (exp_id, exp_time), row in zip(values, rows):
+            assert row[0] == exp_id
+            assert row[1] == exp_time, f"id {exp_id}: expected {exp_time}, got {row[1]}"
+    except Exception as e:
+        pytest.fail(f"TIME executemany test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_time_execmany")
+        db_connection.commit()
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _normalize_time_param helper
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeTimeParam:
+    """Tests for the _normalize_time_param helper in cursor.py."""
+
+    @staticmethod
+    def _normalize(value, c_type):
+        from mssql_python.cursor import _normalize_time_param
+
+        return _normalize_time_param(value, c_type)
+
+    def test_time_with_sql_c_char_returns_isoformat(self):
+        """time + SQL_C_CHAR → isoformat string."""
+        from mssql_python.constants import ConstantsDDBC
+
+        result = self._normalize(time(14, 30, 0, 123456), ConstantsDDBC.SQL_C_CHAR.value)
+        assert result == "14:30:00.123456"
+
+    def test_time_with_sql_c_wchar_returns_isoformat(self):
+        """time + SQL_C_WCHAR → isoformat string."""
+        from mssql_python.constants import ConstantsDDBC
+
+        result = self._normalize(time(9, 5, 3), ConstantsDDBC.SQL_C_WCHAR.value)
+        assert result == "09:05:03.000000"
+
+    def test_time_with_non_text_ctype_returns_none(self):
+        """time + non-text C-type → None (no conversion)."""
+        from mssql_python.constants import ConstantsDDBC
+
+        result = self._normalize(time(12, 0, 0), ConstantsDDBC.SQL_C_TYPE_TIME.value)
+        assert result is None
+
+    def test_non_time_value_returns_none(self):
+        """Non-time value → None regardless of c_type."""
+        from mssql_python.constants import ConstantsDDBC
+
+        assert self._normalize("12:00:00", ConstantsDDBC.SQL_C_CHAR.value) is None
+        assert self._normalize(42, ConstantsDDBC.SQL_C_CHAR.value) is None
+        assert self._normalize(None, ConstantsDDBC.SQL_C_CHAR.value) is None
 
 
 def test_insert_datetime_column(cursor, db_connection):
@@ -347,7 +545,7 @@ def test_insert_datetime_column(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Datetime column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE #pytest_single_column")
+        drop_table_if_exists(cursor, "#pytest_single_column")
         db_connection.commit()
 
 
@@ -653,6 +851,287 @@ def test_varbinary_full_capacity(cursor, db_connection):
         pytest.fail(f"SQL_VARBINARY parsing test failed: {e}")
     finally:
         cursor.execute("DROP TABLE #pytest_varbinary_test")
+        db_connection.commit()
+
+
+def test_execute_none_into_varbinary_column(cursor, db_connection):
+    from mssql_python.constants import ConstantsDDBC
+
+    drop_table_if_exists(cursor, "#test_varbinary_null")
+    try:
+        cursor.execute("CREATE TABLE #test_varbinary_null (data VARBINARY(100))")
+        db_connection.commit()
+        cursor.setinputsizes([(ConstantsDDBC.SQL_VARBINARY.value, 100, 0)])
+        cursor.execute("INSERT INTO #test_varbinary_null (data) VALUES (?)", None)
+        db_connection.commit()
+        cursor.execute("SELECT data FROM #test_varbinary_null")
+        row = cursor.fetchone()
+        assert row[0] is None
+    finally:
+        drop_table_if_exists(cursor, "#test_varbinary_null")
+
+
+def test_gh627_execute_nonnull_before_null_varbinary(cursor, db_connection):
+    """GH-627: NULL VARBINARY should bind correctly when earlier params are non-NULL."""
+    table_name = f"pytest_gh627_execute_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == 1
+        assert row[1] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_executemany_nonnull_before_null_varbinary(cursor, db_connection):
+    """GH-627: executemany all-NULL VARBINARY column should bind after non-NULL column."""
+    table_name = f"pytest_gh627_executemany_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [(1, None), (2, None), (3, None)],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows == [[1, None], [2, None], [3, None]]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_executemany_mixed_null_nonnull_varbinary(cursor, db_connection):
+    """GH-627: executemany with mixed NULL/non-NULL VARBINARY rows should work.
+    This exercises the non-all-NULL executemany path where individual rows
+    go through BindParameters with both NULL and non-NULL binary values."""
+    table_name = f"pytest_gh627_mixed_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [(1, b"\x01\x02\x03"), (2, None), (3, b"\xaa\xbb\xcc")],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0] == [1, b"\x01\x02\x03"]
+        assert rows[1] == [2, None]
+        assert rows[2] == [3, b"\xaa\xbb\xcc"]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_null_then_nonnull_varbinary_reuse(cursor, db_connection):
+    """GH-627: Re-executing same SQL with NULL then non-NULL VARBINARY must work
+    (prepared statement + cache reuse path)."""
+    table_name = f"pytest_gh627_reuse_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        # First call: NULL — triggers SQLDescribeParam and caches VARBINARY type
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        # Second call: non-NULL — reuses prepared stmt, cache entry should not interfere
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [2, b"\xde\xad\xbe\xef"],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0] == [1, None]
+        assert rows[1][0] == 2
+        assert rows[1][1] == b"\xde\xad\xbe\xef"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_execute_nonnull_before_null_binary(cursor, db_connection):
+    """GH-627: NULL BINARY (fixed-length) should bind correctly when earlier params are non-NULL."""
+    table_name = f"pytest_gh627_binary_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data BINARY(16) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == 1
+        assert row[1] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_null_varbinary_as_first_param(cursor, db_connection):
+    """GH-627: NULL VARBINARY as first parameter (ordinal 1 resolution)."""
+    table_name = f"pytest_gh627_first_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (data VARBINARY(32) NULL, id INT)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (data, id) VALUES (?, ?)",
+            [None, 1],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data, id FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] is None
+        assert row[1] == 1
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_multiple_null_varbinary_columns(cursor, db_connection):
+    """GH-627: Multiple NULL VARBINARY columns resolved in a single pre-resolve pass."""
+    table_name = f"pytest_gh627_multi_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(
+            f"CREATE TABLE {table_name} (id INT, bin1 VARBINARY(32) NULL, bin2 VARBINARY(64) NULL)"
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, bin1, bin2) VALUES (?, ?, ?)",
+            [1, None, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, bin1, bin2 FROM {table_name}")
+        row = cursor.fetchone()
+        assert row == [1, None, None]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_varbinary_max_null(cursor, db_connection):
+    """GH-627: NULL VARBINARY(MAX) column — MAX has special semantics in
+    sp_describe_undeclared_parameters."""
+    table_name = f"pytest_gh627_max_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(MAX) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row == [1, None]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_executemany_temp_table_raises(cursor, db_connection):
+    """GH-627: executemany with temp table + all-NULL VARBINARY column raises
+    ProgrammingError due to SQL_VARCHAR fallback (SQLDescribeParam can't resolve
+    temp table metadata). Users should use setinputsizes to work around this."""
+    from mssql_python.exceptions import ProgrammingError
+
+    cursor.execute("CREATE TABLE #gh627_em_warn (id INT, data VARBINARY(50) NULL)")
+    db_connection.commit()
+
+    with pytest.raises(ProgrammingError):
+        cursor.executemany(
+            "INSERT INTO #gh627_em_warn (id, data) VALUES (?, ?)",
+            [(1, None), (2, None)],
+        )
+
+    cursor.execute("DROP TABLE IF EXISTS #gh627_em_warn")
+    db_connection.commit()
+
+
+def test_gh627_temp_table_null_varbinary_raises(cursor, db_connection):
+    """GH-627: Inserting NULL into a temp table VARBINARY column raises
+    ProgrammingError because SQLDescribeParam falls back to SQL_VARCHAR
+    and SQL Server rejects implicit varchar->varbinary conversion."""
+    from mssql_python.exceptions import ProgrammingError
+
+    cursor.execute("CREATE TABLE #gh627_warn (id INT, data VARBINARY(50) NULL)")
+    db_connection.commit()
+
+    with pytest.raises(ProgrammingError):
+        cursor.execute("INSERT INTO #gh627_warn (id, data) VALUES (?, ?)", [1, None])
+
+    cursor.execute("DROP TABLE IF EXISTS #gh627_warn")
+    db_connection.commit()
+
+
+def test_gh627_temp_table_setinputsizes_workaround(cursor, db_connection):
+    """GH-627: setinputsizes should resolve NULL VARBINARY binding in temp tables
+    where SQLDescribeParam cannot determine the column type."""
+    cursor.execute("CREATE TABLE #gh627_fix (id INT, data VARBINARY(100) NULL)")
+    db_connection.commit()
+
+    # Use setinputsizes to explicitly declare types for all parameters
+    from mssql_python.constants import ConstantsDDBC
+
+    cursor.setinputsizes(
+        [(ConstantsDDBC.SQL_INTEGER.value, 10, 0), (ConstantsDDBC.SQL_VARBINARY.value, 100, 0)]
+    )
+    cursor.execute("INSERT INTO #gh627_fix (id, data) VALUES (?, ?)", [1, None])
+    db_connection.commit()
+
+    cursor.execute("SELECT id, data FROM #gh627_fix")
+    row = cursor.fetchone()
+    assert row[0] == 1
+    assert row[1] is None
+
+    cursor.execute("DROP TABLE IF EXISTS #gh627_fix")
+    db_connection.commit()
+
+
+def test_gh627_physical_table_null_varbinary_succeeds(cursor, db_connection):
+    """GH-627: Physical tables should resolve via SQLDescribeParam and
+    successfully bind NULL VARBINARY without error."""
+    table_name = f"pytest_gh627_nocache_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(50) NULL)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} (id, data) VALUES (?, ?)", [1, None])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {table_name}")
+        assert cursor.fetchone()[0] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
 
@@ -1969,6 +2448,173 @@ def test_executemany_MIX_NONE_parameter_list(cursor, db_connection):
         db_connection.commit()
 
 
+def test_map_sql_type_none_returns_sql_unknown_type():
+    """Test that _map_sql_type returns SQL_UNKNOWN_TYPE for None params (GH-610).
+
+    None returns SQL_UNKNOWN_TYPE so the C++ BindParameters cache can resolve
+    the correct type via SQLDescribeParam on first call and cache it for
+    subsequent calls.
+    """
+    from unittest.mock import MagicMock
+
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+
+    cursor = MagicMock(spec=mssql_python.Cursor)
+    _map_sql_type = mssql_python.Cursor._map_sql_type.__get__(cursor)
+    params = [None, 42, None]
+
+    sql_type, c_type, col_size, dec_digits, is_dae = _map_sql_type(None, params, 0)
+
+    assert sql_type == ddbc_sql_const.SQL_UNKNOWN_TYPE.value
+    assert c_type == ddbc_sql_const.SQL_C_DEFAULT.value
+    assert col_size == 1
+    assert dec_digits == 0
+    assert is_dae is False
+
+
+# ---------------------------------------------------------
+# GH-610: SQLDescribeParam cache coverage tests
+# ---------------------------------------------------------
+
+
+def test_gh610_execute_null_param_cache_miss(cursor, db_connection):
+    """Cover cache MISS path: first execute with NULL triggers SQLDescribeParam."""
+    cursor.execute("CREATE TABLE #gh610_cov1 (id INT, name VARCHAR(50))")
+    cursor.execute("INSERT INTO #gh610_cov1 VALUES (?, ?)", (1, None))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov1")
+    assert cursor.fetchone()[0] == 1
+    cursor.execute("DROP TABLE #gh610_cov1")
+
+
+def test_gh610_execute_null_param_cache_hit(cursor, db_connection):
+    """Cover cache HIT path: repeated execute with same SQL + NULL."""
+    cursor.execute("CREATE TABLE #gh610_cov2 (id INT, name VARCHAR(50))")
+    # First call: cache miss → SQLDescribeParam
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (1, None))
+    # Second call: cache hit → no SQLDescribeParam
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (2, None))
+    # Third call: cache hit
+    cursor.execute("INSERT INTO #gh610_cov2 VALUES (?, ?)", (3, None))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov2")
+    assert cursor.fetchone()[0] == 3
+    cursor.execute("DROP TABLE #gh610_cov2")
+
+
+def test_gh610_cache_invalidation_on_new_sql(cursor, db_connection):
+    """Cover InvalidateDescribeCache path: different SQL clears cache."""
+    cursor.execute("CREATE TABLE #gh610_cov3a (val INT)")
+    cursor.execute("CREATE TABLE #gh610_cov3b (val VARCHAR(50))")
+    # First query — cache populated
+    cursor.execute("INSERT INTO #gh610_cov3a VALUES (?)", (None,))
+    # Different SQL — triggers SQLPrepare → InvalidateDescribeCache
+    cursor.execute("INSERT INTO #gh610_cov3b VALUES (?)", (None,))
+    # Back to first — triggers SQLPrepare → InvalidateDescribeCache again
+    cursor.execute("INSERT INTO #gh610_cov3a VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov3a")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("DROP TABLE #gh610_cov3a")
+    cursor.execute("DROP TABLE #gh610_cov3b")
+
+
+def test_gh610_executemany_all_null_column(cursor, db_connection):
+    """Cover BindParameterArray SQL_C_DEFAULT + SQL_UNKNOWN_TYPE path."""
+    cursor.execute("CREATE TABLE #gh610_cov4 (id INT, name VARCHAR(50))")
+    cursor.executemany(
+        "INSERT INTO #gh610_cov4 VALUES (?, ?)",
+        [(1, None), (2, None), (3, None)],
+    )
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov4 WHERE name IS NULL")
+    assert cursor.fetchone()[0] == 3
+    cursor.execute("DROP TABLE #gh610_cov4")
+
+
+def test_gh610_executemany_multiple_all_null_columns(cursor, db_connection):
+    """Cover BindParameterArray with multiple all-NULL columns."""
+    cursor.execute("CREATE TABLE #gh610_cov5 (id INT, a VARCHAR(50), b INT, c VARCHAR(50))")
+    cursor.executemany(
+        "INSERT INTO #gh610_cov5 VALUES (?, ?, ?, ?)",
+        [(1, None, None, None), (2, None, None, None)],
+    )
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_cov5")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("DROP TABLE #gh610_cov5")
+
+
+def test_gh610_execute_all_null_params(cursor, db_connection):
+    """Cover BindParameters with all params being NULL."""
+    cursor.execute("CREATE TABLE #gh610_cov6 (a INT, b VARCHAR(50))")
+    cursor.execute("INSERT INTO #gh610_cov6 VALUES (?, ?)", (None, None))
+    db_connection.commit()
+    cursor.execute("SELECT * FROM #gh610_cov6")
+    row = cursor.fetchone()
+    assert row[0] is None and row[1] is None
+    cursor.execute("DROP TABLE #gh610_cov6")
+
+
+def test_gh610_setinputsizes_bypasses_cache(cursor, db_connection):
+    """setinputsizes provides type directly — cache not used."""
+    from mssql_python.constants import ConstantsDDBC as C
+
+    cursor.execute("CREATE TABLE #gh610_cov7 (val VARCHAR(50))")
+    cursor.setinputsizes([(C.SQL_VARCHAR.value, 50, 0)])
+    cursor.execute("INSERT INTO #gh610_cov7 VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT val FROM #gh610_cov7")
+    assert cursor.fetchone()[0] is None
+    cursor.execute("DROP TABLE #gh610_cov7")
+
+
+def test_gh610_cache_no_mix_across_different_sql(cursor, db_connection):
+    """Switching SQL on same cursor clears cache — no cross-query type mixing.
+
+    Regression test requested by gargsaumya: execute INSERT INTO t1 VALUES (?)
+    then INSERT INTO t2 VALUES (?, ?) on the same cursor to ensure cache
+    doesn't mix parameter types across different prepared statements.
+    """
+    cursor.execute("CREATE TABLE #gh610_mix1 (val INT)")
+    cursor.execute("CREATE TABLE #gh610_mix2 (a VARCHAR(50), b INT)")
+    # First query — cache populated for 1-param INSERT
+    cursor.execute("INSERT INTO #gh610_mix1 VALUES (?)", (None,))
+    # Different SQL (different param count) — cache must be cleared by re-prepare
+    cursor.execute("INSERT INTO #gh610_mix2 VALUES (?, ?)", (None, None))
+    # Back to first query — cache cleared again, fresh describe
+    cursor.execute("INSERT INTO #gh610_mix1 VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT COUNT(*) FROM #gh610_mix1")
+    assert cursor.fetchone()[0] == 2
+    cursor.execute("SELECT COUNT(*) FROM #gh610_mix2")
+    assert cursor.fetchone()[0] == 1
+    cursor.execute("DROP TABLE #gh610_mix1")
+    cursor.execute("DROP TABLE #gh610_mix2")
+
+
+def test_gh610_cache_null_then_nonnull_same_statement(cursor, db_connection):
+    """Cached NULL type does not affect subsequent non-NULL execution.
+
+    Regression test requested by gargsaumya: execute with NULL first (caches
+    fallback type), then execute with non-NULL on same statement. The cache
+    should not interfere because non-NULL params take a different code path
+    (concrete C type, not SQL_C_DEFAULT).
+    """
+    cursor.execute("CREATE TABLE #gh610_nullnon (val INT)")
+    # First call: param is None → SQL_UNKNOWN_TYPE → cache populated
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (None,))
+    # Second call: param is 42 (int) → SQL_C_TINYINT, never hits cache
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (42,))
+    # Third call: param is None again → cache hit
+    cursor.execute("INSERT INTO #gh610_nullnon VALUES (?)", (None,))
+    db_connection.commit()
+    cursor.execute("SELECT val FROM #gh610_nullnon ORDER BY val")
+    rows = [r[0] for r in cursor.fetchall()]
+    assert rows == [None, None, 42]
+    cursor.execute("DROP TABLE #gh610_nullnon")
+
+
 @pytest.mark.skip(reason="Skipping due to commit reliability issues with executemany")
 def test_executemany_concurrent_null_parameters(db_connection):
     """Test executemany with NULL parameters across multiple sequential operations."""
@@ -2086,6 +2732,55 @@ def test_executemany_Decimal_list(cursor, db_connection):
         assert count == 2
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
+
+def test_executemany_decimal_sign_change(cursor, db_connection):
+    """Test executemany with decimals that change signs (GH-557).
+
+    When the sample value chosen for column sizing is a positive Decimal,
+    its format(v, 'f') string is shorter than the negative counterpart
+    (e.g. '1.0' vs '-0.1'), causing the C++ buffer validation to reject
+    the longer row with a column-size overflow error.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_decimal_sign (col_1 DECIMAL(28, 14))")
+
+        # Case 1: negative first, then positive — previously worked
+        data1 = [(decimal.Decimal("-0.1"),), (decimal.Decimal("1.0"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data1)
+
+        # Case 2: positive first, then negative — previously failed
+        data2 = [(decimal.Decimal("0.1"),), (decimal.Decimal("-0.1"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data2)
+
+        # Case 3: positive then negative with different integer parts
+        data3 = [(decimal.Decimal("1.0"),), (decimal.Decimal("-0.1"),)]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data3)
+
+        # Case 4: multiple sign changes in a single batch
+        data4 = [
+            (decimal.Decimal("100.5"),),
+            (decimal.Decimal("-0.001"),),
+            (decimal.Decimal("0.5"),),
+            (decimal.Decimal("-999.99"),),
+        ]
+        cursor.executemany("INSERT INTO #pytest_decimal_sign VALUES (?)", data4)
+
+        db_connection.commit()
+
+        # Verify row count
+        cursor.execute("SELECT COUNT(*) FROM #pytest_decimal_sign")
+        count = cursor.fetchone()[0]
+        assert count == 10
+
+        # Verify data correctness for the originally-failing case
+        cursor.execute("SELECT col_1 FROM #pytest_decimal_sign ORDER BY col_1")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert decimal.Decimal("-999.99") in [r.quantize(decimal.Decimal("0.01")) for r in rows]
+        assert decimal.Decimal("0.1") in [r.quantize(decimal.Decimal("0.1")) for r in rows]
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_sign")
         db_connection.commit()
 
 
@@ -2610,6 +3305,44 @@ def test_row_attribute_access(cursor, db_connection):
     finally:
         cursor.execute("DROP TABLE #pytest_row_attr_test")
         db_connection.commit()
+
+
+def test_row_string_key_indexing(cursor, db_connection):
+    """Test accessing row values by column name as string key: row['col']"""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_strkey (id INT PRIMARY KEY, name VARCHAR(50), age INT)"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_strkey (id, name, age) VALUES (1, 'Alice', 25)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_strkey")
+        row = cursor.fetchone()
+
+        # String-key access
+        assert row["id"] == 1, "Failed to access 'id' by string key"
+        assert row["name"] == "Alice", "Failed to access 'name' by string key"
+        assert row["age"] == 25, "Failed to access 'age' by string key"
+
+        # Consistency with index and attribute access
+        assert row["id"] == row[0] == row.id
+        assert row["name"] == row[1] == row.name
+        assert row["age"] == row[2] == row.age
+
+        # Non-existent key raises KeyError
+        with pytest.raises(KeyError):
+            row["nonexistent"]
+
+    except Exception as e:
+        pytest.fail(f"Row string-key indexing test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_strkey")
+            db_connection.commit()
+        except Exception:
+            pass
 
 
 def test_row_comparison_with_list(cursor, db_connection):
@@ -6150,6 +6883,138 @@ def test_cursor_messages_with_error(cursor):
     assert "After error" in cursor.messages[0][1], "Message should be from after the error"
 
 
+def test_cursor_messages_nextset_multiple_prints(cursor):
+    """Test that PRINT messages from subsequent result sets are captured via nextset().
+
+    Regression test for GH-612: PRINT messages after the first one were lost
+    because nextset() did not capture SQL_SUCCESS_WITH_INFO diagnostics.
+    """
+    cursor.execute("""
+        PRINT 'hi';
+        PRINT 'ih';
+        """)
+
+    # First PRINT is captured by execute()
+    assert len(cursor.messages) == 1, "execute() should capture the first PRINT message"
+    assert "hi" in cursor.messages[0][1]
+
+    # Advance to the next result set — should capture the second PRINT
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1, "nextset() should capture the second PRINT message"
+    assert "ih" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
+def test_cursor_messages_nextset_print_with_select(cursor):
+    """Test PRINT messages interleaved with SELECT result sets via nextset().
+
+    Ensures messages are captured correctly when PRINT and SELECT are mixed.
+    Only messages collected from nextset() itself are checked so the test
+    fails if nextset() drops messages (even if fetchall() would mask it).
+    """
+    cursor.execute("""
+        PRINT 'before select';
+        SELECT 1 AS val;
+        PRINT 'after select';
+        """)
+
+    # First PRINT captured by execute()
+    assert len(cursor.messages) >= 1
+    assert "before select" in cursor.messages[0][1]
+
+    nextset_messages = []
+    all_rows = []
+
+    while cursor.nextset():
+        # Collect only messages produced by nextset() — not by fetchall()
+        nextset_messages.extend(cursor.messages)
+        if cursor.description:
+            all_rows.extend(cursor.fetchall())
+
+    # Also collect messages from the final nextset() that returned False
+    # (trailing PRINT can attach to SQL_NO_DATA)
+    nextset_messages.extend(cursor.messages)
+
+    # Verify the "after select" PRINT was captured by nextset(), not fetchall()
+    combined_text = " ".join(m[1] for m in nextset_messages)
+    assert "after select" in combined_text, "nextset() should capture the trailing PRINT message"
+
+    # Verify the SELECT result was returned
+    assert len(all_rows) == 1
+    assert all_rows[0][0] == 1
+
+
+def test_cursor_messages_nextset_three_prints(cursor):
+    """Test that three consecutive PRINT messages are all captured across nextset() calls."""
+    cursor.execute("""
+        PRINT 'msg1';
+        PRINT 'msg2';
+        PRINT 'msg3';
+        """)
+
+    # First PRINT captured by execute()
+    assert len(cursor.messages) == 1
+    assert "msg1" in cursor.messages[0][1]
+
+    # Second PRINT via nextset()
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1
+    assert "msg2" in cursor.messages[0][1]
+
+    # Third PRINT via nextset()
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1
+    assert "msg3" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
+def test_cursor_messages_nextset_clears_previous(cursor):
+    """Test that nextset() clears messages from the previous result set."""
+    cursor.execute("""
+        PRINT 'first';
+        PRINT 'second';
+        """)
+
+    assert len(cursor.messages) == 1
+    assert "first" in cursor.messages[0][1]
+
+    # After nextset(), messages should only contain the new message
+    assert cursor.nextset()
+    assert len(cursor.messages) == 1, "Previous messages should have been cleared"
+    assert "second" in cursor.messages[0][1]
+    assert not any("first" in m[1] for m in cursor.messages), "Old message should not persist"
+
+
+def test_cursor_messages_nextset_trailing_print(cursor):
+    """Test that a trailing PRINT after the final SELECT is captured.
+
+    The ODBC driver delivers the trailing PRINT as a separate result set
+    (SQL_SUCCESS_WITH_INFO), so nextset() returns True and captures the
+    message.  A second nextset() then returns False (SQL_NO_DATA).
+    This is the most common customer pain point (GH-612).
+    """
+    cursor.execute("""
+        SELECT 1 AS val;
+        PRINT 'trailing';
+        """)
+
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 1
+
+    # The trailing PRINT is delivered as a separate result set
+    assert cursor.nextset()
+    assert len(cursor.messages) >= 1, "Trailing PRINT after final SELECT should be captured"
+    assert "trailing" in cursor.messages[0][1]
+
+    # No more result sets
+    assert not cursor.nextset()
+
+
 def test_tables_setup(cursor, db_connection):
     """Create test objects for tables method testing"""
     try:
@@ -7430,7 +8295,9 @@ def test_sql_double_type(cursor, db_connection):
 
 def test_null_guid_type(cursor, db_connection):
     """Test NULL UNIQUEIDENTIFIER (GUID) to cover lines 3376-3377."""
+    original_native_uuid = mssql_python.native_uuid
     try:
+        mssql_python.native_uuid = True
         drop_table_if_exists(cursor, "#pytest_null_guid")
         cursor.execute("""
             CREATE TABLE #pytest_null_guid (
@@ -7481,6 +8348,7 @@ def test_null_guid_type(cursor, db_connection):
         pytest.fail(f"NULL GUID type test failed: {e}")
 
     finally:
+        mssql_python.native_uuid = original_native_uuid
         drop_table_if_exists(cursor, "#pytest_null_guid")
         db_connection.commit()
 
@@ -7814,376 +8682,6 @@ def test_nvarcharmax_large(cursor, db_connection):
         db_connection.commit()
 
 
-def test_money_smallmoney_insert_fetch(cursor, db_connection):
-    """Test inserting and retrieving valid MONEY and SMALLMONEY values including boundaries and typical data"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY,
-                d DECIMAL(19,4),
-                n NUMERIC(10,4)
-            )
-        """)
-        db_connection.commit()
-
-        # Max values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("922337203685477.5807"),
-                decimal.Decimal("214748.3647"),
-                decimal.Decimal("9999999999999.9999"),
-                decimal.Decimal("1234.5678"),
-            ),
-        )
-
-        # Min values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("-922337203685477.5808"),
-                decimal.Decimal("-214748.3648"),
-                decimal.Decimal("-9999999999999.9999"),
-                decimal.Decimal("-1234.5678"),
-            ),
-        )
-
-        # Typical values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (
-                decimal.Decimal("1234567.8901"),
-                decimal.Decimal("12345.6789"),
-                decimal.Decimal("42.4242"),
-                decimal.Decimal("3.1415"),
-            ),
-        )
-
-        # NULL values
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
-            (None, None, None, None),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm, d, n FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == 4, f"Expected 4 rows, got {len(results)}"
-
-        expected = [
-            (
-                decimal.Decimal("922337203685477.5807"),
-                decimal.Decimal("214748.3647"),
-                decimal.Decimal("9999999999999.9999"),
-                decimal.Decimal("1234.5678"),
-            ),
-            (
-                decimal.Decimal("-922337203685477.5808"),
-                decimal.Decimal("-214748.3648"),
-                decimal.Decimal("-9999999999999.9999"),
-                decimal.Decimal("-1234.5678"),
-            ),
-            (
-                decimal.Decimal("1234567.8901"),
-                decimal.Decimal("12345.6789"),
-                decimal.Decimal("42.4242"),
-                decimal.Decimal("3.1415"),
-            ),
-            (None, None, None, None),
-        ]
-
-        for i, (row, exp) in enumerate(zip(results, expected)):
-            for j, (val, exp_val) in enumerate(zip(row, exp), 1):
-                if exp_val is None:
-                    assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
-                else:
-                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
-                    assert isinstance(
-                        val, decimal.Decimal
-                    ), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY insert/fetch test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_null_handling(cursor, db_connection):
-    """Test that NULL values for MONEY and SMALLMONEY are stored and retrieved correctly"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Row with both NULLs
-        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", (None, None))
-
-        # Row with m filled, sm NULL
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("123.4500"), None),
-        )
-
-        # Row with m NULL, sm filled
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (None, decimal.Decimal("67.8900")),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == 3, f"Expected 3 rows, got {len(results)}"
-
-        expected = [
-            (None, None),
-            (decimal.Decimal("123.4500"), None),
-            (None, decimal.Decimal("67.8900")),
-        ]
-
-        for i, (row, exp) in enumerate(zip(results, expected)):
-            for j, (val, exp_val) in enumerate(zip(row, exp), 1):
-                if exp_val is None:
-                    assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
-                else:
-                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
-                    assert isinstance(
-                        val, decimal.Decimal
-                    ), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY NULL handling test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_roundtrip(cursor, db_connection):
-    """Test inserting and retrieving MONEY and SMALLMONEY using decimal.Decimal roundtrip"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        values = (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543"))
-        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", values)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
-        row = cursor.fetchone()
-        for i, (val, exp_val) in enumerate(zip(row, values), 1):
-            assert val == exp_val, f"col{i} roundtrip mismatch, got {val}, expected {exp_val}"
-            assert isinstance(val, decimal.Decimal), f"col{i} should be Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY roundtrip test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_boundaries(cursor, db_connection):
-    """Test boundary values for MONEY and SMALLMONEY types are handled correctly"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Insert max boundary
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")),
-        )
-
-        # Insert min boundary
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
-            (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
-        )
-
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
-        results = cursor.fetchall()
-        expected = [
-            (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
-            (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")),
-        ]
-        for i, (row, exp_row) in enumerate(zip(results, expected), 1):
-            for j, (val, exp_val) in enumerate(zip(row, exp_row), 1):
-                assert val == exp_val, f"Row {i} col{j} mismatch, got {val}, expected {exp_val}"
-                assert isinstance(
-                    val, decimal.Decimal
-                ), f"Row {i} col{j} should be Decimal, got {type(val)}"
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY boundary values test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_invalid_values(cursor, db_connection):
-    """Test that invalid or out-of-range MONEY and SMALLMONEY values raise errors"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        # Out of range MONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (m) VALUES (?)",
-                (decimal.Decimal("922337203685477.5808"),),
-            )
-
-        # Out of range SMALLMONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (sm) VALUES (?)",
-                (decimal.Decimal("214748.3648"),),
-            )
-
-        # Invalid string
-        with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #pytest_money_test (m) VALUES (?)", ("invalid_string",))
-
-    except Exception as e:
-        pytest.fail(f"MONEY and SMALLMONEY invalid values test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
-    """Test inserting and retrieving MONEY and SMALLMONEY using executemany with decimal.Decimal"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        test_data = [
-            (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543")),
-            (decimal.Decimal("0.0001"), decimal.Decimal("0.01")),
-            (None, decimal.Decimal("42.42")),
-            (decimal.Decimal("-1000.99"), None),
-        ]
-
-        # Insert using executemany directly with Decimals
-        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", test_data)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
-        results = cursor.fetchall()
-        assert len(results) == len(test_data)
-
-        for i, (row, expected) in enumerate(zip(results, test_data), 1):
-            for j, (val, exp_val) in enumerate(zip(row, expected), 1):
-                if exp_val is None:
-                    assert val is None
-                else:
-                    assert val == exp_val
-                    assert isinstance(val, decimal.Decimal)
-
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_executemany_null_handling(cursor, db_connection):
-    """Test inserting NULLs into MONEY and SMALLMONEY using executemany"""
-    try:
-        cursor.execute("""
-            CREATE TABLE #pytest_money_test (
-                id INT IDENTITY PRIMARY KEY,
-                m MONEY,
-                sm SMALLMONEY
-            )
-        """)
-        db_connection.commit()
-
-        rows = [
-            (None, None),
-            (decimal.Decimal("123.4500"), None),
-            (None, decimal.Decimal("67.8900")),
-        ]
-        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", rows)
-        db_connection.commit()
-
-        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id ASC")
-        results = cursor.fetchall()
-        assert len(results) == len(rows)
-
-        for row, expected in zip(results, rows):
-            for val, exp_val in zip(row, expected):
-                if exp_val is None:
-                    assert val is None
-                else:
-                    assert val == exp_val
-                    assert isinstance(val, decimal.Decimal)
-
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
-def test_money_smallmoney_out_of_range_low(cursor, db_connection):
-    """Test inserting values just below the minimum MONEY/SMALLMONEY range raises error"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        cursor.execute("CREATE TABLE #pytest_money_test (m MONEY, sm SMALLMONEY)")
-        db_connection.commit()
-
-        # Just below minimum MONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (m) VALUES (?)",
-                (decimal.Decimal("-922337203685477.5809"),),
-            )
-
-        # Just below minimum SMALLMONEY
-        with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (sm) VALUES (?)",
-                (decimal.Decimal("-214748.3649"),),
-            )
-    finally:
-        drop_table_if_exists(cursor, "#pytest_money_test")
-        db_connection.commit()
-
-
 def test_uuid_insert_and_select_none(cursor, db_connection):
     """Test inserting and retrieving None in a nullable UUID column."""
     table_name = "#pytest_uuid_nullable"
@@ -8215,8 +8713,10 @@ def test_uuid_insert_and_select_none(cursor, db_connection):
 
 def test_insert_multiple_uuids(cursor, db_connection):
     """Test inserting multiple UUIDs and verifying retrieval."""
+    original_native_uuid = mssql_python.native_uuid
     table_name = "#pytest_uuid_multiple"
     try:
+        mssql_python.native_uuid = True
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         cursor.execute(f"""
             CREATE TABLE {table_name} (
@@ -8250,14 +8750,17 @@ def test_insert_multiple_uuids(cursor, db_connection):
                 retrieved_uuid == expected_uuid
             ), f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
     finally:
+        mssql_python.native_uuid = original_native_uuid
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
 
 def test_fetchmany_uuids(cursor, db_connection):
     """Test fetching multiple UUID rows with fetchmany()."""
+    original_native_uuid = mssql_python.native_uuid
     table_name = "#pytest_uuid_fetchmany"
     try:
+        mssql_python.native_uuid = True
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         cursor.execute(f"""
             CREATE TABLE {table_name} (
@@ -8291,6 +8794,7 @@ def test_fetchmany_uuids(cursor, db_connection):
             expected_uuid = uuids_to_insert[retrieved_desc]
             assert retrieved_uuid == expected_uuid
     finally:
+        mssql_python.native_uuid = original_native_uuid
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
@@ -8368,8 +8872,10 @@ def test_duplicate_uuid_inserts(cursor, db_connection):
 
 def test_extreme_uuids(cursor, db_connection):
     """Test inserting extreme but valid UUIDs."""
+    original_native_uuid = mssql_python.native_uuid
     table_name = "#pytest_uuid_extreme"
     try:
+        mssql_python.native_uuid = True
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         cursor.execute(f"CREATE TABLE {table_name} (id UNIQUEIDENTIFIER)")
         db_connection.commit()
@@ -8390,6 +8896,7 @@ def test_extreme_uuids(cursor, db_connection):
         for uid in extreme_uuids:
             assert uid in fetched_uuids, f"Extreme UUID {uid} not retrieved correctly"
     finally:
+        mssql_python.native_uuid = original_native_uuid
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
@@ -8431,10 +8938,7 @@ def test_executemany_uuid_insert_and_select(cursor, db_connection):
         for i, (retrieved_uuid, retrieved_desc) in enumerate(rows):
             expected_uuid, expected_desc = data_to_insert[i]
 
-            # Assert the type is correct
-            if isinstance(retrieved_uuid, str):
-                retrieved_uuid = uuid.UUID(retrieved_uuid)  # convert if driver returns str
-
+            # native_uuid defaults to True, so UUID columns return uuid.UUID directly
             assert isinstance(
                 retrieved_uuid, uuid.UUID
             ), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
@@ -8482,11 +8986,10 @@ def test_executemany_uuid_roundtrip_fixed_value(cursor, db_connection):
         row = cursor.fetchone()
         retrieved_uuid, retrieved_desc = row
 
-        # Ensure type and value are correct
-        if isinstance(retrieved_uuid, str):
-            retrieved_uuid = uuid.UUID(retrieved_uuid)
-
-        assert isinstance(retrieved_uuid, uuid.UUID)
+        # native_uuid defaults to True — UUID columns return uuid.UUID directly
+        assert isinstance(
+            retrieved_uuid, uuid.UUID
+        ), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
         assert retrieved_uuid == fixed_uuid
         assert str(retrieved_uuid) == str(fixed_uuid)
         assert retrieved_desc == description
@@ -9751,6 +10254,298 @@ def test_cursor_setinputsizes_with_executemany_float(db_connection):
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_float")
 
 
+def test_setinputsizes_sql_decimal_with_executemany(db_connection):
+    """Test setinputsizes with SQL_DECIMAL accepts Python Decimal values (GH-503).
+
+    Without this fix, passing SQL_DECIMAL or SQL_NUMERIC via setinputsizes()
+    caused a RuntimeError because Decimal objects were not converted to
+    NumericData before the C binding validated the C type.
+    """
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_decimal")
+    try:
+        cursor.execute("""
+        CREATE TABLE #test_sis_decimal (
+            Name NVARCHAR(100),
+            CategoryID INT,
+            Price DECIMAL(18,2)
+        )
+        """)
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_WVARCHAR, 100, 0),
+                (mssql_python.SQL_INTEGER, 0, 0),
+                (mssql_python.SQL_DECIMAL, 18, 2),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_decimal (Name, CategoryID, Price) VALUES (?, ?, ?)",
+            [
+                ("Widget", 1, decimal.Decimal("19.99")),
+                ("Gadget", 2, decimal.Decimal("29.99")),
+                ("Gizmo", 3, decimal.Decimal("0.01")),
+            ],
+        )
+
+        cursor.execute("SELECT Name, CategoryID, Price FROM #test_sis_decimal ORDER BY CategoryID")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == "Widget"
+        assert rows[0][1] == 1
+        assert rows[0][2] == decimal.Decimal("19.99")
+        assert rows[1][0] == "Gadget"
+        assert rows[1][1] == 2
+        assert rows[1][2] == decimal.Decimal("29.99")
+        assert rows[2][0] == "Gizmo"
+        assert rows[2][1] == 3
+        assert rows[2][2] == decimal.Decimal("0.01")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_decimal")
+
+
+def test_setinputsizes_sql_numeric_with_executemany(db_connection):
+    """Test setinputsizes with SQL_NUMERIC accepts Python Decimal values (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_numeric")
+    try:
+        cursor.execute("""
+        CREATE TABLE #test_sis_numeric (
+            Value NUMERIC(10,4)
+        )
+        """)
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_NUMERIC, 10, 4),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_numeric (Value) VALUES (?)",
+            [
+                (decimal.Decimal("123.4567"),),
+                (decimal.Decimal("-99.0001"),),
+                (decimal.Decimal("0.0000"),),
+            ],
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_numeric ORDER BY Value")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("-99.0001")
+        assert rows[1][0] == decimal.Decimal("0.0000")
+        assert rows[2][0] == decimal.Decimal("123.4567")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_numeric")
+
+
+def test_setinputsizes_sql_decimal_with_non_decimal_values(db_connection):
+    """Test setinputsizes with SQL_DECIMAL converts non-Decimal values (int/float) to string (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_nondec")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_nondc (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        # Pass int and float instead of Decimal — exercises the non-Decimal conversion branch
+        cursor.executemany(
+            "INSERT INTO #test_sis_dec_nondc (Price) VALUES (?)",
+            [(42,), (19.99,), (0,)],
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_nondc ORDER BY Price")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("0.00")
+        assert rows[1][0] == decimal.Decimal("19.99")
+        assert rows[2][0] == decimal.Decimal("42.00")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_nondc")
+
+
+def test_setinputsizes_sql_decimal_with_execute(db_connection):
+    """Test setinputsizes with SQL_DECIMAL works with single execute() too (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_exec")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_exec (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_exec (Price) VALUES (?)",
+            decimal.Decimal("99.95"),
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_exec")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal("99.95")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_exec")
+
+
+def test_setinputsizes_sql_decimal_null(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles NULL values correctly (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_null")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_null (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_null (Price) VALUES (?)",
+            None,
+        )
+
+        cursor.execute("SELECT Price FROM #test_sis_dec_null")
+        row = cursor.fetchone()
+        assert row[0] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_null")
+
+
+def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
+    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_bad (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError, match="Failed to convert parameter"):
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_bad (Price) VALUES (?)",
+                [("not_a_number",)],
+            )
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+
+
+def test_setinputsizes_sql_decimal_high_precision(db_connection):
+    """Test setinputsizes with SQL_DECIMAL preserves full DECIMAL(38,18) precision (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_hp")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_hp (Value DECIMAL(38,18))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 38, 18)])
+
+        high_prec = decimal.Decimal("12345678901234567890.123456789012345678")
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_hp (Value) VALUES (?)",
+            high_prec,
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_dec_hp")
+        row = cursor.fetchone()
+        assert row[0] == high_prec
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_hp")
+
+
+def test_setinputsizes_sql_decimal_negative_zero(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles Decimal('-0.00') correctly (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_negz")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_negz (Value DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+        cursor.execute(
+            "INSERT INTO #test_sis_dec_negz (Value) VALUES (?)",
+            decimal.Decimal("-0.00"),
+        )
+
+        cursor.execute("SELECT Value FROM #test_sis_dec_negz")
+        row = cursor.fetchone()
+        # SQL Server normalizes -0.00 to 0.00
+        assert row[0] == decimal.Decimal("0.00")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_negz")
+
+
+def test_setinputsizes_sql_decimal_mixed_null_executemany(db_connection):
+    """Test setinputsizes with SQL_DECIMAL handles mixed NULL/non-NULL in executemany (GH-503)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mix")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_mix (Id INT, Price DECIMAL(18,2))")
+
+        cursor.setinputsizes(
+            [
+                (mssql_python.SQL_INTEGER, 0, 0),
+                (mssql_python.SQL_DECIMAL, 18, 2),
+            ]
+        )
+
+        cursor.executemany(
+            "INSERT INTO #test_sis_dec_mix (Id, Price) VALUES (?, ?)",
+            [
+                (1, decimal.Decimal("10.50")),
+                (2, None),
+                (3, decimal.Decimal("30.75")),
+                (4, None),
+            ],
+        )
+
+        cursor.execute("SELECT Id, Price FROM #test_sis_dec_mix ORDER BY Id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 4
+        assert rows[0][1] == decimal.Decimal("10.50")
+        assert rows[1][1] is None
+        assert rows[2][1] == decimal.Decimal("30.75")
+        assert rows[3][1] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mix")
+
+
+def test_decimal_without_setinputsizes_no_regression(db_connection):
+    """Verify plain Decimal binding without setinputsizes still works (GH-503 regression check)."""
+    cursor = db_connection.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS #test_dec_noreg")
+    try:
+        cursor.execute("CREATE TABLE #test_dec_noreg (Price DECIMAL(18,2))")
+
+        # Single execute without setinputsizes
+        cursor.execute(
+            "INSERT INTO #test_dec_noreg (Price) VALUES (?)",
+            decimal.Decimal("49.99"),
+        )
+
+        # executemany without setinputsizes
+        cursor.executemany(
+            "INSERT INTO #test_dec_noreg (Price) VALUES (?)",
+            [(decimal.Decimal("99.99"),), (decimal.Decimal("0.01"),)],
+        )
+
+        cursor.execute("SELECT Price FROM #test_dec_noreg ORDER BY Price")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 3
+        assert rows[0][0] == decimal.Decimal("0.01")
+        assert rows[1][0] == decimal.Decimal("49.99")
+        assert rows[2][0] == decimal.Decimal("99.99")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_dec_noreg")
+
+
 def test_cursor_setinputsizes_reset(db_connection):
     """Test that setinputsizes is reset after execution"""
 
@@ -10045,6 +10840,73 @@ def test_setinputsizes_sql_injection_protection(db_connection):
 
     # Clean up
     cursor.execute("DROP TABLE #test_sql_injection")
+
+
+def test_fetch_methods_not_shadowed_on_instance(cursor):
+    """Regression test for GH #620.
+
+    The fetch methods (fetchone/fetchmany/fetchall) must remain regular class
+    methods and never be reassigned as instance attributes. The previous
+    implementation swapped them for closures on the instance while preparing
+    catalog/metadata result sets, which produced a union type that broke static
+    type checkers (e.g. ``ty`` reported a spurious missing ``self`` argument).
+    """
+    fetch_methods = ("fetchone", "fetchmany", "fetchall")
+
+    # Pristine cursor: methods come from the class, not the instance.
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} should not be an instance attribute"
+
+    # A catalog helper historically reassigned the fetch methods. Make sure it
+    # no longer shadows them on the instance.
+    cursor.getTypeInfo().fetchall()
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after getTypeInfo()"
+
+    # A normal execute must also leave the class methods intact, and the
+    # column-name cache populated by the earlier getTypeInfo() call must be
+    # rebuilt so catalog column names do not leak into an ordinary SELECT.
+    cursor.execute("SELECT 1 AS one")
+    rows = cursor.fetchall()
+    assert rows == [[1]]
+    row = rows[0]
+    assert row.one == 1
+    # "TYPE_NAME" belonged to the getTypeInfo() result set. If the cache leaked,
+    # these would resolve to column 0 (returning 1) instead of raising.
+    with pytest.raises(AttributeError):
+        _ = row.TYPE_NAME
+    with pytest.raises(KeyError):
+        _ = row["TYPE_NAME"]
+    for name in fetch_methods:
+        assert name not in cursor.__dict__, f"{name} was shadowed after execute()"
+
+
+def test_metadata_case_insensitive_access_when_lowercase(db_connection):
+    """Regression test for GH #620 follow-up.
+
+    Catalog result sets must keep case-insensitive column access even when the
+    global ``lowercase`` setting is enabled. With lowercase=True the description
+    names are lowercased, so the cursor must build a lowercase lookup map for
+    metadata rows; otherwise original-cased ODBC names like ``TABLE_NAME`` stop
+    resolving.
+    """
+    original_lowercase = mssql_python.lowercase
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        try:
+            row = cursor.getTypeInfo().fetchone()
+            assert row is not None, "getTypeInfo() should return at least one row"
+            # Lowercase access (the stored casing) must work...
+            lower_value = row.type_name
+            # ...and so must the original ODBC casing, via the lowercase map.
+            assert row.TYPE_NAME == lower_value
+            assert row["TYPE_NAME"] == lower_value
+            assert row["type_name"] == lower_value
+        finally:
+            cursor.close()
+    finally:
+        mssql_python.lowercase = original_lowercase
 
 
 def test_gettypeinfo_all_types(cursor):
@@ -12695,10 +13557,7 @@ def test_executemany_with_uuids(cursor, db_connection):
                     retrieved_uuid is None
                 ), f"Expected None for '{retrieved_desc}', got {retrieved_uuid}"
             else:
-                # Convert string to UUID if needed
-                if isinstance(retrieved_uuid, str):
-                    retrieved_uuid = uuid.UUID(retrieved_uuid)
-
+                # native_uuid defaults to True — UUID columns return uuid.UUID directly
                 assert isinstance(
                     retrieved_uuid, uuid.UUID
                 ), f"Expected UUID, got {type(retrieved_uuid)}"
@@ -15019,3 +15878,1330 @@ def test_close(db_connection):
         pytest.fail(f"Cursor close test failed: {e}")
     finally:
         cursor = db_connection.cursor()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# native_uuid tests
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_native_uuid_default_returns_uuid_objects(db_connection):
+    """Test that the default native_uuid=True returns uuid.UUID without explicit setting."""
+    cursor = db_connection.cursor()
+
+    try:
+        drop_table_if_exists(cursor, "#test_native_uuid_default")
+        cursor.execute(
+            "CREATE TABLE #test_native_uuid_default (id UNIQUEIDENTIFIER, name NVARCHAR(50))"
+        )
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO #test_native_uuid_default VALUES (?, ?)", [test_uuid, "test"])
+
+        # Without setting native_uuid at all, default (True) should return uuid.UUID
+        cursor.execute("SELECT id, name FROM #test_native_uuid_default")
+        row = cursor.fetchone()
+        assert isinstance(
+            row[0], uuid.UUID
+        ), f"Default native_uuid=True should return uuid.UUID, got {type(row[0])}"
+        assert row[0] == test_uuid
+
+    finally:
+        drop_table_if_exists(cursor, "#test_native_uuid_default")
+        db_connection.commit()
+
+
+def test_native_uuid_true_returns_uuid_objects(db_connection):
+    """Test that with native_uuid=True, UNIQUEIDENTIFIER columns return uuid.UUID."""
+    original_value = mssql_python.native_uuid
+    cursor = db_connection.cursor()
+
+    try:
+        mssql_python.native_uuid = True
+
+        drop_table_if_exists(cursor, "#test_native_uuid_true")
+        cursor.execute(
+            "CREATE TABLE #test_native_uuid_true (id UNIQUEIDENTIFIER, name NVARCHAR(50))"
+        )
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO #test_native_uuid_true VALUES (?, ?)", [test_uuid, "test"])
+
+        # fetchone
+        cursor.execute("SELECT id, name FROM #test_native_uuid_true")
+        row = cursor.fetchone()
+        assert isinstance(row[0], uuid.UUID), f"Expected uuid.UUID, got {type(row[0])}"
+        assert row[0] == test_uuid
+
+        # fetchall
+        cursor.execute("SELECT id, name FROM #test_native_uuid_true")
+        rows = cursor.fetchall()
+        assert isinstance(rows[0][0], uuid.UUID), f"Expected uuid.UUID, got {type(rows[0][0])}"
+        assert rows[0][0] == test_uuid
+
+        # fetchmany
+        cursor.execute("SELECT id, name FROM #test_native_uuid_true")
+        rows = cursor.fetchmany(1)
+        assert isinstance(rows[0][0], uuid.UUID), f"Expected uuid.UUID, got {type(rows[0][0])}"
+        assert rows[0][0] == test_uuid
+
+    finally:
+        mssql_python.native_uuid = original_value
+        drop_table_if_exists(cursor, "#test_native_uuid_true")
+        db_connection.commit()
+
+
+def test_native_uuid_false_returns_strings(db_connection):
+    """Test that with native_uuid=False, UNIQUEIDENTIFIER columns return str."""
+    original_value = mssql_python.native_uuid
+    cursor = db_connection.cursor()
+
+    try:
+        mssql_python.native_uuid = False
+
+        drop_table_if_exists(cursor, "#test_native_uuid_false")
+        cursor.execute(
+            "CREATE TABLE #test_native_uuid_false (id UNIQUEIDENTIFIER, name NVARCHAR(50))"
+        )
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO #test_native_uuid_false VALUES (?, ?)", [test_uuid, "test"])
+
+        # fetchone
+        cursor.execute("SELECT id, name FROM #test_native_uuid_false")
+        row = cursor.fetchone()
+        assert isinstance(row[0], str), f"With native_uuid=False, expected str, got {type(row[0])}"
+        assert (
+            row[0] == str(test_uuid).upper()
+        ), f"UUID string mismatch: {row[0]} != {str(test_uuid).upper()}"
+
+        # fetchall
+        cursor.execute("SELECT id, name FROM #test_native_uuid_false")
+        rows = cursor.fetchall()
+        assert isinstance(
+            rows[0][0], str
+        ), f"With native_uuid=False, expected str, got {type(rows[0][0])}"
+        assert rows[0][0] == str(test_uuid).upper()
+
+        # fetchmany
+        cursor.execute("SELECT id, name FROM #test_native_uuid_false")
+        rows = cursor.fetchmany(1)
+        assert isinstance(
+            rows[0][0], str
+        ), f"With native_uuid=False, expected str, got {type(rows[0][0])}"
+        assert rows[0][0] == str(test_uuid).upper()
+
+    finally:
+        mssql_python.native_uuid = original_value
+        drop_table_if_exists(cursor, "#test_native_uuid_false")
+        db_connection.commit()
+
+
+def test_native_uuid_null_handling(db_connection):
+    """Test that NULL UNIQUEIDENTIFIER values remain None regardless of native_uuid setting."""
+    original_value = mssql_python.native_uuid
+    cursor = db_connection.cursor()
+
+    try:
+        drop_table_if_exists(cursor, "#test_uuid_null")
+        cursor.execute("CREATE TABLE #test_uuid_null (id INT, uuid_col UNIQUEIDENTIFIER)")
+        cursor.execute("INSERT INTO #test_uuid_null VALUES (1, NULL)")
+
+        # Test with native_uuid=True
+        mssql_python.native_uuid = True
+        cursor.execute("SELECT * FROM #test_uuid_null")
+        row = cursor.fetchone()
+        assert row[1] is None, "NULL UUID should remain None with native_uuid=True"
+
+        # Test with native_uuid=False
+        mssql_python.native_uuid = False
+        cursor.execute("SELECT * FROM #test_uuid_null")
+        row = cursor.fetchone()
+        assert row[1] is None, "NULL UUID should remain None with native_uuid=False"
+
+    finally:
+        mssql_python.native_uuid = original_value
+        drop_table_if_exists(cursor, "#test_uuid_null")
+        db_connection.commit()
+
+
+def test_native_uuid_non_uuid_columns_unaffected(db_connection):
+    """Test that native_uuid=False does not affect non-UUID columns."""
+    original_value = mssql_python.native_uuid
+    cursor = db_connection.cursor()
+
+    try:
+        mssql_python.native_uuid = False
+
+        drop_table_if_exists(cursor, "#test_uuid_other_cols")
+        cursor.execute("""
+            CREATE TABLE #test_uuid_other_cols (
+                id UNIQUEIDENTIFIER,
+                int_col INT,
+                str_col NVARCHAR(50),
+                float_col FLOAT,
+                bit_col BIT
+            )
+        """)
+        test_uuid = uuid.uuid4()
+        cursor.execute(
+            "INSERT INTO #test_uuid_other_cols VALUES (?, ?, ?, ?, ?)",
+            [test_uuid, 42, "hello", 3.14, True],
+        )
+
+        cursor.execute("SELECT * FROM #test_uuid_other_cols")
+        row = cursor.fetchone()
+
+        # UUID column should be str
+        assert isinstance(row[0], str), f"UUID col: expected str, got {type(row[0])}"
+        # Other columns should retain their types
+        assert isinstance(row[1], int), f"INT col: expected int, got {type(row[1])}"
+        assert isinstance(row[2], str), f"NVARCHAR col: expected str, got {type(row[2])}"
+        assert isinstance(row[3], float), f"FLOAT col: expected float, got {type(row[3])}"
+        assert isinstance(row[4], bool), f"BIT col: expected bool, got {type(row[4])}"
+
+    finally:
+        mssql_python.native_uuid = original_value
+        drop_table_if_exists(cursor, "#test_uuid_other_cols")
+        db_connection.commit()
+
+
+def test_native_uuid_setting_snapshot_at_execute(db_connection):
+    """Test that native_uuid is snapshotted at execute() time, not fetch() time."""
+    original_value = mssql_python.native_uuid
+    cursor = db_connection.cursor()
+
+    try:
+        drop_table_if_exists(cursor, "#test_uuid_snapshot")
+        cursor.execute("CREATE TABLE #test_uuid_snapshot (id UNIQUEIDENTIFIER)")
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO #test_uuid_snapshot VALUES (?)", [test_uuid])
+
+        # Execute with native_uuid=False
+        mssql_python.native_uuid = False
+        cursor.execute("SELECT id FROM #test_uuid_snapshot")
+
+        # Change setting AFTER execute but BEFORE fetch
+        mssql_python.native_uuid = True
+
+        # Should still return str because setting was snapshotted at execute()
+        row = cursor.fetchone()
+        assert isinstance(row[0], str), (
+            "Setting should be snapshotted at execute() time. " f"Expected str, got {type(row[0])}"
+        )
+
+    finally:
+        mssql_python.native_uuid = original_value
+        drop_table_if_exists(cursor, "#test_uuid_snapshot")
+        db_connection.commit()
+
+
+def test_native_uuid_input_parameter_accepts_uuid_objects(db_connection):
+    """Test that uuid.UUID objects are still accepted as input parameters regardless of native_uuid."""
+    original_value = mssql_python.native_uuid
+    cursor = db_connection.cursor()
+
+    try:
+        drop_table_if_exists(cursor, "#test_uuid_input")
+        cursor.execute("CREATE TABLE #test_uuid_input (id UNIQUEIDENTIFIER)")
+        test_uuid = uuid.uuid4()
+
+        # Insert with native_uuid=False — uuid.UUID input should still work
+        mssql_python.native_uuid = False
+        cursor.execute("INSERT INTO #test_uuid_input VALUES (?)", [test_uuid])
+
+        cursor.execute("SELECT id FROM #test_uuid_input")
+        row = cursor.fetchone()
+        assert isinstance(row[0], str)
+        assert row[0] == str(test_uuid).upper()
+
+        # Query with UUID parameter — should also work
+        cursor.execute("SELECT id FROM #test_uuid_input WHERE id = ?", [test_uuid])
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == str(test_uuid).upper()
+
+    finally:
+        mssql_python.native_uuid = original_value
+        drop_table_if_exists(cursor, "#test_uuid_input")
+        db_connection.commit()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-connection native_uuid tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_per_connection_native_uuid_none_uses_module_default(conn_str):
+    """Test that connect(native_uuid=None) defers to module-level setting."""
+    original_value = mssql_python.native_uuid
+    conn = mssql_python.connect(conn_str, native_uuid=None)
+    cursor = conn.cursor()
+    try:
+        # Module-level = True, connection = None → should return uuid.UUID
+        mssql_python.native_uuid = True
+        drop_table_if_exists(cursor, "##test_conn_uuid_none")
+        cursor.execute("CREATE TABLE ##test_conn_uuid_none (id UNIQUEIDENTIFIER)")
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO ##test_conn_uuid_none VALUES (?)", [test_uuid])
+        cursor.execute("SELECT id FROM ##test_conn_uuid_none")
+        row = cursor.fetchone()
+        assert isinstance(row[0], uuid.UUID), "None should defer to module-level True"
+
+        # Now change module-level to False → new cursor on same connection should return str
+        mssql_python.native_uuid = False
+        cursor2 = conn.cursor()
+        cursor2.execute("SELECT id FROM ##test_conn_uuid_none")
+        row2 = cursor2.fetchone()
+        assert isinstance(row2[0], str), "None should defer to module-level False"
+
+    finally:
+        drop_table_if_exists(cursor, "##test_conn_uuid_none")
+        conn.close()
+        mssql_python.native_uuid = original_value
+
+
+def test_per_connection_overrides_module_level(conn_str):
+    """Test that per-connection native_uuid overrides the module-level setting."""
+    original_value = mssql_python.native_uuid
+    conn = None
+    conn2 = None
+    try:
+        # Module-level = True, but connection says False → strings
+        mssql_python.native_uuid = True
+        conn = mssql_python.connect(conn_str, native_uuid=False)
+        cursor = conn.cursor()
+
+        drop_table_if_exists(cursor, "#test_conn_override_a")
+        cursor.execute("CREATE TABLE #test_conn_override_a (id UNIQUEIDENTIFIER)")
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO #test_conn_override_a VALUES (?)", [test_uuid])
+
+        cursor.execute("SELECT id FROM #test_conn_override_a")
+        row = cursor.fetchone()
+        assert isinstance(
+            row[0], str
+        ), f"Connection native_uuid=False should override module True, got {type(row[0])}"
+
+        # Module-level = False, but connection says True → uuid.UUID
+        mssql_python.native_uuid = False
+        conn2 = mssql_python.connect(conn_str, native_uuid=True)
+        cursor2 = conn2.cursor()
+        drop_table_if_exists(cursor2, "#test_conn_override_b")
+        cursor2.execute("CREATE TABLE #test_conn_override_b (id UNIQUEIDENTIFIER)")
+        cursor2.execute("INSERT INTO #test_conn_override_b VALUES (?)", [test_uuid])
+
+        cursor2.execute("SELECT id FROM #test_conn_override_b")
+        row2 = cursor2.fetchone()
+        assert isinstance(
+            row2[0], uuid.UUID
+        ), f"Connection native_uuid=True should override module False, got {type(row2[0])}"
+
+        drop_table_if_exists(cursor, "#test_conn_override_a")
+        drop_table_if_exists(cursor2, "#test_conn_override_b")
+    finally:
+        mssql_python.native_uuid = original_value
+        if conn:
+            conn.close()
+        if conn2:
+            conn2.close()
+
+
+def test_two_connections_different_native_uuid(conn_str):
+    """Test that two simultaneous connections can have different native_uuid settings."""
+    original_value = mssql_python.native_uuid
+    try:
+        conn_str_mode = conn_str
+        conn_uuid = mssql_python.connect(conn_str_mode, native_uuid=True)
+        conn_str_mode2 = conn_str
+        conn_string = mssql_python.connect(conn_str_mode2, native_uuid=False)
+
+        cursor_uuid = conn_uuid.cursor()
+        cursor_string = conn_string.cursor()
+
+        drop_table_if_exists(cursor_uuid, "#test_dual_conn")
+        cursor_uuid.execute("CREATE TABLE #test_dual_conn (id UNIQUEIDENTIFIER)")
+        test_uuid = uuid.uuid4()
+        cursor_uuid.execute("INSERT INTO #test_dual_conn VALUES (?)", [test_uuid])
+
+        # Same query, different connections → different types
+        cursor_uuid.execute("SELECT id FROM #test_dual_conn")
+        row_uuid = cursor_uuid.fetchone()
+
+        # Need a separate temp table for the second connection since temp tables
+        # are connection-scoped. Use a global temp table instead.
+        drop_table_if_exists(cursor_string, "##test_dual_conn_shared")
+        cursor_string.execute("CREATE TABLE ##test_dual_conn_shared (id UNIQUEIDENTIFIER)")
+        cursor_string.execute("INSERT INTO ##test_dual_conn_shared VALUES (?)", [test_uuid])
+        cursor_string.execute("SELECT id FROM ##test_dual_conn_shared")
+        row_string = cursor_string.fetchone()
+
+        assert isinstance(row_uuid[0], uuid.UUID), f"Expected uuid.UUID, got {type(row_uuid[0])}"
+        assert isinstance(row_string[0], str), f"Expected str, got {type(row_string[0])}"
+        assert (
+            str(row_uuid[0]).upper() == row_string[0]
+        ), "Values should be equal as uppercase strings"
+
+        drop_table_if_exists(cursor_uuid, "#test_dual_conn")
+        drop_table_if_exists(cursor_string, "##test_dual_conn_shared")
+        conn_uuid.close()
+        conn_string.close()
+    finally:
+        mssql_python.native_uuid = original_value
+
+
+def test_per_connection_native_uuid_invalid_type(conn_str):
+    """Test that connect(native_uuid=<non-bool>) raises ValueError."""
+    with pytest.raises(ValueError, match="native_uuid must be a boolean"):
+        mssql_python.connect(conn_str, native_uuid="false")
+
+    with pytest.raises(ValueError, match="native_uuid must be a boolean"):
+        mssql_python.connect(conn_str, native_uuid=1)
+
+
+def test_executemany_uuid_output_sets_uuid_str_indices(conn_str):
+    """Test that executemany with OUTPUT clause computes _uuid_str_indices."""
+    original = mssql_python.native_uuid
+    try:
+        mssql_python.native_uuid = False
+        conn = mssql_python.connect(conn_str)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE #executemany_uuid_output (
+                id INT IDENTITY(1,1),
+                guid UNIQUEIDENTIFIER DEFAULT NEWID()
+            )
+        """)
+
+        # executemany with OUTPUT — produces a result set with a UUID column
+        cursor.executemany(
+            "INSERT INTO #executemany_uuid_output (guid) OUTPUT INSERTED.guid VALUES (?)",
+            [
+                (uuid.UUID("11111111-1111-1111-1111-111111111111"),),
+                (uuid.UUID("22222222-2222-2222-2222-222222222222"),),
+            ],
+        )
+
+        # After executemany, description should exist (OUTPUT returns rows)
+        assert cursor.description is not None, "OUTPUT clause should produce a description"
+
+        # _uuid_str_indices should have been computed (native_uuid=False + UUID column)
+        assert (
+            cursor._uuid_str_indices is not None
+        ), "_uuid_str_indices should be set after executemany with OUTPUT"
+
+        # Fetch the returned rows — should be uppercase strings, not uuid.UUID
+        rows = cursor.fetchall()
+        assert len(rows) >= 1, "OUTPUT clause should return at least one row"
+        for row in rows:
+            assert isinstance(row[0], str), f"Expected str, got {type(row[0])}"
+            assert row[0] == row[0].upper(), "UUID string should be uppercase"
+
+        cursor.execute("DROP TABLE IF EXISTS #executemany_uuid_output")
+        cursor.close()
+        conn.close()
+    finally:
+        mssql_python.native_uuid = original
+
+
+def test_executemany_no_result_set_clears_uuid_str_indices(conn_str):
+    """Test that executemany without OUTPUT clears description and uuid state.
+
+    Covers the ``else`` branch (cursor.description is None) inside executemany().
+    """
+    original = mssql_python.native_uuid
+    try:
+        mssql_python.native_uuid = False
+        conn = mssql_python.connect(conn_str)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE #executemany_no_output (
+                id INT,
+                guid UNIQUEIDENTIFIER
+            )
+        """)
+
+        # Plain INSERT — no OUTPUT clause, no result set produced
+        cursor.executemany(
+            "INSERT INTO #executemany_no_output (id, guid) VALUES (?, ?)",
+            [
+                (1, uuid.UUID("11111111-1111-1111-1111-111111111111")),
+                (2, uuid.UUID("22222222-2222-2222-2222-222222222222")),
+            ],
+        )
+
+        # description should be None
+        assert cursor.description is None, "Plain INSERT should have no description"
+        # _uuid_str_indices should be None
+        assert cursor._uuid_str_indices is None
+        # rowcount should reflect the inserted rows
+        assert cursor.rowcount == 2
+
+        cursor.execute("DROP TABLE IF EXISTS #executemany_no_output")
+        cursor.close()
+        conn.close()
+    finally:
+        mssql_python.native_uuid = original
+
+
+def test_executemany_describe_col_exception_sets_description_none(conn_str):
+    """Test that executemany handles DDBCSQLDescribeCol raising an exception.
+
+    The except handler that sets
+    self.description = None when the C++ binding raises during column
+    metadata retrieval.
+    """
+    original = mssql_python.native_uuid
+    try:
+        mssql_python.native_uuid = False
+        conn = mssql_python.connect(conn_str)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE #executemany_except_test (
+                id INT,
+                guid UNIQUEIDENTIFIER
+            )
+        """)
+
+        # Capture the real DDBCSQLDescribeCol so we can patch only during executemany
+        real_describe = mssql_python.cursor.ddbc_bindings.DDBCSQLDescribeCol
+        call_count = 0
+
+        def describe_raises(*args, **kwargs):
+            """Raise on the first call (inside executemany), delegate otherwise."""
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Simulated DDBCSQLDescribeCol failure")
+
+        # executemany with OUTPUT — would normally produce a result set, but we
+        # force DDBCSQLDescribeCol to raise so the except branch is taken.
+        with patch.object(
+            mssql_python.cursor.ddbc_bindings,
+            "DDBCSQLDescribeCol",
+            side_effect=describe_raises,
+        ):
+            cursor.executemany(
+                "INSERT INTO #executemany_except_test (id, guid) OUTPUT INSERTED.guid VALUES (?, ?)",
+                [
+                    (1, uuid.UUID("11111111-1111-1111-1111-111111111111")),
+                ],
+            )
+
+        # The except branch should have set description to None
+        assert (
+            cursor.description is None
+        ), "description should be None after DDBCSQLDescribeCol raises"
+        assert cursor._uuid_str_indices is None
+        assert call_count >= 1, "DDBCSQLDescribeCol mock should have been called"
+
+        cursor.execute("DROP TABLE IF EXISTS #executemany_except_test")
+        cursor.close()
+        conn.close()
+    finally:
+        mssql_python.native_uuid = original
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# native_uuid concurrency & thread-safety tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_native_uuid_concurrent_connections_isolation(conn_str):
+    """Multiple threads with different per-connection native_uuid execute simultaneously.
+
+    Verifies that per-connection native_uuid settings are fully isolated:
+    each thread's results match its own connection's setting regardless of
+    what other threads are doing concurrently.
+    """
+    NUM_THREADS = 6
+    ITERATIONS = 5
+    errors = []
+    barrier = threading.Barrier(NUM_THREADS)
+
+    def worker(thread_id, native_uuid_setting):
+        """Each thread creates its own connection and verifies return types."""
+        try:
+            conn = mssql_python.connect(conn_str, native_uuid=native_uuid_setting)
+            cursor = conn.cursor()
+            table = f"#concurrent_uuid_{thread_id}"
+
+            try:
+                cursor.execute(f"CREATE TABLE {table} (id UNIQUEIDENTIFIER)")
+                test_uuid = uuid.uuid4()
+                cursor.execute(f"INSERT INTO {table} VALUES (?)", [test_uuid])
+
+                # Synchronize — all threads start querying at the same time
+                barrier.wait(timeout=10)
+
+                for _ in range(ITERATIONS):
+                    cursor.execute(f"SELECT id FROM {table}")
+                    row = cursor.fetchone()
+                    if native_uuid_setting:
+                        if not isinstance(row[0], uuid.UUID):
+                            errors.append(
+                                f"Thread {thread_id}: expected uuid.UUID, " f"got {type(row[0])}"
+                            )
+                    else:
+                        if not isinstance(row[0], str):
+                            errors.append(
+                                f"Thread {thread_id}: expected str, " f"got {type(row[0])}"
+                            )
+
+                cursor.execute(f"DROP TABLE IF EXISTS {table}")
+            finally:
+                conn.close()
+        except Exception as e:
+            errors.append(f"Thread {thread_id}: {e}")
+
+    threads = []
+    for i in range(NUM_THREADS):
+        # Alternate True / False across threads
+        setting = i % 2 == 0
+        t = threading.Thread(target=worker, args=(i, setting))
+        threads.append(t)
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"Concurrent connection isolation errors: {errors}"
+
+
+def test_native_uuid_snapshot_under_concurrent_modification(conn_str):
+    """Snapshot-at-execute holds even when another thread modifies the module setting.
+
+    Thread A executes with native_uuid=False, then thread B toggles the
+    module setting to True *before* thread A fetches.  Thread A must still
+    receive strings because the setting was snapshotted at execute() time.
+    """
+    original = mssql_python.native_uuid
+    errors = []
+    executed_event = threading.Event()  # A signals after execute()
+    toggled_event = threading.Event()  # B signals after toggling
+
+    try:
+        mssql_python.native_uuid = False
+        conn = mssql_python.connect(conn_str)  # native_uuid=None → uses module
+        cursor = conn.cursor()
+
+        cursor.execute("CREATE TABLE #snapshot_conc (id UNIQUEIDENTIFIER)")
+        test_uuid = uuid.uuid4()
+        cursor.execute("INSERT INTO #snapshot_conc VALUES (?)", [test_uuid])
+
+        def thread_a():
+            """Execute with False, wait for toggle, then fetch."""
+            try:
+                cursor.execute("SELECT id FROM #snapshot_conc")
+                executed_event.set()  # signal: execute() done
+                toggled_event.wait(timeout=10)  # wait for B to toggle
+                row = cursor.fetchone()
+                if not isinstance(row[0], str):
+                    errors.append(
+                        f"Thread A: snapshot broken — expected str, " f"got {type(row[0])}"
+                    )
+            except Exception as e:
+                errors.append(f"Thread A: {e}")
+
+        def thread_b():
+            """Wait for A to execute, then toggle module setting."""
+            try:
+                executed_event.wait(timeout=10)
+                mssql_python.native_uuid = True  # toggle after execute
+                toggled_event.set()
+            except Exception as e:
+                errors.append(f"Thread B: {e}")
+
+        ta = threading.Thread(target=thread_a)
+        tb = threading.Thread(target=thread_b)
+        ta.start()
+        tb.start()
+        ta.join(timeout=15)
+        tb.join(timeout=15)
+
+        assert not errors, f"Snapshot-under-concurrency errors: {errors}"
+
+        cursor.execute("DROP TABLE IF EXISTS #snapshot_conc")
+        conn.close()
+    finally:
+        mssql_python.native_uuid = original
+
+
+def test_native_uuid_concurrent_toggle_consistency(conn_str):
+    """One thread rapidly toggles module-level native_uuid while others query.
+
+    Each querying thread must get a *consistent* result for each execute/fetch
+    cycle — either all uuid.UUID or all str within a single cursor, never a
+    mix.  This validates that the snapshot-at-execute design prevents torn reads.
+    """
+    original = mssql_python.native_uuid
+    NUM_READERS = 4
+    ITERATIONS = 10
+    errors = []
+    stop_event = threading.Event()
+
+    def toggler():
+        """Rapidly flip the module-level native_uuid flag."""
+        try:
+            while not stop_event.is_set():
+                mssql_python.native_uuid = True
+                mssql_python.native_uuid = False
+        except Exception as e:
+            errors.append(f"Toggler: {e}")
+
+    def reader(reader_id):
+        """Open a connection and repeatedly execute + fetch, checking consistency."""
+        try:
+            conn = mssql_python.connect(conn_str)  # native_uuid=None → module
+            cursor = conn.cursor()
+            table = f"#toggle_reader_{reader_id}"
+
+            try:
+                cursor.execute(f"CREATE TABLE {table} (id UNIQUEIDENTIFIER)")
+                uuids = [uuid.uuid4() for _ in range(3)]
+                for u in uuids:
+                    cursor.execute(f"INSERT INTO {table} VALUES (?)", [u])
+
+                for _ in range(ITERATIONS):
+                    cursor.execute(f"SELECT id FROM {table}")
+                    rows = cursor.fetchall()
+                    types = {type(r[0]) for r in rows}
+
+                    # All rows in a single fetch must be the same type
+                    if len(types) != 1:
+                        errors.append(
+                            f"Reader {reader_id}: mixed types in single " f"fetch: {types}"
+                        )
+
+                cursor.execute(f"DROP TABLE IF EXISTS {table}")
+            finally:
+                conn.close()
+        except Exception as e:
+            errors.append(f"Reader {reader_id}: {e}")
+
+    try:
+        toggle_thread = threading.Thread(target=toggler, daemon=True)
+        toggle_thread.start()
+
+        reader_threads = []
+        for i in range(NUM_READERS):
+            t = threading.Thread(target=reader, args=(i,))
+            reader_threads.append(t)
+
+        for t in reader_threads:
+            t.start()
+        for t in reader_threads:
+            t.join(timeout=30)
+
+        stop_event.set()
+        toggle_thread.join(timeout=5)
+
+        assert not errors, f"Concurrent toggle consistency errors: {errors}"
+    finally:
+        stop_event.set()
+        mssql_python.native_uuid = original
+
+
+def test_execute_reset_cursor_false_reuses_prepared_plan(db_connection):
+    """Test that reset_cursor=False reuses the prepared statement handle
+    and successfully re-executes after consuming the previous result set."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT 1 AS val WHERE 1 = ?", (1,))
+        row = cursor.fetchone()
+        assert row[0] == 1
+        _ = cursor.fetchall()  # consume remaining
+
+        # Re-execute with reset_cursor=False — this was raising
+        # ProgrammingError: Invalid cursor state before the fix.
+        cursor.execute("SELECT 1 AS val WHERE 1 = ?", (2,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row is None  # No match for WHERE 1 = 2
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_returns_new_results(db_connection):
+    """Test that reset_cursor=False correctly returns results from the
+    second execution with different parameter values."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT ? AS val", (42,))
+        row = cursor.fetchone()
+        assert row[0] == 42
+        _ = cursor.fetchall()
+
+        cursor.execute("SELECT ? AS val", (99,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 99
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_multiple_iterations(db_connection):
+    """Test that reset_cursor=False works across several consecutive
+    re-executions on the same cursor."""
+    cursor = db_connection.cursor()
+    try:
+        for i in range(5):
+            kwargs = {"reset_cursor": False} if i > 0 else {}
+            cursor.execute("SELECT ? AS iter", (i,), **kwargs)
+            row = cursor.fetchone()
+            assert row is not None, f"Expected row with value {i}, got None"
+            assert row[0] == i, f"Expected {i}, got {row[0]}"
+            _ = cursor.fetchall()
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_no_params(db_connection):
+    """Test that reset_cursor=False works for queries without parameters."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT 1 AS a")
+        _ = cursor.fetchall()
+
+        cursor.execute("SELECT 2 AS a", reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 2
+    finally:
+        cursor.close()
+
+
+def test_execute_reset_cursor_false_after_fetchone_only(db_connection):
+    """Test reset_cursor=False when only fetchone() was called (result set
+    not fully consumed via fetchall)."""
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("SELECT ? AS val", (1,))
+        row = cursor.fetchone()
+        assert row[0] == 1
+        # Do NOT call fetchall — go straight to re-execute
+        cursor.execute("SELECT ? AS val", (2,), reset_cursor=False)
+        row = cursor.fetchone()
+        assert row[0] == 2
+    finally:
+        cursor.close()
+
+
+@pytest.fixture(scope="module")
+def catalog_fetch_schema(cursor, db_connection):
+    """Create and tear down test objects for catalog fetchone/iteration testing."""
+    cursor.execute(
+        "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_cat_fetch') "
+        "EXEC('CREATE SCHEMA pytest_cat_fetch')"
+    )
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    cursor.execute("DROP PROCEDURE IF EXISTS pytest_cat_fetch.fetch_test_proc")
+
+    cursor.execute("""
+        CREATE TABLE pytest_cat_fetch.fetch_test (
+            id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            value DECIMAL(10,2),
+            ts DATETIME DEFAULT GETDATE()
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE pytest_cat_fetch.fetch_test_child (
+            child_id INT PRIMARY KEY,
+            parent_id INT NOT NULL,
+            CONSTRAINT fk_parent FOREIGN KEY (parent_id)
+                REFERENCES pytest_cat_fetch.fetch_test(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE PROCEDURE pytest_cat_fetch.fetch_test_proc
+        AS
+        BEGIN
+            SELECT 1 AS result
+        END
+    """)
+    db_connection.commit()
+
+    yield
+
+    cursor.execute("DROP PROCEDURE IF EXISTS pytest_cat_fetch.fetch_test_proc")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test_child")
+    cursor.execute("DROP TABLE IF EXISTS pytest_cat_fetch.fetch_test")
+    cursor.execute("DROP SCHEMA IF EXISTS pytest_cat_fetch")
+    db_connection.commit()
+
+
+def test_tables_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on tables() result set (GH-505)"""
+    cursor.tables(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row"
+    assert row.table_name.lower() == "fetch_test"
+    assert row.table_schem.lower() == "pytest_cat_fetch"
+    assert cursor.fetchone() is None
+
+
+def test_tables_iteration(cursor, db_connection, catalog_fetch_schema):
+    """Test that 'for row in cursor.tables()' works (GH-505)"""
+    rows = list(cursor.tables(table="fetch_test", schema="pytest_cat_fetch"))
+    assert len(rows) == 1, "Iteration should yield 1 row"
+    assert rows[0].table_name.lower() == "fetch_test"
+
+
+def test_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on columns() result set (GH-505)"""
+    cursor.columns(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from columns()"
+    assert hasattr(row, "column_name")
+    assert row.table_name.lower() == "fetch_test"
+
+
+def test_primarykeys_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on primaryKeys() result set (GH-505)"""
+    cursor.primaryKeys(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from primaryKeys()"
+    assert row.column_name.lower() == "id"
+    assert cursor.fetchone() is None
+
+
+def test_foreignkeys_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on foreignKeys() result set (GH-505)"""
+    cursor.foreignKeys(
+        table="fetch_test_child",
+        schema="pytest_cat_fetch",
+    )
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from foreignKeys()"
+    assert row.pkcolumn_name.lower() == "id"
+    assert row.fkcolumn_name.lower() == "parent_id"
+    assert cursor.fetchone() is None
+
+
+def test_statistics_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on statistics() result set (GH-505)"""
+    cursor.statistics(table="fetch_test", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from statistics()"
+    assert row.table_name.lower() == "fetch_test"
+
+
+def test_procedures_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on procedures() result set (GH-505)"""
+    cursor.procedures(procedure="fetch_test_proc", schema="pytest_cat_fetch")
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from procedures()"
+    assert row.procedure_name.lower().startswith("fetch_test_proc")
+    assert cursor.fetchone() is None
+
+
+def test_rowid_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on rowIdColumns() result set (GH-505)"""
+    cursor.rowIdColumns(table="fetch_test", schema="pytest_cat_fetch")
+    # May or may not have rowid columns; just verify no InterfaceError
+    row = cursor.fetchone()
+    if row is not None:
+        assert hasattr(row, "column_name")
+
+
+def test_rowver_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on rowVerColumns() result set (GH-505)"""
+    cursor.rowVerColumns(table="fetch_test", schema="pytest_cat_fetch")
+    # May or may not have rowver columns; just verify no InterfaceError
+    row = cursor.fetchone()
+    if row is not None:
+        assert hasattr(row, "column_name")
+
+
+def test_gettypeinfo_fetchone(cursor, db_connection, catalog_fetch_schema):
+    """Test that fetchone() works on getTypeInfo() result set (GH-505)"""
+    cursor.getTypeInfo()
+    row = cursor.fetchone()
+    assert row is not None, "fetchone() should return a row from getTypeInfo()"
+    assert hasattr(row, "type_name")
+
+
+def test_catalog_rownumber_increments_correctly(cursor, db_connection, catalog_fetch_schema):
+    """Test that rownumber increments correctly during fetchone() on catalog results (GH-505)"""
+    cursor.columns(table="fetch_test", schema="pytest_cat_fetch")
+    assert cursor.rownumber == -1
+
+    for expected_idx in range(4):
+        row = cursor.fetchone()
+        assert row is not None, f"Expected row at index {expected_idx}"
+        assert cursor.rownumber == expected_idx
+
+    assert cursor.fetchone() is None
+
+
+@pytest.mark.parametrize(
+    "raiserror_len",
+    [2047, 4000],
+)
+def test_long_raiserror(cursor, raiserror_len):
+    """Test that long error messages from RAISERROR are correctly captured"""
+    query = f"""
+        DECLARE @msg NVARCHAR(MAX) = REPLICATE(N'a', {raiserror_len});
+        RAISERROR(@msg, 16, 1);
+    """
+    try:
+        cursor.execute(query)
+    except mssql_python.ProgrammingError as e:
+        msg = e.args[0]
+        if raiserror_len <= 2047:  # SQL Server length cap
+            assert msg.endswith("a" * raiserror_len), msg
+        else:
+            assert msg.endswith("a" * (2047 - 3) + "..."), msg
+
+
+@pytest.mark.parametrize(
+    "message_len",
+    [2047, 4000, 8000, 8001, 80000],
+)
+def test_long_print_message(cursor, message_len):
+    """Test that long messages from PRINT are correctly captured."""
+    query = f"""
+        DECLARE @msg VARCHAR(MAX);
+        /* Cast to VARCHAR(MAX) so REPLICATE is not truncated to 8000 bytes. */
+        SET @msg = REPLICATE(CAST('a' AS VARCHAR(MAX)), {message_len});
+        PRINT @msg;
+    """
+    cursor.execute(query)
+    msg = cursor.messages[0][1]
+    # SQL Server truncates at 8000 characters
+    assert msg.endswith("a" * min(8000, message_len)), msg
+
+
+# ---------------------------------------------------------
+# GH-609: Unit tests (no DB connection needed)
+# ---------------------------------------------------------
+from mssql_python.cursor import Cursor as _Cursor, MONEY_MAX as _MONEY_MAX
+from mssql_python.constants import ConstantsDDBC as _C
+
+
+def _make_bare_cursor():
+    """Create a Cursor instance without a connection for unit testing."""
+    cur = _Cursor.__new__(_Cursor)
+    cur._inputsizes = None
+    return cur
+
+
+def test_compute_column_type_large_decimal():
+    """_compute_column_type picks the highest-precision Decimal as sample."""
+    cur = _make_bare_cursor()
+    column = [
+        decimal.Decimal("100.50"),
+        decimal.Decimal("999999999999999999.123456"),
+        decimal.Decimal("200.75"),
+    ]
+    sample, _, _, max_dec_len = cur._compute_column_type(column)
+    assert isinstance(sample, decimal.Decimal)
+    assert sample > _MONEY_MAX
+    assert max_dec_len > 0
+
+
+def test_map_sql_type_decimal_outside_money_returns_numeric():
+    """_map_sql_type returns SQL_C_NUMERIC for Decimal outside MONEY range."""
+    cur = _make_bare_cursor()
+    val = decimal.Decimal("999999999999999999.123456")
+    dummy_row = [val]
+    sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
+    assert sql_type == _C.SQL_NUMERIC.value
+    assert c_type == _C.SQL_C_NUMERIC.value
+    assert isinstance(format(val, "f"), str)
+
+
+def test_map_sql_type_decimal_in_money_returns_varchar():
+    """_map_sql_type returns SQL_VARCHAR for Decimal within MONEY range."""
+    cur = _make_bare_cursor()
+    val = decimal.Decimal("100.50")
+    dummy_row = [val]
+    sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
+    assert sql_type == _C.SQL_VARCHAR.value
+    assert c_type == _C.SQL_C_CHAR.value
+
+
+def test_executemany_numeric_override_needed():
+    """The executemany auto-detection path must override SQL_C_NUMERIC to SQL_C_CHAR (GH-609)."""
+    from mssql_python import ddbc_bindings
+
+    cur = _make_bare_cursor()
+    data = [
+        (decimal.Decimal("100.50"),),
+        (decimal.Decimal("999999999999999999.123456"),),
+    ]
+    column = [row[0] for row in data]
+    sample_value, min_val, max_val, max_decimal_len = cur._compute_column_type(column)
+    dummy_row = list(data[0])
+    paraminfo = cur._create_parameter_types_list(
+        sample_value,
+        ddbc_bindings.ParamInfo,
+        dummy_row,
+        0,
+        min_val=min_val,
+        max_val=max_val,
+    )
+    assert paraminfo.paramSQLType == _C.SQL_NUMERIC.value
+    original_c_type = paraminfo.paramCType
+    if paraminfo.paramSQLType in (_C.SQL_DECIMAL.value, _C.SQL_NUMERIC.value):
+        paraminfo.paramCType = _C.SQL_C_CHAR.value
+        if max_decimal_len > paraminfo.columnSize:
+            paraminfo.columnSize = max_decimal_len
+    assert paraminfo.paramCType == _C.SQL_C_CHAR.value
+    assert original_c_type == _C.SQL_C_NUMERIC.value
+    assert paraminfo.columnSize >= max_decimal_len
+
+
+def test_executemany_decimal_numeric_override_coverage(monkeypatch):
+    """Call the real executemany method to cover the GH-609 override lines."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        captured["row_count"] = row_count
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [
+        (decimal.Decimal("100.50"),),
+        (decimal.Decimal("999999999999999999.123456"),),
+    ]
+    cur.executemany("INSERT INTO t VALUES (?)", data)
+    pt = captured["parameters_type"]
+    assert len(pt) == 1
+    assert pt[0].paramSQLType == _C.SQL_NUMERIC.value
+    assert pt[0].paramCType == _C.SQL_C_CHAR.value
+    col_values = captured["columnwise_params"][0]
+    for val in col_values:
+        assert val is None or isinstance(val, str)
+
+
+# ---------------------------------------------------------
+# GH-609: Integration tests (need DB connection)
+# ---------------------------------------------------------
+def test_executemany_decimal_outside_money_range(cursor, db_connection):
+    """Test executemany with Decimal values exceeding the MONEY range (GH-609).
+
+    When a batch contains Decimal values outside ±922,337,203,685,477.5807,
+    _map_sql_type returns SQL_C_NUMERIC (expecting NumericData structs), but
+    the conversion loop converts all Decimals to strings. Without the GH-609
+    fix, this mismatch causes:
+        RuntimeError: Parameter's object type does not match parameter's C type
+
+    Also exercises separate batches (customer scenario: most batches have
+    in-MONEY-range values, one batch exceeds the range).
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_gh609 (val DECIMAL(38, 6))")
+
+        # Batch 1: all values inside MONEY range
+        batch1 = [(decimal.Decimal("100.50"),), (decimal.Decimal("200.75"),)]
+        cursor.executemany("INSERT INTO #pytest_gh609 VALUES (?)", batch1)
+
+        # Batch 2: mix of inside and outside MONEY range
+        batch2 = [
+            (decimal.Decimal("0.000001"),),
+            (decimal.Decimal("999999999999999999.123456"),),  # exceeds MONEY_MAX
+            (decimal.Decimal("-999999999999999999.654321"),),  # exceeds MONEY_MIN
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609 VALUES (?)", batch2)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_gh609 ORDER BY val")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert len(rows) == 5
+        assert rows[0] == decimal.Decimal("-999999999999999999.654321")
+        assert rows[-1] == decimal.Decimal("999999999999999999.123456")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609")
+        db_connection.commit()
+
+
+def test_executemany_decimal_with_nulls_outside_money(cursor, db_connection):
+    """Test executemany with NULL + large Decimal values outside MONEY range (GH-609)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_gh609_nulls (val DECIMAL(38, 10))")
+        data = [
+            (None,),
+            (decimal.Decimal("12345678901234567890.1234567890"),),
+            (None,),
+            (decimal.Decimal("-12345678901234567890.1234567890"),),
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609_nulls VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_gh609_nulls WHERE val IS NOT NULL ORDER BY val")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert len(rows) == 2
+        assert rows[0] == decimal.Decimal("-12345678901234567890.1234567890")
+        assert rows[1] == decimal.Decimal("12345678901234567890.1234567890")
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh609_nulls WHERE val IS NULL")
+        assert cursor.fetchone()[0] == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_nulls")
+        db_connection.commit()
+
+
+def test_executemany_multi_column_with_large_decimal(cursor, db_connection):
+    """Test executemany with multiple columns including large Decimal (GH-609).
+
+    Mirrors the customer's scenario: a table with many columns where one
+    NUMERIC column has values outside the MONEY range.
+    """
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_gh609_multi (
+                id INT,
+                name NVARCHAR(100),
+                amount DECIMAL(38, 6),
+                description VARCHAR(200)
+            )
+        """)
+        data = [
+            (1, "row1", decimal.Decimal("999999999999999999.123456"), "test"),
+            (2, "row2", decimal.Decimal("50.0"), "small"),
+            (3, "row3", decimal.Decimal("-999999999999999999.654321"), "negative large"),
+        ]
+        cursor.executemany("INSERT INTO #pytest_gh609_multi VALUES (?, ?, ?, ?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, amount FROM #pytest_gh609_multi ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3
+        assert rows[0][1] == decimal.Decimal("999999999999999999.123456")
+        assert rows[2][1] == decimal.Decimal("-999999999999999999.654321")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh609_multi")
+        db_connection.commit()
+
+
+def test_executemany_row_objects_with_varchar_max_dae(cursor, db_connection):
+    """Test executemany with Row objects and VARCHAR(MAX) DAE fallback (GH-629)."""
+    try:
+        # Create source table with VARCHAR(MAX) column
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_source (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Insert data with large strings (>4000 chars triggers DAE)
+        large_text = "X" * 5000
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (1, large_text))
+        cursor.execute("INSERT INTO #pytest_gh629_source VALUES (?, ?)", (2, large_text))
+        db_connection.commit()
+
+        # Fetch rows as Row objects
+        cursor.execute("SELECT * FROM #pytest_gh629_source")
+        rows = cursor.fetchmany(10)  # Returns Row objects
+        assert len(rows) == 2
+        assert isinstance(rows[0], mssql_python.Row)
+
+        # Create target table
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_target (
+                id INT,
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # executemany with Row objects should work (triggers DAE + row-by-row fallback)
+        cursor.executemany("INSERT INTO #pytest_gh629_target VALUES (?, ?)", rows)
+        db_connection.commit()
+
+        # Verify data was inserted correctly
+        cursor.execute("SELECT COUNT(*) FROM #pytest_gh629_target")
+        assert cursor.fetchone()[0] == 2
+
+        cursor.execute("SELECT id, LEN(large_text) FROM #pytest_gh629_target ORDER BY id")
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == 5000
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_target")
+        db_connection.commit()
+
+
+def test_execute_with_row_object_as_parameters(cursor, db_connection):
+    """Test execute(sql, row) directly with a Row object as parameters (GH-629).
+
+    The fix for GH-629 lives in execute()'s single-argument unwrap: a Row
+    (e.g. from fetchone()) must be unwrapped into individual parameters
+    instead of being treated as one scalar value. This guards that surface
+    directly so a future refactor of the unwrap logic can't silently re-break it.
+    """
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_exec_source (
+                id INT,
+                name VARCHAR(50),
+                large_text VARCHAR(MAX)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE #pytest_gh629_exec_target (
+                id INT,
+                name VARCHAR(50),
+                large_text VARCHAR(MAX)
+            )
+        """)
+
+        # Row 1 stays small (regular bind path); Row 2 has a >4000 char value (DAE path)
+        small_text = "hello"
+        large_text = "X" * 5000
+        cursor.execute(
+            "INSERT INTO #pytest_gh629_exec_source VALUES (?, ?, ?)", (1, "alice", small_text)
+        )
+        cursor.execute(
+            "INSERT INTO #pytest_gh629_exec_source VALUES (?, ?, ?)", (2, "bob", large_text)
+        )
+        db_connection.commit()
+
+        # Fetch as Row objects, then pass each Row directly to execute(sql, row)
+        cursor.execute("SELECT * FROM #pytest_gh629_exec_source ORDER BY id")
+        rows = cursor.fetchall()
+        assert isinstance(rows[0], mssql_python.Row)
+
+        for row in rows:
+            # Passing the Row directly (not tuple(row)) must work after the fix.
+            cursor.execute("INSERT INTO #pytest_gh629_exec_target VALUES (?, ?, ?)", row)
+        db_connection.commit()
+
+        # Verify the round-trip preserved every value
+        cursor.execute(
+            "SELECT id, name, LEN(large_text) FROM #pytest_gh629_exec_target ORDER BY id"
+        )
+        result_rows = cursor.fetchall()
+        assert result_rows[0][0] == 1
+        assert result_rows[0][1] == "alice"
+        assert result_rows[0][2] == len(small_text)
+        assert result_rows[1][0] == 2
+        assert result_rows[1][1] == "bob"
+        assert result_rows[1][2] == 5000
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_exec_source")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_gh629_exec_target")
+        db_connection.commit()
