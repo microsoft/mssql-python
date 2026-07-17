@@ -843,7 +843,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(python3 -c 'from pathlib import Path; import re; t=Path("mssql_python_odbc/__init__.py").read_text(encoding="utf-8"); m=re.search(r"^__version__\\s*=\\s*[\"\'](\\d+\\.\\d+)\\.\\d+[\"\']", t, re.M); print(m.group(1) if m else "")')
+        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
       "
@@ -1072,26 +1072,32 @@ jobs:
       # Install dependencies in the ARM64 container
       if [ "$(distroName)" = "Ubuntu" ]; then
         docker exec test-container-$(distroName)-$(archName) bash -c "
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
+          apt-get update
           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
           # Verify architecture
           uname -m
           dpkg --print-architecture
+          python3 --version
+          cmake --version
         "
       else
         # Debian ARM64
         docker exec test-container-$(distroName)-$(archName) bash -c "
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
+          apt-get update
           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
           # Verify architecture
           uname -m
           dpkg --print-architecture
+          python3 --version
+          cmake --version
         "
       fi
     displayName: 'Install basic dependencies in $(distroName) ARM64 container'
@@ -1128,9 +1134,14 @@ jobs:
   - script: |
       # Install Python dependencies in the ARM64 container using virtual environment
       docker exec test-container-$(distroName)-$(archName) bash -c "
+        set -euo pipefail
         # Create a virtual environment
         python3 -m venv /opt/venv
         source /opt/venv/bin/activate
+
+        # Ensure the expected runtime tools are available before build/test steps
+        command -v python >/dev/null 2>&1
+        command -v cmake >/dev/null 2>&1
         
         # Install dependencies in the virtual environment
         python -m pip install --upgrade pip
@@ -1144,7 +1155,14 @@ jobs:
   - script: |
       # Build pybind bindings in the ARM64 container
       docker exec test-container-$(distroName)-$(archName) bash -c "
+        set -euo pipefail
+        if [ ! -f /opt/venv/bin/activate ]; then
+          echo '/opt/venv/bin/activate is missing. Python dependency setup did not complete.'
+          exit 1
+        fi
         source /opt/venv/bin/activate
+        command -v python >/dev/null 2>&1
+        command -v cmake >/dev/null 2>&1
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
@@ -1170,7 +1188,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(python3 -c 'from pathlib import Path; import re; t=Path("mssql_python_odbc/__init__.py").read_text(encoding="utf-8"); m=re.search(r"^__version__\\s*=\\s*[\"\'](\\d+\\.\\d+)\\.\\d+[\"\']", t, re.M); print(m.group(1) if m else "")')
+        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
       "
@@ -1385,7 +1403,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 rhel driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(python3 -c 'from pathlib import Path; import re; t=Path("mssql_python_odbc/__init__.py").read_text(encoding="utf-8"); m=re.search(r"^__version__\\s*=\\s*[\"\'](\\d+\\.\\d+)\\.\\d+[\"\']", t, re.M); print(m.group(1) if m else "")')
+        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
       "
@@ -1612,7 +1630,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 rhel driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(python3 -c 'from pathlib import Path; import re; t=Path("mssql_python_odbc/__init__.py").read_text(encoding="utf-8"); m=re.search(r"^__version__\\s*=\\s*[\"\'](\\d+\\.\\d+)\\.\\d+[\"\']", t, re.M); print(m.group(1) if m else "")')
+        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
       "
@@ -1848,7 +1866,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 alpine driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(python3 -c 'from pathlib import Path; import re; t=Path("mssql_python_odbc/__init__.py").read_text(encoding="utf-8"); m=re.search(r"^__version__\\s*=\\s*[\"\'](\\d+\\.\\d+)\\.\\d+[\"\']", t, re.M); print(m.group(1) if m else "")')
+        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
@@ -2101,7 +2119,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 alpine driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(python3 -c 'from pathlib import Path; import re; t=Path("mssql_python_odbc/__init__.py").read_text(encoding="utf-8"); m=re.search(r"^__version__\\s*=\\s*[\"\'](\\d+\\.\\d+)\\.\\d+[\"\']", t, re.M); print(m.group(1) if m else "")')
+        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
