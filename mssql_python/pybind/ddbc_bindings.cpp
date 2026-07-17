@@ -1272,6 +1272,12 @@ std::string GetLastErrorMessage() {
  * all supported platforms.
  */
 std::string GetDriverPathCpp(const std::string& moduleDir) {
+#if !defined(MSODBCSQL_VERSION_MAJOR) || !defined(MSODBCSQL_VERSION_MAJOR_MINOR)
+#error \
+    "MSODBCSQL_VERSION_MAJOR / MSODBCSQL_VERSION_MAJOR_MINOR must be defined at build time. " \
+    "They are derived from mssql_python_odbc.__version__ in CMakeLists.txt so the driver " \
+    "filename can never drift from the packaged driver version."
+#endif
     namespace fs = std::filesystem;
     fs::path basePath(moduleDir);
 
@@ -1299,23 +1305,22 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
         platform = "debian_ubuntu";  // Default to debian_ubuntu for other distros
     }
 
-    // NOTE (version coupling): the Linux driver filename is pinned to the exact
-    // msodbcsql minor version (18.6 -> libmsodbcsql-18.6.so.2.1), matching the
-    // binaries bundled under mssql_python/libs and shipped by the standalone
-    // mssql_python_odbc package. If those driver binaries are upgraded (e.g. to
-    // 18.7) this literal MUST be updated in lockstep: GetOdbcLibsBaseDir() calls
-    // fs::exists() on this exact path to decide whether the external package is
-    // "complete", so a stale name would make it silently fall back to the
-    // bundled libs. (The macOS/Windows paths below key off the major version
-    // only and are more forgiving.) Tracked for the Phase 3 driver-version-
-    // agnostic resolution work.
-    fs::path driverPath =
-        basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.6.so.2.1";
+    // The msodbcsql version embedded in the driver filename is injected at build
+    // time from mssql_python_odbc.__version__ (the single source of truth for the
+    // driver version) via the MSODBCSQL_VERSION_* macros defined in
+    // CMakeLists.txt. This keeps the native resolver and the Python package
+    // version from ever drifting: GetOdbcLibsBaseDir() calls fs::exists() on this
+    // exact path to decide whether the external package is "complete", so a stale
+    // name would silently fall back to the bundled libs. (The ".so.2.1" suffix is
+    // the driver's ELF soname, which is independent of the product version.)
+    fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" /
+                          ("libmsodbcsql-" MSODBCSQL_VERSION_MAJOR_MINOR ".so.2.1");
     return driverPath.string();
 
 #elif defined(__APPLE__)
     platform = "macos";
-    fs::path driverPath = basePath / "libs" / platform / arch / "lib" / "libmsodbcsql.18.dylib";
+    fs::path driverPath = basePath / "libs" / platform / arch / "lib" /
+                          ("libmsodbcsql." MSODBCSQL_VERSION_MAJOR ".dylib");
     return driverPath.string();
 
 #elif defined(_WIN32)
@@ -1323,7 +1328,8 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     // Normalize x86_64 to x64 for Windows naming
     if (arch == "x86_64")
         arch = "x64";
-    fs::path driverPath = basePath / "libs" / platform / arch / "msodbcsql18.dll";
+    fs::path driverPath =
+        basePath / "libs" / platform / arch / ("msodbcsql" MSODBCSQL_VERSION_MAJOR ".dll");
     return driverPath.string();
 
 #else

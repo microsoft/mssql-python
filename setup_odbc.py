@@ -43,6 +43,22 @@ BUNDLED_LIBS_ROOT = PROJECT_ROOT / "mssql_python" / "libs"
 MIN_SETUPTOOLS = (62, 3, 0)
 
 
+def _read_odbc_version() -> str:
+    """Return ``__version__`` from ``mssql_python_odbc/__init__.py``.
+
+    Single source of truth for the package version: the value is defined once in
+    the package's ``__init__.py`` and read here (by regex, without importing the
+    package) so the wheel version can never drift from what the package reports
+    at runtime.
+    """
+    init_file = PACKAGE_DIR / "__init__.py"
+    text = init_file.read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"Could not find __version__ in {init_file}")
+    return match.group(1)
+
+
 def _require_min_setuptools() -> None:
     raw = setuptools.__version__
     parts = tuple(int(m) for m in re.findall(r"\d+", raw)[:3])
@@ -197,7 +213,7 @@ _require_min_setuptools()
 
 setup(
     name="mssql-python-odbc",
-    version="18.6.2",
+    version=_read_odbc_version(),
     description=(
         "Internal implementation package for mssql-python: Microsoft ODBC "
         "Driver 18 for SQL Server binaries. Not intended for direct use."
