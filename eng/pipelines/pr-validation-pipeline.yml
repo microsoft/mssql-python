@@ -836,6 +836,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
