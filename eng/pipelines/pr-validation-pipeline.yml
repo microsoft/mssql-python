@@ -772,6 +772,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         
@@ -843,9 +846,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
-        if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
-        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
 
@@ -1104,6 +1105,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName)-$(archName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         
@@ -1188,9 +1192,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
-        if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
-        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
 
@@ -1290,6 +1292,9 @@ jobs:
 
   - script: |
       # Install dependencies in the RHEL 9 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9 bash -c "
         # Enable CodeReady Builder repository for additional packages
         dnf update -y
@@ -1403,9 +1408,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 rhel driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
-        if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
-        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
 
@@ -1513,6 +1516,9 @@ jobs:
 
   - script: |
       # Install dependencies in the RHEL 9 ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9-arm64 bash -c "
         # Enable CodeReady Builder repository for additional packages
         dnf update -y
@@ -1630,9 +1636,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 rhel driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
-        if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
-        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
 
@@ -1776,6 +1780,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the Alpine x86_64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine bash -c "
         # Detect architecture for ODBC driver download
         case \$(uname -m) in
@@ -1866,9 +1873,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 alpine driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
-        if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
-        ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
+        ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
 
@@ -2028,6 +2033,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the Alpine ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine-arm64 bash -c "
         # Detect architecture for ODBC driver download
         case \$(uname -m) in
@@ -2119,9 +2127,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 alpine driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
-        if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
-        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
+        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
 
