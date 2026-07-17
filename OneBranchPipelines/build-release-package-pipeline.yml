@@ -591,3 +591,30 @@ extends:
               parameters:
                 oneBranchType: '${{ variables.effectiveOneBranchType }}'
                 expectedWheelCount: 7
+
+      # =========================================================================
+      # WHEEL INSTALLATION TEST STAGE(S)
+      # =========================================================================
+      # Post-consolidation validation of the package split from an end user's
+      # perspective: install the ACTUAL published mssql-python + mssql-python-odbc
+      # wheels together, remove the bundled ODBC driver so the external package is
+      # the ONLY driver source, then run the full pytest suite. Runs only when BOTH
+      # packages are built in the same run (buildPackage = 'both'), because it needs
+      # both consolidated artifacts (drop_Consolidate_* and drop_ConsolidateOdbc_*).
+      - ${{ if eq(variables.effectiveBuildPackage, 'both') }}:
+        - template: /OneBranchPipelines/stages/wheel-installation-test-stage.yml@self
+          parameters:
+            stageName: TestBothWheels_manylinux_2_28_x86_64
+            jobName: InstallAndTest
+            linuxTag: manylinux_2_28
+            arch: x86_64
+            dockerPlatform: linux/amd64
+            oneBranchType: '${{ variables.effectiveOneBranchType }}'
+        - template: /OneBranchPipelines/stages/wheel-installation-test-stage.yml@self
+          parameters:
+            stageName: TestBothWheels_musllinux_x86_64
+            jobName: InstallAndTest
+            linuxTag: musllinux
+            arch: x86_64
+            dockerPlatform: linux/amd64
+            oneBranchType: '${{ variables.effectiveOneBranchType }}'

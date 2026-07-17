@@ -1,0 +1,316 @@
+# =========================================================================================
+# End-User "Both Wheels Together" Installation Test Stage
+# =========================================================================================
+# Validates the mssql-python / mssql-python-odbc PACKAGE SPLIT from an end-user's
+# perspective, using the ACTUAL published wheel artifacts (not raw build binaries):
+#
+#   pip install mssql_python-<ver>-<pytag>-<platform>.whl
+#   pip install mssql_python_odbc-<ver>-py3-none-<platform>.whl
+#
+# The proof is both POSITIVE and NEGATIVE:
+#   * POSITIVE: before touching anything we assert that the native loader WILL pick
+#     the external package - GetDriverPathCpp(dir(mssql_python_odbc)) points at an
+#     existing driver file, which is exactly the condition GetOdbcLibsBaseDir uses
+#     to treat the external package as authoritative.
+#   * NEGATIVE: we then DELETE the ODBC driver binaries that mssql-python still
+#     bundles under `mssql_python/libs/`. With the bundled fallback removed, a
+#     successful connection + passing test suite proves the driver was resolved
+#     from the separately-installed `mssql_python_odbc` package.
+# (see GetOdbcLibsBaseDir in ddbc_bindings.cpp, which prefers the external package
+# and falls back to bundled libs). Without the deletion the bundled fallback would
+# mask a broken split and the test would pass even if the ODBC package were ignored.
+#
+# Scope: Linux manylinux_2_28 + musllinux (x86_64), all supported Python versions.
+# This stage tests the INSTALL/RESOLUTION path, not per-arch compilation (already
+# covered by the build stages). It runs only when BOTH packages are built in the
+# same run (buildPackage = 'both'), because it needs both consolidated artifacts.
+# =========================================================================================
+parameters:
+  # Stage identifier (e.g., 'TestBothWheels_manylinux_2_28_x86_64')
+  - name: stageName
+    type: string
+  # Job identifier within the stage
+  - name: jobName
+    type: string
+    default: 'InstallAndTest'
+  # Linux distribution type: 'manylinux_2_28' (glibc 2.28+) or 'musllinux' (musl libc)
+  - name: linuxTag
+    type: string
+  # CPU architecture (test stage targets x86_64 only)
+  - name: arch
+    type: string
+    default: 'x86_64'
+  # Docker platform for the build/test container
+  - name: dockerPlatform
+    type: string
+    default: 'linux/amd64'
+  # OneBranch build type: 'Official' or 'NonOfficial'
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'Test Both Wheels ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+    # Only meaningful when both consolidated artifacts exist in this run.
+    dependsOn:
+      - Consolidate
+      - ConsolidateOdbc
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Install both wheels + pytest - ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+
+        pool:
+          type: linux
+          isCustom: true
+          name: Python-1ES-pool
+          demands:
+          - imageOverride -equals PYTHON-1ES-UB2404
+        timeoutInMinutes: 90
+
+        variables:
+          - name: ob_sdl_binskim_enabled
+            value: false
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          - name: LINUX_TAG
+            value: ${{ parameters.linuxTag }}
+          - name: ARCH
+            value: ${{ parameters.arch }}
+          - name: DOCKER_PLATFORM
+            value: ${{ parameters.dockerPlatform }}
+
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          # Download the two CONSOLIDATED wheel artifacts produced earlier in this run:
+          #   drop_Consolidate_ConsolidateArtifacts     -> mssql-python wheels (all platforms/pyvers)
+          #   drop_ConsolidateOdbc_ConsolidateArtifacts -> mssql-python-odbc wheels (7 platforms)
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download consolidated mssql-python wheels'
+            inputs:
+              buildType: 'current'
+              artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+              targetPath: '$(Pipeline.Workspace)/mssql-python-wheels'
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download consolidated mssql-python-odbc wheels'
+            inputs:
+              buildType: 'current'
+              artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+              targetPath: '$(Pipeline.Workspace)/mssql-python-odbc-wheels'
+
+          - bash: |
+              set -euxo pipefail
+              if ! docker info > /dev/null 2>&1; then
+                echo "Docker daemon not running, starting it..."
+                sudo dockerd > docker.log 2>&1 &
+                sleep 10
+              fi
+              docker --version
+            displayName: 'Ensure Docker daemon is running'
+
+          - task: AzureCLI@2
+            displayName: 'Login to ACR (tdslibrs)'
+            inputs:
+              azureSubscription: 'Magnitude Test-mssql-rs-mssql-python'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az acr login --name tdslibrs
+
+          - script: |
+              set -euxo pipefail
+              if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
+                IMAGE="tdslibrs.azurecr.io/import/python-build/manylinux_2_28_$(ARCH):latest"
+              elif [[ "$(LINUX_TAG)" == "musllinux" ]]; then
+                IMAGE="tdslibrs.azurecr.io/import/python-build/musllinux_1_2_$(ARCH):latest"
+              else
+                echo "ERROR: Unsupported LINUX_TAG '$(LINUX_TAG)'" >&2
+                exit 1
+              fi
+
+              # Mount the repo and downloaded wheels read-only. Read-only /workspace is
+              # deliberate: this stage must exercise the INSTALLED wheels, never the
+              # source checkout, so nothing here should ever write into the repo tree.
+              docker run -d --name test-$(LINUX_TAG)-$(ARCH) \
+                --platform $(DOCKER_PLATFORM) \
+                -v $(Build.SourcesDirectory):/workspace:ro \
+                -v $(Pipeline.Workspace)/mssql-python-wheels:/wheels/mssql-python:ro \
+                -v $(Pipeline.Workspace)/mssql-python-odbc-wheels:/wheels/mssql-python-odbc:ro \
+                -w /workspace \
+                $IMAGE \
+                tail -f /dev/null
+            displayName: 'Start $(LINUX_TAG) $(ARCH) test container'
+
+          # Start a SQL Server 2022 container on the host so pytest has a live server.
+          - script: |
+              set -euxo pipefail
+              docker run -d --name sqlserver-$(LINUX_TAG)-$(ARCH) \
+                --platform linux/amd64 \
+                -e ACCEPT_EULA=Y \
+                -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+                -p 1433:1433 \
+                mcr.microsoft.com/mssql/server:2022-latest
+
+              echo "Waiting for SQL Server to be ready..."
+              for i in {1..30}; do
+                if docker exec sqlserver-$(LINUX_TAG)-$(ARCH) /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+                  echo "SQL Server is ready"
+                  break
+                fi
+                sleep 2
+              done
+
+              SQL_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' sqlserver-$(LINUX_TAG)-$(ARCH))
+              echo "SQL Server IP: $SQL_IP"
+              echo "##vso[task.setvariable variable=SQL_IP]$SQL_IP"
+            displayName: 'Start SQL Server container for testing'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+
+          # For each Python version: install BOTH wheels, remove the bundled ODBC
+          # driver from the installed mssql_python package, then run pytest. A pass
+          # proves the driver was loaded from the separate mssql_python_odbc package.
+          - script: |
+              set -euxo pipefail
+              if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
+
+              # Count how many Python versions actually ran the full test so the stage
+              # cannot go green having silently skipped every version (e.g. if none of
+              # the /opt/python/<ver> interpreters exist in the image).
+              TESTED=0
+              # Inner script uses exit code 3 to signal "interpreter absent - skipped".
+              SKIP_RC=3
+
+              for PYBIN in cp310 cp311 cp312 cp313 cp314; do
+                echo ""
+                echo "====================================================="
+                echo "End-user both-wheels test: $PYBIN on $(LINUX_TAG)/$(ARCH)"
+                echo "====================================================="
+
+                set +e
+                docker exec -e PYBIN=$PYBIN -e LINUX_TAG="$(LINUX_TAG)" -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" \
+                  test-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc '
+                    set -euo pipefail
+
+                    PY=/opt/python/${PYBIN}-${PYBIN}/bin/python
+                    test -x "$PY" || { echo "Python $PY missing - skipping ${PYBIN}"; exit 3; }
+                    echo "Using: $($PY --version)"
+
+                    # Fresh isolated venv = clean end-user machine
+                    TEST_DIR="/enduser_${PYBIN}"
+                    rm -rf "$TEST_DIR"
+                    $PY -m venv "$TEST_DIR"
+                    VENV_PY="$TEST_DIR/bin/python"
+
+                    # Run all Python invocations from the venv dir (never /workspace) and
+                    # with PYTHONSAFEPATH so the repo checkout at /workspace/mssql_python
+                    # can NEVER shadow the freshly installed wheel. Without this, cwd
+                    # (/workspace) lands on sys.path and "import mssql_python" would resolve
+                    # to the source tree instead of the package under test.
+                    export PYTHONSAFEPATH=1
+                    cd "$TEST_DIR"
+
+                    $VENV_PY -m pip install -q -U pip
+
+                    # Platform wheel tag: manylinux_2_28 vs musllinux_1_2, x86_64
+                    if [ "$LINUX_TAG" = "manylinux_2_28" ]; then PLAT="manylinux"; else PLAT="musllinux"; fi
+
+                    # Select the mssql-python wheel matching THIS Python version + libc
+                    MP_WHEEL=$(ls /wheels/mssql-python/dist/mssql_python-*${PYBIN}-*${PLAT}*x86_64*.whl 2>/dev/null | head -1)
+                    if [ -z "$MP_WHEEL" ]; then
+                      echo "ERROR: no mssql-python wheel for ${PYBIN}/${PLAT}"; exit 1
+                    fi
+
+                    # ODBC wheel is data-only (py3-none-<platform>), one per platform
+                    ODBC_WHEEL=$(ls /wheels/mssql-python-odbc/dist/mssql_python_odbc-*${PLAT}*x86_64*.whl 2>/dev/null | head -1)
+                    if [ -z "$ODBC_WHEEL" ]; then
+                      echo "ERROR: no mssql-python-odbc wheel for ${PLAT}"; exit 1
+                    fi
+
+                    echo "Installing mssql-python:      $MP_WHEEL"
+                    $VENV_PY -m pip install -q "$MP_WHEEL"
+                    echo "Installing mssql-python-odbc: $ODBC_WHEEL"
+                    $VENV_PY -m pip install -q "$ODBC_WHEEL"
+
+                    # Show where the external ODBC package lives (the split target)
+                    $VENV_PY -c "import mssql_python_odbc, os; print(\"mssql_python_odbc libs:\", mssql_python_odbc.get_libs_dir()); assert os.path.isdir(mssql_python_odbc.get_libs_dir())"
+
+                    # POSITIVE assertion: prove the native loader WILL resolve the driver
+                    # from the external mssql_python_odbc package. This mirrors exactly what
+                    # GetOdbcLibsBaseDir() does in ddbc_bindings.cpp: it takes the parent dir
+                    # of mssql_python_odbc.__file__ as the base and treats the external
+                    # package as authoritative iff GetDriverPathCpp(base) exists. If this
+                    # driver file is present, the loader is guaranteed to pick the external
+                    # package (non-Windows only checks the driver; Windows also needs
+                    # mssql-auth.dll, which this platform test does not cover).
+                    $VENV_PY -c "import mssql_python.ddbc_bindings as d, mssql_python_odbc, os; base=os.path.dirname(mssql_python_odbc.__file__); drv=d.GetDriverPathCpp(base); print(\"external driver path:\", drv); assert os.path.exists(drv), \"external ODBC driver not found - loader would NOT select external package: \"+drv; print(\"POSITIVE: loader will resolve the driver from the external mssql_python_odbc package\")"
+
+                    # DECISIVE (negative) STEP: remove the ODBC driver bundled inside
+                    # mssql_python. With the fallback gone, any successful connection must
+                    # be using the driver from the separate mssql_python_odbc package.
+                    MP_LIBS=$($VENV_PY -c "import mssql_python, os; print(os.path.join(os.path.dirname(mssql_python.__file__), \"libs\"))")
+                    case "$MP_LIBS" in
+                      /workspace/*)
+                        echo "ERROR: resolved mssql_python to the source tree ($MP_LIBS), not the installed wheel"; exit 1 ;;
+                    esac
+                    if [ -d "$MP_LIBS" ]; then
+                      echo "Removing bundled mssql_python/libs to force use of external ODBC package: $MP_LIBS"
+                      rm -rf "$MP_LIBS"
+                    else
+                      echo "Note: mssql_python has no bundled libs/ (already split at build time)"
+                    fi
+
+                    # Smoke test: import + live connection using ONLY the external driver
+                    $VENV_PY -c "import mssql_python; print(\"mssql_python\", mssql_python.__version__, \"imported OK\")"
+                    DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
+                      $VENV_PY -c "import mssql_python, os; c=mssql_python.connect(os.environ[\"DB_CONNECTION_STRING\"]); cur=c.cursor(); cur.execute(\"SELECT 1\"); print(\"connection OK:\", cur.fetchone()); c.close()"
+
+                    # Copy the suite OUT of /workspace so pytest collection cannot import
+                    # the source-tree package either, then run against the installed wheels.
+                    cp -r /workspace/tests "$TEST_DIR/tests"
+                    cp /workspace/pytest.ini "$TEST_DIR/pytest.ini" 2>/dev/null || true
+                    $VENV_PY -m pip install -q pytest
+                    if [ -f /workspace/requirements.txt ]; then
+                      $VENV_PY -m pip install -q -r /workspace/requirements.txt
+                    fi
+                    DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
+                      $VENV_PY -m pytest "$TEST_DIR/tests" -v --maxfail=1
+                    echo "All tests passed for ${PYBIN} using the EXTERNAL mssql_python_odbc driver"
+                  '
+                rc=$?
+                set -e
+
+                if [ "$rc" -eq "$SKIP_RC" ]; then
+                  echo "Skipped $PYBIN (interpreter not present in image)"
+                elif [ "$rc" -ne 0 ]; then
+                  echo "ERROR: both-wheels test failed for $PYBIN (exit $rc)"
+                  exit "$rc"
+                else
+                  TESTED=$((TESTED + 1))
+                  echo "Both-wheels test complete for $PYBIN"
+                fi
+              done
+
+              if [ "$TESTED" -eq 0 ]; then
+                echo "ERROR: no Python versions were tested - every interpreter was missing. Failing the stage."
+                exit 1
+              fi
+
+              echo "====================================================="
+              echo "All available Python versions ($TESTED) passed the both-wheels end-user test"
+              echo "====================================================="
+            displayName: 'Install both wheels + pytest (Python 3.10-3.14)'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+
+          - script: |
+              docker stop test-$(LINUX_TAG)-$(ARCH) sqlserver-$(LINUX_TAG)-$(ARCH) || true
+              docker rm test-$(LINUX_TAG)-$(ARCH) sqlserver-$(LINUX_TAG)-$(ARCH) || true
+            displayName: 'Cleanup containers'
+            condition: always()
