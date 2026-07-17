@@ -843,7 +843,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
+        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
       "
@@ -1188,7 +1188,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
+        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
       "
@@ -1403,7 +1403,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 rhel driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
+        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
       "
@@ -1630,7 +1630,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 rhel driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
+        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1
       "
@@ -1866,7 +1866,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 alpine driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
+        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
@@ -2119,7 +2119,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 alpine driver library signatures:'
-        DRIVER_MAJOR_MINOR=\$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+)\.[0-9]+['\"].*/\1/p" mssql_python_odbc/__init__.py | head -1)
+        DRIVER_MAJOR_MINOR=\$(perl -ne 'if(/^__version__\s*=\s*[\042\047]([0-9]+\.[0-9]+)\.[0-9]+[\042\047]/){print $1; exit}' mssql_python_odbc/__init__.py)
         if [ -z "\$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
         ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-\${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
