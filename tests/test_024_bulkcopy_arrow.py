@@ -591,7 +591,9 @@ class TestBulkcopyArrowLive:
 
     # ── column mappings ─────────────────────────────────────────────────────
 
-    def test_column_mappings_by_name(self, cursor):
+    def test_column_mappings_positional_names(self, cursor):
+        # A List[str] maps positionally: source ordinal i -> destination name.
+        # (True source-field-name matching is not supported on the Arrow path.)
         t = "mssql_python_arrow_map_name"
         _make_table(cursor, t, "a INT NOT NULL, b NVARCHAR(20) NULL")
         src = pa.table({"x": pa.array([1, 2], type=pa.int32()), "y": pa.array(["p", "q"])})
