@@ -9,6 +9,7 @@
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
 #include "py_ref.hpp"
+#include "python_object_cache.hpp"
 #include "utf_utils.h"
 
 using pyref::PyPtr;
@@ -107,10 +108,6 @@ inline int EffectiveCharCtypeForFetch(int charCtype, const std::string& charEnco
     return charCtype;
 }
 
-namespace PythonObjectCache {
-PyObject* get_time_class();
-py::object get_time_class_obj();
-}
 
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
@@ -120,164 +117,6 @@ py::object get_time_class_obj();
 // Uses printf-style formatting: LOG("Value: %d", x) -- __FILE__/__LINE__
 // embedded in macro
 //-------------------------------------------------------------------------------------------------
-namespace PythonObjectCache {
-// Cached as raw PyObject* to avoid pybind11 refcount wrapper overhead on every access.
-// These are immortal (never DECREFed) — module-lifetime singletons, same as CPython's type objects.
-static PyObject* datetime_class = nullptr;
-static PyObject* date_class = nullptr;
-static PyObject* time_class = nullptr;
-static PyObject* decimal_class = nullptr;
-static PyObject* uuid_class = nullptr;
-static PyObject* money_min = nullptr;
-static PyObject* money_max = nullptr;
-static PyObject* smallmoney_min = nullptr;
-static PyObject* smallmoney_max = nullptr;
-static bool cache_initialized = false;
-
-static PyObject* import_attr(const char* module_name, const char* attr_name) {
-    PyObject* mod = PyImport_ImportModule(module_name);
-    if (!mod) throw py::error_already_set();
-    PyObject* attr = PyObject_GetAttrString(mod, attr_name);
-    Py_DECREF(mod);
-    if (!attr) throw py::error_already_set();
-    return attr;
-}
-
-// Fall back to import here because legacy paths can reach these lookups before initialize_cache() has populated globals.
-static PyObject* get_cached_class(PyObject* cached, const char* module_name, const char* attr_name) {
-    if (cache_initialized && cached) return cached;
-    PyObject* mod = PyImport_ImportModule(module_name);
-    if (!mod) return nullptr;
-    PyObject* cls = PyObject_GetAttrString(mod, attr_name);
-    Py_DECREF(mod);
-    return cls;
-}
-
-// One-time cache of Python type objects and MONEY boundary constants.
-// Called on first execute(). Uses raw CPython API (not pybind11) because
-// these cached PyObject* are compared via PyObject_IsInstance in the
-// hot DetectParamTypes loop — wrapping them in py::object would add
-// unnecessary ref-count traffic on every parameter.
-void initialize() {
-    if (!cache_initialized) {
-        PyDateTime_IMPORT;
-        if (PyDateTimeAPI == nullptr) {
-            throw py::error_already_set();
-        }
-
-        try {
-            // Cache datetime.datetime, datetime.date, datetime.time for isinstance
-            // checks in DetectParamTypes. Single import, then borrowed refs held
-            // for process lifetime (module-level statics, never decremented).
-            PyObject* datetime_module = PyImport_ImportModule("datetime");
-            if (!datetime_module) throw py::error_already_set();
-            datetime_class = PyObject_GetAttrString(datetime_module, "datetime");
-            date_class = PyObject_GetAttrString(datetime_module, "date");
-            time_class = PyObject_GetAttrString(datetime_module, "time");
-            Py_DECREF(datetime_module);
-            if (!datetime_class || !date_class || !time_class) {
-                throw py::error_already_set();
-            }
-
-            decimal_class = import_attr("decimal", "Decimal");
-            uuid_class = import_attr("uuid", "UUID");
-
-            // Pre-compute MONEY/SMALLMONEY boundary Decimals once. DetectParamTypes
-            // uses PyObject_RichCompareBool against these to classify Decimal params
-            // into MONEY vs NUMERIC — doing exact Decimal comparison (not float cast)
-            // avoids boundary misclassification at the edges.
-            PyObject* Decimal = decimal_class;
-            smallmoney_min = PyObject_CallFunction(Decimal, "s", "-214748.3648");
-            smallmoney_max = PyObject_CallFunction(Decimal, "s", "214748.3647");
-            money_min = PyObject_CallFunction(Decimal, "s", "-922337203685477.5808");
-            money_max = PyObject_CallFunction(Decimal, "s", "922337203685477.5807");
-            if (!smallmoney_min || !smallmoney_max || !money_min || !money_max) {
-                throw py::error_already_set();
-            }
-
-            cache_initialized = true;
-        } catch (...) {
-            Py_XDECREF(datetime_class);
-            Py_XDECREF(date_class);
-            Py_XDECREF(time_class);
-            Py_XDECREF(decimal_class);
-            Py_XDECREF(uuid_class);
-            Py_XDECREF(smallmoney_min);
-            Py_XDECREF(smallmoney_max);
-            Py_XDECREF(money_min);
-            Py_XDECREF(money_max);
-            datetime_class = nullptr;
-            date_class = nullptr;
-            time_class = nullptr;
-            decimal_class = nullptr;
-            uuid_class = nullptr;
-            smallmoney_min = nullptr;
-            smallmoney_max = nullptr;
-            money_min = nullptr;
-            money_max = nullptr;
-            throw;
-        }
-    }
-}
-
-static py::object wrap_cached_or_imported(PyObject* obj) {
-    if (!obj) throw py::error_already_set();
-    // Cached path returns a borrowed module-lifetime singleton. Fallback import path
-    // returns a fresh reference, so steal it to avoid leaking the rare edge-case object.
-    return cache_initialized ? py::reinterpret_borrow<py::object>(py::handle(obj))
-                             : py::reinterpret_steal<py::object>(obj);
-}
-
-// Returns cached type. Fallback import only for edge case where cache wasn't initialized
-// (e.g., called from legacy path before any fast-path execute).
-PyObject* get_datetime_class() {
-    return get_cached_class(datetime_class, "datetime", "datetime");
-}
-
-py::object get_datetime_class_obj() {
-    return wrap_cached_or_imported(get_datetime_class());
-}
-
-// Returns cached type. Fallback import only for edge case where cache wasn't initialized
-// (e.g., called from legacy path before any fast-path execute).
-PyObject* get_date_class() {
-    return get_cached_class(date_class, "datetime", "date");
-}
-
-py::object get_date_class_obj() {
-    return wrap_cached_or_imported(get_date_class());
-}
-
-// Returns cached type. Fallback import only for edge case where cache wasn't initialized
-// (e.g., called from legacy path before any fast-path execute).
-PyObject* get_time_class() {
-    return get_cached_class(time_class, "datetime", "time");
-}
-
-py::object get_time_class_obj() {
-    return wrap_cached_or_imported(get_time_class());
-}
-
-// Returns cached type. Fallback import only for edge case where cache wasn't initialized
-// (e.g., called from legacy path before any fast-path execute).
-PyObject* get_decimal_class() {
-    return get_cached_class(decimal_class, "decimal", "Decimal");
-}
-
-py::object get_decimal_class_obj() {
-    return wrap_cached_or_imported(get_decimal_class());
-}
-
-// Returns cached type. Fallback import only for edge case where cache wasn't initialized
-// (e.g., called from legacy path before any fast-path execute).
-PyObject* get_uuid_class() {
-    return get_cached_class(uuid_class, "uuid", "UUID");
-}
-
-py::object get_uuid_class_obj() {
-    return wrap_cached_or_imported(get_uuid_class());
-}
-}  // namespace PythonObjectCache
 
 //-------------------------------------------------------------------------------------------------
 // Class definitions
@@ -301,7 +140,9 @@ struct ParamInfo {
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
     // Holds a strong reference to the Python object for DAE (data-at-execution) streaming.
-    // Raw pointer + manual Py_INCREF/DECREF avoids pybind11 wrapper overhead in the hot loop.
+    // Raw pointer + manual Py_INCREF/DECREF (not PyPtr) because ParamInfo has custom
+    // copy/move semantics and is exposed to pybind11 type_caster — changing the member
+    // type would ripple through struct layout, copy/move operators, and property bindings.
     PyObject* dataPtr = nullptr;
     Py_ssize_t utf16Len = 0;  // UTF-16 code unit count for string params
 
@@ -843,10 +684,9 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
 
         // --- datetime (must check before date, since datetime is subclass of date) ---
         if (PyDateTime_Check(obj)) {
-            PyObject* tzinfo = PyObject_GetAttrString(obj, "tzinfo");
+            PyPtr tzinfo = adopt(PyObject_GetAttrString(obj, "tzinfo"));
             if (!tzinfo) throw py::error_already_set();
-            bool has_tz = (tzinfo != Py_None);
-            Py_DECREF(tzinfo);
+            bool has_tz = (tzinfo.get() != Py_None);
             if (has_tz) {
                 info.paramSQLType = SQL_SS_TIMESTAMPOFFSET;
                 info.paramCType = SQL_C_SS_TIMESTAMPOFFSET;
@@ -972,7 +812,8 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 info.decimalDigits = 0;
                 PyObject* raw = formatted.release();
                 if (PyList_SetItem(params, i, raw) != 0) {
-                    Py_DECREF(raw);
+                    // PyList_SetItem steals (decrefs) the item even on failure,
+                    // so raw is already freed — do NOT Py_DECREF here.
                     throw py::error_already_set();
                 }
                 continue;
@@ -989,7 +830,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             py::object numeric_obj = py::cast(nd);
             PyObject* raw = numeric_obj.release().ptr();
             if (PyList_SetItem(params, i, raw) != 0) {
-                Py_DECREF(raw);
+                // PyList_SetItem steals (decrefs) the item even on failure.
                 throw py::error_already_set();
             }
             continue;
@@ -1006,7 +847,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             info.columnSize = 16;
             info.decimalDigits = 0;
             if (PyList_SetItem(params, i, bytes_le) != 0) {
-                Py_DECREF(bytes_le);
+                // PyList_SetItem steals (decrefs) the item even on failure.
                 throw py::error_already_set();
             }
             continue;
