@@ -3026,9 +3026,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # silently re-routing or failing deep inside the tuple validator.
         if self._looks_like_arrow_source(data):
             raise TypeError(
-                "bulkcopy() expects an iterable of row tuples/lists. "
+                "bulkcopy() expects an iterable of row tuples or Row objects. "
                 "For pyarrow.Table / RecordBatch / RecordBatchReader / objects "
-                "implementing __arrow_c_stream__, call cursor.bulkcopy_arrow() instead."
+                "implementing __arrow_c_stream__/__arrow_c_array__, call "
+                "cursor.bulkcopy_arrow() instead."
             )
 
         try:
