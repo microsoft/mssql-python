@@ -1,4 +1,4 @@
-// python_object_cache.hpp — One-time cache of Python type objects and MONEY boundary constants.
+// py_type_cache.hpp — One-time cache of Python type objects and MONEY boundary constants.
 //
 // Called on first execute(). Uses raw CPython API (not pybind11) because
 // these cached PyObject* are compared via PyObject_IsInstance in the
@@ -17,7 +17,7 @@ namespace py = pybind11;
 using pyref::PyPtr;
 using pyref::adopt;
 
-namespace PythonObjectCache {
+namespace PyTypeCache {
 
 // Module-lifetime singletons — never DECREFed, alive for the process.
 inline PyObject* datetime_class = nullptr;
@@ -108,4 +108,4 @@ inline py::object get_time_class_obj()     { return wrap_cached_or_imported(get_
 inline py::object get_decimal_class_obj()  { return wrap_cached_or_imported(get_decimal_class()); }
 inline py::object get_uuid_class_obj()     { return wrap_cached_or_imported(get_uuid_class()); }
 
-}  // namespace PythonObjectCache
+}  // namespace PyTypeCache

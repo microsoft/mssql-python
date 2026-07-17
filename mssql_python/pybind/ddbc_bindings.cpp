@@ -9,20 +9,17 @@
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
 #include "py_ref.hpp"
-#include "python_object_cache.hpp"
+#include "py_type_cache.hpp"
 #include "utf_utils.h"
 
 using pyref::PyPtr;
 using pyref::adopt;
-using pyref::incref_borrow;
 
 
 #include <algorithm>  // std::min
-#include <cctype>
 #include <cstdint>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
-#include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
@@ -526,13 +523,13 @@ static NumericData build_numeric_data(PyObject* decimal_param);
 // Takes a raw PyObject* (must be a list). Caller guarantees it's a fresh copy
 // (cursor.py does list(actual_params)), so in-place mutation via PyList_SetItem is safe.
 std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
-    PythonObjectCache::initialize();
+    PyTypeCache::initialize();
 
     const Py_ssize_t n = PyList_GET_SIZE(params);
     std::vector<ParamInfo> infos(n);
 
-    PyObject* decimal_type = PythonObjectCache::get_decimal_class();
-    PyObject* uuid_type = PythonObjectCache::get_uuid_class();
+    PyObject* decimal_type = PyTypeCache::get_decimal_class();
+    PyObject* uuid_type = PyTypeCache::get_uuid_class();
 
     for (Py_ssize_t i = 0; i < n; ++i) {
         ParamInfo& info = infos[i];
@@ -789,14 +786,14 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             // represent the exact money range without precision loss on certain ODBC drivers.
             // Use exact Decimal comparison (not double) to avoid boundary misclassification.
             bool in_money_range = false;
-            int cmp_ge = PyObject_RichCompareBool(obj, PythonObjectCache::smallmoney_min, Py_GE);
-            int cmp_le = PyObject_RichCompareBool(obj, PythonObjectCache::smallmoney_max, Py_LE);
+            int cmp_ge = PyObject_RichCompareBool(obj, PyTypeCache::smallmoney_min, Py_GE);
+            int cmp_le = PyObject_RichCompareBool(obj, PyTypeCache::smallmoney_max, Py_LE);
             if (cmp_ge == -1 || cmp_le == -1) throw py::error_already_set();
             if (cmp_ge == 1 && cmp_le == 1) {
                 in_money_range = true;
             } else {
-                cmp_ge = PyObject_RichCompareBool(obj, PythonObjectCache::money_min, Py_GE);
-                cmp_le = PyObject_RichCompareBool(obj, PythonObjectCache::money_max, Py_LE);
+                cmp_ge = PyObject_RichCompareBool(obj, PyTypeCache::money_min, Py_GE);
+                cmp_le = PyObject_RichCompareBool(obj, PyTypeCache::money_max, Py_LE);
                 if (cmp_ge == -1 || cmp_le == -1) throw py::error_already_set();
                 if (cmp_ge == 1 && cmp_le == 1) {
                     in_money_range = true;
@@ -1349,7 +1346,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_TYPE_DATE: {
-                py::object dateType = PythonObjectCache::get_date_class_obj();
+                py::object dateType = PyTypeCache::get_date_class_obj();
                 if (!py::isinstance(param, dateType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -1369,7 +1366,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_TYPE_TIME: {
-                py::object timeType = PythonObjectCache::get_time_class_obj();
+                py::object timeType = PyTypeCache::get_time_class_obj();
                 if (!py::isinstance(param, timeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -1383,7 +1380,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_SS_TIMESTAMPOFFSET: {
-                py::object datetimeType = PythonObjectCache::get_datetime_class_obj();
+                py::object datetimeType = PyTypeCache::get_datetime_class_obj();
                 if (!py::isinstance(param, datetimeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -1435,7 +1432,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_TYPE_TIMESTAMP: {
-                py::object datetimeType = PythonObjectCache::get_datetime_class_obj();
+                py::object datetimeType = PyTypeCache::get_datetime_class_obj();
                 if (!py::isinstance(param, datetimeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -3151,7 +3148,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         AllocateParamBufferArray<DateTimeOffset>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
-                    py::object datetimeType = PythonObjectCache::get_datetime_class_obj();
+                    py::object datetimeType = PyTypeCache::get_datetime_class_obj();
 
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         const py::handle& param = columnValues[i];
@@ -3266,7 +3263,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     // Get cached UUID class from module-level helper
                     // This avoids static object destruction issues during
                     // Python finalization
-                    py::object uuid_class = PythonObjectCache::get_uuid_class_obj();
+                    py::object uuid_class = PyTypeCache::get_uuid_class_obj();
                     // Get cached UUID class
 
                     for (size_t i = 0; i < paramSetSize; ++i) {
@@ -4233,7 +4230,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         // parsing The decimal separator only affects display
                         // formatting, not parsing
                         py::object decimalObj =
-                            PythonObjectCache::get_decimal_class_obj()(py::str(cnum, safeLen));
+                            PyTypeCache::get_decimal_class_obj()(py::str(cnum, safeLen));
                         row.append(decimalObj);
                     } catch (const py::error_already_set& e) {
                         // If conversion fails, append None
@@ -4283,7 +4280,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret =
                     SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(PythonObjectCache::get_date_class_obj()(dateValue.year, dateValue.month,
+                    row.append(PyTypeCache::get_date_class_obj()(dateValue.year, dateValue.month,
                                                                    dateValue.day));
                 } else {
                     row.append(py::none());
@@ -4296,7 +4293,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SS_TIME2, &t2, sizeof(t2), &indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
-                    row.append(PythonObjectCache::get_time_class_obj()(
+                    row.append(PyTypeCache::get_time_class_obj()(
                         t2.hour, t2.minute, t2.second, t2.fraction / 1000));  // ns to µs
                 } else {
                     if (!SQL_SUCCEEDED(ret)) {
@@ -4315,7 +4312,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
                                      sizeof(timestampValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(PythonObjectCache::get_datetime_class_obj()(
+                    row.append(PyTypeCache::get_datetime_class_obj()(
                         timestampValue.year, timestampValue.month, timestampValue.day,
                         timestampValue.hour, timestampValue.minute, timestampValue.second,
                         timestampValue.fraction / 1000  // Convert back ns to µs
@@ -4355,7 +4352,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     py::object datetime_module = py::module_::import("datetime");
                     py::object tzinfo = datetime_module.attr("timezone")(
                         datetime_module.attr("timedelta")(py::arg("minutes") = totalMinutes));
-                    py::object py_dt = PythonObjectCache::get_datetime_class_obj()(
+                    py::object py_dt = PyTypeCache::get_datetime_class_obj()(
                         dtoValue.year, dtoValue.month, dtoValue.day, dtoValue.hour, dtoValue.minute,
                         dtoValue.second, microseconds, tzinfo);
                     row.append(py_dt);
@@ -4462,7 +4459,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 
                     py::bytes py_guid_bytes(guid_bytes.data(), guid_bytes.size());
                     py::object uuid_obj =
-                        PythonObjectCache::get_uuid_class_obj()(py::arg("bytes") = py_guid_bytes);
+                        PyTypeCache::get_uuid_class_obj()(py::arg("bytes") = py_guid_bytes);
                     row.append(uuid_obj);
                 } else if (indicator == SQL_NULL_DATA) {
                     row.append(py::none());
@@ -4925,7 +4922,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         // parsing The decimal separator only affects display
                         // formatting, not parsing
                         PyObject* decimalObj =
-                            PythonObjectCache::get_decimal_class_obj()(py::str(rawData, decimalDataLen))
+                            PyTypeCache::get_decimal_class_obj()(py::str(rawData, decimalDataLen))
                                 .release()
                                 .ptr();
                         PyList_SET_ITEM(row, col - 1, decimalObj);
@@ -4942,7 +4939,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
-                    PyObject* datetimeObj = PythonObjectCache::get_datetime_class_obj()(
+                    PyObject* datetimeObj = PyTypeCache::get_datetime_class_obj()(
                                                 ts.year, ts.month, ts.day, ts.hour, ts.minute,
                                                 ts.second, ts.fraction / 1000)
                                                 .release()
@@ -4952,7 +4949,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 case SQL_TYPE_DATE: {
                     PyObject* dateObj =
-                        PythonObjectCache::get_date_class_obj()(buffers.dateBuffers[col - 1][i].year,
+                        PyTypeCache::get_date_class_obj()(buffers.dateBuffers[col - 1][i].year,
                                                             buffers.dateBuffers[col - 1][i].month,
                                                             buffers.dateBuffers[col - 1][i].day)
                             .release()
@@ -4963,7 +4960,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_SS_TIME2: {
                     const SQL_SS_TIME2_STRUCT& t2 = buffers.timeBuffers[col - 1][i];
                     PyObject* timeObj =
-                        PythonObjectCache::get_time_class_obj()(t2.hour, t2.minute, t2.second,
+                        PyTypeCache::get_time_class_obj()(t2.hour, t2.minute, t2.second,
                                                             t2.fraction / 1000)  // ns to µs
                             .release()
                             .ptr();
@@ -4979,7 +4976,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         py::object datetime_module = py::module_::import("datetime");
                         py::object tzinfo = datetime_module.attr("timezone")(
                             datetime_module.attr("timedelta")(py::arg("minutes") = totalMinutes));
-                        py::object py_dt = PythonObjectCache::get_datetime_class_obj()(
+                        py::object py_dt = PyTypeCache::get_datetime_class_obj()(
                             dtoValue.year, dtoValue.month, dtoValue.day, dtoValue.hour,
                             dtoValue.minute, dtoValue.second,
                             dtoValue.fraction / 1000,  // ns → µs
@@ -5013,7 +5010,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     py::bytes py_guid_bytes(reinterpret_cast<char*>(reordered), 16);
                     py::dict kwargs;
                     kwargs["bytes"] = py_guid_bytes;
-                    py::object uuid_obj = PythonObjectCache::get_uuid_class_obj()(**kwargs);
+                    py::object uuid_obj = PyTypeCache::get_uuid_class_obj()(**kwargs);
                     PyList_SET_ITEM(row, col - 1, uuid_obj.release().ptr());
                     break;
                 }
@@ -6537,7 +6534,7 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
 
-    PythonObjectCache::initialize();
+    PyTypeCache::initialize();
 
     // Add architecture information as module attribute
     m.attr("__architecture__") = ARCHITECTURE;
