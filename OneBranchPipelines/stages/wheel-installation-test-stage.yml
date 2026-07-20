@@ -11,19 +11,25 @@
 #   * POSITIVE: before touching anything we assert that the native loader WILL pick
 #     the external package - GetDriverPathCpp(dir(mssql_python_odbc)) points at an
 #     existing driver file, which is exactly the condition GetOdbcLibsBaseDir uses
-#     to treat the external package as authoritative.
-#   * NEGATIVE: we then DELETE the ODBC driver binaries that mssql-python still
-#     bundles under `mssql_python/libs/`. With the bundled fallback removed, a
-#     successful connection + passing test suite proves the driver was resolved
-#     from the separately-installed `mssql_python_odbc` package.
-# (see GetOdbcLibsBaseDir in ddbc_bindings.cpp, which prefers the external package
-# and falls back to bundled libs). Without the deletion the bundled fallback would
-# mask a broken split and the test would pass even if the ODBC package were ignored.
+#     to treat the external package as authoritative. Because that resolver prefers
+#     the external package on EVERY connect whenever its driver is complete -
+#     regardless of whether mssql_python still bundles libs (see GetOdbcLibsBaseDir
+#     in ddbc_bindings.cpp) - simply installing the odbc wheel already exercises the
+#     external-resolution branch throughout the whole suite.
+#   * NEGATIVE: AFTER the full suite passes, we DELETE the ODBC driver binaries that
+#     mssql-python still bundles under `mssql_python/libs/` and connect once more.
+#     With the bundled fallback removed, a successful live query can ONLY be using
+#     the driver from the separately-installed `mssql_python_odbc` package. We do
+#     NOT re-run the full suite after deletion: test_000_dependencies intentionally
+#     asserts the bundled package layout, which this negative step deliberately breaks.
 #
 # Scope: Linux manylinux_2_28 + musllinux (x86_64), all supported Python versions.
 # This stage tests the INSTALL/RESOLUTION path, not per-arch compilation (already
 # covered by the build stages). It runs only when BOTH packages are built in the
 # same run (buildPackage = 'both'), because it needs both consolidated artifacts.
+# NOTE: this external-resolution coverage is nightly-only. The PR-validation
+# pipeline never installs the odbc wheel, so its connects still use the bundled
+# driver path - that gap is intentional and covered here on the daily build.
 # =========================================================================================
 parameters:
   # Stage identifier (e.g., 'TestBothWheels_manylinux_2_28_x86_64')
@@ -66,7 +72,9 @@ stages:
           name: Python-1ES-pool
           demands:
           - imageOverride -equals PYTHON-1ES-UB2404
-        timeoutInMinutes: 90
+        # 5 Python versions x full pytest suite (+ venv/pip/install overhead) per
+        # stage; headroom over the observed runtime so a slow agent cannot time out.
+        timeoutInMinutes: 150
 
         variables:
           - name: ob_sdl_binskim_enabled
@@ -158,8 +166,10 @@ stages:
 
               echo "Waiting for SQL Server to be ready..."
               for i in {1..30}; do
+                # sqlcmd runs INSIDE the mssql container via `docker exec`; localhost is the
+                # container's own loopback (a readiness probe), not debug code reaching a dev box.
                 if docker exec sqlserver-$(LINUX_TAG)-$(ARCH) /opt/mssql-tools18/bin/sqlcmd \
-                  -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+                  -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then # DevSkim: ignore DS162092
                   echo "SQL Server is ready"
                   break
                 fi
@@ -173,8 +183,9 @@ stages:
             env:
               DB_PASSWORD: $(DB_PASSWORD)
 
-          # For each Python version: install BOTH wheels, remove the bundled ODBC
-          # driver from the installed mssql_python package, then run pytest. A pass
+          # For each Python version: install BOTH wheels, run the full pytest suite
+          # with bundled libs intact (external driver already preferred), THEN remove
+          # the bundled ODBC driver and connect once more. The post-deletion connect
           # proves the driver was loaded from the separate mssql_python_odbc package.
           - script: |
               set -euxo pipefail
@@ -251,9 +262,34 @@ stages:
                     # mssql-auth.dll, which this platform test does not cover).
                     $VENV_PY -c "import mssql_python.ddbc_bindings as d, mssql_python_odbc, os; base=os.path.dirname(mssql_python_odbc.__file__); drv=d.GetDriverPathCpp(base); print(\"external driver path:\", drv); assert os.path.exists(drv), \"external ODBC driver not found - loader would NOT select external package: \"+drv; print(\"POSITIVE: loader will resolve the driver from the external mssql_python_odbc package\")"
 
-                    # DECISIVE (negative) STEP: remove the ODBC driver bundled inside
-                    # mssql_python. With the fallback gone, any successful connection must
-                    # be using the driver from the separate mssql_python_odbc package.
+                    # PHASE 1: run the FULL existing suite with bundled libs INTACT.
+                    # The external mssql_python_odbc package is already installed, so
+                    # GetOdbcLibsBaseDir() prefers it on every connect (it selects the
+                    # external package whenever its driver is complete, regardless of
+                    # whether mssql_python still bundles libs - see ddbc_bindings.cpp).
+                    # This exercises the external-resolution branch throughout while
+                    # keeping tests that assert the bundled package layout (e.g.
+                    # test_000_dependencies) valid. Copy the suite OUT of /workspace so
+                    # pytest collection cannot import the source-tree package.
+                    cp -r /workspace/tests "$TEST_DIR/tests"
+                    # pytest.ini carries the `-m "not stress"` default and markers; it must
+                    # be present so collection behaves like a normal repo run. Fail loudly
+                    # if it is missing rather than silently running an unconfigured suite.
+                    cp /workspace/pytest.ini "$TEST_DIR/pytest.ini"
+                    $VENV_PY -m pip install -q pytest
+                    if [ -f /workspace/requirements.txt ]; then
+                      $VENV_PY -m pip install -q -r /workspace/requirements.txt
+                    fi
+                    DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
+                      $VENV_PY -m pytest "$TEST_DIR/tests" -v --maxfail=1 -m "not stress"
+                    echo "Full suite passed for ${PYBIN} with both wheels installed (external driver preferred)"
+
+                    # PHASE 2 - DECISIVE negative proof: remove the ODBC driver that
+                    # mssql_python still bundles, then connect again. With the bundled
+                    # fallback gone, a successful live query can ONLY be using the driver
+                    # from the separate mssql_python_odbc package. We do NOT re-run the
+                    # full suite here: test_000_dependencies intentionally asserts the
+                    # bundled layout, which this step deliberately breaks.
                     MP_LIBS=$($VENV_PY -c "import mssql_python, os; print(os.path.join(os.path.dirname(mssql_python.__file__), \"libs\"))")
                     case "$MP_LIBS" in
                       /workspace/*)
@@ -266,22 +302,10 @@ stages:
                       echo "Note: mssql_python has no bundled libs/ (already split at build time)"
                     fi
 
-                    # Smoke test: import + live connection using ONLY the external driver
-                    $VENV_PY -c "import mssql_python; print(\"mssql_python\", mssql_python.__version__, \"imported OK\")"
+                    $VENV_PY -c "import mssql_python; print(\"mssql_python\", mssql_python.__version__, \"imported OK (bundled libs removed)\")"
                     DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                      $VENV_PY -c "import mssql_python, os; c=mssql_python.connect(os.environ[\"DB_CONNECTION_STRING\"]); cur=c.cursor(); cur.execute(\"SELECT 1\"); print(\"connection OK:\", cur.fetchone()); c.close()"
-
-                    # Copy the suite OUT of /workspace so pytest collection cannot import
-                    # the source-tree package either, then run against the installed wheels.
-                    cp -r /workspace/tests "$TEST_DIR/tests"
-                    cp /workspace/pytest.ini "$TEST_DIR/pytest.ini" 2>/dev/null || true
-                    $VENV_PY -m pip install -q pytest
-                    if [ -f /workspace/requirements.txt ]; then
-                      $VENV_PY -m pip install -q -r /workspace/requirements.txt
-                    fi
-                    DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                      $VENV_PY -m pytest "$TEST_DIR/tests" -v --maxfail=1
-                    echo "All tests passed for ${PYBIN} using the EXTERNAL mssql_python_odbc driver"
+                      $VENV_PY -c "import mssql_python, os; c=mssql_python.connect(os.environ[\"DB_CONNECTION_STRING\"]); cur=c.cursor(); cur.execute(\"SELECT 1\"); print(\"connection OK via EXTERNAL driver:\", cur.fetchone()); c.close()"
+                    echo "DECISIVE: ${PYBIN} connected with bundled libs removed - driver resolved from external mssql_python_odbc package"
                   '
                 rc=$?
                 set -e
