@@ -1,0 +1,66 @@
+# Step template: Install integration-test dependencies from the public
+# mssql-rs_Public Azure Artifacts PyPI feed via eng/requirements-integration-tests.txt.
+#
+# These deps are required for the integration tests, notably
+# tests/test_024_mock_tds_fedauth.py (guards the deferred
+# SQL_COPT_SS_ACCESS_TOKEN use-after-free fix, PR #596 / issue #594), which
+# needs the in-process mssql-mock-tds server. The install fails the leg if no
+# compatible wheel is available: the package versions and feed are pinned in
+# eng/requirements-integration-tests.txt.
+#
+# Usage:
+#   # Windows (host)
+#   - template: steps/install-test-dependencies.yml
+#     parameters:
+#       platform: windows
+#
+#   # macOS / Linux (host)
+#   - template: steps/install-test-dependencies.yml
+#     parameters:
+#       platform: unix
+#
+#   # Inside a Docker container
+#   - template: steps/install-test-dependencies.yml
+#     parameters:
+#       platform: container
+#       containerName: test-container-$(distroName)
+#       venvActivate: 'source /opt/venv/bin/activate'
+
+parameters:
+  - name: platform
+    type: string
+    values: [windows, unix, container]
+
+  - name: containerName
+    type: string
+    default: ''
+
+  - name: venvActivate
+    type: string
+    default: 'source /opt/venv/bin/activate'
+
+  - name: displaySuffix
+    type: string
+    default: ''
+
+steps:
+# Windows host
+- ${{ if eq(parameters.platform, 'windows') }}:
+  - script: |
+      python -m pip install -r eng/requirements-integration-tests.txt
+    displayName: 'Install test dependencies${{ parameters.displaySuffix }}'
+
+# Unix host (macOS, Linux without container)
+- ${{ if eq(parameters.platform, 'unix') }}:
+  - script: |
+      python -m pip install -r eng/requirements-integration-tests.txt
+    displayName: 'Install test dependencies${{ parameters.displaySuffix }}'
+
+# Inside a Docker container
+- ${{ if eq(parameters.platform, 'container') }}:
+  - script: |
+      docker exec ${{ parameters.containerName }} bash -c "
+        ${{ parameters.venvActivate }}
+        python -m pip install -r eng/requirements-integration-tests.txt
+      "
+    displayName: 'Install test dependencies in ${{ parameters.containerName }}${{ parameters.displaySuffix }}'

@@ -1,0 +1,20 @@
+# Integration-test dependencies sourced from the public mssql-rs_Public Azure
+# Artifacts feed (no auth required). These are installed only on the CI legs
+# that run the integration tests and are kept separate from the top-level
+# requirements.txt, which holds the ordinary build/test dependencies from
+# public PyPI. Add feed-sourced integration-test dependencies here; put plain
+# PyPI dependencies in the top-level requirements.txt instead.
+#
+# mssql-mock-tds: in-process TDS server used by
+#   tests/test_024_mock_tds_fedauth.py (guards the deferred
+#   SQL_COPT_SS_ACCESS_TOKEN use-after-free fix, PR #596 / issue #594).
+# cryptography: used by that test to mint the throwaway TLS identity the mock
+#   server needs.
+#
+# The mock package ships wheels for linux glibc (x86_64/aarch64),
+# musllinux/Alpine (x86_64/aarch64), macOS universal2, and Windows
+# (amd64/arm64). This file is installed with `pip install -r` and fails the
+# leg if no compatible wheel is available.
+--extra-index-url https://pkgs.dev.azure.com/sqlclientdrivers/public/_packaging/mssql-rs_Public/pypi/simple/
+mssql-mock-tds==0.1.0.dev20260702159138
+cryptography
