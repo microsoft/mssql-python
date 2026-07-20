@@ -57,7 +57,11 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             if (_pool.empty()) {
                 // No more candidates — try to reserve a slot for a new connection.
                 if (_current_size < _max_size) {
-                    valid_conn = std::make_shared<Connection>(connStr, true);
+                    // Reserve the slot here but construct the Connection outside
+                    // _mutex (Phase 3): the Connection constructor allocates ODBC
+                    // handles and emits log records that acquire the GIL, and
+                    // holding _mutex across a GIL acquisition deadlocks a thread
+                    // that holds the GIL and is waiting on _mutex (#671).
                     ++_current_size;
                     needs_connect = true;
                 } else {
@@ -94,12 +98,13 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
         }
     }
 
-    // Phase 3: Connect the new connection outside the mutex.
+    // Phase 3: Construct and connect the new connection outside the mutex.
     if (needs_connect) {
         try {
+            valid_conn = std::make_shared<Connection>(connStr, true);
             valid_conn->connect(attrs_before);
         } catch (...) {
-            // Connect failed — release the reserved slot
+            // Construct/connect failed — release the reserved slot
             {
                 std::lock_guard<std::mutex> lock(_mutex);
                 if (_current_size > 0) --_current_size;
@@ -171,14 +176,21 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
 std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::u16string& connStr,
                                                                      const py::dict& attrs_before) {
     std::shared_ptr<ConnectionPool> pool;
+    bool created = false;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
         auto& pool_ref = _pools[connStr];
         if (!pool_ref) {
-            LOG("Creating new connection pool");
             pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+            created = true;
         }
         pool = pool_ref;
+    }
+    // Log after releasing _manager_mutex (#671): LOG() acquires the GIL, and
+    // holding a native mutex across a GIL acquisition deadlocks a thread that
+    // holds the GIL and is waiting on the same mutex.
+    if (created) {
+        LOG("Creating new connection pool");
     }
     // Call acquire() outside _manager_mutex.  acquire() may release the GIL
     // during the ODBC connect call; holding _manager_mutex across that would
