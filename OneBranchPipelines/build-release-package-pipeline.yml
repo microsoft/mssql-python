@@ -36,12 +36,12 @@ pr:
     include:
       - main
 
-# Schedule: Daily builds at 12:30 AM IST (19:00 UTC previous day)
+# Schedule: Daily builds at 4:30 AM IST (23:00 UTC previous day)
 # Cron format: minute hour day month weekday
 # always:true = run even if no code changes
 schedules:
-  - cron: "0 19 * * *"
-    displayName: Daily run at 12:30 AM IST
+  - cron: "0 23 * * *"
+    displayName: Daily run at 4:30 AM IST
     branches:
       include:
         - main
