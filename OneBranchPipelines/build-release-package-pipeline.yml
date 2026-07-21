@@ -378,7 +378,13 @@ extends:
       # Version automatically detected from wheel metadata (setup.py)
       sbom:
         enabled: ${{ parameters.runSdlTasks }}
-        packageName: 'mssql-python'
+        # Name the SBOM after the package actually being built so an odbc-only build
+        # does not mislabel the driver wheels as 'mssql-python'. Combined ('both') and
+        # mssql-python builds keep the primary package name.
+        ${{ if eq(variables.effectiveBuildPackage, 'mssql-python-odbc') }}:
+          packageName: 'mssql-python-odbc'
+        ${{ else }}:
+          packageName: 'mssql-python'
 
       # TSA - Threat and Security Assessment
       # Uploads scan results to Microsoft's TSA tool for tracking
@@ -617,4 +623,23 @@ extends:
             linuxTag: musllinux
             arch: x86_64
             dockerPlatform: linux/amd64
+            oneBranchType: '${{ variables.effectiveOneBranchType }}'
+        # Windows + macOS counterparts run natively (no Docker) on the same pools the
+        # build stages use. They prove the external-package resolution end-to-end on all
+        # three OSes - Windows additionally covers mssql-auth.dll resolution, macOS covers
+        # the universal2 dylib @loader_path/rpath resolution.
+        - template: /OneBranchPipelines/stages/wheel-installation-test-windows-stage.yml@self
+          parameters:
+            stageName: TestBothWheels_Windows_x64
+            jobName: InstallAndTest
+            pythonVersion: '3.12'
+            shortPyVer: '312'
+            architecture: x64
+            oneBranchType: '${{ variables.effectiveOneBranchType }}'
+        - template: /OneBranchPipelines/stages/wheel-installation-test-macos-stage.yml@self
+          parameters:
+            stageName: TestBothWheels_macOS_universal2
+            jobName: InstallAndTest
+            pythonVersion: '3.12'
+            shortPyVer: '312'
             oneBranchType: '${{ variables.effectiveOneBranchType }}'

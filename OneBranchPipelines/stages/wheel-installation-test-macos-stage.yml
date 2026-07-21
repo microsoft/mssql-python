@@ -1,0 +1,207 @@
+# =========================================================================================
+# End-User "Both Wheels Together" Installation Test - macOS
+# =========================================================================================
+# macOS counterpart of wheel-installation-test-stage.yml (which is Docker/Linux-only).
+# Installs the ACTUAL published mssql-python (universal2) + mssql-python-odbc (universal2)
+# wheels into a fresh venv, runs the full pytest suite (bundled libs intact, external
+# package already preferred by GetOdbcLibsBaseDir), then DELETES the bundled
+# mssql_python/libs and connects once more in a fresh process. With the bundled fallback
+# gone, a successful live query can ONLY be using the driver from the separately installed
+# mssql_python_odbc package. This also exercises the universal2 dylib @loader_path/rpath
+# resolution from the external package.
+#
+# Runs natively on a macOS-15 + Colima/Docker SQL Server agent. macOS 15 is required
+# because the universal2 wheels are retagged to a macosx_15_0 minimum deployment target.
+# A single representative Python version is sufficient: the external package RESOLUTION
+# path (GetOdbcLibsBaseDir in ddbc_bindings.cpp) is Python-version independent; per-version
+# native builds are already covered by the macOS build stages.
+# =========================================================================================
+parameters:
+  # Stage identifier (e.g., 'TestBothWheels_macOS_universal2')
+  - name: stageName
+    type: string
+  # Job identifier within the stage
+  - name: jobName
+    type: string
+    default: 'InstallAndTest'
+  # Python version in X.Y format used to select the mssql-python wheel
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  # Python version as 3-digit string (e.g., '312') matching the cp<ver> wheel tag
+  - name: shortPyVer
+    type: string
+    default: '312'
+  # OneBranch build type: 'Official' or 'NonOfficial'
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'Test Both Wheels macOS universal2'
+    # Only meaningful when both consolidated artifacts exist in this run.
+    dependsOn:
+      - Consolidate
+      - ConsolidateOdbc
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Install both wheels + pytest - macOS universal2'
+
+        # macOS-15 (Sequoia). type:linux is an Azure Pipelines quirk - macOS pools
+        # declare as 'linux' type. The build stage retags the universal2 wheels to
+        # macosx_15_0 (min deployment target), so pip only accepts them on macOS 15+.
+        # The build stage itself runs on macOS-14 because it tests the freshly built
+        # .so directly (never pip-installs the retagged wheel); this install test does
+        # pip-install it, so it MUST run on macOS 15+ or pip rejects the wheel with
+        # "not a supported wheel on this platform".
+        pool:
+          type: linux
+          isCustom: true
+          name: Azure Pipelines
+          vmImage: 'macOS-15'
+        timeoutInMinutes: 120
+
+        variables:
+          # BinSkim is Windows-PE focused; macOS uses Mach-O.
+          - name: ob_sdl_binskim_enabled
+            value: false
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          # OneBranch-required variable (unused on macOS agents).
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+              addToPath: true
+            displayName: 'Use Python ${{ parameters.pythonVersion }}'
+
+          # Download the two CONSOLIDATED wheel artifacts produced earlier in this run.
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download consolidated mssql-python wheels'
+            inputs:
+              buildType: 'current'
+              artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+              targetPath: '$(Pipeline.Workspace)/mssql-python-wheels'
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download consolidated mssql-python-odbc wheels'
+            inputs:
+              buildType: 'current'
+              artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+              targetPath: '$(Pipeline.Workspace)/mssql-python-odbc-wheels'
+
+          # Install Docker CLI + Colima (macOS Docker runtime) and start a SQL Server
+          # 2022 container on the host loopback (localhost:1433), same as the build stage.
+          - script: |
+              brew update
+              brew install docker colima
+              colima start --vm-type vz --cpu 4 --memory 8 || {
+                echo "vz VM failed, trying qemu..."
+                colima start --vm-type qemu --cpu 4 --memory 8
+              }
+              sleep 30
+              docker context use colima >/dev/null || true
+              docker version
+            displayName: 'Install and start Docker (Colima)'
+            timeoutInMinutes: 15
+
+          - script: |
+              set -euxo pipefail
+              docker pull mcr.microsoft.com/mssql/server:2022-latest
+              docker run --name sqlserver \
+                -e ACCEPT_EULA=Y \
+                -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+                -p 1433:1433 -d \
+                mcr.microsoft.com/mssql/server:2022-latest
+              echo "Waiting for SQL Server to be ready..."
+              for i in {1..30}; do
+                # sqlcmd runs INSIDE the mssql container; localhost is the container's own
+                # loopback (a readiness probe), not debug code reaching a dev box.
+                if docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U SA -P "$DB_PASSWORD" -C -Q "SELECT 1" >/dev/null 2>&1; then # DevSkim: ignore DS162092
+                  echo "SQL Server is ready"; break
+                fi
+                sleep 2
+              done
+            displayName: 'Start SQL Server (Docker)'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+
+          - script: |
+              set -euo pipefail
+
+              PYTAG="cp${{ parameters.shortPyVer }}"
+
+              # Select the universal2 wheels matching THIS Python version (mssql-python)
+              # and the data-only odbc package (py3-none-macosx-universal2).
+              MP_WHEEL=$(ls "$(Pipeline.Workspace)"/mssql-python-wheels/dist/mssql_python-*${PYTAG}-*macosx*universal2*.whl 2>/dev/null | head -1)
+              if [ -z "$MP_WHEEL" ]; then echo "ERROR: no mssql-python wheel for ${PYTAG}/macosx universal2"; exit 1; fi
+              ODBC_WHEEL=$(ls "$(Pipeline.Workspace)"/mssql-python-odbc-wheels/dist/mssql_python_odbc-*macosx*universal2*.whl 2>/dev/null | head -1)
+              if [ -z "$ODBC_WHEEL" ]; then echo "ERROR: no mssql-python-odbc wheel for macosx universal2"; exit 1; fi
+
+              # Fresh isolated venv = clean end-user machine.
+              TEST_DIR="$(Agent.TempDirectory)/enduser_${PYTAG}"
+              rm -rf "$TEST_DIR"
+              python3 -m venv "$TEST_DIR"
+              VENV_PY="$TEST_DIR/bin/python"
+
+              # PYTHONSAFEPATH so the repo checkout can never shadow the installed wheel.
+              export PYTHONSAFEPATH=1
+
+              "$VENV_PY" -m pip install -q -U pip
+
+              # Install the odbc wheel FIRST so mssql-python's pinned mssql-python-odbc==X
+              # requirement is satisfied from this LOCAL wheel (pip never reaches PyPI).
+              echo "Installing mssql-python-odbc: $ODBC_WHEEL"
+              "$VENV_PY" -m pip install -q "$ODBC_WHEEL"
+              echo "Installing mssql-python:      $MP_WHEEL"
+              "$VENV_PY" -m pip install -q "$MP_WHEEL"
+
+              # Show where the external ODBC package lives (the split target).
+              "$VENV_PY" -c "import mssql_python_odbc, os; print('mssql_python_odbc libs:', mssql_python_odbc.get_libs_dir()); assert os.path.isdir(mssql_python_odbc.get_libs_dir())"
+
+              # POSITIVE assertion: prove the native loader WILL resolve the driver from
+              # the external mssql_python_odbc package (mirrors GetOdbcLibsBaseDir).
+              "$VENV_PY" -c "import mssql_python.ddbc_bindings as d, mssql_python_odbc, os; base=os.path.dirname(mssql_python_odbc.__file__); drv=d.GetDriverPathCpp(base); print('external driver path:', drv); assert os.path.exists(drv), 'external ODBC driver not found - loader would NOT select external package: '+drv; print('POSITIVE: loader will resolve the driver from the external mssql_python_odbc package')"
+
+              # PHASE 1: run the FULL existing suite with bundled libs INTACT. Copy the
+              # suite OUT of the source tree so collection imports the INSTALLED package.
+              cp -r "$(Build.SourcesDirectory)/tests" "$TEST_DIR/tests"
+              cp "$(Build.SourcesDirectory)/pytest.ini" "$TEST_DIR/pytest.ini"
+              "$VENV_PY" -m pip install -q pytest
+              if [ -f "$(Build.SourcesDirectory)/requirements.txt" ]; then
+                "$VENV_PY" -m pip install -q -r "$(Build.SourcesDirectory)/requirements.txt"
+              fi
+              cd "$TEST_DIR"
+              DB_CONNECTION_STRING="Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
+                "$VENV_PY" -m pytest "$TEST_DIR/tests" -v --maxfail=1 -m "not stress"
+              echo "Full suite passed for ${PYTAG} with both wheels installed (external driver preferred)"
+
+              # PHASE 2 - DECISIVE negative proof: remove the ODBC driver that
+              # mssql_python still bundles, then connect again in a FRESH process.
+              MP_LIBS=$("$VENV_PY" -c "import mssql_python, os; print(os.path.join(os.path.dirname(mssql_python.__file__), 'libs'))")
+              case "$MP_LIBS" in
+                "$(Build.SourcesDirectory)"/*)
+                  echo "ERROR: resolved mssql_python to the source tree ($MP_LIBS), not the installed wheel"; exit 1 ;;
+              esac
+              if [ -d "$MP_LIBS" ]; then
+                echo "Removing bundled mssql_python/libs to force use of external ODBC package: $MP_LIBS"
+                rm -rf "$MP_LIBS"
+              else
+                echo "Note: mssql_python has no bundled libs/ (already split at build time)"
+              fi
+
+              "$VENV_PY" -c "import mssql_python; print('mssql_python', mssql_python.__version__, 'imported OK (bundled libs removed)')"
+              DB_CONNECTION_STRING="Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
+                "$VENV_PY" -c "import mssql_python, os; c=mssql_python.connect(os.environ['DB_CONNECTION_STRING']); cur=c.cursor(); cur.execute('SELECT 1'); print('connection OK via EXTERNAL driver:', cur.fetchone()); c.close()"
+              echo "DECISIVE: connected with bundled libs removed - driver resolved from external mssql_python_odbc package"
+            displayName: 'Install both wheels + full pytest + external-only proof'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)

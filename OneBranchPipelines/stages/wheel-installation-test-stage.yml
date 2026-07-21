@@ -154,6 +154,28 @@ stages:
                 tail -f /dev/null
             displayName: 'Start $(LINUX_TAG) $(ARCH) test container'
 
+          # Install the ODBC driver's runtime SYSTEM dependencies INTO the test
+          # container. msodbcsql18 links MIT Kerberos (libkrb5.so.3 /
+          # libgssapi_krb5.so.2) as a system dependency - these are never bundled in
+          # the wheel (the driver's RUNPATH is only $ORIGIN, which resolves the
+          # co-located libodbcinst.so.2 but NOT krb5). The manylinux_2_28 base image
+          # ships krb5-libs by default, but the minimal musllinux/Alpine image does
+          # NOT, so without this the driver's dlopen fails with
+          # "Error loading shared library libkrb5.so.3: No such file or directory" and,
+          # because that throw happens inside std::call_once on musl, the process
+          # aborts (core dump) at import instead of raising a clean ImportError. This
+          # mirrors the krb5-libs install already performed by
+          # build-linux-single-stage.yml and reflects the real runtime requirement for
+          # Alpine end users.
+          - script: |
+              set -euxo pipefail
+              if [[ "$(LINUX_TAG)" == "musllinux" ]]; then
+                docker exec test-$(LINUX_TAG)-$(ARCH) sh -lc 'apk add --no-cache krb5-libs keyutils-libs'
+              else
+                docker exec test-$(LINUX_TAG)-$(ARCH) bash -lc 'dnf -y install krb5-libs keyutils-libs || yum -y install krb5-libs keyutils-libs || true'
+              fi
+            displayName: 'Install ODBC driver runtime deps (krb5) in $(LINUX_TAG) container'
+
           # Start a SQL Server 2022 container on the host so pytest has a live server.
           - script: |
               set -euxo pipefail
@@ -244,10 +266,14 @@ stages:
                       echo "ERROR: no mssql-python-odbc wheel for ${PLAT}"; exit 1
                     fi
 
-                    echo "Installing mssql-python:      $MP_WHEEL"
-                    $VENV_PY -m pip install -q "$MP_WHEEL"
+                    # Install the odbc wheel FIRST so that once mssql-python pins
+                    # mssql-python-odbc==X (setup.py install_requires), the requirement
+                    # is already satisfied from this LOCAL wheel and pip never reaches
+                    # PyPI for a version that may not be published yet.
                     echo "Installing mssql-python-odbc: $ODBC_WHEEL"
                     $VENV_PY -m pip install -q "$ODBC_WHEEL"
+                    echo "Installing mssql-python:      $MP_WHEEL"
+                    $VENV_PY -m pip install -q "$MP_WHEEL"
 
                     # Show where the external ODBC package lives (the split target)
                     $VENV_PY -c "import mssql_python_odbc, os; print(\"mssql_python_odbc libs:\", mssql_python_odbc.get_libs_dir()); assert os.path.isdir(mssql_python_odbc.get_libs_dir())"
