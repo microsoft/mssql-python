@@ -7,6 +7,8 @@ import pytest
 import platform
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -420,6 +422,113 @@ class TestArchitectureSpecificDependencies:
             assert (
                 libodbcinst_path.exists()
             ), f"macOS {arch} ODBC installer library not found: {libodbcinst_path}"
+
+    @pytest.mark.skipif(dependency_tester.platform_name != "darwin", reason="macOS-specific test")
+    def test_macos_driver_load_chain_is_relocatable(self):
+        """Ensure the macOS driver's bundled load chain contains no absolute paths.
+
+        Guards against GitHub issue #656. On a fresh Apple Silicon Mac (without
+        ``brew install unixodbc``) importing mssql_python fails because the arm64
+        ``libmsodbcsql.18.dylib`` shipped in the wheel still hardcodes
+        ``/opt/homebrew/lib/libodbcinst.2.dylib`` instead of
+        ``@loader_path/libodbcinst.2.dylib``.
+
+        Root cause: ``pybind/configure_dylibs.sh`` only rewrites the dylibs for
+        the *build host* architecture (``ARCH=$(uname -m)``). macOS wheels are
+        universal2 but built on an x86_64 runner, so only the x86_64 driver gets
+        relocated; the arm64 driver ships with Homebrew-absolute dependencies.
+
+        At runtime ``ddbc_bindings`` ``dlopen``s ``libmsodbcsql.18.dylib``
+        DIRECTLY (it does not go through the unixODBC driver manager), so this
+        test walks exactly that load graph: starting from the driver and
+        following only its *bundled* sibling dependencies. Any bundled sibling
+        reached via an absolute path would fail to load on a machine without
+        Homebrew.
+
+        ``otool -L`` reads Mach-O load commands of any architecture regardless of
+        the host, so inspecting BOTH the arm64 and x86_64 drivers lets a single
+        x86_64 CI runner catch the arm64-only packaging bug. Non-bundled
+        dependencies (system libs under /usr/lib or /System, and the documented
+        external openssl prerequisite) are intentionally ignored.
+        """
+        otool = shutil.which("otool")
+        if otool is None:
+            pytest.skip("otool not available on this system")
+
+        def direct_bundled_deps(dylib_path, bundled_names):
+            """Return (absolute_hits, relocatable_hits) for bundled sibling deps.
+
+            The first line of ``otool -L`` output is the file being inspected and
+            the second is the library's own install id (LC_ID_DYLIB); both are
+            self-references and are skipped by ignoring deps whose basename equals
+            the file's own name.
+            """
+            result = subprocess.run([otool, "-L", str(dylib_path)], capture_output=True, text=True)
+            if result.returncode != 0:
+                return None, None
+
+            absolute_hits, relocatable_hits = [], []
+            for line in result.stdout.splitlines()[1:]:
+                dep = line.strip().split(" (compatibility")[0].strip()
+                if not dep:
+                    continue
+                base = os.path.basename(dep)
+                if base == dylib_path.name or base not in bundled_names:
+                    continue  # self-reference or a non-bundled/external dependency
+                if dep.startswith("/"):
+                    absolute_hits.append((base, dep))
+                else:
+                    relocatable_hits.append(base)
+            return absolute_hits, relocatable_hits
+
+        problems = []
+        checked_arches = []
+        for arch in ["arm64", "x86_64"]:
+            lib_dir = dependency_tester.libs_base_dir / "libs" / "macos" / arch / "lib"
+            driver = lib_dir / "libmsodbcsql.18.dylib"
+            if not driver.exists():
+                continue
+            checked_arches.append(arch)
+
+            bundled = {p.name: p for p in lib_dir.glob("*.dylib")}
+
+            # Depth-first walk of the driver's bundled load chain (queue.pop() is
+            # LIFO). Order does not matter here: we visit every reachable bundled
+            # dylib and collect all absolute-path problems regardless of traversal.
+            visited, queue = set(), [driver]
+            while queue:
+                current = queue.pop()
+                if current.name in visited:
+                    continue
+                visited.add(current.name)
+
+                absolute_hits, relocatable_hits = direct_bundled_deps(current, bundled)
+                if absolute_hits is None or relocatable_hits is None:
+                    problems.append(f"{arch}/{current.name}: otool failed to inspect the library")
+                    continue
+
+                for base, dep in absolute_hits:
+                    problems.append(
+                        f"{arch}/{current.name} loads bundled '{base}' via absolute "
+                        f"path '{dep}' (expected @loader_path); this breaks on "
+                        f"machines without Homebrew"
+                    )
+                for base in relocatable_hits:
+                    queue.append(bundled[base])
+
+        # Fail loudly instead of passing vacuously if no bundled driver was found
+        # to validate (e.g. the packaging layout changed).
+        assert checked_arches, (
+            "no bundled macOS driver found to validate under "
+            "libs/macos/{arm64,x86_64}/lib/libmsodbcsql.18.dylib "
+            "(packaging layout may have changed)"
+        )
+
+        assert not problems, (
+            "macOS driver load chain contains hardcoded absolute dependency paths "
+            "that break on machines without Homebrew (see GitHub issue #656):\n  "
+            + "\n  ".join(problems)
+        )
 
     @pytest.mark.skipif(dependency_tester.platform_name != "linux", reason="Linux-specific test")
     def test_linux_distribution_dependencies(self):
