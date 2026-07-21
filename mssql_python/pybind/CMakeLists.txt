@@ -5,6 +5,10 @@ project(ddbc_bindings)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Performance profiling instrumentation. OFF by default so released wheels ship
+# with zero profiler code. Turn on with -DENABLE_PROFILING=ON (dev/internal builds).
+option(ENABLE_PROFILING "Build with performance profiling instrumentation" OFF)
+
 # Enable verbose output to see actual compiler/linker commands
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
 
@@ -347,6 +351,12 @@ target_compile_definitions(ddbc_bindings PRIVATE
     PYBIND11_COMPILER_TYPE="_MSC_VER"
     NOMINMAX
 )
+
+# Emit ENABLE_PROFILING to the compiler only when the option is on.
+if(ENABLE_PROFILING)
+    message(STATUS "Building WITH performance profiling instrumentation")
+    target_compile_definitions(ddbc_bindings PRIVATE ENABLE_PROFILING)
+endif()
 
 # Add warning level flags for MSVC
 if(MSVC)

@@ -122,8 +122,13 @@ class CustomBdistWheel(bdist_wheel):
 # Package discovery
 # ---------------------------------------------------------------------------
 
-# Find all packages in the current directory
-packages = find_packages()
+# Find all packages in the current directory.
+# Exclude profiler/: it's internal development tooling (a standalone benchmark
+# CLI), not part of the shipped driver, and its generic top-level name should
+# not land in users' site-packages. The runtime instrumentation it drives lives
+# inside mssql_python (perf_timer.py, the ddbc_bindings profiling submodule) and
+# is packaged normally.
+packages = find_packages(exclude=["profiler", "profiler.*"])
 
 # Get platform info using consolidated function
 arch, platform_tag = get_platform_info()
