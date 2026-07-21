@@ -6017,7 +6017,11 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"), py::arg("value"),
              "Set connection attribute")
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
-        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
+        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"))
+        .def("get_async_capability", &ConnectionHandle::getAsyncCapability,
+             "POC (async execute/fetch): probe the driver for ODBC async support. "
+             "Returns a dict with SQL_ASYNC_MODE and the "
+             "SQL_ASYNC_STMT_FUNCTIONS / SQL_ASYNC_DBC_FUNCTIONS bitmasks.");
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
