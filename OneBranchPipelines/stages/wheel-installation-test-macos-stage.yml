@@ -180,8 +180,10 @@ stages:
                 "$VENV_PY" -m pip install -q -r "$(Build.SourcesDirectory)/requirements.txt"
               fi
               cd "$TEST_DIR"
-              DB_CONNECTION_STRING="Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                "$VENV_PY" -m pytest "$TEST_DIR/tests" -v --maxfail=1 -m "not stress"
+              # 127.0.0.1 targets the CI SQL Server 2022 container on the agent loopback (a
+              # test fixture), not debug code reaching a real host.
+              export DB_CONNECTION_STRING="Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"  # DevSkim: ignore DS162092
+              "$VENV_PY" -m pytest "$TEST_DIR/tests" -v --maxfail=1 -m "not stress"
               echo "Full suite passed for ${PYTAG} with both wheels installed (external driver preferred)"
 
               # PHASE 2 - DECISIVE negative proof: remove the ODBC driver that
@@ -199,8 +201,10 @@ stages:
               fi
 
               "$VENV_PY" -c "import mssql_python; print('mssql_python', mssql_python.__version__, 'imported OK (bundled libs removed)')"
-              DB_CONNECTION_STRING="Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                "$VENV_PY" -c "import mssql_python, os; c=mssql_python.connect(os.environ['DB_CONNECTION_STRING']); cur=c.cursor(); cur.execute('SELECT 1'); print('connection OK via EXTERNAL driver:', cur.fetchone()); c.close()"
+              # 127.0.0.1 targets the CI SQL Server 2022 container on the agent loopback (a
+              # test fixture), not debug code reaching a real host.
+              export DB_CONNECTION_STRING="Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"  # DevSkim: ignore DS162092
+              "$VENV_PY" -c "import mssql_python, os; c=mssql_python.connect(os.environ['DB_CONNECTION_STRING']); cur=c.cursor(); cur.execute('SELECT 1'); print('connection OK via EXTERNAL driver:', cur.fetchone()); c.close()"
               echo "DECISIVE: connected with bundled libs removed - driver resolved from external mssql_python_odbc package"
             displayName: 'Install both wheels + full pytest + external-only proof'
             env:
