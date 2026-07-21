@@ -205,11 +205,13 @@ extends:
                       filePath: '$(Build.SourcesDirectory)\OneBranchPipelines\scripts\validate-release-versions.ps1'
                       arguments: '-VersionFile "$(Build.SourcesDirectory)\artifacts\dist\mssql-py-core.version"'
 
-                  # Guard: the released mssql-python wheel MUST depend on the pinned
-                  # mssql-python-odbc package. Catches releasing from a PRE-pin build
-                  # (e.g. the wrong build run), which would ship a driver-less package
-                  # that breaks 'pip install mssql-python'. By design this FAILS on a
-                  # pre-pin build. Update $expectedVersion when the odbc pin bumps.
+                  # Guard: if the released mssql-python wheel declares an
+                  # mssql-python-odbc dependency, it MUST be the exact pinned version.
+                  # A pre-pin build declares no such dependency and is allowed through
+                  # (inert until setup.py adds install_requires), so this does not break
+                  # an unrelated hotfix released before the pin lands. It DOES catch a
+                  # wheel pinned to the wrong odbc version. Update $expectedVersion when
+                  # the odbc pin bumps.
                   - task: PowerShell@2
                     displayName: '[TEST] Validate mssql-python-odbc pin in wheel metadata'
                     inputs:
@@ -237,16 +239,22 @@ extends:
                         $reader.Dispose()
                         $zip.Dispose()
                         $odbcLines = ($metadata -split "`n") | Where-Object { $_ -match 'Requires-Dist:\s*mssql[-_]python[-_]odbc' }
-                        if ($odbcLines) {
+                        if (-not $odbcLines) {
+                          Write-Warning "Wheel declares no mssql-python-odbc dependency (pre-pin build). Skipping odbc pin enforcement - expected until setup.py adds install_requires=mssql-python-odbc==$expectedVersion."
+                        } else {
                           Write-Host "odbc dependency in metadata:"
                           $odbcLines | ForEach-Object { Write-Host "  $($_.Trim())" }
+                          # Anchor the version with a negative lookahead so 18.6.20 /
+                          # 18.6.2.1 do NOT satisfy an 18.6.2 pin, while still allowing a
+                          # trailing space, ';' environment marker, or end of line.
+                          $pinRegex = 'mssql[-_]python[-_]odbc\s*==\s*' + [regex]::Escape($expectedVersion) + '(?![\d.])'
+                          $pinned = $odbcLines | Where-Object { $_ -match $pinRegex }
+                          if (-not $pinned) {
+                            Write-Error "mssql-python wheel declares an mssql-python-odbc dependency but not the exact pin ==$expectedVersion. Release from the POST-pin build with the correct odbc version."
+                            exit 1
+                          }
+                          Write-Host "OK: wheel depends on mssql-python-odbc==$expectedVersion"
                         }
-                        $pinRegex = 'Requires-Dist:\s*mssql[-_]python[-_]odbc\s*==\s*' + [regex]::Escape($expectedVersion)
-                        if ($metadata -notmatch $pinRegex) {
-                          Write-Error "mssql-python wheel does not pin mssql-python-odbc==$expectedVersion. Are you releasing from the POST-pin build? mssql-python must depend on the pinned odbc package before release."
-                          exit 1
-                        }
-                        Write-Host "OK: wheel depends on mssql-python-odbc==$expectedVersion"
 
               # Step 4: Verify wheel integrity
               - task: PowerShell@2
