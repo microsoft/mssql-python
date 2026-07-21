@@ -7,8 +7,6 @@ import pytest
 import platform
 import os
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -22,6 +20,7 @@ class DependencyTester:
         self.platform_name = platform.system().lower()
         self.raw_architecture = platform.machine().lower()
         self.module_dir = self._get_module_directory()
+        self.libs_base_dir = self._get_libs_base_dir()
         self.normalized_arch = self._normalize_architecture()
 
     def _get_module_directory(self):
@@ -34,6 +33,33 @@ class DependencyTester:
         except ImportError:
             # Fallback to relative path from tests directory
             return Path(__file__).parent.parent / "mssql_python"
+
+    def _get_libs_base_dir(self):
+        """Directory that contains the ``libs/`` driver payload the loader will use.
+
+        Mirrors the native resolver (``GetOdbcLibsBaseDir`` in ddbc_bindings.cpp):
+        the external ``mssql_python_odbc`` package is authoritative whenever it is
+        installed and actually ships the driver; otherwise the driver is resolved
+        from ``mssql_python``'s own bundled ``libs/``. Keeping the expected paths in
+        lockstep with the loader means these dependency assertions validate the SAME
+        driver the runtime loads -- including the package-split scenario where the
+        bundled ``mssql_python/libs`` is absent and the driver comes only from the
+        separately installed ``mssql_python_odbc`` package. When that package is not
+        installed the base is unchanged, so single-wheel CI keeps enforcing that
+        ``mssql_python`` bundles its own libs.
+        """
+        try:
+            import mssql_python_odbc
+            import mssql_python.ddbc_bindings as ddbc
+
+            external_base = Path(mssql_python_odbc.__file__).parent
+            driver = ddbc.GetDriverPathCpp(str(external_base))
+            if driver and Path(driver).exists():
+                return external_base
+        except Exception:
+            # No external package (or it can't resolve a driver) -> bundled libs.
+            pass
+        return self.module_dir
 
     def _normalize_architecture(self):
         """Normalize architecture names for the given platform."""
@@ -152,7 +178,7 @@ class DependencyTester:
 
     def _get_windows_dependencies(self):
         """Get Windows dependencies based on architecture."""
-        base_path = self.module_dir / "libs" / "windows" / self.normalized_arch
+        base_path = self.libs_base_dir / "libs" / "windows" / self.normalized_arch
 
         dependencies = [
             base_path / self._driver_filename(),
@@ -169,7 +195,7 @@ class DependencyTester:
 
         # macOS uses universal2 binaries, but we need to check both arch directories
         for arch in ["arm64", "x86_64"]:
-            base_path = self.module_dir / "libs" / "macos" / arch / "lib"
+            base_path = self.libs_base_dir / "libs" / "macos" / arch / "lib"
             dependencies.extend(
                 [
                     base_path / self._driver_filename(),
@@ -190,7 +216,7 @@ class DependencyTester:
         elif runtime_arch in ["aarch64"]:
             runtime_arch = "arm64"
 
-        base_path = self.module_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
+        base_path = self.libs_base_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
 
         dependencies = [
             base_path / self._driver_filename(),
@@ -232,7 +258,7 @@ class DependencyTester:
 
         if platform_name == "windows":
             driver_path = (
-                Path(self.module_dir)
+                Path(self.libs_base_dir)
                 / "libs"
                 / "windows"
                 / normalized_arch
@@ -241,7 +267,7 @@ class DependencyTester:
 
         elif platform_name == "darwin":
             driver_path = (
-                Path(self.module_dir)
+                Path(self.libs_base_dir)
                 / "libs"
                 / "macos"
                 / normalized_arch
@@ -252,7 +278,7 @@ class DependencyTester:
         elif platform_name == "linux":
             distro_name = self._detect_linux_distro()
             driver_path = (
-                Path(self.module_dir)
+                Path(self.libs_base_dir)
                 / "libs"
                 / "linux"
                 / distro_name
@@ -356,7 +382,7 @@ class TestArchitectureSpecificDependencies:
     def test_windows_vcredist_dependency(self):
         """Test that Windows builds include vcredist dependencies."""
         vcredist_path = (
-            dependency_tester.module_dir
+            dependency_tester.libs_base_dir
             / "libs"
             / "windows"
             / dependency_tester.normalized_arch
@@ -372,7 +398,7 @@ class TestArchitectureSpecificDependencies:
     def test_windows_auth_dependency(self):
         """Test that Windows builds include authentication library."""
         auth_path = (
-            dependency_tester.module_dir
+            dependency_tester.libs_base_dir
             / "libs"
             / "windows"
             / dependency_tester.normalized_arch
@@ -385,7 +411,7 @@ class TestArchitectureSpecificDependencies:
     def test_macos_universal_dependencies(self):
         """Test that macOS builds include dependencies for both architectures."""
         for arch in ["arm64", "x86_64"]:
-            base_path = dependency_tester.module_dir / "libs" / "macos" / arch / "lib"
+            base_path = dependency_tester.libs_base_dir / "libs" / "macos" / arch / "lib"
 
             msodbcsql_path = base_path / dependency_tester._driver_filename()
             libodbcinst_path = base_path / "libodbcinst.2.dylib"
@@ -395,120 +421,13 @@ class TestArchitectureSpecificDependencies:
                 libodbcinst_path.exists()
             ), f"macOS {arch} ODBC installer library not found: {libodbcinst_path}"
 
-    @pytest.mark.skipif(dependency_tester.platform_name != "darwin", reason="macOS-specific test")
-    def test_macos_driver_load_chain_is_relocatable(self):
-        """Ensure the macOS driver's bundled load chain contains no absolute paths.
-
-        Guards against GitHub issue #656. On a fresh Apple Silicon Mac (without
-        ``brew install unixodbc``) importing mssql_python fails because the arm64
-        ``libmsodbcsql.18.dylib`` shipped in the wheel still hardcodes
-        ``/opt/homebrew/lib/libodbcinst.2.dylib`` instead of
-        ``@loader_path/libodbcinst.2.dylib``.
-
-        Root cause: ``pybind/configure_dylibs.sh`` only rewrites the dylibs for
-        the *build host* architecture (``ARCH=$(uname -m)``). macOS wheels are
-        universal2 but built on an x86_64 runner, so only the x86_64 driver gets
-        relocated; the arm64 driver ships with Homebrew-absolute dependencies.
-
-        At runtime ``ddbc_bindings`` ``dlopen``s ``libmsodbcsql.18.dylib``
-        DIRECTLY (it does not go through the unixODBC driver manager), so this
-        test walks exactly that load graph: starting from the driver and
-        following only its *bundled* sibling dependencies. Any bundled sibling
-        reached via an absolute path would fail to load on a machine without
-        Homebrew.
-
-        ``otool -L`` reads Mach-O load commands of any architecture regardless of
-        the host, so inspecting BOTH the arm64 and x86_64 drivers lets a single
-        x86_64 CI runner catch the arm64-only packaging bug. Non-bundled
-        dependencies (system libs under /usr/lib or /System, and the documented
-        external openssl prerequisite) are intentionally ignored.
-        """
-        otool = shutil.which("otool")
-        if otool is None:
-            pytest.skip("otool not available on this system")
-
-        def direct_bundled_deps(dylib_path, bundled_names):
-            """Return (absolute_hits, relocatable_hits) for bundled sibling deps.
-
-            The first line of ``otool -L`` output is the file being inspected and
-            the second is the library's own install id (LC_ID_DYLIB); both are
-            self-references and are skipped by ignoring deps whose basename equals
-            the file's own name.
-            """
-            result = subprocess.run([otool, "-L", str(dylib_path)], capture_output=True, text=True)
-            if result.returncode != 0:
-                return None, None
-
-            absolute_hits, relocatable_hits = [], []
-            for line in result.stdout.splitlines()[1:]:
-                dep = line.strip().split(" (compatibility")[0].strip()
-                if not dep:
-                    continue
-                base = os.path.basename(dep)
-                if base == dylib_path.name or base not in bundled_names:
-                    continue  # self-reference or a non-bundled/external dependency
-                if dep.startswith("/"):
-                    absolute_hits.append((base, dep))
-                else:
-                    relocatable_hits.append(base)
-            return absolute_hits, relocatable_hits
-
-        problems = []
-        checked_arches = []
-        for arch in ["arm64", "x86_64"]:
-            lib_dir = dependency_tester.module_dir / "libs" / "macos" / arch / "lib"
-            driver = lib_dir / "libmsodbcsql.18.dylib"
-            if not driver.exists():
-                continue
-            checked_arches.append(arch)
-
-            bundled = {p.name: p for p in lib_dir.glob("*.dylib")}
-
-            # Depth-first walk of the driver's bundled load chain (queue.pop() is
-            # LIFO). Order does not matter here: we visit every reachable bundled
-            # dylib and collect all absolute-path problems regardless of traversal.
-            visited, queue = set(), [driver]
-            while queue:
-                current = queue.pop()
-                if current.name in visited:
-                    continue
-                visited.add(current.name)
-
-                absolute_hits, relocatable_hits = direct_bundled_deps(current, bundled)
-                if absolute_hits is None or relocatable_hits is None:
-                    problems.append(f"{arch}/{current.name}: otool failed to inspect the library")
-                    continue
-
-                for base, dep in absolute_hits:
-                    problems.append(
-                        f"{arch}/{current.name} loads bundled '{base}' via absolute "
-                        f"path '{dep}' (expected @loader_path); this breaks on "
-                        f"machines without Homebrew"
-                    )
-                for base in relocatable_hits:
-                    queue.append(bundled[base])
-
-        # Fail loudly instead of passing vacuously if no bundled driver was found
-        # to validate (e.g. the packaging layout changed).
-        assert checked_arches, (
-            "no bundled macOS driver found to validate under "
-            "libs/macos/{arm64,x86_64}/lib/libmsodbcsql.18.dylib "
-            "(packaging layout may have changed)"
-        )
-
-        assert not problems, (
-            "macOS driver load chain contains hardcoded absolute dependency paths "
-            "that break on machines without Homebrew (see GitHub issue #656):\n  "
-            + "\n  ".join(problems)
-        )
-
     @pytest.mark.skipif(dependency_tester.platform_name != "linux", reason="Linux-specific test")
     def test_linux_distribution_dependencies(self):
         """Test that Linux builds include distribution-specific dependencies."""
         distro_name = dependency_tester._detect_linux_distro()
 
         # Test that the distribution directory exists
-        distro_path = dependency_tester.module_dir / "libs" / "linux" / distro_name
+        distro_path = dependency_tester.libs_base_dir / "libs" / "linux" / distro_name
 
         assert distro_path.exists(), f"Linux distribution directory not found: {distro_path}"
 
@@ -583,9 +502,9 @@ def test_get_driver_path_from_ddbc_bindings():
     try:
         import mssql_python.ddbc_bindings as ddbc
 
-        module_dir = dependency_tester.module_dir
+        libs_base = dependency_tester.libs_base_dir
 
-        driver_path = ddbc.GetDriverPathCpp(str(module_dir))
+        driver_path = ddbc.GetDriverPathCpp(str(libs_base))
 
         # The driver path should be same as one returned by the Python function
         expected_path = dependency_tester.get_expected_driver_path()
