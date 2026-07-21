@@ -149,12 +149,18 @@ stages:
               fi
               for whl in $matches; do
                 echo "Verifying ODBC driver binary present in: $whl"
-                if python3 -m zipfile -l "$whl" | grep -qi 'msodbcsql'; then
-                  echo "OK: $whl contains the ODBC driver binary"
-                else
+                entries=$(python3 -m zipfile -l "$whl")
+                if ! echo "$entries" | grep -qi 'msodbcsql'; then
                   echo "ERROR: ODBC driver binary (msodbcsql*) missing from $whl" >&2
                   exit 1
                 fi
+                # The msodbcsql driver loads the ODBC installer lib at runtime; assert
+                # the companion is packaged too, not just the driver itself.
+                if ! echo "$entries" | grep -qi 'libodbcinst'; then
+                  echo "ERROR: ODBC installer lib (libodbcinst*) missing from $whl" >&2
+                  exit 1
+                fi
+                echo "OK: $whl contains the ODBC driver binary and libodbcinst"
               done
             displayName: 'Assert wheel contains ODBC driver binary'
 

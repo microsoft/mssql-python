@@ -92,8 +92,12 @@ stages:
               TargetFolder: '$(ob_outputDirectory)\wheels'
             displayName: 'Stage wheel artifact'
 
-          # Guard against a data wheel that packaged no driver binary (twine check
-          # would still pass). The driver DLL name contains 'msodbcsql' on every platform.
+          # Guard against a data wheel that packaged an incomplete driver set (twine
+          # check would still pass). Assert BOTH the driver DLL (msodbcsql*) and the
+          # Windows auth component (mssql-auth.dll): the native loader treats the
+          # external package as COMPLETE on Windows only when mssql-auth.dll is
+          # co-located with the driver - without it the loader silently falls back to
+          # bundled libs (or fails), which the Linux-only install test cannot catch.
           - powershell: |
               $ErrorActionPreference = "Stop"
               $wheels = Get-ChildItem -Path "$(ob_outputDirectory)\wheels" -Filter "*.whl"
@@ -104,13 +108,17 @@ stages:
               Add-Type -AssemblyName System.IO.Compression.FileSystem
               foreach ($whl in $wheels) {
                 $zip = [System.IO.Compression.ZipFile]::OpenRead($whl.FullName)
-                $hasDriver = $zip.Entries | Where-Object { $_.FullName -match 'msodbcsql' }
+                $names = $zip.Entries | ForEach-Object { $_.FullName }
                 $zip.Dispose()
-                if (-not $hasDriver) {
+                if (-not ($names | Where-Object { $_ -match 'msodbcsql' })) {
                   Write-Error "ODBC driver binary (msodbcsql*) missing from $($whl.Name)"
                   exit 1
                 }
-                Write-Host "OK: $($whl.Name) contains the ODBC driver binary"
+                if (-not ($names | Where-Object { $_ -match 'mssql-auth\.dll' })) {
+                  Write-Error "Windows auth component (mssql-auth.dll) missing from $($whl.Name) - loader would not treat the external package as complete"
+                  exit 1
+                }
+                Write-Host "OK: $($whl.Name) contains the ODBC driver binary and mssql-auth.dll"
               }
             displayName: 'Assert wheel contains ODBC driver binary'
 
