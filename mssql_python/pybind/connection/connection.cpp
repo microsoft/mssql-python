@@ -641,6 +641,45 @@ py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
     return _conn->getInfo(infoType);
 }
 
+// Async POC: probe SQL_ASYNC_MODE and cache the result. Returns true iff the
+// driver supports statement-level async (SQL_AM_STATEMENT) or connection-level
+// async (SQL_AM_CONNECTION). Called from Cursor.execute_async as a capability
+// gate before configuring SQL_ATTR_ASYNC_ENABLE on the statement handle.
+bool Connection::isAsyncCapable() const {
+    int cached = _asyncModeCache.load(std::memory_order_acquire);
+    if (cached < 0) {
+        if (!_dbcHandle) {
+            return false;
+        }
+        if (!SQLGetInfo_ptr) {
+            LOG("isAsyncCapable: SQLGetInfo not initialized, loading driver");
+            DriverLoader::getInstance().loadDriver();
+        }
+        SQLUSMALLINT asyncMode = 0;
+        SQLSMALLINT outLen = 0;
+        SQLRETURN ret = SQLGetInfo_ptr(_dbcHandle->get(), SQL_ASYNC_MODE, &asyncMode,
+                                       sizeof(asyncMode), &outLen);
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("isAsyncCapable: SQLGetInfo(SQL_ASYNC_MODE) failed - SQLRETURN=%d", ret);
+            // Cache as SQL_AM_NONE so we don't re-probe on every call.
+            _asyncModeCache.store(static_cast<int>(SQL_AM_NONE), std::memory_order_release);
+            return false;
+        }
+        cached = static_cast<int>(asyncMode);
+        _asyncModeCache.store(cached, std::memory_order_release);
+        LOG("isAsyncCapable: SQL_ASYNC_MODE=%d (cached)", cached);
+    }
+    return cached == static_cast<int>(SQL_AM_STATEMENT) ||
+           cached == static_cast<int>(SQL_AM_CONNECTION);
+}
+
+bool ConnectionHandle::isAsyncCapable() const {
+    if (!_conn) {
+        ThrowStdException("Connection object is not initialized");
+    }
+    return _conn->isAsyncCapable();
+}
+
 void ConnectionHandle::setAttr(int attribute, py::object value) {
     if (!_conn) {
         ThrowStdException("Connection not established");

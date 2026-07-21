@@ -163,6 +163,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
         self.messages: List[Tuple[str, str]] = []  # Store diagnostic messages
 
+        # Async POC: cursor-busy guard. Set True while an execute_async /
+        # fetch_async is in flight so overlapping async calls on the same
+        # cursor raise ProgrammingError instead of racing on the HSTMT.
+        # DB-API threadsafety=1 already forbids sharing cursors across
+        # threads; this adds the same protection for asyncio tasks.
+        self._async_in_flight: bool = False
+
     def _is_unicode_string(self, param: str) -> bool:
         """
         Check if a string contains non-ASCII characters.
@@ -3500,3 +3507,479 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             are managed automatically by the underlying driver.
         """
         # This is a no-op - buffer sizes are managed automatically
+
+    # ========================================================================
+    # Async POC: execute_async + fetch_async
+    # ========================================================================
+    # These methods live in an isolated block and do NOT share code with the
+    # sync execute / fetchone / fetchmany / fetchall paths. The prep and
+    # finalize helpers below are DELIBERATELY DUPLICATED from the sync
+    # implementations so any bug fix or behavior change on the sync path does
+    # not need to propagate here (and vice versa). Long-term de-duplication is
+    # deferred until the async POC stabilizes.
+    #
+    # Design notes:
+    #  - Statement-level polling via SQL_ATTR_ASYNC_ENABLE, driven from
+    #    C++ (DDBCSQLExecuteAsync / DDBCSQLFetchOneAsync /
+    #    DDBCSQLFetchManyAsync / DDBCSQLFetchAllAsync).
+    #  - The blocking polling loop runs under loop.run_in_executor so the
+    #    asyncio event loop in the caller's thread stays responsive.
+    #  - Data-At-Execution parameters (large VARBINARY(MAX) / NVARCHAR(MAX))
+    #    are rejected up-front in C++ for async execute; use sync execute()
+    #    for those.
+    #  - Concurrency: one Cursor == one HSTMT, so async ops on the same
+    #    cursor are serialized via ``_async_in_flight``. Two cursors on the
+    #    same Connection can run concurrently.
+    # ------------------------------------------------------------------------
+
+    def _check_async_capable(self) -> None:
+        """Raise NotSupportedError if the ODBC driver doesn't advertise async support.
+
+        Called at the top of every async method. Result is cached inside
+        Connection::isAsyncCapable() so the SQLGetInfo probe runs at most once
+        per connection.
+        """
+        conn = self._connection._conn
+        if not conn.is_async_capable():
+            raise NotSupportedError(
+                driver_error=(
+                    "Async execution is not supported by this ODBC driver. "
+                    "SQLGetInfo(SQL_ASYNC_MODE) reports SQL_AM_NONE."
+                ),
+                ddbc_error="",
+            )
+
+    def _acquire_async_slot(self) -> None:
+        """Take the cursor-busy slot; raise ProgrammingError if already held."""
+        if self._async_in_flight:
+            raise ProgrammingError(
+                driver_error=(
+                    "Cursor is busy: another async operation is already in flight "
+                    "on this cursor. One Cursor == one HSTMT, so async ops on the "
+                    "same cursor must be serialized. Create a second cursor for "
+                    "concurrent async work."
+                ),
+                ddbc_error="",
+            )
+        self._async_in_flight = True
+
+    def _release_async_slot(self) -> None:
+        """Release the cursor-busy slot. Safe to call multiple times."""
+        self._async_in_flight = False
+
+    # ---- Duplicated prep / finalize helpers (mirror the sync execute()) ----
+
+    def _prepare_execute_state_async(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+        self,
+        operation: str,
+        parameters,
+        use_prepare: bool,
+        reset_cursor: bool,
+    ) -> Tuple[str, List[Any], List[Any], bool, Any]:
+        """Async-only mirror of the pre-ODBC prep block from sync execute().
+
+        DELIBERATE DUPLICATE of the corresponding logic in ``execute()`` — do
+        NOT refactor to call into the sync path. See the block comment above
+        for rationale.
+
+        Returns a tuple: (operation, parameters, parameters_type,
+        effective_use_prepare, encoding_settings).
+        """
+        self._check_closed()
+        if reset_cursor:
+            if self.hstmt:
+                self._soft_reset_cursor()
+            else:
+                self._reset_cursor()
+        else:
+            if self.hstmt:
+                logger.debug(
+                    "execute_async: Closing cursor for re-execution (reset_cursor=False)"
+                )
+                self.hstmt._close_cursor()
+                self._clear_rownumber()
+
+        # Clear any previous messages
+        self.messages = []
+
+        # Parameter unwrap (same rules as sync execute).
+        if parameters:
+            if isinstance(parameters, tuple) and len(parameters) == 1:
+                if isinstance(parameters[0], (tuple, list, dict)):
+                    actual_params = parameters[0]
+                elif isinstance(parameters[0], Row):
+                    actual_params = tuple(parameters[0])
+                else:
+                    actual_params = parameters
+            else:
+                actual_params = parameters
+
+            if operation == self.last_executed_stmt and isinstance(
+                actual_params, (tuple, list)
+            ):
+                parameters = list(actual_params)
+            else:
+                operation, converted_params = detect_and_convert_parameters(
+                    operation, actual_params
+                )
+                parameters = list(converted_params)
+        else:
+            parameters = []
+
+        encoding_settings = self._get_encoding_settings()
+
+        logger.debug("execute_async: Creating parameter type list")
+        param_info = ddbc_bindings.ParamInfo
+        parameters_type: List[Any] = []
+
+        if parameters and self._inputsizes:
+            if len(self._inputsizes) != len(parameters):
+                warnings.warn(
+                    f"Number of input sizes ({len(self._inputsizes)}) does not match "
+                    f"number of parameters ({len(parameters)}). "
+                    f"This may lead to unexpected behavior.",
+                    Warning,
+                )
+
+        if parameters:
+            for i, param in enumerate(parameters):
+                paraminfo = self._create_parameter_types_list(
+                    param, param_info, parameters, i
+                )
+                parameters_type.append(paraminfo)
+
+        same_sql = (
+            parameters
+            and operation == self.last_executed_stmt
+            and self.is_stmt_prepared[0]
+        )
+        if not same_sql:
+            self.is_stmt_prepared = [False]
+        effective_use_prepare = use_prepare and not same_sql
+
+        return (
+            operation,
+            parameters,
+            parameters_type,
+            effective_use_prepare,
+            encoding_settings,
+        )
+
+    def _finalize_execute_async(self, ret: int, operation: str) -> None:
+        """Async-only mirror of the post-ODBC finalize block from sync execute().
+
+        DELIBERATE DUPLICATE of the corresponding logic in ``execute()``.
+        """
+        try:
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("execute_async failed, resetting cursor: %s", e)
+            self._reset_cursor()
+            raise
+
+        self._capture_diagnostics(ret)
+        self.last_executed_stmt = operation
+        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+
+        column_metadata: List[Any] = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception:  # pylint: disable=broad-exception-caught
+            # If describe fails, it's likely there are no results (e.g. INSERT)
+            self.description = None
+
+        if self.description:
+            self.rowcount = -1
+            self._reset_rownumber()
+            self._cached_column_map = {
+                col_desc[0]: i for i, col_desc in enumerate(self.description)
+            }
+            self._cached_column_map_lower = (
+                {k.lower(): v for k, v in self._cached_column_map.items()}
+                if get_settings().lowercase
+                else None
+            )
+            self._cached_converter_map = self._build_converter_map()
+            self._uuid_str_indices = self._compute_uuid_str_indices()
+        else:
+            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+            self._clear_rownumber()
+            self._cached_column_map = None
+            self._cached_column_map_lower = None
+            self._cached_converter_map = None
+            self._uuid_str_indices = None
+
+        self._reset_inputsizes()
+
+    def _wrap_row_async(self, row_data: List[Any]) -> Row:
+        """Async-only mirror of fetchone()'s Row-construction block."""
+        column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+        return Row(
+            row_data,
+            column_map,
+            cursor=self,
+            converter_map=converter_map,
+            uuid_str_indices=self._uuid_str_indices,
+            column_map_lower=column_map_lower,
+        )
+
+    def _wrap_rows_async(self, rows_data: List[List[Any]]) -> List[Row]:
+        """Async-only mirror of fetchmany() / fetchall()'s Row-construction block."""
+        column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+        uuid_idx = self._uuid_str_indices
+        return [
+            Row(
+                row_data,
+                column_map,
+                cursor=self,
+                converter_map=converter_map,
+                uuid_str_indices=uuid_idx,
+                column_map_lower=column_map_lower,
+            )
+            for row_data in rows_data
+        ]
+
+    # ---- Public async API ---------------------------------------------------
+
+    async def execute_async(
+        self,
+        operation: str,
+        *parameters,
+        use_prepare: bool = True,
+        reset_cursor: bool = True,
+        poll_initial_ms: float = 0.5,
+        poll_max_ms: float = 20.0,
+    ) -> "Cursor":
+        """Async counterpart of :meth:`execute` (POC).
+
+        Runs the ODBC execute call on a background executor thread with
+        SQL_ATTR_ASYNC_ENABLE turned on, so the caller's asyncio event loop
+        stays responsive while the driver polls SQLExecute / SQLExecDirect.
+
+        Args:
+            operation: SQL query or command.
+            parameters: Sequence of parameters to bind (same semantics as
+                :meth:`execute`). Data-At-Execution parameters (very large
+                strings / bytes) are NOT supported on the async path — use
+                :meth:`execute` for those.
+            use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
+            reset_cursor: Whether to reset the cursor before execution.
+            poll_initial_ms: First sleep interval between SQL_STILL_EXECUTING
+                polls in the C++ polling loop.
+            poll_max_ms: Capped exponential backoff ceiling (1.5x per iteration).
+
+        Returns:
+            self, for method chaining.
+
+        Raises:
+            NotSupportedError: driver does not advertise async support.
+            ProgrammingError: another async operation is already in flight on
+                this cursor.
+        """
+        import asyncio  # lazy — no cost for sync-only users
+
+        self._check_closed()
+        self._check_async_capable()
+
+        logger.debug(
+            "execute_async: Starting - operation_length=%d, param_count=%d, use_prepare=%s",
+            len(operation),
+            len(parameters),
+            str(use_prepare),
+        )
+        logger.debug("Executing query (async): %s", operation)
+
+        (
+            operation,
+            parameters,
+            parameters_type,
+            effective_use_prepare,
+            encoding_settings,
+        ) = self._prepare_execute_state_async(
+            operation, parameters, use_prepare, reset_cursor
+        )
+
+        loop = asyncio.get_running_loop()
+        self._acquire_async_slot()
+        try:
+            ret = await loop.run_in_executor(
+                None,
+                ddbc_bindings.DDBCSQLExecuteAsync,
+                self.hstmt,
+                operation,
+                parameters,
+                parameters_type,
+                self.is_stmt_prepared,
+                effective_use_prepare,
+                encoding_settings,
+                poll_initial_ms,
+                poll_max_ms,
+            )
+        finally:
+            self._release_async_slot()
+
+        self._finalize_execute_async(ret, operation)
+        return self
+
+    async def fetch_async(
+        self,
+        size: Optional[int] = None,
+        *,
+        poll_initial_ms: float = 0.5,
+        poll_max_ms: float = 20.0,
+    ) -> Union[Row, List[Row], None]:
+        """Async counterpart of :meth:`fetchone` / :meth:`fetchmany` / :meth:`fetchall` (POC).
+
+        Dispatch table:
+
+        =================  =======================================================
+        ``size`` value     Behavior
+        =================  =======================================================
+        ``None`` (default) Single ``Row`` or ``None`` (fetchone semantics).
+        positive int       ``List[Row]`` of up to ``size`` rows (fetchmany).
+        ``-1``             ``List[Row]`` of all remaining rows (fetchall).
+        ``0`` / other <= 0 Empty list (fetchmany semantics for size <= 0).
+        =================  =======================================================
+
+        Args:
+            size: See dispatch table above.
+            poll_initial_ms: First sleep interval between SQL_STILL_EXECUTING
+                polls in the C++ polling loop.
+            poll_max_ms: Capped exponential backoff ceiling.
+
+        Returns:
+            A ``Row``, a ``list[Row]``, or ``None`` — see dispatch table.
+
+        Raises:
+            NotSupportedError: driver does not advertise async support.
+            ProgrammingError: another async operation is already in flight on
+                this cursor.
+        """
+        import asyncio  # lazy
+
+        self._check_closed()
+        self._check_async_capable()
+
+        if not self._has_result_set and self.description:
+            self._reset_rownumber()
+
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+        char_enc = char_decoding.get("encoding", "utf-16le")
+        wchar_enc = wchar_decoding.get("encoding", "utf-16le")
+        char_ctype = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
+
+        loop = asyncio.get_running_loop()
+
+        if size is None:
+            # ---- fetchone-async ----
+            row_data: List[Any] = []
+            self._acquire_async_slot()
+            try:
+                ret = await loop.run_in_executor(
+                    None,
+                    ddbc_bindings.DDBCSQLFetchOneAsync,
+                    self.hstmt,
+                    row_data,
+                    char_enc,
+                    wchar_enc,
+                    char_ctype,
+                    poll_initial_ms,
+                    poll_max_ms,
+                )
+            finally:
+                self._release_async_slot()
+
+            if self.hstmt:
+                self.messages.extend(
+                    ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt)
+                )
+
+            if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                if self._next_row_index == 0 and self.description is not None:
+                    self.rowcount = 0
+                return None
+
+            # rownumber tracking (mirrors sync fetchone)
+            if self._skip_increment_for_next_fetch:
+                self._skip_increment_for_next_fetch = False
+                self._next_row_index += 1
+            else:
+                self._increment_rownumber()
+            self.rowcount = self._next_row_index
+            return self._wrap_row_async(row_data)
+
+        if size == -1:
+            # ---- fetchall-async ----
+            rows_data: List[List[Any]] = []
+            self._acquire_async_slot()
+            try:
+                ret = await loop.run_in_executor(
+                    None,
+                    ddbc_bindings.DDBCSQLFetchAllAsync,
+                    self.hstmt,
+                    rows_data,
+                    char_enc,
+                    wchar_enc,
+                    char_ctype,
+                    poll_initial_ms,
+                    poll_max_ms,
+                )
+            finally:
+                self._release_async_slot()
+
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+            if self.hstmt:
+                self.messages.extend(
+                    ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt)
+                )
+
+            if rows_data and self._has_result_set:
+                self._next_row_index += len(rows_data)
+                self._rownumber = self._next_row_index - 1
+
+            if len(rows_data) == 0 and self._next_row_index == 0:
+                self.rowcount = 0
+            else:
+                self.rowcount = self._next_row_index
+
+            return self._wrap_rows_async(rows_data)
+
+        # ---- fetchmany-async (size > 0 or size <= 0 sentinel) ----
+        if size <= 0:
+            return []
+        rows_data = []
+        self._acquire_async_slot()
+        try:
+            ret = await loop.run_in_executor(
+                None,
+                ddbc_bindings.DDBCSQLFetchManyAsync,
+                self.hstmt,
+                rows_data,
+                size,
+                char_enc,
+                wchar_enc,
+                char_ctype,
+                poll_initial_ms,
+                poll_max_ms,
+            )
+        finally:
+            self._release_async_slot()
+
+        if self.hstmt:
+            self.messages.extend(
+                ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt)
+            )
+
+        if rows_data and self._has_result_set:
+            self._next_row_index += len(rows_data)
+            self._rownumber = self._next_row_index - 1
+
+        if len(rows_data) == 0 and self._next_row_index == 0:
+            self.rowcount = 0
+        else:
+            self.rowcount = self._next_row_index
+
+        return self._wrap_rows_async(rows_data)

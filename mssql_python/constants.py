@@ -533,6 +533,19 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     # (with spaces) ODBC only honors "PacketSize" without spaces
     # internally.
     "packetsize": "PacketSize",
+    # Multiple Active Result Sets (MARS) — lets a single connection have more
+    # than one active statement/result set at a time. Required for concurrent
+    # execute_async on cursors sharing one Connection.
+    #
+    # NOTE: Only the ODBC-standard alias "MARS_Connection" is on the allowlist.
+    # The SQL Server-native spelling "MultipleActiveResultSets" is silently
+    # ignored by the bundled msodbcsql18 driver (empirically verified: the
+    # keyword is accepted but MARS is not actually enabled). Do NOT add
+    # "multipleactiveresultsets" here without confirming the driver honors it
+    # first — otherwise users get a MARS-off connection while thinking they
+    # asked for MARS-on, which leads to unpredictable behavior under
+    # concurrent async workloads.
+    "mars_connection": "MARS_Connection",
 }
 
 # Canonical normalized key names produced by _ConnectionStringParser._normalize_params.
