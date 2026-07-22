@@ -191,6 +191,7 @@ setup(
     # Add dependencies
     install_requires=[
         "azure-identity>=1.12.0",  # Azure authentication library
+        "mssql-python-odbc==18.6.2",  # ODBC Driver 18 binaries (standalone package)
     ],
     extras_require={
         "pyarrow": ["pyarrow>=14.0.0"],
