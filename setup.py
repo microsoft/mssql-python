@@ -122,8 +122,13 @@ class CustomBdistWheel(bdist_wheel):
 # Package discovery
 # ---------------------------------------------------------------------------
 
-# Find all packages in the current directory
-packages = find_packages()
+# Find all packages in the current directory.
+# Exclude mssql_python_odbc: it is shipped exclusively by the standalone
+# mssql-python-odbc distribution (see setup_odbc.py) and pulled in via
+# install_requires. Shipping it here too would make two distributions own the
+# same import directory (install-order file overwrites; uninstall of one can
+# remove files the other needs).
+packages = find_packages(exclude=["mssql_python_odbc", "mssql_python_odbc.*"])
 
 # Get platform info using consolidated function
 arch, platform_tag = get_platform_info()
