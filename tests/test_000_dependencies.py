@@ -22,6 +22,7 @@ class DependencyTester:
         self.platform_name = platform.system().lower()
         self.raw_architecture = platform.machine().lower()
         self.module_dir = self._get_module_directory()
+        self.libs_base_dir = self._get_libs_base_dir()
         self.normalized_arch = self._normalize_architecture()
 
     def _get_module_directory(self):
@@ -34,6 +35,33 @@ class DependencyTester:
         except ImportError:
             # Fallback to relative path from tests directory
             return Path(__file__).parent.parent / "mssql_python"
+
+    def _get_libs_base_dir(self):
+        """Directory that contains the ``libs/`` driver payload the loader will use.
+
+        Mirrors the native resolver (``GetOdbcLibsBaseDir`` in ddbc_bindings.cpp):
+        the external ``mssql_python_odbc`` package is authoritative whenever it is
+        installed and actually ships the driver; otherwise the driver is resolved
+        from ``mssql_python``'s own bundled ``libs/``. Keeping the expected paths in
+        lockstep with the loader means these dependency assertions validate the SAME
+        driver the runtime loads -- including the package-split scenario where the
+        bundled ``mssql_python/libs`` is absent and the driver comes only from the
+        separately installed ``mssql_python_odbc`` package. When that package is not
+        installed the base is unchanged, so single-wheel CI keeps enforcing that
+        ``mssql_python`` bundles its own libs.
+        """
+        try:
+            import mssql_python_odbc
+            import mssql_python.ddbc_bindings as ddbc
+
+            external_base = Path(mssql_python_odbc.__file__).parent
+            driver = ddbc.GetDriverPathCpp(str(external_base))
+            if driver and Path(driver).exists():
+                return external_base
+        except Exception:
+            # No external package (or it can't resolve a driver) -> bundled libs.
+            pass
+        return self.module_dir
 
     def _normalize_architecture(self):
         """Normalize architecture names for the given platform."""
@@ -152,7 +180,7 @@ class DependencyTester:
 
     def _get_windows_dependencies(self):
         """Get Windows dependencies based on architecture."""
-        base_path = self.module_dir / "libs" / "windows" / self.normalized_arch
+        base_path = self.libs_base_dir / "libs" / "windows" / self.normalized_arch
 
         dependencies = [
             base_path / self._driver_filename(),
@@ -169,7 +197,7 @@ class DependencyTester:
 
         # macOS uses universal2 binaries, but we need to check both arch directories
         for arch in ["arm64", "x86_64"]:
-            base_path = self.module_dir / "libs" / "macos" / arch / "lib"
+            base_path = self.libs_base_dir / "libs" / "macos" / arch / "lib"
             dependencies.extend(
                 [
                     base_path / self._driver_filename(),
@@ -190,7 +218,7 @@ class DependencyTester:
         elif runtime_arch in ["aarch64"]:
             runtime_arch = "arm64"
 
-        base_path = self.module_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
+        base_path = self.libs_base_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
 
         dependencies = [
             base_path / self._driver_filename(),
@@ -232,7 +260,7 @@ class DependencyTester:
 
         if platform_name == "windows":
             driver_path = (
-                Path(self.module_dir)
+                Path(self.libs_base_dir)
                 / "libs"
                 / "windows"
                 / normalized_arch
@@ -241,7 +269,7 @@ class DependencyTester:
 
         elif platform_name == "darwin":
             driver_path = (
-                Path(self.module_dir)
+                Path(self.libs_base_dir)
                 / "libs"
                 / "macos"
                 / normalized_arch
@@ -252,7 +280,7 @@ class DependencyTester:
         elif platform_name == "linux":
             distro_name = self._detect_linux_distro()
             driver_path = (
-                Path(self.module_dir)
+                Path(self.libs_base_dir)
                 / "libs"
                 / "linux"
                 / distro_name
@@ -356,7 +384,7 @@ class TestArchitectureSpecificDependencies:
     def test_windows_vcredist_dependency(self):
         """Test that Windows builds include vcredist dependencies."""
         vcredist_path = (
-            dependency_tester.module_dir
+            dependency_tester.libs_base_dir
             / "libs"
             / "windows"
             / dependency_tester.normalized_arch
@@ -372,7 +400,7 @@ class TestArchitectureSpecificDependencies:
     def test_windows_auth_dependency(self):
         """Test that Windows builds include authentication library."""
         auth_path = (
-            dependency_tester.module_dir
+            dependency_tester.libs_base_dir
             / "libs"
             / "windows"
             / dependency_tester.normalized_arch
@@ -385,7 +413,7 @@ class TestArchitectureSpecificDependencies:
     def test_macos_universal_dependencies(self):
         """Test that macOS builds include dependencies for both architectures."""
         for arch in ["arm64", "x86_64"]:
-            base_path = dependency_tester.module_dir / "libs" / "macos" / arch / "lib"
+            base_path = dependency_tester.libs_base_dir / "libs" / "macos" / arch / "lib"
 
             msodbcsql_path = base_path / dependency_tester._driver_filename()
             libodbcinst_path = base_path / "libodbcinst.2.dylib"
@@ -456,7 +484,7 @@ class TestArchitectureSpecificDependencies:
         problems = []
         checked_arches = []
         for arch in ["arm64", "x86_64"]:
-            lib_dir = dependency_tester.module_dir / "libs" / "macos" / arch / "lib"
+            lib_dir = dependency_tester.libs_base_dir / "libs" / "macos" / arch / "lib"
             driver = lib_dir / "libmsodbcsql.18.dylib"
             if not driver.exists():
                 continue
@@ -508,7 +536,7 @@ class TestArchitectureSpecificDependencies:
         distro_name = dependency_tester._detect_linux_distro()
 
         # Test that the distribution directory exists
-        distro_path = dependency_tester.module_dir / "libs" / "linux" / distro_name
+        distro_path = dependency_tester.libs_base_dir / "libs" / "linux" / distro_name
 
         assert distro_path.exists(), f"Linux distribution directory not found: {distro_path}"
 
@@ -583,9 +611,9 @@ def test_get_driver_path_from_ddbc_bindings():
     try:
         import mssql_python.ddbc_bindings as ddbc
 
-        module_dir = dependency_tester.module_dir
+        libs_base = dependency_tester.libs_base_dir
 
-        driver_path = ddbc.GetDriverPathCpp(str(module_dir))
+        driver_path = ddbc.GetDriverPathCpp(str(libs_base))
 
         # The driver path should be same as one returned by the Python function
         expected_path = dependency_tester.get_expected_driver_path()
