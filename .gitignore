@@ -91,3 +91,6 @@ fix_multiline_log_exclusions.py
 test_pyodbc_decimal.py
 run_coverage_docker.ps1
 TRIAGE_REPORT_*.md
+
+# Local-only async POC design docs (not committed upstream)
+docs/async/
