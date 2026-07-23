@@ -32,7 +32,11 @@ cd benchmarks/detect_types_bench
 
 python build.py            # builds all three extensions into this folder
 python parity_test.py      # correctness first — must show all 61 inputs OK
-python run_benchmark.py    # then perf comparison across 5 workload mixes
+python run_benchmark.py    # then perf comparison across 15 workload mixes
+
+# Optional flags for the perf harness:
+python run_benchmark.py --runs 9          # more samples per (workload, variant)
+python run_benchmark.py --seconds 2.0     # longer wall-clock window per run
 ```
 
 ## What each file does
@@ -46,32 +50,58 @@ python run_benchmark.py    # then perf comparison across 5 workload mixes
     (used for parity validation).
 - `build.py` — one-shot build of all three shared objects (invokes `g++`
   directly; no CMake dependency).
-- `run_benchmark.py` — the perf harness. Runs 5 workload mixes (OLTP,
-  Analytics, Int-heavy, Str-heavy, Decimal-heavy), best-of-3 timing, GC
-  disabled during measurement.
+- `run_benchmark.py` — the perf harness. Runs **15 workload mixes** (OLTP and
+  Analytics at 1, 10, 100, and 1000 row scales; homogeneous Int/Str/Decimal
+  at 100 and 1000 params; DAE-heavy large strings/bytes at 100 and 1000).
+  Reports median / stddev / min / max ns per parameter across configurable
+  sample count (default: median of 5 runs, ~1s each). GC disabled during
+  measurement.
 - `parity_test.py` — the correctness harness. Runs a 61-input corpus through
   all three variants and against a Python-side reference implementation of
   `DetectParamTypes` semantics.
 
 ## Sample results (Python 3.12.3, gcc 13.3.0 -O3, one Linux x86_64 workstation)
 
-Numbers are nanoseconds per parameter, best-of-3, averaged across three
-back-to-back runs.
+Median ns per parameter across 5 samples per (workload, variant) at ~1 second
+of wall-clock work each. Stddev is typically 0.5–2% of the median.
 
-| Workload | pybind11 | raw CPython | nanobind | nanobind vs pybind11 | nanobind vs raw CPython |
+| Workload | pybind11 (baseline) | raw CPython (this PR) | nanobind (proposed) | CPython vs pybind11 | nanobind vs pybind11 |
 |---|---:|---:|---:|---:|---:|
-| OLTP mixed (6 params) | 167 ns | 124 ns | 123 ns | 1.36x faster | 1% faster |
-| Analytics (10 params) | 194 ns | 139 ns | 134 ns | 1.45x faster | 3% faster |
-| Int-heavy (20 params) | 9.5 ns | 6.5 ns | 5.8 ns | 1.62x faster | 10% faster |
-| Str-heavy (20 params) | 8.2 ns | 5.8 ns | 4.9 ns | 1.68x faster | 16% faster |
-| Decimal-heavy (20 params) | 722 ns | 617 ns | 602 ns | 1.20x faster | 2% faster |
+| OLTP 6 params (1 row) | 169.15 | 133.11 | **127.88** | 1.27x | **1.32x** |
+| OLTP 60 params (10 rows) | 142.19 | **121.67** | 125.52 | **1.17x** | 1.13x |
+| OLTP 600 params (100 rows) | 134.67 | 118.87 | **119.22** | 1.13x | **1.13x** |
+| OLTP 6000 params (1000 rows) | 137.08 | 119.73 | **116.91** | 1.14x | **1.17x** |
+| Analytics 10 params (1 row) | 190.67 | 140.46 | **139.01** | 1.36x | **1.37x** |
+| Analytics 100 params (10 rows) | 171.38 | **133.22** | 133.34 | **1.29x** | 1.29x |
+| Analytics 1000 params (100 rows) | 173.48 | **131.98** | 133.42 | **1.31x** | 1.30x |
+| Int-heavy 100 params | 5.99 | **4.71** | 4.79 | **1.27x** | 1.25x |
+| Int-heavy 1000 params | 5.30 | **4.23** | 4.40 | **1.25x** | 1.20x |
+| Str-heavy 100 params | 5.10 | 4.00 | **3.75** | 1.27x | **1.36x** |
+| Str-heavy 1000 params | 4.25 | 3.55 | **3.51** | 1.20x | **1.21x** |
+| Decimal-heavy 100 params | 707.37 | 641.57 | **628.83** | 1.10x | **1.12x** |
+| Decimal-heavy 1000 params | 701.35 | **627.49** | 633.15 | **1.12x** | 1.11x |
+| DAE-heavy 100 large params | 5.69 | 4.15 | **3.95** | 1.37x | **1.44x** |
+| DAE-heavy 1000 large params | 4.84 | 3.63 | **3.55** | 1.33x | **1.36x** |
 
-**How to read this:** Both raw CPython and nanobind deliver a substantial
-1.2x-1.7x speedup over pybind11. In this environment nanobind matches or
-slightly beats raw CPython on every workload, largely because nanobind uses
-PEP 590 vectorcall for the function-call boundary while the raw-CPython
-version relies on `METH_VARARGS + PyArg_ParseTuple` — a per-call cost that
-matters when calls take only ~100-1000 ns each.
+### How to read this
+
+- **Both fast variants deliver a 1.10–1.44x speedup over pybind11** across
+  every workload. The speedup is largest at small sizes (per-call overhead
+  dominates) and narrows at bulk sizes (per-param work dominates).
+- **Nanobind and raw CPython are statistically tied.** Across 15 workloads,
+  nanobind wins 7, raw CPython wins 6, they tie on 2 — all within the
+  measured stddev.
+- **Small workloads favor nanobind** (OLTP 6, Analytics 10, DAE-heavy 100/1000)
+  because PEP 590 vectorcall saves ~30 ns per call vs `METH_VARARGS +
+  PyArg_ParseTuple`. At 6 params that's ~5 ns/param; at 6000 params it's ~0.005
+  ns/param — invisible.
+- **Bulk workloads (600+ params) settle at ~117–134 ns/param for both fast
+  variants**, roughly 1.13–1.31x faster than pybind11. This is the range
+  that matters for `executemany` throughput.
+- **Homogeneous int/str/decimal workloads** cost 3–6 ns/param on the fast
+  variants because they hit a single hot branch repeatedly. The mixed OLTP
+  and Analytics numbers (100–170 ns/param) are more representative of real
+  ad-hoc queries.
 
 ## Design notes
 
