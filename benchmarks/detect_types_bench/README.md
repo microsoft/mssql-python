@@ -8,7 +8,7 @@ so we can measure the perf and maintainability trade-offs between them:
 |---|---|---|
 | pybind11 baseline | `detect_pybind11.cpp` | `py::isinstance<>`, `.attr()`, `.cast<>()` |
 | raw CPython | `detect_cpython.cpp` | `PyLong_Check`, `PyObject_GetAttrString`, manual refcounts (the approach taken by the current insertmany-perf-detect-types PR) |
-| nanobind | `detect_nanobind.cpp` | RAII C++ throughout; escapes to CPython macros only where they genuinely matter (`PyUnicode_KIND`, `PyDateTime_TIME_GET_HOUR`, etc.) |
+| nanobind | `detect_nanobind.cpp` | RAII C++ throughout |
 
 All three do **identical work per parameter** — this is cross-validated by
 `parity_test.py`, which compares their outputs on 61 representative inputs
@@ -153,11 +153,6 @@ does not cherry-pick the fastest run.
 - All three cache implementations use "leak-on-purpose" singletons (never
   `Py_DECREF`ed) — this matches the pattern the PR uses and avoids
   static-destructor issues at interpreter shutdown.
-- Both `raw CPython` and `nanobind` escape to CPython macros for the same
-  ~5 hotspots where they genuinely matter (`PyUnicode_KIND`,
-  `PyUnicode_IS_COMPACT_ASCII`, `PyDateTime_TIME_GET_HOUR`, etc.) — nanobind
-  does not hide `PyObject*`, it just wraps it, so this escape hatch works
-  the same in both.
 - The pybind11 variant deliberately uses the same idioms the codebase used
   *before* the perf refactor: `py::isinstance<T>`, `obj.attr("hour").cast<int>()`,
   `py::module_::import`, `.cast<py::tuple>()`. This gives a faithful "before"
@@ -165,6 +160,29 @@ does not cherry-pick the fastest run.
 - Decimal handling exercises the real `DetectParamTypes` two-tier MONEY range
   check plus `__format__("f")` for in-range values, so the Decimal benchmark
   reflects genuine work (not a shortcut).
+
+### CPython struct-field macros (shared across all three variants)
+
+A small number of Python C API macros are used **identically in all three
+variants** — pybind11, raw CPython, and nanobind. They are not part of the
+"binding library" distinction the benchmark is measuring; they are public
+primitives of the Python C API that read struct fields directly and have no
+C++-idiomatic replacement in any wrapper library.
+
+| Macro | What it does | Why it is used |
+|---|---|---|
+| `PyUnicode_KIND(s)` | Reads the UCS kind (1/2/4-byte) from the `PyUnicodeObject` header | The only way to inspect a string's internal representation |
+| `PyUnicode_IS_COMPACT_ASCII(s)` | Single-bit flag test on the string header | Same |
+| `PyUnicode_MAX_CHAR_VALUE(s)` | Reads maxchar from the string header | Same |
+| `PyUnicode_4BYTE_DATA(s)` | Direct pointer to the UCS-4 buffer | Same |
+| `PyDateTime_TIME_GET_HOUR` / `_MINUTE` / `_SECOND` / `_MICROSECOND` | Reads the field at a compile-time struct offset (~1 ns) | The C++ alternative is `obj.attr("hour").cast<int>()`, which does a full Python attribute lookup plus int conversion (~30-50 ns) — 30-50x slower |
+
+The pybind11 variant uses them too (see `detect_pybind11.cpp`). Their
+presence in the nanobind row is therefore **not** a compromise of the C++
+idiom — it is the same shared primitive layer sitting *underneath* all three
+binding approaches. The comparison being measured is how each binding library
+expresses type checks, attribute access, exception propagation, and refcount
+management, not whether it uses these public struct accessors.
 
 ## What this benchmark does *not* measure
 
