@@ -122,8 +122,13 @@ class CustomBdistWheel(bdist_wheel):
 # Package discovery
 # ---------------------------------------------------------------------------
 
-# Find all packages in the current directory
-packages = find_packages()
+# Find all packages in the current directory.
+# Exclude mssql_python_odbc: it is shipped exclusively by the standalone
+# mssql-python-odbc distribution (see setup_odbc.py) and pulled in via
+# install_requires. Shipping it here too would make two distributions own the
+# same import directory (install-order file overwrites; uninstall of one can
+# remove files the other needs).
+packages = find_packages(exclude=["mssql_python_odbc", "mssql_python_odbc.*"])
 
 # Get platform info using consolidated function
 arch, platform_tag = get_platform_info()
@@ -176,7 +181,7 @@ package_data = {
 
 setup(
     name="mssql-python",
-    version="1.10.0",
+    version="1.11.0",
     description="A Python library for interacting with Microsoft SQL Server",
     long_description=open("PyPI_Description.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
@@ -191,6 +196,7 @@ setup(
     # Add dependencies
     install_requires=[
         "azure-identity>=1.12.0",  # Azure authentication library
+        "mssql-python-odbc==18.6.2",  # ODBC Driver 18 binaries (standalone package)
     ],
     extras_require={
         "pyarrow": ["pyarrow>=14.0.0"],
