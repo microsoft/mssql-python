@@ -14,12 +14,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   connection. The callback is invoked by mssql-tds mid-handshake (FedAuth
   workflow 0x02) so the tenant id can be resolved from the server-supplied
   STS URL. Requires `mssql-py-core` 0.1.5+. Partial fix for #534.
+- **Standalone `mssql-python-odbc` package (PRs #663, #664):** the Microsoft
+  ODBC Driver 18 for SQL Server binaries are now also published as a separate,
+  platform-specific `mssql-python-odbc` package. When it is installed, the
+  native driver loader resolves the driver from it; when it is absent or
+  incomplete, mssql-python transparently falls back to its own bundled `libs/`.
+  This is a non-breaking step toward decoupling driver-binary updates from
+  mssql-python releases; a future major version will make the dependency
+  explicit and drop the bundled binaries.
 
 ### Changed
 - Improved error handling in the connection module.
+- **GH-627 behavioral change:** `NULL` parameters for `VARBINARY`/`BINARY`
+  columns on physical tables now succeed silently (previously raised
+  `ProgrammingError` when a non-NULL parameter was bound first). For temp
+  tables where `SQLDescribeParam` cannot determine column metadata, the
+  fallback to `SQL_VARCHAR` still produces the same `ProgrammingError` as
+  before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
 - Bug fix: Resolved issue with connection timeout.
+- **GH-627:** Fixed `SQLDescribeParam` ordinal remapping bug that caused
+  `VARBINARY`/`BINARY` `NULL` bindings to fail when a non-NULL parameter was
+  bound first. The driver now pre-resolves unknown NULL parameter types before
+  any `SQLBindParameter` calls, avoiding ODBC ordinal confusion.
 
 ## [1.0.0-alpha] - 2025-02-24
 

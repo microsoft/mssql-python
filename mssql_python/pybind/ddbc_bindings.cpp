@@ -475,13 +475,14 @@ std::string DescribeChar(unsigned char ch) {
 
 // GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
 // On cache miss, calls SQLDescribeParam and stores the result.
-static DescribedParamInfo ResolveNullParamType(
-        SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
-    // Check per-handle cache (no mutex — one handle per thread)
+static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
+    // Check per-handle cache. ODBC mandates one handle per thread, so no
+    // mutex is needed. Violating this contract causes undefined behavior.
     auto it = handle.describeCache.find(paramIndex);
     if (it != handle.describeCache.end()) {
         LOG("ResolveNullParamType: Cache HIT for hStmt=%p param[%d] "
-            "-> sqlType=%d", (void*)hStmt, paramIndex, it->second.sqlType);
+            "-> sqlType=%d",
+            (void*)hStmt, paramIndex, it->second.sqlType);
         return it->second;
     }
 
@@ -490,9 +491,16 @@ static DescribedParamInfo ResolveNullParamType(
     SQLULEN size;
     LOG("ResolveNullParamType: Cache MISS for hStmt=%p param[%d], calling "
         "SQLDescribeParam", (void*)hStmt, paramIndex);
-    RETCODE rc = SQLDescribeParam_ptr(
-        hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
-        &type, &size, &digits, &nullable);
+    // SQLDescribeParam may issue a server round-trip
+    // (sp_describe_undeclared_parameters). Release the GIL around it so
+    // in-process Python TCP forwarders can run (issue #565 family).
+    RETCODE rc;
+    {
+        py::gil_scoped_release release;
+        rc = SQLDescribeParam_ptr(
+            hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
+            &type, &size, &digits, &nullable);
+    }
 
     DescribedParamInfo info;
     if (SQL_SUCCEEDED(rc)) {
@@ -501,15 +509,63 @@ static DescribedParamInfo ResolveNullParamType(
             "-> sqlType=%d, columnSize=%lu, decimalDigits=%d",
             paramIndex, type, (unsigned long)size, digits);
     } else {
+        // SQLDescribeParam failed — typically happens with temp tables (#table),
+        // table variables, or complex CTEs where the driver cannot determine
+        // parameter metadata.  Fall back to SQL_VARCHAR which works for most
+        // column types but will fail for BINARY/VARBINARY columns due to SQL
+        // Server's implicit conversion rules.
+        //
+        // Workaround: cursor.setinputsizes() to explicitly specify types.
+        //   from mssql_python.constants import ConstantsDDBC
+        //   cursor.setinputsizes([(ConstantsDDBC.SQL_INTEGER.value, 10, 0),
+        //                         (ConstantsDDBC.SQL_VARBINARY.value, 0, 0)])
+        //   cursor.execute("INSERT INTO #t (id, data) VALUES (?, ?)", [1, None])
         info = {SQL_VARCHAR, 1, 0};
         LOG_WARNING("ResolveNullParamType: SQLDescribeParam failed for "
                     "param[%d] (rc=%d), falling back to SQL_VARCHAR",
                     paramIndex, rc);
     }
 
-    // Store in per-handle cache
+    // Cache both successful and fallback results. For fallbacks, this avoids
+    // repeated SQLDescribeParam network calls on statement reuse. Note: on the
+    // same_sql path clearDescribeCache() is NOT called, so a transient describe
+    // failure is pinned as SQL_VARCHAR for the life of the prepared statement.
+    // This is intentional — retrying a failing describe on every execute would
+    // add latency with no benefit (temp-table metadata won't become resolvable
+    // mid-connection). The cache IS cleared on SQLPrepare (usePrepare path).
     handle.describeCache[paramIndex] = info;
+
     return info;
+}
+
+// GH-627: Resolve unknown NULL SQL types before any SQLBindParameter calls.
+// Some drivers remap parameter ordinals during describe when parameters have
+// already been bound, so interleaving describe+bind can fail for binary NULLs.
+// When `params` is provided (execute path), an additional py::none check is
+// performed; for executemany (array path), SQL_C_DEFAULT already guarantees
+// all values in that column are NULL, so no Python-level check is needed.
+static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
+                                       std::vector<ParamInfo>& paramInfos,
+                                       const py::list* params = nullptr) {
+    if (paramInfos.empty())
+        return;
+
+    for (size_t paramIndex = 0; paramIndex < paramInfos.size(); ++paramIndex) {
+        ParamInfo& paramInfo = paramInfos[paramIndex];
+        if (paramInfo.paramCType != SQL_C_DEFAULT || paramInfo.paramSQLType != SQL_UNKNOWN_TYPE) {
+            continue;
+        }
+        // For execute(), verify the actual value is None (mixed columns possible).
+        if (params && paramIndex < params->size() &&
+            !py::isinstance<py::none>((*params)[paramIndex])) {
+            continue;
+        }
+
+        auto resolved = ResolveNullParamType(handle, hStmt, static_cast<int>(paramIndex));
+        paramInfo.paramSQLType = resolved.sqlType;
+        paramInfo.columnSize = resolved.columnSize;
+        paramInfo.decimalDigits = resolved.decimalDigits;
+    }
 }
 
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
@@ -521,6 +577,9 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
     LOG("BindParameters: Starting parameter binding for statement handle %p "
         "with %zu parameters",
         (void*)hStmt, params.size());
+
+    // GH-627: resolve unknown NULL param SQL types before binding any param.
+    PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         ParamInfo& paramInfo = paramInfos[paramIndex];
@@ -670,23 +729,10 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                // GH-610: Resolve SQL type for NULL params via per-handle cache.
-                SQLSMALLINT sqlType = paramInfo.paramSQLType;
-                SQLULEN columnSize = paramInfo.columnSize;
-                SQLSMALLINT decimalDigits = paramInfo.decimalDigits;
-                if (sqlType == SQL_UNKNOWN_TYPE) {
-                    auto resolved = ResolveNullParamType(handle, hStmt, paramIndex);
-                    sqlType = resolved.sqlType;
-                    columnSize = resolved.columnSize;
-                    decimalDigits = resolved.decimalDigits;
-                }
-                dataPtr = nullptr;
+                dataPtr = nullptr;  // GH-627: type resolved by PreResolveUnknownNullTypes.
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                 *strLenOrIndPtr = SQL_NULL_DATA;
                 bufferLength = 0;
-                paramInfo.paramSQLType = sqlType;
-                paramInfo.columnSize = columnSize;
-                paramInfo.decimalDigits = decimalDigits;
                 break;
             }
             case SQL_C_STINYINT:
@@ -1080,6 +1126,90 @@ std::string GetModuleDirectory() {
     return parentDir.string();
 }
 
+// Resolve the base directory that contains the ODBC driver `libs/` tree.
+//
+// Post-split, the driver binaries ship in the standalone `mssql_python_odbc`
+// package (a pure-data sibling with no native extension). We import it and use
+// its directory as the base that `GetDriverPathCpp` (and the Windows
+// `mssql-auth.dll` lookup) append `libs` to.
+//
+// During the Phase-2 transition we fall back to the bundled `mssql_python`
+// directory when the external package is not installed, so a wheel that still
+// bundles `libs/` keeps working. Importing `mssql_python_odbc` here is
+// Alpine/musl-safe precisely because it is a separate pure package: it cannot
+// trigger the partially-initialized-module circular import that motivated
+// resolving these paths in C++ in the first place.
+//
+// (`GetDriverPathCpp` is defined further below; forward-declared here so we can
+// verify the external package actually ships this platform's driver binary.)
+std::string GetDriverPathCpp(const std::string& moduleDir);
+
+std::string GetOdbcLibsBaseDir() {
+    namespace fs = std::filesystem;
+    // This function calls into the Python C-API (py::module::import, attribute
+    // access, casts), so it must run with the GIL held. It is a no-op when the
+    // GIL is already held — which it is at the sole current call site, during
+    // module initialization — but acquiring it here self-documents the C-API
+    // dependency and keeps a future GIL-released caller from turning this into a
+    // hard crash.
+    py::gil_scoped_acquire gil;
+    try {
+        py::object module = py::module::import("mssql_python_odbc");
+        py::object module_path = module.attr("__file__");
+        std::string module_file = module_path.cast<std::string>();
+
+        fs::path parentDir = fs::path(module_file).parent_path();
+
+        // Only treat the external package as authoritative if it actually ships
+        // a COMPLETE set of this platform's driver binaries. In a source/dev
+        // checkout (and in CI) the package is importable from the repo root but
+        // its `libs/` tree is gitignored and either absent or only partially
+        // populated; in that case fall back to the bundled `mssql_python` libs
+        // so driver resolution points at a real, complete installation.
+        //
+        // "Complete" means the ODBC driver itself and, on Windows, the
+        // co-located `mssql-auth.dll` that LoadDriverOrThrowException loads
+        // unconditionally. Verifying both here keeps this resolver's notion of a
+        // usable base dir consistent with what the loader below actually needs,
+        // so we never select a directory that would later make the loader throw
+        // (e.g. a dir that has msodbcsql18.dll but is missing mssql-auth.dll).
+        std::error_code ec;
+        fs::path externalDriver(GetDriverPathCpp(parentDir.string()));
+        bool externalComplete = fs::exists(externalDriver, ec);
+#ifdef _WIN32
+        if (externalComplete) {
+            fs::path externalAuthDll = externalDriver.parent_path() / "mssql-auth.dll";
+            externalComplete = fs::exists(externalAuthDll, ec);
+        }
+#endif
+        if (externalComplete) {
+            LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
+                parentDir.string().c_str());
+            return parentDir.string();
+        }
+        LOG("GetOdbcLibsBaseDir: mssql_python_odbc present at '%s' but its libs are missing or "
+            "incomplete; falling back to bundled libs in mssql_python",
+            parentDir.string().c_str());
+        return GetModuleDirectory();
+    } catch (const py::error_already_set& e) {
+        if (e.matches(PyExc_ModuleNotFoundError)) {
+            // Expected in Phase 2 when the standalone package is not installed.
+            // pybind11 has already fetched and cleared the CPython error
+            // indicator, so re-importing `mssql_python` below is safe.
+            LOG("GetOdbcLibsBaseDir: mssql_python_odbc not installed (%s); "
+                "falling back to bundled libs in mssql_python",
+                e.what());
+            return GetModuleDirectory();
+        }
+        // A different import-time error means the package is installed but
+        // broken; surface it instead of silently masking the real problem.
+        LOG("GetOdbcLibsBaseDir: importing mssql_python_odbc failed unexpectedly (%s); "
+            "re-raising",
+            e.what());
+        throw;
+    }
+}
+
 // Platform-agnostic function to load the driver dynamic library
 DriverHandle LoadDriverLibrary(const std::string& driverPath) {
     LOG("LoadDriverLibrary: Attempting to load ODBC driver from path='%s'", driverPath.c_str());
@@ -1143,6 +1273,12 @@ std::string GetLastErrorMessage() {
  * all supported platforms.
  */
 std::string GetDriverPathCpp(const std::string& moduleDir) {
+#if !defined(MSODBCSQL_VERSION_MAJOR) || !defined(MSODBCSQL_VERSION_MAJOR_MINOR)
+#error \
+    "MSODBCSQL_VERSION_MAJOR / MSODBCSQL_VERSION_MAJOR_MINOR must be defined at build time. " \
+    "They are derived from mssql_python_odbc.__version__ in CMakeLists.txt so the driver " \
+    "filename can never drift from the packaged driver version."
+#endif
     namespace fs = std::filesystem;
     fs::path basePath(moduleDir);
 
@@ -1170,13 +1306,22 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
         platform = "debian_ubuntu";  // Default to debian_ubuntu for other distros
     }
 
-    fs::path driverPath =
-        basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.6.so.2.1";
+    // The msodbcsql version embedded in the driver filename is injected at build
+    // time from mssql_python_odbc.__version__ (the single source of truth for the
+    // driver version) via the MSODBCSQL_VERSION_* macros defined in
+    // CMakeLists.txt. This keeps the native resolver and the Python package
+    // version from ever drifting: GetOdbcLibsBaseDir() calls fs::exists() on this
+    // exact path to decide whether the external package is "complete", so a stale
+    // name would silently fall back to the bundled libs. (The ".so.2.1" suffix is
+    // the driver's ELF soname, which is independent of the product version.)
+    fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" /
+                          ("libmsodbcsql-" MSODBCSQL_VERSION_MAJOR_MINOR ".so.2.1");
     return driverPath.string();
 
 #elif defined(__APPLE__)
     platform = "macos";
-    fs::path driverPath = basePath / "libs" / platform / arch / "lib" / "libmsodbcsql.18.dylib";
+    fs::path driverPath = basePath / "libs" / platform / arch / "lib" /
+                          ("libmsodbcsql." MSODBCSQL_VERSION_MAJOR ".dylib");
     return driverPath.string();
 
 #elif defined(_WIN32)
@@ -1184,7 +1329,8 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     // Normalize x86_64 to x64 for Windows naming
     if (arch == "x86_64")
         arch = "x64";
-    fs::path driverPath = basePath / "libs" / platform / arch / "msodbcsql18.dll";
+    fs::path driverPath =
+        basePath / "libs" / platform / arch / ("msodbcsql" MSODBCSQL_VERSION_MAJOR ".dll");
     return driverPath.string();
 
 #else
@@ -1195,8 +1341,12 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
 DriverHandle LoadDriverOrThrowException() {
     namespace fs = std::filesystem;
 
-    std::string moduleDir = GetModuleDirectory();
-    LOG("LoadDriverOrThrowException: Module directory resolved to '%s'", moduleDir.c_str());
+    // Resolve the base dir from the standalone `mssql_python_odbc` package
+    // (falls back to the bundled `mssql_python` libs during the transition).
+    // Both the driver path and the Windows `mssql-auth.dll` path below are
+    // derived from this directory.
+    std::string moduleDir = GetOdbcLibsBaseDir();
+    LOG("LoadDriverOrThrowException: ODBC libs base directory resolved to '%s'", moduleDir.c_str());
 
     std::string archStr = ARCHITECTURE;
     LOG("LoadDriverOrThrowException: Architecture detected as '%s'", archStr.c_str());
@@ -1413,8 +1563,21 @@ void SqlHandle::free() {
             return;
         }
 
-        // Handle is valid and not implicitly freed, proceed with normal freeing
-        SQLFreeHandle_ptr(_type, _handle);
+        // Handle is valid and not implicitly freed, proceed with normal freeing.
+        // Release the GIL during the blocking ODBC call (SQLFreeHandle on a STMT
+        // with an open server-side cursor, or on a DBC, performs network I/O).
+        // This is critical when the connection is reached through an in-process
+        // Python TCP forwarder (e.g. paramiko + sshtunnel) - the forwarder
+        // thread needs the GIL to push bytes, so holding it here deadlocks
+        // (issue #565). Only release the GIL if it is actually held AND the
+        // interpreter is not finalizing - gil_scoped_release is unsafe during
+        // shutdown even if PyGILState_Check() reports the GIL as held.
+        if (!pythonShuttingDown && PyGILState_Check()) {
+            py::gil_scoped_release release;
+            SQLFreeHandle_ptr(_type, _handle);
+        } else {
+            SQLFreeHandle_ptr(_type, _handle);
+        }
         _handle = nullptr;
     }
 }
@@ -1429,7 +1592,17 @@ void SqlHandle::close_cursor() {
     if (!SQLFreeStmt_ptr) {
         ThrowStdException("SQLFreeStmt function not loaded");
     }
-    SQLRETURN ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    // Release the GIL during the blocking SQLFreeStmt(SQL_CLOSE) network
+    // round-trip; see issue #565 (in-process forwarder deadlock).
+    // Skip GIL release when the GIL isn't held or the interpreter is
+    // finalizing - gil_scoped_release is unsafe in shutdown.
+    SQLRETURN ret;
+    if (!is_python_finalizing() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    } else {
+        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
         ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
     }
@@ -2016,6 +2189,8 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     std::vector<std::shared_ptr<void>> tempBuffers;
 
     try {
+        // GH-627: resolve unknown NULL array param SQL types before binding any param.
+        PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
             ParamInfo& info = paramInfos[paramIndex];
@@ -2593,20 +2768,10 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                 }
                 case SQL_C_DEFAULT: {
                     // Handle NULL parameters - all values in this column should be NULL
+                    // GH-627: SQL type already resolved by PreResolveUnknownNullTypes.
                     LOG("BindParameterArray: Binding SQL_C_DEFAULT (NULL) array - param_index=%d, "
-                        "count=%zu",
-                        paramIndex, paramSetSize);
-
-                    // GH-610: Resolve SQL type for all-NULL columns via per-handle cache.
-                    SQLSMALLINT resolvedSqlType = info.paramSQLType;
-                    SQLULEN resolvedColSize = info.columnSize;
-                    SQLSMALLINT resolvedDecDigits = info.decimalDigits;
-                    if (resolvedSqlType == SQL_UNKNOWN_TYPE) {
-                        auto resolved = ResolveNullParamType(handle, hStmt, paramIndex);
-                        resolvedSqlType = resolved.sqlType;
-                        resolvedColSize = resolved.columnSize;
-                        resolvedDecDigits = resolved.decimalDigits;
-                    }
+                        "count=%zu, resolvedSqlType=%d",
+                        paramIndex, paramSetSize, info.paramSQLType);
 
                     char* nullBuffer = AllocateParamBufferArray<char>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
@@ -2618,14 +2783,6 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
 
                     dataPtr = nullBuffer;
                     bufferLength = 1;
-
-                    // Override info fields so SQLBindParameter below uses resolved type
-                    info.paramSQLType = resolvedSqlType;
-                    info.columnSize = resolvedColSize;
-                    info.decimalDigits = resolvedDecDigits;
-
-                    LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d, "
-                        "resolvedSqlType=%d", paramIndex, resolvedSqlType);
                     break;
                 }
                 default: {
@@ -5762,13 +5919,27 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     LOG("SQLFreeHandle_wrap: Free SQL handle type=%d", HandleType);
+    // Guard against a null/None handle being passed from Python - dereferencing
+    // Handle->get() on a null shared_ptr would segfault.
+    if (!Handle || !Handle->get()) {
+        return SQL_INVALID_HANDLE;
+    }
     if (!SQLAllocHandle_ptr) {
         LOG("SQLFreeHandle_wrap: Function pointer not initialized. Loading the "
             "driver.");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    SQLRETURN ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    // Release the GIL during the blocking SQLFreeHandle network round-trip
+    // (see issue #565 - in-process Python TCP forwarder deadlock).
+    // Skip GIL release in shutdown paths where it would crash.
+    SQLRETURN ret;
+    if (!is_python_finalizing() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    } else {
+        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLFreeHandle_wrap: SQLFreeHandle failed with error code - %d", ret);
         return ret;
