@@ -450,14 +450,26 @@ def test_idle_identity_pool_is_evicted_by_later_acquire(conn_str):
             conn_b = trimmed + ";Database=tempdb"
 
         def phys_id(conn):
-            # This connection's own physical connection_id (visible without
-            # VIEW SERVER STATE because it is the caller's own session).
+            # This connection's own physical connection_id. Reading
+            # sys.dm_exec_connections requires VIEW SERVER STATE -- and on SQL
+            # Server 2022+ the more granular VIEW SERVER PERFORMANCE STATE --
+            # even for one's own session on some server configs. Where the login
+            # lacks it, skip (exit 77) rather than fail with a permission error.
             cur = conn.cursor()
-            cur.execute(
-                "SELECT CONVERT(nvarchar(36), connection_id) "
-                "FROM sys.dm_exec_connections "
-                "WHERE session_id = @@SPID AND parent_connection_id IS NULL"
-            )
+            try:
+                cur.execute(
+                    "SELECT CONVERT(nvarchar(36), connection_id) "
+                    "FROM sys.dm_exec_connections "
+                    "WHERE session_id = @@SPID AND parent_connection_id IS NULL"
+                )
+            except Exception as exc:
+                if "permission" in str(exc).lower():
+                    sys.stderr.write(
+                        "requires VIEW SERVER STATE / VIEW SERVER PERFORMANCE "
+                        "STATE to read sys.dm_exec_connections"
+                    )
+                    sys.exit(77)
+                raise
             row = cur.fetchone()
             return row[0] if row else None
 
@@ -598,12 +610,25 @@ def test_checked_out_pool_is_not_evicted(conn_str):
             conn_b = trimmed + ";Database=tempdb"
 
         def phys_id(conn):
+            # Reading sys.dm_exec_connections requires VIEW SERVER STATE -- and
+            # on SQL Server 2022+ the more granular VIEW SERVER PERFORMANCE
+            # STATE -- even for one's own session on some server configs. Where
+            # the login lacks it, skip (exit 77) rather than fail.
             cur = conn.cursor()
-            cur.execute(
-                "SELECT CONVERT(nvarchar(36), connection_id) "
-                "FROM sys.dm_exec_connections "
-                "WHERE session_id = @@SPID AND parent_connection_id IS NULL"
-            )
+            try:
+                cur.execute(
+                    "SELECT CONVERT(nvarchar(36), connection_id) "
+                    "FROM sys.dm_exec_connections "
+                    "WHERE session_id = @@SPID AND parent_connection_id IS NULL"
+                )
+            except Exception as exc:
+                if "permission" in str(exc).lower():
+                    sys.stderr.write(
+                        "requires VIEW SERVER STATE / VIEW SERVER PERFORMANCE "
+                        "STATE to read sys.dm_exec_connections"
+                    )
+                    sys.exit(77)
+                raise
             row = cur.fetchone()
             return row[0] if row else None
 
