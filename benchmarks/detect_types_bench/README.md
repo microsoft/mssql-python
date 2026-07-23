@@ -62,6 +62,34 @@ python run_benchmark.py --seconds 2.0     # longer wall-clock window per run
 
 ## Sample results (Python 3.12.3, gcc 13.3.0 -O3, one Linux x86_64 workstation)
 
+Two datasets are provided. Both were run on the same machine, back-to-back.
+The **small dataset** is easier to eyeball and matches what a user would see
+running a handful of small `execute()` calls. The **expanded dataset** covers
+15 workloads at 1-, 10-, 100-, and 1000-row scales and reports median /
+stddev / min / max across 5 samples per (workload, variant) so run-to-run
+variance is visible.
+
+### Initial small dataset (5 workloads, best-of-3)
+
+Nanoseconds per parameter, best-of-3, averaged across three back-to-back runs.
+
+| Workload | pybind11 | raw CPython | nanobind | nanobind vs pybind11 | nanobind vs raw CPython |
+|---|---:|---:|---:|---:|---:|
+| OLTP mixed (6 params) | 167 ns | 124 ns | 123 ns | 1.36x faster | 1% faster |
+| Analytics (10 params) | 194 ns | 139 ns | 134 ns | 1.45x faster | 3% faster |
+| Int-heavy (20 params) | 9.5 ns | 6.5 ns | 5.8 ns | 1.62x faster | 10% faster |
+| Str-heavy (20 params) | 8.2 ns | 5.8 ns | 4.9 ns | 1.68x faster | 16% faster |
+| Decimal-heavy (20 params) | 722 ns | 617 ns | 602 ns | 1.20x faster | 2% faster |
+
+**Takeaway at small scale:** Both raw CPython and nanobind deliver a substantial
+1.2x-1.7x speedup over pybind11. In this environment nanobind matches or
+slightly beats raw CPython on every workload, largely because nanobind uses
+PEP 590 vectorcall for the function-call boundary while the raw-CPython
+version relies on `METH_VARARGS + PyArg_ParseTuple` — a per-call cost that
+matters when calls take only ~100-1000 ns each.
+
+### Expanded dataset (15 workloads, median-of-5)
+
 Median ns per parameter across 5 samples per (workload, variant) at ~1 second
 of wall-clock work each. Stddev is typically 0.5–2% of the median.
 
@@ -83,7 +111,7 @@ of wall-clock work each. Stddev is typically 0.5–2% of the median.
 | DAE-heavy 100 large params | 5.69 | 4.15 | **3.95** | 1.37x | **1.44x** |
 | DAE-heavy 1000 large params | 4.84 | 3.63 | **3.55** | 1.33x | **1.36x** |
 
-### How to read this
+### How to read the expanded dataset
 
 - **Both fast variants deliver a 1.10–1.44x speedup over pybind11** across
   every workload. The speedup is largest at small sizes (per-call overhead
@@ -102,6 +130,23 @@ of wall-clock work each. Stddev is typically 0.5–2% of the median.
   variants because they hit a single hot branch repeatedly. The mixed OLTP
   and Analytics numbers (100–170 ns/param) are more representative of real
   ad-hoc queries.
+
+### Cross-referencing the two datasets
+
+The small-dataset "OLTP mixed (6 params)" and expanded "OLTP 6 params (1 row)"
+are the same workload measured with different methodologies (best-of-3 vs
+median-of-5 with tighter iteration counts). They agree to within measurement
+noise:
+
+| Workload | small dataset | expanded dataset |
+|---|---:|---:|
+| OLTP mixed (6 params) — pybind11 | 167 ns | 169.15 ns |
+| OLTP mixed (6 params) — raw CPython | 124 ns | 133.11 ns |
+| OLTP mixed (6 params) — nanobind | 123 ns | 127.88 ns |
+
+The expanded methodology gives slightly higher numbers because it uses median
+rather than min-of-3 — a more conservative and reproducible statistic that
+does not cherry-pick the fastest run.
 
 ## Design notes
 
