@@ -67,8 +67,10 @@ class Connection {
 
     // Record / inspect the pooled access token's expiry so a near-expiry
     // connection is refreshed on checkout instead of being handed out with a
-    // token about to expire. Epoch seconds; 0 = unknown
-    // (non-token auth), for which isTokenNearExpiry() always returns false.
+    // token about to expire. Epoch seconds; 0 = unknown. isTokenNearExpiry()
+    // fails closed on an unknown expiry when a token is present (treats it as
+    // near-expiry so checkout re-verifies it) and returns false when no token
+    // is held (nothing to expire, e.g. non-token / SQL auth).
     void setTokenExpiry(long long epochSeconds);
     bool isTokenNearExpiry(int thresholdSecs) const;
 
@@ -78,13 +80,6 @@ class Connection {
     // from the one the pooled connection already holds: if unchanged, the
     // healthy connection is reused; only a rotated token forces reopen.
     std::string currentAccessToken() const;
-
-    // True if this connection's last access token equals `token`, compared in
-    // place against the internal buffer (no copy). Used by the sibling-drain
-    // sweep so rotating one token does not copy every pooled connection's token
-    // per comparison. Matches currentAccessToken() == token semantics (a
-    // connection with no token matches only an empty comparand).
-    bool accessTokenEquals(const std::string& token) const;
 
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();

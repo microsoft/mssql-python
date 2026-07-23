@@ -85,10 +85,6 @@ class ConnectionPoolManager {
     // Closes all pools and their connections
     void closePools();
 
-    // Diagnostic: number of pools currently tracked by the manager. Used by
-    // tests to observe lazy eviction of idle identity pools.
-    size_t poolCount();
-
   private:
     ConnectionPoolManager() = default;
     ~ConnectionPoolManager() = default;

@@ -561,7 +561,15 @@ void Connection::setTokenExpiry(long long epochSeconds) {
 
 bool Connection::isTokenNearExpiry(int thresholdSecs) const {
     if (_tokenExpiryEpoch == 0) {
-        return false;  // Unknown / non-token auth: never treated as expiring.
+        // Unknown expiry. Fail closed when we actually hold a token whose
+        // validity we cannot prove: reusing it risks handing back a token that
+        // expires mid-query, so force a refresh check instead (matching
+        // tokenExpirySafelyBeyond()'s fail-closed treatment of an unknown
+        // expiry). With no token present (an empty access token, e.g. a factory
+        // that supplies non-token attrs for SQL auth) there is nothing to
+        // expire, so the connection stays reusable. Real credentials always
+        // report expires_on, so the fail-closed arm is a safety net.
+        return !currentAccessToken().empty();
     }
     const long long now = static_cast<long long>(
         std::chrono::duration_cast<std::chrono::seconds>(
@@ -573,16 +581,6 @@ bool Connection::isTokenNearExpiry(int thresholdSecs) const {
 std::string Connection::currentAccessToken() const {
     auto it = _attrBytesBuffers.find(SQL_COPT_SS_ACCESS_TOKEN);
     return it != _attrBytesBuffers.end() ? it->second : std::string();
-}
-
-bool Connection::accessTokenEquals(const std::string& token) const {
-    auto it = _attrBytesBuffers.find(SQL_COPT_SS_ACCESS_TOKEN);
-    if (it == _attrBytesBuffers.end()) {
-        // No token on this connection; matches only an empty comparand,
-        // mirroring currentAccessToken() == token semantics.
-        return token.empty();
-    }
-    return it->second == token;
 }
 
 ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
@@ -604,14 +602,13 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
         _conn = std::make_shared<Connection>(_connStr, false);
         // Non-pooled connect still honors the lazy token factory: a
         // token is materialized only when a physical connection is opened. The
-        // factory may also carry the token expiry, recorded on the
-        // connection for completeness (a non-pooled connection is never reused,
-        // so expiry-aware checkout does not apply here).
+        // factory may also carry the token expiry, but a non-pooled
+        // connection is never reused, so expiry-aware checkout does not
+        // apply and the expiry is intentionally not recorded here.
         if (tokenFactory && !tokenFactory.is_none()) {
             long long expiry = 0;
             py::dict connect_attrs = Connection::invokeTokenFactory(tokenFactory, expiry);
             _conn->connect(connect_attrs);
-            _conn->setTokenExpiry(expiry);
         } else {
             _conn->connect(attrsBefore);
         }

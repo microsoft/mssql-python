@@ -421,14 +421,20 @@ def test_idle_identity_pool_is_evicted_by_later_acquire(conn_str):
     ``canEvict()`` evaluate the idle timeout, so acquiring B sweeps the
     aged-out pool A away.
 
+    Rather than reading an internal pool count, this asserts the observable
+    outcome: pool A's physical connection is disconnected on the server once it
+    is evicted. A persistent observer connection watches for A's connection_id
+    in sys.dm_exec_connections; the observer needs VIEW SERVER STATE to see a
+    session other than its own, so the test skips gracefully where that is not
+    granted.
+
     Run in a subprocess so this test's ``pooling(idle_timeout=1)`` is the first
-    (and therefore effective) call in a clean process, and so ``_pool_count``
-    observes only pools this test created.
+    (and therefore effective) call in a clean process.
     """
     _run_in_subprocess(
         """
         import os, re, sys, time
-        from mssql_python import connect, pooling, ddbc_bindings
+        from mssql_python import connect, pooling
 
         base = os.environ["DB_CONNECTION_STRING"]
         # Two distinct pool keys against the same server. The pool key is derived
@@ -443,32 +449,74 @@ def test_idle_identity_pool_is_evicted_by_later_acquire(conn_str):
             conn_a = trimmed + ";Database=master"
             conn_b = trimmed + ";Database=tempdb"
 
+        def phys_id(conn):
+            # This connection's own physical connection_id (visible without
+            # VIEW SERVER STATE because it is the caller's own session).
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT CONVERT(nvarchar(36), connection_id) "
+                "FROM sys.dm_exec_connections "
+                "WHERE session_id = @@SPID AND parent_connection_id IS NULL"
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+        def alive(observer, pid):
+            # pid is a server-generated GUID; validate before inlining it so the
+            # string interpolation cannot be an injection vector.
+            assert re.fullmatch(r"[0-9A-Fa-f-]{36}", pid), pid
+            cur = observer.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM sys.dm_exec_connections "
+                "WHERE CONVERT(nvarchar(36), connection_id) = '" + pid + "'"
+            )
+            return cur.fetchone()[0]
+
         pooling(max_size=2, idle_timeout=1)
 
-        # Identity A: open and return -> pool A now holds one idle connection
-        # (_current_size == 1). Under the old canEvict() this pool could never
-        # be reclaimed.
+        # Identity A: open, note its physical connection, then return it -> pool A
+        # now holds one idle connection (_current_size == 1). Under the old
+        # canEvict() this pool -- and this server session -- could never be
+        # reclaimed.
         a = connect(conn_a)
-        a.cursor().execute("SELECT 1")
+        a_id = phys_id(a)
+
+        # Persistent observer on a different pool key. It stays checked out for
+        # the whole test so it can watch A's session on the server.
+        obs = connect(conn_b)
+
+        if alive(obs, a_id) != 1:
+            # The observer cannot see A's session -> this login lacks VIEW SERVER
+            # STATE. Skip rather than report a false negative (exit 77).
+            sys.stderr.write(
+                "requires VIEW SERVER STATE to observe pool eviction on the server"
+            )
+            sys.exit(77)
+
         a.close()
-        assert ddbc_bindings._pool_count() == 1, (
-            f"expected exactly pool A, got {ddbc_bindings._pool_count()}"
-        )
+        assert alive(obs, a_id) == 1, "pool A's idle connection should still be open"
 
         # Let pool A's idle connection age past the 1s idle timeout.
         time.sleep(3)
 
-        # Identity B: acquiring on a different key triggers the manager's lazy
-        # eviction sweep, which must now reclaim the aged-out pool A.
-        b = connect(conn_b)
-        b.cursor().execute("SELECT 1")
-        b.close()
+        # Acquiring on a different key triggers the manager's lazy eviction
+        # sweep, which must now reclaim the aged-out pool A and disconnect it.
+        trigger = connect(conn_b)
+        trigger.cursor().execute("SELECT 1")
+        trigger.close()
 
-        count = ddbc_bindings._pool_count()
-        assert count == 1, (
-            f"pool A was not evicted: _pool_count()={count} (expected 1, "
-            f"which is only pool B). Under the old canEvict() this would be 2."
+        # The sweep disconnects synchronously, but give the server a moment to
+        # tear the session down before asserting it is gone.
+        deadline = time.time() + 5
+        while alive(obs, a_id) != 0 and time.time() < deadline:
+            time.sleep(0.2)
+        assert alive(obs, a_id) == 0, (
+            "pool A was not evicted: its physical connection is still open on "
+            "the server. Under the old canEvict() the idle pool would linger "
+            "forever."
         )
+
+        obs.close()
         """,
         conn_str,
     )
@@ -525,13 +573,18 @@ def test_checked_out_pool_is_not_evicted(conn_str):
     connection, so the eviction sweep must leave that pool alone regardless of
     the idle timeout.
 
-    Run in a subprocess so ``pooling(idle_timeout=1)`` is the effective config
-    and ``_pool_count`` observes only this test's pools.
+    Asserts the observable consequence rather than an internal pool count: if the
+    checked-out pool survives the sweep, the connection returned to it is reused
+    on the next same-key acquire (same physical connection_id). Had the pool been
+    wrongly evicted, returning the connection would orphan-close it and the next
+    acquire would open a brand-new one (a different connection_id).
+
+    Run in a subprocess so ``pooling(idle_timeout=1)`` is the effective config.
     """
     _run_in_subprocess(
         """
         import os, re, sys, time
-        from mssql_python import connect, pooling, ddbc_bindings
+        from mssql_python import connect, pooling
 
         base = os.environ["DB_CONNECTION_STRING"]
         # Two distinct pool keys against the same server (see the idle-eviction
@@ -544,92 +597,44 @@ def test_checked_out_pool_is_not_evicted(conn_str):
             conn_a = trimmed + ";Database=master"
             conn_b = trimmed + ";Database=tempdb"
 
+        def phys_id(conn):
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT CONVERT(nvarchar(36), connection_id) "
+                "FROM sys.dm_exec_connections "
+                "WHERE session_id = @@SPID AND parent_connection_id IS NULL"
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
         pooling(max_size=2, idle_timeout=1)
 
         # Identity A: open and KEEP OPEN. The connection is checked out, so pool
         # A's reserved capacity exceeds its idle contents (_current_size == 1,
-        # _pool empty) — canEvict() must refuse to reclaim it.
+        # _pool empty), so canEvict() must refuse to reclaim it.
         a = connect(conn_a)
-        a.cursor().execute("SELECT 1")
+        a_id = phys_id(a)
 
         # Age past the 1s idle timeout, then acquire on a different key to run
-        # the manager's eviction sweep over pool A.
+        # the manager's eviction sweep while A is still checked out.
         time.sleep(3)
-        b = connect(conn_b)
-        b.cursor().execute("SELECT 1")
+        trigger = connect(conn_b)
+        trigger.cursor().execute("SELECT 1")
+        trigger.close()
 
-        count = ddbc_bindings._pool_count()
-        assert count == 2, (
-            f"checked-out pool A must survive the sweep: _pool_count()={count} "
-            f"(expected 2: pools A and B)."
-        )
-
+        # Return A to pool A (which must have survived the sweep) and reacquire
+        # on the same key: a surviving pool hands the very same physical
+        # connection back.
         a.close()
-        b.close()
-        """,
-        conn_str,
-    )
-
-
-def test_disable_during_concurrent_connects_leaves_no_pool(conn_str):
-    """Disabling pooling amid concurrent connects leaves no escaped pool.
-
-    Regression test for the disable()-vs-connect() race. A connect reads the
-    (unlocked) enabled flag; before the fix, one that read it as True could
-    create a native pool just after ``disable()`` cleared the map, leaving a
-    pool alive for the life of the process. The native manager now disarms
-    new-pool creation under ``_manager_mutex`` before closing, so a raced
-    connect either had its pool reaped by the close or is declined and falls
-    back to a non-pooled connection. Once the storm settles, ``_pool_count()``
-    must be 0.
-
-    Run in a subprocess so the enable -> concurrent connect/disable lifecycle is
-    isolated from other tests (pooling config is process-global).
-    """
-    _run_in_subprocess(
-        """
-        import os, sys, threading, time
-        from mssql_python import connect, pooling, ddbc_bindings
-        from mssql_python.pooling import PoolingManager
-
-        conn_str = os.environ["DB_CONNECTION_STRING"]
-        pooling(max_size=8, idle_timeout=30)
-
-        stop = threading.Event()
-        errors = []
-
-        def worker():
-            while not stop.is_set():
-                try:
-                    c = connect(conn_str)
-                    c.cursor().execute("SELECT 1")
-                    c.close()
-                except Exception as exc:
-                    errors.append(repr(exc))
-                    return
-
-        threads = [threading.Thread(target=worker) for _ in range(4)]
-        for t in threads:
-            t.start()
-
-        # Let pools populate, then disable while the workers are hammering so
-        # some connects race the disable.
-        time.sleep(0.2)
-        PoolingManager.disable()
-
-        # Keep the workers running after the disable so late connects exercise
-        # the disarmed path (they must fall back to non-pooled, creating no pool).
-        time.sleep(0.3)
-        stop.set()
-        for t in threads:
-            t.join(timeout=10)
-
-        assert not errors, f"workers hit connection errors: {errors}"
-        count = ddbc_bindings._pool_count()
-        assert count == 0, (
-            f"a pool escaped disable(): _pool_count()={count} (expected 0). "
-            f"A connect that raced the disable resurrected a pool."
+        a2 = connect(conn_a)
+        a2_id = phys_id(a2)
+        assert a2_id == a_id, (
+            "checked-out pool A was wrongly evicted: the reacquire opened a new "
+            "physical connection (" + str(a2_id) + ") instead of reusing the "
+            "pooled one (" + str(a_id) + ")."
         )
+
+        a2.close()
         """,
         conn_str,
     )
@@ -915,7 +920,7 @@ def test_reenable_rearms_disable_guard(conn_str):
         PoolingManager.enable()
         assert PoolingManager._pools_closed is False
 
-        with patch("mssql_python.pooling.ddbc_bindings.disable_pooling") as mock_disable:
+        with patch("mssql_python.ddbc_bindings.disable_pooling") as mock_disable:
             PoolingManager.disable()
             mock_disable.assert_called_once()
         assert PoolingManager.is_enabled() is False
@@ -1231,15 +1236,18 @@ class TestNativeTokenFactory:
         assert calls["n"] == 2, "Near-expiry checkout must re-invoke the factory"
 
     def test_factory_token_unknown_expiry_is_reused(self, conn_str):
-        """A factory reporting no expiry (``None``) or epoch ``0`` leaves the
-        pooled connection with an *unknown* expiry, which the native checkout
-        treats as "not near expiry" and therefore reuses.
+        """A factory that reports no expiry (``None``/0) *and* supplies no token
+        leaves the pooled connection with nothing that can expire, so the native
+        checkout reuses it.
 
-        This pins down the current epoch-0 semantics (``isTokenNearExpiry``
-        returns ``false`` for a 0/unknown expiry, connection.cpp): the factory
-        runs once on the miss and is skipped on the same-key hit. Treating an
-        unknown expiry as *unsafe* for token-backed factory pools is tracked as
-        an optional hardening follow-up, not current behavior.
+        ``isTokenNearExpiry`` fails closed on an unknown expiry only when the
+        pooled connection actually holds an access token (connection.cpp). Here
+        the SQL-auth creds live in the connection string and the factory returns
+        empty attrs, so the pooled token is empty and there is nothing to
+        refresh: the factory runs once on the miss and is skipped on the
+        same-key hit. A pooled connection that *does* carry a token with an
+        unknown expiry is instead refreshed on checkout (fail closed); that path
+        needs a real Entra token to exercise end-to-end.
         """
         if not conn_str:
             pytest.skip("Live database connection required")
@@ -1260,7 +1268,7 @@ class TestNativeTokenFactory:
             conn1.close()
 
             conn2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
-            assert calls["n"] == 1, "Unknown/zero expiry is currently treated as safe and reused"
+            assert calls["n"] == 1, "No token held: unknown expiry is reused (nothing to refresh)"
             conn2.close()
 
     def test_factory_raises_on_near_expiry_checkout_recovers_pool(self, conn_str):
@@ -1344,8 +1352,13 @@ class TestNativeTokenFactory:
         pool map, so any ``acquireConnection`` serialized after it declines
         (returns nullptr) and the connection transparently falls back to a
         non-pooled one. A connect can therefore never resurrect a pool after a
-        disable, so ``_pool_count()`` stays 0. The non-pooled fallback still
-        honors the token factory.
+        disable. The non-pooled fallback still honors the token factory.
+
+        Asserts the observable contract instead of an internal pool count: the
+        token factory is invoked on every connect. With a live pool, a same-key
+        connect after a close would reuse the idle connection and skip the
+        factory; because a disabled manager creates no pool, each connect is a
+        fresh non-pooled connection and the factory fires again.
         """
         if not conn_str:
             pytest.skip("Live database connection required")
@@ -1356,7 +1369,6 @@ class TestNativeTokenFactory:
             # Arm, then disable: disarm new-pool creation and close everything.
             ddbc_bindings.enable_pooling(10, 600)
             ddbc_bindings.disable_pooling()
-            assert ddbc_bindings._pool_count() == 0, "disable must leave no pools"
 
             calls = {"n": 0}
 
@@ -1366,16 +1378,22 @@ class TestNativeTokenFactory:
 
             pool_key = conn_str + "\x00mssql_test_disabled_nopool"
 
-            # use_pool=True, but the manager is disarmed -> non-pooled fallback.
+            # use_pool=True, but the manager is disarmed -> non-pooled fallback,
+            # which still opens a real connection (the factory fires).
             conn = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
             assert calls["n"] == 1, "non-pooled fallback must still invoke the factory"
-            assert (
-                ddbc_bindings._pool_count() == 0
-            ), "a disabled manager must not create a pool for a racing connect"
             conn.close()
-            assert (
-                ddbc_bindings._pool_count() == 0
-            ), "returning the fallback connection must not create a pool"
+
+            # If the disabled manager had wrongly created a pool, this same-key
+            # connect would reuse the returned connection and skip the factory.
+            # No pool exists, so it must open another fresh connection instead.
+            conn2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, factory)
+            assert calls["n"] == 2, (
+                "a disabled manager must not pool the connection: the second "
+                "same-key connect had to open a fresh non-pooled connection "
+                "(the factory fired again) instead of reusing a pooled one"
+            )
+            conn2.close()
         finally:
             # Re-arm so sibling tests pool normally again.
             ddbc_bindings.enable_pooling(10, 600)

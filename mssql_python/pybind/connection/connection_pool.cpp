@@ -196,7 +196,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                             std::remove_if(
                                 _pool.begin(), _pool.end(),
                                 [&](const std::shared_ptr<Connection>& sibling) {
-                                    if (sibling->accessTokenEquals(stale_token)) {
+                                    if (sibling->currentAccessToken() == stale_token) {
                                         to_disconnect.push_back(sibling);
                                         if (_current_size > 0) --_current_size;
                                         return true;
@@ -520,11 +520,6 @@ void ConnectionPoolManager::closePools() {
             LOG("ConnectionPoolManager::closePools: closing pool failed: %s", ex.what());
         }
     }
-}
-
-size_t ConnectionPoolManager::poolCount() {
-    std::lock_guard<std::mutex> lock(_manager_mutex);
-    return _pools.size();
 }
 
 void ConnectionPoolManager::setAccepting(bool accepting) {
