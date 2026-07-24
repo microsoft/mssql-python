@@ -12,7 +12,6 @@
 #include <utility>
 #include <vector>
 
-#define SQL_COPT_SS_ACCESS_TOKEN 1256  // Custom attribute ID for access token
 #define SQL_MAX_SMALL_INT 32767        // Maximum value for SQLSMALLINT
 
 // Logging uses LOG() macro for all diagnostic output
@@ -298,6 +297,25 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
 
+    // Fail closed on a non-binary access token. SQL_COPT_SS_ACCESS_TOKEN (1256)
+    // MUST be the raw [DWORD byte-length][UTF-16LE token] struct passed as
+    // bytes/bytearray. If a caller supplies it as a py::str, the str->UTF-16
+    // cast in the string branch below would mangle that struct; worse, the
+    // Python identity-aware pool-key logic only hashes bytes/bytearray tokens,
+    // so a str token slips through with the bare connection-string pool key and
+    // two callers passing different str tokens against the same server could
+    // share a pooled, authenticated connection. Reject any non-binary token at
+    // this native boundary so the cross-identity invariant ("a token is present
+    // => the pool key is never the bare connStr") holds regardless of how the
+    // Connection was constructed.
+    if (attribute == SQL_COPT_SS_ACCESS_TOKEN && !py::isinstance<py::bytes>(value) &&
+        !py::isinstance<py::bytearray>(value)) {
+        LOG("Rejecting non-binary SQL_COPT_SS_ACCESS_TOKEN (attribute=%d): access token "
+            "must be bytes/bytearray",
+            attribute);
+        return SQL_ERROR;
+    }
+
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
         int64_t longValue = value.cast<int64_t>();
@@ -513,14 +531,87 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
+py::dict Connection::invokeTokenFactory(const py::object& tokenFactory,
+                                        long long& outExpiryEpoch) {
+    outExpiryEpoch = 0;
+    py::object result = tokenFactory();
+    // New contract: factory returns (attrs, expires_on). Remain
+    // backward compatible with the legacy contract where it returned a
+    // bare attrs dict.
+    if (py::isinstance<py::tuple>(result)) {
+        py::tuple parts = result.cast<py::tuple>();
+        // Defensive: a well-formed factory always returns at least (attrs,).
+        // Guard the index so a misbehaving/empty tuple falls through to the
+        // cast below (which raises a clear tuple->dict error) instead of an
+        // out-of-range access on parts[0].
+        if (parts.size() >= 1) {
+            py::dict attrs = parts[0].cast<py::dict>();
+            if (parts.size() > 1 && !parts[1].is_none()) {
+                outExpiryEpoch = parts[1].cast<long long>();
+            }
+            return attrs;
+        }
+    }
+    return result.cast<py::dict>();
+}
+
+void Connection::setTokenExpiry(long long epochSeconds) {
+    _tokenExpiryEpoch = epochSeconds;
+}
+
+bool Connection::isTokenNearExpiry(int thresholdSecs) const {
+    if (_tokenExpiryEpoch == 0) {
+        // Unknown expiry. Fail closed when we actually hold a token whose
+        // validity we cannot prove: reusing it risks handing back a token that
+        // expires mid-query, so force a refresh check instead (matching
+        // tokenExpirySafelyBeyond()'s fail-closed treatment of an unknown
+        // expiry). With no token present (an empty access token, e.g. a factory
+        // that supplies non-token attrs for SQL auth) there is nothing to
+        // expire, so the connection stays reusable. Real credentials always
+        // report expires_on, so the fail-closed arm is a safety net.
+        return !currentAccessToken().empty();
+    }
+    const long long now = static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    return (now + static_cast<long long>(thresholdSecs)) >= _tokenExpiryEpoch;
+}
+
+std::string Connection::currentAccessToken() const {
+    auto it = _attrBytesBuffers.find(SQL_COPT_SS_ACCESS_TOKEN);
+    return it != _attrBytesBuffers.end() ? it->second : std::string();
+}
+
 ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
-                                   const py::dict& attrsBefore)
-    : _usePool(usePool), _connStr(connStr) {
+                                   const py::dict& attrsBefore, const std::u16string& poolKey,
+                                   const py::object& tokenFactory)
+    : _usePool(usePool), _connStr(connStr), _poolKey(poolKey.empty() ? connStr : poolKey) {
     if (_usePool) {
-        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
-    } else {
+        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
+                                                                       _poolKey, tokenFactory);
+        // acquireConnection returns nullptr when pooling was disabled out from
+        // under us (a disable_pooling() won the race). Fall back to a non-pooled
+        // connection and flip _usePool so close() disconnects it directly rather
+        // than trying to return it to a pool that no longer exists.
+        if (!_conn) {
+            _usePool = false;
+        }
+    }
+    if (!_usePool) {
         _conn = std::make_shared<Connection>(_connStr, false);
-        _conn->connect(attrsBefore);
+        // Non-pooled connect still honors the lazy token factory: a
+        // token is materialized only when a physical connection is opened. The
+        // factory may also carry the token expiry, but a non-pooled
+        // connection is never reused, so expiry-aware checkout does not
+        // apply and the expiry is intentionally not recorded here.
+        if (tokenFactory && !tokenFactory.is_none()) {
+            long long expiry = 0;
+            py::dict connect_attrs = Connection::invokeTokenFactory(tokenFactory, expiry);
+            _conn->connect(connect_attrs);
+        } else {
+            _conn->connect(attrsBefore);
+        }
     }
 }
 
@@ -535,7 +626,7 @@ void ConnectionHandle::close() {
         ThrowStdException("Connection object is not initialized");
     }
     if (_usePool) {
-        ConnectionPoolManager::getInstance().returnConnection(_connStr, _conn);
+        ConnectionPoolManager::getInstance().returnConnection(_poolKey, _conn);
     } else {
         _conn->disconnect();
     }
