@@ -181,7 +181,7 @@ package_data = {
 
 setup(
     name="mssql-python",
-    version="1.11.0",
+    version="1.12.0",
     description="A Python library for interacting with Microsoft SQL Server",
     long_description=open("PyPI_Description.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
