@@ -9,6 +9,21 @@ The driver is compatible with all the Python versions >= 3.10
 > **Note:**
 > This project is now Generally Available (GA) and ready for production use. We’ve completed core functionality and incorporated feedback from the preview phase.
 > 
+> **Important Note:**
+>
+> ### ODBC Driver Distribution
+> The ODBC driver binaries used by `mssql-python` are now distributed through a dedicated companion package:
+>
+> - Package: `mssql-python-odbc`
+> - Import name: `mssql_python_odbc`
+> - Current version: **18.6.2**
+>
+> When installed, `mssql-python` automatically depends on and loads the ODBC driver binaries from `mssql-python-odbc`.
+>
+> To ensure a smooth transition, the current release retains the bundled binaries within the `libs/` directory and uses them as a fallback if the external package is unavailable. Existing installations will continue to work without modification.
+>
+> **Note:** The bundled `libs/` fallback is deprecated and will be removed in a future release. Beginning with a subsequent release, the ODBC binaries will be supplied exclusively through the `mssql-python-odbc` package. We recommend validating environments against the standalone package ahead of this change.
+
 ## Installation
  
 **Windows:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
