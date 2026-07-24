@@ -390,6 +390,7 @@ SQLEndTranFunc SQLEndTran_ptr = nullptr;
 SQLFreeHandleFunc SQLFreeHandle_ptr = nullptr;
 SQLDisconnectFunc SQLDisconnect_ptr = nullptr;
 SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
+SQLCancelFunc SQLCancel_ptr = nullptr;
 
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
@@ -1445,6 +1446,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
     SQLFreeHandle_ptr = GetFunctionPointer<SQLFreeHandleFunc>(handle, "SQLFreeHandle");
     SQLFreeStmt_ptr = GetFunctionPointer<SQLFreeStmtFunc>(handle, "SQLFreeStmt");
+    SQLCancel_ptr = GetFunctionPointer<SQLCancelFunc>(handle, "SQLCancel");
 
     SQLGetDiagRec_ptr = GetFunctionPointer<SQLGetDiagRecFunc>(handle, "SQLGetDiagRecW");
 
@@ -1603,6 +1605,31 @@ void SqlHandle::close_cursor() {
     }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
         ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
+    }
+}
+
+void SqlHandle::cancel() {
+    // SQLCancel is intentionally lenient: it is a no-op on non-STMT handles,
+    // already-freed handles, or if the driver does not expose it. This lets
+    // _ArrowReader.close() call it unconditionally without coordinating with
+    // the fetch thread. The GIL is released so a blocked fetch thread can
+    // observe the cancel and return.
+    if (_type != SQL_HANDLE_STMT || !_handle || _implicitly_freed) {
+        return;
+    }
+    if (!SQLCancel_ptr) {
+        return;
+    }
+    SQLHANDLE h = _handle;
+    SQLRETURN ret;
+    {
+        py::gil_scoped_release release;
+        ret = SQLCancel_ptr(h);
+    }
+    // SQLCancel may return SQL_SUCCESS_WITH_INFO when there was nothing to
+    // cancel; that is fine. We only throw on hard failure.
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
+        ThrowStdException("SQLCancel failed");
     }
 }
 
@@ -6004,7 +6031,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")
         .def("_close_cursor", &SqlHandle::close_cursor,
-             "Internal: close the cursor without freeing the prepared statement");
+             "Internal: close the cursor without freeing the prepared statement")
+        .def("_cancel", &SqlHandle::cancel,
+             "Internal: cancel an in-progress statement (SQLCancel). "
+             "Safe to call from another thread; no-op if unsupported or idle.");
 
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::u16string&, bool, const py::dict&>(), py::arg("conn_str"),
