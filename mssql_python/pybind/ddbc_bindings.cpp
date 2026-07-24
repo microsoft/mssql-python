@@ -8,17 +8,21 @@
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
+#include "py_ref.hpp"
+#include "py_type_cache.hpp"
 #include "utf_utils.h"
+
+using pyref::PyPtr;
+using pyref::adopt;
 
 
 #include <algorithm>  // std::min
-#include <cctype>
 #include <cstdint>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
-#include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
+#include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
 
 //-------------------------------------------------------------------------------------------------
@@ -101,9 +105,6 @@ inline int EffectiveCharCtypeForFetch(int charCtype, const std::string& charEnco
     return charCtype;
 }
 
-namespace PythonObjectCache {
-py::object get_time_class();
-}
 
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
@@ -113,66 +114,6 @@ py::object get_time_class();
 // Uses printf-style formatting: LOG("Value: %d", x) -- __FILE__/__LINE__
 // embedded in macro
 //-------------------------------------------------------------------------------------------------
-namespace PythonObjectCache {
-static py::object datetime_class;
-static py::object date_class;
-static py::object time_class;
-static py::object decimal_class;
-static py::object uuid_class;
-static bool cache_initialized = false;
-
-void initialize() {
-    if (!cache_initialized) {
-        auto datetime_module = py::module_::import("datetime");
-        datetime_class = datetime_module.attr("datetime");
-        date_class = datetime_module.attr("date");
-        time_class = datetime_module.attr("time");
-
-        auto decimal_module = py::module_::import("decimal");
-        decimal_class = decimal_module.attr("Decimal");
-
-        auto uuid_module = py::module_::import("uuid");
-        uuid_class = uuid_module.attr("UUID");
-
-        cache_initialized = true;
-    }
-}
-
-py::object get_datetime_class() {
-    if (cache_initialized && datetime_class) {
-        return datetime_class;
-    }
-    return py::module_::import("datetime").attr("datetime");
-}
-
-py::object get_date_class() {
-    if (cache_initialized && date_class) {
-        return date_class;
-    }
-    return py::module_::import("datetime").attr("date");
-}
-
-py::object get_time_class() {
-    if (cache_initialized && time_class) {
-        return time_class;
-    }
-    return py::module_::import("datetime").attr("time");
-}
-
-py::object get_decimal_class() {
-    if (cache_initialized && decimal_class) {
-        return decimal_class;
-    }
-    return py::module_::import("decimal").attr("Decimal");
-}
-
-py::object get_uuid_class() {
-    if (cache_initialized && uuid_class) {
-        return uuid_class;
-    }
-    return py::module_::import("uuid").attr("UUID");
-}
-}  // namespace PythonObjectCache
 
 //-------------------------------------------------------------------------------------------------
 // Class definitions
@@ -188,14 +129,72 @@ py::object get_uuid_class() {
 #pragma GCC diagnostic ignored "-Wattributes"
 #endif
 struct ParamInfo {
-    SQLSMALLINT inputOutputType;
-    SQLSMALLINT paramCType;
-    SQLSMALLINT paramSQLType;
-    SQLULEN columnSize;
-    SQLSMALLINT decimalDigits;
+    SQLSMALLINT inputOutputType = SQL_PARAM_INPUT;
+    SQLSMALLINT paramCType = SQL_C_DEFAULT;
+    SQLSMALLINT paramSQLType = SQL_UNKNOWN_TYPE;
+    SQLULEN columnSize = 0;
+    SQLSMALLINT decimalDigits = 0;
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
-    py::object dataPtr;
+    // Holds a strong reference to the Python object for DAE (data-at-execution) streaming.
+    // Raw pointer + manual Py_INCREF/DECREF (not PyPtr) because ParamInfo has custom
+    // copy/move semantics and is exposed to pybind11 type_caster — changing the member
+    // type would ripple through struct layout, copy/move operators, and property bindings.
+    PyObject* dataPtr = nullptr;
+    Py_ssize_t utf16Len = 0;  // UTF-16 code unit count for string params
+
+    ParamInfo() = default;
+    ~ParamInfo() { Py_XDECREF(dataPtr); }
+    // Copy needed by pybind11 type_caster for the legacy path (std::vector<ParamInfo>&).
+    ParamInfo(const ParamInfo& other)
+        : inputOutputType(other.inputOutputType), paramCType(other.paramCType),
+          paramSQLType(other.paramSQLType), columnSize(other.columnSize),
+          decimalDigits(other.decimalDigits), strLenOrInd(other.strLenOrInd),
+          isDAE(other.isDAE), dataPtr(other.dataPtr), utf16Len(other.utf16Len) {
+        Py_XINCREF(dataPtr);
+    }
+    // Copy/move assignment and move constructor below are required for
+    // std::vector<ParamInfo> resize/reallocation and pybind11's type_caster.
+    // They manually manage dataPtr refcounts since ParamInfo owns a strong ref.
+    ParamInfo& operator=(const ParamInfo& other) {
+        if (this != &other) {
+            Py_XDECREF(dataPtr);
+            inputOutputType = other.inputOutputType;
+            paramCType = other.paramCType;
+            paramSQLType = other.paramSQLType;
+            columnSize = other.columnSize;
+            decimalDigits = other.decimalDigits;
+            strLenOrInd = other.strLenOrInd;
+            isDAE = other.isDAE;
+            dataPtr = other.dataPtr;
+            utf16Len = other.utf16Len;
+            Py_XINCREF(dataPtr);
+        }
+        return *this;
+    }
+    ParamInfo(ParamInfo&& other) noexcept
+        : inputOutputType(other.inputOutputType), paramCType(other.paramCType),
+          paramSQLType(other.paramSQLType), columnSize(other.columnSize),
+          decimalDigits(other.decimalDigits), strLenOrInd(other.strLenOrInd),
+          isDAE(other.isDAE), dataPtr(other.dataPtr), utf16Len(other.utf16Len) {
+        other.dataPtr = nullptr;
+    }
+    ParamInfo& operator=(ParamInfo&& other) noexcept {
+        if (this != &other) {
+            Py_XDECREF(dataPtr);
+            inputOutputType = other.inputOutputType;
+            paramCType = other.paramCType;
+            paramSQLType = other.paramSQLType;
+            columnSize = other.columnSize;
+            decimalDigits = other.decimalDigits;
+            strLenOrInd = other.strLenOrInd;
+            isDAE = other.isDAE;
+            dataPtr = other.dataPtr;
+            utf16Len = other.utf16Len;
+            other.dataPtr = nullptr;
+        }
+        return *this;
+    }
 };
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -403,6 +402,7 @@ SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
 
 namespace {
 
+
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
     switch (cType) {
         STRINGIFY_FOR_CASE(SQL_C_CHAR);
@@ -470,6 +470,529 @@ std::string DescribeChar(unsigned char ch) {
         snprintf(buffer, sizeof(buffer), "U+%04X", ch);
         return std::string(buffer);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Constants for DetectParamTypes
+// ---------------------------------------------------------------------------
+
+// Strings longer than this use data-at-execution (DAE) streaming
+static constexpr int MAX_INLINE_CHAR = 4000;
+
+// Binary data longer than this uses DAE streaming (SQL Server max for non-MAX types)
+static constexpr int MAX_INLINE_BINARY = 8000;
+
+// SQL Server maximum numeric precision
+static constexpr int MAX_NUMERIC_PRECISION = 38;
+
+// Platform-specific text C type: unixODBC requires all text as wide chars on
+// Linux/macOS. On Windows the ODBC driver accepts SQL_C_CHAR for ASCII text.
+// This matches the Python slow path's behavior (its SQL_C_CHAR constant is
+// numerically -8, which is ODBC's SQL_C_WCHAR — a long-standing alias used
+// throughout the Python layer).
+#if defined(__APPLE__) || defined(__linux__)
+static constexpr SQLSMALLINT PARAM_C_TYPE_TEXT = SQL_C_WCHAR;
+#else
+static constexpr SQLSMALLINT PARAM_C_TYPE_TEXT = SQL_C_CHAR;
+#endif
+
+// Forward declare NumericData helper used by decimal path
+static NumericData build_numeric_data(PyObject* decimal_param);
+
+// ---------------------------------------------------------------------------
+// DetectParamTypes: Raw CPython parameter type detection for the primary execute path.
+//
+// Design decisions:
+// 1. Operates on a COPY of the user's param list (cursor.py does list(actual_params)).
+//    We mutate it in-place (PyList_SetItem) for types that need pre-processing
+//    (time→isoformat string, Decimal→NumericData, UUID→bytes_le).
+// 2. Uses CPython macros (PyLong_Check, PyDateTime_Check, etc.) instead of pybind11's
+//    py::isinstance<> for ~3x faster type checks (direct struct field test vs virtual call).
+// 3. Integer range detection uses <cstdint> constants — these match the SQL Server
+//    storage engine's range exactly (TINYINT: 0-255, SMALLINT: -32768..32767, etc.)
+// 4. String handling inspects UCS kind directly for O(1) ASCII detection rather than
+//    scanning content — critical for bulk insert scenarios with thousands of params.
+// 5. MONEY/SMALLMONEY uses exact Decimal comparison (PyObject_RichCompareBool) to avoid
+//    double-precision boundary errors (e.g., 214748.3647 would round incorrectly as double).
+// ---------------------------------------------------------------------------
+//
+// ORDERING MATTERS:
+//   - bool before int (bool is a subclass of int in Python)
+//   - datetime before date (datetime is a subclass of date)
+//
+// Takes a raw PyObject* (must be a list). Caller guarantees it's a fresh copy
+// (cursor.py does list(actual_params)), so in-place mutation via PyList_SetItem is safe.
+std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
+    PyTypeCache::initialize();
+
+    const Py_ssize_t n = PyList_GET_SIZE(params);
+    std::vector<ParamInfo> infos(n);
+
+    PyObject* decimal_type = PyTypeCache::get_decimal_class();
+    PyObject* uuid_type = PyTypeCache::get_uuid_class();
+
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        ParamInfo& info = infos[i];
+        info.inputOutputType = SQL_PARAM_INPUT;
+        info.isDAE = false;
+
+        PyObject* obj = PyList_GET_ITEM(params, i);
+
+        // --- None ---
+        if (obj == Py_None) {
+            info.paramSQLType = SQL_UNKNOWN_TYPE;
+            info.paramCType = SQL_C_DEFAULT;
+            info.columnSize = 1;
+            info.decimalDigits = 0;
+            continue;
+        }
+
+        // bool must be checked before int: in CPython, PyBool_Type is a subclass of
+        // PyLong_Type, so PyLong_Check(True) returns 1. If we hit the int branch first,
+        // True→1 instead of BIT.
+        if (PyBool_Check(obj)) {
+            info.paramSQLType = SQL_BIT;
+            info.paramCType = SQL_C_BIT;
+            info.columnSize = 1;
+            info.decimalDigits = 0;
+            continue;
+        }
+
+        // --- int (allow subclasses, but bool was already caught above) ---
+        if (PyLong_Check(obj)) {
+            int overflow = 0;
+            int64_t val = PyLong_AsLongLongAndOverflow(obj, &overflow);
+            if (overflow == 0 && !PyErr_Occurred()) {
+                if (val >= 0 && val <= UINT8_MAX) {
+                    info.paramSQLType = SQL_TINYINT;
+                    info.paramCType = SQL_C_TINYINT;
+                    info.columnSize = 3;
+                } else if (val >= INT16_MIN && val <= INT16_MAX) {
+                    info.paramSQLType = SQL_SMALLINT;
+                    info.paramCType = SQL_C_SHORT;
+                    info.columnSize = 5;
+                } else if (val >= INT32_MIN && val <= INT32_MAX) {
+                    info.paramSQLType = SQL_INTEGER;
+                    info.paramCType = SQL_C_LONG;
+                    info.columnSize = 10;
+                } else {
+                    info.paramSQLType = SQL_BIGINT;
+                    info.paramCType = SQL_C_SBIGINT;
+                    info.columnSize = 19;
+                }
+            } else {
+                PyErr_Clear();
+                info.paramSQLType = SQL_BIGINT;
+                info.paramCType = SQL_C_SBIGINT;
+                info.columnSize = 19;
+            }
+            info.decimalDigits = 0;
+            continue;
+        }
+
+        // --- float (allow subclasses) ---
+        if (PyFloat_Check(obj)) {
+            info.paramSQLType = SQL_DOUBLE;
+            info.paramCType = SQL_C_DOUBLE;
+            info.columnSize = 15;
+            info.decimalDigits = 0;
+            continue;
+        }
+
+        // --- str (allow subclasses) ---
+        if (PyUnicode_Check(obj)) {
+            Py_ssize_t length = PyUnicode_GET_LENGTH(obj);
+            unsigned int kind = PyUnicode_KIND(obj);
+
+            Py_ssize_t utf16_len;
+            if (kind <= PyUnicode_2BYTE_KIND) {
+                utf16_len = length;
+            } else {
+                utf16_len = 0;
+                const Py_UCS4* data = PyUnicode_4BYTE_DATA(obj);
+                for (Py_ssize_t j = 0; j < length; ++j) {
+                    utf16_len += (data[j] > 0xFFFF) ? 2 : 1;
+                }
+            }
+
+            // Detect whether the string needs wide-char (NVARCHAR) or narrow (VARCHAR) binding.
+            // PyUnicode_IS_COMPACT_ASCII is a struct field check (O(1)), not a content scan.
+            // UCS-1 strings with max_char > 127 contain Latin-1 chars → need NVARCHAR.
+            bool is_unicode =
+                (kind > PyUnicode_1BYTE_KIND) ||
+                (PyUnicode_IS_COMPACT_ASCII(obj) == 0 && kind == PyUnicode_1BYTE_KIND &&
+                 PyUnicode_MAX_CHAR_VALUE(obj) > 127);
+
+            if (utf16_len > MAX_INLINE_CHAR) {
+                // Strings > 4000 UTF-16 code units exceed SQL Server's inline NVARCHAR(MAX)
+                // threshold. Switch to data-at-execution (DAE) streaming: ODBC driver pulls
+                // data in chunks via SQLPutData, avoiding a single massive buffer allocation.
+                // DAE path: match slow-path types exactly.
+                // Non-unicode (ASCII) → SQL_VARCHAR + PARAM_C_TYPE_TEXT
+                //   On Linux/macOS PARAM_C_TYPE_TEXT == SQL_C_WCHAR, matching
+                //   the slow path's SQL_C_CHAR (which is numerically -8 ==
+                //   SQL_C_WCHAR — a long-standing alias in the Python layer).
+                // Unicode → SQL_WVARCHAR + SQL_C_WCHAR (wide-char streaming)
+                info.isDAE = true;
+                info.columnSize = 0;
+                info.utf16Len = utf16_len;
+                info.dataPtr = obj;
+                Py_INCREF(obj);
+                info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
+                info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
+            } else {
+                info.columnSize = is_unicode ? utf16_len : length;
+                info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
+                info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
+            }
+            info.decimalDigits = 0;
+
+            // Check geometry prefixes (only for non-DAE strings; long geometry
+            // values stay on the DAE path with their already-set types).
+            if (!info.isDAE && length >= 5 && kind == PyUnicode_1BYTE_KIND) {
+                const char* ascii = (const char*)PyUnicode_1BYTE_DATA(obj);
+                if (strncmp(ascii, "POINT", 5) == 0 ||
+                    (length >= 10 && strncmp(ascii, "LINESTRING", 10) == 0) ||
+                    (length >= 7 && strncmp(ascii, "POLYGON", 7) == 0)) {
+                    info.paramSQLType = SQL_WVARCHAR;
+                    info.paramCType = SQL_C_WCHAR;
+                    info.columnSize = length;
+                }
+            }
+            continue;
+        }
+
+        // --- bytes / bytearray (allow subclasses) ---
+        if (PyBytes_Check(obj) || PyByteArray_Check(obj)) {
+            Py_ssize_t length = PyBytes_Check(obj) ? PyBytes_Size(obj) : PyByteArray_Size(obj);
+            info.paramSQLType = SQL_VARBINARY;
+            info.paramCType = SQL_C_BINARY;
+            info.decimalDigits = 0;
+            if (length > MAX_INLINE_BINARY) {
+                info.isDAE = true;
+                info.columnSize = 0;
+                info.dataPtr = obj;
+                Py_INCREF(obj);
+            } else {
+                info.columnSize = std::max<SQLULEN>(length, 1);
+            }
+            continue;
+        }
+
+        // --- datetime (must check before date, since datetime is subclass of date) ---
+        if (PyDateTime_Check(obj)) {
+            PyPtr tzinfo = adopt(PyObject_GetAttrString(obj, "tzinfo"));
+            if (!tzinfo) throw py::error_already_set();
+            bool has_tz = (tzinfo.get() != Py_None);
+            if (has_tz) {
+                info.paramSQLType = SQL_SS_TIMESTAMPOFFSET;
+                info.paramCType = SQL_C_SS_TIMESTAMPOFFSET;
+                info.columnSize = 34;
+                info.decimalDigits = 7;
+            } else {
+                info.paramSQLType = SQL_TYPE_TIMESTAMP;
+                info.paramCType = SQL_C_TYPE_TIMESTAMP;
+                info.columnSize = 26;
+                info.decimalDigits = 6;
+            }
+            continue;
+        }
+
+        // --- date ---
+        if (PyDate_Check(obj)) {
+            info.paramSQLType = SQL_TYPE_DATE;
+            info.paramCType = SQL_C_TYPE_DATE;
+            info.columnSize = 10;
+            info.decimalDigits = 0;
+            continue;
+        }
+
+        // --- time (normalized to string for binding) ---
+        if (PyTime_Check(obj)) {
+            info.paramSQLType = SQL_TYPE_TIME;
+            info.paramCType =
+                PARAM_C_TYPE_TEXT;  // matches slow path (its SQL_C_CHAR is -8 = SQL_C_WCHAR)
+            info.columnSize = 16;
+            info.decimalDigits = 6;
+            int hour = PyDateTime_TIME_GET_HOUR(obj);
+            int minute = PyDateTime_TIME_GET_MINUTE(obj);
+            int second = PyDateTime_TIME_GET_SECOND(obj);
+            int microsecond = PyDateTime_TIME_GET_MICROSECOND(obj);
+            // Always include microseconds (matches Python's isoformat(timespec="microseconds")).
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%06d", hour, minute, second, microsecond);
+            PyObject* time_str = PyUnicode_FromString(buf);
+            if (!time_str) throw py::error_already_set();
+            Py_ssize_t time_len = PyUnicode_GET_LENGTH(time_str);
+            info.columnSize = std::max<SQLULEN>(info.columnSize, time_len);
+            // PyList_SetItem (lowercase) decrefs the old slot before stealing the new
+            // reference; safe here because cursor.py already passed a fresh list copy.
+            if (PyList_SetItem(params, i, time_str) != 0) {
+                throw py::error_already_set();
+            }
+            continue;
+        }
+
+        // --- Decimal ---
+        int is_decimal = PyObject_IsInstance(obj, decimal_type);
+        if (is_decimal == -1) throw py::error_already_set();
+        if (is_decimal == 1) {
+            PyPtr as_tuple_ptr = adopt(PyObject_CallMethod(obj, "as_tuple", NULL));
+            if (!as_tuple_ptr) throw py::error_already_set();
+
+            PyPtr exponent_obj = adopt(PyObject_GetAttrString(as_tuple_ptr.get(), "exponent"));
+            if (!exponent_obj) throw py::error_already_set();
+
+            // NaN / Infinity / sNaN: refuse rather than silently writing 0.
+            if (PyUnicode_Check(exponent_obj.get())) {
+                throw py::value_error(
+                    "Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC");
+            }
+
+            PyPtr digits_obj = adopt(PyObject_GetAttrString(as_tuple_ptr.get(), "digits"));
+            if (!digits_obj) throw py::error_already_set();
+
+            if (!PyTuple_Check(digits_obj.get())) {
+                throw py::type_error("Decimal.as_tuple().digits must be a tuple");
+            }
+
+            Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj.get());
+            int exponent = static_cast<int>(PyLong_AsLong(exponent_obj.get()));
+            if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
+
+            int precision;
+            // Precision is total base-10 digits after applying Decimal's exponent: positive exponents
+            // add trailing zeros, in-range negative exponents keep the original digit count, and larger
+            // negative exponents force leading fractional zeros such as Decimal("0.001") -> precision 3.
+            if (exponent >= 0)
+                precision = static_cast<int>(num_digits) + exponent;
+            else if ((-exponent) <= num_digits)
+                precision = static_cast<int>(num_digits);
+            else
+                precision = -exponent;
+
+            if (precision > MAX_NUMERIC_PRECISION) {
+                throw py::value_error(
+                    "Precision of the numeric value is too high. "
+                    "The maximum precision supported by SQL Server is " +
+                    std::to_string(MAX_NUMERIC_PRECISION) + ", but got " +
+                    std::to_string(precision) + ".");
+            }
+
+            // Check SMALLMONEY first, then widen to MONEY, so common small values keep the narrowest
+            // exact range while still accepting larger fixed-point values supported by SQL Server.
+            // MONEY/SMALLMONEY: SQL Server stores these as fixed-point integers internally.
+            // We bind as formatted VARCHAR (e.g., "214748.3647") because SQL_C_NUMERIC can't
+            // represent the exact money range without precision loss on certain ODBC drivers.
+            // Use exact Decimal comparison (not double) to avoid boundary misclassification.
+            bool in_money_range = false;
+            int cmp_ge = PyObject_RichCompareBool(obj, PyTypeCache::smallmoney_min, Py_GE);
+            int cmp_le = PyObject_RichCompareBool(obj, PyTypeCache::smallmoney_max, Py_LE);
+            if (cmp_ge == -1 || cmp_le == -1) throw py::error_already_set();
+            if (cmp_ge == 1 && cmp_le == 1) {
+                in_money_range = true;
+            } else {
+                cmp_ge = PyObject_RichCompareBool(obj, PyTypeCache::money_min, Py_GE);
+                cmp_le = PyObject_RichCompareBool(obj, PyTypeCache::money_max, Py_LE);
+                if (cmp_ge == -1 || cmp_le == -1) throw py::error_already_set();
+                if (cmp_ge == 1 && cmp_le == 1) {
+                    in_money_range = true;
+                }
+            }
+
+            if (in_money_range) {
+                PyPtr formatted = adopt(PyObject_CallMethod(obj, "__format__", "s", "f"));
+                if (!formatted) throw py::error_already_set();
+                info.paramSQLType = SQL_VARCHAR;
+                info.paramCType = PARAM_C_TYPE_TEXT;
+                info.columnSize = PyUnicode_GET_LENGTH(formatted.get());
+                info.decimalDigits = 0;
+                PyObject* raw = formatted.release();
+                if (PyList_SetItem(params, i, raw) != 0) {
+                    // PyList_SetItem steals (decrefs) the item even on failure,
+                    // so raw is already freed — do NOT Py_DECREF here.
+                    throw py::error_already_set();
+                }
+                continue;
+            }
+
+            // Build SQL_NUMERIC_STRUCT from the Decimal object. Store as a pybind11-castable
+            // object in the param list so BindParameters can extract it as NumericData.
+            info.paramSQLType = SQL_NUMERIC;
+            info.paramCType = SQL_C_NUMERIC;
+            NumericData nd = build_numeric_data(obj);
+            info.columnSize = nd.precision;
+            info.decimalDigits = nd.scale;
+            // Store NumericData as a Python object in the param list for the binder.
+            py::object numeric_obj = py::cast(nd);
+            PyObject* raw = numeric_obj.release().ptr();
+            if (PyList_SetItem(params, i, raw) != 0) {
+                // PyList_SetItem steals (decrefs) the item even on failure.
+                throw py::error_already_set();
+            }
+            continue;
+        }
+
+        // --- UUID ---
+        int is_uuid = PyObject_IsInstance(obj, uuid_type);
+        if (is_uuid == -1) throw py::error_already_set();
+        if (is_uuid == 1) {
+            PyObject* bytes_le = PyObject_GetAttrString(obj, "bytes_le");
+            if (!bytes_le) throw py::error_already_set();
+            info.paramSQLType = SQL_GUID;
+            info.paramCType = SQL_C_GUID;
+            info.columnSize = 16;
+            info.decimalDigits = 0;
+            if (PyList_SetItem(params, i, bytes_le) != 0) {
+                // PyList_SetItem steals (decrefs) the item even on failure.
+                throw py::error_already_set();
+            }
+            continue;
+        }
+
+        // --- Unknown type: raise TypeError (matches Python _map_sql_type) ---
+        throw py::type_error(
+            "Unsupported parameter type: The driver cannot safely convert it to a SQL type.");
+    }
+
+    return infos;
+}
+
+// Helper: build SQL_NUMERIC_STRUCT from Python Decimal
+// Converts a Python Decimal into a SQL_NUMERIC_STRUCT representation.
+// Takes raw PyObject* (must be a Decimal instance). Returns NumericData directly —
+// the caller stores it as a Python capsule via PyList_SetItem for the binder to consume.
+static NumericData build_numeric_data(PyObject* decimal_param) {
+    // Decimal.as_tuple() exposes the canonical pieces we need: sign, coefficient digits, and exponent.
+    PyPtr as_tuple = adopt(PyObject_CallMethod(decimal_param, "as_tuple", NULL));
+    if (!as_tuple) throw py::error_already_set();
+
+    // Step 1-4: unpack Decimal(sign, digits, exponent) and validate that digits is the tuple form
+    // promised by Decimal.as_tuple(); the remaining logic works purely from these normalized parts.
+    PyPtr digits = adopt(PyObject_GetAttrString(as_tuple.get(), "digits"));
+    if (!digits) throw py::error_already_set();
+    PyPtr sign_obj = adopt(PyObject_GetAttrString(as_tuple.get(), "sign"));
+    if (!sign_obj) throw py::error_already_set();
+    PyPtr exponent_obj = adopt(PyObject_GetAttrString(as_tuple.get(), "exponent"));
+    if (!exponent_obj) throw py::error_already_set();
+
+    int sign_val = static_cast<int>(PyLong_AsLong(sign_obj.get()));
+    sign_obj.reset();
+    if (sign_val == -1 && PyErr_Occurred()) throw py::error_already_set();
+
+    int exponent = 0;
+    if (PyLong_Check(exponent_obj.get())) {
+        exponent = static_cast<int>(PyLong_AsLong(exponent_obj.get()));
+        if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
+    }
+    exponent_obj.reset();
+
+    if (!PyTuple_Check(digits.get())) {
+        throw py::type_error("Decimal.as_tuple().digits must be a tuple");
+    }
+
+    // Step 5: SQL Server precision counts all stored decimal digits, while scale is just the fractional
+    // digits. A positive exponent means trailing zeros move into the integer part; a negative exponent
+    // means scale = -exponent and precision must still cover leading fractional zeros such as 0.001.
+    int num_digits = static_cast<int>(PyTuple_GET_SIZE(digits.get()));
+    int precision, scale;
+    if (exponent >= 0) {
+        precision = num_digits + exponent;
+        scale = 0;
+    } else {
+        scale = -exponent;
+        precision = std::max(num_digits, scale);
+    }
+    precision = std::max(1, std::min(precision, MAX_NUMERIC_PRECISION));
+    scale = std::min(scale, precision);
+
+    // Step 6: build the mantissa with Python bigint math so we preserve every Decimal digit; a fixed
+    // C++ integer would overflow long before SQL Server's 38-digit NUMERIC limit.
+    PyPtr py_ten = adopt(PyLong_FromLong(10));
+    PyPtr int_val = adopt(PyLong_FromLong(0));
+    if (!py_ten || !int_val) {
+        throw py::error_already_set();
+    }
+
+    const Py_ssize_t digit_count = PyTuple_GET_SIZE(digits.get());
+    for (Py_ssize_t i = 0; i < digit_count; ++i) {
+        PyObject* digit_obj = PyTuple_GET_ITEM(digits.get(), i);
+        long digit = PyLong_AsLong(digit_obj);
+        if (digit == -1 && PyErr_Occurred()) throw py::error_already_set();
+
+        PyPtr multiplied = adopt(PyNumber_Multiply(int_val.get(), py_ten.get()));
+        if (!multiplied) throw py::error_already_set();
+
+        PyPtr py_digit = adopt(PyLong_FromLong(digit));
+        if (!py_digit) throw py::error_already_set();
+
+        int_val = adopt(PyNumber_Add(multiplied.get(), py_digit.get()));
+        if (!int_val) throw py::error_already_set();
+    }
+
+    // Step 7: a positive Decimal exponent means the tuple digits omit trailing zeros, so Decimal("123e2")
+    // must become integer mantissa 12300 before packing.
+    if (exponent > 0) {
+        PyPtr multiplier = adopt(PyLong_FromLong(1));
+        if (!multiplier) throw py::error_already_set();
+        for (int j = 0; j < exponent; ++j) {
+            multiplier = adopt(PyNumber_Multiply(multiplier.get(), py_ten.get()));
+            if (!multiplier) throw py::error_already_set();
+        }
+        int_val = adopt(PyNumber_Multiply(int_val.get(), multiplier.get()));
+        if (!int_val) throw py::error_already_set();
+    }
+
+    // Step 8: SQL_NUMERIC_STRUCT stores magnitude and sign separately, so encode only the absolute value.
+    PyPtr abs_val = adopt(PyNumber_Absolute(int_val.get()));
+    int_val.reset();
+    py_ten.reset();
+    digits.reset();
+    as_tuple.reset();
+    if (!abs_val) throw py::error_already_set();
+
+    // Step 9: SQL_NUMERIC_STRUCT::val is a 16-byte little-endian unsigned integer buffer, so ask
+    // Python's bigint to serialize directly into that wire format instead of reimplementing base conversion.
+    PyPtr val_bytes = adopt(PyObject_CallMethod(abs_val.get(), "to_bytes", "is", 16, "little"));
+    abs_val.reset();
+    if (!val_bytes) throw py::error_already_set();
+
+    char* val_buf = nullptr;
+    Py_ssize_t val_size = 0;
+    if (PyBytes_AsStringAndSize(val_bytes.get(), &val_buf, &val_size) == -1) {
+        throw py::error_already_set();
+    }
+
+    // Step 10: pack precision/scale plus the 16-byte little-endian magnitude. SQL uses sign=1 for
+    // positive and sign=0 for negative, which is the inverse of Decimal.as_tuple().sign.
+    NumericData nd;
+    nd.precision = static_cast<SQLCHAR>(precision);
+    nd.scale = static_cast<SQLSCHAR>(scale);
+    nd.sign = (sign_val == 0) ? 1 : 0;
+    std::memset(&nd.val[0], 0, SQL_MAX_NUMERIC_LEN);
+    size_t copy_len = std::min(static_cast<size_t>(val_size), static_cast<size_t>(SQL_MAX_NUMERIC_LEN));
+    if (copy_len > 0 && val_buf != nullptr) {
+#ifdef _MSC_VER
+        memcpy_s(&nd.val[0], SQL_MAX_NUMERIC_LEN, val_buf, copy_len);
+#else
+        // copy_len is bounded to SQL_MAX_NUMERIC_LEN above — safe by construction
+        std::memcpy(&nd.val[0], val_buf, copy_len);  // DevSkim: ignore DS121708
+#endif
+    }
+    return nd;
+}
+
+template<typename PutDataFn>
+// The callable hides whether the caller wraps SQLPutData with GIL management; chunk sizing stays shared.
+static SQLRETURN stream_dae_chunks(const void* data, size_t total_bytes, PutDataFn put_data_fn) {
+    const char* bytes = static_cast<const char*>(data);
+    for (size_t offset = 0; offset < total_bytes; offset += DAE_CHUNK_SIZE) {
+        size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE), total_bytes - offset);
+        SQLRETURN rc = put_data_fn(
+            static_cast<SQLPOINTER>(const_cast<char*>(bytes + offset)), static_cast<SQLLEN>(len));
+        if (!SQL_SUCCEEDED(rc)) return rc;
+    }
+    return SQL_SUCCESS;
 }
 
 // GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
@@ -644,10 +1167,12 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
 
                     std::string* strParam =
                         AllocateParamBuffer<std::string>(paramBuffers, encodedStr);
-                    dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
-                    bufferLength = strParam->size() + 1;
+                    dataPtr = const_cast<void*>(static_cast<const void*>(strParam->data()));
+                    bufferLength = strParam->size();
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                    *strLenOrIndPtr = SQL_NTS;
+                    // Use explicit byte length instead of SQL_NTS so embedded NUL chars
+                    // aren't treated as string terminators (e.g., "hello\x00world").
+                    *strLenOrIndPtr = static_cast<SQLLEN>(strParam->size());
                 }
                 break;
             }
@@ -712,7 +1237,9 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                     dataPtr = sqlwcharBuffer->data();
                     bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                    *strLenOrIndPtr = SQL_NTS;
+                    // Use explicit byte length instead of SQL_NTS so embedded NUL chars
+                    // aren't treated as string terminators.
+                    *strLenOrIndPtr = static_cast<SQLLEN>(sqlwcharBuffer->size() * sizeof(SQLWCHAR));
                 }
                 break;
             }
@@ -819,7 +1346,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_TYPE_DATE: {
-                py::object dateType = PythonObjectCache::get_date_class();
+                py::object dateType = PyTypeCache::get_date_class_obj();
                 if (!py::isinstance(param, dateType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -839,7 +1366,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_TYPE_TIME: {
-                py::object timeType = PythonObjectCache::get_time_class();
+                py::object timeType = PyTypeCache::get_time_class_obj();
                 if (!py::isinstance(param, timeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -853,7 +1380,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_SS_TIMESTAMPOFFSET: {
-                py::object datetimeType = PythonObjectCache::get_datetime_class();
+                py::object datetimeType = PyTypeCache::get_datetime_class_obj();
                 if (!py::isinstance(param, datetimeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -905,7 +1432,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_TYPE_TIMESTAMP: {
-                py::object datetimeType = PythonObjectCache::get_datetime_class();
+                py::object datetimeType = PyTypeCache::get_datetime_class_obj();
                 if (!py::isinstance(param, datetimeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -1914,7 +2441,7 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
 // statement and binds the parameters. Otherwise, it executes the query
 // directly. 'usePrepare' parameter can be used to disable the prepare step for
 // queries that might already be prepared in a previous call.
-SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
+SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                           const py::list& params, std::vector<ParamInfo>& paramInfos,
                           py::list& isStmtPrepared, const bool usePrepare,
                           const py::dict& encodingSettings) {
@@ -2007,7 +2534,6 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
         if (!SQL_SUCCEEDED(rc)) {
             return rc;
         }
-
         {
             // Release the GIL during the blocking SQLExecute network call.
             py::gil_scoped_release release;
@@ -2040,89 +2566,66 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
                 if (!matchedInfo) {
                     ThrowStdException("Unrecognized paramToken returned by SQLParamData");
                 }
-                const py::object& pyObj = matchedInfo->dataPtr;
-                if (pyObj.is_none()) {
+                PyObject* pyObj = matchedInfo->dataPtr;
+                if (!pyObj || pyObj == Py_None) {
                     putData(nullptr, 0);
                     continue;
                 }
-                if (py::isinstance<py::str>(pyObj)) {
+                if (PyUnicode_Check(pyObj)) {
                     if (matchedInfo->paramCType == SQL_C_WCHAR) {
-                        std::u16string utf16 = pyObj.cast<std::u16string>();
-                        size_t totalChars = utf16.size();
-                        const SQLWCHAR* dataPtr = reinterpretU16stringAsSqlWChar(utf16);
-                        size_t offset = 0;
-                        size_t chunkChars = DAE_CHUNK_SIZE / sizeof(SQLWCHAR);
-                        while (offset < totalChars) {
-                            size_t len = std::min(chunkChars, totalChars - offset);
-                            size_t lenBytes = len * sizeof(SQLWCHAR);
-                            if (lenBytes >
-                                static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
-                                ThrowStdException("Chunk size exceeds maximum "
-                                                  "allowed by SQLLEN");
-                            }
-                            rc = putData((SQLPOINTER)(dataPtr + offset),
-                                         static_cast<SQLLEN>(lenBytes));
-                            if (!SQL_SUCCEEDED(rc)) {
-                                LOG("SQLExecute: SQLPutData failed for "
-                                    "SQL_C_WCHAR chunk - offset=%zu",
-                                    offset, totalChars, lenBytes, rc);
-                                return rc;
-                            }
-                            offset += len;
+                        std::u16string utf16 =
+                            py::reinterpret_borrow<py::str>(py::handle(pyObj)).cast<std::u16string>();
+                        rc = stream_dae_chunks(
+                            reinterpretU16stringAsSqlWChar(utf16),
+                            utf16.size() * sizeof(SQLWCHAR),
+                            putData);
+                        if (!SQL_SUCCEEDED(rc)) {
+                            LOG("SQLExecute: SQLPutData failed for SQL_C_WCHAR DAE streaming");
+                            return rc;
                         }
                     } else if (matchedInfo->paramCType == SQL_C_CHAR) {
                         // Encode the string using the specified encoding
                         std::string encodedStr;
                         try {
-                            if (py::isinstance<py::str>(pyObj)) {
-                                py::object encoded = pyObj.attr("encode")(charEncoding, "strict");
-                                encodedStr = encoded.cast<std::string>();
-                                LOG("SQLExecute: DAE SQL_C_CHAR - Encoded with '%s', %zu bytes",
-                                    charEncoding.c_str(), encodedStr.size());
-                            } else {
-                                encodedStr = pyObj.cast<std::string>();
-                            }
+                            py::object encoded = py::reinterpret_borrow<py::object>(py::handle(pyObj))
+                                                     .attr("encode")(charEncoding, "strict");
+                            encodedStr = encoded.cast<std::string>();
+                            LOG("SQLExecute: DAE SQL_C_CHAR - Encoded with '%s', %zu bytes",
+                                charEncoding.c_str(), encodedStr.size());
                         } catch (const py::error_already_set& e) {
                             LOG_ERROR("SQLExecute: DAE SQL_C_CHAR - Failed to encode with '%s': %s",
                                       charEncoding.c_str(), e.what());
                             throw;
                         }
 
-                        size_t totalBytes = encodedStr.size();
-                        const char* dataPtr = encodedStr.data();
-                        size_t offset = 0;
-                        size_t chunkBytes = DAE_CHUNK_SIZE;
-                        while (offset < totalBytes) {
-                            size_t len = std::min(chunkBytes, totalBytes - offset);
-
-                            rc = putData((SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
-                            if (!SQL_SUCCEEDED(rc)) {
-                                LOG("SQLExecute: SQLPutData failed for "
-                                    "SQL_C_CHAR chunk - offset=%zu",
-                                    offset, totalBytes, len, rc);
-                                return rc;
-                            }
-                            offset += len;
+                        rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
+                        if (!SQL_SUCCEEDED(rc)) {
+                            LOG("SQLExecute: SQLPutData failed for SQL_C_CHAR DAE streaming");
+                            return rc;
                         }
                     } else {
                         ThrowStdException("Unsupported C type for str in DAE");
                     }
-                } else if (py::isinstance<py::bytes>(pyObj) ||
-                           py::isinstance<py::bytearray>(pyObj)) {
-                    py::bytes b = pyObj.cast<py::bytes>();
-                    std::string s = b;
-                    const char* dataPtr = s.data();
-                    size_t totalBytes = s.size();
-                    const size_t chunkSize = DAE_CHUNK_SIZE;
-                    for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
-                        size_t len = std::min(chunkSize, totalBytes - offset);
-                        rc = putData((SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
-                        if (!SQL_SUCCEEDED(rc)) {
-                            LOG("SQLExecute: SQLPutData failed for "
-                                "binary/bytes chunk - offset=%zu",
-                                offset, totalBytes, len, rc);
-                            return rc;
-                        }
+                } else if (PyBytes_Check(pyObj) || PyByteArray_Check(pyObj)) {
+                    const char* dataPtr = nullptr;
+                    size_t totalBytes = 0;
+                    std::string bytesStorage;  // lifetime must span the loop
+                    if (PyBytes_Check(pyObj)) {
+                        bytesStorage = py::reinterpret_borrow<py::bytes>(py::handle(pyObj));
+                        dataPtr = bytesStorage.data();
+                        totalBytes = bytesStorage.size();
+                    } else {
+                        // bytearray is mutable — copy to stable buffer before streaming
+                        bytesStorage.assign(PyByteArray_AS_STRING(pyObj),
+                                            static_cast<size_t>(PyByteArray_GET_SIZE(pyObj)));
+                        dataPtr = bytesStorage.data();
+                        totalBytes = bytesStorage.size();
+                    }
+
+                    rc = stream_dae_chunks(dataPtr, totalBytes, putData);
+                    if (!SQL_SUCCEEDED(rc)) {
+                        LOG("SQLExecute: SQLPutData failed for binary/bytes DAE streaming");
+                        return rc;
                     }
                 } else {
                     ThrowStdException("DAE only supported for str or bytes");
@@ -2143,12 +2646,186 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle, const std::u16stri
             return rc;
         }
 
-        // Unbind the bound buffers for all parameters coz the buffers' memory
-        // will be freed when this function exits (parambuffers goes out of
-        // scope)
-        rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+        // Unbind parameter buffers before they go out of scope.
+        // Not called on error paths — diagnostics must remain readable.
+        SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
         return rc;
     }
+}
+
+// ---------------------------------------------------------------------------
+// SQLExecuteFast — single C++ pipeline: DetectParamTypes → BindParameters → SQLExecute
+// No ParamInfo objects cross the pybind11 boundary.
+//
+// Honors use_prepare: when true, uses SQLPrepare + SQLExecute (benefiting from
+// plan reuse). When false but already prepared, reuses the existing plan.
+// When false and not prepared, throws (matching slow path behavior).
+// ---------------------------------------------------------------------------
+SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
+                              const std::u16string& query,
+                              py::list params,
+                              py::list is_stmt_prepared,
+                              bool use_prepare,
+                              const py::dict& encoding_settings) {
+    if (!statementHandle || !statementHandle->get()) {
+        return SQL_INVALID_HANDLE;
+    }
+
+    SQLHANDLE hStmt = statementHandle->get();
+
+    // Configure forward-only / read-only cursor (matches slow path semantics).
+    if (SQLSetStmtAttr_ptr) {
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CURSOR_TYPE,
+                           (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY, 0);
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY,
+                           (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
+    }
+
+    // The encoding-settings dict has the form {"encoding": str, "ctype": int}.
+    // Note: the Python layer's SQL_C_CHAR constant is numerically -8, the same
+    // as ODBC's SQL_C_WCHAR. As a result, the only path that genuinely uses
+    // byte-level character encoding is when the user explicitly opts in via
+    // setencoding(..., ctype=mssql_python.SQL_CHAR) (which sends ctype=1, the
+    // real ODBC SQL_CHAR). We default to utf-8 and only honor the dict's
+    // encoding when ctype == 1 (real ODBC SQL_CHAR). Otherwise the user's
+    // "encoding" value is meant for the wide-char path and we leave it alone.
+    std::string charEncoding = "utf-8";
+    if (encoding_settings.contains("ctype") && encoding_settings.contains("encoding")) {
+        int ctype = encoding_settings["ctype"].cast<int>();
+        if (ctype == SQL_C_CHAR /* real ODBC value: 1 */) {
+            charEncoding = encoding_settings["encoding"].cast<std::string>();
+        }
+    }
+
+    // The cursor.py caller always passes a fresh `list(actual_params)` so this
+    // function is free to mutate slots in place. Even so, every site below uses
+    // PyList_SetItem (which decrefs the old slot before stealing the new ref),
+    // so the function is safe regardless of who owns the list.
+
+    // Run DetectParamTypes BEFORE SQLPrepare so that type-detection errors
+    // (unsupported type, NaN Decimal, precision overflow) don't leave the
+    // cursor in a half-prepared state.
+    std::vector<ParamInfo> paramInfos = DetectParamTypes(params.ptr());
+
+    RETCODE rc;
+    bool already_prepared = is_stmt_prepared[0].cast<bool>();
+
+    // Honor use_prepare flag (matching slow path behavior):
+    // - use_prepare=true: prepare now (or reuse if same SQL already prepared)
+    // - use_prepare=false + already prepared: reuse existing plan
+    // - use_prepare=false + not prepared: error (cannot execute unprepared)
+    if (!already_prepared) {
+        if (use_prepare) {
+            SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
+            {
+                py::gil_scoped_release release;
+                rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+            }
+            if (!SQL_SUCCEEDED(rc)) return rc;
+            statementHandle->clearDescribeCache();
+            is_stmt_prepared[0] = py::bool_(true);
+        } else {
+            ThrowStdException("Cannot execute unprepared statement");
+        }
+    }
+
+    std::vector<std::shared_ptr<void>> paramBuffers;
+    rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
+    if (!SQL_SUCCEEDED(rc)) return rc;
+
+    {
+        py::gil_scoped_release release;
+        rc = SQLExecute_ptr(hStmt);
+    }
+
+    // DAE (Data-At-Execution) loop: when BindParameters marks a param as DAE
+    // (large str/bytes/binary), SQLExecute returns SQL_NEED_DATA. We must
+    // stream the data via SQLParamData/SQLPutData before execution completes.
+    // GIL is released around each ODBC call to match slow-path concurrency.
+    if (rc == SQL_NEED_DATA) {
+        SQLPOINTER paramToken = nullptr;
+        auto putData = [&](SQLPOINTER data, SQLLEN len) {
+            py::gil_scoped_release release;
+            return SQLPutData_ptr(hStmt, data, len);
+        };
+        while (true) {
+            {
+                py::gil_scoped_release release;
+                rc = SQLParamData_ptr(hStmt, &paramToken);
+            }
+            if (rc != SQL_NEED_DATA) break;
+
+            const ParamInfo* matchedInfo = nullptr;
+            for (auto& info : paramInfos) {
+                if (reinterpret_cast<SQLPOINTER>(const_cast<ParamInfo*>(&info)) == paramToken) {
+                    matchedInfo = &info;
+                    break;
+                }
+            }
+            if (!matchedInfo) {
+                ThrowStdException("SQLExecuteFast: unrecognized paramToken from SQLParamData");
+            }
+            PyObject* pyObj = matchedInfo->dataPtr;
+            if (!pyObj || pyObj == Py_None) {
+                py::gil_scoped_release release;
+                SQLPutData_ptr(hStmt, nullptr, 0);
+                continue;
+            }
+
+            if (PyUnicode_Check(pyObj)) {
+                if (matchedInfo->paramCType == SQL_C_WCHAR) {
+                    std::u16string u16 =
+                        py::reinterpret_borrow<py::str>(py::handle(pyObj)).cast<std::u16string>();
+                    rc = stream_dae_chunks(
+                        reinterpretU16stringAsSqlWChar(u16),
+                        u16.size() * sizeof(SQLWCHAR),
+                        putData);
+                    if (!SQL_SUCCEEDED(rc)) return rc;
+                } else if (matchedInfo->paramCType == SQL_C_CHAR) {
+                    std::string encodedStr;
+                    py::object encoded = py::reinterpret_borrow<py::object>(py::handle(pyObj))
+                                             .attr("encode")(charEncoding, "strict");
+                    encodedStr = encoded.cast<std::string>();
+                    rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
+                    if (!SQL_SUCCEEDED(rc)) return rc;
+                } else {
+                    ThrowStdException("SQLExecuteFast: unsupported C type for str in DAE");
+                }
+            } else if (PyBytes_Check(pyObj) || PyByteArray_Check(pyObj)) {
+                // Handle bytes and bytearray separately — pybind11's bytes
+                // caster does not safely convert bytearray.
+                const char* dataPtr = nullptr;
+                size_t totalBytes = 0;
+                std::string bytesStorage;  // lifetime must span the loop
+
+                if (PyBytes_Check(pyObj)) {
+                    bytesStorage = py::reinterpret_borrow<py::bytes>(py::handle(pyObj));
+                    dataPtr = bytesStorage.data();
+                    totalBytes = bytesStorage.size();
+                } else {
+                    // bytearray is mutable — copy to stable buffer before streaming
+                    bytesStorage.assign(PyByteArray_AS_STRING(pyObj),
+                                        static_cast<size_t>(PyByteArray_GET_SIZE(pyObj)));
+                    dataPtr = bytesStorage.data();
+                    totalBytes = bytesStorage.size();
+                }
+
+                rc = stream_dae_chunks(dataPtr, totalBytes, putData);
+                if (!SQL_SUCCEEDED(rc)) return rc;
+            } else {
+                ThrowStdException("SQLExecuteFast: DAE only supported for str or bytes");
+            }
+        }
+        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
+    }
+
+    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
+
+    // Unbind parameter buffers before they go out of scope.
+    // Not called on error paths — diagnostics must remain readable.
+    SQLRETURN exec_rc = rc;
+    SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    return exec_rc;
 }
 
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
@@ -2575,7 +3252,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         AllocateParamBufferArray<DateTimeOffset>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
-                    py::object datetimeType = PythonObjectCache::get_datetime_class();
+                    py::object datetimeType = PyTypeCache::get_datetime_class_obj();
 
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         const py::handle& param = columnValues[i];
@@ -2690,7 +3367,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     // Get cached UUID class from module-level helper
                     // This avoids static object destruction issues during
                     // Python finalization
-                    py::object uuid_class = PythonObjectCache::get_uuid_class();
+                    py::object uuid_class = PyTypeCache::get_uuid_class_obj();
                     // Get cached UUID class
 
                     for (size_t i = 0; i < paramSetSize; ++i) {
@@ -3657,7 +4334,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         // parsing The decimal separator only affects display
                         // formatting, not parsing
                         py::object decimalObj =
-                            PythonObjectCache::get_decimal_class()(py::str(cnum, safeLen));
+                            PyTypeCache::get_decimal_class_obj()(py::str(cnum, safeLen));
                         row.append(decimalObj);
                     } catch (const py::error_already_set& e) {
                         // If conversion fails, append None
@@ -3707,7 +4384,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret =
                     SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(PythonObjectCache::get_date_class()(dateValue.year, dateValue.month,
+                    row.append(PyTypeCache::get_date_class_obj()(dateValue.year, dateValue.month,
                                                                    dateValue.day));
                 } else {
                     row.append(py::none());
@@ -3720,7 +4397,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SS_TIME2, &t2, sizeof(t2), &indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
-                    row.append(PythonObjectCache::get_time_class()(
+                    row.append(PyTypeCache::get_time_class_obj()(
                         t2.hour, t2.minute, t2.second, t2.fraction / 1000));  // ns to µs
                 } else {
                     if (!SQL_SUCCEEDED(ret)) {
@@ -3739,7 +4416,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
                                      sizeof(timestampValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(PythonObjectCache::get_datetime_class()(
+                    row.append(PyTypeCache::get_datetime_class_obj()(
                         timestampValue.year, timestampValue.month, timestampValue.day,
                         timestampValue.hour, timestampValue.minute, timestampValue.second,
                         timestampValue.fraction / 1000  // Convert back ns to µs
@@ -3779,7 +4456,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     py::object datetime_module = py::module_::import("datetime");
                     py::object tzinfo = datetime_module.attr("timezone")(
                         datetime_module.attr("timedelta")(py::arg("minutes") = totalMinutes));
-                    py::object py_dt = PythonObjectCache::get_datetime_class()(
+                    py::object py_dt = PyTypeCache::get_datetime_class_obj()(
                         dtoValue.year, dtoValue.month, dtoValue.day, dtoValue.hour, dtoValue.minute,
                         dtoValue.second, microseconds, tzinfo);
                     row.append(py_dt);
@@ -3886,7 +4563,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 
                     py::bytes py_guid_bytes(guid_bytes.data(), guid_bytes.size());
                     py::object uuid_obj =
-                        PythonObjectCache::get_uuid_class()(py::arg("bytes") = py_guid_bytes);
+                        PyTypeCache::get_uuid_class_obj()(py::arg("bytes") = py_guid_bytes);
                     row.append(uuid_obj);
                 } else if (indicator == SQL_NULL_DATA) {
                     row.append(py::none());
@@ -4349,7 +5026,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         // parsing The decimal separator only affects display
                         // formatting, not parsing
                         PyObject* decimalObj =
-                            PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen))
+                            PyTypeCache::get_decimal_class_obj()(py::str(rawData, decimalDataLen))
                                 .release()
                                 .ptr();
                         PyList_SET_ITEM(row, col - 1, decimalObj);
@@ -4366,7 +5043,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
-                    PyObject* datetimeObj = PythonObjectCache::get_datetime_class()(
+                    PyObject* datetimeObj = PyTypeCache::get_datetime_class_obj()(
                                                 ts.year, ts.month, ts.day, ts.hour, ts.minute,
                                                 ts.second, ts.fraction / 1000)
                                                 .release()
@@ -4376,7 +5053,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 case SQL_TYPE_DATE: {
                     PyObject* dateObj =
-                        PythonObjectCache::get_date_class()(buffers.dateBuffers[col - 1][i].year,
+                        PyTypeCache::get_date_class_obj()(buffers.dateBuffers[col - 1][i].year,
                                                             buffers.dateBuffers[col - 1][i].month,
                                                             buffers.dateBuffers[col - 1][i].day)
                             .release()
@@ -4387,7 +5064,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_SS_TIME2: {
                     const SQL_SS_TIME2_STRUCT& t2 = buffers.timeBuffers[col - 1][i];
                     PyObject* timeObj =
-                        PythonObjectCache::get_time_class()(t2.hour, t2.minute, t2.second,
+                        PyTypeCache::get_time_class_obj()(t2.hour, t2.minute, t2.second,
                                                             t2.fraction / 1000)  // ns to µs
                             .release()
                             .ptr();
@@ -4403,7 +5080,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         py::object datetime_module = py::module_::import("datetime");
                         py::object tzinfo = datetime_module.attr("timezone")(
                             datetime_module.attr("timedelta")(py::arg("minutes") = totalMinutes));
-                        py::object py_dt = PythonObjectCache::get_datetime_class()(
+                        py::object py_dt = PyTypeCache::get_datetime_class_obj()(
                             dtoValue.year, dtoValue.month, dtoValue.day, dtoValue.hour,
                             dtoValue.minute, dtoValue.second,
                             dtoValue.fraction / 1000,  // ns → µs
@@ -4437,7 +5114,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     py::bytes py_guid_bytes(reinterpret_cast<char*>(reordered), 16);
                     py::dict kwargs;
                     kwargs["bytes"] = py_guid_bytes;
-                    py::object uuid_obj = PythonObjectCache::get_uuid_class()(**kwargs);
+                    py::object uuid_obj = PyTypeCache::get_uuid_class_obj()(**kwargs);
                     PyList_SET_ITEM(row, col - 1, uuid_obj.release().ptr());
                     break;
                 }
@@ -5961,7 +6638,7 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
 
-    PythonObjectCache::initialize();
+    PyTypeCache::initialize();
 
     // Add architecture information as module attribute
     m.attr("__architecture__") = ARCHITECTURE;
@@ -5984,7 +6661,19 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("columnSize", &ParamInfo::columnSize)
         .def_readwrite("decimalDigits", &ParamInfo::decimalDigits)
         .def_readwrite("strLenOrInd", &ParamInfo::strLenOrInd)
-        .def_readwrite("dataPtr", &ParamInfo::dataPtr)
+        .def_property(
+            "dataPtr",
+            [](const ParamInfo& info) -> py::object {
+                if (!info.dataPtr) {
+                    return py::none();
+                }
+                return py::reinterpret_borrow<py::object>(py::handle(info.dataPtr));
+            },
+            [](ParamInfo& info, py::object obj) {
+                Py_XINCREF(obj.ptr());
+                Py_XDECREF(info.dataPtr);
+                info.dataPtr = obj.ptr();
+            })
         .def_readwrite("isDAE", &ParamInfo::isDAE);
 
     // Define numeric data class
@@ -6021,8 +6710,13 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
-    m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements",
+    m.def("DDBCSQLExecuteLegacy", &SQLExecuteLegacy_wrap,
+          "Legacy path: accepts pre-built ParamInfo from Python (used with setinputsizes)",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),
+          py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
+    m.def("DDBCSQLExecute", &SQLExecute_wrap,
+          "Primary path: DetectParamTypes + BindParameters + SQLExecute all in C++",
+          py::arg("statementHandle"), py::arg("query"), py::arg("params"),
           py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",
           py::arg("statementHandle"), py::arg("query"), py::arg("columnwise_params"),
