@@ -35,16 +35,16 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.10.0
+## What's new in v1.12.0
 
 ### Enhancements
 
-- **Active Directory Service Principal for Bulk Copy** - `bulkcopy` now supports `Authentication=ActiveDirectoryServicePrincipal`, acquiring tokens mid-handshake via a registered callback so service principal credentials work for bulk inserts (#576).
+- **Standalone `mssql-python-odbc` Package** - The bundled ODBC driver binaries are now also published as a separate, pure-data package `mssql-python-odbc` (import name `mssql_python_odbc`, version 18.6.2). `mssql-python` now depends on `mssql-python-odbc==18.6.2` and prefers the external package at import time, falling back to the still-bundled `libs/` tree so existing installs keep working (#663, #687).
 
 ### Bug Fixes
 
-- **Non-ASCII VARCHAR in Arrow Fetch** - The arrow fetch path now requests `SQL_CHAR` data as `SQL_C_WCHAR` (UTF-16LE), ensuring correct results regardless of encoding settings, locale, or operating system (#575).
-- **Bulk Load Connection Timeouts** - Fixed connection timeouts during bulk load operations (#641, via `mssql_py_core` 0.1.5).
+- **Bulk Copy Connection Timeout** - `cursor.bulkcopy()` now forwards the cursor's connection timeout (from `connect(timeout=X)`) into the underlying `mssql_py_core` connection, instead of always using the hardcoded 15s default (#650).
+- **Bulk Copy of Custom CLR UDT Columns** - Fixed a `Protocol Error: Unsupported TDS type for bulk copy: 0xF0` that prevented `cursor.bulkcopy()` from loading rows into custom (non-spatial) CLR UDT columns; UDT columns are now mapped to `varbinary(max)` on the wire and the supplied bytes are streamed as the UDT's serialized form (#688, via `mssql_py_core` 0.1.7).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

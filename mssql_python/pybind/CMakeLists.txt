@@ -73,6 +73,36 @@ endif()
 add_definitions(-DARCHITECTURE="${ARCHITECTURE}")
 add_definitions(-DPLATFORM_NAME="${PLATFORM_NAME}")
 
+# --- msodbcsql driver version (single source of truth) -----------------------
+# The ODBC driver filename embeds the msodbcsql version (e.g.
+# libmsodbcsql-18.6.so.2.1 on Linux, libmsodbcsql.18.dylib on macOS,
+# msodbcsql18.dll on Windows). Derive that version from
+# mssql_python_odbc.__version__ -- the single source of truth for the driver
+# version -- and inject it into GetDriverPathCpp() via -D defines, so the native
+# resolver and the Python package can never drift. The literal is read straight
+# from the file (not by importing the package) to keep configure hermetic and
+# independent of whatever packages the build interpreter happens to have.
+set(MSODBCSQL_VERSION_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../../mssql_python_odbc/__init__.py")
+if(NOT EXISTS "${MSODBCSQL_VERSION_SOURCE}")
+    message(FATAL_ERROR
+        "Cannot resolve the msodbcsql driver version: ${MSODBCSQL_VERSION_SOURCE} not found. "
+        "The native driver filename is derived from mssql_python_odbc.__version__; "
+        "build from a full repository checkout.")
+endif()
+file(STRINGS "${MSODBCSQL_VERSION_SOURCE}" _msodbcsql_version_line REGEX "^__version__")
+string(REGEX REPLACE ".*['\"]([0-9]+\\.[0-9]+\\.[0-9]+)['\"].*" "\\1"
+       MSODBCSQL_VERSION "${_msodbcsql_version_line}")
+if(NOT MSODBCSQL_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR
+        "Failed to parse __version__ from ${MSODBCSQL_VERSION_SOURCE} "
+        "(got '${MSODBCSQL_VERSION}').")
+endif()
+string(REGEX MATCH "^[0-9]+" MSODBCSQL_VERSION_MAJOR "${MSODBCSQL_VERSION}")
+string(REGEX MATCH "^[0-9]+\\.[0-9]+" MSODBCSQL_VERSION_MAJOR_MINOR "${MSODBCSQL_VERSION}")
+message(STATUS "msodbcsql driver version (from mssql_python_odbc.__version__): ${MSODBCSQL_VERSION} -> major=${MSODBCSQL_VERSION_MAJOR}, major.minor=${MSODBCSQL_VERSION_MAJOR_MINOR}")
+add_definitions(-DMSODBCSQL_VERSION_MAJOR="${MSODBCSQL_VERSION_MAJOR}")
+add_definitions(-DMSODBCSQL_VERSION_MAJOR_MINOR="${MSODBCSQL_VERSION_MAJOR_MINOR}")
+
 # For macOS, always set universal build
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS" FORCE)

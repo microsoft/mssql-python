@@ -2,22 +2,50 @@
 # Script to configure dylib paths for macOS
 # This script fixes the library paths in the ODBC driver dylibs and codesigns them
 
-# Function to get the current architecture
-get_mac_platform_architecture() {
-  arch=$(uname -m)
-  echo "$arch"
-}
-
 # Directory structure setup
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Get platform and configure paths
-ARCH=$(get_mac_platform_architecture)
+ODBC_VERSION_FILE="$PROJECT_DIR/../mssql_python_odbc/__init__.py"
+if [ ! -f "$ODBC_VERSION_FILE" ]; then
+  echo "Error: SSOT version file not found: $ODBC_VERSION_FILE"
+  exit 1
+fi
+
+DRIVER_MAJOR=$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+)\.[0-9]+\.[0-9]+['\"].*/\1/p" "$ODBC_VERSION_FILE" | head -1)
+if [ -z "$DRIVER_MAJOR" ]; then
+  echo "Error: failed to parse __version__ from $ODBC_VERSION_FILE"
+  exit 1
+fi
+
+DRIVER_DYLIB_NAME="libmsodbcsql.${DRIVER_MAJOR}.dylib"
+
+# The universal2 wheel bundles a per-arch copy of the driver dylibs, so every
+# bundled arch must be configured, not just the build host's ($(uname -m)).
+# install_name_tool and codesign both work cross-arch. Fixing only the host arch
+# is what shipped the broken arm64 driver in issue #656.
+for ARCH in arm64 x86_64; do
 LIB_DIR="$PROJECT_DIR/libs/macos/$ARCH/lib"
-LIBMSODBCSQL_PATH="$LIB_DIR/libmsodbcsql.18.dylib"
+LIBMSODBCSQL_PATH="$LIB_DIR/$DRIVER_DYLIB_NAME"
+LIBMSODBCSQL_NAME="$DRIVER_DYLIB_NAME"
 LIBODBCINST_PATH="$LIB_DIR/libodbcinst.2.dylib"
 LIBLTDL_PATH="$LIB_DIR/libltdl.7.dylib"
+
+# Check if the directories and files exist
+if [ ! -d "$LIB_DIR" ]; then
+  echo "Note: library directory doesn't exist, skipping: $LIB_DIR"
+  continue
+fi
+
+if [ ! -f "$LIBMSODBCSQL_PATH" ]; then
+  echo "Error: $DRIVER_DYLIB_NAME not found at: $LIBMSODBCSQL_PATH"
+  exit 1
+fi
+
+if [ ! -f "$LIBODBCINST_PATH" ]; then
+  echo "Error: libodbcinst.2.dylib not found at: $LIBODBCINST_PATH"
+  exit 1
+fi
 
 echo "Initial configuration:"
 otool -L "$LIBMSODBCSQL_PATH"
@@ -28,24 +56,8 @@ fi
 
 echo "Configuring dylibs in: $LIB_DIR"
 
-# Check if the directories and files exist
-if [ ! -d "$LIB_DIR" ]; then
-  echo "Error: Library directory doesn't exist: $LIB_DIR"
-  exit 1
-fi
-
-if [ ! -f "$LIBMSODBCSQL_PATH" ]; then
-  echo "Error: libmsodbcsql.18.dylib not found at: $LIBMSODBCSQL_PATH"
-  exit 1
-fi
-
-if [ ! -f "$LIBODBCINST_PATH" ]; then
-  echo "Error: libodbcinst.2.dylib not found at: $LIBODBCINST_PATH"
-  exit 1
-fi
-
 # Get the existing library paths which are linked to the dylibs
-echo "Reading dependencies from libmsodbcsql.18.dylib..."
+echo "Reading dependencies from $LIBMSODBCSQL_NAME..."
 OTOOL_LIST=$(otool -L "$LIBMSODBCSQL_PATH")
 OLD_LIBODBCINST_PATH=""
 
@@ -71,12 +83,12 @@ done <<< "$OTOOL_LIST"
 
 # Configure the library paths if dependencies were found
 if [ -n "$OLD_LIBODBCINST_PATH" ]; then
-  echo "Fixing libmsodbcsql.18.dylib dependency on libodbcinst.2.dylib..."
+  echo "Fixing $LIBMSODBCSQL_NAME dependency on libodbcinst.2.dylib..."
   echo "  Changing: $OLD_LIBODBCINST_PATH"
   echo "  To: @loader_path/libodbcinst.2.dylib"
   install_name_tool -change "$OLD_LIBODBCINST_PATH" "@loader_path/libodbcinst.2.dylib" "$LIBMSODBCSQL_PATH"
 else
-  echo "Warning: libodbcinst dependency not found in libmsodbcsql.18.dylib"
+  echo "Warning: libodbcinst dependency not found in $LIBMSODBCSQL_NAME"
 fi
 
 if [ -n "$OLD_LIBLTDL_PATH" ] && [ -f "$LIBLTDL_PATH" ]; then
@@ -92,8 +104,8 @@ fi
 
 # First set the IDs of the libraries using @loader_path
 echo "Setting library IDs with @loader_path..."
-echo "Setting ID for libmsodbcsql.18.dylib..."
-install_name_tool -id "@loader_path/libmsodbcsql.18.dylib" "$LIBMSODBCSQL_PATH"
+echo "Setting ID for $LIBMSODBCSQL_NAME..."
+install_name_tool -id "@loader_path/$LIBMSODBCSQL_NAME" "$LIBMSODBCSQL_PATH"
 
 echo "Setting ID for libodbcinst.2.dylib..."
 install_name_tool -id "@loader_path/libodbcinst.2.dylib" "$LIBODBCINST_PATH"
@@ -103,7 +115,7 @@ if [ -f "$LIBLTDL_PATH" ]; then
   install_name_tool -id "@loader_path/libltdl.7.dylib" "$LIBLTDL_PATH"
 fi
 
-echo "Codesigning libmsodbcsql.18.dylib..."
+echo "Codesigning $LIBMSODBCSQL_NAME..."
 codesign -s - -f "$LIBMSODBCSQL_PATH" 2>/dev/null
 
 echo "Codesigning libodbcinst.2.dylib..."
@@ -114,10 +126,11 @@ if [ -f "$LIBLTDL_PATH" ]; then
   codesign -s - -f "$LIBLTDL_PATH" 2>/dev/null
 fi
 
-echo "Library configuration complete!"
+echo "Library configuration complete for $ARCH!"
 echo "Final configuration:"
 otool -L "$LIBMSODBCSQL_PATH"
 otool -L "$LIBODBCINST_PATH"
 if [ -f "$LIBLTDL_PATH" ]; then
   otool -L "$LIBLTDL_PATH"
 fi
+done
