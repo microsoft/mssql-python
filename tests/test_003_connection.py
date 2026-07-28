@@ -21,6 +21,7 @@ Functions:
 
 from mssql_python.exceptions import InterfaceError, ProgrammingError, DatabaseError
 import mssql_python
+import decimal
 import sys
 import pytest
 import time
@@ -1906,6 +1907,82 @@ def test_converter_integration(db_connection):
 
     # Clean up
     db_connection.clear_output_converters()
+
+
+def test_output_converter_integer_sql_type_key_gh684(db_connection):
+    """Integer ODBC SQL-type keys must dispatch (pyodbc-compatible). Regression for GH #684.
+
+    add_output_converter documents an integer SQL type code, but dispatch used to key on
+    the Python type in cursor.description[i][1], so integer keys silently never fired.
+    """
+    cursor = db_connection.cursor()
+    decimal_query = "SELECT CAST(19.99 AS DECIMAL(10, 2)) AS price"
+
+    try:
+        # 1) Integer SQL-type key fires (the reported bug: it used to silently no-op).
+        db_connection.add_output_converter(
+            mssql_python.SQL_DECIMAL, lambda v: None if v is None else float(v)
+        )
+        cursor.execute(decimal_query)
+        value = cursor.fetchone()[0]
+        assert isinstance(value, float), "Integer SQL_DECIMAL converter did not fire"
+        assert value == 19.99
+        db_connection.clear_output_converters()
+
+        # 2) Exact-type dispatch: an SQL_INTEGER converter must NOT touch a DECIMAL column.
+        db_connection.add_output_converter(mssql_python.SQL_INTEGER, lambda v: "SHOULD_NOT_FIRE")
+        cursor.execute(decimal_query)
+        value = cursor.fetchone()[0]
+        assert isinstance(value, decimal.Decimal), "SQL_INTEGER converter wrongly hit DECIMAL"
+        # ...but it does fire on an INTEGER column.
+        cursor.execute("SELECT CAST(42 AS INT) AS n")
+        assert cursor.fetchone()[0] == "SHOULD_NOT_FIRE", "SQL_INTEGER converter did not fire"
+        db_connection.clear_output_converters()
+
+        # 3) Integer SQL-type key takes precedence over a Python-type key on the same column.
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "python-type")
+        db_connection.add_output_converter(mssql_python.SQL_DECIMAL, lambda v: "int-type")
+        cursor.execute(decimal_query)
+        assert cursor.fetchone()[0] == "int-type", "Integer key should win over Python-type key"
+        db_connection.clear_output_converters()
+
+        # 4) Distinct converters for DECIMAL vs NUMERIC (exact type, not collapsed to Decimal).
+        db_connection.add_output_converter(mssql_python.SQL_DECIMAL, lambda v: "D")
+        db_connection.add_output_converter(mssql_python.SQL_NUMERIC, lambda v: "N")
+        cursor.execute("SELECT CAST(1.5 AS DECIMAL(10, 2)) AS x")
+        assert cursor.fetchone()[0] == "D"
+        cursor.execute("SELECT CAST(1.5 AS NUMERIC(10, 2)) AS x")
+        assert cursor.fetchone()[0] == "N"
+        db_connection.clear_output_converters()
+
+        # 5) NULL still yields None regardless of an integer-keyed converter.
+        db_connection.add_output_converter(
+            mssql_python.SQL_DECIMAL, lambda v: None if v is None else float(v)
+        )
+        cursor.execute("SELECT CAST(NULL AS DECIMAL(10, 2)) AS price")
+        assert cursor.fetchone()[0] is None
+        db_connection.clear_output_converters()
+
+        # 6) String path: an integer SQL_WVARCHAR key fires on an NVARCHAR column and
+        #    receives the raw value as UTF-16LE bytes (the documented string contract).
+        db_connection.add_output_converter(
+            mssql_python.SQL_WVARCHAR,
+            lambda v: None if v is None else "CONV:" + v.decode("utf-16-le"),
+        )
+        cursor.execute("SELECT CAST(N'hello' AS NVARCHAR(50)) AS s")
+        assert cursor.fetchone()[0] == "CONV:hello", "Integer SQL_WVARCHAR converter did not fire"
+        db_connection.clear_output_converters()
+
+        # 7) Metadata result sets also honor output converters (GH #684 metadata path).
+        #    Registering any converter must cause the metadata converter map to be built.
+        db_connection.add_output_converter(mssql_python.SQL_WVARCHAR, lambda v: v)
+        cursor.tables()
+        assert (
+            cursor._cached_converter_map is not None
+        ), "Metadata result sets must build a converter map so output converters apply"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
 
 
 def test_output_converter_with_null_values(db_connection):

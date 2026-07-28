@@ -1212,7 +1212,7 @@ class Connection:
         logger.debug("cursor: Cursor created successfully - total_cursors=%d", len(self._cursors))
         return cursor
 
-    def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None:
+    def add_output_converter(self, sqltype: Union[int, type], func: Callable[[Any], Any]) -> None:
         """
         Register an output converter function that will be called whenever a value
         with the given SQL type is read from the database.
@@ -1225,13 +1225,24 @@ class Connection:
         vulnerabilities. This API should never be exposed to untrusted or external input.
 
         Args:
-            sqltype (int): The integer SQL type value to convert, which can be one of the
-                          defined standard constants (e.g. SQL_VARCHAR) or a database-specific
-                          value (e.g. -151 for the SQL Server 2008 geometry data type).
-            func (callable): The converter function which will be called with a single parameter,
-                            the value, and should return the converted value. If the value is NULL
-                            then the parameter passed to the function will be None, otherwise it
-                            will be a bytes object.
+            sqltype (int or type): The type to convert. Either:
+                - an integer ODBC SQL type code (pyodbc-compatible), which can be one of
+                  the standard constants (e.g. SQL_VARCHAR, SQL_DECIMAL) or a
+                  database-specific value (e.g. -151 for the SQL Server geometry type). The
+                  converter fires for columns whose ODBC SQL type matches exactly, so
+                  distinct types such as DECIMAL and NUMERIC can have separate converters; or
+                - a Python type (e.g. ``decimal.Decimal``, ``str``, ``bytes``), which fires
+                  for every column whose value materializes to that Python type (so, for
+                  example, a single ``decimal.Decimal`` converter matches DECIMAL, NUMERIC,
+                  MONEY and SMALLMONEY columns alike).
+                When both an integer-keyed and a Python-type-keyed converter could apply to
+                the same column, the integer SQL-type converter takes precedence.
+            func (callable): The converter function, called with a single parameter (the
+                            value) that returns the converted value. If the value is NULL the
+                            parameter is None. Otherwise the parameter is the value already
+                            materialized as its Python type (e.g. a ``decimal.Decimal`` or
+                            ``datetime.datetime``); string values are passed as their
+                            UTF-16LE-encoded ``bytes``.
 
         Returns:
             None
