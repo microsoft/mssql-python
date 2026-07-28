@@ -1974,12 +1974,18 @@ def test_output_converter_integer_sql_type_key_gh684(db_connection):
         db_connection.clear_output_converters()
 
         # 7) Metadata result sets also honor output converters (GH #684 metadata path).
-        #    Registering any converter must cause the metadata converter map to be built.
-        db_connection.add_output_converter(mssql_python.SQL_WVARCHAR, lambda v: v)
+        #    Black-box check: a string column from a catalog result set must be passed
+        #    through the registered SQL_WVARCHAR converter, not just cached internally.
+        db_connection.add_output_converter(
+            mssql_python.SQL_WVARCHAR,
+            lambda v: None if v is None else "CONV:" + v.decode("utf-16-le"),
+        )
         cursor.tables()
-        assert (
-            cursor._cached_converter_map is not None
-        ), "Metadata result sets must build a converter map so output converters apply"
+        row = cursor.fetchone()
+        assert row is not None, "tables() should return at least one catalog row"
+        assert any(
+            isinstance(col, str) and col.startswith("CONV:") for col in row
+        ), "Metadata result sets must apply output converters to their string columns"
     finally:
         db_connection.clear_output_converters()
         cursor.close()
