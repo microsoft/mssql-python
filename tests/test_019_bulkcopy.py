@@ -454,3 +454,64 @@ def test_bulkcopy_empty_iterator(cursor):
     finally:
         cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
         cursor.connection.commit()
+
+
+def test_bulkcopy_udt_geometry(cursor):
+    """GH-667: bulk copy into a CLR UDT column.
+
+    Custom (user-defined) CLR UDTs require a deployed assembly, so this test uses
+    the built-in ``geometry`` CLR UDT, which travels the identical TDS ``0xF0``
+    wire path. Before the fix, bulk copy of any UDT column failed with
+    ``Unsupported TDS type for bulk copy: 0xF0``; the fix streams UDTs as
+    ``varbinary(max)`` (their ``IBinarySerialize`` form).
+
+    The test seeds a ``geometry`` column, reads the serialized UDT bytes back,
+    bulk copies them into a second ``geometry`` column, and verifies a byte-exact
+    round-trip (including a NULL).
+    """
+    src = "mssql_python_bcp_udt_src"
+    dst = "mssql_python_bcp_udt_dst"
+
+    def _read(table):
+        cursor.execute(f"SELECT id, g FROM {table} ORDER BY id")
+        return [(r[0], bytes(r[1]) if r[1] is not None else None) for r in cursor.fetchall()]
+
+    try:
+        # Seed a geometry (built-in CLR UDT) source table via T-SQL.
+        cursor.execute(f"IF OBJECT_ID('{src}', 'U') IS NOT NULL DROP TABLE {src}")
+        cursor.execute(f"CREATE TABLE {src} (id INT NOT NULL, g geometry NULL)")
+        cursor.execute(
+            f"INSERT INTO {src} (id, g) VALUES "
+            "(1, geometry::STGeomFromText('POINT(1 2)', 0)), "
+            "(2, geometry::STGeomFromText('LINESTRING(0 0, 10 10, 20 25)', 0)), "
+            "(3, NULL), "
+            "(4, geometry::STGeomFromText('POLYGON((0 0, 0 5, 5 5, 5 0, 0 0))', 0))"
+        )
+        cursor.connection.commit()
+
+        # Read the serialized UDT bytes back (unaffected by the fix).
+        source_rows = _read(src)
+        assert len(source_rows) == 4
+        assert sum(1 for _, g in source_rows if g is not None) == 3
+        assert any(g is None for _, g in source_rows)
+
+        # Destination geometry table.
+        cursor.execute(f"IF OBJECT_ID('{dst}', 'U') IS NOT NULL DROP TABLE {dst}")
+        cursor.execute(f"CREATE TABLE {dst} (id INT NOT NULL, g geometry NULL)")
+        cursor.connection.commit()
+
+        # Bulk copy the UDT bytes into the geometry column. Requires the GH-667
+        # fix in the bundled mssql_py_core (both the varbinary(max) wire mapping
+        # and the bytes->UDT value-coercion). Pre-fix this failed with
+        # "Unsupported TDS type for bulk copy: 0xF0" / a bad varbinary(-1) type /
+        # a "target SQL type is Udt" coercion error.
+        result = cursor.bulkcopy(dst, source_rows, timeout=60)
+        assert result["rows_copied"] == 4
+
+        # Verify byte-exact round-trip, including the NULL row.
+        assert _read(dst) == source_rows
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{src}', 'U') IS NOT NULL DROP TABLE {src}")
+        cursor.execute(f"IF OBJECT_ID('{dst}', 'U') IS NOT NULL DROP TABLE {dst}")
+        cursor.connection.commit()
