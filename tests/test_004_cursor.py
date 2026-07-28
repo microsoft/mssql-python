@@ -16407,6 +16407,50 @@ def test_executemany_describe_col_exception_sets_description_none(conn_str):
         mssql_python.native_uuid = original
 
 
+def test_execute_describe_col_exception_resets_description_and_sql_types(conn_str):
+    """execute() must reset description AND _column_sql_types when DDBCSQLDescribeCol raises.
+
+    Guards the except branch in execute() (GH #684) that sets both
+    self.description = None and self._column_sql_types = None, so a stale
+    per-column SQL-type list can't survive into the next converter-map build.
+    """
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+    try:
+        # Run a normal SELECT first so description and the parallel SQL-type
+        # codes are populated (the reset below then has something to clear).
+        cursor.execute("SELECT CAST(1 AS INT) AS n")
+        cursor.fetchall()
+        assert cursor.description is not None
+        assert cursor._column_sql_types is not None
+
+        call_count = 0
+
+        def describe_raises(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Simulated DDBCSQLDescribeCol failure")
+
+        # Force DDBCSQLDescribeCol to raise so execute()'s except branch runs.
+        with patch.object(
+            mssql_python.cursor.ddbc_bindings,
+            "DDBCSQLDescribeCol",
+            side_effect=describe_raises,
+        ):
+            cursor.execute("SELECT CAST(1 AS INT) AS n")
+
+        assert call_count >= 1, "DDBCSQLDescribeCol mock should have been called"
+        assert (
+            cursor.description is None
+        ), "description should be None after DDBCSQLDescribeCol raises"
+        assert (
+            cursor._column_sql_types is None
+        ), "_column_sql_types should be reset to None after DDBCSQLDescribeCol raises"
+    finally:
+        cursor.close()
+        conn.close()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # native_uuid concurrency & thread-safety tests
 # ──────────────────────────────────────────────────────────────────────────────
