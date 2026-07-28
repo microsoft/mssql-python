@@ -35,15 +35,16 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.11.0
+## What's new in v1.12.0
+
+### Enhancements
+
+- **Standalone `mssql-python-odbc` Package** - The bundled ODBC driver binaries are now also published as a separate, pure-data package `mssql-python-odbc` (import name `mssql_python_odbc`, version 18.6.2). `mssql-python` now depends on `mssql-python-odbc==18.6.2` and prefers the external package at import time, falling back to the still-bundled `libs/` tree so existing installs keep working (#663, #687).
 
 ### Bug Fixes
 
-- **SSH-Tunnel / In-Process Forwarder Deadlock** - The driver now releases the GIL around blocking ODBC teardown calls (`SQLFreeHandle`/`SQLFreeStmt`) and `SQLDescribeParam`, preventing deadlocks when the connection is routed through an in-process Python TCP forwarder (#604).
-- **BINARY/VARBINARY NULL Parameters in Temp Tables** - Unknown NULL parameter types are now pre-resolved before binding, with actionable `setinputsizes` guidance, fixing errors when inserting NULL binary values into temp tables or table variables (#654).
-- **Context Manager Transaction Semantics** - The `Connection` context manager now commits on clean exit and rolls back on exception (with `autocommit=False`), matching the documented behavior (#639).
-- **macOS Apple Silicon Import Failure** - Bundled macOS ODBC dylibs are now configured for all shipped architectures, so `import mssql_python` works on Apple Silicon without requiring a separate `brew install unixodbc` (#661).
-- **Service Principal Bulk Copy Freeze** - Fixed a GIL-deadlock that froze `bulkcopy` when authenticating with a service principal (#666, via `mssql_py_core` 0.1.6).
+- **Bulk Copy Connection Timeout** - `cursor.bulkcopy()` now forwards the cursor's connection timeout (from `connect(timeout=X)`) into the underlying `mssql_py_core` connection, instead of always using the hardcoded 15s default (#650).
+- **Bulk Copy of Custom CLR UDT Columns** - Fixed a `Protocol Error: Unsupported TDS type for bulk copy: 0xF0` that prevented `cursor.bulkcopy()` from loading rows into custom (non-spatial) CLR UDT columns; UDT columns are now mapped to `varbinary(max)` on the wire and the supplied bytes are streamed as the UDT's serialized form (#688, via `mssql_py_core` 0.1.7).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
