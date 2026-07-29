@@ -1908,6 +1908,76 @@ def test_converter_integration(db_connection):
     db_connection.clear_output_converters()
 
 
+def test_output_converter_wvarchar_not_catchall_for_non_string_columns_gh691(db_connection):
+    """GH #691: a SQL_WVARCHAR converter must not be an unconditional catch-all.
+
+    A converter registered only for SQL_WVARCHAR must be invoked for string and
+    binary columns only, and never for INT / DECIMAL / DATE columns. Before the
+    fix, the WVARCHAR converter was placed on every column that lacked a direct
+    type-keyed converter.
+
+    The converter here is a spy that records every value it receives and returns
+    an observable marker for non-bytes input instead of raising. That matters:
+    the optimized apply path swallows converter exceptions, so a converter doing
+    ``value.decode(...)`` would raise-and-be-swallowed on int/Decimal/date and
+    leave the original value intact -- hiding the bug. Recording invocations (and
+    returning a marker) makes the catch-all regression detectable: the call-count
+    assertion below fails on the unfixed code (converter fired on all columns)
+    and passes once the fallback is gated to str/bytes columns.
+    """
+    import decimal
+    import datetime
+
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+
+    converter_calls = []
+
+    def wvarchar_spy(value):
+        # Record the invocation first, before anything that could raise, so the
+        # spy captures calls even on non-string values (int/Decimal/date).
+        converter_calls.append(value)
+        if isinstance(value, bytes):
+            return "CONV:" + value.decode("utf-16-le")
+        return "CONV_NON_STRING"
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute("""
+            SELECT
+                CAST(42 AS INT)                  AS int_col,
+                CAST(3.14 AS DECIMAL(10, 2))     AS dec_col,
+                CAST('2020-01-02' AS DATE)       AS date_col,
+                CAST(N'hello' AS NVARCHAR(50))   AS str_col,
+                CAST(0x41004200 AS VARBINARY(8)) AS bin_col
+            """)
+        row = cursor.fetchone()
+
+        # Non-string columns must be untouched by the WVARCHAR converter.
+        assert isinstance(row[0], int) and row[0] == 42, f"INT column mangled: {row[0]!r}"
+        assert row[1] == decimal.Decimal("3.14"), f"DECIMAL column mangled: {row[1]!r}"
+        assert row[2] == datetime.date(2020, 1, 2), f"DATE column mangled: {row[2]!r}"
+
+        # The string column must still be converted by the WVARCHAR converter.
+        assert row[3] == "CONV:hello", f"NVARCHAR column not converted: {row[3]!r}"
+
+        # The binary column is also handled by the WVARCHAR fallback -- the gate
+        # intentionally includes bytes, mirroring Row._apply_output_converters.
+        assert row[4] == "CONV:AB", f"VARBINARY column not handled by fallback: {row[4]!r}"
+
+        # Contract check that actually catches GH #691: the converter must fire
+        # for exactly the two str/bytes columns, never as a catch-all on the
+        # INT / DECIMAL / DATE columns.
+        assert len(converter_calls) == 2, (
+            "SQL_WVARCHAR converter must fire only on the NVARCHAR and VARBINARY "
+            f"columns; it was invoked {len(converter_calls)} times on "
+            f"{converter_calls!r}"
+        )
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
 def test_output_converter_with_null_values(db_connection):
     """Test that output converters handle NULL values correctly"""
     cursor = db_connection.cursor()

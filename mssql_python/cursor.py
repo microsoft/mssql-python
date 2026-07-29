@@ -1109,11 +1109,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 continue
             sql_type = desc[1]
             converter = self.connection.get_output_converter(sql_type)
-            # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
-            if converter is None:
-                from mssql_python.constants import ConstantsDDBC
-
-                converter = self.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
+            # Legacy WVARCHAR fallback: only apply it when the column's mapped type
+            # is str/bytes, so a registered SQL_WVARCHAR converter is never used as an
+            # unconditional catch-all for INT/DECIMAL/DATE/etc. columns (GH #691). This
+            # mirrors the isinstance(value, (str, bytes)) gate in
+            # Row._apply_output_converters.
+            if converter is None and sql_type in (str, bytes):
+                converter = self.connection.get_output_converter(ddbc_sql_const.SQL_WVARCHAR.value)
 
             converter_map.append(converter)
 
