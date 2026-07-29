@@ -3311,7 +3311,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 type(e).__name__,
                 str(e),
             )
-            raise type(e)(str(e)) from None
+            raise
 
         finally:
             # Clear sensitive data to minimize memory exposure. The
