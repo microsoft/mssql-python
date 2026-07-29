@@ -489,16 +489,25 @@ def test_cursor_init_failure_leaves_consistent_state(conn_str, monkeypatch):
     only around the ``conn.cursor()`` call, and observe unraisables through
     the hook rather than through ``warnings.catch_warnings`` (which never
     sees them).
+
+    NOTE 2: the ``RuntimeError`` MUST be constructed inline inside
+    ``_raise`` — do NOT bind it to a local outside the function.  A
+    local like ``boom = RuntimeError(...)`` in the enclosing frame keeps
+    the raised exception's ``__traceback__`` alive, which in turn keeps
+    the partial ``Cursor`` frame alive past the ``sys.unraisablehook``
+    restore, so ``__del__`` never fires inside the hook window and the
+    assertion silently becomes a no-op (passes on unfixed cursor.py).
     """
     from mssql_python import connect
     from mssql_python.cursor import Cursor
 
     conn = connect(conn_str)
     try:
-        boom = RuntimeError("simulated HSTMT allocation failure")
 
         def _raise(self):
-            raise boom
+            # Instantiate the exception inline; see NOTE 2 in the docstring
+            # for why we must not bind this to an enclosing-frame local.
+            raise RuntimeError("simulated HSTMT allocation failure")
 
         monkeypatch.setattr(Cursor, "_initialize_cursor", _raise)
 
