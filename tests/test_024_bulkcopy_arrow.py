@@ -593,7 +593,8 @@ class TestBulkcopyArrowLive:
 
     def test_column_mappings_positional_names(self, cursor):
         # A List[str] maps positionally: source ordinal i -> destination name.
-        # (True source-field-name matching is not supported on the Arrow path.)
+        # (For name-based source matching, pass (source_name, dest_name) tuples
+        # instead -- see test_by_name_source_mapping.)
         t = "mssql_python_arrow_map_name"
         _make_table(cursor, t, "a INT NOT NULL, b NVARCHAR(20) NULL")
         src = pa.table({"x": pa.array([1, 2], type=pa.int32()), "y": pa.array(["p", "q"])})
@@ -674,4 +675,162 @@ class TestBulkcopyArrowLive:
         tbl = pa.table({"vb": pa.array([b"\x01\x02\x03", b"\xff\xee"], type=pa.binary())})
         result = cursor.bulkcopy_arrow(t, tbl)
         assert result["rows_copied"] == 2
+        cursor.execute(f"DROP TABLE {t}")
+
+    # ── uniqueidentifier (binary + text) ────────────────────────────────────
+
+    def test_uniqueidentifier_text_round_trip(self, cursor):
+        # mssql-python's cursor.arrow() reads a GUID column as (large_)string,
+        # so utf8/large_utf8 -> UNIQUEIDENTIFIER enables a read-then-bulkload
+        # roundtrip. Exercise both string widths.
+        guid = "58185e0d-3a91-44d8-bc46-7107217e0a6d"
+        for idx, ty in enumerate((pa.string(), pa.large_string())):
+            t = f"mssql_python_arrow_guid_text{idx}"
+            _make_table(cursor, t, "g UNIQUEIDENTIFIER NOT NULL")
+            result = cursor.bulkcopy_arrow(t, pa.table({"g": pa.array([guid], type=ty)}))
+            assert result["rows_copied"] == 1
+            cursor.execute(f"SELECT g FROM {t}")
+            assert str(cursor.fetchone()[0]).lower() == guid
+            cursor.execute(f"DROP TABLE {t}")
+
+    def test_uniqueidentifier_invalid_text_raises(self, cursor):
+        t = "mssql_python_arrow_guid_bad"
+        _make_table(cursor, t, "g UNIQUEIDENTIFIER NOT NULL")
+        with pytest.raises(Exception):
+            cursor.bulkcopy_arrow(t, pa.table({"g": pa.array(["not-a-guid"], type=pa.string())}))
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_uniqueidentifier_binary16(self, cursor):
+        import uuid as _uuid
+
+        t = "mssql_python_arrow_guid_bin"
+        _make_table(cursor, t, "g UNIQUEIDENTIFIER NOT NULL")
+        raw = _uuid.uuid4().bytes
+        result = cursor.bulkcopy_arrow(t, pa.table({"g": pa.array([raw], type=pa.binary(16))}))
+        assert result["rows_copied"] == 1
+        cursor.execute(f"SELECT g FROM {t}")
+        assert cursor.fetchone()[0] is not None
+        cursor.execute(f"DROP TABLE {t}")
+
+    # ── by-name source mapping ((str, str)) ─────────────────────────────────
+
+    def test_by_name_source_mapping(self, cursor):
+        # (str, str) tuples match Arrow field *names*, not position. Source
+        # columns are deliberately reordered vs the table to prove it.
+        t = "mssql_python_arrow_byname"
+        _make_table(cursor, t, "a INT NOT NULL, b NVARCHAR(20) NULL")
+        src = pa.table({"b": pa.array(["p", "q"]), "a": pa.array([1, 2], type=pa.int32())})
+        result = cursor.bulkcopy_arrow(t, src, column_mappings=[("a", "a"), ("b", "b")])
+        assert result["rows_copied"] == 2
+        cursor.execute(f"SELECT a, b FROM {t} ORDER BY a")
+        rows = cursor.fetchall()
+        assert rows[0][0] == 1 and rows[0][1] == "p"
+        assert rows[1][0] == 2 and rows[1][1] == "q"
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_by_name_unknown_source_raises(self, cursor):
+        t = "mssql_python_arrow_byname_bad"
+        _make_table(cursor, t, "a INT NOT NULL")
+        src = pa.table({"x": pa.array([1], type=pa.int32())})
+        with pytest.raises(Exception, match="(?i)not found"):
+            cursor.bulkcopy_arrow(t, src, column_mappings=[("missing", "a")])
+        cursor.execute(f"DROP TABLE {t}")
+
+    # ── non-finite floats rejected client-side ──────────────────────────────
+
+    def test_float_non_finite_raises(self, cursor):
+        import math
+
+        t = "mssql_python_arrow_nonfinite"
+        _make_table(cursor, t, "f FLOAT NULL")
+        for bad in (math.nan, math.inf, -math.inf):
+            with pytest.raises(Exception):
+                cursor.bulkcopy_arrow(t, pa.table({"f": pa.array([bad], type=pa.float64())}))
+        cursor.execute(f"DROP TABLE {t}")
+
+    # ── money / smallmoney, xml, legacy datetime, date64, fixed binary ──────
+
+    def test_money_and_smallmoney(self, cursor):
+        from decimal import Decimal
+
+        t = "mssql_python_arrow_money"
+        _make_table(cursor, t, "m MONEY NULL, sm SMALLMONEY NULL")
+        tbl = pa.table(
+            {
+                "m": pa.array([Decimal("123.45")], type=pa.decimal128(19, 4)),
+                "sm": pa.array([Decimal("12.34")], type=pa.decimal128(10, 4)),
+            }
+        )
+        result = cursor.bulkcopy_arrow(t, tbl)
+        assert result["rows_copied"] == 1
+        cursor.execute(f"SELECT m, sm FROM {t}")
+        row = cursor.fetchone()
+        assert Decimal(str(row[0])) == Decimal("123.45")
+        assert Decimal(str(row[1])) == Decimal("12.34")
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_xml(self, cursor):
+        t = "mssql_python_arrow_xml"
+        _make_table(cursor, t, "x XML NULL")
+        result = cursor.bulkcopy_arrow(
+            t, pa.table({"x": pa.array(["<r a='1'>hi</r>"], type=pa.string())})
+        )
+        assert result["rows_copied"] == 1
+        cursor.execute(f"SELECT CAST(x AS NVARCHAR(MAX)) FROM {t}")
+        assert "hi" in cursor.fetchone()[0]
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_datetime_and_smalldatetime(self, cursor):
+        import datetime as dt
+
+        t = "mssql_python_arrow_legacy_dt"
+        _make_table(cursor, t, "d DATETIME NULL, sd SMALLDATETIME NULL")
+        ts = pa.array([dt.datetime(2020, 6, 15, 10, 30, 0)], type=pa.timestamp("us"))
+        result = cursor.bulkcopy_arrow(t, pa.table({"d": ts, "sd": ts}))
+        assert result["rows_copied"] == 1
+        cursor.execute(f"SELECT d, sd FROM {t}")
+        row = cursor.fetchone()
+        assert (row[0].year, row[0].month, row[0].day) == (2020, 6, 15)
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_tz_aware_timestamp_to_datetime_raises(self, cursor):
+        import datetime as dt
+
+        t = "mssql_python_arrow_tz_legacy"
+        _make_table(cursor, t, "d DATETIME NULL")
+        ts = pa.array([dt.datetime(2020, 1, 1, 12)], type=pa.timestamp("us", tz="UTC"))
+        with pytest.raises(Exception, match="(?i)datetimeoffset"):
+            cursor.bulkcopy_arrow(t, pa.table({"d": ts}))
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_date64_to_date(self, cursor):
+        import datetime as dt
+
+        t = "mssql_python_arrow_date64"
+        _make_table(cursor, t, "d DATE NULL")
+        result = cursor.bulkcopy_arrow(
+            t, pa.table({"d": pa.array([dt.date(2021, 3, 4)], type=pa.date64())})
+        )
+        assert result["rows_copied"] == 1
+        cursor.execute(f"SELECT d FROM {t}")
+        assert cursor.fetchone()[0] == dt.date(2021, 3, 4)
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_fixed_size_binary_width4(self, cursor):
+        # Any-width fixed_size_binary loads into BINARY/VARBINARY, not just 16.
+        t = "mssql_python_arrow_fsb4"
+        _make_table(cursor, t, "b VARBINARY(8) NULL")
+        result = cursor.bulkcopy_arrow(
+            t, pa.table({"b": pa.array([b"\x01\x02\x03\x04"], type=pa.binary(4))})
+        )
+        assert result["rows_copied"] == 1
+        cursor.execute(f"SELECT b FROM {t}")
+        assert bytes(cursor.fetchone()[0]) == b"\x01\x02\x03\x04"
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_null_into_not_null_raises(self, cursor):
+        t = "mssql_python_arrow_notnull"
+        _make_table(cursor, t, "n INT NOT NULL")
+        with pytest.raises(Exception):
+            cursor.bulkcopy_arrow(t, pa.table({"n": pa.array([None], type=pa.int32())}))
         cursor.execute(f"DROP TABLE {t}")
