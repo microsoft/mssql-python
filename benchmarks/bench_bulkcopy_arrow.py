@@ -1,18 +1,16 @@
 """Extensive benchmark: cursor.bulkcopy() (row tuples) vs cursor.bulkcopy_arrow().
 
 Feeds *identical* data to both code paths so the comparison is apples-to-apples,
-then reports throughput, latency stability, data-volume rate, and peak Python
-memory across a range of column profiles and row counts.
+then reports throughput, latency stability, and data-volume rate across a range
+of column profiles and row counts.
 
-Three questions this benchmark answers
---------------------------------------
+Two questions this benchmark answers
+------------------------------------
 1. Insert-only (both inputs already materialized): how much faster is the Arrow
    write path per se?  -> Scenario A
 2. Source *originates* as Arrow (Parquet / polars / DuckDB / pandas / ADBC):
    the tuple path must first box every cell into a Python object. What does that
    conversion tax cost end-to-end?  -> Scenario B
-3. Peak Python heap: the tuple path must hold N row tuples in memory; the Arrow
-   path streams typed buffers. How different is the memory footprint?  -> Scenario C
 
 Statistics
 ----------
@@ -33,8 +31,6 @@ Usage (PowerShell)
 Notes
 -----
 * `pyarrow` is required (``pip install mssql-python[pyarrow]``).
-* `psutil` is optional; if present, RSS deltas are shown alongside the
-  tracemalloc-based Python-heap peak.
 """
 
 from __future__ import annotations
@@ -48,18 +44,12 @@ import platform
 import statistics
 import sys
 import time
-import tracemalloc
 from decimal import Decimal
 
 try:
     import pyarrow as pa
 except ImportError:  # pragma: no cover
     sys.exit("pyarrow is required: pip install mssql-python[pyarrow]")
-
-try:
-    import psutil  # optional, for RSS
-except ImportError:  # pragma: no cover
-    psutil = None
 
 # Allow running as `python benchmarks/bench_bulkcopy_arrow.py`: put the repo
 # root first on sys.path so `import mssql_python` resolves to the in-repo
@@ -257,45 +247,6 @@ def _run_from_arrow(cursor, table, repeats, batch_size):
     return _stats(conv), _stats(ins), _stats(total), r
 
 
-def _peak_python_mb(fn):
-    """Return (result, peak_python_heap_MB) for a single call."""
-    gc.collect()
-    tracemalloc.start()
-    try:
-        result = fn()
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    return result, peak / 1e6
-
-
-def _rss_mb():
-    if psutil is None:
-        return None
-    return psutil.Process().memory_info().rss / 1e6
-
-
-def _run_memory(cursor, table, batch_size):
-    """Scenario C: peak Python heap for tuple-from-arrow vs arrow-direct."""
-    # Tuple path: materialize rows, then insert (measure the whole thing).
-    _truncate(cursor)
-    rss0 = _rss_mb()
-
-    def _tuple_path():
-        rows = _arrow_to_tuples(table)
-        return cursor.bulkcopy(TABLE, rows, batch_size=batch_size)
-
-    _, tup_peak = _peak_python_mb(_tuple_path)
-    rss_tup = None if rss0 is None else _rss_mb() - rss0
-
-    # Arrow path: stream typed buffers, no tuple materialization.
-    _truncate(cursor)
-    rss1 = _rss_mb()
-    _, arw_peak = _peak_python_mb(lambda: cursor.bulkcopy_arrow(TABLE, table, batch_size=batch_size))
-    rss_arw = None if rss1 is None else _rss_mb() - rss1
-    return tup_peak, arw_peak, rss_tup, rss_arw
-
-
 # --------------------------------------------------------------------------- #
 # Driver
 # --------------------------------------------------------------------------- #
@@ -316,11 +267,10 @@ def _print_env(cursor):
     print(f"  pyarrow     : {pa.__version__}")
     print(f"  mssql_python: {getattr(mssql_python, '__version__', 'unknown')}")
     print(f"  sql server  : {_server_version(cursor)}")
-    print(f"  psutil RSS  : {'available' if psutil else 'not installed (peak RSS skipped)'}")
     print("=" * 78)
 
 
-def run(row_counts, repeats, selected_profiles, batch_sizes, do_memory, csv_path):
+def run(row_counts, repeats, selected_profiles, batch_sizes, csv_path):
     conn_str = os.environ.get("DB_CONNECTION_STRING")
     if not conn_str:
         sys.exit("Set DB_CONNECTION_STRING to run this benchmark.")
@@ -357,10 +307,6 @@ def run(row_counts, repeats, selected_profiles, batch_sizes, do_memory, csv_path
                     assert r_arw["rows_copied"] == row_count, r_arw
                     assert r_fa["rows_copied"] == row_count, r_fa
 
-                    mem = (None, None, None, None)
-                    if do_memory:
-                        mem = _run_memory(cursor, table, bsize)
-
                     records.append(
                         {
                             "profile": pname,
@@ -373,10 +319,6 @@ def run(row_counts, repeats, selected_profiles, batch_sizes, do_memory, csv_path
                             "B_conv": b_conv,
                             "B_ins": b_ins,
                             "B_total": b_total,
-                            "C_tup_mb": mem[0],
-                            "C_arw_mb": mem[1],
-                            "C_tup_rss": mem[2],
-                            "C_arw_rss": mem[3],
                         }
                     )
     finally:
@@ -384,9 +326,9 @@ def run(row_counts, repeats, selected_profiles, batch_sizes, do_memory, csv_path
         cursor.close()
         conn.close()
 
-    _report(records, do_memory)
+    _report(records)
     if csv_path:
-        _write_csv(records, csv_path, do_memory)
+        _write_csv(records, csv_path)
         print(f"\nFull records (incl. min/mean/stdev/p95/CV) written to {csv_path}")
 
 
@@ -397,7 +339,7 @@ def _mbps(bytes_total, seconds):
     return (bytes_total / 1e6) / seconds if seconds else 0.0
 
 
-def _report(records, do_memory):
+def _report(records):
     # Scenario A -------------------------------------------------------------
     print("\n=== Scenario A: insert-only (data already in tuples / Arrow) ===")
     hdr = (
@@ -431,29 +373,8 @@ def _report(records, do_memory):
             f"{conv:>12.4f}{ins:>12.4f}{tot:>10.4f}{a:>10.4f}{(tot / a if a else 0):>8.2f}x"
         )
 
-    # Scenario C -------------------------------------------------------------
-    if do_memory:
-        print("\n=== Scenario C: peak Python heap (tuple-from-Arrow vs arrow-direct) ===")
-        rss_note = "" if psutil else "  (install psutil for RSS columns)"
-        hdr3 = (
-            f"{'profile':<9}{'rows':>10}{'batch':>8}"
-            f"{'tup heap MB':>13}{'arw heap MB':>13}{'heap x':>8}"
-            f"{'tup RSS MB':>12}{'arw RSS MB':>12}"
-        )
-        print(hdr3 + rss_note)
-        print("-" * len(hdr3))
-        for r in records:
-            tm, am = r["C_tup_mb"], r["C_arw_mb"]
-            ratio = (tm / am) if (tm and am) else 0.0
-            tr = "-" if r["C_tup_rss"] is None else f"{r['C_tup_rss']:.1f}"
-            ar = "-" if r["C_arw_rss"] is None else f"{r['C_arw_rss']:.1f}"
-            print(
-                f"{r['profile']:<9}{r['rows']:>10,}{r['batch_size']:>8}"
-                f"{tm:>13.1f}{am:>13.1f}{ratio:>7.1f}x{tr:>12}{ar:>12}"
-            )
 
-
-def _write_csv(records, path, do_memory):
+def _write_csv(records, path):
     fields = [
         "profile", "cols", "rows", "batch_size", "bytes",
         "A_tup_median", "A_tup_min", "A_tup_mean", "A_tup_stdev", "A_tup_p95", "A_tup_cv",
@@ -461,8 +382,6 @@ def _write_csv(records, path, do_memory):
         "A_speedup",
         "B_convert_median", "B_insert_median", "B_total_median", "B_speedup",
     ]
-    if do_memory:
-        fields += ["C_tup_heap_mb", "C_arw_heap_mb", "C_heap_ratio", "C_tup_rss_mb", "C_arw_rss_mb"]
 
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fields)
@@ -484,17 +403,6 @@ def _write_csv(records, path, do_memory):
                 "B_total_median": r["B_total"]["median"],
                 "B_speedup": b_speedup,
             }
-            if do_memory:
-                tm, am = r["C_tup_mb"], r["C_arw_mb"]
-                row.update(
-                    {
-                        "C_tup_heap_mb": tm,
-                        "C_arw_heap_mb": am,
-                        "C_heap_ratio": (tm / am) if (tm and am) else 0.0,
-                        "C_tup_rss_mb": r["C_tup_rss"],
-                        "C_arw_rss_mb": r["C_arw_rss"],
-                    }
-                )
             w.writerow(row)
 
 
@@ -514,8 +422,6 @@ def main():
                         help="Column profiles to run (subset of the built-in set).")
     parser.add_argument("--batch-sizes", type=int, nargs="+", default=[0],
                         help="bulk-copy batch sizes to sweep (0 = server optimal).")
-    parser.add_argument("--no-memory", action="store_true",
-                        help="Skip the peak-memory scenario (C).")
     parser.add_argument("--csv", metavar="PATH", default=None,
                         help="Write full per-cell statistics to a CSV file.")
     parser.add_argument("--quick", action="store_true",
@@ -532,7 +438,6 @@ def main():
         repeats=args.repeats,
         selected_profiles=args.profiles,
         batch_sizes=args.batch_sizes,
-        do_memory=not args.no_memory,
         csv_path=args.csv,
     )
 
