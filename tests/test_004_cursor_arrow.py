@@ -309,6 +309,50 @@ def test_arrow_reader(cursor: mssql_python.Cursor):
     assert sum(len(b) for b in batches) == 11
 
 
+def test_arrow_reader_pycapsule_protocol(cursor: mssql_python.Cursor):
+    """The wrapper implements the Arrow PyCapsule Protocol via
+    ``__arrow_c_stream__``, so Arrow-aware consumers can accept it
+    without an ``isinstance(x, pa.RecordBatchReader)`` check.
+
+    Regression guard for the alternative to subclassing
+    ``pyarrow.RecordBatchReader`` (which is a Cython extension type and
+    can't carry our extra state).
+    """
+    if not hasattr(pa.RecordBatchReader, "from_stream"):
+        pytest.skip("pyarrow>=14 required for RecordBatchReader.from_stream")
+
+    reader = cursor.execute("select top 11 1 a from sys.objects").arrow_reader(batch_size=4)
+    assert hasattr(reader, "__arrow_c_stream__")
+    assert callable(reader.__arrow_c_stream__)
+
+    # Consume the wrapper via the PyCapsule Protocol.  ``from_stream`` calls
+    # ``__arrow_c_stream__`` internally, which transfers the C stream out of
+    # the inner reader — after this the wrapper is effectively drained but
+    # still safely closeable.
+    native = pa.RecordBatchReader.from_stream(reader)
+    assert isinstance(native, pa.RecordBatchReader)
+    total_rows = sum(b.num_rows for b in native)
+    assert total_rows == 11
+
+    # Wrapper close() must still be safe after the stream has been
+    # transferred out (idempotent + generator finally handles teardown).
+    reader.close()
+    assert reader.closed is True
+
+    # Parent cursor remains usable.
+    cursor.execute("select 42")
+    assert cursor.fetchone()[0] == 42
+
+
+def test_arrow_reader_pycapsule_protocol_raises_after_close(cursor: mssql_python.Cursor):
+    """``__arrow_c_stream__`` must refuse export after ``close()`` — matches
+    the ``read_next_batch()`` / ``schema`` post-close semantics."""
+    reader = cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+    reader.close()
+    with pytest.raises(pa.ArrowInvalid):
+        reader.__arrow_c_stream__()
+
+
 def test_arrow_reader_close_semantics(cursor: mssql_python.Cursor):
     """``reader.close()`` must stop fetching, mark the reader closed, leave
     the parent Cursor usable, be idempotent, and work as a context manager."""

@@ -74,6 +74,18 @@ class _ArrowReader:
     propagate into the underlying Python generator and does **not** stop the
     server-side ODBC cursor.  This wrapper closes that gap.
 
+    Interoperability: this class exposes ``__arrow_c_stream__`` (Arrow
+    PyCapsule Protocol, pyarrow >= 14), so Arrow-aware consumers
+    (``pyarrow.RecordBatchReader.from_stream``, ``polars.from_arrow``,
+    ``duckdb.from_arrow``, etc.) can accept it directly without any
+    ``isinstance(x, pyarrow.RecordBatchReader)`` check.  Subclassing
+    ``pyarrow.RecordBatchReader`` (a Cython extension type) isn't a viable
+    alternative because its ``from_batches`` factory returns the base class
+    regardless of the subclass, ``__class__`` reassignment is rejected on
+    Cython types, and instances cannot hold arbitrary Python attributes —
+    so a subclass could not carry the cursor/generator refs this wrapper
+    needs for cancellation semantics.
+
     Design (optimized):
       * The Python generator backing the reader carries its own ``try/finally``
         block — so server-side cleanup runs symmetrically whether the user
@@ -132,6 +144,37 @@ class _ArrowReader:
         if self._closed:
             raise self._arrow_invalid("Reader is closed")
         return self._inner.read_next_batch()
+
+    def __arrow_c_stream__(self, requested_schema=None):
+        """Arrow PyCapsule Protocol — export as an Arrow C stream.
+
+        Implements the Arrow PyCapsule Protocol for streams (pyarrow >= 14),
+        so this wrapper can be consumed by any Arrow-compatible library
+        (``pyarrow.RecordBatchReader.from_stream``, ``polars.from_arrow``,
+        ``duckdb.from_arrow``, ``pandas.api.interchange.from_dataframe`` for
+        streams, etc.) without an ``isinstance(x, pa.RecordBatchReader)``
+        check.  See
+        https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html
+
+        Note: once the capsule has been consumed by the caller, the
+        underlying pyarrow reader's internal C stream is transferred out;
+        further calls to ``read_next_batch()`` on this wrapper will fail
+        with ``ArrowInvalid``.  That mirrors pyarrow's own semantics.
+        """
+        if self._closed:
+            raise self._arrow_invalid("Reader is closed")
+        # Delegate to the inner pyarrow reader.  pyarrow >= 14 exposes
+        # ``__arrow_c_stream__`` directly on ``RecordBatchReader``; older
+        # versions do not implement the protocol.  Fail explicitly rather
+        # than silently returning something invalid.
+        inner_export = getattr(self._inner, "__arrow_c_stream__", None)
+        if inner_export is None:
+            raise self._arrow_invalid(
+                "Arrow PyCapsule Protocol requires pyarrow>=14; "
+                "the installed pyarrow version does not expose "
+                "RecordBatchReader.__arrow_c_stream__."
+            )
+        return inner_export(requested_schema)
 
     def __iter__(self):
         return self
