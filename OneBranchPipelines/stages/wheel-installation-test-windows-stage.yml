@@ -1,0 +1,196 @@
+# =========================================================================================
+# End-User "Both Wheels Together" Installation Test - WINDOWS
+# =========================================================================================
+# Windows counterpart of wheel-installation-test-stage.yml (which is Docker/Linux-only).
+# Installs the ACTUAL published mssql-python + mssql-python-odbc Windows wheels into a
+# fresh venv, runs the full pytest suite (bundled libs intact, external package already
+# preferred by GetOdbcLibsBaseDir), then DELETES the bundled mssql_python/libs and
+# connects once more in a fresh process. With the bundled fallback gone, a successful
+# live query can ONLY be using the driver from the separately installed
+# mssql_python_odbc package.
+#
+# Windows adds coverage the Linux stage explicitly cannot: on Windows the loader treats
+# the external package as authoritative only when BOTH the ODBC driver AND mssql-auth.dll
+# are present, so this proves the auth DLL is resolved from the external package too.
+#
+# Runs natively on the same 1ES Windows Server + SQL Server LocalDB pool as the build
+# stage (no Docker). A single representative Python version is sufficient: the external
+# package RESOLUTION path (GetOdbcLibsBaseDir in ddbc_bindings.cpp) is Python-version
+# independent; per-version native builds are already covered by the Windows build stages.
+# =========================================================================================
+parameters:
+  # Stage identifier (e.g., 'TestBothWheels_Windows_x64')
+  - name: stageName
+    type: string
+  # Job identifier within the stage
+  - name: jobName
+    type: string
+    default: 'InstallAndTest'
+  # Python version in X.Y format used to select the mssql-python wheel
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  # Python version as 3-digit string (e.g., '312') matching the cp<ver> wheel tag
+  - name: shortPyVer
+    type: string
+    default: '312'
+  # Target architecture (test stage targets x64 only; ARM64 binaries can't run on x64 host)
+  - name: architecture
+    type: string
+    default: 'x64'
+  # OneBranch build type: 'Official' or 'NonOfficial'
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'Test Both Wheels Windows ${{ parameters.architecture }}'
+    # Only meaningful when both consolidated artifacts exist in this run.
+    dependsOn:
+      - Consolidate
+      - ConsolidateOdbc
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Install both wheels + pytest - Windows ${{ parameters.architecture }}'
+
+        # Same custom 1ES pool the Windows build stage uses: Windows Server 2022 with
+        # SQL Server LocalDB pre-installed, so pytest has a live server without Docker.
+        pool:
+          type: windows
+          isCustom: true
+          name: Python-1ES-pool
+          demands:
+          - imageOverride -equals PYTHON-1ES-MMS2022
+        timeoutInMinutes: 120
+
+        variables:
+          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+          # OneBranch-required variable (unused on Windows agents).
+          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+              architecture: 'x64'
+              addToPath: true
+            displayName: 'Use Python ${{ parameters.pythonVersion }}'
+
+          # Download the two CONSOLIDATED wheel artifacts produced earlier in this run.
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download consolidated mssql-python wheels'
+            inputs:
+              buildType: 'current'
+              artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+              targetPath: '$(Pipeline.Workspace)/mssql-python-wheels'
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download consolidated mssql-python-odbc wheels'
+            inputs:
+              buildType: 'current'
+              artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+              targetPath: '$(Pipeline.Workspace)/mssql-python-odbc-wheels'
+
+          # Start SQL Server LocalDB (pre-installed on the 1ES Windows image).
+          - powershell: |
+              sqllocaldb create MSSQLLocalDB
+              sqllocaldb start MSSQLLocalDB
+            displayName: 'Start LocalDB instance'
+
+          - powershell: |
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+            displayName: 'Setup database and user'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+
+              # Run every venv-python invocation through this helper so a non-zero exit
+              # (native commands do NOT trip $ErrorActionPreference) fails the step loudly.
+              # No param() block: PowerShell then routes ALL tokens (including -m, -c, -q)
+              # into the automatic $args instead of trying to bind them as parameters.
+              $script:VenvPy = $null
+              function Invoke-Py {
+                & $script:VenvPy @args
+                if ($LASTEXITCODE -ne 0) { throw "python exited ${LASTEXITCODE}: $($args -join ' ')" }
+              }
+
+              $PYTAG   = 'cp${{ parameters.shortPyVer }}'
+              $PLATTAG = 'win_amd64'
+
+              # Select the mssql-python wheel matching THIS Python version + platform.
+              $mpWheel = Get-ChildItem "$(Pipeline.Workspace)\mssql-python-wheels\dist\mssql_python-*$PYTAG-*$PLATTAG*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if (-not $mpWheel) { throw "ERROR: no mssql-python wheel for $PYTAG/$PLATTAG" }
+              # The odbc wheel is data-only (py3-none-<platform>), one per platform.
+              $odbcWheel = Get-ChildItem "$(Pipeline.Workspace)\mssql-python-odbc-wheels\dist\mssql_python_odbc-*$PLATTAG*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if (-not $odbcWheel) { throw "ERROR: no mssql-python-odbc wheel for $PLATTAG" }
+
+              # Fresh isolated venv = clean end-user machine.
+              $testDir = Join-Path $env:TEMP "enduser_$PYTAG"
+              if (Test-Path $testDir) { Remove-Item -Recurse -Force $testDir }
+              python -m venv $testDir
+              if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
+              $script:VenvPy = Join-Path $testDir 'Scripts\python.exe'
+
+              # PYTHONSAFEPATH so the repo checkout can never shadow the installed wheel.
+              $env:PYTHONSAFEPATH = '1'
+
+              Invoke-Py -m pip install -q -U pip
+
+              # Install the odbc wheel FIRST so mssql-python's pinned mssql-python-odbc==X
+              # requirement is satisfied from this LOCAL wheel (pip never reaches PyPI).
+              Write-Host "Installing mssql-python-odbc: $($odbcWheel.Name)"
+              Invoke-Py -m pip install -q "$($odbcWheel.FullName)"
+              Write-Host "Installing mssql-python:      $($mpWheel.Name)"
+              Invoke-Py -m pip install -q "$($mpWheel.FullName)"
+
+              # Show where the external ODBC package lives (the split target).
+              Invoke-Py -c "import mssql_python_odbc, os; d=mssql_python_odbc.get_libs_dir(); print('mssql_python_odbc libs:', d); assert os.path.isdir(d)"
+
+              # POSITIVE assertion: prove the native loader WILL resolve the driver from
+              # the external mssql_python_odbc package (mirrors GetOdbcLibsBaseDir).
+              Invoke-Py -c "import mssql_python.ddbc_bindings as d, mssql_python_odbc, os; base=os.path.dirname(mssql_python_odbc.__file__); drv=d.GetDriverPathCpp(base); print('external driver path:', drv); assert os.path.exists(drv), 'external ODBC driver not found - loader would NOT select external package: '+drv; print('POSITIVE: loader will resolve the driver from the external mssql_python_odbc package')"
+
+              # PHASE 1: run the FULL existing suite with bundled libs INTACT. Copy the
+              # suite OUT of the source tree so collection imports the INSTALLED package.
+              Copy-Item -Recurse "$(Build.SourcesDirectory)\tests" (Join-Path $testDir 'tests')
+              Copy-Item "$(Build.SourcesDirectory)\pytest.ini" (Join-Path $testDir 'pytest.ini')
+              Invoke-Py -m pip install -q pytest
+              if (Test-Path "$(Build.SourcesDirectory)\requirements.txt") {
+                Invoke-Py -m pip install -q -r "$(Build.SourcesDirectory)\requirements.txt"
+              }
+              $env:DB_CONNECTION_STRING = "Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$($env:DB_PASSWORD);TrustServerCertificate=yes"
+              Push-Location $testDir
+              try {
+                Invoke-Py -m pytest (Join-Path $testDir 'tests') -v --maxfail=1 -m "not stress"
+              } finally {
+                Pop-Location
+              }
+              Write-Host "Full suite passed for $PYTAG with both wheels installed (external driver preferred)"
+
+              # PHASE 2 - DECISIVE negative proof: remove the ODBC driver that
+              # mssql_python still bundles, then connect again in a FRESH process.
+              $mpLibs = & $script:VenvPy -c "import mssql_python, os; print(os.path.join(os.path.dirname(mssql_python.__file__), 'libs'))"
+              if ($LASTEXITCODE -ne 0) { throw "failed to resolve mssql_python libs dir" }
+              if ($mpLibs -like "$(Build.SourcesDirectory)*") { throw "ERROR: resolved mssql_python to the source tree ($mpLibs), not the installed wheel" }
+              if (Test-Path $mpLibs) {
+                Write-Host "Removing bundled mssql_python/libs to force use of external ODBC package: $mpLibs"
+                Remove-Item -Recurse -Force $mpLibs
+              } else {
+                Write-Host "Note: mssql_python has no bundled libs/ (already split at build time)"
+              }
+
+              Invoke-Py -c "import mssql_python; print('mssql_python', mssql_python.__version__, 'imported OK (bundled libs removed)')"
+              Invoke-Py -c "import mssql_python, os; c=mssql_python.connect(os.environ['DB_CONNECTION_STRING']); cur=c.cursor(); cur.execute('SELECT 1'); print('connection OK via EXTERNAL driver:', cur.fetchone()); c.close()"
+              Write-Host "DECISIVE: connected with bundled libs removed - driver + mssql-auth.dll resolved from external mssql_python_odbc package"
+            displayName: 'Install both wheels + full pytest + external-only proof'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)

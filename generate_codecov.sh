@@ -38,7 +38,19 @@ echo "==================================="
 
 # Cleanup old coverage
 rm -f .coverage coverage.xml python-coverage.info cpp-coverage.info total.info
-rm -rf htmlcov unified-coverage
+rm -f default.profraw default.profdata
+rm -rf htmlcov unified-coverage profraw
+
+# Capture one raw profile *per process* so subprocess-based tests count too.
+# Several pooling tests (idle eviction, pool-full, orphan return) must run in a
+# fresh interpreter because the C++ pool config is locked in via std::call_once;
+# they spawn `python -c` workers. With a fixed LLVM_PROFILE_FILE every process
+# writes the same default.profraw and the last writer (the main pytest process)
+# clobbers the workers, dropping their C++ coverage entirely. Using %p (PID) and
+# %m (binary signature) gives each instrumented process its own file, which we
+# merge below. Subprocess workers inherit this env var (os.environ.copy()).
+mkdir -p "$(pwd)/profraw"
+export LLVM_PROFILE_FILE="$(pwd)/profraw/default-%p-%m.profraw"
 
 # Run pytest with Python coverage (XML + HTML output)
 python -m pytest -v \
@@ -57,13 +69,22 @@ echo "==================================="
 echo "[STEP 3] Processing C++ coverage (Clang/LLVM)"
 echo "==================================="
 
-# Merge raw profile data from pybind runs
-if [ ! -f default.profraw ]; then
-    echo "[ERROR] default.profraw not found. Did you build with -fprofile-instr-generate?"
+# Merge raw profile data from every instrumented process (main pytest run plus
+# any `python -c` subprocess workers). Each wrote its own profraw/*.profraw via
+# the LLVM_PROFILE_FILE pattern set in STEP 2.
+shopt -s nullglob
+PROFRAW_FILES=(profraw/*.profraw)
+# Fallback: pick up a legacy single default.profraw if one exists in CWD.
+if [ -f default.profraw ]; then
+    PROFRAW_FILES+=(default.profraw)
+fi
+if [ ${#PROFRAW_FILES[@]} -eq 0 ]; then
+    echo "[ERROR] No .profraw files found. Did you build with -fprofile-instr-generate?"
     exit 1
 fi
 
-llvm-profdata merge -sparse default.profraw -o default.profdata
+echo "[INFO] Merging ${#PROFRAW_FILES[@]} raw profile file(s)"
+llvm-profdata merge -sparse "${PROFRAW_FILES[@]}" -o default.profdata
 
 # Find the pybind .so file (Linux build)
 PYBIND_SO=$(find mssql_python -name "*.so" | head -n 1)
