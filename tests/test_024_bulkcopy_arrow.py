@@ -225,9 +225,7 @@ class TestBuildPycoreContext:
             cur._build_pycore_context()
 
     def test_sql_auth_keeps_credentials(self):
-        cur = _cursor_with_conn(
-            "Server=testhost;Database=testdb;UID=sa;PWD=mypwd", auth_type=None
-        )
+        cur = _cursor_with_conn("Server=testhost;Database=testdb;UID=sa;PWD=mypwd", auth_type=None)
         ctx = cur._build_pycore_context()
         assert ctx.get("user_name") == "sa"
         assert ctx.get("password") == "mypwd"
@@ -385,7 +383,6 @@ class TestBulkcopyArrowDispatch:
         assert kwargs["batch_size"] == 7
         assert kwargs["timeout"] == 15
 
-
     @patch("mssql_python.cursor.logger")
     def test_sensitive_fields_cleared_after_success(self, mock_logger):
         mock_logger.is_debug_enabled = False
@@ -415,9 +412,7 @@ class TestBulkcopyArrowDispatch:
     def test_core_exception_is_reraised_and_cleaned_up(self, mock_logger):
         mock_logger.is_debug_enabled = False
         cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
-        module, pyc_cursor, pyc_conn, captured = _mock_pycore(
-            raise_exc=ValueError("boom")
-        )
+        module, pyc_cursor, pyc_conn, captured = _mock_pycore(raise_exc=ValueError("boom"))
 
         with patch.dict("sys.modules", {"mssql_py_core": module}):
             with pytest.raises(ValueError, match="boom"):
@@ -496,9 +491,7 @@ class TestBulkcopyArrowLive:
             pa.record_batch(
                 [pa.array([1, 2], type=pa.int32()), pa.array(["a", "b"])], schema=schema
             ),
-            pa.record_batch(
-                [pa.array([3], type=pa.int32()), pa.array([None])], schema=schema
-            ),
+            pa.record_batch([pa.array([3], type=pa.int32()), pa.array([None])], schema=schema),
         ]
         reader = pa.RecordBatchReader.from_batches(schema, batches)
         result = cursor.bulkcopy_arrow(t, reader)

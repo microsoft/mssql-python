@@ -474,9 +474,7 @@ def test_bulkcopy_udt_geometry(cursor):
 
     def _read(table):
         cursor.execute(f"SELECT id, g FROM {table} ORDER BY id")
-        return [
-            (r[0], bytes(r[1]) if r[1] is not None else None) for r in cursor.fetchall()
-        ]
+        return [(r[0], bytes(r[1]) if r[1] is not None else None) for r in cursor.fetchall()]
 
     try:
         # Seed a geometry (built-in CLR UDT) source table via T-SQL.

@@ -4,7 +4,19 @@ Licensed under the MIT license.
 Type stubs for mssql_python package - based on actual public API
 """
 
-from typing import Any, Dict, List, Mapping, Optional, Union, Tuple, Sequence, Callable, Iterator, Iterable
+from typing import (
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Union,
+    Tuple,
+    Sequence,
+    Callable,
+    Iterator,
+    Iterable,
+)
 import datetime
 import logging
 import pyarrow
