@@ -1132,12 +1132,12 @@ std::string GetModuleDirectory() {
 // its directory as the base that `GetDriverPathCpp` (and the Windows
 // `mssql-auth.dll` lookup) append `libs` to.
 //
-// During the Phase-2 transition we fall back to the bundled `mssql_python`
-// directory when the external package is not installed, so a wheel that still
-// bundles `libs/` keeps working. Importing `mssql_python_odbc` here is
-// Alpine/musl-safe precisely because it is a separate pure package: it cannot
-// trigger the partially-initialized-module circular import that motivated
-// resolving these paths in C++ in the first place.
+// Post-split the standalone package is REQUIRED: if it is missing or does not
+// ship this platform's driver binaries we raise a clear, actionable error
+// instead of silently falling back to bundled libs (there are none). Importing
+// `mssql_python_odbc` here is Alpine/musl-safe precisely because it is a
+// separate pure package: it cannot trigger the partially-initialized-module
+// circular import that motivated resolving these paths in C++ in the first place.
 //
 // (`GetDriverPathCpp` is defined further below; forward-declared here so we can
 // verify the external package actually ships this platform's driver binary.)
@@ -1159,19 +1159,17 @@ std::string GetOdbcLibsBaseDir() {
 
         fs::path parentDir = fs::path(module_file).parent_path();
 
-        // Only treat the external package as authoritative if it actually ships
-        // a COMPLETE set of this platform's driver binaries. In a source/dev
+        // The external package is authoritative and REQUIRED: it must ship a
+        // COMPLETE set of this platform's driver binaries. In a source/dev
         // checkout (and in CI) the package is importable from the repo root but
         // its `libs/` tree is gitignored and either absent or only partially
-        // populated; in that case fall back to the bundled `mssql_python` libs
-        // so driver resolution points at a real, complete installation.
+        // populated; there is no bundled fallback anymore, so fail hard rather
+        // than resolve to a directory that has no usable driver.
         //
         // "Complete" means the ODBC driver itself and, on Windows, the
         // co-located `mssql-auth.dll` that LoadDriverOrThrowException loads
         // unconditionally. Verifying both here keeps this resolver's notion of a
-        // usable base dir consistent with what the loader below actually needs,
-        // so we never select a directory that would later make the loader throw
-        // (e.g. a dir that has msodbcsql18.dll but is missing mssql-auth.dll).
+        // usable base dir consistent with what the loader below actually needs.
         std::error_code ec;
         fs::path externalDriver(GetDriverPathCpp(parentDir.string()));
         bool externalComplete = fs::exists(externalDriver, ec);
@@ -1181,24 +1179,27 @@ std::string GetOdbcLibsBaseDir() {
             externalComplete = fs::exists(externalAuthDll, ec);
         }
 #endif
-        if (externalComplete) {
-            LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
+        if (!externalComplete) {
+            LOG("GetOdbcLibsBaseDir: mssql_python_odbc present at '%s' but its ODBC driver "
+                "binaries are missing or incomplete for this platform",
                 parentDir.string().c_str());
-            return parentDir.string();
+            ThrowStdException(
+                "The 'mssql-python-odbc' package is installed but its ODBC driver binaries "
+                "are missing or incomplete for this platform. Reinstall it with: "
+                "pip install --force-reinstall mssql-python-odbc");
         }
-        LOG("GetOdbcLibsBaseDir: mssql_python_odbc present at '%s' but its libs are missing or "
-            "incomplete; falling back to bundled libs in mssql_python",
+        LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
             parentDir.string().c_str());
-        return GetModuleDirectory();
+        return parentDir.string();
     } catch (const py::error_already_set& e) {
         if (e.matches(PyExc_ModuleNotFoundError)) {
-            // Expected in Phase 2 when the standalone package is not installed.
-            // pybind11 has already fetched and cleared the CPython error
-            // indicator, so re-importing `mssql_python` below is safe.
-            LOG("GetOdbcLibsBaseDir: mssql_python_odbc not installed (%s); "
-                "falling back to bundled libs in mssql_python",
+            // Phase 2: the standalone package is required. Turn the missing
+            // dependency into a clear, actionable error instead of a fallback.
+            LOG("GetOdbcLibsBaseDir: required package mssql_python_odbc is not installed (%s)",
                 e.what());
-            return GetModuleDirectory();
+            ThrowStdException(
+                "The required 'mssql-python-odbc' package (which ships the ODBC driver "
+                "binaries) is not installed. Install it with: pip install mssql-python-odbc");
         }
         // A different import-time error means the package is installed but
         // broken; surface it instead of silently masking the real problem.
@@ -1311,8 +1312,8 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     // CMakeLists.txt. This keeps the native resolver and the Python package
     // version from ever drifting: GetOdbcLibsBaseDir() calls fs::exists() on this
     // exact path to decide whether the external package is "complete", so a stale
-    // name would silently fall back to the bundled libs. (The ".so.2.1" suffix is
-    // the driver's ELF soname, which is independent of the product version.)
+    // name would fail that completeness check and raise a hard error. (The
+    // ".so.2.1" suffix is the driver's ELF soname, independent of the product version.)
     fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" /
                           ("libmsodbcsql-" MSODBCSQL_VERSION_MAJOR_MINOR ".so.2.1");
     return driverPath.string();
@@ -1341,9 +1342,9 @@ DriverHandle LoadDriverOrThrowException() {
     namespace fs = std::filesystem;
 
     // Resolve the base dir from the standalone `mssql_python_odbc` package
-    // (falls back to the bundled `mssql_python` libs during the transition).
-    // Both the driver path and the Windows `mssql-auth.dll` path below are
-    // derived from this directory.
+    // (required post-split; raises if missing or incomplete). Both the driver
+    // path and the Windows `mssql-auth.dll` path below are derived from this
+    // directory.
     std::string moduleDir = GetOdbcLibsBaseDir();
     LOG("LoadDriverOrThrowException: ODBC libs base directory resolved to '%s'", moduleDir.c_str());
 

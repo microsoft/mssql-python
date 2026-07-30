@@ -10,16 +10,14 @@ with::
 
     python setup_odbc.py bdist_wheel
 
-During the transition period the driver binaries still live under
-``mssql_python/libs/``. This script copies the current platform's subtree into
-``mssql_python_odbc/libs/`` so a wheel can be produced locally. The release
-pipeline populates ``libs/`` per-platform and is the source of truth for the
+The driver binaries live under ``mssql_python_odbc/libs/`` (the committed source
+of truth, moved here from ``mssql_python/libs/`` in Phase 2). The release
+pipeline overwrites that subtree per-platform and is the source of truth for the
 full release matrix.
 """
 
 import os
 import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -31,7 +29,6 @@ from wheel.bdist_wheel import bdist_wheel
 PROJECT_ROOT = Path(__file__).resolve().parent
 PACKAGE_NAME = "mssql_python_odbc"
 PACKAGE_DIR = PROJECT_ROOT / PACKAGE_NAME
-BUNDLED_LIBS_ROOT = PROJECT_ROOT / "mssql_python" / "libs"
 
 # The driver binaries are packaged via the recursive ``libs/**/*`` glob in
 # ``package_data`` below, which enumerates files from the copied
@@ -179,7 +176,7 @@ def sync_libs() -> None:
 
 
 class CustomBdistWheel(bdist_wheel):
-    """Force a platform-specific but Python-agnostic tag and sync libs.
+    """Force a platform-specific but Python-agnostic tag.
 
     The package ships only pre-built ODBC driver binaries (data), not a compiled
     Python extension, so one ``py3-none-<platform>`` wheel serves every supported
@@ -203,10 +200,6 @@ class CustomBdistWheel(bdist_wheel):
         # interpreter/ABI tags as Python-agnostic ("py3"/"none").
         _python, _abi, plat = bdist_wheel.get_tag(self)
         return "py3", "none", plat
-
-    def run(self):
-        sync_libs()
-        bdist_wheel.run(self)
 
 
 _require_min_setuptools()

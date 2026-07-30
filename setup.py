@@ -139,28 +139,6 @@ print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
 if (PROJECT_ROOT / "mssql_py_core").is_dir():
     packages.append("mssql_py_core")
 
-# Add platform-specific packages
-if sys.platform.startswith("win"):
-    packages.extend(
-        [
-            f"mssql_python.libs.windows.{arch}",
-            f"mssql_python.libs.windows.{arch}.1033",
-            f"mssql_python.libs.windows.{arch}.vcredist",
-        ]
-    )
-elif sys.platform.startswith("darwin"):
-    packages.extend(
-        [
-            f"mssql_python.libs.macos",
-        ]
-    )
-elif sys.platform.startswith("linux"):
-    packages.extend(
-        [
-            f"mssql_python.libs.linux",
-        ]
-    )
-
 # ---------------------------------------------------------------------------
 # package_data – binaries to include in the wheel
 # ---------------------------------------------------------------------------
@@ -169,8 +147,9 @@ package_data = {
         "py.typed",
         "ddbc_bindings.cp*.pyd",
         "ddbc_bindings.cp*.so",
-        "libs/*",
-        "libs/**/*",
+        # msvcp140.dll (VC++ runtime) is copied next to the compiled extension by
+        # build.bat; the ODBC driver binaries themselves ship only in the
+        # standalone mssql-python-odbc package (see setup_odbc.py).
         "*.dll",
     ],
     "mssql_py_core": [
@@ -211,10 +190,6 @@ setup(
     distclass=BinaryDistribution,
     exclude_package_data={
         "": ["*.yml", "*.yaml"],  # Exclude YML files
-        "mssql_python": [
-            "libs/*/vcredist/*",
-            "libs/*/vcredist/**/*",  # Exclude vcredist directories, added here since `'libs/*' is already included`
-        ],
     },
     # Register custom commands
     cmdclass={
