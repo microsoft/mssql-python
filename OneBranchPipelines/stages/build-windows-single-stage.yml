@@ -27,10 +27,20 @@ parameters:
   - name: publishSymbols
     type: boolean
     default: true
+  # Phase 2: stages this build depends on (e.g. [ConsolidateOdbc]) so the external
+  # mssql-python-odbc wheel exists before pytest. Default [] = no dependency.
+  - name: odbcDependsOn
+    type: object
+    default: []
+  # Phase 2: install the external ODBC wheel (from ConsolidateOdbc) before pytest.
+  - name: installOdbcWheel
+    type: boolean
+    default: false
 
 stages:
   - stage: ${{ parameters.stageName }}
     displayName: 'Windows Py${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+    dependsOn: ${{ parameters.odbcDependsOn }}
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheel - Py${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
@@ -249,6 +259,36 @@ stages:
               targetType: 'filePath'
               filePath: '$(Build.SourcesDirectory)\eng\scripts\install-mssql-py-core.ps1'
           
+          # =========================
+          # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
+          # =========================
+          # The bundled ODBC driver was removed from the mssql-python wheel in Phase 2,
+          # so `import mssql_python` now resolves the driver from the separate
+          # mssql-python-odbc package. Install the matching wheel built earlier in this
+          # run (ConsolidateOdbc) so pytest exercises the real external-package path.
+          # Skipped on ARM64 (pytest does not run on the x64 host for ARM64 targets).
+          - ${{ if parameters.installOdbcWheel }}:
+            - task: DownloadPipelineArtifact@2
+              displayName: 'Download consolidated ODBC wheels'
+              condition: ne(variables['targetArch'], 'arm64')
+              inputs:
+                buildType: 'current'
+                artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                itemPattern: '**/*.whl'
+                targetPath: '$(Pipeline.Workspace)/odbc_wheels'
+            - powershell: |
+                $ErrorActionPreference = "Stop"
+                # find-links points at the folder holding the .whl files (consolidate
+                # publishes them under dist/). pip picks the wheel matching THIS host.
+                $links = Get-ChildItem -Path "$(Pipeline.Workspace)/odbc_wheels" -Recurse -Filter *.whl |
+                         Select-Object -First 1 -ExpandProperty DirectoryName
+                if (-not $links) { Write-Error "No ODBC wheel found in downloaded artifact"; exit 1 }
+                Write-Host "Installing mssql-python-odbc from $links"
+                python -m pip install --no-index --find-links "$links" mssql-python-odbc
+                python -c "import mssql_python_odbc, os; print('mssql_python_odbc at', os.path.dirname(mssql_python_odbc.__file__))"
+              displayName: 'Install external ODBC wheel (mssql-python-odbc)'
+              condition: ne(variables['targetArch'], 'arm64')
+
           # =========================
           # TESTING
           # =========================

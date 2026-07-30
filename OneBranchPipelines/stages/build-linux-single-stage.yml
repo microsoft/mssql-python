@@ -23,10 +23,20 @@ parameters:
   - name: oneBranchType
     type: string
     default: 'Official'
+  # Phase 2: stages this build depends on (e.g. [ConsolidateOdbc]) so the external
+  # mssql-python-odbc wheel exists before pytest. Default [] = no dependency.
+  - name: odbcDependsOn
+    type: object
+    default: []
+  # Phase 2: install the external ODBC wheel (from ConsolidateOdbc) before pytest.
+  - name: installOdbcWheel
+    type: boolean
+    default: false
 
 stages:
   - stage: ${{ parameters.stageName }}
     displayName: 'Linux ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+    dependsOn: ${{ parameters.odbcDependsOn }}
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheels - ${{ parameters.linuxTag }} ${{ parameters.arch }}'
@@ -191,6 +201,33 @@ stages:
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           
+          # =========================
+          # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
+          # =========================
+          # Phase 2 removed the bundled ODBC driver from the mssql-python wheel, so the
+          # isolated-install pytest below must obtain the driver from the external
+          # mssql-python-odbc package. Download the wheels built earlier this run
+          # (ConsolidateOdbc) into the repo dir (bind-mounted at /workspace in the build
+          # container) and flatten them so PIP_FIND_LINKS=/workspace/odbc_wheels lets the
+          # in-container `pip install <mssql_python wheel>` resolve the pinned
+          # mssql-python-odbc==18.6.2 dependency locally (no PyPI needed for it).
+          - ${{ if parameters.installOdbcWheel }}:
+            - task: DownloadPipelineArtifact@2
+              displayName: 'Download consolidated ODBC wheels'
+              inputs:
+                buildType: 'current'
+                artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                itemPattern: '**/*.whl'
+                targetPath: '$(Build.SourcesDirectory)/odbc_wheels'
+            - bash: |
+                set -euo pipefail
+                # Flatten all downloaded wheels into the find-links root so pip (via
+                # PIP_FIND_LINKS) sees them without recursion.
+                find "$(Build.SourcesDirectory)/odbc_wheels" -name '*.whl' -exec mv -f {} "$(Build.SourcesDirectory)/odbc_wheels/" \; || true
+                echo "ODBC wheels available for find-links:"
+                ls -1 "$(Build.SourcesDirectory)/odbc_wheels"/*.whl
+              displayName: 'Flatten ODBC wheels for pip find-links'
+          
           # Build wheels for all Python versions (3.10-3.14) and test each one
           - script: |
               set -euxo pipefail
@@ -206,7 +243,7 @@ stages:
                 
                 if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
                   # Manylinux (glibc-based) - use bash
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" build-$(LINUX_TAG)-$(ARCH) bash -lc '
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) bash -lc '
                     set -euxo pipefail;
                     
                     # Step 1: Setup Python environment
@@ -274,7 +311,7 @@ stages:
                   '
                 else
                   # Musllinux (musl libc-based) - use sh
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" build-$(LINUX_TAG)-$(ARCH) sh -lc '
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) sh -lc '
                     set -euxo pipefail;
                     
                     # Step 1: Setup Python environment

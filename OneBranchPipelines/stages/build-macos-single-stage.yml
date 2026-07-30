@@ -20,10 +20,20 @@ parameters:
   - name: oneBranchType
     type: string
     default: 'Official'
+  # Phase 2: stages this build depends on (e.g. [ConsolidateOdbc]) so the external
+  # mssql-python-odbc wheel exists before pytest. Default [] = no dependency.
+  - name: odbcDependsOn
+    type: object
+    default: []
+  # Phase 2: install the external ODBC wheel (from ConsolidateOdbc) before pytest.
+  - name: installOdbcWheel
+    type: boolean
+    default: false
 
 stages:
   - stage: ${{ parameters.stageName }}
     displayName: 'macOS Py${{ parameters.pythonVersion }} Universal2'
+    dependsOn: ${{ parameters.odbcDependsOn }}
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheel - Py${{ parameters.pythonVersion }} Universal2'
@@ -176,6 +186,29 @@ stages:
               bash $(Build.SourcesDirectory)/eng/scripts/install-mssql-py-core.sh
             displayName: 'Install mssql_py_core from NuGet'
           
+          # =========================
+          # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
+          # =========================
+          # Phase 2 removed the bundled ODBC driver from the mssql-python wheel, so the
+          # driver is resolved from the separate mssql-python-odbc package. Install the
+          # matching wheel built earlier in this run (ConsolidateOdbc) before pytest.
+          - ${{ if parameters.installOdbcWheel }}:
+            - task: DownloadPipelineArtifact@2
+              displayName: 'Download consolidated ODBC wheels'
+              inputs:
+                buildType: 'current'
+                artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                itemPattern: '**/*.whl'
+                targetPath: '$(Pipeline.Workspace)/odbc_wheels'
+            - script: |
+                set -e
+                LINKS=$(dirname "$(find "$(Pipeline.Workspace)/odbc_wheels" -name '*.whl' | head -1)")
+                if [ -z "$LINKS" ]; then echo "No ODBC wheel found in downloaded artifact" >&2; exit 1; fi
+                echo "Installing mssql-python-odbc from $LINKS"
+                python -m pip install --no-index --find-links "$LINKS" mssql-python-odbc
+                python -c "import mssql_python_odbc, os; print('mssql_python_odbc at', os.path.dirname(mssql_python_odbc.__file__))"
+              displayName: 'Install external ODBC wheel (mssql-python-odbc)'
+
           # =========================
           # TESTING
           # =========================
