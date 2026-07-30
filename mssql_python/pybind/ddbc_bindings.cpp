@@ -8,13 +8,8 @@
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
-#include "py_ref.hpp"
 #include "py_type_cache.hpp"
 #include "utf_utils.h"
-
-using pyref::PyPtr;
-using pyref::adopt;
-
 
 #include <algorithm>  // std::min
 #include <cstdint>
@@ -137,7 +132,7 @@ struct ParamInfo {
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
     // Holds a strong reference to the Python object for DAE (data-at-execution) streaming.
-    // Raw pointer + manual Py_INCREF/DECREF (not PyPtr) because ParamInfo has custom
+    // Raw pointer + manual Py_INCREF/DECREF (not a RAII wrapper) because ParamInfo has custom
     // copy/move semantics and is exposed to pybind11 type_caster — changing the member
     // type would ripple through struct layout, copy/move operators, and property bindings.
     PyObject* dataPtr = nullptr;
@@ -681,9 +676,9 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
 
         // --- datetime (must check before date, since datetime is subclass of date) ---
         if (PyDateTime_Check(obj)) {
-            PyPtr tzinfo = adopt(PyObject_GetAttrString(obj, "tzinfo"));
+            py::object tzinfo = steal(PyObject_GetAttrString(obj, "tzinfo"));
             if (!tzinfo) throw py::error_already_set();
-            bool has_tz = (tzinfo.get() != Py_None);
+            bool has_tz = (tzinfo.ptr() != Py_None);
             if (has_tz) {
                 info.paramSQLType = SQL_SS_TIMESTAMPOFFSET;
                 info.paramCType = SQL_C_SS_TIMESTAMPOFFSET;
@@ -737,27 +732,27 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
         int is_decimal = PyObject_IsInstance(obj, decimal_type);
         if (is_decimal == -1) throw py::error_already_set();
         if (is_decimal == 1) {
-            PyPtr as_tuple_ptr = adopt(PyObject_CallMethod(obj, "as_tuple", NULL));
+            py::object as_tuple_ptr = steal(PyObject_CallMethod(obj, "as_tuple", NULL));
             if (!as_tuple_ptr) throw py::error_already_set();
 
-            PyPtr exponent_obj = adopt(PyObject_GetAttrString(as_tuple_ptr.get(), "exponent"));
+            py::object exponent_obj = steal(PyObject_GetAttrString(as_tuple_ptr.ptr(), "exponent"));
             if (!exponent_obj) throw py::error_already_set();
 
             // NaN / Infinity / sNaN: refuse rather than silently writing 0.
-            if (PyUnicode_Check(exponent_obj.get())) {
+            if (PyUnicode_Check(exponent_obj.ptr())) {
                 throw py::value_error(
                     "Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC");
             }
 
-            PyPtr digits_obj = adopt(PyObject_GetAttrString(as_tuple_ptr.get(), "digits"));
+            py::object digits_obj = steal(PyObject_GetAttrString(as_tuple_ptr.ptr(), "digits"));
             if (!digits_obj) throw py::error_already_set();
 
-            if (!PyTuple_Check(digits_obj.get())) {
+            if (!PyTuple_Check(digits_obj.ptr())) {
                 throw py::type_error("Decimal.as_tuple().digits must be a tuple");
             }
 
-            Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj.get());
-            int exponent = static_cast<int>(PyLong_AsLong(exponent_obj.get()));
+            Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj.ptr());
+            int exponent = static_cast<int>(PyLong_AsLong(exponent_obj.ptr()));
             if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
 
             int precision;
@@ -801,13 +796,13 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             }
 
             if (in_money_range) {
-                PyPtr formatted = adopt(PyObject_CallMethod(obj, "__format__", "s", "f"));
+                py::object formatted = steal(PyObject_CallMethod(obj, "__format__", "s", "f"));
                 if (!formatted) throw py::error_already_set();
                 info.paramSQLType = SQL_VARCHAR;
                 info.paramCType = PARAM_C_TYPE_TEXT;
-                info.columnSize = PyUnicode_GET_LENGTH(formatted.get());
+                info.columnSize = PyUnicode_GET_LENGTH(formatted.ptr());
                 info.decimalDigits = 0;
-                PyObject* raw = formatted.release();
+                PyObject* raw = formatted.release().ptr();
                 if (PyList_SetItem(params, i, raw) != 0) {
                     // PyList_SetItem steals (decrefs) the item even on failure,
                     // so raw is already freed — do NOT Py_DECREF here.
@@ -864,37 +859,37 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
 // the caller stores it as a Python capsule via PyList_SetItem for the binder to consume.
 static NumericData build_numeric_data(PyObject* decimal_param) {
     // Decimal.as_tuple() exposes the canonical pieces we need: sign, coefficient digits, and exponent.
-    PyPtr as_tuple = adopt(PyObject_CallMethod(decimal_param, "as_tuple", NULL));
+    py::object as_tuple = steal(PyObject_CallMethod(decimal_param, "as_tuple", NULL));
     if (!as_tuple) throw py::error_already_set();
 
     // Step 1-4: unpack Decimal(sign, digits, exponent) and validate that digits is the tuple form
     // promised by Decimal.as_tuple(); the remaining logic works purely from these normalized parts.
-    PyPtr digits = adopt(PyObject_GetAttrString(as_tuple.get(), "digits"));
+    py::object digits = steal(PyObject_GetAttrString(as_tuple.ptr(), "digits"));
     if (!digits) throw py::error_already_set();
-    PyPtr sign_obj = adopt(PyObject_GetAttrString(as_tuple.get(), "sign"));
+    py::object sign_obj = steal(PyObject_GetAttrString(as_tuple.ptr(), "sign"));
     if (!sign_obj) throw py::error_already_set();
-    PyPtr exponent_obj = adopt(PyObject_GetAttrString(as_tuple.get(), "exponent"));
+    py::object exponent_obj = steal(PyObject_GetAttrString(as_tuple.ptr(), "exponent"));
     if (!exponent_obj) throw py::error_already_set();
 
-    int sign_val = static_cast<int>(PyLong_AsLong(sign_obj.get()));
-    sign_obj.reset();
+    int sign_val = static_cast<int>(PyLong_AsLong(sign_obj.ptr()));
+    sign_obj = py::object();
     if (sign_val == -1 && PyErr_Occurred()) throw py::error_already_set();
 
     int exponent = 0;
-    if (PyLong_Check(exponent_obj.get())) {
-        exponent = static_cast<int>(PyLong_AsLong(exponent_obj.get()));
+    if (PyLong_Check(exponent_obj.ptr())) {
+        exponent = static_cast<int>(PyLong_AsLong(exponent_obj.ptr()));
         if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
     }
-    exponent_obj.reset();
+    exponent_obj = py::object();
 
-    if (!PyTuple_Check(digits.get())) {
+    if (!PyTuple_Check(digits.ptr())) {
         throw py::type_error("Decimal.as_tuple().digits must be a tuple");
     }
 
     // Step 5: SQL Server precision counts all stored decimal digits, while scale is just the fractional
     // digits. A positive exponent means trailing zeros move into the integer part; a negative exponent
     // means scale = -exponent and precision must still cover leading fractional zeros such as 0.001.
-    int num_digits = static_cast<int>(PyTuple_GET_SIZE(digits.get()));
+    int num_digits = static_cast<int>(PyTuple_GET_SIZE(digits.ptr()));
     int precision, scale;
     if (exponent >= 0) {
         precision = num_digits + exponent;
@@ -908,58 +903,58 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
 
     // Step 6: build the mantissa with Python bigint math so we preserve every Decimal digit; a fixed
     // C++ integer would overflow long before SQL Server's 38-digit NUMERIC limit.
-    PyPtr py_ten = adopt(PyLong_FromLong(10));
-    PyPtr int_val = adopt(PyLong_FromLong(0));
+    py::object py_ten = steal(PyLong_FromLong(10));
+    py::object int_val = steal(PyLong_FromLong(0));
     if (!py_ten || !int_val) {
         throw py::error_already_set();
     }
 
-    const Py_ssize_t digit_count = PyTuple_GET_SIZE(digits.get());
+    const Py_ssize_t digit_count = PyTuple_GET_SIZE(digits.ptr());
     for (Py_ssize_t i = 0; i < digit_count; ++i) {
-        PyObject* digit_obj = PyTuple_GET_ITEM(digits.get(), i);
+        PyObject* digit_obj = PyTuple_GET_ITEM(digits.ptr(), i);
         long digit = PyLong_AsLong(digit_obj);
         if (digit == -1 && PyErr_Occurred()) throw py::error_already_set();
 
-        PyPtr multiplied = adopt(PyNumber_Multiply(int_val.get(), py_ten.get()));
+        py::object multiplied = steal(PyNumber_Multiply(int_val.ptr(), py_ten.ptr()));
         if (!multiplied) throw py::error_already_set();
 
-        PyPtr py_digit = adopt(PyLong_FromLong(digit));
+        py::object py_digit = steal(PyLong_FromLong(digit));
         if (!py_digit) throw py::error_already_set();
 
-        int_val = adopt(PyNumber_Add(multiplied.get(), py_digit.get()));
+        int_val = steal(PyNumber_Add(multiplied.ptr(), py_digit.ptr()));
         if (!int_val) throw py::error_already_set();
     }
 
     // Step 7: a positive Decimal exponent means the tuple digits omit trailing zeros, so Decimal("123e2")
     // must become integer mantissa 12300 before packing.
     if (exponent > 0) {
-        PyPtr multiplier = adopt(PyLong_FromLong(1));
+        py::object multiplier = steal(PyLong_FromLong(1));
         if (!multiplier) throw py::error_already_set();
         for (int j = 0; j < exponent; ++j) {
-            multiplier = adopt(PyNumber_Multiply(multiplier.get(), py_ten.get()));
+            multiplier = steal(PyNumber_Multiply(multiplier.ptr(), py_ten.ptr()));
             if (!multiplier) throw py::error_already_set();
         }
-        int_val = adopt(PyNumber_Multiply(int_val.get(), multiplier.get()));
+        int_val = steal(PyNumber_Multiply(int_val.ptr(), multiplier.ptr()));
         if (!int_val) throw py::error_already_set();
     }
 
     // Step 8: SQL_NUMERIC_STRUCT stores magnitude and sign separately, so encode only the absolute value.
-    PyPtr abs_val = adopt(PyNumber_Absolute(int_val.get()));
-    int_val.reset();
-    py_ten.reset();
-    digits.reset();
-    as_tuple.reset();
+    py::object abs_val = steal(PyNumber_Absolute(int_val.ptr()));
+    int_val = py::object();
+    py_ten = py::object();
+    digits = py::object();
+    as_tuple = py::object();
     if (!abs_val) throw py::error_already_set();
 
     // Step 9: SQL_NUMERIC_STRUCT::val is a 16-byte little-endian unsigned integer buffer, so ask
     // Python's bigint to serialize directly into that wire format instead of reimplementing base conversion.
-    PyPtr val_bytes = adopt(PyObject_CallMethod(abs_val.get(), "to_bytes", "is", 16, "little"));
-    abs_val.reset();
+    py::object val_bytes = steal(PyObject_CallMethod(abs_val.ptr(), "to_bytes", "is", 16, "little"));
+    abs_val = py::object();
     if (!val_bytes) throw py::error_already_set();
 
     char* val_buf = nullptr;
     Py_ssize_t val_size = 0;
-    if (PyBytes_AsStringAndSize(val_bytes.get(), &val_buf, &val_size) == -1) {
+    if (PyBytes_AsStringAndSize(val_bytes.ptr(), &val_buf, &val_size) == -1) {
         throw py::error_already_set();
     }
 

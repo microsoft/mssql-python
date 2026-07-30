@@ -11,11 +11,11 @@
 #include <Python.h>
 #include <datetime.h>
 #include <pybind11/pybind11.h>
-#include "py_ref.hpp"
 
 namespace py = pybind11;
-using pyref::PyPtr;
-using pyref::adopt;
+
+// Shorthand for adopting CPython new-references into pybind11 RAII.
+inline py::object steal(PyObject* p) { return py::reinterpret_steal<py::object>(py::handle(p)); }
 
 namespace PyTypeCache {
 
@@ -33,9 +33,9 @@ inline bool cache_initialized = false;
 
 // Import a module and extract an attribute. Returns a new reference.
 inline PyObject* import_attr(const char* module_name, const char* attr_name) {
-    PyPtr mod = adopt(PyImport_ImportModule(module_name));
+    py::object mod = steal(PyImport_ImportModule(module_name));
     if (!mod) throw py::error_already_set();
-    PyObject* attr = PyObject_GetAttrString(mod.get(), attr_name);
+    PyObject* attr = PyObject_GetAttrString(mod.ptr(), attr_name);
     if (!attr) throw py::error_already_set();
     return attr;
 }
@@ -44,12 +44,12 @@ inline PyObject* import_attr(const char* module_name, const char* attr_name) {
 // before initialize() has run.
 inline PyObject* get_cached_class(PyObject* cached, const char* module_name, const char* attr_name) {
     if (cache_initialized && cached) return cached;
-    PyPtr mod = adopt(PyImport_ImportModule(module_name));
+    py::object mod = steal(PyImport_ImportModule(module_name));
     if (!mod) return nullptr;
-    return PyObject_GetAttrString(mod.get(), attr_name);
+    return PyObject_GetAttrString(mod.ptr(), attr_name);
 }
 
-// One-time init. Uses local PyPtrs so exception cleanup is automatic;
+// One-time init. Uses local py::objects so exception cleanup is automatic;
 // only .release() into globals after ALL acquisitions succeed.
 inline void initialize() {
     if (cache_initialized) return;
@@ -57,35 +57,35 @@ inline void initialize() {
     PyDateTime_IMPORT;
     if (PyDateTimeAPI == nullptr) throw py::error_already_set();
 
-    PyPtr dt_mod = adopt(PyImport_ImportModule("datetime"));
+    py::object dt_mod = steal(PyImport_ImportModule("datetime"));
     if (!dt_mod) throw py::error_already_set();
 
-    PyPtr dt_cls  = adopt(PyObject_GetAttrString(dt_mod.get(), "datetime"));
-    PyPtr date_cls = adopt(PyObject_GetAttrString(dt_mod.get(), "date"));
-    PyPtr time_cls = adopt(PyObject_GetAttrString(dt_mod.get(), "time"));
+    py::object dt_cls  = steal(PyObject_GetAttrString(dt_mod.ptr(), "datetime"));
+    py::object date_cls = steal(PyObject_GetAttrString(dt_mod.ptr(), "date"));
+    py::object time_cls = steal(PyObject_GetAttrString(dt_mod.ptr(), "time"));
     if (!dt_cls || !date_cls || !time_cls) throw py::error_already_set();
 
-    PyPtr dec_cls  = adopt(import_attr("decimal", "Decimal"));
-    PyPtr uuid_cls = adopt(import_attr("uuid", "UUID"));
+    py::object dec_cls  = steal(import_attr("decimal", "Decimal"));
+    py::object uuid_cls = steal(import_attr("uuid", "UUID"));
 
     // Pre-compute MONEY/SMALLMONEY boundary Decimals for exact comparison
     // in DetectParamTypes (avoids double-precision boundary errors).
-    PyPtr sm_min = adopt(PyObject_CallFunction(dec_cls.get(), "s", "-214748.3648"));
-    PyPtr sm_max = adopt(PyObject_CallFunction(dec_cls.get(), "s", "214748.3647"));
-    PyPtr m_min  = adopt(PyObject_CallFunction(dec_cls.get(), "s", "-922337203685477.5808"));
-    PyPtr m_max  = adopt(PyObject_CallFunction(dec_cls.get(), "s", "922337203685477.5807"));
+    py::object sm_min = steal(PyObject_CallFunction(dec_cls.ptr(), "s", "-214748.3648"));
+    py::object sm_max = steal(PyObject_CallFunction(dec_cls.ptr(), "s", "214748.3647"));
+    py::object m_min  = steal(PyObject_CallFunction(dec_cls.ptr(), "s", "-922337203685477.5808"));
+    py::object m_max  = steal(PyObject_CallFunction(dec_cls.ptr(), "s", "922337203685477.5807"));
     if (!sm_min || !sm_max || !m_min || !m_max) throw py::error_already_set();
 
     // Commit to globals — all acquisitions succeeded.
-    datetime_class = dt_cls.release();
-    date_class     = date_cls.release();
-    time_class     = time_cls.release();
-    decimal_class  = dec_cls.release();
-    uuid_class     = uuid_cls.release();
-    smallmoney_min = sm_min.release();
-    smallmoney_max = sm_max.release();
-    money_min      = m_min.release();
-    money_max      = m_max.release();
+    datetime_class = dt_cls.release().ptr();
+    date_class     = date_cls.release().ptr();
+    time_class     = time_cls.release().ptr();
+    decimal_class  = dec_cls.release().ptr();
+    uuid_class     = uuid_cls.release().ptr();
+    smallmoney_min = sm_min.release().ptr();
+    smallmoney_max = sm_max.release().ptr();
+    money_min      = m_min.release().ptr();
+    money_max      = m_max.release().ptr();
     cache_initialized = true;
 }
 
