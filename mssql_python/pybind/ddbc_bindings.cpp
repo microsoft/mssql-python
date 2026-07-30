@@ -492,7 +492,7 @@ static constexpr SQLSMALLINT PARAM_C_TYPE_TEXT = SQL_C_CHAR;
 #endif
 
 // Forward declare NumericData helper used by decimal path
-static NumericData build_numeric_data(PyObject* decimal_param);
+static NumericData build_numeric_data(PyObject* as_tuple, PyObject* digits, int exponent);
 
 // ---------------------------------------------------------------------------
 // DetectParamTypes: Raw CPython parameter type detection for the primary execute path.
@@ -815,7 +815,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             // object in the param list so BindParameters can extract it as NumericData.
             info.paramSQLType = SQL_NUMERIC;
             info.paramCType = SQL_C_NUMERIC;
-            NumericData nd = build_numeric_data(obj);
+            NumericData nd = build_numeric_data(as_tuple_ptr.ptr(), digits_obj.ptr(), exponent);
             info.columnSize = nd.precision;
             info.decimalDigits = nd.scale;
             // Store NumericData as a Python object in the param list for the binder.
@@ -853,43 +853,34 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
     return infos;
 }
 
-// Helper: build SQL_NUMERIC_STRUCT from Python Decimal
-// Converts a Python Decimal into a SQL_NUMERIC_STRUCT representation.
-// Takes raw PyObject* (must be a Decimal instance). Returns NumericData directly —
-// the caller stores it as a Python capsule via PyList_SetItem for the binder to consume.
-static NumericData build_numeric_data(PyObject* decimal_param) {
-    // Decimal.as_tuple() exposes the canonical pieces we need: sign, coefficient digits, and exponent.
-    py::object as_tuple = steal(PyObject_CallMethod(decimal_param, "as_tuple", NULL));
-    if (!as_tuple) throw py::error_already_set();
-
-    // Step 1-4: unpack Decimal(sign, digits, exponent) and validate that digits is the tuple form
-    // promised by Decimal.as_tuple(); the remaining logic works purely from these normalized parts.
-    py::object digits = steal(PyObject_GetAttrString(as_tuple.ptr(), "digits"));
-    if (!digits) throw py::error_already_set();
-    py::object sign_obj = steal(PyObject_GetAttrString(as_tuple.ptr(), "sign"));
+// Helper: build SQL_NUMERIC_STRUCT from an already-unpacked Decimal.as_tuple().
+//
+// Callers in DetectParamTypes have already called as_tuple() and pulled out the digits
+// tuple and exponent, so those are passed in rather than re-entering Python to fetch
+// them a second time.
+//
+// The mantissa is accumulated into a fixed 128-bit value held as four 32-bit limbs
+// instead of Python bigint arithmetic. SQL Server caps NUMERIC precision at
+// MAX_NUMERIC_PRECISION (38) digits and callers reject anything larger, so the value
+// always fits the 16 bytes SQL_NUMERIC_STRUCT provides. Limbs keep this portable
+// (MSVC has no __int128) and the result is written out byte-by-byte so host endianness
+// does not matter.
+static NumericData build_numeric_data(PyObject* as_tuple, PyObject* digits, int exponent) {
+    py::object sign_obj = steal(PyObject_GetAttrString(as_tuple, "sign"));
     if (!sign_obj) throw py::error_already_set();
-    py::object exponent_obj = steal(PyObject_GetAttrString(as_tuple.ptr(), "exponent"));
-    if (!exponent_obj) throw py::error_already_set();
-
     int sign_val = static_cast<int>(PyLong_AsLong(sign_obj.ptr()));
-    sign_obj = py::object();
     if (sign_val == -1 && PyErr_Occurred()) throw py::error_already_set();
 
-    int exponent = 0;
-    if (PyLong_Check(exponent_obj.ptr())) {
-        exponent = static_cast<int>(PyLong_AsLong(exponent_obj.ptr()));
-        if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
-    }
-    exponent_obj = py::object();
-
-    if (!PyTuple_Check(digits.ptr())) {
+    if (!PyTuple_Check(digits)) {
         throw py::type_error("Decimal.as_tuple().digits must be a tuple");
     }
 
-    // Step 5: SQL Server precision counts all stored decimal digits, while scale is just the fractional
-    // digits. A positive exponent means trailing zeros move into the integer part; a negative exponent
-    // means scale = -exponent and precision must still cover leading fractional zeros such as 0.001.
-    int num_digits = static_cast<int>(PyTuple_GET_SIZE(digits.ptr()));
+    // SQL Server precision counts all stored decimal digits, while scale is just the
+    // fractional digits. A positive exponent moves trailing zeros into the integer part;
+    // a negative exponent means scale = -exponent and precision must still cover leading
+    // fractional zeros such as 0.001.
+    const Py_ssize_t digit_count = PyTuple_GET_SIZE(digits);
+    const int num_digits = static_cast<int>(digit_count);
     int precision, scale;
     if (exponent >= 0) {
         precision = num_digits + exponent;
@@ -901,78 +892,47 @@ static NumericData build_numeric_data(PyObject* decimal_param) {
     precision = std::max(1, std::min(precision, MAX_NUMERIC_PRECISION));
     scale = std::min(scale, precision);
 
-    // Step 6: build the mantissa with Python bigint math so we preserve every Decimal digit; a fixed
-    // C++ integer would overflow long before SQL Server's 38-digit NUMERIC limit.
-    py::object py_ten = steal(PyLong_FromLong(10));
-    py::object int_val = steal(PyLong_FromLong(0));
-    if (!py_ten || !int_val) {
-        throw py::error_already_set();
-    }
+    // 128-bit magnitude as four little-endian 32-bit limbs. Returns the carry out of the
+    // top limb, which is non-zero only if the value overflowed 128 bits.
+    uint32_t limb[4] = {0, 0, 0, 0};
+    auto mul10_add = [&limb](uint32_t addend) -> uint64_t {
+        uint64_t carry = addend;
+        for (int k = 0; k < 4; ++k) {
+            uint64_t cur = static_cast<uint64_t>(limb[k]) * 10u + carry;
+            limb[k] = static_cast<uint32_t>(cur);
+            carry = cur >> 32;
+        }
+        return carry;
+    };
 
-    const Py_ssize_t digit_count = PyTuple_GET_SIZE(digits.ptr());
+    uint64_t overflow = 0;
     for (Py_ssize_t i = 0; i < digit_count; ++i) {
-        PyObject* digit_obj = PyTuple_GET_ITEM(digits.ptr(), i);
+        PyObject* digit_obj = PyTuple_GET_ITEM(digits, i);
         long digit = PyLong_AsLong(digit_obj);
         if (digit == -1 && PyErr_Occurred()) throw py::error_already_set();
-
-        py::object multiplied = steal(PyNumber_Multiply(int_val.ptr(), py_ten.ptr()));
-        if (!multiplied) throw py::error_already_set();
-
-        py::object py_digit = steal(PyLong_FromLong(digit));
-        if (!py_digit) throw py::error_already_set();
-
-        int_val = steal(PyNumber_Add(multiplied.ptr(), py_digit.ptr()));
-        if (!int_val) throw py::error_already_set();
+        overflow |= mul10_add(static_cast<uint32_t>(digit));
+    }
+    // A positive exponent means as_tuple() omitted trailing zeros, so Decimal("123e2")
+    // must become mantissa 12300 before packing.
+    for (int j = 0; j < exponent; ++j) {
+        overflow |= mul10_add(0);
+    }
+    if (overflow != 0) {
+        throw py::value_error("Decimal magnitude exceeds the 16-byte SQL NUMERIC capacity");
     }
 
-    // Step 7: a positive Decimal exponent means the tuple digits omit trailing zeros, so Decimal("123e2")
-    // must become integer mantissa 12300 before packing.
-    if (exponent > 0) {
-        py::object multiplier = steal(PyLong_FromLong(1));
-        if (!multiplier) throw py::error_already_set();
-        for (int j = 0; j < exponent; ++j) {
-            multiplier = steal(PyNumber_Multiply(multiplier.ptr(), py_ten.ptr()));
-            if (!multiplier) throw py::error_already_set();
-        }
-        int_val = steal(PyNumber_Multiply(int_val.ptr(), multiplier.ptr()));
-        if (!int_val) throw py::error_already_set();
-    }
-
-    // Step 8: SQL_NUMERIC_STRUCT stores magnitude and sign separately, so encode only the absolute value.
-    py::object abs_val = steal(PyNumber_Absolute(int_val.ptr()));
-    int_val = py::object();
-    py_ten = py::object();
-    digits = py::object();
-    as_tuple = py::object();
-    if (!abs_val) throw py::error_already_set();
-
-    // Step 9: SQL_NUMERIC_STRUCT::val is a 16-byte little-endian unsigned integer buffer, so ask
-    // Python's bigint to serialize directly into that wire format instead of reimplementing base conversion.
-    py::object val_bytes = steal(PyObject_CallMethod(abs_val.ptr(), "to_bytes", "is", 16, "little"));
-    abs_val = py::object();
-    if (!val_bytes) throw py::error_already_set();
-
-    char* val_buf = nullptr;
-    Py_ssize_t val_size = 0;
-    if (PyBytes_AsStringAndSize(val_bytes.ptr(), &val_buf, &val_size) == -1) {
-        throw py::error_already_set();
-    }
-
-    // Step 10: pack precision/scale plus the 16-byte little-endian magnitude. SQL uses sign=1 for
-    // positive and sign=0 for negative, which is the inverse of Decimal.as_tuple().sign.
     NumericData nd;
     nd.precision = static_cast<SQLCHAR>(precision);
     nd.scale = static_cast<SQLSCHAR>(scale);
+    // SQL uses sign=1 for positive and sign=0 for negative, the inverse of
+    // Decimal.as_tuple().sign.
     nd.sign = (sign_val == 0) ? 1 : 0;
-    std::memset(&nd.val[0], 0, SQL_MAX_NUMERIC_LEN);
-    size_t copy_len = std::min(static_cast<size_t>(val_size), static_cast<size_t>(SQL_MAX_NUMERIC_LEN));
-    if (copy_len > 0 && val_buf != nullptr) {
-#ifdef _MSC_VER
-        memcpy_s(&nd.val[0], SQL_MAX_NUMERIC_LEN, val_buf, copy_len);
-#else
-        // copy_len is bounded to SQL_MAX_NUMERIC_LEN above — safe by construction
-        std::memcpy(&nd.val[0], val_buf, copy_len);  // DevSkim: ignore DS121708
-#endif
+    nd.val.assign(SQL_MAX_NUMERIC_LEN, '\0');
+    for (int k = 0; k < 4; ++k) {
+        nd.val[k * 4 + 0] = static_cast<char>(limb[k] & 0xFF);
+        nd.val[k * 4 + 1] = static_cast<char>((limb[k] >> 8) & 0xFF);
+        nd.val[k * 4 + 2] = static_cast<char>((limb[k] >> 16) & 0xFF);
+        nd.val[k * 4 + 3] = static_cast<char>((limb[k] >> 24) & 0xFF);
     }
     return nd;
 }
