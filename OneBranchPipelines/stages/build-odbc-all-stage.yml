@@ -43,7 +43,12 @@ parameters:
     default:
       - { tag: 'win_amd64', arch: 'x64' }
       - { tag: 'win_arm64', arch: 'arm64' }
-      - { tag: 'macosx_15_0_universal2', arch: 'universal2' }
+      # macOS: universal2 data-only wheel. macosx_11_0 is the canonical universal2
+      # floor (Big Sur — first arm64 macOS) and the driver dylibs run on macOS 11+
+      # (proven by pre-split connection tests on the macOS-14 agent), so this is
+      # pip-installable on every macOS the mssql-python wheel targets, including the
+      # macOS-14 build/test agent (a macosx_15_0 tag is rejected there).
+      - { tag: 'macosx_11_0_universal2', arch: 'universal2' }
       - { tag: 'manylinux_2_28_x86_64', arch: 'x86_64' }
       - { tag: 'manylinux_2_28_aarch64', arch: 'aarch64' }
       - { tag: 'musllinux_1_2_x86_64', arch: 'x86_64' }
@@ -130,7 +135,7 @@ stages:
               $expect = @{
                 'win_amd64'              = @{ Must = @('libs/windows/x64/', 'msodbcsql', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/arm64/') }
                 'win_arm64'              = @{ Must = @('libs/windows/arm64/', 'msodbcsql', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/x64/') }
-                'macosx_15_0_universal2' = @{ Must = @('libs/macos/arm64/', 'libs/macos/x86_64/', '.dylib', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/linux/') }
+                'macosx_11_0_universal2' = @{ Must = @('libs/macos/arm64/', 'libs/macos/x86_64/', '.dylib', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/linux/') }
                 'manylinux_2_28_x86_64'  = @{ Must = @('libs/linux/debian_ubuntu/x86_64/', '.so', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
                 'manylinux_2_28_aarch64' = @{ Must = @('libs/linux/debian_ubuntu/arm64/', '.so', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/x86_64/') }
                 'musllinux_1_2_x86_64'   = @{ Must = @('libs/linux/alpine/x86_64/', '.so', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
