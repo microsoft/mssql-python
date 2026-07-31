@@ -1234,15 +1234,25 @@ class Connection:
                 - a Python type (e.g. ``decimal.Decimal``, ``str``, ``bytes``), which fires
                   for every column whose value materializes to that Python type (so, for
                   example, a single ``decimal.Decimal`` converter matches DECIMAL, NUMERIC,
-                  MONEY and SMALLMONEY columns alike).
+                  MONEY and SMALLMONEY columns alike). The supported Python types are
+                  ``str``, ``bytes``, ``bool``, ``int``, ``float``, ``decimal.Decimal``,
+                  ``datetime.date``, ``datetime.time``, ``datetime.datetime`` and
+                  ``uuid.UUID``.
                 When both an integer-keyed and a Python-type-keyed converter could apply to
                 the same column, the integer SQL-type converter takes precedence.
+
+                For pyodbc compatibility the ``sqltype`` argument is not validated: any key
+                is accepted and stored. A key that matches neither an exact integer ODBC SQL
+                type code nor an exact materialized Python type (for example a ``set``, a
+                ``dict``, ``object``, or a ``decimal.Decimal`` subclass) is stored but never
+                dispatched — registering it is a harmless no-op rather than an error.
             func (callable): The converter function, called with a single parameter (the
-                            value) that returns the converted value. If the value is NULL the
-                            parameter is None. Otherwise the parameter is the value already
-                            materialized as its Python type (e.g. a ``decimal.Decimal`` or
-                            ``datetime.datetime``); string values are passed as their
-                            UTF-16LE-encoded ``bytes``.
+                            value) that returns the converted value. The converter is not
+                            invoked for SQL NULL values (they are returned as ``None``
+                            unchanged). For non-NULL values the parameter is the value
+                            already materialized as its Python type (e.g. a
+                            ``decimal.Decimal`` or ``datetime.datetime``); string values are
+                            passed as their UTF-16LE-encoded ``bytes``.
 
         Returns:
             None
