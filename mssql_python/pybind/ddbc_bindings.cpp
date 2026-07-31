@@ -1102,29 +1102,6 @@ void ThrowStdException(const std::string& message) {
 }
 std::string GetLastErrorMessage();
 
-// TODO: Move this to Python
-std::string GetModuleDirectory() {
-    namespace fs = std::filesystem;
-    py::object module = py::module::import("mssql_python");
-    py::object module_path = module.attr("__file__");
-    std::string module_file = module_path.cast<std::string>();
-
-    // Use std::filesystem::path for cross-platform path handling
-    // This properly handles UTF-8 encoded paths on all platforms
-    fs::path modulePath(module_file);
-    fs::path parentDir = modulePath.parent_path();
-
-    // Log path extraction for observability
-    LOG("GetModuleDirectory: Extracted directory - "
-        "original_path='%s', directory='%s'",
-        module_file.c_str(), parentDir.string().c_str());
-
-    // Return UTF-8 encoded string for consistent handling
-    // If parentDir is empty or invalid, subsequent operations (like LoadDriverLibrary)
-    // will fail naturally with clear error messages
-    return parentDir.string();
-}
-
 // Resolve the base directory that contains the ODBC driver `libs/` tree.
 //
 // Post-split, the driver binaries ship in the standalone `mssql_python_odbc`
