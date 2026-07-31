@@ -1978,6 +1978,133 @@ def test_output_converter_wvarchar_not_catchall_for_non_string_columns_gh691(db_
         cursor.close()
 
 
+def test_output_converter_wvarchar_null_string_gh691(db_connection):
+    """GH #691: a NULL string value stays None and the WVARCHAR converter is never called.
+
+    The gated fallback is placed on the NVARCHAR column (mapped type str), but the apply path
+    short-circuits on NULL, so the converter must not be invoked for a NULL value.
+    """
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    calls = []
+
+    def wvarchar_spy(value):
+        calls.append(value)
+        return "CONV:" + value.decode("utf-16-le")
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute("SELECT CAST(NULL AS NVARCHAR(20)) AS null_str")
+        value = cursor.fetchone()[0]
+        assert value is None, f"NULL NVARCHAR must remain None, got {value!r}"
+        assert calls == [], "WVARCHAR converter must not be invoked for a NULL value"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_wvarchar_applies_to_varchar_column_gh691(db_connection):
+    """GH #691: the gated WVARCHAR fallback still applies to VARCHAR columns (mapped type str).
+
+    VARCHAR maps to the Python type ``str`` just like NVARCHAR, so a SQL_WVARCHAR converter
+    fires on it and receives the value as UTF-16LE bytes.
+    """
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    calls = []
+
+    def wvarchar_spy(value):
+        calls.append(value)
+        return "CONV:" + value.decode("utf-16-le")
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute("SELECT CAST('abc' AS VARCHAR(20)) AS vchar")
+        value = cursor.fetchone()[0]
+        assert value == "CONV:abc", f"VARCHAR column not converted by WVARCHAR fallback: {value!r}"
+        assert len(calls) == 1, f"WVARCHAR converter should fire once on VARCHAR, got {len(calls)}"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_wvarchar_mixed_result_set_gh691(db_connection):
+    """GH #691: in a mixed row, the WVARCHAR converter fires only on the string column.
+
+    INT and DECIMAL columns (non str/bytes mapped types) must be untouched; only the NVARCHAR
+    column is converted, and the converter is invoked exactly once.
+    """
+    import decimal
+
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    calls = []
+
+    def wvarchar_spy(value):
+        calls.append(value)
+        if isinstance(value, bytes):
+            return "CONV:" + value.decode("utf-16-le")
+        return "CONV_NON_STRING"
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute(
+            "SELECT CAST(1 AS INT) AS i, "
+            "CAST('abc' AS NVARCHAR(10)) AS s, "
+            "CAST(12.34 AS DECIMAL(10, 2)) AS d"
+        )
+        i_val, s_val, d_val = cursor.fetchone()
+        assert isinstance(i_val, int) and i_val == 1, f"INT column mangled: {i_val!r}"
+        assert s_val == "CONV:abc", f"NVARCHAR column not converted: {s_val!r}"
+        assert d_val == decimal.Decimal("12.34"), f"DECIMAL column mangled: {d_val!r}"
+        assert len(calls) == 1, (
+            "WVARCHAR converter must fire only on the NVARCHAR column; "
+            f"invoked {len(calls)} times on {calls!r}"
+        )
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_wvarchar_cached_map_multiple_fetches_gh691(db_connection):
+    """GH #691: the cached converter map behaves identically across multiple fetched rows.
+
+    The gated WVARCHAR fallback is computed once per statement; every row in a multi-row
+    result must be converted consistently, and the INT column must never be touched.
+    """
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    calls = []
+
+    def wvarchar_spy(value):
+        calls.append(value)
+        if isinstance(value, bytes):
+            return "CONV:" + value.decode("utf-16-le")
+        return "CONV_NON_STRING"
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute(
+            "SELECT CAST(10 AS INT) AS i, CAST(N'a' AS NVARCHAR(10)) AS s "
+            "UNION ALL SELECT CAST(20 AS INT), CAST(N'b' AS NVARCHAR(10)) "
+            "UNION ALL SELECT CAST(30 AS INT), CAST(N'c' AS NVARCHAR(10))"
+        )
+        rows = cursor.fetchall()
+        assert [r[0] for r in rows] == [10, 20, 30], "INT column must be untouched on every row"
+        assert [r[1] for r in rows] == [
+            "CONV:a",
+            "CONV:b",
+            "CONV:c",
+        ], "NVARCHAR column must be converted consistently on every row"
+        # Exactly one invocation per row -- the string column only, never the INT column.
+        assert (
+            len(calls) == 3
+        ), f"WVARCHAR converter must fire once per row (3 total), got {len(calls)}: {calls!r}"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
 def test_output_converter_with_null_values(db_connection):
     """Test that output converters handle NULL values correctly"""
     cursor = db_connection.cursor()
