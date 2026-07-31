@@ -14,8 +14,19 @@
 
 namespace py = pybind11;
 
-// Shorthand for adopting CPython new-references into pybind11 RAII.
-inline py::object steal(PyObject* p) { return py::reinterpret_steal<py::object>(py::handle(p)); }
+// Shorthand for adopting CPython references into pybind11 RAII, named after
+// nanobind's nb::steal / nb::borrow.
+//
+// steal  — takes ownership of a NEW reference without increfing. Applying it to
+//          a borrowed reference (PyList_GetItem, PyTuple_GetItem, PyDict_GetItem,
+//          PyDict_GetItemString) is a premature decref and a use-after-free.
+// borrow — increfs a BORROWED reference. Safe on a new reference only if the
+//          caller still decrefs it, which it usually should not.
+template <typename T = py::object>
+inline T steal(PyObject* p) { return py::reinterpret_steal<T>(py::handle(p)); }
+
+template <typename T = py::object>
+inline T borrow(PyObject* p) { return py::reinterpret_borrow<T>(py::handle(p)); }
 
 namespace PyTypeCache {
 
@@ -89,11 +100,12 @@ inline void initialize() {
     cache_initialized = true;
 }
 
-// Wrap a cached pointer as py::object (borrow for cached, steal for fallback import).
+// Wrap a cached pointer as py::object. A cached class is a module-lifetime
+// singleton we do not own, so borrow it; the fallback import path returns a new
+// reference, so steal it.
 inline py::object wrap_cached_or_imported(PyObject* obj) {
     if (!obj) throw py::error_already_set();
-    return cache_initialized ? py::reinterpret_borrow<py::object>(py::handle(obj))
-                             : py::reinterpret_steal<py::object>(obj);
+    return cache_initialized ? borrow(obj) : steal(obj);
 }
 
 inline PyObject* get_datetime_class() { return get_cached_class(datetime_class, "datetime", "datetime"); }

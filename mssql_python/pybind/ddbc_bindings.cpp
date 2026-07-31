@@ -577,7 +577,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 info.isDAE = true;
                 info.columnSize = 0;
                 info.utf16Len = utf16_len;
-                info.dataPtr = py::reinterpret_borrow<py::object>(py::handle(obj));
+                info.dataPtr = borrow(obj);
                 info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             } else {
@@ -611,7 +611,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (length > MAX_INLINE_BINARY) {
                 info.isDAE = true;
                 info.columnSize = 0;
-                info.dataPtr = py::reinterpret_borrow<py::object>(py::handle(obj));
+                info.dataPtr = borrow(obj);
             } else {
                 info.columnSize = std::max<SQLULEN>(length, 1);
             }
@@ -2369,7 +2369,7 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                 if (PyUnicode_Check(pyObj)) {
                     if (matchedInfo->paramCType == SQL_C_WCHAR) {
                         std::u16string utf16 =
-                            py::reinterpret_borrow<py::str>(py::handle(pyObj)).cast<std::u16string>();
+                            borrow<py::str>(pyObj).cast<std::u16string>();
                         rc = stream_dae_chunks(
                             reinterpretU16stringAsSqlWChar(utf16),
                             utf16.size() * sizeof(SQLWCHAR),
@@ -2382,7 +2382,7 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                         // Encode the string using the specified encoding
                         std::string encodedStr;
                         try {
-                            py::object encoded = py::reinterpret_borrow<py::object>(py::handle(pyObj))
+                            py::object encoded = borrow(pyObj)
                                                      .attr("encode")(charEncoding, "strict");
                             encodedStr = encoded.cast<std::string>();
                             LOG("SQLExecute: DAE SQL_C_CHAR - Encoded with '%s', %zu bytes",
@@ -2406,7 +2406,7 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                     size_t totalBytes = 0;
                     std::string bytesStorage;  // lifetime must span the loop
                     if (PyBytes_Check(pyObj)) {
-                        bytesStorage = py::reinterpret_borrow<py::bytes>(py::handle(pyObj));
+                        bytesStorage = borrow<py::bytes>(pyObj);
                         dataPtr = bytesStorage.data();
                         totalBytes = bytesStorage.size();
                     } else {
@@ -2570,7 +2570,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             if (PyUnicode_Check(pyObj)) {
                 if (matchedInfo->paramCType == SQL_C_WCHAR) {
                     std::u16string u16 =
-                        py::reinterpret_borrow<py::str>(py::handle(pyObj)).cast<std::u16string>();
+                        borrow<py::str>(pyObj).cast<std::u16string>();
                     rc = stream_dae_chunks(
                         reinterpretU16stringAsSqlWChar(u16),
                         u16.size() * sizeof(SQLWCHAR),
@@ -2578,7 +2578,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     if (!SQL_SUCCEEDED(rc)) return rc;
                 } else if (matchedInfo->paramCType == SQL_C_CHAR) {
                     std::string encodedStr;
-                    py::object encoded = py::reinterpret_borrow<py::object>(py::handle(pyObj))
+                    py::object encoded = borrow(pyObj)
                                              .attr("encode")(charEncoding, "strict");
                     encodedStr = encoded.cast<std::string>();
                     rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
@@ -2594,7 +2594,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 std::string bytesStorage;  // lifetime must span the loop
 
                 if (PyBytes_Check(pyObj)) {
-                    bytesStorage = py::reinterpret_borrow<py::bytes>(py::handle(pyObj));
+                    bytesStorage = borrow<py::bytes>(pyObj);
                     dataPtr = bytesStorage.data();
                     totalBytes = bytesStorage.size();
                 } else {
