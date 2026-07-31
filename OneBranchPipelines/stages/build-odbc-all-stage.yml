@@ -57,6 +57,15 @@ parameters:
 stages:
   - stage: ${{ parameters.stageName }}
     displayName: 'ODBC Build All Wheels (single host)'
+    # This stage MUST run first: the mssql-python build stages depend on
+    # ConsolidateOdbc, which depends on this stage. It is declared LAST in the
+    # orchestrator YAML (right after Consolidate), so WITHOUT an explicit empty
+    # dependsOn, Azure's implicit "depends on the previous stage" rule would chain it
+    # to Consolidate and form a cycle:
+    #   ODBC_BuildAll -> Consolidate -> (18 platform builds) -> ConsolidateOdbc -> ODBC_BuildAll
+    # which fails the pipeline at compile time. An empty dependsOn breaks that implicit
+    # link so ODBC_BuildAll has no dependencies and runs first.
+    dependsOn: []
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build all 7 ODBC wheels on one Windows host'
