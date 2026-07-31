@@ -97,7 +97,15 @@ def get_platform_info():
     # arch from ODBC_TARGET_ARCH) instead of inferring from the build host.
     explicit_tag = os.environ.get("ODBC_TARGET_PLATFORM_TAG")
     if explicit_tag:
-        return os.environ.get("ODBC_TARGET_ARCH", ""), explicit_tag
+        target_arch = os.environ.get("ODBC_TARGET_ARCH", "").strip()
+        if not target_arch:
+            raise OSError(
+                "ODBC_TARGET_ARCH must be set (non-empty) when "
+                "ODBC_TARGET_PLATFORM_TAG is provided: an empty arch would expand the "
+                "libs/ package_data globs to EVERY architecture's subtree and leak "
+                "foreign-platform driver binaries into the wheel."
+            )
+        return target_arch, explicit_tag
 
     if sys.platform.startswith("win"):
         arch = os.environ.get("ARCHITECTURE", "x64")

@@ -5,7 +5,7 @@ Verifies that the driver correctly handles paths containing non-ASCII
 characters on Windows (e.g., usernames like 'Thalén', folders like 'café').
 
 Bug Summary:
-- GetModuleDirectory() used ANSI APIs (PathRemoveFileSpecA) which corrupted UTF-8 paths
+- The module-directory resolver used ANSI APIs (PathRemoveFileSpecA) which corrupted UTF-8 paths
 - LoadDriverLibrary() used broken UTF-8→UTF-16 conversion: std::wstring(path.begin(), path.end())
 - LoadDriverOrThrowException() used same broken pattern for mssql-auth.dll
 
@@ -28,15 +28,15 @@ class TestPathHandlingCodePaths:
     Test that path handling code paths are exercised correctly.
 
     These tests run by DEFAULT and verify the fixed C++ functions
-    (GetModuleDirectory, LoadDriverLibrary) are working.
+    (GetOdbcLibsBaseDir, LoadDriverLibrary) are working.
     """
 
     def test_module_import_exercises_path_handling(self):
         """
-        Verify module import succeeds - this exercises GetModuleDirectory().
+        Verify module import succeeds - this exercises GetOdbcLibsBaseDir().
 
         When mssql_python imports, it calls:
-        1. GetModuleDirectory() - to find module location
+        1. GetOdbcLibsBaseDir() - to resolve the ODBC driver libs directory
         2. LoadDriverLibrary() - to load ODBC driver
         3. LoadLibraryW() for mssql-auth.dll on Windows
 
