@@ -131,65 +131,11 @@ struct ParamInfo {
     SQLSMALLINT decimalDigits = 0;
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
-    // Holds a strong reference to the Python object for DAE (data-at-execution) streaming.
-    // Raw pointer + manual Py_INCREF/DECREF (not a RAII wrapper) because ParamInfo has custom
-    // copy/move semantics and is exposed to pybind11 type_caster — changing the member
-    // type would ripple through struct layout, copy/move operators, and property bindings.
-    PyObject* dataPtr = nullptr;
+    // Strong reference to the Python object for DAE (data-at-execution) streaming.
+    // py::object owns the refcount, so the compiler-generated destructor, copy and
+    // move operations are all correct and this struct needs no rule-of-five.
+    py::object dataPtr;
     Py_ssize_t utf16Len = 0;  // UTF-16 code unit count for string params
-
-    ParamInfo() = default;
-    ~ParamInfo() { Py_XDECREF(dataPtr); }
-    // Copy needed by pybind11 type_caster for the legacy path (std::vector<ParamInfo>&).
-    ParamInfo(const ParamInfo& other)
-        : inputOutputType(other.inputOutputType), paramCType(other.paramCType),
-          paramSQLType(other.paramSQLType), columnSize(other.columnSize),
-          decimalDigits(other.decimalDigits), strLenOrInd(other.strLenOrInd),
-          isDAE(other.isDAE), dataPtr(other.dataPtr), utf16Len(other.utf16Len) {
-        Py_XINCREF(dataPtr);
-    }
-    // Copy/move assignment and move constructor below are required for
-    // std::vector<ParamInfo> resize/reallocation and pybind11's type_caster.
-    // They manually manage dataPtr refcounts since ParamInfo owns a strong ref.
-    ParamInfo& operator=(const ParamInfo& other) {
-        if (this != &other) {
-            Py_XDECREF(dataPtr);
-            inputOutputType = other.inputOutputType;
-            paramCType = other.paramCType;
-            paramSQLType = other.paramSQLType;
-            columnSize = other.columnSize;
-            decimalDigits = other.decimalDigits;
-            strLenOrInd = other.strLenOrInd;
-            isDAE = other.isDAE;
-            dataPtr = other.dataPtr;
-            utf16Len = other.utf16Len;
-            Py_XINCREF(dataPtr);
-        }
-        return *this;
-    }
-    ParamInfo(ParamInfo&& other) noexcept
-        : inputOutputType(other.inputOutputType), paramCType(other.paramCType),
-          paramSQLType(other.paramSQLType), columnSize(other.columnSize),
-          decimalDigits(other.decimalDigits), strLenOrInd(other.strLenOrInd),
-          isDAE(other.isDAE), dataPtr(other.dataPtr), utf16Len(other.utf16Len) {
-        other.dataPtr = nullptr;
-    }
-    ParamInfo& operator=(ParamInfo&& other) noexcept {
-        if (this != &other) {
-            Py_XDECREF(dataPtr);
-            inputOutputType = other.inputOutputType;
-            paramCType = other.paramCType;
-            paramSQLType = other.paramSQLType;
-            columnSize = other.columnSize;
-            decimalDigits = other.decimalDigits;
-            strLenOrInd = other.strLenOrInd;
-            isDAE = other.isDAE;
-            dataPtr = other.dataPtr;
-            utf16Len = other.utf16Len;
-            other.dataPtr = nullptr;
-        }
-        return *this;
-    }
 };
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -631,8 +577,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 info.isDAE = true;
                 info.columnSize = 0;
                 info.utf16Len = utf16_len;
-                info.dataPtr = obj;
-                Py_INCREF(obj);
+                info.dataPtr = py::reinterpret_borrow<py::object>(py::handle(obj));
                 info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             } else {
@@ -666,8 +611,7 @@ std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             if (length > MAX_INLINE_BINARY) {
                 info.isDAE = true;
                 info.columnSize = 0;
-                info.dataPtr = obj;
-                Py_INCREF(obj);
+                info.dataPtr = py::reinterpret_borrow<py::object>(py::handle(obj));
             } else {
                 info.columnSize = std::max<SQLULEN>(length, 1);
             }
@@ -2417,7 +2361,7 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
                 if (!matchedInfo) {
                     ThrowStdException("Unrecognized paramToken returned by SQLParamData");
                 }
-                PyObject* pyObj = matchedInfo->dataPtr;
+                PyObject* pyObj = matchedInfo->dataPtr.ptr();
                 if (!pyObj || pyObj == Py_None) {
                     putData(nullptr, 0);
                     continue;
@@ -2616,7 +2560,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             if (!matchedInfo) {
                 ThrowStdException("SQLExecuteFast: unrecognized paramToken from SQLParamData");
             }
-            PyObject* pyObj = matchedInfo->dataPtr;
+            PyObject* pyObj = matchedInfo->dataPtr.ptr();
             if (!pyObj || pyObj == Py_None) {
                 py::gil_scoped_release release;
                 SQLPutData_ptr(hStmt, nullptr, 0);
@@ -6518,13 +6462,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                 if (!info.dataPtr) {
                     return py::none();
                 }
-                return py::reinterpret_borrow<py::object>(py::handle(info.dataPtr));
+                return info.dataPtr;
             },
-            [](ParamInfo& info, py::object obj) {
-                Py_XINCREF(obj.ptr());
-                Py_XDECREF(info.dataPtr);
-                info.dataPtr = obj.ptr();
-            })
+            [](ParamInfo& info, py::object obj) { info.dataPtr = std::move(obj); })
         .def_readwrite("isDAE", &ParamInfo::isDAE);
 
     // Define numeric data class
