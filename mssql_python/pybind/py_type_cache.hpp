@@ -12,21 +12,9 @@
 #include <datetime.h>
 #include <pybind11/pybind11.h>
 
+#include "py_ref.hpp"  // steal / borrow
+
 namespace py = pybind11;
-
-// Shorthand for adopting CPython references into pybind11 RAII, named after
-// nanobind's nb::steal / nb::borrow.
-//
-// steal  — takes ownership of a NEW reference without increfing. Applying it to
-//          a borrowed reference (PyList_GetItem, PyTuple_GetItem, PyDict_GetItem,
-//          PyDict_GetItemString) is a premature decref and a use-after-free.
-// borrow — increfs a BORROWED reference. Safe on a new reference only if the
-//          caller still decrefs it, which it usually should not.
-template <typename T = py::object>
-inline T steal(PyObject* p) { return py::reinterpret_steal<T>(py::handle(p)); }
-
-template <typename T = py::object>
-inline T borrow(PyObject* p) { return py::reinterpret_borrow<T>(py::handle(p)); }
 
 namespace PyTypeCache {
 
