@@ -1667,10 +1667,18 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
     return ret;
 }
 
-// Executes the provided query. If the query is parametrized, it prepares the
-// statement and binds the parameters. Otherwise, it executes the query
-// directly. 'usePrepare' parameter can be used to disable the prepare step for
-// queries that might already be prepared in a previous call.
+// LEGACY — slated for removal in a future optimization round.
+//
+// Executes the provided query using a ParamInfo list that Python already built,
+// rather than detecting parameter types in C++. Retained only for setinputsizes()
+// callers, whose explicit type overrides the native path does not yet honour.
+// Every parameter crosses the pybind11 boundary as a ParamInfo object here, which
+// is the cost SQLExecute_wrap exists to avoid. Once setinputsizes is handled
+// natively this function and its DDBCSQLExecuteLegacy binding both go away.
+//
+// If the query is parametrized, it prepares the statement and binds the
+// parameters. Otherwise, it executes the query directly. 'usePrepare' can be used
+// to disable the prepare step for queries already prepared in a previous call.
 SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                           const py::list& params, std::vector<ParamInfo>& paramInfos,
                           py::list& isStmtPrepared, const bool usePrepare,
@@ -5936,12 +5944,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
+    // LEGACY — to be removed once setinputsizes overrides are handled natively.
     m.def("DDBCSQLExecuteLegacy", &SQLExecuteLegacy_wrap,
-          "Legacy path: accepts pre-built ParamInfo from Python (used with setinputsizes)",
+          "Legacy path (slated for removal): accepts pre-built ParamInfo from Python, "
+          "used only when setinputsizes overrides are present",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),
           py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
+    // Standard path — what cursor.execute() uses unless setinputsizes is active.
     m.def("DDBCSQLExecute", &SQLExecute_wrap,
-          "Primary path: DetectParamTypes + BindParameters + SQLExecute all in C++",
+          "Standard path: DetectParamTypes + BindParameters + SQLExecute all in C++",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"),
           py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",

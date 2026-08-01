@@ -1,5 +1,5 @@
 """
-Parity tests: assert that the primary path (C++ DetectParamTypes + DDBCSQLExecute)
+Parity tests: assert that the standard path (C++ DetectParamTypes + DDBCSQLExecute)
 and legacy path (Python _map_sql_type + DDBCSQLExecuteLegacy) produce identical query
 results for representative parameter types.
 
@@ -22,8 +22,8 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 # ---------------------------------------------------------------------------
 
 
-def _fast_path_roundtrip(cursor, value):
-    """Default fast path: no setinputsizes."""
+def _standard_roundtrip(cursor, value):
+    """Standard path: no setinputsizes, so C++ detects the types."""
     cursor.execute("SELECT ?", [value])
     return cursor.fetchone()[0]
 
@@ -77,9 +77,9 @@ def _slow_path_roundtrip(cursor, value, sql_type, column_size):
         b"x" * 100,
     ],
 )
-def test_fast_path_basic_types(cursor, value):
-    """Fast path round-trips representative scalar types correctly."""
-    result = _fast_path_roundtrip(cursor, value)
+def test_standard_path_basic_types(cursor, value):
+    """Standard path round-trips representative scalar types correctly."""
+    result = _standard_roundtrip(cursor, value)
     assert result == value, (
         f"Fast-path roundtrip mismatch for {type(value).__name__} {value!r}: " f"got {result!r}"
     )
@@ -94,28 +94,28 @@ def test_int_subclass(cursor):
     class MyInt(int):
         pass
 
-    assert _fast_path_roundtrip(cursor, MyInt(42)) == 42
+    assert _standard_roundtrip(cursor, MyInt(42)) == 42
 
 
 def test_str_subclass(cursor):
     class MyStr(str):
         pass
 
-    assert _fast_path_roundtrip(cursor, MyStr("hello")) == "hello"
+    assert _standard_roundtrip(cursor, MyStr("hello")) == "hello"
 
 
 def test_bytes_subclass(cursor):
     class MyBytes(bytes):
         pass
 
-    assert _fast_path_roundtrip(cursor, MyBytes(b"hello")) == b"hello"
+    assert _standard_roundtrip(cursor, MyBytes(b"hello")) == b"hello"
 
 
 def test_float_subclass(cursor):
     class MyFloat(float):
         pass
 
-    assert _fast_path_roundtrip(cursor, MyFloat(3.14)) == 3.14
+    assert _standard_roundtrip(cursor, MyFloat(3.14)) == 3.14
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def test_no_refcount_leak_on_in_place_replacement(cursor):
 
 
 def test_unsupported_type_raises_typeerror(cursor):
-    """Fast path must raise TypeError for unknown parameter types — matching
+    """Standard path must raise TypeError for unknown parameter types — matching
     the slow path's `_map_sql_type` final branch."""
     with pytest.raises(TypeError):
         cursor.execute("SELECT ?", [{1, 2, 3}])  # set is not bindable
@@ -191,7 +191,7 @@ def test_decimal_nan_rejected(cursor):
 )
 def test_fast_slow_path_parity(cursor, value, sql_type, column_size):
     """Same input through both paths produces the same output."""
-    fast = _fast_path_roundtrip(cursor, value)
+    fast = _standard_roundtrip(cursor, value)
     slow = _slow_path_roundtrip(cursor, value, sql_type=sql_type, column_size=column_size)
     assert fast == slow, f"Fast/slow path divergence for {value!r}: fast={fast!r} slow={slow!r}"
 

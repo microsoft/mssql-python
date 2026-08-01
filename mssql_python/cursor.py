@@ -982,6 +982,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     ) -> Tuple[int, int, int, int, bool]:
         """
         Maps parameter types for the given parameter.
+
+        Python-side type detection. The standard execute() path no longer calls this —
+        DetectParamTypes does the same job in C++ without crossing the pybind11
+        boundary per parameter. Two callers remain: the legacy execute() branch used
+        when setinputsizes overrides are active, and executemany(). The former goes
+        away once setinputsizes is handled natively; the latter needs its own
+        native columnwise detection before this can be deleted outright.
+
         Args:
             parameter: parameter to bind.
         Returns:
@@ -1506,13 +1514,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        # Primary path: when no inputsizes override, do type detection + bind + execute
-        # entirely in C++. ParamInfo never crosses the pybind11 boundary.
-        use_fast_path = parameters and not (
+        # Standard path: when no inputsizes override, type detection + bind + execute
+        # all happen in C++ via DDBCSQLExecute. ParamInfo never crosses the pybind11
+        # boundary. This is the path ~99% of calls take.
+        use_standard_execute = parameters and not (
             self._inputsizes and any(s is not None for s in self._inputsizes)
         )
 
-        if use_fast_path:
+        if use_standard_execute:
             ret = ddbc_bindings.DDBCSQLExecute(
                 self.hstmt,
                 operation,
@@ -1522,7 +1531,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 encoding_settings,
             )
         else:
-            # Legacy path: Python-side type detection (used when setinputsizes overrides are present)
+            # LEGACY PATH — slated for removal in a future optimization round.
+            #
+            # Kept only for setinputsizes() callers, where the user's explicit type
+            # overrides have to be honoured instead of C++ detecting types itself.
+            # Type detection happens in Python here, so every parameter round-trips
+            # through pybind11 as a ParamInfo object, which is what makes it slow.
+            # Once setinputsizes overrides are handled natively, this branch and
+            # DDBCSQLExecuteLegacy both go away.
             parameters_type = []
             if parameters:
                 param_info = ddbc_bindings.ParamInfo
@@ -1545,6 +1561,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         parameters_type[i].inputOutputType,
                     )
 
+            # Legacy binding: accepts the pre-built ParamInfo list from Python.
+            # Goes away with the branch above.
             ret = ddbc_bindings.DDBCSQLExecuteLegacy(
                 self.hstmt,
                 operation,

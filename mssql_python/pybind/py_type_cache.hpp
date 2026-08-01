@@ -39,8 +39,10 @@ inline PyObject* import_attr(const char* module_name, const char* attr_name) {
     return attr;
 }
 
-// Return cached type, falling back to import for legacy paths that call
-// before initialize() has run.
+// Return cached type, falling back to a fresh import for callers that run before
+// initialize() has. The fallback exists for the legacy execute path, which does its
+// type detection in Python and can therefore reach here without the cache being warm;
+// it can be dropped once that path is removed.
 inline PyObject* get_cached_class(PyObject* cached, const char* module_name, const char* attr_name) {
     if (cache_initialized && cached) return cached;
     py::object mod = steal(PyImport_ImportModule(module_name));
