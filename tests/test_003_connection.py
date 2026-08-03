@@ -21,6 +21,7 @@ Functions:
 
 from mssql_python.exceptions import InterfaceError, ProgrammingError, DatabaseError
 import mssql_python
+import decimal
 import sys
 import pytest
 import time
@@ -1978,6 +1979,88 @@ def test_output_converter_wvarchar_not_catchall_for_non_string_columns_gh691(db_
         cursor.close()
 
 
+def test_output_converter_integer_sql_type_key_gh684(db_connection):
+    """Integer ODBC SQL-type keys must dispatch (pyodbc-compatible). Regression for GH #684.
+
+    add_output_converter documents an integer SQL type code, but dispatch used to key on
+    the Python type in cursor.description[i][1], so integer keys silently never fired.
+    """
+    cursor = db_connection.cursor()
+    decimal_query = "SELECT CAST(19.99 AS DECIMAL(10, 2)) AS price"
+
+    try:
+        # 1) Integer SQL-type key fires (the reported bug: it used to silently no-op).
+        db_connection.add_output_converter(
+            mssql_python.SQL_DECIMAL, lambda v: None if v is None else float(v)
+        )
+        cursor.execute(decimal_query)
+        value = cursor.fetchone()[0]
+        assert isinstance(value, float), "Integer SQL_DECIMAL converter did not fire"
+        assert value == 19.99
+        db_connection.clear_output_converters()
+
+        # 2) Exact-type dispatch: an SQL_INTEGER converter must NOT touch a DECIMAL column.
+        db_connection.add_output_converter(mssql_python.SQL_INTEGER, lambda v: "SHOULD_NOT_FIRE")
+        cursor.execute(decimal_query)
+        value = cursor.fetchone()[0]
+        assert isinstance(value, decimal.Decimal), "SQL_INTEGER converter wrongly hit DECIMAL"
+        # ...but it does fire on an INTEGER column.
+        cursor.execute("SELECT CAST(42 AS INT) AS n")
+        assert cursor.fetchone()[0] == "SHOULD_NOT_FIRE", "SQL_INTEGER converter did not fire"
+        db_connection.clear_output_converters()
+
+        # 3) Integer SQL-type key takes precedence over a Python-type key on the same column.
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "python-type")
+        db_connection.add_output_converter(mssql_python.SQL_DECIMAL, lambda v: "int-type")
+        cursor.execute(decimal_query)
+        assert cursor.fetchone()[0] == "int-type", "Integer key should win over Python-type key"
+        db_connection.clear_output_converters()
+
+        # 4) Distinct converters for DECIMAL vs NUMERIC (exact type, not collapsed to Decimal).
+        db_connection.add_output_converter(mssql_python.SQL_DECIMAL, lambda v: "D")
+        db_connection.add_output_converter(mssql_python.SQL_NUMERIC, lambda v: "N")
+        cursor.execute("SELECT CAST(1.5 AS DECIMAL(10, 2)) AS x")
+        assert cursor.fetchone()[0] == "D"
+        cursor.execute("SELECT CAST(1.5 AS NUMERIC(10, 2)) AS x")
+        assert cursor.fetchone()[0] == "N"
+        db_connection.clear_output_converters()
+
+        # 5) NULL still yields None regardless of an integer-keyed converter.
+        db_connection.add_output_converter(
+            mssql_python.SQL_DECIMAL, lambda v: None if v is None else float(v)
+        )
+        cursor.execute("SELECT CAST(NULL AS DECIMAL(10, 2)) AS price")
+        assert cursor.fetchone()[0] is None
+        db_connection.clear_output_converters()
+
+        # 6) String path: an integer SQL_WVARCHAR key fires on an NVARCHAR column and
+        #    receives the raw value as UTF-16LE bytes (the documented string contract).
+        db_connection.add_output_converter(
+            mssql_python.SQL_WVARCHAR,
+            lambda v: None if v is None else "CONV:" + v.decode("utf-16-le"),
+        )
+        cursor.execute("SELECT CAST(N'hello' AS NVARCHAR(50)) AS s")
+        assert cursor.fetchone()[0] == "CONV:hello", "Integer SQL_WVARCHAR converter did not fire"
+        db_connection.clear_output_converters()
+
+        # 7) Metadata result sets also honor output converters (GH #684 metadata path).
+        #    Black-box check: a string column from a catalog result set must be passed
+        #    through the registered SQL_WVARCHAR converter, not just cached internally.
+        db_connection.add_output_converter(
+            mssql_python.SQL_WVARCHAR,
+            lambda v: None if v is None else "CONV:" + v.decode("utf-16-le"),
+        )
+        cursor.tables()
+        row = cursor.fetchone()
+        assert row is not None, "tables() should return at least one catalog row"
+        assert any(
+            isinstance(col, str) and col.startswith("CONV:") for col in row
+        ), "Metadata result sets must apply output converters to their string columns"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
 def test_output_converter_wvarchar_null_string_gh691(db_connection):
     """GH #691: a NULL string value stays None and the WVARCHAR converter is never called.
 
@@ -1998,6 +2081,46 @@ def test_output_converter_wvarchar_null_string_gh691(db_connection):
         value = cursor.fetchone()[0]
         assert value is None, f"NULL NVARCHAR must remain None, got {value!r}"
         assert calls == [], "WVARCHAR converter must not be invoked for a NULL value"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_python_type_covers_multiple_sql_types_gh684(db_connection):
+    """A single Python-type converter must cover every SQL type that materializes to it.
+
+    DECIMAL, NUMERIC, MONEY and SMALLMONEY all surface as ``decimal.Decimal`` in
+    cursor.description[i][1], so one ``add_output_converter(decimal.Decimal, ...)`` must
+    fire for all four. Conversely, an integer SQL-type key is exact-match: SQL_DECIMAL
+    (code 3) also covers MONEY/SMALLMONEY (which report code 3) but never NUMERIC (code 2).
+    """
+    cursor = db_connection.cursor()
+    query = (
+        "SELECT CAST(1.10 AS DECIMAL(10, 2)) AS dec_c, "
+        "CAST(2.20 AS NUMERIC(10, 2)) AS num_c, "
+        "CAST(3.30 AS MONEY) AS money_c, "
+        "CAST(4.40 AS SMALLMONEY) AS sm_c"
+    )
+    try:
+        # Phase 1: one Python-type converter fires for all four decimal-like columns.
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "D:" + str(v))
+        cursor.execute(query)
+        dec_c, num_c, money_c, sm_c = cursor.fetchone()
+        assert dec_c.startswith("D:"), "decimal.Decimal converter missed DECIMAL"
+        assert num_c.startswith("D:"), "decimal.Decimal converter missed NUMERIC"
+        assert money_c.startswith("D:"), "decimal.Decimal converter missed MONEY"
+        assert sm_c.startswith("D:"), "decimal.Decimal converter missed SMALLMONEY"
+        db_connection.clear_output_converters()
+
+        # Phase 2: an integer SQL_DECIMAL key is exact-match on the ODBC code. MONEY and
+        # SMALLMONEY share DECIMAL's code (3), so they fire; NUMERIC (code 2) does not.
+        db_connection.add_output_converter(mssql_python.SQL_DECIMAL, lambda v: "INT3")
+        cursor.execute(query)
+        dec_c, num_c, money_c, sm_c = cursor.fetchone()
+        assert dec_c == "INT3", "SQL_DECIMAL integer key did not fire on DECIMAL"
+        assert money_c == "INT3", "SQL_DECIMAL integer key did not fire on MONEY"
+        assert sm_c == "INT3", "SQL_DECIMAL integer key did not fire on SMALLMONEY"
+        assert isinstance(num_c, decimal.Decimal), "SQL_DECIMAL key wrongly hit NUMERIC"
     finally:
         db_connection.clear_output_converters()
         cursor.close()
@@ -2066,6 +2189,28 @@ def test_output_converter_wvarchar_mixed_result_set_gh691(db_connection):
         cursor.close()
 
 
+def test_output_converter_python_type_datetime_and_bytes_gh684(db_connection):
+    """Python-type converters must work for datetime and bytes columns, not just numbers.
+
+    DATETIME materializes to ``datetime.datetime`` and VARBINARY to ``bytes``; the value is
+    handed to the converter as-is (only ``str`` values are pre-encoded to UTF-16LE bytes).
+    """
+    cursor = db_connection.cursor()
+    try:
+        db_connection.add_output_converter(datetime, lambda v: "DT:" + v.isoformat())
+        db_connection.add_output_converter(bytes, lambda v: "B:" + v.hex())
+        cursor.execute(
+            "SELECT CAST('2021-06-07 08:09:10' AS DATETIME) AS dt, "
+            "CAST(0x41004200 AS VARBINARY(8)) AS b"
+        )
+        dt_val, bin_val = cursor.fetchone()
+        assert dt_val == "DT:2021-06-07T08:09:10", "datetime.datetime converter did not fire"
+        assert bin_val == "B:41004200", "bytes converter did not fire"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
 def test_output_converter_wvarchar_cached_map_multiple_fetches_gh691(db_connection):
     """GH #691: the cached converter map behaves identically across multiple fetched rows.
 
@@ -2100,6 +2245,137 @@ def test_output_converter_wvarchar_cached_map_multiple_fetches_gh691(db_connecti
         assert (
             len(calls) == 3
         ), f"WVARCHAR converter must fire once per row (3 total), got {len(calls)}: {calls!r}"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_null_value_skips_converter_gh684(db_connection):
+    """A SQL NULL is returned as None and the converter is never invoked for it.
+
+    Both apply paths short-circuit on ``value is None``, so a registered converter is not
+    called with None. A spy proves the converter never runs on the NULL column.
+    """
+    cursor = db_connection.cursor()
+    calls = []
+
+    def spy(value):
+        calls.append(value)
+        return "SHOULD_NOT_APPEAR"
+
+    try:
+        db_connection.add_output_converter(decimal.Decimal, spy)
+        cursor.execute("SELECT CAST(NULL AS DECIMAL(10, 2)) AS n")
+        value = cursor.fetchone()[0]
+        assert value is None, "SQL NULL must be returned as None"
+        assert calls == [], "Converter must not be invoked for a NULL value"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_mixed_result_set_gh684(db_connection):
+    """Distinct converters for different Python types coexist within one result set.
+
+    A single row exposing INT, DECIMAL, NVARCHAR and DATETIME columns must route each value
+    to its own type-keyed converter independently.
+    """
+    cursor = db_connection.cursor()
+    try:
+        db_connection.add_output_converter(int, lambda v: v + 1000)
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "DEC:" + str(v))
+        db_connection.add_output_converter(str, lambda v: "STR:" + v.decode("utf-16-le"))
+        db_connection.add_output_converter(datetime, lambda v: "DT:" + v.isoformat())
+        cursor.execute(
+            "SELECT CAST(7 AS INT) AS i, "
+            "CAST(1.50 AS DECIMAL(10, 2)) AS d, "
+            "CAST(N'hi' AS NVARCHAR(10)) AS s, "
+            "CAST('2021-06-07 08:09:10' AS DATETIME) AS dt"
+        )
+        i_val, d_val, s_val, dt_val = cursor.fetchone()
+        assert i_val == 1007, "int converter did not fire on INT column"
+        assert d_val == "DEC:1.50", "decimal.Decimal converter did not fire on DECIMAL column"
+        assert s_val == "STR:hi", "str converter did not fire on NVARCHAR column"
+        assert dt_val == "DT:2021-06-07T08:09:10", "datetime converter did not fire on DATETIME"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_unsupported_keys_are_noops_gh684(db_connection):
+    """Keys that match no ODBC code and no materialized Python type are harmless no-ops.
+
+    ``add_output_converter`` accepts an ``int`` or a ``type`` (pyodbc-compatible) and stores
+    whatever key is given. Dispatch, however, only matches an exact integer ODBC SQL type
+    code or a column's exact materialized Python type, so keys like ``set``, ``object`` or a
+    ``decimal.Decimal`` subclass are stored but never invoked. Spies prove they never fire
+    and the values pass through unchanged.
+    """
+    cursor = db_connection.cursor()
+
+    class MyDecimal(decimal.Decimal):
+        pass
+
+    set_calls, object_calls, subclass_calls = [], [], []
+
+    def set_spy(value):
+        set_calls.append(value)
+        return "SET_FIRED"
+
+    def object_spy(value):
+        object_calls.append(value)
+        return "OBJECT_FIRED"
+
+    def subclass_spy(value):
+        subclass_calls.append(value)
+        return "SUBCLASS_FIRED"
+
+    try:
+        db_connection.add_output_converter(set, set_spy)
+        db_connection.add_output_converter(object, object_spy)
+        db_connection.add_output_converter(MyDecimal, subclass_spy)
+        cursor.execute(
+            "SELECT CAST(5 AS INT) AS i, "
+            "CAST(6.50 AS DECIMAL(10, 2)) AS d, "
+            "CAST(N'x' AS NVARCHAR(10)) AS s, "
+            "CAST(0x4100 AS VARBINARY(4)) AS b"
+        )
+        i_val, d_val, s_val, b_val = cursor.fetchone()
+        # None of the unsupported-key converters were ever invoked.
+        assert set_calls == [], "set-keyed converter must never be invoked"
+        assert object_calls == [], "object-keyed converter must never be invoked"
+        assert subclass_calls == [], "Decimal-subclass-keyed converter must never be invoked"
+        # Values pass through unchanged as their native Python types.
+        assert i_val == 5, "INT value must be unchanged by a no-op converter"
+        assert isinstance(d_val, decimal.Decimal), "DECIMAL value must remain decimal.Decimal"
+        assert isinstance(s_val, str), "NVARCHAR value must remain str"
+        assert isinstance(b_val, (bytes, bytearray)), "VARBINARY value must remain bytes"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_cached_map_across_multiple_rows_gh684(db_connection):
+    """The per-statement converter map is cached once and applied to every fetched row.
+
+    A converter registered before execute() must convert all rows consistently, proving the
+    cached converter map is reused (not rebuilt or dropped) across a multi-row fetchall().
+    """
+    cursor = db_connection.cursor()
+    try:
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "R:" + str(v))
+        cursor.execute(
+            "SELECT CAST(1.50 AS DECIMAL(10, 2)) AS d "
+            "UNION ALL SELECT CAST(2.50 AS DECIMAL(10, 2)) "
+            "UNION ALL SELECT CAST(3.50 AS DECIMAL(10, 2))"
+        )
+        rows = cursor.fetchall()
+        assert len(rows) == 3, "Expected three rows from the UNION ALL"
+        assert [r[0] for r in rows] == [
+            "R:1.50",
+            "R:2.50",
+            "R:3.50",
+        ], "Cached converter map must convert every row consistently"
     finally:
         db_connection.clear_output_converters()
         cursor.close()
