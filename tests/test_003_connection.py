@@ -2381,6 +2381,51 @@ def test_output_converter_cached_map_across_multiple_rows_gh684(db_connection):
         cursor.close()
 
 
+def test_output_converter_int_column_converter_vs_wvarchar_gating_gh691(db_connection):
+    """An INT-column converter runs; the WVARCHAR fallback never touches a non-string column.
+
+    Locks in the GH #691 gating so it cannot regress. Positive: a converter registered against
+    the INT column (via its SQL_INTEGER type code) still fires and receives the raw integer.
+    Negative: with only a SQL_WVARCHAR converter registered, that converter must NOT sneak onto
+    the INT column -- the value passes through untouched and the converter is never invoked.
+    """
+    cursor = db_connection.cursor()
+    int_query = "SELECT CAST(42 AS INT) AS n"
+    try:
+        # Positive: an INT-column converter still runs and sees the raw integer value.
+        int_calls = []
+
+        def int_spy(value):
+            int_calls.append(value)
+            return "INT:" + str(value)
+
+        db_connection.add_output_converter(mssql_python.SQL_INTEGER, int_spy)
+        cursor.execute(int_query)
+        value = cursor.fetchone()[0]
+        assert value == "INT:42", "Registered INT-column converter did not fire"
+        assert int_calls == [42], f"INT converter must see the raw int, got {int_calls!r}"
+        db_connection.clear_output_converters()
+
+        # Negative (GH #691): a WVARCHAR converter must not sneak onto the INT column.
+        wvarchar_calls = []
+
+        def wvarchar_spy(value):
+            wvarchar_calls.append(value)
+            return "SHOULD_NOT_FIRE"
+
+        db_connection.add_output_converter(mssql_python.SQL_WVARCHAR, wvarchar_spy)
+        cursor.execute(int_query)
+        value = cursor.fetchone()[0]
+        assert value == 42, f"WVARCHAR fallback must not touch the INT column, got {value!r}"
+        assert wvarchar_calls == [], (
+            "WVARCHAR converter must never be invoked on a non-string (INT) column; "
+            f"it was called on {wvarchar_calls!r}"
+        )
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
 def test_output_converter_with_null_values(db_connection):
     """Test that output converters handle NULL values correctly"""
     cursor = db_connection.cursor()
