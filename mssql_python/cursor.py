@@ -105,6 +105,14 @@ class _ArrowReader:
       * Cached ``pyarrow.ArrowInvalid`` avoids per-read imports on the
         post-close error path.
       * ``__del__`` is guarded against interpreter finalization.
+      * The public method surface is *delegated* to the inner pyarrow reader
+        via ``__getattr__`` rather than hand-enumerated: any method pyarrow
+        provides (``read_all``, ``read_pandas``, ``cast``, ``schema``,
+        ``read_next_batch``, and anything added by future pyarrow
+        versions) transparently forwards.  Only the methods the wrapper
+        genuinely intercepts stay explicit: ``close``, ``closed``,
+        ``__arrow_c_stream__``, ``__iter__``/``__next__``,
+        ``__enter__``/``__exit__``, ``__del__``.
 
     The parent ``Cursor`` is **not** closed; it remains fully usable.
     """
@@ -133,17 +141,33 @@ class _ArrowReader:
         """True once ``close()`` has been called."""
         return self._closed
 
-    @property
-    def schema(self):
-        """Schema of the record batches produced by this reader."""
-        if self._closed:
-            raise self._arrow_invalid("Reader is closed")
-        return self._inner.schema
+    def __getattr__(self, name):
+        """Delegate any attribute we don't explicitly define to the inner
+        ``pyarrow.RecordBatchReader``.
 
-    def read_next_batch(self):
+        Rationale: enumerating pyarrow's surface by hand was fragile —
+        methods like ``read_all()``, ``read_pandas()``, and ``cast()`` were
+        silently missing, breaking existing user code on upgrade, and every
+        future addition to ``RecordBatchReader`` would repeat the same
+        regression.  ``__getattr__`` is only invoked when normal attribute
+        lookup fails, so our explicit overrides (``close``, ``closed``,
+        ``__arrow_c_stream__``, iteration and context-manager protocols)
+        always win; everything else falls through to the wrapped reader.
+
+        Private / dunder names (leading ``_``) are refused so that a
+        partially-constructed instance during ``__del__`` cannot recurse
+        forever trying to resolve its own slot names via ``self._inner``.
+
+        Post-close access raises ``pyarrow.ArrowInvalid`` to match the
+        behaviour of the explicit ``__next__`` / ``__arrow_c_stream__``
+        methods — a reader that has been marked closed must not delegate
+        even if a retry-pending state still holds ``self._inner``.
+        """
+        if name.startswith("_"):
+            raise AttributeError(name)
         if self._closed:
             raise self._arrow_invalid("Reader is closed")
-        return self._inner.read_next_batch()
+        return getattr(self._inner, name)
 
     def __arrow_c_stream__(self, requested_schema=None):
         """Arrow PyCapsule Protocol — export as an Arrow C stream.
@@ -3006,7 +3030,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 try:
                     cur.hstmt._close_cursor()  # pylint: disable=protected-access
                 except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: _close_cursor failed: %s", e)
+                    # Elevated to WARNING: unlike the diag-drain failures
+                    # (which only cost us some warning text), a failed
+                    # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
+                    # and its locks/tempdb resources open on SQL Server
+                    # until this parent Cursor is closed or re-executed.
+                    # DEBUG is typically disabled in production, so that
+                    # leak would be invisible; WARNING makes it visible.
+                    logger.warning(
+                        "arrow_reader cleanup: _close_cursor failed (%s); "
+                        "server-side cursor may remain open until this "
+                        "Cursor is closed or re-executed",
+                        e,
+                    )
 
                 # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
                 #    runs unconditionally because SQL_CLOSE can return

@@ -1614,6 +1614,28 @@ void SqlHandle::cancel() {
     // _ArrowReader.close() call it unconditionally without coordinating with
     // the fetch thread. The GIL is released so a blocked fetch thread can
     // observe the cancel and return.
+    //
+    // Cross-thread invariant (why no mutex is needed):
+    //   The only cross-thread pattern this driver blesses is exactly the one
+    //   ODBC blesses: cancel() may be called from a thread *other than* the
+    //   fetch thread to unblock an in-flight SQLFetch/SQLExecute on the same
+    //   HSTMT. Per the ODBC spec, SQLCancel (with the SQLGetDiagRec/Field
+    //   family) is the only entry point safe to call across threads on the
+    //   same statement handle. All other operations on a Cursor/SqlHandle
+    //   are single-owner: per DB API 2.0 and the Cursor thread-safety TODO
+    //   in cursor.py, callers must not share a Cursor for its lifecycle
+    //   operations (execute/fetch/close/free) across threads. Under that
+    //   contract, free() / close_cursor() / SQLFreeHandle can never be in
+    //   flight on this handle concurrently with cancel(), so the read of
+    //   _handle above and the SQLCancel_ptr(h) call below cannot race a
+    //   free() that clears _handle.
+    //
+    //   A std::mutex here would only close the cancel()-vs-free() window;
+    //   it would NOT close the (equally real) free()-vs-fetch window
+    //   without also locking every fetch — which would serialize network
+    //   I/O and defeat the whole point of cross-thread cancel. The right
+    //   place to defend against a misuse (Cursor shared across threads for
+    //   close vs. reader-cancel) is at the Python Cursor layer, not here.
     if (_type != SQL_HANDLE_STMT || !_handle || _implicitly_freed) {
         return;
     }

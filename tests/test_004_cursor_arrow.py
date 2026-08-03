@@ -309,6 +309,89 @@ def test_arrow_reader(cursor: mssql_python.Cursor):
     assert sum(len(b) for b in batches) == 11
 
 
+def test_arrow_reader_read_all_returns_table(cursor: mssql_python.Cursor):
+    """Regression: ``reader.read_all()`` is the idiomatic pyarrow way to
+    drain a reader into a Table and must work through the wrapper.  Was
+    silently missing when the class hand-enumerated the pyarrow surface;
+    covered here to lock the ``__getattr__`` delegation contract in place.
+    """
+    reader = cursor.execute("select top 11 1 a from sys.objects").arrow_reader(batch_size=4)
+    tbl = reader.read_all()
+    assert type(tbl) is pa.Table
+    assert tbl.num_rows == 11
+    assert tbl.num_columns == 1
+    # After a successful drain the reader is empty; close() must still be
+    # safe (idempotency + generator finally).
+    reader.close()
+    assert reader.closed is True
+    # Parent cursor stays usable.
+    cursor.execute("select 42")
+    assert cursor.fetchone()[0] == 42
+
+
+def test_arrow_reader_read_pandas_returns_dataframe(cursor: mssql_python.Cursor):
+    """Regression: ``reader.read_pandas()`` must delegate to the inner
+    reader and return a pandas ``DataFrame``.  Skipped if pandas isn't
+    importable in the test env.
+    """
+    pd = pytest.importorskip("pandas")
+    reader = cursor.execute("select top 7 1 a from sys.objects").arrow_reader(batch_size=3)
+    df = reader.read_pandas()
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 7
+    assert list(df.columns) == ["a"]
+    reader.close()
+
+
+def test_arrow_reader_cast_delegates(cursor: mssql_python.Cursor):
+    """Regression: ``reader.cast(target_schema)`` must delegate to the
+    inner reader.  ``cast`` returns a new pyarrow reader that projects the
+    stream to a different schema — we're not exercising the projection
+    logic itself, only that the delegation path exists and returns
+    something reader-shaped.
+    """
+    reader = cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+    # Same schema — the cast should succeed (identity projection).
+    casted = reader.cast(reader.schema)
+    assert casted is not None
+    # ``cast`` returns a real pyarrow RecordBatchReader (not another wrapper),
+    # which is fine — the consumer just wants a reader-like object.
+    assert hasattr(casted, "read_next_batch")
+    reader.close()
+
+
+def test_arrow_reader_delegates_unknown_pyarrow_method(cursor: mssql_python.Cursor):
+    """Guard against future regression: any public method the inner
+    pyarrow reader exposes must be reachable through the wrapper without
+    the class having to enumerate it explicitly.  Probes ``schema`` (a
+    property that used to be hand-written) and ``read_next_batch`` (a
+    method that used to be hand-written) via ``__getattr__``.
+    """
+    reader = cursor.execute("select top 3 1 a from sys.objects").arrow_reader(batch_size=2)
+    # schema now goes through __getattr__ delegation.
+    schema = reader.schema
+    assert schema.field(0).name == "a"
+    # read_next_batch also goes through __getattr__ (except when reached
+    # via the iteration protocol, which uses __next__).
+    batch = reader.read_next_batch()
+    assert batch.num_rows > 0
+    reader.close()
+
+
+def test_arrow_reader_delegated_method_raises_after_close(cursor: mssql_python.Cursor):
+    """Post-close access via ``__getattr__`` must raise ``ArrowInvalid``
+    to match the explicit ``__next__`` / ``__arrow_c_stream__`` semantics —
+    a delegated call must not silently succeed on a reader the user has
+    already closed.
+    """
+    reader = cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+    reader.close()
+    with pytest.raises(pa.ArrowInvalid):
+        reader.read_all()
+    with pytest.raises(pa.ArrowInvalid):
+        _ = reader.schema
+
+
 def test_arrow_reader_pycapsule_protocol(cursor: mssql_python.Cursor):
     """The wrapper implements the Arrow PyCapsule Protocol via
     ``__arrow_c_stream__``, so Arrow-aware consumers can accept it
