@@ -2955,6 +2955,55 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             return False
         return isinstance(data, (pa.Table, pa.RecordBatch, pa.RecordBatchReader))
 
+    @staticmethod
+    def _bulkcopy_core_and_validate(table_name, batch_size, timeout):
+        """Import the native core and validate the args shared by ``bulkcopy``
+        and ``bulkcopy_arrow``. Returns the imported ``mssql_py_core`` module."""
+        try:
+            import mssql_py_core
+        except ImportError as exc:
+            logger.error("bulkcopy: Failed to import mssql_py_core module")
+            raise ImportError(
+                "Bulk copy requires the mssql_py_core library which is not available. "
+                "This is an unexpected error. "
+            ) from exc
+
+        if not table_name or not isinstance(table_name, str):
+            logger.error("bulkcopy: Invalid table_name parameter")
+            raise ValueError("table_name must be a non-empty string")
+
+        if not isinstance(batch_size, int):
+            raise TypeError(
+                f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
+            )
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
+
+        if not isinstance(timeout, int):
+            raise TypeError(f"timeout must be a positive integer, got {type(timeout).__name__}")
+        if timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
+
+        return mssql_py_core
+
+    @staticmethod
+    def _bulkcopy_teardown(pycore_context, pycore_cursor, pycore_connection):
+        """Scrub credential material from the context and close native
+        bulk-copy resources. Safe to call with partially-initialized state."""
+        if pycore_context:
+            for key in ("password", "user_name", "access_token", "entra_id_token_factory"):
+                pycore_context.pop(key, None)
+        for resource in (pycore_cursor, pycore_connection):
+            if resource and hasattr(resource, "close"):
+                try:
+                    resource.close()
+                except Exception as cleanup_error:
+                    logger.debug(
+                        "Failed to close bulk copy resource %s: %s",
+                        type(resource).__name__,
+                        cleanup_error,
+                    )
+
     def bulkcopy(
         self,
         table_name: str,
@@ -3047,19 +3096,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "cursor.bulkcopy_arrow() instead."
             )
 
-        try:
-            import mssql_py_core
-        except ImportError as exc:
-            logger.error("_bulkcopy: Failed to import mssql_py_core module")
-            raise ImportError(
-                "Bulk copy requires the mssql_py_core library which is not available. "
-                "This is an unexpected error. "
-            ) from exc
-
-        # Validate inputs
-        if not table_name or not isinstance(table_name, str):
-            logger.error("_bulkcopy: Invalid table_name parameter")
-            raise ValueError("table_name must be a non-empty string")
+        mssql_py_core = self._bulkcopy_core_and_validate(table_name, batch_size, timeout)
 
         # Validate that data is iterable (but not a string or bytes, which are technically iterable)
         if data is None:
@@ -3073,20 +3110,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise TypeError(
                 f"data must be an iterable of tuples or lists, got non-iterable {type(data).__name__}"
             )
-
-        # Validate batch_size type and value (0 means server optimal)
-        if not isinstance(batch_size, int):
-            raise TypeError(
-                f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
-            )
-        if batch_size < 0:
-            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
-
-        # Validate timeout type and value
-        if not isinstance(timeout, int):
-            raise TypeError(f"timeout must be a positive integer, got {type(timeout).__name__}")
-        if timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
 
         pycore_context = self._build_pycore_context()
 
@@ -3157,35 +3180,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 type(e).__name__,
                 str(e),
             )
-            # Re-raise without exposing connection context in the error chain
-            # to prevent credential leakage in stack traces
-            raise type(e)(str(e)) from None
+            # Re-raise the original exception, preserving its type, args, and
+            # traceback. The finally block scrubs credentials, and Python
+            # tracebacks don't expose local values, so no reconstruction is needed.
+            raise
 
         finally:
-            # Clear sensitive data to minimize memory exposure. The
-            # entra_id_token_factory closure captures client_secret, so drop
-            # our dict reference to it (Rust still holds an Arc until the
-            # connection is dropped, but at least we don't keep an extra ref).
-            if pycore_context:
-                for key in (
-                    "password",
-                    "user_name",
-                    "access_token",
-                    "entra_id_token_factory",
-                ):
-                    pycore_context.pop(key, None)
-            # Clean up bulk copy resources
-            for resource in (pycore_cursor, pycore_connection):
-                if resource and hasattr(resource, "close"):
-                    try:
-                        resource.close()
-                    except Exception as cleanup_error:
-                        # Log cleanup errors only - aids troubleshooting without masking original exception
-                        logger.debug(
-                            "Failed to close bulk copy resource %s: %s",
-                            type(resource).__name__,
-                            cleanup_error,
-                        )
+            self._bulkcopy_teardown(pycore_context, pycore_cursor, pycore_connection)
 
     def bulkcopy_arrow(
         self,
@@ -3241,7 +3242,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         Raises:
             ImportError: If the mssql_py_core library is not installed.
-            TypeError: If ``source`` is None.
+            TypeError: If ``source`` is None, a str, or bytes.
             ValueError: If ``table_name`` is empty or parameters are invalid.
             RuntimeError: If the connection string is not available.
 
@@ -3254,37 +3255,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         is_logging_enabled = logger.is_debug_enabled
 
-        try:
-            import mssql_py_core
-        except ImportError as exc:
-            logger.error("bulkcopy_arrow: Failed to import mssql_py_core module")
-            raise ImportError(
-                "Bulk copy requires the mssql_py_core library which is not available. "
-                "This is an unexpected error. "
-            ) from exc
+        mssql_py_core = self._bulkcopy_core_and_validate(table_name, batch_size, timeout)
 
-        if not table_name or not isinstance(table_name, str):
-            logger.error("bulkcopy_arrow: Invalid table_name parameter")
-            raise ValueError("table_name must be a non-empty string")
-
-        if source is None:
+        if source is None or isinstance(source, (str, bytes)):
+            got = "None" if source is None else type(source).__name__
             raise TypeError(
                 "source must be a pyarrow Table/RecordBatch/RecordBatchReader, "
                 "an iterable of RecordBatch, or an object implementing "
-                "__arrow_c_stream__/__arrow_c_array__, got None"
+                f"__arrow_c_stream__/__arrow_c_array__, got {got}"
             )
-
-        if not isinstance(batch_size, int):
-            raise TypeError(
-                f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
-            )
-        if batch_size < 0:
-            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
-
-        if not isinstance(timeout, int):
-            raise TypeError(f"timeout must be a positive integer, got {type(timeout).__name__}")
-        if timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
 
         pycore_context = self._build_pycore_context()
 
@@ -3329,27 +3308,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise
 
         finally:
-            # Clear sensitive data to minimize memory exposure. The
-            # entra_id_token_factory closure captures client_secret, so drop
-            # our dict reference to it as well.
-            if pycore_context:
-                for key in (
-                    "password",
-                    "user_name",
-                    "access_token",
-                    "entra_id_token_factory",
-                ):
-                    pycore_context.pop(key, None)
-            for resource in (pycore_cursor, pycore_connection):
-                if resource and hasattr(resource, "close"):
-                    try:
-                        resource.close()
-                    except Exception as cleanup_error:
-                        logger.debug(
-                            "Failed to close bulk copy resource %s: %s",
-                            type(resource).__name__,
-                            cleanup_error,
-                        )
+            self._bulkcopy_teardown(pycore_context, pycore_cursor, pycore_connection)
 
     def __enter__(self):
         """

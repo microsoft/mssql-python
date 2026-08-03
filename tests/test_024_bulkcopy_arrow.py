@@ -183,6 +183,13 @@ class TestBulkcopyArrowValidation:
         with pytest.raises(TypeError, match="source"):
             _bare_cursor().bulkcopy_arrow("t", None)
 
+    def test_str_and_bytes_source_raise(self):
+        # str/bytes are iterable, so without an explicit guard they'd be treated
+        # as an iterable of RecordBatch and fail deep with a confusing message.
+        for bad in ("data.parquet", b"\x00\x01"):
+            with pytest.raises(TypeError, match="source"):
+                _bare_cursor().bulkcopy_arrow("t", bad)
+
     def test_batch_size_wrong_type(self):
         with pytest.raises(TypeError, match="batch_size"):
             _bare_cursor().bulkcopy_arrow("t", pa.table({"a": [1]}), batch_size="5")
