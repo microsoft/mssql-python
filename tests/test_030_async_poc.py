@@ -161,6 +161,85 @@ class TestAsyncNonBlocking:
             f"queries appear serialised (elapsed={elapsed:.3f}s)"
         )
 
+    async def test_three_queries_complete_in_duration_order(self, async_conn_str):
+        """Three concurrent queries with distinct WAITFOR durations must
+        complete in duration order.
+
+        Scenario (mirrors "thread1/thread2/thread3" from the design brief,
+        realised here as asyncio tasks on the shared Tokio runtime):
+
+            Query1 -> WAITFOR 10 ms
+            Query2 -> WAITFOR  3 ms   (shortest -> finishes first)
+            Query3 -> WAITFOR  7 ms
+
+        Expected completion order:  Query2 -> Query3 -> Query1
+
+        If the driver serialised on a single lock the observed order would
+        follow *submission* order (Query1, Query2, Query3) instead, so the
+        assertion below is a direct proof of real concurrency.
+
+        Connections and cursors are established **before** the timing
+        window so that TCP+TDS handshake latency (tens to hundreds of ms)
+        does not swamp the sub-10ms deltas we are measuring.
+        """
+        # Pre-open one dedicated connection+cursor per task so the timed
+        # section only measures execute/fetch, not connect.
+        conns = [await mssql_python.connect_async(async_conn_str) for _ in range(3)]
+        curs = [c.cursor() for c in conns]
+        try:
+            completion_order: list[str] = []
+            timings: dict[str, float] = {}
+            start = time.monotonic()
+
+            async def run(name: str, cur, delay_ms: int):
+                # WAITFOR DELAY accepts millisecond precision as HH:MM:SS.fff.
+                delay = f"00:00:00.{delay_ms:03d}"
+                await cur.execute(f"WAITFOR DELAY '{delay}'; SELECT '{name}'")
+                row = await cur.fetchone()
+                completed_at = time.monotonic() - start
+                completion_order.append(name)
+                timings[name] = completed_at
+                print(
+                    f"  {name} (WAITFOR {delay_ms:2d} ms) "
+                    f"completed at {completed_at * 1000:7.2f} ms  row={row}"
+                )
+                return row
+
+            print(
+                "\n[async concurrent execution — "
+                "expected order: Query2, Query3, Query1]"
+            )
+            results = await asyncio.gather(
+                run("Query1", curs[0], 10),
+                run("Query2", curs[1], 3),
+                run("Query3", curs[2], 7),
+            )
+            total_elapsed = time.monotonic() - start
+            print(f"[total elapsed: {total_elapsed * 1000:.2f} ms]")
+            print(f"[completion order: {completion_order}]")
+
+            # Every task returned its own sentinel row (gather preserves
+            # submission order in its return value).
+            assert results == [("Query1",), ("Query2",), ("Query3",)]
+
+            # Duration-ordered completion — the concurrency proof.
+            assert completion_order == ["Query2", "Query3", "Query1"], (
+                f"unexpected completion order: {completion_order} "
+                f"(timings ms: "
+                f"{ {k: round(v * 1000, 2) for k, v in timings.items()} })"
+            )
+
+            # If the three queries were serialised the total would be
+            # >=20 ms (sum of waits) plus per-batch RTT. With genuine
+            # concurrency it is bounded by the longest single WAITFOR
+            # (10 ms) plus one RTT — well under 500 ms even on slow CI.
+            assert total_elapsed < 0.5, (
+                f"queries appear serialised (total={total_elapsed * 1000:.2f} ms)"
+            )
+        finally:
+            for c in conns:
+                await c.close()
+
 
 # ---------------------------------------------------------------------------
 # TestAsyncCancel — TDS attention plumbing
