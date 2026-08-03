@@ -113,21 +113,13 @@ stages:
               docker --version
             displayName: 'Ensure Docker daemon is running'
 
-          - task: AzureCLI@2
-            displayName: 'Login to ACR (tdslibrs)'
-            inputs:
-              azureSubscription: 'Magnitude Test-mssql-rs-mssql-python'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                az acr login --name tdslibrs
-
           - script: |
               set -euxo pipefail
+              # Public GHCR images published by github.com/microsoft/mssql-rs; no login required.
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
-                IMAGE="tdslibrs.azurecr.io/import/python-build/manylinux_2_28_$(ARCH):latest"
+                IMAGE="ghcr.io/microsoft/mssql-rs/python-build/manylinux_2_28_$(ARCH)_rust:latest"
               elif [[ "$(LINUX_TAG)" == "musllinux" ]]; then
-                IMAGE="tdslibrs.azurecr.io/import/python-build/musllinux_1_2_$(ARCH):latest"
+                IMAGE="ghcr.io/microsoft/mssql-rs/python-build/musllinux_1_2_$(ARCH)_rust:latest"
               else
                 echo "ERROR: Unsupported LINUX_TAG '$(LINUX_TAG)'" >&2
                 exit 1
