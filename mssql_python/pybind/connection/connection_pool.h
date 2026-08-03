@@ -19,15 +19,27 @@ class ConnectionPool {
   public:
     ConnectionPool(size_t max_size, int idle_timeout_secs);
 
-    // Acquires a connection from the pool or creates a new one if under limit
+    // Acquires a connection from the pool or creates a new one if under limit.
+    // token_factory, when set, is a Python callable returning the connect-attrs
+    // (including the access token) to connect with; it is invoked *only* when a
+    // new physical connection is opened, so a pool hit skips it entirely.
+    // (Internal callback — unrelated to the public token_provider= API.)
+    // When token_factory is set, a pooled candidate whose access token is within
+    // the expiry threshold is discarded and reopened so a caller never receives
+    // a connection with an about-to-expire token.
     std::shared_ptr<Connection> acquire(const std::u16string& connStr,
-                                        const py::dict& attrs_before = py::dict());
+                                        const py::dict& attrs_before = py::dict(),
+                                        const py::object& token_factory = py::object());
 
     // Returns a connection to the pool for reuse
     void release(std::shared_ptr<Connection> conn);
 
     // Closes all connections in the pool, releasing resources
     void close();
+
+    // True when the pool holds no live or in-flight connections and can be
+    // dropped by the manager to reclaim memory (lazy eviction).
+    bool canEvict();
 
   private:
     size_t _max_size;        // Maximum number of connections allowed
@@ -45,12 +57,30 @@ class ConnectionPoolManager {
 
     void configure(int max_size, int idle_timeout);
 
-    // Gets a connection from the appropriate pool (creates one if none exists)
-    std::shared_ptr<Connection> acquireConnection(const std::u16string& conn_str,
-                                                  const py::dict& attrs_before = py::dict());
+    // Gets a connection from the appropriate pool (creates one if none exists).
+    // The pool is keyed by pool_key when supplied, else by conn_str. conn_str
+    // is always used to establish new physical connections. Keying separately
+    // keeps distinct Entra identities in distinct pools.
+    // token_factory is forwarded to ConnectionPool::acquire for lazy token
+    // acquisition on a pool miss.
+    //
+    // Returns nullptr when pooling is not currently accepting new pools (i.e. a
+    // concurrent disable won the race). The enabled-check and the pool creation
+    // share _manager_mutex, so this decision is atomic with respect to
+    // closePools(): the caller must fall back to a non-pooled connection.
+    std::shared_ptr<Connection> acquireConnection(
+        const std::u16string& conn_str, const py::dict& attrs_before = py::dict(),
+        const std::u16string& pool_key = std::u16string(),
+        const py::object& token_factory = py::object());
 
-    // Returns a connection to its original pool
-    void returnConnection(const std::u16string& conn_str, std::shared_ptr<Connection> conn);
+    // Arms (true) or disarms (false) new-pool creation. Disarming, done under
+    // _manager_mutex, guarantees that any acquireConnection() serialized after
+    // it declines to create a pool, closing the disable()-vs-connect() race.
+    void setAccepting(bool accepting);
+
+    // Returns a connection to its original pool, identified by pool_key
+    // (the same key passed to acquireConnection).
+    void returnConnection(const std::u16string& pool_key, std::shared_ptr<Connection> conn);
 
     // Closes all pools and their connections
     void closePools();
@@ -66,6 +96,22 @@ class ConnectionPoolManager {
     std::mutex _manager_mutex;
     size_t _default_max_size = 10;
     int _default_idle_secs = 300;
+
+    // When false, acquireConnection() refuses to create/hand out pools so a
+    // connect racing a disable() cannot resurrect a pool after closePools()
+    // cleared the map. Read and written only under _manager_mutex. Defaults to
+    // true so direct native pool use (and auto-enable) works without an
+    // explicit enable_pooling() call; only disable_pooling() disarms it, and
+    // enable_pooling() re-arms it.
+    bool _accepting = true;
+
+    // Throttle for the lazy-eviction sweep in acquireConnection(). The sweep
+    // iterates every pool (and every idle connection within each) under
+    // _manager_mutex, so running it on literally every connect is an O(pools ×
+    // conns) contention hotspot for many-identity workloads. A pool cannot
+    // become evictable faster than the idle timeout, so sweeping more often
+    // than that buys nothing; we run it at most once per idle-timeout window.
+    std::chrono::steady_clock::time_point _last_sweep{};
 
     // Prevent copying
     ConnectionPoolManager(const ConnectionPoolManager&) = delete;
