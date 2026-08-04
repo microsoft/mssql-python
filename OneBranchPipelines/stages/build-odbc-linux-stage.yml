@@ -85,9 +85,9 @@ stages:
               # Same PyPA images as the mssql-python Linux build, published to GHCR by
               # github.com/microsoft/mssql-rs. Public packages, so no login is required.
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
-                IMAGE="ghcr.io/microsoft/mssql-rs/python-build/manylinux_2_28_$(ARCH)_rust:latest"
+                IMAGE="ghcr.io/microsoft/mssql-rs/import/python-build/manylinux_2_28_$(ARCH):latest"
               elif [[ "$(LINUX_TAG)" == "musllinux" ]]; then
-                IMAGE="ghcr.io/microsoft/mssql-rs/python-build/musllinux_1_2_$(ARCH)_rust:latest"
+                IMAGE="ghcr.io/microsoft/mssql-rs/import/python-build/musllinux_1_2_$(ARCH):latest"
               else
                 echo "ERROR: Unsupported LINUX_TAG '$(LINUX_TAG)'. Expected: manylinux_2_28 or musllinux" >&2
                 exit 1

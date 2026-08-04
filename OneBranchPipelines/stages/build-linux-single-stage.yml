@@ -109,9 +109,9 @@ stages:
               # manylinux_2_28 = AlmaLinux 8 / RHEL 8 compatible (glibc 2.28)
               # musllinux_1_2  = Alpine-based (musl libc)
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
-                IMAGE="ghcr.io/microsoft/mssql-rs/python-build/manylinux_2_28_$(ARCH)_rust:latest"
+                IMAGE="ghcr.io/microsoft/mssql-rs/import/python-build/manylinux_2_28_$(ARCH):latest"
               elif [[ "$(LINUX_TAG)" == "musllinux" ]]; then
-                IMAGE="ghcr.io/microsoft/mssql-rs/python-build/musllinux_1_2_$(ARCH)_rust:latest"
+                IMAGE="ghcr.io/microsoft/mssql-rs/import/python-build/musllinux_1_2_$(ARCH):latest"
               else
                 echo "ERROR: Unsupported LINUX_TAG '$(LINUX_TAG)'. Expected: manylinux_2_28 or musllinux" >&2
                 exit 1
