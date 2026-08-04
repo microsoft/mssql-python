@@ -1377,11 +1377,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             #    (e.g. decimal.Decimal) - the pre-existing mssql-python key style.
             if converter is None:
                 converter = self.connection.get_output_converter(desc[1])
-            # 3) last-resort WVARCHAR converter fallback (legacy behavior)
-            if converter is None:
-                from mssql_python.constants import ConstantsDDBC
-
-                converter = self.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
+            # 3) Legacy WVARCHAR fallback: only apply it when the column's mapped type
+            #    is str/bytes, so a registered SQL_WVARCHAR converter is never used as an
+            #    unconditional catch-all for INT/DECIMAL/DATE/etc. columns (GH #691). This
+            #    mirrors the isinstance(value, (str, bytes)) gate in
+            #    Row._apply_output_converters.
+            if converter is None and desc[1] in (str, bytes):
+                converter = self.connection.get_output_converter(ddbc_sql_const.SQL_WVARCHAR.value)
 
             converter_map.append(converter)
 
