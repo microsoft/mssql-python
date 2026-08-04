@@ -1622,7 +1622,7 @@ void SqlHandle::cancel() {
     //   HSTMT. Per the ODBC spec, SQLCancel (with the SQLGetDiagRec/Field
     //   family) is the only entry point safe to call across threads on the
     //   same statement handle. All other operations on a Cursor/SqlHandle
-    //   are single-owner: per DB API 2.0 and the Cursor thread-safety TODO
+    //   are single-owner: per DB API 2.0 and the Cursor thread-safety note
     //   in cursor.py, callers must not share a Cursor for its lifecycle
     //   operations (execute/fetch/close/free) across threads. Under that
     //   contract, free() / close_cursor() / SQLFreeHandle can never be in

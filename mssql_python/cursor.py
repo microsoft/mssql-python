@@ -2994,13 +2994,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             batches.append(batch)
         return pyarrow.Table.from_batches(batches, schema=batches[0].schema)
 
-    def arrow_reader(self, batch_size: int = 8192) -> "pyarrow.RecordBatchReader":
+    def arrow_reader(self, batch_size: int = 8192) -> "_ArrowReader":
         """
         Fetch the result as a pyarrow-compatible RecordBatchReader, which
         yields Record Batches of the specified size until the current result
         set is exhausted.
 
-        The returned object behaves like ``pyarrow.RecordBatchReader``
+        The returned object is an ``_ArrowReader`` wrapper that behaves like
+        ``pyarrow.RecordBatchReader``
         (``schema``, ``read_next_batch``, iteration, context manager) but
         its ``close()`` is fully effective.  Cleanup is driven
         by a ``try/finally`` block inside the underlying batch generator, so
