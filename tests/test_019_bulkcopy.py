@@ -440,6 +440,78 @@ def test_bulkcopy_tuple_passthrough(cursor):
         cursor.connection.commit()
 
 
+def test_bulkcopy_accepts_timeout_zero(cursor):
+    """GH-697: timeout=0 means no timeout per the BCP spec, so it must not be rejected."""
+    table_name = "mssql_python_bcp_timeout_zero"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name VARCHAR(20))")
+        cursor.connection.commit()
+
+        result = cursor.bulkcopy(table_name, [(1, "Alice"), (2, "Bob")], timeout=0)
+        assert result["rows_copied"] == 2
+
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 2
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_forwards_timeout_zero_unchanged():
+    """GH-697: 0 must reach py-core as 0, not be swapped for the 30s default.
+
+    mssql-py-core maps a 0 timeout to an infinite deadline, so a copy that
+    merely succeeds does not prove the value survived the python layer.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from mssql_python.cursor import Cursor
+
+    mock_conn = MagicMock()
+    mock_conn.connection_str = "Server=localhost;Database=testdb;UID=sa;PWD=mypwd"
+    mock_conn._auth_type = None
+    mock_conn._is_connected = True
+
+    cursor = Cursor.__new__(Cursor)
+    cursor._connection = mock_conn
+    cursor._timeout = 0
+    cursor.closed = False
+    cursor.hstmt = None
+
+    pycore_cursor = MagicMock()
+    pycore_cursor.bulkcopy.return_value = {
+        "rows_copied": 1,
+        "batch_count": 1,
+        "elapsed_time": 0.1,
+    }
+    pycore_conn = MagicMock()
+    pycore_conn.cursor.return_value = pycore_cursor
+    pycore_module = MagicMock()
+    pycore_module.PyCoreConnection = MagicMock(return_value=pycore_conn)
+
+    with patch.dict("sys.modules", {"mssql_py_core": pycore_module}):
+        cursor.bulkcopy("dbo.some_table", [(1,)], timeout=0)
+
+    assert pycore_cursor.bulkcopy.call_args.kwargs["timeout"] == 0
+
+
+def test_bulkcopy_rejects_invalid_timeouts(cursor):
+    """GH-697: negatives and bools stay rejected. Validation fires before any DB work."""
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=-1)
+
+    with pytest.raises(TypeError, match="timeout must be a non-negative integer"):
+        cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=1.5)
+
+    # bool is an int subclass, so False would otherwise slip through as 0
+    # and silently disable the timeout.
+    for flag in (False, True):
+        with pytest.raises(TypeError, match="timeout must be a non-negative integer"):
+            cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=flag)
+
+
 def test_bulkcopy_empty_iterator(cursor):
     """Regression test: empty iterator doesn't crash (GH-482)."""
     table_name = "mssql_python_bcp_empty"

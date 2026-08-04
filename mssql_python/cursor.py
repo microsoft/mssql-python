@@ -2893,7 +2893,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             batch_size: Number of rows to send per batch. Default 0 uses server optimal.
 
-            timeout: Operation timeout in seconds. Default is 30.
+            timeout: Operation timeout in seconds. Default is 30. 0 disables the
+                bulk copy operation timeout.
 
             column_mappings: Maps source data columns to target table column names.
                 Two formats supported:
@@ -2975,10 +2976,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise ValueError(f"batch_size must be non-negative, got {batch_size}")
 
         # Validate timeout type and value
-        if not isinstance(timeout, int):
-            raise TypeError(f"timeout must be a positive integer, got {type(timeout).__name__}")
-        if timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
+        if not isinstance(timeout, int) or isinstance(timeout, bool):
+            raise TypeError(f"timeout must be a non-negative integer, got {type(timeout).__name__}")
+        if timeout < 0:
+            raise ValueError(f"timeout must be non-negative, got {timeout}")
 
         # Get and parse connection string
         if not hasattr(self.connection, "connection_str"):
