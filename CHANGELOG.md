@@ -33,6 +33,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   explicit and drop the bundled binaries.
 
 ### Changed
+- Connection strings and string connection parameters that contain a NUL
+  (`\x00`) character are now rejected up front with `InterfaceError` instead of
+  being silently truncated at the NUL by the underlying driver.
 - Improved error handling in the connection module.
 - **GH-627 behavioral change:** `NULL` parameters for `VARBINARY`/`BINARY`
   columns on physical tables now succeed silently (previously raised

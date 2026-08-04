@@ -418,7 +418,9 @@ class Connection:
         # captured from the credential's AccessToken result. None when unknown.
         # The token is a pre-connect ODBC attribute and cannot be refreshed on
         # a live connection — this is exposed for diagnostics/logging only.
-        self._token_expires_on: Optional[int] = None
+        # A custom token_provider may report a float POSIX timestamp, so the
+        # hint is Optional[float] (int is accepted under the numeric tower).
+        self._token_expires_on: Optional[float] = None
 
         # Composite, identity-aware pool key. Empty means "key the native pool
         # on the connection string" (legacy behavior, used for non-token auth).

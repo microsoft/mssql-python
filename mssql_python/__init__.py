@@ -53,6 +53,9 @@ from .type import (
 # Connection Objects
 from .db_connection import connect, Connection
 
+# Token provider protocol (structural type for the token_provider= parameter)
+from .connection import TokenProvider
+
 # Connection String Handling
 from .connection_string_parser import _ConnectionStringParser
 from .connection_string_builder import _ConnectionStringBuilder
@@ -322,6 +325,7 @@ __all__ = [
     # Connection and cursor classes
     "connect",
     "Connection",
+    "TokenProvider",
     "Cursor",
     "Row",
     # Settings

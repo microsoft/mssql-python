@@ -1859,15 +1859,18 @@ class TestTokenProviderValidation:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_expired_expires_on_warns_but_is_accepted(self, mock_ddbc_conn):
         """An already-expired expires_on is still accepted (the server enforces
-        expiry), but a warning is emitted so the likely cause surfaces early."""
+        expiry), but a warning is logged (not raised as a Python warning, so it
+        is never promoted to an exception under ``-W error``)."""
         mock_ddbc_conn.return_value = MagicMock()
         past = 1  # 1970 — long expired
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN, expires_on=past)
         from mssql_python import connect
+        import mssql_python.auth as auth_mod
 
-        with pytest.warns(UserWarning, match="already expired"):
+        with patch.object(auth_mod.logger, "warning") as mock_warning:
             conn = connect("Server=test;Database=testdb", token_provider=mock_cred)
+        assert any("already expired" in str(call.args[0]) for call in mock_warning.call_args_list)
         assert conn._token_expires_on == past
         # Token stored eagerly in attrs_before.
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
@@ -2120,10 +2123,9 @@ class TestTokenProviderPooling:
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN, expires_on=1)
         from mssql_python import connect
 
-        # expires_on=1 is in the past, so the expired-token warning fires; the
-        # point of this test is that the token is acquired exactly once.
-        with pytest.warns(UserWarning, match="already expired"):
-            conn = connect("Server=s;Database=d", token_provider=mock_cred)
+        # expires_on=1 is in the past (the expired-token diagnostic is logged);
+        # the point of this test is that the token is acquired exactly once.
+        conn = connect("Server=s;Database=d", token_provider=mock_cred)
         # Even though expires_on is in the past, nothing re-acquires the token
         # (the mocked native never invokes the factory).
         assert mock_cred.get_token.call_count == 1
@@ -2799,6 +2801,18 @@ class TestDefaultCredentialPoolingWarning:
         assert mock_logger.warning.call_count == 1
 
 
+class TestPublicApiReexports:
+    """The public token_provider typing surface must be importable from the
+    package root so callers can annotate against it."""
+
+    def test_token_provider_is_reexported(self):
+        import mssql_python
+        from mssql_python import TokenProvider
+
+        assert TokenProvider is mssql_python.connection.TokenProvider
+        assert "TokenProvider" in mssql_python.__all__
+
+
 class TestComputeIdentityKey:
     """The per-identity discriminator that makes the native pool key
     identity-aware."""
@@ -2830,6 +2844,23 @@ class TestComputeIdentityKey:
         assert user == "msi:client:system"
         assert system == "msi:system"
         assert user != system
+
+    def test_msi_client_id_is_normalized(self):
+        # The same managed identity written with different GUID casing or with
+        # optional surrounding {braces} must map to a single pool bucket.
+        canonical = "abcd1234-5678-90ab-cdef-1234567890ab"
+        assert (
+            compute_identity_key("msi", {"client_id": canonical.upper()})
+            == f"msi:client:{canonical}"
+        )
+        assert (
+            compute_identity_key("msi", {"client_id": "{" + canonical.upper() + "}"})
+            == f"msi:client:{canonical}"
+        )
+        assert (
+            compute_identity_key("msi", {"client_id": "  " + canonical + "  "})
+            == f"msi:client:{canonical}"
+        )
 
     def test_token_hash_fallback_for_default(self):
         token = b"\x00\x01sometokenbytes"

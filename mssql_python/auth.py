@@ -11,7 +11,6 @@ import struct
 import sys
 import threading
 import time
-import warnings
 from typing import Tuple, Dict, NamedTuple, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -665,6 +664,11 @@ def compute_identity_key(
 
     if auth_type == _AuthInternal.MSI:
         client_id = (credential_kwargs or {}).get("client_id")
+        # Normalize so the same identity maps to one pool regardless of GUID
+        # casing or optional surrounding {braces} in the connection string
+        # (e.g. "{ABCD...}" and "abcd..." are the same managed identity).
+        if client_id:
+            client_id = client_id.strip().strip("{}").lower()
         # System- vs user-assigned MSI must never share a pool bucket. A
         # user-assigned identity whose client_id is the literal "system" would
         # collide with system-assigned MSI under a bare ``msi:<client_id>``
@@ -825,21 +829,22 @@ def _get_token_from_credential(
         )
 
     expires_on = getattr(token_result, "expires_on", None)
-    # Warn (don't fail) if the credential handed back an already-expired token:
+    # Log (don't fail) if the credential handed back an already-expired token:
     # the server enforces expiry and will reject the login, so surfacing it here
-    # points at the real cause instead of an opaque later failure. Only numeric
-    # POSIX timestamps are checked; bools are excluded to avoid false positives.
+    # points at the real cause instead of an opaque later failure. A log record
+    # (rather than warnings.warn) is used so this diagnostic is never promoted to
+    # an exception under ``-W error``. Only numeric POSIX timestamps are checked;
+    # bools are excluded to avoid false positives.
     if (
         isinstance(expires_on, (int, float))
         and not isinstance(expires_on, bool)
         and expires_on < time.time()
     ):
-        warnings.warn(
-            f"token_provider returned a token that is already expired "
-            f"(expires_on={expires_on} is in the past). The server will likely "
-            f"reject the connection.",
-            UserWarning,
-            stacklevel=_user_facing_stacklevel(),
+        logger.warning(
+            "token_provider returned a token that is already expired "
+            "(expires_on=%s is in the past). The server will likely "
+            "reject the connection.",
+            expires_on,
         )
     elapsed_ms = (time.perf_counter() - start_time) * 1000
     logger.info(
