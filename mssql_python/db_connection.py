@@ -4,12 +4,9 @@ Licensed under the MIT license.
 This module provides a way to create a new connection object to interact with the database.
 """
 
-from typing import Any, Dict, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, Optional, Union
 
-from mssql_python.connection import Connection
-
-if TYPE_CHECKING:
-    from azure.core.credentials import TokenCredential
+from mssql_python.connection import Connection, TokenProvider
 
 
 def connect(
@@ -18,7 +15,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
-    token_provider: Optional["TokenCredential"] = None,
+    token_provider: Optional[TokenProvider] = None,
     **kwargs: Any,
 ) -> Connection:
     """

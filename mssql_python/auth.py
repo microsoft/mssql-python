@@ -8,10 +8,11 @@ import hashlib
 import inspect
 import platform
 import struct
+import sys
 import threading
 import time
 import warnings
-from typing import Tuple, Dict, NamedTuple, Optional, Any, TYPE_CHECKING
+from typing import Tuple, Dict, NamedTuple, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from azure.core.credentials import TokenCredential
@@ -607,6 +608,23 @@ def get_auth_token_info(
     return info
 
 
+def compute_token_identity(token_struct: Optional[bytes]) -> Optional[str]:
+    """Return the ``"tok:<sha256>"`` pool identity for a raw token struct.
+
+    The raw-token / DefaultAzureCredential / custom ``token_provider=`` paths
+    hold a token but have no param-derivable identity, so their pool key is
+    bound to the token itself: distinct tokens hash to distinct pools and the
+    same token reuses one pool. This is correct but not expiry-aware — a rotated
+    token opens a new bucket that the native idle sweep later evicts.
+
+    Returns ``None`` when *token_struct* is empty/absent, signalling the caller
+    to acquire a token first and recompute.
+    """
+    if not token_struct:
+        return None
+    return "tok:" + hashlib.sha256(token_struct).hexdigest()
+
+
 def compute_identity_key(
     auth_type: Optional[str],
     credential_kwargs: Optional[Dict[str, str]] = None,
@@ -628,24 +646,32 @@ def compute_identity_key(
       * ``None`` — no token auth (SQL / trusted / native ServicePrincipal /
         Windows Interactive). The connection string alone already isolates the
         identity, so the pool key is unchanged (fully backward compatible).
-      * ``"msi:<client_id>"`` / ``"msi:system"`` — Managed Identity, derived
-        from connection params *without* acquiring a token (enables skipping
-        token acquisition on a pool hit).
+      * ``"msi:client:<client_id>"`` / ``"msi:system"`` — Managed Identity,
+        derived from connection params *without* acquiring a token (enables
+        skipping token acquisition on a pool hit). System- and user-assigned
+        identities use disjoint prefixes so they can never collide.
       * ``"acct:<home_account_id>"`` — Interactive / Device-code, keyed on the
         stable account id from ``authenticate()`` so a silent token refresh
         reuses the pool but a different signed-in account gets its own pool.
-      * ``"tok:<sha256>"`` — fail-safe hash of the token struct for auth types
-        whose identity is not derivable from params (DefaultAzureCredential,
-        raw token, and interactive / device-code when ``home_account_id`` is
-        unavailable). Requires ``token_struct``; when it is not supplied the
-        function returns ``None`` to signal "acquire a token, then recompute".
+      * ``"tok:<sha256>"`` — fail-safe hash of the token struct (via
+        :func:`compute_token_identity`) for auth types whose identity is not
+        derivable from params (DefaultAzureCredential, raw token, and
+        interactive / device-code when ``home_account_id`` is unavailable).
+        Requires ``token_struct``; when it is not supplied the function returns
+        ``None`` to signal "acquire a token, then recompute".
     """
     if not auth_type:
         return None
 
     if auth_type == _AuthInternal.MSI:
         client_id = (credential_kwargs or {}).get("client_id")
-        return f"msi:{client_id}" if client_id else "msi:system"
+        # System- vs user-assigned MSI must never share a pool bucket. A
+        # user-assigned identity whose client_id is the literal "system" would
+        # collide with system-assigned MSI under a bare ``msi:<client_id>``
+        # scheme (and once UID is stripped the connection strings match too), so
+        # user-assigned identities are namespaced under the disjoint
+        # ``msi:client:`` prefix.
+        return f"msi:client:{client_id}" if client_id else "msi:system"
 
     # Interactive / Device-code: prefer the stable account id when available so
     # silent refreshes reuse the pool; fall back to the token hash otherwise.
@@ -653,7 +679,7 @@ def compute_identity_key(
         return f"acct:{home_account_id}"
 
     if token_struct is not None:
-        return "tok:" + hashlib.sha256(token_struct).hexdigest()
+        return compute_token_identity(token_struct)
 
     # A token-backed auth type whose key needs the token, but none was
     # supplied yet. Signal the caller to acquire first, then recompute.
@@ -672,7 +698,34 @@ def extract_auth_type(parsed_params: Dict[str, str]) -> Optional[str]:
     return _AUTH_TYPE_MAP.get(auth_value)
 
 
-def _get_token_from_credential(credential: "TokenCredential") -> Tuple[str, Optional[int]]:
+def _user_facing_stacklevel() -> int:
+    """Return a :func:`warnings.warn` ``stacklevel`` that points at the first
+    caller outside the ``mssql_python`` package.
+
+    This module's warnings are emitted at different call depths — the public
+    ``connect()`` path is several frames deeper than ``Cursor.bulkcopy`` — so no
+    fixed ``stacklevel`` lands on user code for both. Walk outward from the
+    ``warnings.warn`` call site and return the level of the first frame whose
+    module is outside ``mssql_python`` so the warning always points at the
+    caller's own code.
+    """
+    # sys._getframe(1) is this helper's caller — the warnings.warn call site,
+    # which corresponds to stacklevel=1.
+    frame = sys._getframe(1)
+    level = 1
+    while frame is not None:
+        if not frame.f_globals.get("__name__", "").startswith("mssql_python"):
+            return level
+        frame = frame.f_back
+        level += 1
+    # Every frame was internal (not expected in practice); fall back to the
+    # outermost real frame rather than blaming this helper.
+    return max(level - 1, 1)
+
+
+def _get_token_from_credential(
+    credential: "TokenCredential",
+) -> Tuple[str, Optional[int]]:
     """Internal: call credential.get_token() and return ``(raw_jwt, expires_on)``.
 
     Centralises the token-acquisition + error-wrapping logic that both
@@ -685,6 +738,10 @@ def _get_token_from_credential(credential: "TokenCredential") -> Tuple[str, Opti
     callers can log it and reason about token lifetime; the access token
     itself is a *pre-connect* ODBC attribute and cannot be refreshed on a
     live connection (see the module docs on token lifecycle).
+
+    The already-expired-token warning is attributed to the first non-internal
+    caller via :func:`_user_facing_stacklevel`, so it points at user code
+    regardless of how deep this helper is called.
 
     Note:
         The scope is hard-coded to the Azure **commercial** cloud
@@ -701,18 +758,32 @@ def _get_token_from_credential(credential: "TokenCredential") -> Tuple[str, Opti
     try:
         token_result = credential.get_token(_SQL_SCOPE)
     except TypeError as e:
-        # get_token() is called with exactly one positional scope argument, so
-        # a TypeError here almost always means its signature can't accept a
-        # scope (e.g. a zero-arg or keyword-only get_token). Surface that as a
-        # clear, actionable InterfaceError instead of an opaque failure. This
-        # is the call-time source of truth for arity — the connect() path only
-        # *warns* on a suspicious signature so it never blocks a credential
-        # whose signature is merely hard to introspect (partial/decorated).
-        raise InterfaceError(
-            driver_error=(
-                "token_provider.get_token() must accept a scope positional "
-                "argument, e.g. get_token(scope)."
-            ),
+        # A TypeError from get_token(scope) can mean two very different things,
+        # and only one is about the scope argument:
+        #   1. the signature can't accept the positional scope -- a *binding*
+        #      error raised before the function body runs (e.g. a zero-arg or
+        #      keyword-only get_token); or
+        #   2. the user's get_token body itself raised TypeError (e.g. "a" + 1).
+        # A binding error's traceback stops at this frame (tb_next is None); a
+        # TypeError raised inside get_token has at least one deeper frame. Only
+        # blame the scope for case 1 -- for case 2, keep the original message
+        # and fall through to the generic OperationalError so the user sees
+        # their real bug instead of being sent to fix the scope argument.
+        if e.__traceback__ is not None and e.__traceback__.tb_next is None:
+            raise InterfaceError(
+                driver_error=(
+                    "token_provider.get_token() must accept a scope positional "
+                    "argument, e.g. get_token(scope)."
+                ),
+                ddbc_error=str(e),
+            ) from e
+        logger.error(
+            "_get_token_from_credential: get_token() failed - credential=%s, error=%s",
+            type(credential).__name__,
+            str(e),
+        )
+        raise OperationalError(
+            driver_error=(f"Failed to acquire token from credential ({type(credential).__name__})"),
             ddbc_error=str(e),
         ) from e
     except Exception as e:
@@ -768,7 +839,7 @@ def _get_token_from_credential(credential: "TokenCredential") -> Tuple[str, Opti
             f"(expires_on={expires_on} is in the past). The server will likely "
             f"reject the connection.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_user_facing_stacklevel(),
         )
     elapsed_ms = (time.perf_counter() - start_time) * 1000
     logger.info(

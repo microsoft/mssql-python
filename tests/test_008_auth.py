@@ -6,7 +6,6 @@ Tests for the auth module.
 
 import pytest
 import collections
-import inspect
 import platform
 import sys
 import threading
@@ -1305,7 +1304,7 @@ class TestAcquireTokenFromCredential:
         with pytest.raises(InterfaceError, match="non-empty"):
             acquire_token_from_credential(mock_cred)
 
-    def test_scope_is_commercial_cloud(self):
+    def test_acquire_token_requests_commercial_cloud_scope(self):
         """The scope is hard-coded to the Azure commercial-cloud audience."""
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
@@ -1405,7 +1404,9 @@ class TestCustomTokenProviderConnect:
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_token_provider_happy_path(self, mock_ddbc_conn):
-        """token_provider= acquires token and sets attrs_before."""
+        """token_provider= validates the credential up front, captures the
+        expiry, and stores the acquired token in attrs_before; the pool is keyed
+        on the token hash (no deferred factory)."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN, expires_on=1893456000)
@@ -1413,14 +1414,18 @@ class TestCustomTokenProviderConnect:
 
         conn = connect("Server=test;Database=testdb", token_provider=mock_cred)
         assert conn._token_provider is mock_cred
+        # Eager validate-once captures the expiry at connect().
         assert conn._token_expires_on == 1893456000
-        assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
+        # The token is keyed on its hash, not the provider object, so it is
+        # eagerly placed in attrs_before and no factory is wired.
+        assert conn._token_factory is None
+        assert conn._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] is not None
         # Existing auth_type should be None (no Authentication= in conn str)
         assert conn._auth_type is None
         conn.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_token_provider_plus_authentication_raises_valueerror(self, mock_ddbc_conn):
+    def test_token_provider_plus_authentication_raises_interface_error(self, mock_ddbc_conn):
         """token_provider= + Authentication= raises InterfaceError."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
@@ -1436,7 +1441,9 @@ class TestCustomTokenProviderConnect:
         mock_ddbc_conn.assert_not_called()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_token_provider_plus_authentication_via_kwargs_raises_valueerror(self, mock_ddbc_conn):
+    def test_token_provider_plus_authentication_via_kwargs_raises_interface_error(
+        self, mock_ddbc_conn
+    ):
         """token_provider= + Authentication via kwargs raises InterfaceError."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
@@ -1453,7 +1460,9 @@ class TestCustomTokenProviderConnect:
         mock_ddbc_conn.assert_not_called()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_token_provider_plus_attrs_before_access_token_raises_valueerror(self, mock_ddbc_conn):
+    def test_token_provider_plus_attrs_before_access_token_raises_interface_error(
+        self, mock_ddbc_conn
+    ):
         """token_provider= + manual attrs_before token is ambiguous and rejected."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
@@ -1470,7 +1479,7 @@ class TestCustomTokenProviderConnect:
         mock_ddbc_conn.assert_not_called()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_token_provider_without_get_token_raises_typeerror(self, mock_ddbc_conn):
+    def test_token_provider_without_get_token_raises_interface_error(self, mock_ddbc_conn):
         """Passing an object without .get_token() raises InterfaceError."""
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
@@ -1491,7 +1500,8 @@ class TestCustomTokenProviderConnect:
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_token_provider_with_non_auth_attrs_before(self, mock_ddbc_conn):
-        """token_provider= works alongside non-auth attrs_before."""
+        """token_provider= works alongside non-auth attrs_before: the
+        user-supplied attr is preserved alongside the eagerly-stored token."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
@@ -1503,12 +1513,13 @@ class TestCustomTokenProviderConnect:
             token_provider=mock_cred,
             attrs_before={login_timeout_attr: 30},
         )
+        # The non-auth attr is preserved alongside the eagerly-stored token.
         assert conn._attrs_before[login_timeout_attr] == 30
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
         conn.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_token_provider_get_token_failure_raises_runtime_error(self, mock_ddbc_conn):
+    def test_token_provider_get_token_failure_raises_operational_error(self, mock_ddbc_conn):
         """If token_provider.get_token() fails, connect() raises OperationalError."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
@@ -1519,7 +1530,9 @@ class TestCustomTokenProviderConnect:
             connect("Server=test;Database=testdb", token_provider=mock_cred)
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_token_provider_with_non_callable_get_token_raises_typeerror(self, mock_ddbc_conn):
+    def test_token_provider_with_non_callable_get_token_raises_interface_error(
+        self, mock_ddbc_conn
+    ):
         """Object with .get_token as a non-callable attribute raises InterfaceError."""
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
@@ -1567,7 +1580,7 @@ class TestTokenProviderValidation:
     """Tests for token_provider get_token arity validation and the dropped-credential warning."""
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_scope_is_commercial_cloud(self, mock_ddbc_conn):
+    def test_connect_requests_commercial_cloud_scope(self, mock_ddbc_conn):
         """connect() requests the fixed commercial-cloud scope from the credential."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
@@ -1591,6 +1604,26 @@ class TestTokenProviderValidation:
         # No up-front signature inspection: the call-time validation raises.
         with pytest.raises(InterfaceError, match="must accept a scope"):
             connect("Server=test;Database=testdb", token_provider=ZeroArgCredential())
+        mock_ddbc_conn.assert_not_called()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_get_token_internal_typeerror_raises_operational_error(self, mock_ddbc_conn):
+        """A TypeError raised *inside* get_token (a real bug in the credential, not
+        an arity mismatch) is not blamed on the scope argument: it surfaces as
+        OperationalError carrying the credential's own message, so the user sees
+        their real bug instead of being told to fix the scope."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        class BuggyCredential:
+            def get_token(self, scope):
+                # Real bug inside the body -- not an arity/binding problem.
+                return "not-a-number" + 1
+
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=test;Database=testdb", token_provider=BuggyCredential())
+        # The scope-arity message must NOT be used for an internal bug.
+        assert "must accept a scope" not in str(exc_info.value)
         mock_ddbc_conn.assert_not_called()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
@@ -1698,6 +1731,7 @@ class TestTokenProviderValidation:
 
         conn = connect("Server=test;Database=testdb", token_provider=MinimalCredential())
         assert conn._token_expires_on is None
+        # Token is eagerly stored in attrs_before (no deferred factory).
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
         conn.close()
 
@@ -1733,7 +1767,7 @@ class TestTokenProviderValidation:
             connect("Server=test;Database=testdb", token_provider=cred)
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_suspicious_signature_warns_but_does_not_block(self, mock_ddbc_conn):
+    def test_hard_to_introspect_signature_not_warned_or_blocked(self, mock_ddbc_conn):
         """A credential with a hard-to-introspect signature (partial/decorated) is
         never rejected or warned at connect time — the real call is the source of
         truth, so it just succeeds when the call works."""
@@ -1749,8 +1783,10 @@ class TestTokenProviderValidation:
             warnings.simplefilter("always")
             conn = connect("Server=test;Database=testdb", token_provider=cred)
         assert not any("does not appear to accept" in str(w.message) for w in caught)
-        # Not blocked: the connection succeeded and captured the token.
+        # Not blocked: the connection succeeded, captured the expiry, and stored
+        # the token eagerly in attrs_before.
         assert conn._token_expires_on == 1893456000
+        assert conn._token_factory is None
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
         conn.close()
 
@@ -1788,8 +1824,10 @@ class TestTokenProviderValidation:
         # The caller's dict is untouched: no access token leaked in.
         assert caller_opts == {login_timeout_attr: 30}
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value not in caller_opts
-        # The connection's own copy did receive the token.
+        # The token is stored in the connection's own attrs_before copy, which
+        # is independent of the caller's dict.
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
+        assert caller_opts == {login_timeout_attr: 30}
         conn.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
@@ -1807,9 +1845,14 @@ class TestTokenProviderValidation:
         c1 = connect("Server=s;Database=d", token_provider=cred_a, attrs_before=shared_opts)
         # Without the copy fix this raises "Cannot specify both ... access token".
         c2 = connect("Server=s;Database=d", token_provider=cred_b, attrs_before=shared_opts)
+        # Each connection has its own attrs_before copy and its own factory, and
+        # the shared caller dict was never polluted with a token.
+        assert c1._attrs_before is not c2._attrs_before
+        assert c1._token_factory is None
+        assert c2._token_factory is None
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in c1._attrs_before
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in c2._attrs_before
-        assert c1._attrs_before is not c2._attrs_before
+        assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value not in shared_opts
         c1.close()
         c2.close()
 
@@ -1826,6 +1869,7 @@ class TestTokenProviderValidation:
         with pytest.warns(UserWarning, match="already expired"):
             conn = connect("Server=test;Database=testdb", token_provider=mock_cred)
         assert conn._token_expires_on == past
+        # Token stored eagerly in attrs_before.
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
         conn.close()
 
@@ -1859,7 +1903,7 @@ class TestTokenProviderValidation:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_empty_connection_string_with_token_provider(self, mock_ddbc_conn):
         """An empty connection string with token_provider should not crash the
-        validation path; the token is still acquired and attached."""
+        validation path; the credential is still validated and the token stored."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
@@ -1917,8 +1961,9 @@ class TestTokenProviderPooling:
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_token_provider_allows_pooling_with_identity_key(self, mock_ddbc_conn):
-        """token_provider= connections are pooled, keyed on a token-hash identity
-        so distinct principals never share a pooled connection."""
+        """token_provider= connections are pooled, keyed on the token hash
+        (``tok:``) so distinct tokens never share a pooled connection. The token
+        is stored eagerly in attrs_before with no deferred factory."""
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
         from mssql_python.pooling import PoolingManager
@@ -1931,6 +1976,8 @@ class TestTokenProviderPooling:
         assert self._pooling_arg(mock_ddbc_conn) is True
         assert conn._pooling is True
         assert conn._pool_key.startswith(conn.connection_str + "\x00tok:")
+        assert conn._token_factory is None
+        assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
         conn.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
@@ -2016,9 +2063,11 @@ class TestTokenProviderPooling:
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_same_token_from_different_providers_shares_pool_key(self, mock_ddbc_conn):
-        """Two different provider objects that hand out the SAME token resolve to
-        the same identity, so they share one identity-aware pool key (correct
-        same-principal reuse) while both remain pooled."""
+        """Two DIFFERENT provider objects that mint the SAME token resolve to the
+        SAME token-hash pool key. This is the documented weaker-but-safe reuse:
+        the pool is keyed on the token, not the provider object, so a mutable
+        credential can never hand a caller a connection authenticated as a stale
+        principal (a different principal always mints a different token)."""
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
         from mssql_python.pooling import PoolingManager
@@ -2032,18 +2081,40 @@ class TestTokenProviderPooling:
         c1 = connect("Server=s;Database=d", token_provider=cred_a)
         c2 = connect("Server=s;Database=d", token_provider=cred_b)
         assert c1.connection_str == c2.connection_str
-        # Same token => same identity => same pool key, and both are pooled.
-        assert c1._pooling is True
-        assert c2._pooling is True
+        # Same token => same tok: identity => same pool bucket.
         assert c1._pool_key == c2._pool_key
         assert c1._pool_key.startswith(c1.connection_str + "\x00tok:")
         c1.close()
         c2.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_different_tokens_from_providers_get_distinct_pool_keys(self, mock_ddbc_conn):
+        """Two providers that mint DIFFERENT tokens get DISTINCT pool keys, so
+        distinct principals are never handed each other's pooled connection."""
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+        from mssql_python.pooling import PoolingManager
+
+        PoolingManager._reset_for_testing()
+        cred_a = MagicMock()
+        cred_a.get_token.return_value = MagicMock(token=SAMPLE_TOKEN, expires_on=None)
+        cred_b = MagicMock()
+        cred_b.get_token.return_value = MagicMock(token=SAMPLE_TOKEN + "-B", expires_on=None)
+
+        c1 = connect("Server=s;Database=d", token_provider=cred_a)
+        c2 = connect("Server=s;Database=d", token_provider=cred_b)
+        assert c1.connection_str == c2.connection_str
+        assert c1._pool_key != c2._pool_key
+        assert c1._pool_key.startswith(c1.connection_str + "\x00tok:")
+        assert c2._pool_key.startswith(c2.connection_str + "\x00tok:")
+        c1.close()
+        c2.close()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_token_not_refreshed_after_connect(self, mock_ddbc_conn):
-        """The access token is a pre-connect attribute: it is acquired exactly
-        once at connect() and not re-acquired for the life of the connection."""
+        """The credential is acquired exactly once up front at connect(),
+        regardless of the token's expiry. The token is a pre-connect ODBC
+        attribute and is never re-acquired on this connection."""
         mock_ddbc_conn.return_value = MagicMock()
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN, expires_on=1)
@@ -2053,7 +2124,8 @@ class TestTokenProviderPooling:
         # point of this test is that the token is acquired exactly once.
         with pytest.warns(UserWarning, match="already expired"):
             conn = connect("Server=s;Database=d", token_provider=mock_cred)
-        # Even though expires_on is in the past, nothing re-acquires the token.
+        # Even though expires_on is in the past, nothing re-acquires the token
+        # (the mocked native never invokes the factory).
         assert mock_cred.get_token.call_count == 1
         conn.close()
         assert mock_cred.get_token.call_count == 1
@@ -2151,6 +2223,7 @@ class TestTokenProviderRealWorld:
         assert cred.calls == [(_SQL_SCOPE,)]
         assert conn._token_provider is cred
         assert conn._token_expires_on == 1893456000
+        # Token is stored eagerly in attrs_before (no deferred factory).
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in conn._attrs_before
         conn.close()
 
@@ -2204,7 +2277,7 @@ class TestTokenProviderRealWorld:
 
         conn = connect("Server=s;Database=d", token_provider=cred)
         assert conn._token_expires_on == 1999999999
-        # The injected attribute is the UTF-16-LE struct, not the raw JWT.
+        # The token is stored as a UTF-16-LE struct, not the raw JWT.
         token_struct = conn._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value]
         body = SAMPLE_TOKEN.encode("UTF-16-LE")
         assert token_struct[:4] == len(body).to_bytes(4, "little")
@@ -2252,7 +2325,8 @@ class TestTokenProviderRealWorld:
         # The shared dict is untouched: only the login timeout, no access token.
         assert app_attrs == {SQL_ATTR_LOGIN_TIMEOUT: 30}
         assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value not in app_attrs
-        # Both connections got their own token + the app's login timeout.
+        # Each connection keeps the app's login timeout and stores its own token
+        # in its private attrs_before copy (the shared dict is never polluted).
         for c in (c1, c2):
             assert c._attrs_before[SQL_ATTR_LOGIN_TIMEOUT] == 30
             assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in c._attrs_before
@@ -2736,7 +2810,7 @@ class TestComputeIdentityKey:
 
     def test_msi_user_assigned_uses_client_id(self):
         key = compute_identity_key("msi", {"client_id": "abc-123"})
-        assert key == "msi:abc-123"
+        assert key == "msi:client:abc-123"
 
     def test_msi_system_assigned(self):
         assert compute_identity_key("msi") == "msi:system"
@@ -2745,7 +2819,17 @@ class TestComputeIdentityKey:
     def test_msi_key_derived_without_token(self):
         # No token_struct supplied, yet MSI still yields a key -> enables
         # skipping token acquisition on a pool hit.
-        assert compute_identity_key("msi", {"client_id": "cid"}) == "msi:cid"
+        assert compute_identity_key("msi", {"client_id": "cid"}) == "msi:client:cid"
+
+    def test_msi_user_and_system_encodings_are_disjoint(self):
+        # A user-assigned MSI whose client_id is literally "system" must NOT
+        # collide with a system-assigned MSI: the client id lives under the
+        # ``msi:client:`` prefix so the two encodings can never overlap.
+        user = compute_identity_key("msi", {"client_id": "system"})
+        system = compute_identity_key("msi")
+        assert user == "msi:client:system"
+        assert system == "msi:system"
+        assert user != system
 
     def test_token_hash_fallback_for_default(self):
         token = b"\x00\x01sometokenbytes"
@@ -2782,6 +2866,26 @@ class TestComputeIdentityKey:
         # When both are available the account id wins (stable across refreshes).
         key = compute_identity_key("interactive", token_struct=b"tok", home_account_id="acct-1")
         assert key == "acct:acct-1"
+
+    def test_compute_token_identity_hashes_token(self):
+        # compute_token_identity is the raw-token helper: it derives a stable
+        # ``tok:`` identity straight from the token struct, independent of any
+        # auth_type, and matches the plain "default" token hash.
+        from mssql_python.auth import compute_token_identity
+
+        token = b"\x04\x00\x00\x00rawtoken"
+        identity = compute_token_identity(token)
+        assert identity is not None and identity.startswith("tok:")
+        assert identity == compute_identity_key("default", token_struct=token)
+
+    def test_compute_token_identity_without_token_is_none(self):
+        # compute_token_identity needs a token struct; a falsy value yields None
+        # so the caller does not build a bare-connection-string key for a token
+        # connection.
+        from mssql_python.auth import compute_token_identity
+
+        assert compute_token_identity(None) is None
+        assert compute_token_identity(b"") is None
 
 
 class TestConnectionPoolKey:
@@ -2824,7 +2928,7 @@ class TestConnectionPoolKey:
         conn = connect(
             f"Server=test;Database=testdb;Authentication=ActiveDirectoryMSI;UID={client_id}"
         )
-        assert conn._pool_key == conn.connection_str + f"\x00msi:{client_id}"
+        assert conn._pool_key == conn.connection_str + f"\x00msi:client:{client_id}"
         conn.close()
 
     @patch("mssql_python.connection.get_auth_token_info")
@@ -3016,6 +3120,36 @@ class TestTokenFactoryLazyAcquisition:
         finally:
             conn.close()
 
+    @patch("mssql_python.connection.get_auth_token_info")
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_account_factory_rejects_changed_account(self, mock_ddbc_conn, mock_get_token_info):
+        # The acct: pool bucket is bound to the home_account_id the pool was
+        # keyed on. If the deferred token acquisition later yields a DIFFERENT
+        # account (e.g. the signed-in principal changed between pooling and the
+        # physical connect), the factory must fail closed rather than open a
+        # connection authenticated as a different account in this pool.
+        mock_ddbc_conn.return_value = MagicMock()
+        mock_get_token_info.return_value = TokenInfo(
+            token_struct=b"dc-token-bytes",
+            expires_on=1893456000,
+            home_account_id="dc-acct-1",
+        )
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDeviceCode")
+        try:
+            assert conn._pool_key.endswith("\x00acct:dc-acct-1")
+            # The signed-in account changed under the same pool bucket.
+            mock_get_token_info.return_value = TokenInfo(
+                token_struct=b"other-token-bytes",
+                expires_on=1893456000,
+                home_account_id="dc-acct-2",
+            )
+            with pytest.raises(InterfaceError):
+                conn._token_factory()
+        finally:
+            conn.close()
+
 
 class TestRawAccessTokenPoolKey:
     """A raw SQL_COPT_SS_ACCESS_TOKEN in attrs_before (no ``Authentication=``
@@ -3129,6 +3263,14 @@ class TestRawAccessTokenPoolKey:
         try:
             expected = "tok:" + hashlib.sha256(bytes(token)).hexdigest()
             assert conn._pool_key.endswith("\x00" + expected)
+            # TOCTOU fix: the mutable bytearray is frozen to immutable bytes once
+            # and stored back, so the value the pool hash saw and the value the
+            # native connect reads are the same object and can't be mutated
+            # between hashing and connect.
+            stored = conn._attrs_before[self._TOKEN_ATTR]
+            assert isinstance(stored, bytes)
+            assert not isinstance(stored, bytearray)
+            assert stored == b"bytearray-token"
         finally:
             conn.close()
 
@@ -3147,3 +3289,31 @@ class TestRawAccessTokenPoolKey:
             assert conn._pool_key == ""
         finally:
             conn.close()
+
+
+class TestConnectionStringNulRejection:
+    """The identity-aware pool key joins the sanitized connection string and the
+    per-identity discriminator with a ``\\x00`` separator, and the ODBC layer
+    terminates a connection string at the first NUL (SQL_NTS). A caller-supplied
+    NUL in the connection string (or any string kwarg) could forge/collide a
+    pool key or silently truncate the connection string, so it is rejected at
+    the Python boundary before any pool key is built or a connection opened."""
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_nul_in_connection_string_is_rejected(self, mock_ddbc_conn):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        with pytest.raises(InterfaceError, match="NUL"):
+            connect("Server=test;Database=t\x00est;UID=sa;PWD=secret")
+        # Fail closed: rejected before any native Connection is built.
+        mock_ddbc_conn.assert_not_called()
+
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_nul_in_string_kwarg_is_rejected(self, mock_ddbc_conn):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        with pytest.raises(InterfaceError, match="NUL"):
+            connect("Server=test;Database=testdb", database="te\x00st")
+        mock_ddbc_conn.assert_not_called()

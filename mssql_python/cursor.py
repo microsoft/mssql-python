@@ -3020,15 +3020,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             try:
                 raw_token, _ = acquire_raw_token_from_credential(self.connection._token_provider)
             except (OperationalError, InterfaceError) as e:
-                raise OperationalError(
+                # Preserve the original exception *type* so the same failure is
+                # catchable the same way from connect() and bulkcopy(): an empty
+                # or invalid token raises InterfaceError, while a provider or
+                # transport failure raises OperationalError. Re-wrapping every
+                # case as OperationalError would make an InterfaceError from
+                # connect() surface as OperationalError here, splitting one
+                # failure across two DB-API error categories.
+                raise type(e)(
                     driver_error=(
                         "Bulk copy failed: unable to acquire token from custom credential"
                     ),
                     ddbc_error=str(e),
                 ) from e
             pycore_context["access_token"] = raw_token
-            for key in ("authentication", "user_name", "password"):
-                pycore_context.pop(key, None)
             logger.debug(
                 "Bulk copy: acquired fresh token from custom credential (%s)",
                 type(self.connection._token_provider).__name__,

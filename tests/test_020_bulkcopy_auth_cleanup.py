@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mssql_python.exceptions import OperationalError
+from mssql_python.exceptions import InterfaceError, OperationalError
 
 SAMPLE_TOKEN = secrets.token_hex(44)
 
@@ -121,8 +121,13 @@ class TestBulkcopyTokenProvider:
     """Verify cursor.bulkcopy acquires a token from a custom token_provider."""
 
     @patch("mssql_python.cursor.logger")
-    def test_token_provider_replaces_auth_fields(self, mock_logger):
-        """token_provider present ⇒ fresh token injected, stale auth keys removed."""
+    def test_token_provider_injects_fresh_token(self, mock_logger):
+        """token_provider present ⇒ a fresh token is injected as access_token.
+
+        The connection string reaching bulkcopy has already been sanitized of
+        UID/PWD/Authentication by _configure_token_provider at connect time, so
+        the pycore context carries no stale credential fields to begin with.
+        """
         mock_logger.is_debug_enabled = False
 
         # Custom credential whose get_token returns an AccessToken-like object.
@@ -130,8 +135,7 @@ class TestBulkcopyTokenProvider:
         credential.get_token.return_value = MagicMock(token=SAMPLE_TOKEN, expires_on=1893456000)
 
         cursor = _make_cursor(
-            "Server=tcp:test.database.windows.net;Database=testdb;"
-            "Authentication=ActiveDirectoryDefault;UID=user@test.com;PWD=secret",
+            "Server=tcp:test.database.windows.net;Database=testdb",
             "activedirectorydefault",
         )
         # token_provider takes precedence over _auth_type.
@@ -259,10 +263,16 @@ class TestBulkcopyTokenProvider:
 
         assert credential.get_token.call_count == 2
 
+    @patch("mssql_python.cursor.logger")
+    def test_empty_token_from_provider_raises_interface_error(self, mock_logger):
+        """An empty .token from the custom credential surfaces as InterfaceError
+        from bulkcopy() -- the same exception type connect() raises for this
+        failure -- so a caller catching InterfaceError sees it from both paths.
+        """
         mock_logger.is_debug_enabled = False
 
-        # .token is not a non-empty string ⇒ _get_token_from_credential raises InterfaceError,
-        # which cursor.bulkcopy catches and re-wraps as OperationalError.
+        # .token is not a non-empty string ⇒ _get_token_from_credential raises
+        # InterfaceError, which cursor.bulkcopy preserves (same type as connect()).
         credential = MagicMock()
         credential.get_token.return_value = MagicMock(token="", expires_on=None)
 
@@ -276,7 +286,7 @@ class TestBulkcopyTokenProvider:
         mock_pycore_module = MagicMock()
 
         with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
-            with pytest.raises(OperationalError) as exc_info:
+            with pytest.raises(InterfaceError) as exc_info:
                 cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
         assert "unable to acquire token from custom credential" in str(exc_info.value)

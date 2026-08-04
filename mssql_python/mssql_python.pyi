@@ -4,12 +4,28 @@ Licensed under the MIT license.
 Type stubs for mssql_python package - based on actual public API
 """
 
-from typing import Any, Dict, List, Mapping, Optional, Union, Tuple, Sequence, Callable, Iterator
+from typing import (
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Union,
+    Tuple,
+    Sequence,
+    Callable,
+    Iterator,
+)
 import datetime
 import logging
 import pyarrow
 
-from azure.core.credentials import TokenCredential
+# Structural type for token_provider: any object with get_token(scope) returning
+# an object with a .token attribute (broader than azure's TokenCredential so a
+# minimal get_token(scope) implementation type-checks).
+class TokenProvider(Protocol):
+    def get_token(self, scope: str) -> Any: ...
 
 # GLOBALS - DB-API 2.0 Required Module Globals
 # https://www.python.org/dev/peps/pep-0249/#module-interface
@@ -250,7 +266,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
-        token_provider: Optional[TokenCredential] = None,
+        token_provider: Optional[TokenProvider] = None,
         **kwargs: Any,
     ) -> None: ...
 
@@ -296,7 +312,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
-    token_provider: Optional[TokenCredential] = None,
+    token_provider: Optional[TokenProvider] = None,
     **kwargs: Any,
 ) -> Connection: ...
 
