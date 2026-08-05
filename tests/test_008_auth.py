@@ -1708,7 +1708,7 @@ class TestTokenProviderValidation:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             conn = connect(
-                "Server=test;Database=testdb;UID=user@test.com;PWD=secret",
+                "Server=localhost;Database=testdb;UID=user@test.com;PWD=secret",
                 token_provider=mock_cred,
             )
         assert "UID=" not in conn.connection_str
@@ -2059,7 +2059,7 @@ class TestTokenProviderPooling:
         from mssql_python.pooling import PoolingManager
 
         PoolingManager._reset_for_testing()
-        conn = connect("Server=s;Database=d;UID=sa;PWD=secret")
+        conn = connect("Server=localhost;Database=d;UID=sa;PWD=secret")
         assert self._pooling_arg(mock_ddbc_conn) is True
         assert conn._pooling is True
         conn.close()
@@ -3096,7 +3096,7 @@ class TestTokenFactoryLazyAcquisition:
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
 
-        conn = connect("Server=test;Database=testdb;UID=sa;PWD=secret")
+        conn = connect("Server=localhost;Database=testdb;UID=sa;PWD=secret")
         try:
             assert conn._token_factory is None
             args, _ = mock_ddbc_conn.call_args
@@ -3216,7 +3216,7 @@ class TestRawAccessTokenPoolKey:
 
         with pytest.raises(InterfaceError, match="SQL_COPT_SS_ACCESS_TOKEN"):
             connect(
-                "Server=test;Database=testdb;UID=sa;PWD=secret",
+                "Server=localhost;Database=testdb;UID=sa;PWD=secret",
                 attrs_before={self._TOKEN_ATTR: bad_token},
             )
         # Fail closed: the guard raises before the native Connection is built.
@@ -3231,7 +3231,7 @@ class TestRawAccessTokenPoolKey:
 
         token = b"raw-access-token-bytes"
         conn = connect(
-            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            "Server=localhost;Database=testdb;UID=sa;PWD=secret",
             attrs_before={self._TOKEN_ATTR: token},
         )
         try:
@@ -3247,11 +3247,11 @@ class TestRawAccessTokenPoolKey:
         from mssql_python import connect
 
         conn_a = connect(
-            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            "Server=localhost;Database=testdb;UID=sa;PWD=secret",
             attrs_before={self._TOKEN_ATTR: b"token-A"},
         )
         conn_b = connect(
-            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            "Server=localhost;Database=testdb;UID=sa;PWD=secret",
             attrs_before={self._TOKEN_ATTR: b"token-B"},
         )
         try:
@@ -3266,11 +3266,11 @@ class TestRawAccessTokenPoolKey:
         from mssql_python import connect
 
         conn_a = connect(
-            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            "Server=localhost;Database=testdb;UID=sa;PWD=secret",
             attrs_before={self._TOKEN_ATTR: b"same-token"},
         )
         conn_b = connect(
-            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            "Server=localhost;Database=testdb;UID=sa;PWD=secret",
             attrs_before={self._TOKEN_ATTR: b"same-token"},
         )
         try:
@@ -3288,7 +3288,7 @@ class TestRawAccessTokenPoolKey:
 
         token = bytearray(b"bytearray-token")
         conn = connect(
-            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            "Server=localhost;Database=testdb;UID=sa;PWD=secret",
             attrs_before={self._TOKEN_ATTR: token},
         )
         try:
@@ -3313,7 +3313,7 @@ class TestRawAccessTokenPoolKey:
         from mssql_python import connect
 
         conn = connect(
-            "Server=test;Database=testdb;UID=sa;PWD=secret",
+            "Server=localhost;Database=testdb;UID=sa;PWD=secret",
             attrs_before={1256000: 30},  # some unrelated non-token attribute
         )
         try:
