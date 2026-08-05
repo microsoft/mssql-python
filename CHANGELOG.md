@@ -9,6 +9,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Added
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
+- **GH-570:** New `Cursor.bulkcopy_arrow(table_name, source)` method for
+  high-performance bulk loading directly from Apache Arrow data. Accepts a
+  `pyarrow.Table`, `RecordBatch`, or `RecordBatchReader`, any object exposing
+  the Arrow C Data Interface (`__arrow_c_stream__` / `__arrow_c_array__` — e.g.
+  polars, pandas 2.2+, DuckDB, ADBC results), or an iterable of record batches.
+  Data is streamed to the server through the Arrow C Data Interface without
+  materializing intermediate Python row objects, and the GIL is released for
+  the duration of the network transfer. When the source data already originates
+  as Arrow, this avoids the Arrow→tuple conversion the classic `bulkcopy()`
+  path requires (measured ~1.4x–2.7x faster end-to-end for such sources).
+  `bulkcopy()` now raises `TypeError` steering Arrow inputs to this method.
+  Requires `mssql-py-core` 0.1.5+.
 - Bulk copy now supports `Authentication=ActiveDirectoryServicePrincipal`
   via an `entra_id_token_factory` callback registered on the mssql-py-core
   connection. The callback is invoked by mssql-tds mid-handshake (FedAuth
