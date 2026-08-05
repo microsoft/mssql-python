@@ -43,12 +43,12 @@ parameters:
     default:
       - { tag: 'win_amd64', arch: 'x64' }
       - { tag: 'win_arm64', arch: 'arm64' }
-      # macOS: universal2 data-only wheel. macosx_11_0 is the canonical universal2
-      # floor (Big Sur — first arm64 macOS) and the driver dylibs run on macOS 11+
-      # (proven by pre-split connection tests on the macOS-14 agent), so this is
-      # pip-installable on every macOS the mssql-python wheel targets, including the
-      # macOS-14 build/test agent (a macosx_15_0 tag is rejected there).
-      - { tag: 'macosx_11_0_universal2', arch: 'universal2' }
+      # macOS: universal2 data-only wheel. Tagged macosx_15_0 to match the main
+      # mssql-python wheel (setup.py / setup_odbc.py) so BOTH wheels share one macOS
+      # floor. The driver dylibs themselves run on macOS 11+, but the tag tracks the
+      # mssql-python wheel; the macOS build/test agent is macos-latest (macOS-15),
+      # where a macosx_15_0 wheel installs, so this gets install-tested end to end.
+      - { tag: 'macosx_15_0_universal2', arch: 'universal2' }
       - { tag: 'manylinux_2_28_x86_64', arch: 'x86_64' }
       - { tag: 'manylinux_2_28_aarch64', arch: 'aarch64' }
       - { tag: 'musllinux_1_2_x86_64', arch: 'x86_64' }
@@ -149,7 +149,7 @@ stages:
               $expect = @{
                 'win_amd64'              = @{ Must = @('libs/windows/x64/', 'msodbcsql18.dll', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/arm64/') }
                 'win_arm64'              = @{ Must = @('libs/windows/arm64/', 'msodbcsql18.dll', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/x64/') }
-                'macosx_11_0_universal2' = @{ Must = @('libs/macos/arm64/', 'libs/macos/x86_64/', 'libmsodbcsql.18.dylib', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/linux/') }
+                'macosx_15_0_universal2' = @{ Must = @('libs/macos/arm64/', 'libs/macos/x86_64/', 'libmsodbcsql.18.dylib', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/linux/') }
                 'manylinux_2_28_x86_64'  = @{ Must = @('libs/linux/debian_ubuntu/x86_64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
                 'manylinux_2_28_aarch64' = @{ Must = @('libs/linux/debian_ubuntu/arm64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/x86_64/') }
                 'musllinux_1_2_x86_64'   = @{ Must = @('libs/linux/alpine/x86_64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }

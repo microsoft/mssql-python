@@ -39,13 +39,16 @@ stages:
         displayName: 'Build Wheel - Py${{ parameters.pythonVersion }} Universal2'
         
         # Pool Configuration
-        # macOS-14 image = macOS Sonoma with Xcode 15, Python 3.x toolchain
+        # macos-latest (currently macOS-15 Sequoia) matches the pr-validation gate
+        # (eng/pipelines/pr-validation-pipeline.yml), so the macosx_15_0 universal2
+        # wheels this stage builds and install-tests run on the SAME macOS the gate
+        # uses -- the release pipeline is no longer a version behind it.
         # type:linux is Azure Pipelines quirk (macOS pools declare as 'linux' type)
         pool:
           type: linux
           isCustom: true
           name: Azure Pipelines
-          vmImage: 'macOS-14'
+          vmImage: 'macos-latest'
         # 120-minute timeout (universal2 builds take longer due to dual-architecture compilation)
         timeoutInMinutes: 120
         
