@@ -90,12 +90,18 @@ if(NOT EXISTS "${MSODBCSQL_VERSION_SOURCE}")
         "build from a full repository checkout.")
 endif()
 file(STRINGS "${MSODBCSQL_VERSION_SOURCE}" _msodbcsql_version_line REGEX "^__version__")
-string(REGEX REPLACE ".*['\"]([0-9]+\\.[0-9]+\\.[0-9]+)['\"].*" "\\1"
+# Capture the full quoted version literal (e.g. 18.6.2, 18.6.2.1, 18.6.2.post1).
+# Only a leading MAJOR.MINOR.PATCH must be numeric; a trailing packaging-revision
+# component or PEP 440 suffix is allowed because mssql-python-odbc ships
+# metadata-only re-releases as e.g. 18.6.2.1. The native driver filename is
+# derived solely from MAJOR and MAJOR.MINOR below, so a trailing revision has no
+# effect on which driver is loaded.
+string(REGEX REPLACE ".*['\"]([^'\"]+)['\"].*" "\\1"
        MSODBCSQL_VERSION "${_msodbcsql_version_line}")
-if(NOT MSODBCSQL_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+if(NOT MSODBCSQL_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+")
     message(FATAL_ERROR
         "Failed to parse __version__ from ${MSODBCSQL_VERSION_SOURCE} "
-        "(got '${MSODBCSQL_VERSION}').")
+        "(got '${MSODBCSQL_VERSION}'); expected a leading MAJOR.MINOR.PATCH.")
 endif()
 string(REGEX MATCH "^[0-9]+" MSODBCSQL_VERSION_MAJOR "${MSODBCSQL_VERSION}")
 string(REGEX MATCH "^[0-9]+\\.[0-9]+" MSODBCSQL_VERSION_MAJOR_MINOR "${MSODBCSQL_VERSION}")
