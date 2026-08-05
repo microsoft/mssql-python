@@ -57,6 +57,10 @@ def _cursor_with_conn(connection_str, auth_type=None, credential_kwargs=None):
     mock_conn.connection_str = connection_str
     mock_conn._auth_type = auth_type
     mock_conn._credential_kwargs = credential_kwargs
+    # Real Connection objects always initialize this to None; set it explicitly
+    # so the MagicMock does not auto-vivify a truthy attribute that would send
+    # _build_pycore_context down the custom-credential (token_provider) branch.
+    mock_conn._token_provider = None
     mock_conn._is_connected = True
 
     cursor = Cursor.__new__(Cursor)
@@ -232,7 +236,7 @@ class TestBuildPycoreContext:
             cur._build_pycore_context()
 
     def test_sql_auth_keeps_credentials(self):
-        cur = _cursor_with_conn("Server=testhost;Database=testdb;UID=sa;PWD=mypwd", auth_type=None)
+        cur = _cursor_with_conn("Server=localhost;Database=testdb;UID=sa;PWD=mypwd", auth_type=None)
         ctx = cur._build_pycore_context()
         assert ctx.get("user_name") == "sa"
         assert ctx.get("password") == "mypwd"
@@ -357,7 +361,7 @@ class TestBulkcopyArrowDispatch:
     @patch("mssql_python.cursor.logger")
     def test_success_returns_result_and_forwards_args(self, mock_logger):
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, _, _ = _mock_pycore()
         src = pa.table({"a": [1, 2]})
 
@@ -379,7 +383,7 @@ class TestBulkcopyArrowDispatch:
     def test_batch_size_timeout_accept_positional(self, mock_logger):
         """D13: batch_size/timeout are positional-or-keyword (parity with bulkcopy)."""
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, _, _ = _mock_pycore()
         src = pa.table({"a": [1, 2]})
 
@@ -393,7 +397,7 @@ class TestBulkcopyArrowDispatch:
     @patch("mssql_python.cursor.logger")
     def test_sensitive_fields_cleared_after_success(self, mock_logger):
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=secret")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=secret")
         module, _, _, captured = _mock_pycore()
 
         with patch.dict("sys.modules", {"mssql_py_core": module}):
@@ -406,7 +410,7 @@ class TestBulkcopyArrowDispatch:
     @patch("mssql_python.cursor.logger")
     def test_resources_closed_on_success(self, mock_logger):
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, _ = _mock_pycore()
 
         with patch.dict("sys.modules", {"mssql_py_core": module}):
@@ -418,7 +422,7 @@ class TestBulkcopyArrowDispatch:
     @patch("mssql_python.cursor.logger")
     def test_core_exception_is_reraised_and_cleaned_up(self, mock_logger):
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, captured = _mock_pycore(raise_exc=ValueError("boom"))
 
         with patch.dict("sys.modules", {"mssql_py_core": module}):
@@ -434,7 +438,7 @@ class TestBulkcopyArrowDispatch:
     def test_cleanup_swallows_close_errors(self, mock_logger):
         """A failing resource.close() during teardown must not mask the result."""
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, _ = _mock_pycore()
         pyc_cursor.close.side_effect = RuntimeError("close failed")
 

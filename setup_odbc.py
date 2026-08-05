@@ -224,6 +224,11 @@ _LIBS_GLOBS = _target_libs_globs(_TARGET_PLATFORM_TAG, _TARGET_ARCH)
 print(f"ODBC wheel target: tag={_TARGET_PLATFORM_TAG} arch={_TARGET_ARCH!r}")
 print(f"ODBC libs globs: {_LIBS_GLOBS}")
 
+# PyPI long description is maintained as a standalone Markdown file (mirrors the
+# main mssql-python package, which reads PyPI_Description.md) so it can be edited
+# and reviewed as Markdown rather than embedded in this build script.
+_LONG_DESCRIPTION = (PROJECT_ROOT / "PyPI_Description_ODBC.md").read_text(encoding="utf-8")
+
 setup(
     name="mssql-python-odbc",
     version=_read_odbc_version(),
@@ -231,15 +236,23 @@ setup(
         "Internal implementation package for mssql-python: Microsoft ODBC "
         "Driver 18 for SQL Server binaries. Not intended for direct use."
     ),
-    long_description=(
-        "Internal implementation package not meant for direct consumption. "
-        "Install `mssql-python`, which depends on this package."
-    ),
-    long_description_content_type="text/plain",
+    long_description=_LONG_DESCRIPTION,
+    long_description_content_type="text/markdown",
     author="Microsoft Corporation",
     author_email="mssql-python@microsoft.com",
     url="https://github.com/microsoft/mssql-python",
-    license="MIT",
+    license="Other/Proprietary License",
+    # This wheel redistributes Microsoft's proprietary ODBC driver (and the VC++
+    # runtime it links against), so the DISTRIBUTION is proprietary even though
+    # this build script's own source stays MIT (see the header). Embed both
+    # license texts in the wheel metadata (.dist-info/licenses/). These point at
+    # the committed, canonical ``mssql_python_odbc/licenses/`` copies so the
+    # references always resolve -- independent of whether the build-time libs/
+    # tree has been populated yet (on ``main`` it is empty until sync_libs runs).
+    license_files=[
+        "mssql_python_odbc/licenses/MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt",
+        "mssql_python_odbc/licenses/MICROSOFT_VISUAL_STUDIO_LICENSE.txt",
+    ],
     packages=[PACKAGE_NAME],
     # vcredist / VC++ runtime (deliberate divergence from the main wheel's SHAPE,
     # not a behavior change): unlike setup.py we do NOT exclude
@@ -271,7 +284,7 @@ setup(
     include_package_data=False,
     python_requires=">=3.10",
     classifiers=[
-        "License :: OSI Approved :: MIT License",
+        "License :: Other/Proprietary License",
         "Operating System :: Microsoft :: Windows",
         "Operating System :: MacOS",
         "Operating System :: POSIX :: Linux",
