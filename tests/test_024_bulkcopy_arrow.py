@@ -57,6 +57,10 @@ def _cursor_with_conn(connection_str, auth_type=None, credential_kwargs=None):
     mock_conn.connection_str = connection_str
     mock_conn._auth_type = auth_type
     mock_conn._credential_kwargs = credential_kwargs
+    # Real Connection objects always initialize this to None; set it explicitly
+    # so the MagicMock does not auto-vivify a truthy attribute that would send
+    # _build_pycore_context down the custom-credential (token_provider) branch.
+    mock_conn._token_provider = None
     mock_conn._is_connected = True
 
     cursor = Cursor.__new__(Cursor)
