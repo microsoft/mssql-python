@@ -243,7 +243,7 @@ For usage, API documentation, and source code, see the
 ## License information
 
 This package redistributes proprietary Microsoft binaries under their respective license terms.
-The full license text also ships inside every wheel, next to the binaries it covers.
+The full license text also ships inside every wheel (in the wheel metadata under `.dist-info/licenses/`).
 
 - [Microsoft ODBC Driver for SQL Server License](https://github.com/microsoft/mssql-python/blob/main/mssql_python_odbc/licenses/MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt)
 - [Microsoft Visual C++ Redistributable (Visual Studio) License](https://github.com/microsoft/mssql-python/blob/main/mssql_python_odbc/licenses/MICROSOFT_VISUAL_STUDIO_LICENSE.txt)
