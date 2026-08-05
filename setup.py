@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -7,6 +8,25 @@ from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _read_odbc_version() -> str:
+    """Return ``mssql_python_odbc.__version__`` -- the single source of truth for
+    the ODBC package version.
+
+    The value is read (by regex, without importing the package) from
+    ``mssql_python_odbc/__init__.py``, the same attribute ``setup_odbc.py`` uses
+    for the ``mssql-python-odbc`` wheel version and the ``pr-validation`` pipeline
+    reads for the driver version. Deriving the ``install_requires`` pin from it
+    means the dependency can never drift from what the package actually publishes
+    -- one version, one place.
+    """
+    init_file = PROJECT_ROOT / "mssql_python_odbc" / "__init__.py"
+    text = init_file.read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"Could not find __version__ in {init_file}")
+    return match.group(1)
 
 
 # Custom distribution to force platform-specific wheel
@@ -175,7 +195,10 @@ setup(
     # Add dependencies
     install_requires=[
         "azure-identity>=1.12.0",  # Azure authentication library
-        "mssql-python-odbc==18.6.2",  # ODBC Driver 18 binaries (standalone package)
+        # ODBC Driver 18 binaries (standalone package). The pin is derived from
+        # mssql_python_odbc.__version__ (single source of truth) so it can never
+        # drift from the published mssql-python-odbc package.
+        f"mssql-python-odbc=={_read_odbc_version()}",
     ],
     extras_require={
         "pyarrow": ["pyarrow>=14.0.0"],

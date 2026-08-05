@@ -210,15 +210,27 @@ extends:
                   # A pre-pin build declares no such dependency and is allowed through
                   # (inert until setup.py adds install_requires), so this does not break
                   # an unrelated hotfix released before the pin lands. It DOES catch a
-                  # wheel pinned to the wrong odbc version. Update $expectedVersion when
-                  # the odbc pin bumps.
+                  # wheel pinned to the wrong odbc version. $expectedVersion is derived
+                  # from mssql_python_odbc/__init__.py (single source of truth), so it
+                  # never needs a manual bump when the odbc version changes.
                   - task: PowerShell@2
                     displayName: '[TEST] Validate mssql-python-odbc pin in wheel metadata'
                     inputs:
                       targetType: 'inline'
                       script: |
                         $ErrorActionPreference = 'Stop'
-                        $expectedVersion = '18.6.2'
+                        # Single source of truth: derive the expected pin from
+                        # mssql_python_odbc/__init__.py (the same __version__ that
+                        # setup.py's install_requires and the pr-validation pipeline
+                        # read) so this guard never drifts when the odbc version bumps.
+                        $initFile = "$(Build.SourcesDirectory)/mssql_python_odbc/__init__.py"
+                        $verMatch = Select-String -Path $initFile -Pattern '__version__\s*=\s*["'']([^"'']+)["'']' | Select-Object -First 1
+                        if (-not $verMatch) {
+                          Write-Error "Could not parse __version__ from $initFile"
+                          exit 1
+                        }
+                        $expectedVersion = $verMatch.Matches[0].Groups[1].Value
+                        Write-Host "Expected mssql-python-odbc pin (from mssql_python_odbc/__init__.py): $expectedVersion"
                         $wheels = Get-ChildItem -Path "$(Build.SourcesDirectory)/artifacts/dist" -Filter "mssql_python-*.whl"
                         if ($wheels.Count -eq 0) {
                           Write-Error "No mssql_python-*.whl found in artifacts/dist to validate the odbc pin."
