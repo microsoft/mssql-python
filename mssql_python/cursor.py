@@ -3216,7 +3216,32 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 pycore_context["connect_timeout"] = int(connect_timeout)
 
         # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
-        if self.connection._auth_type:
+        if self.connection._token_provider is not None:
+            # User-supplied credential — use it directly for a fresh token.
+            from mssql_python.auth import acquire_raw_token_from_credential
+
+            try:
+                raw_token, _ = acquire_raw_token_from_credential(self.connection._token_provider)
+            except (OperationalError, InterfaceError) as e:
+                # Preserve the original exception *type* so the same failure is
+                # catchable the same way from connect() and bulkcopy(): an empty
+                # or invalid token raises InterfaceError, while a provider or
+                # transport failure raises OperationalError. Re-wrapping every
+                # case as OperationalError would make an InterfaceError from
+                # connect() surface as OperationalError here, splitting one
+                # failure across two DB-API error categories.
+                raise type(e)(
+                    driver_error=(
+                        "Bulk copy failed: unable to acquire token from custom credential"
+                    ),
+                    ddbc_error=str(e),
+                ) from e
+            pycore_context["access_token"] = raw_token
+            logger.debug(
+                "Bulk copy: acquired fresh token from custom credential (%s)",
+                type(self.connection._token_provider).__name__,
+            )
+        elif self.connection._auth_type:
             # Fresh token acquisition for mssql-py-core connection
             from mssql_python.auth import AADAuth, ServicePrincipalAuth
             from mssql_python.constants import _AuthInternal
