@@ -28,7 +28,16 @@ __all__ = ["get_libs_dir", "__version__"]
 # CMakeLists.txt``) derives the driver filename version from it and injects it
 # into ``GetDriverPathCpp`` -- so the C++ resolver and this package can never
 # drift. Bump this one value to move to a new driver release.
-__version__ = "18.6.2"
+#
+# The bundled Microsoft ODBC driver is 18.6; the trailing components are
+# mssql-python-odbc's own packaging-revision counter. 18.6.2.1 is a metadata-only
+# re-release of 18.6.2 (license label corrected MIT -> proprietary; identical
+# binaries) -- the trailing ".1" is packaging revision 1. A literal "v1" suffix
+# is not a valid PEP 440 version and +local versions are rejected by PyPI, so the
+# revision is expressed as a fourth numeric component. ``mssql_python/pybind/
+# CMakeLists.txt`` parses only the leading MAJOR.MINOR from this value, so the
+# extra component does not affect the resolved driver filename.
+__version__ = "18.6.2.1"
 
 
 def get_libs_dir() -> str:
