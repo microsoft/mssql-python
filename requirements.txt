@@ -6,6 +6,9 @@ unittest-xml-reporting
 psutil
 pyarrow
 
+# Runtime dependencies needed for tests
+azure-identity
+
 # Build dependencies
 pybind11
 setuptools
