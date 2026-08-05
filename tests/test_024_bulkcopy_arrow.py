@@ -383,7 +383,7 @@ class TestBulkcopyArrowDispatch:
     def test_batch_size_timeout_accept_positional(self, mock_logger):
         """D13: batch_size/timeout are positional-or-keyword (parity with bulkcopy)."""
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, _, _ = _mock_pycore()
         src = pa.table({"a": [1, 2]})
 
@@ -410,7 +410,7 @@ class TestBulkcopyArrowDispatch:
     @patch("mssql_python.cursor.logger")
     def test_resources_closed_on_success(self, mock_logger):
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, _ = _mock_pycore()
 
         with patch.dict("sys.modules", {"mssql_py_core": module}):
@@ -422,7 +422,7 @@ class TestBulkcopyArrowDispatch:
     @patch("mssql_python.cursor.logger")
     def test_core_exception_is_reraised_and_cleaned_up(self, mock_logger):
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, captured = _mock_pycore(raise_exc=ValueError("boom"))
 
         with patch.dict("sys.modules", {"mssql_py_core": module}):
@@ -438,7 +438,7 @@ class TestBulkcopyArrowDispatch:
     def test_cleanup_swallows_close_errors(self, mock_logger):
         """A failing resource.close() during teardown must not mask the result."""
         mock_logger.is_debug_enabled = False
-        cur = _cursor_with_conn("Server=testhost;Database=d;UID=sa;PWD=p")
+        cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, _ = _mock_pycore()
         pyc_cursor.close.side_effect = RuntimeError("close failed")
 
