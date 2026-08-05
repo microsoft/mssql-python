@@ -1663,7 +1663,7 @@ class TestTokenProviderValidation:
 
         with pytest.warns(UserWarning, match="credential\\(s\\) are ignored"):
             conn = connect(
-                "Server=test;Database=testdb;UID=user@test.com;PWD=secret",
+                "Server=localhost;Database=testdb;UID=user@test.com;PWD=secret",
                 token_provider=mock_cred,
             )
         conn.close()
@@ -2932,7 +2932,7 @@ class TestConnectionPoolKey:
         mock_ddbc_conn.return_value = MagicMock()
         from mssql_python import connect
 
-        conn = connect("Server=test;Database=testdb;UID=sa;PWD=secret")
+        conn = connect("Server=localhost;Database=testdb;UID=sa;PWD=secret")
         assert conn._pool_key == ""
         # Native Connection received the empty pool key as the 4th positional arg.
         args, _ = mock_ddbc_conn.call_args
@@ -3336,7 +3336,7 @@ class TestConnectionStringNulRejection:
         from mssql_python import connect
 
         with pytest.raises(InterfaceError, match="NUL"):
-            connect("Server=test;Database=t\x00est;UID=sa;PWD=secret")
+            connect("Server=localhost;Database=t\x00est;UID=sa;PWD=secret")
         # Fail closed: rejected before any native Connection is built.
         mock_ddbc_conn.assert_not_called()
 
