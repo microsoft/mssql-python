@@ -20,7 +20,7 @@ noise (see --csv for the full record). GC is disabled around each timed call.
 
 Usage (PowerShell)
 ------------------
-    $env:DB_CONNECTION_STRING = "Server=...;Database=...;UID=...;PWD=...;TrustServerCertificate=yes;"
+    $env:DB_CONNECTION_STRING = "Server=localhost;Database=...;UID=...;PWD=...;TrustServerCertificate=yes;"
     python benchmarks\bench_bulkcopy_arrow.py
     python benchmarks\bench_bulkcopy_arrow.py --rows 1000 10000 100000 --repeats 7
     python benchmarks\bench_bulkcopy_arrow.py --profiles narrow mixed decimal
