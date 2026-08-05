@@ -211,43 +211,10 @@ class CustomBdistWheel(bdist_wheel):
 
 _require_min_setuptools()
 
-# PyPI long description (Markdown). Kept at module scope and UNINDENTED so the
-# Markdown is not accidentally turned into indented code blocks by PyPI's
-# renderer. The "License information" links point at the two redistributed
-# Microsoft license texts that ship inside every wheel.
-_LONG_DESCRIPTION = """\
-# mssql-python-odbc
-
-Internal implementation package for [**mssql-python**](https://pypi.org/project/mssql-python/) —
-Microsoft's official Python driver for SQL Server, Azure SQL, and SQL databases in Fabric.
-
-This package ships the platform-specific **Microsoft ODBC Driver 18 for SQL Server** binaries
-(and the supporting runtime libraries they depend on) as a standalone, pure-data wheel, so that
-`mssql-python` does not have to bundle them inside its own wheel.
-
-## Not intended for direct use
-
-Do **not** install this package directly. Install
-[**mssql-python**](https://pypi.org/project/mssql-python/) instead — it declares the correct
-pinned dependency on `mssql-python-odbc` and loads these binaries automatically:
-
-```
-pip install mssql-python
-```
-
-## Documentation
-
-For usage, API documentation, and source code, see the
-[mssql-python project on GitHub](https://github.com/microsoft/mssql-python).
-
-## License information
-
-This package redistributes proprietary Microsoft binaries under their respective license terms.
-The full license text also ships inside every wheel (in the wheel metadata under `.dist-info/licenses/`).
-
-- [Microsoft ODBC Driver for SQL Server License](https://github.com/microsoft/mssql-python/blob/main/mssql_python_odbc/licenses/MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt)
-- [Microsoft Visual C++ Redistributable (Visual Studio) License](https://github.com/microsoft/mssql-python/blob/main/mssql_python_odbc/licenses/MICROSOFT_VISUAL_STUDIO_LICENSE.txt)
-"""
+# PyPI long description is maintained as a standalone Markdown file (mirrors the
+# main mssql-python package, which reads PyPI_Description.md) so it can be edited
+# and reviewed as Markdown rather than embedded in this build script.
+_LONG_DESCRIPTION = (PROJECT_ROOT / "PyPI_Description_ODBC.md").read_text(encoding="utf-8")
 
 setup(
     name="mssql-python-odbc",
