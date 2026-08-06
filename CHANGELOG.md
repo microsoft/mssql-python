@@ -14,6 +14,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   connection. The callback is invoked by mssql-tds mid-handshake (FedAuth
   workflow 0x02) so the tenant id can be resolved from the server-supplied
   STS URL. Requires `mssql-py-core` 0.1.5+. Partial fix for #534.
+- **Standalone `mssql-python-odbc` package (PRs #663, #664):** the Microsoft
+  ODBC Driver 18 for SQL Server binaries are now also published as a separate,
+  platform-specific `mssql-python-odbc` package. When it is installed, the
+  native driver loader resolves the driver from it; when it is absent or
+  incomplete, mssql-python transparently falls back to its own bundled `libs/`.
+  This is a non-breaking step toward decoupling driver-binary updates from
+  mssql-python releases; a future major version will make the dependency
+  explicit and drop the bundled binaries.
 
 ### Changed
 - Improved error handling in the connection module.

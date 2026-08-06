@@ -110,11 +110,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             connection: Database connection object.
             timeout: Query timeout in seconds
         """
+        # Establish the close() invariant *first*, before any statement that
+        # can raise (notably ``_initialize_cursor`` below).  Setting
+        # ``closed=False`` (not True) up front means that if ``__init__``
+        # fails partway — even after ``hstmt`` was allocated — a subsequent
+        # ``close()`` / ``__del__`` will still see a consistent view and
+        # correctly release whatever was allocated.  Pairing it with
+        # ``hstmt=None`` keeps ``close()`` safe when allocation fails before
+        # an HSTMT exists.
+        self.closed: bool = False
+        self.hstmt: Optional[Any] = None
+
         self._connection: "Connection" = connection  # Store as private attribute
         self._timeout: int = timeout
         self._inputsizes: Optional[List[Union[int, Tuple[Any, ...]]]] = None
         # self.connection.autocommit = False
-        self.hstmt: Optional[Any] = None
         self._initialize_cursor()
         self.description: Optional[
             List[
@@ -134,7 +144,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             1  # Default number of rows to fetch at a time is 1, user can change it
         )
         self.buffer_length: int = 1024  # Default buffer length for string data
-        self.closed: bool = False
         self._result_set_empty: bool = False  # Add this initialization
         self.last_executed_stmt: str = ""  # Stores the last statement executed by this cursor
         self.is_stmt_prepared: List[bool] = [
@@ -152,6 +161,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._cached_column_map = None
         self._cached_column_map_lower = None
         self._cached_converter_map = None
+        # Raw ODBC SQL type codes (from SQLDescribeCol) per column, parallel to
+        # self.description. Kept so output-converter dispatch can key on the integer
+        # ODBC SQL type code (pyodbc-compatible), not just the mapped Python type. See #684.
+        self._column_sql_types = None
         self._uuid_str_indices = None  # Pre-computed UUID column indices for str conversion
         # Cache the effective native_uuid setting for this cursor's connection.
         # Resolution order: connection._native_uuid (if not None) → module-level setting.
@@ -779,7 +792,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         will be raised if any operation (other than close) is attempted with the cursor.
         This is a deviation from pyodbc, which raises an exception if the cursor is already closed.
         """
-        if self.closed:
+        # ``closed`` may be missing on the instance only if the object was
+        # built via ``Cursor.__new__(Cursor)`` (no ``__init__``).  Normal
+        # construction sets ``self.closed = False`` as the first statement
+        # of ``__init__``, so any partially-initialized instance still has
+        # the attribute.  Treat the no-``__init__`` case as "already closed"
+        # — there's nothing to release — and let GC reap the object cleanly.
+        if getattr(self, "closed", True):
             # Do nothing - not calling _check_closed() here since we want this to be idempotent
             return
 
@@ -1071,9 +1090,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """Initialize the description attribute from column metadata."""
         if not column_metadata:
             self.description = None
+            self._column_sql_types = None
             return
 
         description = []
+        # Raw ODBC SQL type codes, parallel to description, for output-converter
+        # dispatch by integer SQL type (see _build_converter_map / #684).
+        sql_type_codes = []
         for _, col in enumerate(column_metadata):
             # Get column name - lowercase it if the lowercase flag is set
             column_name = col["ColumnName"]
@@ -1082,6 +1105,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             if get_settings().lowercase:
                 column_name = column_name.lower()
 
+            sql_type_codes.append(col["DataType"])
             # Add to description tuple (7 elements as per PEP-249)
             description.append(
                 (
@@ -1095,6 +1119,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
             )
         self.description = description
+        self._column_sql_types = sql_type_codes
 
     def _build_converter_map(self):
         """
@@ -1109,19 +1134,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         ):
             return None
 
+        sql_type_codes = self._column_sql_types
         converter_map = []
 
-        for desc in self.description:
+        for i, desc in enumerate(self.description):
             if desc is None:
                 converter_map.append(None)
                 continue
-            sql_type = desc[1]
-            converter = self.connection.get_output_converter(sql_type)
-            # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
+            converter = None
+            # 1) pyodbc-compatible: dispatch on the raw ODBC integer SQL type code
+            #    (e.g. SQL_DECIMAL). This is the key add_output_converter documents. #684
+            if sql_type_codes is not None and i < len(sql_type_codes):
+                converter = self.connection.get_output_converter(sql_type_codes[i])
+            # 2) fall back to the Python type stored in description[i][1]
+            #    (e.g. decimal.Decimal) - the pre-existing mssql-python key style.
             if converter is None:
-                from mssql_python.constants import ConstantsDDBC
-
-                converter = self.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
+                converter = self.connection.get_output_converter(desc[1])
+            # 3) Legacy WVARCHAR fallback: only apply it when the column's mapped type
+            #    is str/bytes, so a registered SQL_WVARCHAR converter is never used as an
+            #    unconditional catch-all for INT/DECIMAL/DATE/etc. columns (GH #691). This
+            #    mirrors the isinstance(value, (str, bytes)) gate in
+            #    Row._apply_output_converters.
+            if converter is None and desc[1] in (str, bytes):
+                converter = self.connection.get_output_converter(ddbc_sql_const.SQL_WVARCHAR.value)
 
             converter_map.append(converter)
 
@@ -1599,6 +1634,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except Exception as e:  # pylint: disable=broad-exception-caught
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
+            self._column_sql_types = None
 
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
@@ -1667,6 +1703,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Use fallback description if provided and current description is empty
         if not self.description and fallback_description:
             self.description = fallback_description
+
+        # Build the converter map so output converters (including integer SQL-type
+        # keys) apply to metadata result sets consistently with normal result sets.
+        # See GH #684.
+        self._cached_converter_map = self._build_converter_map()
 
         # Build the column-name -> index map for this metadata result set.
         # Both the exact name and its lowercase alias are stored so that rows
@@ -2469,6 +2510,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._initialize_description(column_metadata)
             except Exception:  # pylint: disable=broad-exception-caught
                 self.description = None
+                self._column_sql_types = None
 
             if self.description:
                 self.rowcount = -1
@@ -2798,6 +2840,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._cached_column_map = None
         self._cached_column_map_lower = None
         self._cached_converter_map = None
+        self._column_sql_types = None
         self._uuid_str_indices = None
 
         # Skip to the next result set
@@ -3289,10 +3332,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # If interpreter is shutting down, we might not have logging set up
                 import sys
 
-                if sys and sys._is_finalizing():
+                if sys and sys.is_finalizing():
                     # Suppress logging during interpreter shutdown
                     return
-                logger.debug("Exception during cursor cleanup in __del__: %s", e)
+                # ``logger`` could be torn down or have its handlers closed
+                # late in interpreter shutdown; guard so the debug call
+                # cannot itself raise an unraisable exception.
+                if logger is not None:
+                    logger.debug("Exception during cursor cleanup in __del__: %s", e)
 
     def scroll(
         self, value: int, mode: str = "relative"

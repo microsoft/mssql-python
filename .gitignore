@@ -23,6 +23,13 @@ build/
 **/build/
 mssql_python.egg-info/
 
+# ODBC package (mssql-python-odbc): transition-period build artifacts.
+# During Phase 2, setup_odbc.py copies the current platform's driver binaries
+# from mssql_python/libs into this tree so a wheel can be built locally. The
+# release pipeline populates these per-platform; do not commit the copies.
+mssql_python_odbc/libs/
+mssql_python_odbc.egg-info/
+
 # Python bytecode
 __pycache__/
 *.py[cod]
