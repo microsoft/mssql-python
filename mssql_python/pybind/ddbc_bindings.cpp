@@ -1464,10 +1464,27 @@ DriverLoader& DriverLoader::getInstance() {
 }
 
 void DriverLoader::loadDriver() {
+    // The driver-load work runs inside std::call_once so it happens exactly once
+    // per process. Critically, we must NOT let an exception propagate *out of* the
+    // call_once callable: on musl libc (Alpine/musllinux) libstdc++ routes
+    // std::call_once through pthread_once, which cannot propagate an exception
+    // from the callable and calls std::terminate() (SIGABRT) instead -- turning
+    // the actionable "install mssql-python-odbc" error into a hard crash. So we
+    // capture any failure as an exception_ptr inside the callable and rethrow it
+    // below, in a normal context that pybind11 can translate into a Python
+    // exception. The stored error persists, so every subsequent call re-raises the
+    // same actionable message instead of silently proceeding without a driver.
     std::call_once(m_onceFlag, [this]() {
-        LoadDriverOrThrowException();
-        m_driverLoaded = true;
+        try {
+            LoadDriverOrThrowException();
+            m_driverLoaded = true;
+        } catch (...) {
+            m_loadError = std::current_exception();
+        }
     });
+    if (m_loadError) {
+        std::rethrow_exception(m_loadError);
+    }
 }
 
 // SqlHandle definition

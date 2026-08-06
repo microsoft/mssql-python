@@ -5,6 +5,7 @@
 
 // pybind11.h must be the first include
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -238,6 +239,11 @@ class DriverLoader {
 
     bool m_driverLoaded;
     std::once_flag m_onceFlag;
+    // Captures a failure raised inside the std::call_once callable so loadDriver()
+    // can rethrow it from a normal context. This is required on musl libc
+    // (Alpine/musllinux), where an exception must not escape the call_once
+    // callable directly -- see loadDriver() for details.
+    std::exception_ptr m_loadError;
 };
 
 #include <unordered_map>
