@@ -11,22 +11,39 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def _read_odbc_version() -> str:
-    """Return ``mssql_python_odbc.__version__`` -- the single source of truth for
-    the ODBC package version.
+    """Return the ``mssql-python-odbc`` version -- the single source of truth for
+    the ODBC dependency pin.
 
-    The value is read (by regex, without importing the package) from
-    ``mssql_python_odbc/__init__.py``, the same attribute ``setup_odbc.py`` uses
-    for the ``mssql-python-odbc`` wheel version and the ``pr-validation`` pipeline
-    reads for the driver version. Deriving the ``install_requires`` pin from it
-    means the dependency can never drift from what the package actually publishes
-    -- one version, one place.
+    Primary source is ``mssql_python_odbc/__init__.py`` in the checkout (the same
+    ``__version__`` ``setup_odbc.py`` uses for the wheel version and the
+    ``pr-validation`` pipeline reads for the driver version), parsed by regex
+    without importing the package.
+
+    Fallback: the multi-platform build pipeline deletes the committed
+    ``mssql_python_odbc/`` directory before building the mssql-python wheel (so
+    pytest resolves the driver from the installed wheel, not the checkout). In
+    that window the ``mssql-python-odbc`` wheel is already pip-installed, so read
+    the version from its installed metadata -- which itself came from the same
+    ``__init__.py``. Either way it is one version, one place.
     """
     init_file = PROJECT_ROOT / "mssql_python_odbc" / "__init__.py"
-    text = init_file.read_text(encoding="utf-8")
-    match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
-    if not match:
-        raise SystemExit(f"Could not find __version__ in {init_file}")
-    return match.group(1)
+    if init_file.is_file():
+        text = init_file.read_text(encoding="utf-8")
+        match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if match:
+            return match.group(1)
+
+    # The checkout copy is absent (removed by the wheel-build stage); fall back to
+    # the already-installed mssql-python-odbc package metadata.
+    from importlib.metadata import version, PackageNotFoundError
+
+    try:
+        return version("mssql-python-odbc")
+    except PackageNotFoundError:
+        raise SystemExit(
+            "Could not determine the mssql-python-odbc version: neither "
+            f"{init_file} exists nor is the mssql-python-odbc package installed."
+        )
 
 
 # Custom distribution to force platform-specific wheel
