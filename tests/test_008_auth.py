@@ -29,7 +29,11 @@ from mssql_python.auth import (
     _credential_cache_lock,
     _account_id_cache,
 )
-from azure.core.credentials import TokenCredential
+
+try:
+    from azure.core.credentials import TokenCredential
+except ImportError:  # pragma: no cover - azure-core is an optional test dependency
+    TokenCredential = None
 from mssql_python.constants import AuthType, ConstantsDDBC
 from mssql_python.exceptions import InterfaceError, OperationalError
 import secrets
@@ -1920,6 +1924,7 @@ class TestTokenProviderValidation:
 class TestTokenProviderProtocol:
     """Tests for the runtime_checkable azure.core TokenCredential protocol."""
 
+    @pytest.mark.skipif(TokenCredential is None, reason="azure-core not installed")
     def test_object_with_get_token_is_instance(self):
         """An object exposing get_token satisfies the Protocol at runtime."""
 
@@ -1929,6 +1934,7 @@ class TestTokenProviderProtocol:
 
         assert isinstance(Cred(), TokenCredential)
 
+    @pytest.mark.skipif(TokenCredential is None, reason="azure-core not installed")
     def test_object_without_get_token_is_not_instance(self):
         """An object missing get_token does not satisfy the Protocol."""
 
