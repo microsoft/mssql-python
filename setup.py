@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -7,6 +8,42 @@ from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _read_odbc_version() -> str:
+    """Return the ``mssql-python-odbc`` version -- the single source of truth for
+    the ODBC dependency pin.
+
+    Primary source is ``mssql_python_odbc/__init__.py`` in the checkout (the same
+    ``__version__`` ``setup_odbc.py`` uses for the wheel version and the
+    ``pr-validation`` pipeline reads for the driver version), parsed by regex
+    without importing the package.
+
+    Fallback: the multi-platform build pipeline deletes the committed
+    ``mssql_python_odbc/`` directory before building the mssql-python wheel (so
+    pytest resolves the driver from the installed wheel, not the checkout). In
+    that window the ``mssql-python-odbc`` wheel is already pip-installed, so read
+    the version from its installed metadata -- which itself came from the same
+    ``__init__.py``. Either way it is one version, one place.
+    """
+    init_file = PROJECT_ROOT / "mssql_python_odbc" / "__init__.py"
+    if init_file.is_file():
+        text = init_file.read_text(encoding="utf-8")
+        match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if match:
+            return match.group(1)
+
+    # The checkout copy is absent (removed by the wheel-build stage); fall back to
+    # the already-installed mssql-python-odbc package metadata.
+    from importlib.metadata import version, PackageNotFoundError
+
+    try:
+        return version("mssql-python-odbc")
+    except PackageNotFoundError:
+        raise SystemExit(
+            "Could not determine the mssql-python-odbc version: neither "
+            f"{init_file} exists nor is the mssql-python-odbc package installed."
+        )
 
 
 # Custom distribution to force platform-specific wheel
@@ -139,28 +176,6 @@ print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
 if (PROJECT_ROOT / "mssql_py_core").is_dir():
     packages.append("mssql_py_core")
 
-# Add platform-specific packages
-if sys.platform.startswith("win"):
-    packages.extend(
-        [
-            f"mssql_python.libs.windows.{arch}",
-            f"mssql_python.libs.windows.{arch}.1033",
-            f"mssql_python.libs.windows.{arch}.vcredist",
-        ]
-    )
-elif sys.platform.startswith("darwin"):
-    packages.extend(
-        [
-            f"mssql_python.libs.macos",
-        ]
-    )
-elif sys.platform.startswith("linux"):
-    packages.extend(
-        [
-            f"mssql_python.libs.linux",
-        ]
-    )
-
 # ---------------------------------------------------------------------------
 # package_data – binaries to include in the wheel
 # ---------------------------------------------------------------------------
@@ -169,8 +184,9 @@ package_data = {
         "py.typed",
         "ddbc_bindings.cp*.pyd",
         "ddbc_bindings.cp*.so",
-        "libs/*",
-        "libs/**/*",
+        # msvcp140.dll (VC++ runtime) is copied next to the compiled extension by
+        # build.bat; the ODBC driver binaries themselves ship only in the
+        # standalone mssql-python-odbc package (see setup_odbc.py).
         "*.dll",
     ],
     "mssql_py_core": [
@@ -196,7 +212,10 @@ setup(
     # Add dependencies
     install_requires=[
         "azure-identity>=1.12.0",  # Azure authentication library
-        "mssql-python-odbc==18.6.2",  # ODBC Driver 18 binaries (standalone package)
+        # ODBC Driver 18 binaries (standalone package). The pin is derived from
+        # mssql_python_odbc.__version__ (single source of truth) so it can never
+        # drift from the published mssql-python-odbc package.
+        f"mssql-python-odbc=={_read_odbc_version()}",
     ],
     extras_require={
         "pyarrow": ["pyarrow>=14.0.0"],
@@ -211,10 +230,6 @@ setup(
     distclass=BinaryDistribution,
     exclude_package_data={
         "": ["*.yml", "*.yaml"],  # Exclude YML files
-        "mssql_python": [
-            "libs/*/vcredist/*",
-            "libs/*/vcredist/**/*",  # Exclude vcredist directories, added here since `'libs/*' is already included`
-        ],
     },
     # Register custom commands
     cmdclass={

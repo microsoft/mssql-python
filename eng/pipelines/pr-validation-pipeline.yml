@@ -569,7 +569,7 @@ jobs:
       fi
 
       echo "Verifying the bundled x86_64 driver load chain is intact:"
-      otool -L mssql_python/libs/macos/x86_64/lib/libmsodbcsql.18.dylib \
+      otool -L mssql_python_odbc/libs/macos/x86_64/lib/libmsodbcsql.18.dylib \
         || echo "  bundled driver not found"
     displayName: 'Uninstall system ODBC Driver before running tests on macOS'
 
@@ -849,7 +849,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python_odbc/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
 
@@ -1198,7 +1198,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python_odbc/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
 
@@ -1417,7 +1417,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python_odbc/libs/linux/rhel/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
 
@@ -1648,7 +1648,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python_odbc/libs/linux/rhel/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
 
@@ -1888,7 +1888,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
+        ldd mssql_python_odbc/libs/linux/alpine/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
 
@@ -2145,7 +2145,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
+        ldd mssql_python_odbc/libs/linux/alpine/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
 
