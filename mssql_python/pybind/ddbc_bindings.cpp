@@ -2230,17 +2230,14 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d, count=%zu",
                         paramIndex, paramSetSize);
                     int* dataArray = AllocateParamBufferArray<int>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray =
-                                    AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                             dataArray[i] = 0;
                             strLenOrIndArray[i] = SQL_NULL_DATA;
                         } else {
                             dataArray[i] = columnValues[i].cast<int>();
-                            if (strLenOrIndArray)
-                                strLenOrIndArray[i] = 0;
+                            strLenOrIndArray[i] = 0;
                         }
                     }
                     LOG("BindParameterArray: SQL_C_LONG bound - param_index=%d", paramIndex);
@@ -2252,17 +2249,14 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d, count=%zu",
                         paramIndex, paramSetSize);
                     double* dataArray = AllocateParamBufferArray<double>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray =
-                                    AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                             dataArray[i] = 0;
                             strLenOrIndArray[i] = SQL_NULL_DATA;
                         } else {
                             dataArray[i] = columnValues[i].cast<double>();
-                            if (strLenOrIndArray)
-                                strLenOrIndArray[i] = 0;
+                            strLenOrIndArray[i] = 0;
                         }
                     }
                     LOG("BindParameterArray: SQL_C_DOUBLE bound - "
@@ -2311,11 +2305,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         paramIndex, paramSetSize);
                     unsigned char* dataArray =
                         AllocateParamBufferArray<unsigned char>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray =
-                                    AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                             dataArray[i] = 0;
                             strLenOrIndArray[i] = SQL_NULL_DATA;
                         } else {
@@ -2328,8 +2320,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                                   std::to_string(i));
                             }
                             dataArray[i] = static_cast<unsigned char>(intVal);
-                            if (strLenOrIndArray)
-                                strLenOrIndArray[i] = 0;
+                            strLenOrIndArray[i] = 0;
                         }
                     }
                     LOG("BindParameterArray: SQL_C_TINYINT bound - "
@@ -2344,11 +2335,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d, count=%zu",
                         paramIndex, paramSetSize);
                     short* dataArray = AllocateParamBufferArray<short>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray =
-                                    AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                             dataArray[i] = 0;
                             strLenOrIndArray[i] = SQL_NULL_DATA;
                         } else {
@@ -2362,8 +2351,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                                   std::to_string(i));
                             }
                             dataArray[i] = static_cast<short>(intVal);
-                            if (strLenOrIndArray)
-                                strLenOrIndArray[i] = 0;
+                            strLenOrIndArray[i] = 0;
                         }
                     }
                     LOG("BindParameterArray: SQL_C_SHORT bound - "
