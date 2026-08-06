@@ -369,20 +369,22 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 PARAM_C_TYPE_TEXT;  // matches slow path (its SQL_C_CHAR is -8 = SQL_C_WCHAR)
             info.columnSize = 16;
             info.decimalDigits = 6;
-            int hour = PyDateTime_TIME_GET_HOUR(obj);
-            int minute = PyDateTime_TIME_GET_MINUTE(obj);
-            int second = PyDateTime_TIME_GET_SECOND(obj);
-            int microsecond = PyDateTime_TIME_GET_MICROSECOND(obj);
-            // Always include microseconds (matches Python's isoformat(timespec="microseconds")).
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%06d", hour, minute, second, microsecond);
-            PyObject* time_str = PyUnicode_FromString(buf);
-            if (!time_str) throw py::error_already_set();
-            Py_ssize_t time_len = PyUnicode_GET_LENGTH(time_str);
+            // Delegate to isoformat rather than formatting the raw H/M/S/us fields by hand.
+            // Hand-formatting silently drops tzinfo (an aware time rendered as
+            // "01:02:03.000004+05:30" became "01:02:03.000004") and ignores isoformat
+            // overrides on time subclasses. The legacy path calls
+            // isoformat(timespec="microseconds") via _normalize_time_param in cursor.py,
+            // so calling the same method is what keeps the two paths in agreement.
+            py::object time_obj = steal(PyObject_CallMethod(obj, "isoformat", "s", "microseconds"));
+            if (!time_obj) throw py::error_already_set();
+            if (!PyUnicode_Check(time_obj.ptr())) {
+                throw py::type_error("datetime.time.isoformat() must return a str");
+            }
+            Py_ssize_t time_len = PyUnicode_GET_LENGTH(time_obj.ptr());
             info.columnSize = std::max<SQLULEN>(info.columnSize, time_len);
             // PyList_SetItem (lowercase) decrefs the old slot before stealing the new
             // reference; safe here because cursor.py already passed a fresh list copy.
-            if (PyList_SetItem(params, i, time_str) != 0) {
+            if (PyList_SetItem(params, i, time_obj.release().ptr()) != 0) {
                 throw py::error_already_set();
             }
             continue;
@@ -412,8 +414,40 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             }
 
             Py_ssize_t num_digits = PyTuple_GET_SIZE(digits_obj.ptr());
-            int exponent = static_cast<int>(PyLong_AsLong(exponent_obj.ptr()));
-            if (exponent == -1 && PyErr_Occurred()) throw py::error_already_set();
+
+            // Read the exponent at full width and range-check it BEFORE narrowing to int.
+            // Decimal exponents are arbitrary-precision, so a value like Decimal("1E+4294967297")
+            // would otherwise truncate to 1 on LP64, sail past the precision gate below, and
+            // silently bind 10. An out-of-range exponent cannot produce a bindable NUMERIC at
+            // any precision, so treat overflow as precision overflow rather than propagating
+            // OverflowError, matching what the legacy Python path reports.
+            long long exponent_ll = PyLong_AsLongLong(exponent_obj.ptr());
+            if (exponent_ll == -1 && PyErr_Occurred()) {
+                PyErr_Clear();
+                throw py::value_error(
+                    "Precision of the numeric value is too high. "
+                    "The maximum precision supported by SQL Server is " +
+                    std::to_string(MAX_NUMERIC_PRECISION) + ".");
+            }
+            // Bound before any arithmetic or negation. MAX_NUMERIC_PRECISION on both sides is
+            // wider than anything bindable, and keeps -exponent well clear of INT_MIN, whose
+            // negation would be signed-overflow UB.
+            if (exponent_ll > MAX_NUMERIC_PRECISION || exponent_ll < -MAX_NUMERIC_PRECISION) {
+                throw py::value_error(
+                    "Precision of the numeric value is too high. "
+                    "The maximum precision supported by SQL Server is " +
+                    std::to_string(MAX_NUMERIC_PRECISION) + ".");
+            }
+            int exponent = static_cast<int>(exponent_ll);
+
+            // Digit count is likewise capped before it feeds the precision arithmetic.
+            if (num_digits > MAX_NUMERIC_PRECISION) {
+                throw py::value_error(
+                    "Precision of the numeric value is too high. "
+                    "The maximum precision supported by SQL Server is " +
+                    std::to_string(MAX_NUMERIC_PRECISION) + ", but got " +
+                    std::to_string(num_digits) + ".");
+            }
 
             int precision;
             // Precision is total base-10 digits after applying Decimal's exponent: positive exponents

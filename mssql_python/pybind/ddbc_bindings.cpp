@@ -1892,7 +1892,7 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
 }
 
 // ---------------------------------------------------------------------------
-// SQLExecuteFast — single C++ pipeline: DetectParamTypes → BindParameters → SQLExecute
+// SQLExecute_wrap — single C++ pipeline: DetectParamTypes → BindParameters → SQLExecute
 // No ParamInfo objects cross the pybind11 boundary.
 //
 // Honors use_prepare: when true, uses SQLPrepare + SQLExecute (benefiting from
@@ -2001,7 +2001,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 }
             }
             if (!matchedInfo) {
-                ThrowStdException("SQLExecuteFast: unrecognized paramToken from SQLParamData");
+                ThrowStdException("SQLExecute: unrecognized paramToken from SQLParamData");
             }
             PyObject* pyObj = matchedInfo->dataPtr.ptr();
             if (!pyObj || pyObj == Py_None) {
@@ -2027,7 +2027,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
                     if (!SQL_SUCCEEDED(rc)) return rc;
                 } else {
-                    ThrowStdException("SQLExecuteFast: unsupported C type for str in DAE");
+                    ThrowStdException("SQLExecute: unsupported C type for str in DAE");
                 }
             } else if (PyBytes_Check(pyObj) || PyByteArray_Check(pyObj)) {
                 // Handle bytes and bytearray separately — pybind11's bytes
@@ -2051,7 +2051,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 rc = stream_dae_chunks(dataPtr, totalBytes, putData);
                 if (!SQL_SUCCEEDED(rc)) return rc;
             } else {
-                ThrowStdException("SQLExecuteFast: DAE only supported for str or bytes");
+                ThrowStdException("SQLExecute: DAE only supported for str or bytes");
             }
         }
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;

@@ -28,8 +28,8 @@ def _standard_roundtrip(cursor, value):
     return cursor.fetchone()[0]
 
 
-def _slow_path_roundtrip(cursor, value, sql_type, column_size):
-    """Force the slow path by setting an explicit inputsizes entry. The fast
+def _legacy_roundtrip(cursor, value, sql_type, column_size):
+    """Force the legacy path by setting an explicit inputsizes entry. The standard
     path is gated on `not (self._inputsizes and any(s is not None ...))`, so a
     non-None tuple here flips us to the legacy Python type-detection path."""
     cursor.setinputsizes([(sql_type, column_size, 0)])
@@ -41,7 +41,7 @@ def _slow_path_roundtrip(cursor, value, sql_type, column_size):
 
 
 # ---------------------------------------------------------------------------
-# Fast-path coverage: representative type matrix
+# Standard-path coverage: representative type matrix
 # ---------------------------------------------------------------------------
 
 
@@ -81,7 +81,7 @@ def test_standard_path_basic_types(cursor, value):
     """Standard path round-trips representative scalar types correctly."""
     result = _standard_roundtrip(cursor, value)
     assert result == value, (
-        f"Fast-path roundtrip mismatch for {type(value).__name__} {value!r}: " f"got {result!r}"
+        f"Standard-path roundtrip mismatch for {type(value).__name__} {value!r}: " f"got {result!r}"
     )
 
 
@@ -164,7 +164,7 @@ def test_no_refcount_leak_on_in_place_replacement(cursor):
 
 def test_unsupported_type_raises_typeerror(cursor):
     """Standard path must raise TypeError for unknown parameter types — matching
-    the slow path's `_map_sql_type` final branch."""
+    the legacy path's `_map_sql_type` final branch."""
     with pytest.raises(TypeError):
         cursor.execute("SELECT ?", [{1, 2, 3}])  # set is not bindable
 
@@ -175,8 +175,65 @@ def test_decimal_nan_rejected(cursor):
         cursor.execute("SELECT ?", [decimal.Decimal("NaN")])
 
 
+@pytest.mark.parametrize(
+    "exp",
+    [
+        2**32 + 1,  # truncated to 1 by a 32-bit narrowing cast
+        2**31,  # truncates to exactly INT_MIN; negating that is signed-overflow UB
+        2**31 - 1,  # INT_MAX
+        -(2**32 + 1),
+        -(2**31),
+        39,  # first out-of-range exponent that needs no truncation to be invalid
+        -39,
+    ],
+)
+def test_decimal_out_of_range_exponent_rejected(cursor, exp):
+    """Exponents beyond SQL Server's 38-digit precision must raise, including ones
+    that only look valid after a 32-bit narrowing cast.
+
+    Regression guard: the exponent used to be cast to int before being range
+    checked, so Decimal("1E+4294967297") truncated to 1, passed the precision
+    gate, and silently bound 10 while the legacy path raised.
+    """
+    with pytest.raises(Exception) as excinfo:
+        cursor.execute("SELECT ?", [decimal.Decimal(f"1E{exp:+d}")])
+        cursor.fetchone()
+    # the failure must be about precision, not an OverflowError leaking from the cast
+    assert not isinstance(excinfo.value, OverflowError)
+
+
+@pytest.mark.parametrize("exp", [37, -38, 0])
+def test_decimal_in_range_exponent_still_binds(cursor, exp):
+    """The range check must not reject exponents SQL Server can represent."""
+    value = decimal.Decimal(f"1E{exp:+d}")
+    cursor.execute("SELECT ?", [value])
+    assert cursor.fetchone()[0] is not None
+
+
+def test_aware_time_matches_legacy(cursor):
+    """A tz-aware datetime.time must behave the same on both paths.
+
+    SQL Server's TIME has no UTC offset, so isoformat's "+05:30" cannot bind and
+    both paths reject it. The standard path used to hand-format the raw H/M/S/us
+    fields, which silently dropped the offset and bound a different time than the
+    caller passed while the legacy path raised.
+    """
+    aware = datetime.time(
+        1, 2, 3, 4, tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    )
+    with pytest.raises(Exception):
+        cursor.execute("SELECT ?", [aware])
+        cursor.fetchone()
+
+
+def test_naive_time_roundtrips(cursor):
+    """Naive times are unaffected by the aware-time handling above."""
+    naive = datetime.time(1, 2, 3, 4)
+    assert _standard_roundtrip(cursor, naive) == naive
+
+
 # ---------------------------------------------------------------------------
-# Fast-vs-slow parity for representative types
+# Standard-vs-legacy parity for representative types
 # ---------------------------------------------------------------------------
 
 
@@ -189,11 +246,14 @@ def test_decimal_nan_rejected(cursor):
         (b"data", ddbc_sql_const.SQL_VARBINARY.value, 4),
     ],
 )
-def test_fast_slow_path_parity(cursor, value, sql_type, column_size):
+def test_standard_legacy_path_parity(cursor, value, sql_type, column_size):
     """Same input through both paths produces the same output."""
-    fast = _standard_roundtrip(cursor, value)
-    slow = _slow_path_roundtrip(cursor, value, sql_type=sql_type, column_size=column_size)
-    assert fast == slow, f"Fast/slow path divergence for {value!r}: fast={fast!r} slow={slow!r}"
+    standard = _standard_roundtrip(cursor, value)
+    legacy = _legacy_roundtrip(cursor, value, sql_type=sql_type, column_size=column_size)
+    assert standard == legacy, (
+        f"Standard/legacy path divergence for {value!r}: "
+        f"standard={standard!r} legacy={legacy!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
