@@ -1,7 +1,17 @@
 """
-Parity tests: assert that the standard path (C++ DetectParamTypes + DDBCSQLExecute)
-and legacy path (Python _map_sql_type + DDBCSQLExecuteLegacy) produce identical query
-results for representative parameter types.
+Coverage for the two parameter paths, each tested on its own terms — no path is
+forced through a door real callers do not use.
+
+1. Native path (C++ DetectParamTypes + DDBCSQLExecute) — the default that ~99% of
+   calls take. Exercised end to end through plain ``cursor.execute(...)``.
+2. Python type detection (``_map_sql_type`` / ``_get_numeric_data``) — the reference
+   the native path was ported from. Asserted directly as a pure function: value in,
+   (SQL type, C type, column size, decimal digits, DAE) out. No DB round-trip, so
+   the assertion cannot be masked by SQL Server coercing a wrong-but-convertible
+   type back to the right value.
+3. Legacy execute path (DDBCSQLExecuteLegacy) — only reachable by a caller through
+   ``setinputsizes()``, so it is tested through exactly that API, using it for what
+   it is for: honouring user-supplied type overrides.
 
 Uses the project's `cursor` fixture from conftest.py so the tests work in any
 environment that runs the rest of the suite.
@@ -23,15 +33,18 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 
 
 def _standard_roundtrip(cursor, value):
-    """Standard path: no setinputsizes, so C++ detects the types."""
+    """Native path: no setinputsizes, so C++ detects the types."""
     cursor.execute("SELECT ?", [value])
     return cursor.fetchone()[0]
 
 
-def _legacy_roundtrip(cursor, value, sql_type, column_size):
-    """Force the legacy path by setting an explicit inputsizes entry. The standard
-    path is gated on `not (self._inputsizes and any(s is not None ...))`, so a
-    non-None tuple here flips us to the legacy Python type-detection path."""
+def _override_roundtrip(cursor, value, sql_type, column_size):
+    """Legacy execute path through its real entry point.
+
+    ``setinputsizes`` is the only public API that routes a call to
+    DDBCSQLExecuteLegacy. It also declares the parameter's type explicitly, so this
+    helper tests the user-override contract — not type *detection*, which is covered
+    directly against ``_map_sql_type`` elsewhere in this file."""
     cursor.setinputsizes([(sql_type, column_size, 0)])
     try:
         cursor.execute("SELECT ?", [value])
@@ -237,6 +250,15 @@ def test_naive_time_roundtrips(cursor):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Legacy execute path: user-supplied type overrides via setinputsizes
+#
+# These are the only tests that use setinputsizes, and they use it for its real
+# purpose. They keep DDBCSQLExecuteLegacy and the explicit-override branch of
+# _create_parameter_types_list covered end to end.
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize(
     "value, sql_type, column_size",
     [
@@ -246,14 +268,28 @@ def test_naive_time_roundtrips(cursor):
         (b"data", ddbc_sql_const.SQL_VARBINARY.value, 4),
     ],
 )
-def test_standard_legacy_path_parity(cursor, value, sql_type, column_size):
-    """Same input through both paths produces the same output."""
-    standard = _standard_roundtrip(cursor, value)
-    legacy = _legacy_roundtrip(cursor, value, sql_type=sql_type, column_size=column_size)
-    assert standard == legacy, (
-        f"Standard/legacy path divergence for {value!r}: "
-        f"standard={standard!r} legacy={legacy!r}"
-    )
+def test_setinputsizes_override_roundtrips(cursor, value, sql_type, column_size):
+    """A user-declared type via setinputsizes round-trips through the legacy path."""
+    assert _override_roundtrip(cursor, value, sql_type, column_size) == value
+
+
+def test_setinputsizes_shorter_than_params_detects_the_rest(cursor):
+    """setinputsizes with fewer entries than parameters: covered indices use the
+    override, uncovered ones fall through to _map_sql_type inside
+    _create_parameter_types_list. This is the only end-to-end route to that
+    detection fallback on the legacy path, so it keeps that line covered.
+
+    (A None entry cannot be used here — setinputsizes validates and rejects None.)
+    """
+    cursor.setinputsizes([(ddbc_sql_const.SQL_VARCHAR.value, 5, 0)])
+    try:
+        with pytest.warns(Warning):  # count mismatch is warned, then execution proceeds
+            cursor.execute("SELECT ?, ?", ["hello", 42])
+        row = cursor.fetchone()
+        assert row[0] == "hello"
+        assert row[1] == 42
+    finally:
+        cursor.setinputsizes(None)
 
 
 # ---------------------------------------------------------------------------
@@ -467,3 +503,225 @@ def test_money_range_decimal_binds_wide(cursor):
     value = decimal.Decimal("214748.3647")
     cursor.execute("SELECT CAST(? AS MONEY)", [value])
     assert cursor.fetchone()[0] == value
+
+
+# ---------------------------------------------------------------------------
+# Python type detection, asserted directly as a pure function.
+#
+# _map_sql_type(value, [value], 0) returns the 5-tuple
+#   (SQL type, C type, column size, decimal digits, DAE)
+# with no DB round-trip, so a wrong type cannot be hidden by SQL Server coercing
+# the value back. A fresh single-element list is passed per call because the
+# function mutates its slot in place for numeric / uuid / money / time.
+# ---------------------------------------------------------------------------
+
+_c = ddbc_sql_const
+
+
+def _detect(cursor, value):
+    return cursor._map_sql_type(value, [value], 0)
+
+
+# Deterministic cases: the full 5-tuple is fixed by the type alone.
+DETECTION_CASES = [
+    # None and bool
+    (None, _c.SQL_UNKNOWN_TYPE, _c.SQL_C_DEFAULT, 1, 0, False),
+    (True, _c.SQL_BIT, _c.SQL_C_BIT, 1, 0, False),
+    (False, _c.SQL_BIT, _c.SQL_C_BIT, 1, 0, False),
+    # int width detection
+    (0, _c.SQL_TINYINT, _c.SQL_C_TINYINT, 3, 0, False),
+    (255, _c.SQL_TINYINT, _c.SQL_C_TINYINT, 3, 0, False),
+    (256, _c.SQL_SMALLINT, _c.SQL_C_SHORT, 5, 0, False),
+    (-1, _c.SQL_SMALLINT, _c.SQL_C_SHORT, 5, 0, False),
+    (32767, _c.SQL_SMALLINT, _c.SQL_C_SHORT, 5, 0, False),
+    (32768, _c.SQL_INTEGER, _c.SQL_C_LONG, 10, 0, False),
+    (-32769, _c.SQL_INTEGER, _c.SQL_C_LONG, 10, 0, False),
+    (2147483647, _c.SQL_INTEGER, _c.SQL_C_LONG, 10, 0, False),
+    (2147483648, _c.SQL_BIGINT, _c.SQL_C_SBIGINT, 19, 0, False),
+    (-2147483649, _c.SQL_BIGINT, _c.SQL_C_SBIGINT, 19, 0, False),
+    # float
+    (3.14, _c.SQL_DOUBLE, _c.SQL_C_DOUBLE, 15, 0, False),
+    # small binary
+    (b"", _c.SQL_VARBINARY, _c.SQL_C_BINARY, 1, 0, False),
+    (b"abc", _c.SQL_VARBINARY, _c.SQL_C_BINARY, 3, 0, False),
+    # date / datetime / time
+    (datetime.date(2024, 1, 1), _c.SQL_DATE, _c.SQL_C_TYPE_DATE, 10, 0, False),
+    (
+        datetime.datetime(2024, 1, 1, 2, 3, 4),
+        _c.SQL_TIMESTAMP,
+        _c.SQL_C_TYPE_TIMESTAMP,
+        26,
+        6,
+        False,
+    ),
+    (datetime.time(1, 2, 3), _c.SQL_TYPE_TIME, _c.SQL_C_CHAR, 16, 6, False),
+]
+
+
+@pytest.mark.parametrize(
+    "value, sql_type, c_type, column_size, decimal_digits, is_dae",
+    DETECTION_CASES,
+    ids=[repr(row[0]) for row in DETECTION_CASES],
+)
+def test_map_sql_type_detection(
+    cursor, value, sql_type, c_type, column_size, decimal_digits, is_dae
+):
+    assert _detect(cursor, value) == (
+        sql_type.value,
+        c_type.value,
+        column_size,
+        decimal_digits,
+        is_dae,
+    )
+
+
+def test_map_sql_type_uuid(cursor):
+    """UUID → SQL_GUID, and the slot is replaced with its little-endian bytes."""
+    u = uuid.uuid4()
+    params = [u]
+    assert cursor._map_sql_type(u, params, 0) == (
+        _c.SQL_GUID.value,
+        _c.SQL_C_GUID.value,
+        16,
+        0,
+        False,
+    )
+    assert params[0] == u.bytes_le
+
+
+@pytest.mark.parametrize(
+    "value, sql_type, c_type, column_size, is_dae",
+    [
+        ("", _c.SQL_VARCHAR, _c.SQL_C_CHAR, 0, False),
+        ("hello", _c.SQL_VARCHAR, _c.SQL_C_CHAR, 5, False),
+        ("a" * 4000, _c.SQL_VARCHAR, _c.SQL_C_CHAR, 4000, False),  # inline boundary
+        ("a" * 4001, _c.SQL_VARCHAR, _c.SQL_C_CHAR, 0, True),  # ASCII DAE
+        ("café", _c.SQL_WVARCHAR, _c.SQL_C_WCHAR, 4, False),  # unicode inline
+        ("é" * 4001, _c.SQL_WVARCHAR, _c.SQL_C_WCHAR, 0, True),  # unicode DAE
+    ],
+    ids=["empty", "ascii", "ascii-4000", "ascii-4001-dae", "unicode", "unicode-dae"],
+)
+def test_map_sql_type_strings(cursor, value, sql_type, c_type, column_size, is_dae):
+    assert _detect(cursor, value) == (sql_type.value, c_type.value, column_size, 0, is_dae)
+
+
+@pytest.mark.parametrize(
+    "prefix", ["POINT(1 2)", "LINESTRING(0 0, 1 1)", "POLYGON((0 0,1 0,1 1,0 0))"]
+)
+def test_map_sql_type_geometry_wkt(cursor, prefix):
+    """Geometry WKT is detected as SQL_WVARCHAR regardless of the unicode heuristic."""
+    assert _detect(cursor, prefix) == (
+        _c.SQL_WVARCHAR.value,
+        _c.SQL_C_WCHAR.value,
+        len(prefix),
+        0,
+        False,
+    )
+
+
+def test_map_sql_type_geometry_over_4000_stays_inline_on_legacy(cursor):
+    """Documents the legacy contract: a long POLYGON is still SQL_WVARCHAR, non-DAE,
+    column size == len — geometry detection wins over the length/DAE decision.
+
+    This is the reference behaviour; the native path currently routes the same
+    value onto the generic long-string DAE path instead (a known open divergence,
+    not fixed here). Pinning the legacy side keeps that gap visible.
+    """
+    wkt = "POLYGON((" + ",".join(f"{n} {n}" for n in range(1000)) + "))"
+    assert len(wkt) > 4000
+    assert _detect(cursor, wkt) == (
+        _c.SQL_WVARCHAR.value,
+        _c.SQL_C_WCHAR.value,
+        len(wkt),
+        0,
+        False,
+    )
+
+
+def test_map_sql_type_large_binary_uses_dae(cursor):
+    assert _detect(cursor, b"x" * 8001) == (
+        _c.SQL_VARBINARY.value,
+        _c.SQL_C_BINARY.value,
+        0,
+        0,
+        True,
+    )
+
+
+def test_map_sql_type_aware_datetime(cursor):
+    aware = datetime.datetime(
+        2024, 1, 1, 2, 3, 4, tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    )
+    assert _detect(cursor, aware) == (
+        _c.SQL_DATETIMEOFFSET.value,
+        _c.SQL_C_SS_TIMESTAMPOFFSET.value,
+        34,
+        7,
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [decimal.Decimal("100.50"), decimal.Decimal("214748.3647"), decimal.Decimal("214748.3648")],
+    ids=["smallmoney", "smallmoney-max", "money"],
+)
+def test_map_sql_type_money_range_binds_as_text(cursor, value):
+    """MONEY / SMALLMONEY range Decimals are formatted to text and the slot is
+    replaced with that formatted string."""
+    params = [value]
+    sql_type, c_type, column_size, decimal_digits, is_dae = cursor._map_sql_type(value, params, 0)
+    assert (sql_type, c_type, decimal_digits, is_dae) == (
+        _c.SQL_VARCHAR.value,
+        _c.SQL_C_CHAR.value,
+        0,
+        False,
+    )
+    assert params[0] == format(value, "f")
+    assert column_size == len(params[0])
+
+
+def test_map_sql_type_numeric_out_of_money_range(cursor):
+    """A Decimal beyond the MONEY range falls to the generic NUMERIC binding and the
+    slot is replaced with a NumericData struct."""
+    value = decimal.Decimal("1E20")  # 1e20 > MONEY_MAX (~9.2e14)
+    params = [value]
+    sql_type, c_type, column_size, decimal_digits, is_dae = cursor._map_sql_type(value, params, 0)
+    assert (sql_type, c_type, is_dae) == (
+        _c.SQL_NUMERIC.value,
+        _c.SQL_C_NUMERIC.value,
+        False,
+    )
+    assert column_size == params[0].precision
+    assert decimal_digits == params[0].scale
+
+
+def test_map_sql_type_unsupported_raises_typeerror(cursor):
+    with pytest.raises(TypeError):
+        cursor._map_sql_type({1, 2, 3}, [{1, 2, 3}], 0)
+
+
+# ---------------------------------------------------------------------------
+# _get_numeric_data: precision/scale arithmetic and digit packing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value, precision, scale",
+    [
+        (decimal.Decimal("0"), 1, 0),
+        (decimal.Decimal("314E2"), 5, 0),  # positive exponent
+        (decimal.Decimal("3.140"), 4, 3),  # -exp <= num_digits
+        (decimal.Decimal("0.03140"), 5, 5),  # -exp > num_digits (leading-zero pad)
+    ],
+    ids=["zero", "pos-exp", "frac", "leading-zeros"],
+)
+def test_get_numeric_data_precision_scale(cursor, value, precision, scale):
+    nd = cursor._get_numeric_data(value)
+    assert nd.precision == precision
+    assert nd.scale == scale
+
+
+def test_get_numeric_data_precision_overflow(cursor):
+    with pytest.raises(ValueError, match="too high"):
+        cursor._get_numeric_data(decimal.Decimal("1" * 39))
