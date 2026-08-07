@@ -271,29 +271,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         num_digits = len(digits_tuple)
         exponent = decimal_as_tuple.exponent
 
-        # Handle special values (NaN, Infinity, etc.)
+        # NaN / sNaN / Infinity report a string exponent ('n', 'N', 'F') instead of an
+        # int. There is no SQL NUMERIC encoding for them, so refuse here rather than
+        # falling through to precision=38 and letting the digit packing below emit a
+        # silent zero. The native detection path raises ValueError for the same input.
         if isinstance(exponent, str):
-            # For special values like 'n' (NaN), 'N' (sNaN), 'F' (Infinity)
-            # Return default precision and scale
-            precision = 38  # SQL Server default max precision
+            raise ValueError("Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC")
+
+        # Calculate the SQL precision & scale
+        #   precision = no. of significant digits
+        #   scale     = no. digits after decimal point
+        if exponent >= 0:
+            # digits=314, exp=2 ---> '31400' --> precision=5, scale=0
+            precision = num_digits + exponent
             scale = 0
+        elif (-1 * exponent) <= num_digits:
+            # digits=3140, exp=-3 ---> '3.140' --> precision=4, scale=3
+            precision = num_digits
+            scale = exponent * -1
         else:
-            # Calculate the SQL precision & scale
-            #   precision = no. of significant digits
-            #   scale     = no. digits after decimal point
-            if exponent >= 0:
-                # digits=314, exp=2 ---> '31400' --> precision=5, scale=0
-                precision = num_digits + exponent
-                scale = 0
-            elif (-1 * exponent) <= num_digits:
-                # digits=3140, exp=-3 ---> '3.140' --> precision=4, scale=3
-                precision = num_digits
-                scale = exponent * -1
-            else:
-                # digits=3140, exp=-5 ---> '0.03140' --> precision=5, scale=5
-                # TODO: double check the precision calculation here with SQL documentation
-                precision = exponent * -1
-                scale = exponent * -1
+            # digits=3140, exp=-5 ---> '0.03140' --> precision=5, scale=5
+            # TODO: double check the precision calculation here with SQL documentation
+            precision = exponent * -1
+            scale = exponent * -1
 
         if precision > 38:
             raise ValueError(
@@ -511,27 +511,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             num_digits = len(digits_tuple)
             exponent = decimal_as_tuple.exponent
 
-            # Handle special values (NaN, Infinity, etc.)
+            # NaN / sNaN / Infinity report a string exponent ('n', 'N', 'F'). Reject them
+            # before the MONEY range comparison below, which would otherwise raise
+            # decimal.InvalidOperation for NaN, and before _get_numeric_data, which used to
+            # fail with TypeError for Infinity. The native detection path raises ValueError
+            # for the same input, so both paths now agree on type and message.
             if isinstance(exponent, str):
                 logger.debug(
-                    "_map_sql_type: DECIMAL special value - index=%d, exponent=%s", i, exponent
+                    "_map_sql_type: DECIMAL non-finite value - index=%d, exponent=%s", i, exponent
                 )
-                # For special values like 'n' (NaN), 'N' (sNaN), 'F' (Infinity)
-                # Return default precision and scale
-                precision = 38  # SQL Server default max precision
+                raise ValueError("Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC")
+
+            # Calculate the SQL precision (same logic as _get_numeric_data)
+            if exponent >= 0:
+                precision = num_digits + exponent
+            elif (-1 * exponent) <= num_digits:
+                precision = num_digits
             else:
-                # Calculate the SQL precision (same logic as _get_numeric_data)
-                if exponent >= 0:
-                    precision = num_digits + exponent
-                elif (-1 * exponent) <= num_digits:
-                    precision = num_digits
-                else:
-                    precision = exponent * -1
-                logger.debug(
-                    "_map_sql_type: DECIMAL precision calculated - index=%d, precision=%d",
-                    i,
-                    precision,
-                )
+                precision = exponent * -1
+            logger.debug(
+                "_map_sql_type: DECIMAL precision calculated - index=%d, precision=%d",
+                i,
+                precision,
+            )
 
             if precision > 38:
                 logger.debug(
