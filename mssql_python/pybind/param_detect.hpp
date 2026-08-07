@@ -143,16 +143,18 @@ inline constexpr int MAX_INLINE_BINARY = 8000;
 // SQL Server maximum numeric precision
 inline constexpr int MAX_NUMERIC_PRECISION = 38;
 
-// Platform-specific text C type: unixODBC requires all text as wide chars on
-// Linux/macOS. On Windows the ODBC driver accepts SQL_C_CHAR for ASCII text.
-// This matches the Python slow path's behavior (its SQL_C_CHAR constant is
-// numerically -8, which is ODBC's SQL_C_WCHAR — a long-standing alias used
-// throughout the Python layer).
-#if defined(__APPLE__) || defined(__linux__)
+// C type used to bind narrow (ASCII) text: SQL_C_WCHAR on every platform.
+//
+// The legacy Python path binds text with its own SQL_C_CHAR constant, which is
+// numerically -8 — that is ODBC's SQL_C_WCHAR, not SQL_C_CHAR (1). So the legacy
+// path has always bound text wide, on every platform. unixODBC also requires wide
+// chars for text on Linux/macOS, so those platforms agreed already; Windows was
+// the only one resolving this to a real SQL_C_CHAR and binding narrow, which made
+// it diverge from both the legacy path and the other platforms in C type and in
+// the driver-side encoding path it took. Bind wide everywhere so all four
+// combinations agree.
 inline constexpr SQLSMALLINT PARAM_C_TYPE_TEXT = SQL_C_WCHAR;
-#else
-inline constexpr SQLSMALLINT PARAM_C_TYPE_TEXT = SQL_C_CHAR;
-#endif
+
 // Forward declare NumericData helper used by decimal path
 inline NumericData build_numeric_data(PyObject* as_tuple, PyObject* digits, int exponent);
 
@@ -285,10 +287,9 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 // threshold. Switch to data-at-execution (DAE) streaming: ODBC driver pulls
                 // data in chunks via SQLPutData, avoiding a single massive buffer allocation.
                 // DAE path: match slow-path types exactly.
-                // Non-unicode (ASCII) → SQL_VARCHAR + PARAM_C_TYPE_TEXT
-                //   On Linux/macOS PARAM_C_TYPE_TEXT == SQL_C_WCHAR, matching
-                //   the slow path's SQL_C_CHAR (which is numerically -8 ==
-                //   SQL_C_WCHAR — a long-standing alias in the Python layer).
+                // Non-unicode (ASCII) → SQL_VARCHAR + PARAM_C_TYPE_TEXT, which is
+                //   SQL_C_WCHAR and matches the slow path's SQL_C_CHAR (numerically
+                //   -8 == SQL_C_WCHAR — a long-standing alias in the Python layer).
                 // Unicode → SQL_WVARCHAR + SQL_C_WCHAR (wide-char streaming)
                 info.isDAE = true;
                 info.columnSize = 0;

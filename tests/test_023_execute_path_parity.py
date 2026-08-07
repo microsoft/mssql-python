@@ -171,7 +171,7 @@ def test_unsupported_type_raises_typeerror(cursor):
 
 def test_decimal_nan_rejected(cursor):
     """Non-finite Decimals must raise rather than silently bind as 0."""
-    with pytest.raises(Exception):  # ValueError or DataError, not silent zero
+    with pytest.raises(ValueError):
         cursor.execute("SELECT ?", [decimal.Decimal("NaN")])
 
 
@@ -322,7 +322,7 @@ def test_decimal_outside_money_uses_numeric(cursor):
 
 def test_decimal_infinity_rejected(cursor):
     """Decimal('Infinity') must raise, not silently bind as 0."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         cursor.execute("SELECT ?", [decimal.Decimal("Infinity")])
 
 
@@ -354,11 +354,116 @@ def test_integer_overflow_detected(cursor):
 @pytest.mark.parametrize("value", [decimal.Decimal("NaN"), decimal.Decimal("sNaN")])
 def test_decimal_nan_variants_rejected(cursor, value):
     """Decimal NaN variants must raise, not silently bind as 0."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         cursor.execute("SELECT ?", [value])
+
+
+NON_FINITE_DECIMALS = [
+    decimal.Decimal("NaN"),
+    decimal.Decimal("-NaN"),
+    decimal.Decimal("sNaN"),
+    decimal.Decimal("Infinity"),
+    decimal.Decimal("-Infinity"),
+]
+
+
+@pytest.mark.parametrize("value", NON_FINITE_DECIMALS, ids=str)
+def test_non_finite_decimal_exception_type_parity(cursor, value):
+    """Both paths must reject non-finite Decimals with the *same* exception type.
+
+    Before this was made explicit, the two paths diverged on type: the native
+    detector raised ValueError, while the legacy path raised decimal.InvalidOperation
+    for NaN (from the MONEY range comparison) and TypeError for Infinity (from
+    comparing a str exponent against an int inside `_get_numeric_data`). Callers
+    writing `except ValueError` therefore saw different behaviour depending on
+    whether setinputsizes happened to be set.
+    """
+    # Native path — C++ DetectParamTypes, reached through execute().
+    with pytest.raises(ValueError) as native_exc:
+        cursor.execute("SELECT ?", [value])
+
+    # Legacy path — Python type detection. Called directly because setinputsizes,
+    # the only way to reach the legacy branch from execute(), bypasses _map_sql_type.
+    params = [value]
+    with pytest.raises(ValueError) as legacy_exc:
+        cursor._map_sql_type(value, params, 0)
+
+    assert "non-finite" in str(native_exc.value).lower()
+    assert "non-finite" in str(legacy_exc.value).lower()
+
+
+@pytest.mark.parametrize("value", NON_FINITE_DECIMALS, ids=str)
+def test_get_numeric_data_rejects_non_finite(cursor, value):
+    """`_get_numeric_data` is also reachable from executemany's typing pass, so it
+    needs the same explicit rejection rather than falling through to precision=38
+    and packing a silent zero."""
+    with pytest.raises(ValueError, match="non-finite"):
+        cursor._get_numeric_data(value)
 
 
 def test_decimal_precision_overflow_rejected(cursor):
     """Decimals beyond SQL Server's max precision must raise."""
     with pytest.raises(Exception):
         cursor.execute("SELECT ?", [decimal.Decimal("123456789012345678901234567890123456789")])
+
+
+# ---------------------------------------------------------------------------
+# Text parameter C-type parity (all platforms bind wide)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "plain ascii",
+        "a" * 4000,  # inline boundary
+        "a" * 4001,  # DAE boundary
+        "café",  # non-ASCII, forces the unicode branch
+        "naïve café ☕",
+        "日本語テキスト",
+        "mixed ascii and 日本語",
+        "with 'quote' and \"double\"",
+    ],
+    ids=repr,
+)
+def test_text_params_bind_wide_on_every_platform(cursor, value):
+    """Text parameters must survive a round-trip identically on every platform.
+
+    The native detector used to resolve its text C type to a real `SQL_C_CHAR (1)`
+    on Windows while using `SQL_C_WCHAR` on Linux/macOS. The legacy path binds with
+    the Python layer's `SQL_C_CHAR` constant, which is numerically -8 — that is
+    ODBC's `SQL_C_WCHAR` — so the legacy path has always bound wide everywhere.
+    Windows was therefore the only platform where the two paths disagreed on C type
+    and on the driver-side encoding path. This test pins the round-trip behaviour so
+    a reintroduced narrow binding shows up as a Windows-only failure.
+    """
+    cursor.execute("SELECT ?", [value])
+    assert cursor.fetchone()[0] == value
+
+
+def test_ascii_text_roundtrip_into_nvarchar_column(cursor):
+    """ASCII strings take the `SQL_VARCHAR` + wide-C-type combination, which is the
+    exact pairing that differed on Windows. Round-trip through a real NVARCHAR column
+    so the driver's conversion is exercised, not just SELECT ? echo."""
+    cursor.execute("SELECT CAST(? AS NVARCHAR(100))", ["ascii only"])
+    assert cursor.fetchone()[0] == "ascii only"
+
+    cursor.execute("SELECT CAST(? AS NVARCHAR(100))", ["café ☕"])
+    assert cursor.fetchone()[0] == "café ☕"
+
+
+def test_time_param_binds_wide(cursor):
+    """`datetime.time` is normalized to a string and bound with the same text C type,
+    so it shares the Windows narrow/wide divergence."""
+    value = datetime.time(1, 2, 3, 4)
+    cursor.execute("SELECT CAST(? AS TIME(6))", [value])
+    assert cursor.fetchone()[0] == value
+
+
+def test_money_range_decimal_binds_wide(cursor):
+    """Decimals inside the MONEY range are formatted to text and bound with the text
+    C type, the third consumer of the platform-dependent constant."""
+    value = decimal.Decimal("214748.3647")
+    cursor.execute("SELECT CAST(? AS MONEY)", [value])
+    assert cursor.fetchone()[0] == value
