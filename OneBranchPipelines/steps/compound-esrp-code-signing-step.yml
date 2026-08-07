@@ -1,210 +1,162 @@
-'''
-ESRP Code Signing Step Template (DISABLED - Python wheels cannot be signed with SignTool)
+# =========================================================================================
+# ESRP Code Signing Step Template - Native Windows binaries (.pyd / .dll)
+# =========================================================================================
+# Signs native PE-format binaries (the compiled Python extension `ddbc_bindings.*.pyd`
+# and any bundled `.dll`) using Microsoft's Enterprise Secure Release Process (ESRP)
+# with the CP-230012 Authenticode certificate.
+#
+# WHY WE SIGN THE .pyd AND NOT THE .whl
+# -------------------------------------
+# A Python wheel (`.whl`) is a ZIP archive, not a PE-format binary, so Windows
+# SignTool / ESRP SigntoolSign cannot Authenticode-sign the wheel itself. The
+# supported approach is to sign the native binary *inside* the wheel. In this repo
+# the extension `.pyd` is built in a dedicated step BEFORE `setup.py bdist_wheel`
+# packages it, so we sign the `.pyd` in place. The signed binary then flows into:
+#   - the `.whl` produced by bdist_wheel (RECORD hashes stay correct because we sign
+#     before packaging - no unpack/repack/regenerate needed),
+#   - the standalone `bindings/windows` artifact, and
+#   - the apiScan copy used by SDL binary scanning.
+#
+# This template runs in BOTH Official and NonOfficial pipeline runs so every wheel
+# we publish (from any pipeline flavor) contains a signed extension.
+#
+# Certificate: CP-230012 "SHA256 Authenticode" (Microsoft Corporation, external distribution)
+# Operation:   SigntoolSign + SigntoolVerify (Windows SignTool - PE-format binaries)
+# =========================================================================================
+parameters:
+  - name: appRegistrationClientId
+    type: string
+    displayName: 'ESRP App Registration Client ID'
 
-This template was originally designed to handle signing of binary artifacts using Enterprise Secure Release Process (ESRP).
-However, we discovered that Python wheel (.whl) files cannot be signed using Windows SignTool because:
+  - name: appRegistrationTenantId
+    type: string
+    displayName: 'ESRP App Registration Tenant ID'
 
-1. Python wheels are ZIP archive files, not PE format binaries
-2. Windows SignTool only supports PE format files (.exe, .dll, .sys, etc.)
-3. ZIP archives require different signing approaches (if supported at all)
+  - name: authAkvName
+    type: string
+    displayName: 'Azure Key Vault name holding the signing certificate'
 
-Error Messages Encountered:
+  - name: authSignCertName
+    type: string
+    displayName: 'Signing certificate name'
 
-ESRP Error Log:
-"SignTool Error: This file format cannot be signed because it is not recognized."
+  - name: esrpClientId
+    type: string
+    displayName: 'ESRP Client ID'
 
-Full SignTool Command that Failed:
-sign /NPH /fd "SHA256" /f "..." /tr "..." /d "mssql-python" "...whl"
+  - name: esrpConnectedServiceName
+    type: string
+    displayName: 'ESRP Connected Service Name (federated MSI)'
 
-Technical Details:
-- Certificate CP-230012 loads successfully and authentication works correctly
-- File upload to ESRP service works without issues  
-- The failure occurs when SignTool attempts to process the .whl file
-- SignTool recognizes .whl as an unknown/unsupported format
+  - name: signPath
+    type: string
+    displayName: 'Folder containing the native binaries to sign'
 
-Alternative Approaches Considered:
-1. OneBranch signing (onebranch.pipeline.signing@1) - had authentication issues requiring interactive login
-2. Different ESRP operations - no ESRP operation exists for ZIP archive signing
-3. Signing individual files within wheels - would break wheel integrity and PyPI compatibility
+  - name: pattern
+    type: string
+    default: '*.pyd'
+    displayName: 'Comma-separated pattern of files to sign (e.g. ddbc_bindings.cp312-*.pyd)'
 
-Conclusion:
-Python wheels distributed to PyPI are typically unsigned. The package integrity is verified through
-checksums and PyPIs own security mechanisms. Many popular Python packages on PyPI are not code-signed.
+steps:
+  # -----------------------------------------------------------------------------
+  # 1) Malware scan the native binaries before signing (ESRP compliance gate).
+  # -----------------------------------------------------------------------------
+  - task: EsrpMalwareScanning@5
+    displayName: 'ESRP MalwareScanning - Native binaries'
+    inputs:
+      ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
+      AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
+      AppRegistrationTenantId: '${{ parameters.appRegistrationTenantId }}'
+      EsrpClientId: '${{ parameters.esrpClientId }}'
+      UseMSIAuthentication: true
+      FolderPath: '${{ parameters.signPath }}'
+      Pattern: '${{ parameters.pattern }}'
+      SessionTimeout: 60
+      CleanupTempStorage: 1
+      VerboseLogin: 1
 
-This template is preserved for reference and potential future use if alternative signing approaches
-are identified or if other file types need to be signed.
+  # -----------------------------------------------------------------------------
+  # 2) Authenticode-sign the native binaries with CP-230012.
+  # -----------------------------------------------------------------------------
+  - task: EsrpCodeSigning@5
+    displayName: 'ESRP CodeSigning - Native binaries (.pyd)'
+    inputs:
+      ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
+      AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
+      AppRegistrationTenantId: '${{ parameters.appRegistrationTenantId }}'
+      EsrpClientId: '${{ parameters.esrpClientId }}'
+      UseMSIAuthentication: true
+      AuthAKVName: '${{ parameters.authAkvName }}'
+      AuthSignCertName: '${{ parameters.authSignCertName }}'
+      FolderPath: '${{ parameters.signPath }}'
+      Pattern: '${{ parameters.pattern }}'
+      signConfigType: inlineSignParams
+      inlineOperation: |
+        [
+          {
+            "keyCode": "CP-230012",
+            "operationSetCode": "SigntoolSign",
+            "parameters": [
+              {
+                "parameterName": "OpusName",
+                "parameterValue": "mssql-python"
+              },
+              {
+                "parameterName": "OpusInfo",
+                "parameterValue": "https://www.microsoft.com"
+              },
+              {
+                "parameterName": "FileDigest",
+                "parameterValue": "/fd \"SHA256\""
+              },
+              {
+                "parameterName": "PageHash",
+                "parameterValue": "/NPH"
+              },
+              {
+                "parameterName": "TimeStamp",
+                "parameterValue": "/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"
+              }
+            ],
+            "toolName": "sign",
+            "toolVersion": "1.0"
+          },
+          {
+            "keyCode": "CP-230012",
+            "operationSetCode": "SigntoolVerify",
+            "parameters": [],
+            "toolName": "sign",
+            "toolVersion": "1.0"
+          }
+        ]
 
-Original Configuration Details:
-CP-230012: "SHA256 Authenticode Standard Microsoft Corporation" certificate for external distribution
-Operation: SigntoolSign (Windows SignTool for PE format binaries only)
-Service Connection: Microsoft Release Management Internal
+  # -----------------------------------------------------------------------------
+  # 3) Independent Authenticode verification gate - fail the build if any native
+  #    binary is unsigned or has an invalid signature. Prints signer subject as
+  #    evidence in the build log.
+  # -----------------------------------------------------------------------------
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
 
-Based on SqlClient ESRP signing implementation
-COMMENTED OUT - All ESRP signing tasks are disabled due to SignTool incompatibility with wheel files
-The code below is preserved for reference and potential future use with other file types
-'''
-# parameters:
-#   - name: appRegistrationClientId
-#     type: string
-#     displayName: 'App Registration Client ID'
-#   
-#   - name: appRegistrationTenantId
-#     type: string
-#     displayName: 'App Registration Tenant ID'
-#   
-#   - name: artifactType
-#     type: string
-#     displayName: 'Artifact type to sign'
-#     values:
-#       - 'dll'   # For .pyd, .so, .dylib files (native binaries)
-#       - 'whl'   # For .whl files (Python wheels)
-#   
-#   - name: authAkvName
-#     type: string
-#     displayName: 'Azure Key Vault name'
-#   
-#   - name: authSignCertName
-#     type: string
-#     displayName: 'Signing certificate name'
-#   
-#   - name: esrpClientId
-#     type: string
-#     displayName: 'ESRP Client ID'
-#   
-#   - name: esrpConnectedServiceName
-#     type: string
-#     displayName: 'ESRP Connected Service Name'
-#   
-#   - name: signPath
-#     type: string
-#     displayName: 'Path containing files to sign'
+      $files = @(Get-ChildItem -Path '${{ parameters.signPath }}' -Recurse -Include *.pyd,*.dll -File)
+      if ($files.Count -eq 0) {
+        Write-Error "No native binaries (*.pyd, *.dll) found to verify under '${{ parameters.signPath }}'"
+        exit 1
+      }
 
-# steps:
-#   # Sign native binary files (.pyd, .so, .dylib)
-#   - ${{ if eq(parameters.artifactType, 'dll') }}:
-#       - task: EsrpCodeSigning@5
-#         displayName: 'ESRP CodeSigning - Native Binaries'
-#         inputs:
-#           ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
-#           AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
-#           AppRegistrationTenantId: '${{ parameters.appRegistrationTenantId }}'
-#           EsrpClientId: '${{ parameters.esrpClientId }}'
-#           UseMSIAuthentication: true
-#           AuthAKVName: '${{ parameters.authAkvName }}'
-#           AuthSignCertName: '${{ parameters.authSignCertName }}'
-#           FolderPath: '${{ parameters.signPath }}'
-#           Pattern: '*.pyd,*.dll,*.so,*.dylib'
-#           signConfigType: inlineSignParams
-#           inlineOperation: |
-#             [
-#               {
-#                 "keyCode": "CP-230012",
-#                 "operationSetCode": "SigntoolSign",
-#                 "parameters": [
-#                   {
-#                     "parameterName": "OpusName",
-#                     "parameterValue": "mssql-python"
-#                   },
-#                   {
-#                     "parameterName": "OpusInfo",
-#                     "parameterValue": "http://www.microsoft.com"
-#                   },
-#                   {
-#                     "parameterName": "FileDigest",
-#                     "parameterValue": "/fd \"SHA256\""
-#                   },
-#                   {
-#                     "parameterName": "PageHash",
-#                     "parameterValue": "/NPH"
-#                   },
-#                   {
-#                     "parameterName": "TimeStamp",
-#                     "parameterValue": "/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"
-#                   }
-#                 ],
-#                 "toolName": "sign",
-#                 "toolVersion": "1.0"
-#               },
-#               {
-#                 "keyCode": "CP-230012",
-#                 "operationSetCode": "SigntoolVerify",
-#                 "parameters": [],
-#                 "toolName": "sign",
-#                 "toolVersion": "1.0"
-#               }
-#             ]
-#   
-#   # Sign Python wheel files (.whl)
-#   - ${{ if eq(parameters.artifactType, 'whl') }}:
-#       - task: EsrpCodeSigning@5
-#         displayName: 'ESRP CodeSigning - Python Wheels'
-#         inputs:
-#           ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
-#           AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
-#           AppRegistrationTenantId: '${{ parameters.appRegistrationTenantId }}'
-#           EsrpClientId: '${{ parameters.esrpClientId }}'
-#           UseMSIAuthentication: true
-#           AuthAKVName: '${{ parameters.authAkvName }}'
-#           AuthSignCertName: '${{ parameters.authSignCertName }}'
-#           FolderPath: '${{ parameters.signPath }}'
-#           Pattern: '*.whl'
-#           signConfigType: inlineSignParams
-#           inlineOperation: |
-#             [
-#               {
-#                 "keyCode": "CP-230012",
-#                 "operationSetCode": "SigntoolSign",
-#                 "parameters": [
-#                   {
-#                     "parameterName": "OpusName",
-#                     "parameterValue": "mssql-python"
-#                   },
-#                   {
-#                     "parameterName": "OpusInfo",
-#                     "parameterValue": "http://www.microsoft.com"
-#                   },
-#                   {
-#                     "parameterName": "FileDigest",
-#                     "parameterValue": "/fd \"SHA256\""
-#                   },
-#                   {
-#                     "parameterName": "PageHash",
-#                     "parameterValue": "/NPH"
-#                   },
-#                   {
-#                     "parameterName": "TimeStamp",
-#                     "parameterValue": "/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"
-#                   }
-#                 ],
-#                 "toolName": "sign",
-#                 "toolVersion": "1.0"
-#               },
-#               {
-#                 "keyCode": "CP-230012",
-#                 "operationSetCode": "SigntoolVerify",
-#                 "parameters": [],
-#                 "toolName": "sign",
-#                 "toolVersion": "1.0"
-#               }
-#             ]
-#   
-#   # List signed files (platform-specific)
-#   - ${{ if eq(parameters.artifactType, 'dll') }}:
-#       # Windows - use cmd syntax
-#       - script: |
-#           echo Signed files in: ${{ parameters.signPath }}
-#           dir /s /b "${{ parameters.signPath }}\*.whl" "${{ parameters.signPath }}\*.pyd" "${{ parameters.signPath }}\*.dll" 2>nul
-#         displayName: 'List signed files (Windows)'
-#         condition: succeededOrFailed()
-#   
-#   - ${{ else }}:
-#       # Linux/macOS - use bash syntax
-#       - bash: |
-#           echo "Signed files in: ${{ parameters.signPath }}"
-#           if [ -d "${{ parameters.signPath }}" ]; then
-#             find "${{ parameters.signPath }}" -type f \( -name "*.whl" -o -name "*.pyd" -o -name "*.dll" -o -name "*.so" -o -name "*.dylib" \) -ls
-#           else
-#             echo "Directory not found: ${{ parameters.signPath }}"
-#           fi
-#         displayName: 'List signed files (Linux/macOS)'
-#         condition: succeededOrFailed()
+      $invalid = @()
+      foreach ($file in $files) {
+        $signature = Get-AuthenticodeSignature $file.FullName
+        Write-Host "$($file.Name): $($signature.Status) [$($signature.SignerCertificate.Subject)]"
+        if ($signature.Status -ne 'Valid') {
+          $invalid += $file.FullName
+        }
+      }
+
+      if ($invalid.Count -gt 0) {
+        Write-Error "Unsigned or invalid native binaries:`n$($invalid -join "`n")"
+        exit 1
+      }
+
+      Write-Host "All native binaries are Authenticode 'Valid'."
+    displayName: 'Verify Authenticode signatures (native binaries)'

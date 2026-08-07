@@ -36,6 +36,12 @@ parameters:
   - name: installOdbcWheel
     type: boolean
     default: false
+  # Sign the native Python extension (.pyd) with ESRP (CP-230012) before it is
+  # packaged into the wheel. Runs in BOTH Official and NonOfficial runs. Set to
+  # false only for fast local/dev iterations where ESRP creds are unavailable.
+  - name: signWindowsBinaries
+    type: boolean
+    default: true
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -249,6 +255,30 @@ stages:
             continueOnError: false
           
           # =========================
+          # ESRP CODE SIGNING (Windows native extension)
+          # =========================
+          # Authenticode-sign the freshly built ddbc_bindings.*.pyd with CP-230012
+          # BEFORE it is copied to the bindings/apiScan artifacts and packaged into
+          # the wheel by setup.py bdist_wheel. Signing in place (rather than
+          # unpack/repack of the .whl) keeps wheel RECORD hashes correct.
+          #
+          # Runs in BOTH Official and NonOfficial runs (no oneBranchType gate) so
+          # every published wheel contains a signed extension. mssql_py_core is
+          # installed LATER (below), so at this point only ddbc_bindings.*.pyd is
+          # present in mssql_python\ - the pattern further scopes signing to it.
+          - ${{ if eq(parameters.signWindowsBinaries, true) }}:
+            - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
+              parameters:
+                appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                authAkvName: '$(SigningAuthAkvName)'
+                authSignCertName: '$(SigningAuthSignCertName)'
+                esrpClientId: '$(SigningEsrpClientId)'
+                esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                signPath: '$(Build.SourcesDirectory)\mssql_python'
+                pattern: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+          
+          # =========================
           # MSSQL_PY_CORE INSTALLATION
           # =========================
           # Extract mssql_py_core from NuGet into repo root BEFORE testing
@@ -353,6 +383,60 @@ stages:
               set ARCHITECTURE=$(targetArch)
               python setup.py bdist_wheel
             displayName: 'Build wheel package'
+          
+          # =========================
+          # SIGNED-WHEEL EVIDENCE (verification only)
+          # =========================
+          # Prove that the .pyd embedded in the freshly built wheel is
+          # Authenticode-signed. This is a read-only check (unpack to a temp dir and
+          # inspect) - it does NOT modify or repack the wheel, so RECORD hashes are
+          # untouched. Provides the signing evidence attached to the GitHub PR.
+          - ${{ if eq(parameters.signWindowsBinaries, true) }}:
+            - pwsh: |
+                $ErrorActionPreference = 'Stop'
+
+                python -m pip install --upgrade wheel | Out-Null
+
+                $verifyRoot = Join-Path "$(Agent.TempDirectory)" "wheel-sign-verify"
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $verifyRoot
+                New-Item -ItemType Directory -Force -Path $verifyRoot | Out-Null
+
+                $wheels = @(Get-ChildItem "$(Build.SourcesDirectory)\dist" -Filter *.whl -File)
+                if ($wheels.Count -eq 0) {
+                  Write-Error "No wheel found in dist\ to verify"
+                  exit 1
+                }
+
+                foreach ($wheel in $wheels) {
+                  Write-Host "Unpacking $($wheel.Name) for signature verification"
+                  $dest = Join-Path $verifyRoot $wheel.BaseName
+                  New-Item -ItemType Directory -Force -Path $dest | Out-Null
+                  python -m wheel unpack "$($wheel.FullName)" --dest "$dest"
+                }
+
+                $nativeFiles = @(Get-ChildItem $verifyRoot -Recurse -Include ddbc_bindings.*.pyd -File)
+                if ($nativeFiles.Count -eq 0) {
+                  Write-Error "No ddbc_bindings .pyd found inside the built wheel(s)"
+                  exit 1
+                }
+
+                $invalid = @()
+                foreach ($file in $nativeFiles) {
+                  $signature = Get-AuthenticodeSignature $file.FullName
+                  Write-Host "$($file.Name): $($signature.Status) [$($signature.SignerCertificate.Subject)]"
+                  if ($signature.Status -ne 'Valid') {
+                    $invalid += $file.FullName
+                  }
+                }
+
+                if ($invalid.Count -gt 0) {
+                  Write-Error "Wheel contains unsigned/invalid native binaries:`n$($invalid -join "`n")"
+                  exit 1
+                }
+
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $verifyRoot
+                Write-Host "Verified: the .pyd inside the built wheel is Authenticode 'Valid'."
+              displayName: 'Verify signed .pyd inside built wheel'
           
           # =========================
           # ARTIFACT PUBLISHING
