@@ -1,9 +1,16 @@
 # =========================================================================================
-# ESRP Code Signing Step Template - Native Windows binaries (.pyd / .dll)
+# ESRP Code Signing Step Template - Windows native Python extension (.pyd)
 # =========================================================================================
-# Signs native PE-format binaries (the compiled Python extension `ddbc_bindings.*.pyd`
-# and any bundled `.dll`) using Microsoft's Enterprise Secure Release Process (ESRP)
-# with the CP-230012 Authenticode certificate.
+# Authenticode-signs OUR own PE-format binary - the compiled Python extension
+# `ddbc_bindings.*.pyd` - using Microsoft's Enterprise Secure Release Process (ESRP)
+# with the CP-230012 certificate.
+#
+# SCOPE: The caller passes an explicit `pattern` naming exactly the file(s) we own
+# (e.g. `ddbc_bindings.cp312-amd64.pyd`). We deliberately do NOT sign with a broad
+# `*.pyd` / `*.dll` net: other binaries that may sit next to our extension (e.g. the
+# vcredist `msvcp140.dll` copied by build.bat) are already signed by their publishers
+# and are not ours to re-sign. Malware scanning, signing, and the verification gate
+# below all operate on the same explicit `pattern` so the three scopes stay identical.
 #
 # WHY WE SIGN THE .pyd AND NOT THE .whl
 # -------------------------------------
@@ -50,19 +57,18 @@ parameters:
 
   - name: signPath
     type: string
-    displayName: 'Folder containing the native binaries to sign'
+    displayName: 'Folder containing the native extension to sign'
 
   - name: pattern
     type: string
-    default: '*.pyd'
-    displayName: 'Comma-separated pattern of files to sign (e.g. ddbc_bindings.cp312-*.pyd)'
+    displayName: 'Explicit file name(s) to sign, comma-separated (e.g. ddbc_bindings.cp312-amd64.pyd). No default - callers MUST scope this to the specific files they own.'
 
 steps:
   # -----------------------------------------------------------------------------
-  # 1) Malware scan the native binaries before signing (ESRP compliance gate).
+  # 1) Malware scan the native extension before signing (ESRP compliance gate).
   # -----------------------------------------------------------------------------
   - task: EsrpMalwareScanning@5
-    displayName: 'ESRP MalwareScanning - Native binaries'
+    displayName: 'ESRP MalwareScanning - Native extension'
     inputs:
       ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
       AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
@@ -76,10 +82,10 @@ steps:
       VerboseLogin: 1
 
   # -----------------------------------------------------------------------------
-  # 2) Authenticode-sign the native binaries with CP-230012.
+  # 2) Authenticode-sign the native extension with CP-230012.
   # -----------------------------------------------------------------------------
   - task: EsrpCodeSigning@5
-    displayName: 'ESRP CodeSigning - Native binaries (.pyd)'
+    displayName: 'ESRP CodeSigning - Native extension (.pyd)'
     inputs:
       ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
       AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
@@ -131,16 +137,21 @@ steps:
         ]
 
   # -----------------------------------------------------------------------------
-  # 3) Independent Authenticode verification gate - fail the build if any native
-  #    binary is unsigned or has an invalid signature. Prints signer subject as
-  #    evidence in the build log.
+  # 3) Independent Authenticode verification gate - fail the build if the file(s)
+  #    we just signed are unsigned or have an invalid signature. Uses the SAME
+  #    explicit `pattern` as the sign step so the verification scope matches the
+  #    signing scope exactly (no broad *.pyd/*.dll rescan). Prints the signer
+  #    subject as evidence in the build log.
   # -----------------------------------------------------------------------------
   - pwsh: |
       $ErrorActionPreference = 'Stop'
 
-      $files = @(Get-ChildItem -Path '${{ parameters.signPath }}' -Recurse -Include *.pyd,*.dll -File)
+      # Same explicit, comma-separated pattern that was signed above.
+      $patterns = @('${{ parameters.pattern }}'.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
+      $files = @(Get-ChildItem -Path '${{ parameters.signPath }}' -Recurse -Include $patterns -File)
       if ($files.Count -eq 0) {
-        Write-Error "No native binaries (*.pyd, *.dll) found to verify under '${{ parameters.signPath }}'"
+        Write-Error "No files matching pattern(s) '$($patterns -join ", ")' found to verify under '${{ parameters.signPath }}'"
         exit 1
       }
 
@@ -154,9 +165,9 @@ steps:
       }
 
       if ($invalid.Count -gt 0) {
-        Write-Error "Unsigned or invalid native binaries:`n$($invalid -join "`n")"
+        Write-Error "Unsigned or invalid signed file(s):`n$($invalid -join "`n")"
         exit 1
       }
 
-      Write-Host "All native binaries are Authenticode 'Valid'."
-    displayName: 'Verify Authenticode signatures (native binaries)'
+      Write-Host "All signed file(s) are Authenticode 'Valid'."
+    displayName: 'Verify Authenticode signature (native extension)'

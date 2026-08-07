@@ -71,6 +71,15 @@ stages:
           shortPyVer: ${{ parameters.shortPyVer }}
           # Target architecture (can differ from host for cross-compilation)
           targetArch: ${{ parameters.architecture }}
+          # Arch suffix used in the built extension's file name. build.bat maps the
+          # target arch to the wheel/PE tag: x64 -> amd64, arm64 -> arm64, x86 -> win32.
+          # Used to name the exact .pyd for signing (no wildcards).
+          ${{ if eq(parameters.architecture, 'arm64') }}:
+            pydArch: 'arm64'
+          ${{ elseif eq(parameters.architecture, 'x86') }}:
+            pydArch: 'win32'
+          ${{ else }}:
+            pydArch: 'amd64'
           # System access token for authenticated downloads (e.g., GitHub artifacts)
           SYSTEM_ACCESSTOKEN: $(System.AccessToken)
         
@@ -263,9 +272,11 @@ stages:
           # unpack/repack of the .whl) keeps wheel RECORD hashes correct.
           #
           # Runs in BOTH Official and NonOfficial runs (no oneBranchType gate) so
-          # every published wheel contains a signed extension. mssql_py_core is
-          # installed LATER (below), so at this point only ddbc_bindings.*.pyd is
-          # present in mssql_python\ - the pattern further scopes signing to it.
+          # every published wheel contains a signed extension. The `pattern` names
+          # the exact .pyd for THIS Python version + arch (e.g.
+          # ddbc_bindings.cp312-amd64.pyd) so signing is scoped precisely to our own
+          # extension - NOT the vcredist msvcp140.dll that build.bat also copies next
+          # to it (that DLL is already signed by Microsoft and is not ours to sign).
           - ${{ if eq(parameters.signWindowsBinaries, true) }}:
             - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
               parameters:
@@ -276,7 +287,7 @@ stages:
                 esrpClientId: '$(SigningEsrpClientId)'
                 esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
                 signPath: '$(Build.SourcesDirectory)\mssql_python'
-                pattern: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+                pattern: 'ddbc_bindings.cp$(shortPyVer)-$(pydArch).pyd'
           
           # =========================
           # MSSQL_PY_CORE INSTALLATION
