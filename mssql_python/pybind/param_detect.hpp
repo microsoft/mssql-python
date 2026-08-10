@@ -158,6 +158,25 @@ inline constexpr SQLSMALLINT PARAM_C_TYPE_TEXT = SQL_C_WCHAR;
 // Forward declare NumericData helper used by decimal path
 inline NumericData build_numeric_data(PyObject* as_tuple, PyObject* digits, int exponent);
 
+// True if the ready unicode string starts with the given ASCII literal, matching
+// str.startswith semantics across every storage kind (UCS1/2/4). PyUnicode_READ
+// yields the code point at each index regardless of kind, so a WKT prefix is
+// detected even when a later non-ASCII char forces the string into a wider kind.
+// The legacy path uses str.startswith, which is kind-independent, so native must
+// be too for parity.
+inline bool StartsWithAscii(unsigned int kind, const void* data, Py_ssize_t length,
+                            const char* prefix, Py_ssize_t prefixLen) {
+    if (length < prefixLen) {
+        return false;
+    }
+    for (Py_ssize_t j = 0; j < prefixLen; ++j) {
+        if (PyUnicode_READ(kind, data, j) != static_cast<Py_UCS4>(static_cast<unsigned char>(prefix[j]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // DetectParamTypes: Raw CPython parameter type detection for the primary execute path.
 //
@@ -262,6 +281,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
         if (PyUnicode_Check(obj)) {
             Py_ssize_t length = PyUnicode_GET_LENGTH(obj);
             unsigned int kind = PyUnicode_KIND(obj);
+            const void* udata = PyUnicode_DATA(obj);
 
             Py_ssize_t utf16_len;
             if (kind <= PyUnicode_2BYTE_KIND) {
@@ -281,6 +301,24 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 (kind > PyUnicode_1BYTE_KIND) ||
                 (PyUnicode_IS_COMPACT_ASCII(obj) == 0 && kind == PyUnicode_1BYTE_KIND &&
                  PyUnicode_MAX_CHAR_VALUE(obj) > 127);
+
+            // Geometry WKT (POINT / LINESTRING / POLYGON) always binds as NVARCHAR, so the
+            // SQL type is stable regardless of the ASCII/Latin-1 heuristic above and matches
+            // the small-geometry case. The prefix is checked kind-agnostically (matching the
+            // legacy str.startswith), and this runs BEFORE the length/DAE decision so a large
+            // polygon keeps the SAME wide type while still taking the DAE path below.
+            //
+            // NB: we deliberately do NOT copy the legacy path's exact tuple here. The legacy
+            // _map_sql_type returns NVARCHAR with columnSize == len and DAE=false even for a
+            // 7790-char polygon, which is unbindable (SQLBindParameter rejects a non-MAX
+            // NVARCHAR precision > 4000 with "Invalid precision value"). Folding geometry into
+            // is_unicode instead keeps geometry on NVARCHAR for both size regimes and lets the
+            // length gate stream large values via DAE, which actually binds.
+            if (StartsWithAscii(kind, udata, length, "POINT", 5) ||
+                StartsWithAscii(kind, udata, length, "LINESTRING", 10) ||
+                StartsWithAscii(kind, udata, length, "POLYGON", 7)) {
+                is_unicode = true;
+            }
 
             if (utf16_len > MAX_INLINE_CHAR) {
                 // Strings > 4000 UTF-16 code units exceed SQL Server's inline NVARCHAR(MAX)
@@ -303,19 +341,6 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             }
             info.decimalDigits = 0;
-
-            // Check geometry prefixes (only for non-DAE strings; long geometry
-            // values stay on the DAE path with their already-set types).
-            if (!info.isDAE && length >= 5 && kind == PyUnicode_1BYTE_KIND) {
-                const char* ascii = (const char*)PyUnicode_1BYTE_DATA(obj);
-                if (strncmp(ascii, "POINT", 5) == 0 ||
-                    (length >= 10 && strncmp(ascii, "LINESTRING", 10) == 0) ||
-                    (length >= 7 && strncmp(ascii, "POLYGON", 7) == 0)) {
-                    info.paramSQLType = SQL_WVARCHAR;
-                    info.paramCType = SQL_C_WCHAR;
-                    info.columnSize = length;
-                }
-            }
             continue;
         }
 

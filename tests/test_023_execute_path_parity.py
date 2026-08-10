@@ -522,6 +522,17 @@ def _detect(cursor, value):
     return cursor._map_sql_type(value, [value], 0)
 
 
+def _param_basetype(cursor, value):
+    """The SQL Server base type a parameter arrives as, observed from outside.
+
+    CAST(? AS sql_variant) preserves the parameter's declared SQL type, so this
+    returns 'varchar' vs 'nvarchar' for the native path without needing a test-only
+    detector. Limited to values that fit in sql_variant's 8000-byte cap, so it works
+    for the small/inline cases only."""
+    cursor.execute("SELECT SQL_VARIANT_PROPERTY(CAST(? AS sql_variant), 'BaseType')", [value])
+    return cursor.fetchone()[0]
+
+
 # Deterministic cases: the full 5-tuple is fixed by the type alone.
 DETECTION_CASES = [
     # None and bool
@@ -609,7 +620,7 @@ def test_map_sql_type_strings(cursor, value, sql_type, c_type, column_size, is_d
     "prefix", ["POINT(1 2)", "LINESTRING(0 0, 1 1)", "POLYGON((0 0,1 0,1 1,0 0))"]
 )
 def test_map_sql_type_geometry_wkt(cursor, prefix):
-    """Geometry WKT is detected as SQL_WVARCHAR regardless of the unicode heuristic."""
+    """Legacy detection: geometry WKT is SQL_WVARCHAR regardless of the unicode heuristic."""
     assert _detect(cursor, prefix) == (
         _c.SQL_WVARCHAR.value,
         _c.SQL_C_WCHAR.value,
@@ -619,23 +630,59 @@ def test_map_sql_type_geometry_wkt(cursor, prefix):
     )
 
 
-def test_map_sql_type_geometry_over_4000_stays_inline_on_legacy(cursor):
-    """Documents the legacy contract: a long POLYGON is still SQL_WVARCHAR, non-DAE,
-    column size == len — geometry detection wins over the length/DAE decision.
+@pytest.mark.parametrize(
+    "prefix", ["POINT(1 2)", "LINESTRING(0 0, 1 1)", "POLYGON((0 0,1 0,1 1,0 0))"]
+)
+def test_native_small_geometry_binds_nvarchar(cursor, prefix):
+    """Native path: small geometry WKT arrives as nvarchar, while a plain ASCII string
+    arrives as varchar. This is the observable proxy that native geometry detection
+    fires and picks the wide type, matching the legacy tuple above."""
+    assert _param_basetype(cursor, prefix) == "nvarchar"
+    assert _param_basetype(cursor, "hello") == "varchar"
 
-    This is the reference behaviour; the native path currently routes the same
-    value onto the generic long-string DAE path instead (a known open divergence,
-    not fixed here). Pinning the legacy side keeps that gap visible.
+
+def test_native_unicode_kind_geometry_still_detected(cursor):
+    """Native path: a WKT string carrying a non-ASCII char is stored by CPython in a
+    wider (UCS-2/4) kind. Geometry detection must still fire — the old code gated the
+    prefix check on kind == 1BYTE and would have missed this, binding varchar."""
+    tagged = "POLYGON((0 0,1 1,0 0)) café"
+    assert _param_basetype(cursor, tagged) == "nvarchar"
+
+
+def test_native_large_geometry_binds_and_roundtrips(cursor):
+    """Native path: a >4000-char geometry WKT binds and round-trips.
+
+    Regression guard for the geometry fix. Geometry now folds into the wide-type
+    decision but keeps the length-based DAE gate, so a large polygon streams as
+    NVARCHAR(MAX) via DAE. The earlier code that forced non-DAE columnSize == len
+    for geometry produced an unbindable NVARCHAR precision > 4000 ("Invalid precision
+    value"); see test_legacy_map_sql_type_large_geometry_is_unbindable for the shape
+    this deliberately avoids.
+    """
+    ring = ",".join(f"{n} {n}" for n in range(900)) + ",900 0,0 0"
+    wkt = f"POLYGON((0 0,{ring}))"
+    assert len(wkt) > 4000
+    cursor.execute("SELECT ?", [wkt])
+    assert cursor.fetchone()[0] == wkt
+    # And SQL Server accepts it as real geometry, confirming the WKT arrived intact.
+    cursor.execute("SELECT geometry::STGeomFromText(?, 0).STAsText()", [wkt])
+    assert cursor.fetchone()[0]
+
+
+def test_legacy_map_sql_type_large_geometry_is_unbindable(cursor):
+    """Pins a known legacy defect so it stays visible: for a >4000-char polygon the
+    Python _map_sql_type returns SQL_WVARCHAR with columnSize == len and DAE=False.
+    That precision exceeds SQL Server's non-MAX NVARCHAR limit (4000) and is rejected
+    at bind time with "Invalid precision value". The native path deliberately does not
+    reproduce this shape — it streams via DAE instead. If legacy is ever fixed to gate
+    geometry on length, update this test.
     """
     wkt = "POLYGON((" + ",".join(f"{n} {n}" for n in range(1000)) + "))"
     assert len(wkt) > 4000
-    assert _detect(cursor, wkt) == (
-        _c.SQL_WVARCHAR.value,
-        _c.SQL_C_WCHAR.value,
-        len(wkt),
-        0,
-        False,
-    )
+    sql_type, c_type, column_size, decimal_digits, is_dae = _detect(cursor, wkt)
+    assert sql_type == _c.SQL_WVARCHAR.value
+    assert column_size == len(wkt) > 4000
+    assert is_dae is False
 
 
 def test_map_sql_type_large_binary_uses_dae(cursor):
