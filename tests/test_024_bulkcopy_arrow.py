@@ -217,14 +217,6 @@ class TestBulkcopyArrowValidation:
             with pytest.raises(TypeError, match="timeout"):
                 _bare_cursor().bulkcopy_arrow("t", pa.table({"a": [1]}), timeout=flag)
 
-    def test_timeout_zero_passes_validation(self):
-        # GH-697: 0 means no timeout, so it must clear validation. the bare
-        # cursor has no connection wiring, so it fails later for an unrelated
-        # reason. what matters is that it is not a timeout complaint.
-        with pytest.raises(Exception) as exc:
-            _bare_cursor().bulkcopy_arrow("t", pa.table({"a": [1]}), timeout=0)
-        assert "timeout" not in str(exc.value).lower()
-
     def test_missing_pycore_raises_importerror(self):
         cur = _bare_cursor()
         with patch.dict("sys.modules", {"mssql_py_core": None}):
@@ -497,6 +489,22 @@ class TestBulkcopyArrowLive:
         assert [r[0] for r in rows] == [1, 2, 3]
         assert rows[1][1] is None
         assert rows[2][2] is None
+        cursor.execute(f"DROP TABLE {t}")
+
+    def test_timeout_zero_copies(self, cursor):
+        """GH-697: timeout=0 means no timeout, so a copy with it must succeed."""
+        t = "mssql_python_arrow_timeout_zero"
+        _make_table(cursor, t, "id INT NOT NULL, name NVARCHAR(50) NULL")
+        tbl = pa.table(
+            {
+                "id": pa.array([1, 2, 3], type=pa.int32()),
+                "name": pa.array(["a", "b", "c"]),
+            }
+        )
+        result = cursor.bulkcopy_arrow(t, tbl, timeout=0)
+        assert result["rows_copied"] == 3
+        cursor.execute(f"SELECT COUNT(*) FROM {t}")
+        assert cursor.fetchone()[0] == 3
         cursor.execute(f"DROP TABLE {t}")
 
     def test_record_batch_source(self, cursor):
