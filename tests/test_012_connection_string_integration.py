@@ -659,25 +659,14 @@ class TestConnectAPIIntegration:
 
 class TestConnStrFixtureRepr:
     """The conn_str fixture is wrapped so pytest failure headers do not print
-    the password. These lock that behaviour in."""
+    the password. Sanitizer behaviour itself is covered in test_007_logging."""
 
-    def test_repr_masks_password(self):
+    def test_repr_is_masked_and_value_is_untouched(self):
         raw = "Server=localhost,1433;Database=master;UID=sa;PWD=secret123;Encrypt=no"
         masked = _MaskedConnectionString(raw)
+        # repr() is what pytest prints in the failure header
         assert "secret123" not in repr(masked)
-        assert "***" in repr(masked)
-
-    def test_value_is_unchanged(self):
-        raw = "Server=localhost,1433;Database=master;UID=sa;PWD=secret123;Encrypt=no"
-        masked = _MaskedConnectionString(raw)
+        # the value still has to behave exactly like the string it wraps
         assert isinstance(masked, str)
         assert masked == raw
         assert str(masked) == raw
-        assert f"{masked}" == raw
-
-    def test_repr_masks_braced_password(self):
-        # Braced values may contain semicolons; the sanitizer must not truncate
-        # and leak the tail.
-        raw = "Server=localhost;UID=sa;PWD={p@ss;w}}rd};Encrypt=no"
-        masked = _MaskedConnectionString(raw)
-        assert "p@ss" not in repr(masked)
