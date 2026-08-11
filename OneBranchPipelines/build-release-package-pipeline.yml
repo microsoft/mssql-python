@@ -70,6 +70,14 @@ parameters:
     type: boolean
     default: true
 
+  # Authenticode-sign the Windows native .pyd extensions with ESRP (CP-230012).
+  # Enabled by default so BOTH Official and NonOfficial runs produce signed wheels.
+  # Disable only for fast dev iterations where ESRP signing is not needed.
+  - name: signWindowsBinaries
+    displayName: 'Sign Windows native .pyd binaries (ESRP)'
+    type: boolean
+    default: true
+
   # =========================
   # PLATFORM CONFIGURATIONS
   # =========================
@@ -396,6 +404,9 @@ extends:
               shortPyVer: ${{ config.pyVer }}
               architecture: ${{ config.arch }}
               oneBranchType: '${{ variables.effectiveOneBranchType }}'
+              # Sign the native .pyd with ESRP (CP-230012) in both Official and
+              # NonOfficial runs.
+              signWindowsBinaries: ${{ parameters.signWindowsBinaries }}
               # Phase 2: install the external ODBC wheel before pytest (bundled driver removed).
               odbcDependsOn:
                 - ConsolidateOdbc
