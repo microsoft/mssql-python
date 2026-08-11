@@ -3,6 +3,8 @@
 
 """Basic integration tests for bulkcopy via the mssql_python driver."""
 
+import time
+
 import pytest
 
 # Skip the entire module when mssql_py_core can't be loaded (e.g. it's not
@@ -459,43 +461,42 @@ def test_bulkcopy_accepts_timeout_zero(cursor):
         cursor.connection.commit()
 
 
-def test_bulkcopy_forwards_timeout_zero_unchanged():
-    """GH-697: 0 must reach py-core as 0, not be swapped for the 30s default.
+def test_bulkcopy_timeout_zero_disables_the_timeout(cursor):
+    """GH-697: a copy that times out at timeout=1 completes at timeout=0.
 
-    mssql-py-core maps a 0 timeout to an infinite deadline, so a copy that
-    merely succeeds does not prove the value survived the python layer.
+    The source paces itself with sleeps so the copy always outlives a 1 second
+    timeout regardless of machine speed. Same source both times, so the only
+    variable is the timeout value.
     """
-    from unittest.mock import MagicMock, patch
+    table_name = "mssql_python_bcp_timeout_zero_behaviour"
 
-    from mssql_python.cursor import Cursor
+    def slow_rows():
+        for i in range(30):
+            time.sleep(0.1)  # 3s total, comfortably past the 1s timeout
+            yield (i, f"row{i}")
 
-    mock_conn = MagicMock()
-    mock_conn.connection_str = "Server=localhost;Database=testdb;UID=sa;PWD=mypwd"
-    mock_conn._auth_type = None
-    mock_conn._token_provider = None
-    mock_conn._is_connected = True
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name NVARCHAR(50))")
+        cursor.connection.commit()
 
-    cursor = Cursor.__new__(Cursor)
-    cursor._connection = mock_conn
-    cursor._timeout = 0
-    cursor.closed = False
-    cursor.hstmt = None
+        # baseline: the timeout is real and fires on this source
+        with pytest.raises(Exception, match="(?i)timeout"):
+            cursor.bulkcopy(table_name, slow_rows(), timeout=1)
 
-    pycore_cursor = MagicMock()
-    pycore_cursor.bulkcopy.return_value = {
-        "rows_copied": 1,
-        "batch_count": 1,
-        "elapsed_time": 0.1,
-    }
-    pycore_conn = MagicMock()
-    pycore_conn.cursor.return_value = pycore_cursor
-    pycore_module = MagicMock()
-    pycore_module.PyCoreConnection = MagicMock(return_value=pycore_conn)
+        cursor.execute(f"DELETE FROM {table_name}")
+        cursor.connection.commit()
 
-    with patch.dict("sys.modules", {"mssql_py_core": pycore_module}):
-        cursor.bulkcopy("dbo.some_table", [(1,)], timeout=0)
+        # same source, timeout disabled: runs to completion
+        result = cursor.bulkcopy(table_name, slow_rows(), timeout=0)
+        assert result["rows_copied"] == 30
 
-    assert pycore_cursor.bulkcopy.call_args.kwargs["timeout"] == 0
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 30
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
 
 
 def test_bulkcopy_rejects_invalid_timeouts(cursor):
