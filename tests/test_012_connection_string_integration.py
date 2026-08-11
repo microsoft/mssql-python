@@ -662,13 +662,13 @@ class TestConnStrFixtureRepr:
     the password. These lock that behaviour in."""
 
     def test_repr_masks_password(self):
-        raw = "Server=localhost,1433;Database=master;UID=sa;PWD=Sup3rSecret!;Encrypt=no"
+        raw = "Server=localhost,1433;Database=master;UID=sa;PWD=secret123;Encrypt=no"
         masked = _MaskedConnectionString(raw)
-        assert "Sup3rSecret!" not in repr(masked)
+        assert "secret123" not in repr(masked)
         assert "***" in repr(masked)
 
     def test_value_is_unchanged(self):
-        raw = "Server=localhost,1433;Database=master;UID=sa;PWD=Sup3rSecret!;Encrypt=no"
+        raw = "Server=localhost,1433;Database=master;UID=sa;PWD=secret123;Encrypt=no"
         masked = _MaskedConnectionString(raw)
         assert isinstance(masked, str)
         assert masked == raw
