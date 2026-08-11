@@ -472,6 +472,7 @@ def test_bulkcopy_forwards_timeout_zero_unchanged():
     mock_conn = MagicMock()
     mock_conn.connection_str = "Server=localhost;Database=testdb;UID=sa;PWD=mypwd"
     mock_conn._auth_type = None
+    mock_conn._token_provider = None
     mock_conn._is_connected = True
 
     cursor = Cursor.__new__(Cursor)

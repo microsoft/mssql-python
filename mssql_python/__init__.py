@@ -14,7 +14,7 @@ import weakref
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Driver version
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -52,6 +52,9 @@ from .type import (
 
 # Connection Objects
 from .db_connection import connect, Connection
+
+# Token provider protocol (structural type for the token_provider= parameter)
+from .connection import TokenProvider
 
 # Connection String Handling
 from .connection_string_parser import _ConnectionStringParser
@@ -322,6 +325,7 @@ __all__ = [
     # Connection and cursor classes
     "connect",
     "Connection",
+    "TokenProvider",
     "Cursor",
     "Row",
     # Settings

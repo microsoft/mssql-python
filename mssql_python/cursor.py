@@ -65,6 +65,241 @@ def _normalize_time_param(value, c_type):
     return None
 
 
+class _ArrowReader:
+    """RecordBatchReader-compatible wrapper that makes ``close()`` actually
+    release server-side resources.
+
+    ``pyarrow.RecordBatchReader.from_batches(...)`` returns a reader whose
+    ``close()`` only releases the internal ArrowArrayStream — it does **not**
+    propagate into the underlying Python generator and does **not** stop the
+    server-side ODBC cursor.  This wrapper closes that gap.
+
+    Interoperability: this class exposes ``__arrow_c_stream__`` (Arrow
+    PyCapsule Protocol, pyarrow >= 14), so Arrow-aware consumers
+    (``pyarrow.RecordBatchReader.from_stream``, ``polars.from_arrow``,
+    ``duckdb.from_arrow``, etc.) can accept it directly without any
+    ``isinstance(x, pyarrow.RecordBatchReader)`` check.  Subclassing
+    ``pyarrow.RecordBatchReader`` (a Cython extension type) isn't a viable
+    alternative because its ``from_batches`` factory returns the base class
+    regardless of the subclass, ``__class__`` reassignment is rejected on
+    Cython types, and instances cannot hold arbitrary Python attributes —
+    so a subclass could not carry the cursor/generator refs this wrapper
+    needs for cancellation semantics.
+
+    Design (optimized):
+      * The Python generator backing the reader carries its own ``try/finally``
+        block — so server-side cleanup runs symmetrically whether the user
+        exhausts the reader, calls ``close()`` mid-iteration, exits a ``with``
+        block, or just lets the reader be garbage-collected.  ``close()``
+        itself only has to (a) call ``SQLCancel`` to unblock any fetch in
+        flight on another thread and (b) close the generator; the
+        ``finally`` clause does the rest.
+      * ``SQLCancel`` is called *before* ``SQLFreeStmt(SQL_CLOSE)`` so a fetch
+        running on another thread returns cleanly first.  ``SQLCancel`` is
+        the single ODBC entry point (with the diag-record functions) that the
+        spec marks as safe to call from a different thread than the one
+        owning the statement.
+      * Diagnostics are drained *before* the cursor is closed, so records
+        produced by a cancelled fetch are not lost; a second drain after
+        close picks up anything ``SQL_CLOSE`` itself emits.
+      * Cached ``pyarrow.ArrowInvalid`` avoids per-read imports on the
+        post-close error path.
+      * ``__del__`` is guarded against interpreter finalization.
+      * The public method surface is *delegated* to the inner pyarrow reader
+        via ``__getattr__`` rather than hand-enumerated: any method pyarrow
+        provides (``read_all``, ``read_pandas``, ``cast``, ``schema``,
+        ``read_next_batch``, and anything added by future pyarrow
+        versions) transparently forwards.  Only the methods the wrapper
+        genuinely intercepts stay explicit: ``close``, ``closed``,
+        ``__arrow_c_stream__``, ``__iter__``/``__next__``,
+        ``__enter__``/``__exit__``, ``__del__``.
+
+    The parent ``Cursor`` is **not** closed; it remains fully usable.
+    """
+
+    __slots__ = ("_cursor", "_inner", "_generator", "_closed", "_arrow_invalid")
+
+    def __init__(
+        self,
+        cursor: "Cursor",
+        inner: "pyarrow.RecordBatchReader",
+        generator,
+        arrow_invalid_exc: type,
+    ) -> None:
+        self._cursor = cursor
+        self._inner = inner
+        self._generator = generator
+        self._closed = False
+        # Cache the exception class so post-close reads in a hot loop don't
+        # re-import pyarrow.
+        self._arrow_invalid = arrow_invalid_exc
+
+    # ── Public surface mirroring pyarrow.RecordBatchReader ────────────────
+
+    @property
+    def closed(self) -> bool:
+        """True once ``close()`` has been called."""
+        return self._closed
+
+    def __getattr__(self, name):
+        """Delegate any attribute we don't explicitly define to the inner
+        ``pyarrow.RecordBatchReader``.
+
+        Rationale: enumerating pyarrow's surface by hand was fragile —
+        methods like ``read_all()``, ``read_pandas()``, and ``cast()`` were
+        silently missing, breaking existing user code on upgrade, and every
+        future addition to ``RecordBatchReader`` would repeat the same
+        regression.  ``__getattr__`` is only invoked when normal attribute
+        lookup fails, so our explicit overrides (``close``, ``closed``,
+        ``__arrow_c_stream__``, iteration and context-manager protocols)
+        always win; everything else falls through to the wrapped reader.
+
+        Private / dunder names (leading ``_``) are refused so that a
+        partially-constructed instance during ``__del__`` cannot recurse
+        forever trying to resolve its own slot names via ``self._inner``.
+
+        Post-close access raises ``pyarrow.ArrowInvalid`` to match the
+        behaviour of the explicit ``__next__`` / ``__arrow_c_stream__``
+        methods — a reader that has been marked closed must not delegate
+        even if a retry-pending state still holds ``self._inner``.
+        """
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if self._closed:
+            raise self._arrow_invalid("Reader is closed")
+        return getattr(self._inner, name)
+
+    def __arrow_c_stream__(self, requested_schema=None):
+        """Arrow PyCapsule Protocol — export as an Arrow C stream.
+
+        Implements the Arrow PyCapsule Protocol for streams (pyarrow >= 14),
+        so this wrapper can be consumed by any Arrow-compatible library
+        (``pyarrow.RecordBatchReader.from_stream``, ``polars.from_arrow``,
+        ``duckdb.from_arrow``, ``pandas.api.interchange.from_dataframe`` for
+        streams, etc.) without an ``isinstance(x, pa.RecordBatchReader)``
+        check.  See
+        https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html
+
+        Note: once the capsule has been consumed by the caller, the
+        underlying pyarrow reader's internal C stream is transferred out;
+        further calls to ``read_next_batch()`` on this wrapper will fail
+        with ``ArrowInvalid``.  That mirrors pyarrow's own semantics.
+        """
+        if self._closed:
+            raise self._arrow_invalid("Reader is closed")
+        # Delegate to the inner pyarrow reader.  pyarrow >= 14 exposes
+        # ``__arrow_c_stream__`` directly on ``RecordBatchReader``; older
+        # versions do not implement the protocol.  Fail explicitly rather
+        # than silently returning something invalid.
+        inner_export = getattr(self._inner, "__arrow_c_stream__", None)
+        if inner_export is None:
+            raise self._arrow_invalid(
+                "Arrow PyCapsule Protocol requires pyarrow>=14; "
+                "the installed pyarrow version does not expose "
+                "RecordBatchReader.__arrow_c_stream__."
+            )
+        return inner_export(requested_schema)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed:
+            raise self._arrow_invalid("Reader is closed")
+        return self._inner.read_next_batch()
+
+    def __enter__(self):
+        if self._closed:
+            raise self._arrow_invalid("Reader is closed")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def __del__(self):
+        # Best-effort cleanup if the user never called close() (or a previous
+        # close() attempt failed to release the generator and left cleanup
+        # incomplete) and the reader is being garbage-collected.  Skip during
+        # interpreter shutdown — the module globals (pyarrow, ddbc_bindings)
+        # may already be torn down, and touching native code at that point is
+        # unsafe.
+        try:
+            import sys as _sys
+
+            if _sys.is_finalizing():
+                return
+            # Retry whenever the generator is still referenced — covers both
+            # "user never called close()" and "earlier close() raised before
+            # the generator was released".
+            if getattr(self, "_generator", None) is not None:
+                self.close()
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+
+    # ── Close implementation ──────────────────────────────────────────────
+
+    def close(self) -> None:
+        """Synchronously stop fetching, release the server-side cursor, and
+        reset parent-cursor bookkeeping.  Idempotent **and retry-safe**:
+        if a previous call raised before the generator was released (for
+        example because another thread was still executing it and
+        ``generator.close()`` raised ``ValueError: generator already
+        executing``), subsequent calls will pick up where the failed call
+        left off rather than silently no-op'ing.
+
+        Most of the actual cleanup work lives in the generator's ``finally``
+        clause (see ``Cursor.arrow_reader``); this method just unblocks any
+        in-flight fetch and closes the generator, which triggers that
+        ``finally`` block.
+        """
+        # Fast path: cleanup already completed on a previous call.  We use
+        # the *generator* reference — not ``_closed`` — as the completion
+        # marker, because ``_closed`` is flipped early (so racing reads
+        # raise) and must not by itself disable retry of failed cleanup.
+        if self._generator is None and self._cursor is None:
+            self._closed = True
+            return
+
+        # Mark closed first so any racing read raises immediately, even if
+        # the cleanup steps below fail and we end up retried later.
+        self._closed = True
+
+        # SQLCancel (cross-thread safe) — unblocks a fetch running on another
+        # thread so that the generator's finally clause can then run
+        # SQLFreeStmt(SQL_CLOSE) without risking the undefined-behaviour
+        # window of closing an HSTMT mid-fetch.  Safe no-op for an idle stmt.
+        cursor = self._cursor
+        if cursor is not None and not cursor.closed and cursor.hstmt is not None:
+            try:
+                cursor.hstmt._cancel()  # pylint: disable=protected-access
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.debug("arrow_reader.close: SQLCancel raised: %s", e)
+
+        # Close the generator — this raises GeneratorExit inside it, which
+        # runs the try/finally cleanup block (SQLFreeStmt + diag drain +
+        # cursor bookkeeping reset).  If close() raises and the generator is
+        # still alive (e.g. another thread is currently executing it), keep
+        # the reference so a subsequent close() / __del__ can retry; only
+        # drop refs once the generator is actually dead.
+        gen = self._generator
+        if gen is not None:
+            try:
+                gen.close()
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.debug("arrow_reader.close: generator.close raised: %s", e)
+                if getattr(gen, "gi_frame", None) is not None:
+                    # Generator still alive — leave _generator (and _cursor,
+                    # so the next retry can re-issue SQLCancel) intact.
+                    return
+            self._generator = None
+
+        # Drop strong refs so the wrapper does not extend the lifetime of
+        # the parent Cursor or the inner pyarrow reader.
+        self._cursor = None
+        self._inner = None
+
+
 class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """
     Represents a database cursor, which is used to manage the context of a fetch operation.
@@ -2759,17 +2994,31 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             batches.append(batch)
         return pyarrow.Table.from_batches(batches, schema=batches[0].schema)
 
-    def arrow_reader(self, batch_size: int = 8192) -> "pyarrow.RecordBatchReader":
+    def arrow_reader(self, batch_size: int = 8192) -> "_ArrowReader":
         """
-        Fetch the result as a pyarrow RecordBatchReader, which yields Record
-        Batches of the specified size until the current result set is
-        exhausted.
+        Fetch the result as a pyarrow-compatible RecordBatchReader, which
+        yields Record Batches of the specified size until the current result
+        set is exhausted.
+
+        The returned object is an ``_ArrowReader`` wrapper that behaves like
+        ``pyarrow.RecordBatchReader``
+        (``schema``, ``read_next_batch``, iteration, context manager) but
+        its ``close()`` is fully effective.  Cleanup is driven
+        by a ``try/finally`` block inside the underlying batch generator, so
+        the same teardown — ``SQLCancel`` to unblock any in-flight fetch on
+        another thread, ``SQLFreeStmt(SQL_CLOSE)`` to release the server-side
+        cursor and locks, draining diagnostics into ``cursor.messages``, and
+        resetting the parent ``Cursor``'s rownumber / ``rowcount`` state —
+        runs whether the user (a) exhausts the reader normally, (b) calls
+        ``close()`` mid-iteration, (c) exits a ``with`` block, or (d) just
+        lets the reader be garbage-collected.  The parent ``Cursor`` itself
+        is **not** closed and can be re-executed.  ``close()`` is idempotent.
 
         Args:
             batch_size: Size of the Record Batches produced by the reader.
 
         Returns:
-            A pyarrow RecordBatchReader for the result set.
+            A pyarrow-compatible RecordBatchReader for the result set.
         """
         self._check_closed()  # Check if the cursor is closed
         pyarrow = self._ensure_pyarrow()
@@ -2778,11 +3027,73 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         schema_batch = self.arrow_batch(0)
         schema = schema_batch.schema
 
-        def batch_generator():
-            while (batch := self.arrow_batch(batch_size)).num_rows > 0:
-                yield batch
+        # Capture the parent cursor in a closure cell that the generator
+        # can null out after cleanup, so a GC'd reader does not keep the
+        # cursor pinned.
+        cursor_ref = [self]
 
-        return pyarrow.RecordBatchReader.from_batches(schema, batch_generator())
+        def batch_generator():
+            try:
+                while (batch := cursor_ref[0].arrow_batch(batch_size)).num_rows > 0:
+                    yield batch
+            finally:
+                # Symmetric server-side teardown — runs on exhaustion,
+                # GeneratorExit (from close()), or an exception inside the
+                # body.  This is the single canonical cleanup site.
+                cur = cursor_ref[0]
+                cursor_ref[0] = None
+                if cur is None or cur.closed or cur.hstmt is None:
+                    return
+
+                # 1) Drain diagnostics produced by the (possibly cancelled)
+                #    fetch *before* SQL_CLOSE so we don't lose them.
+                try:
+                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
+
+                # 2) Release the server-side cursor & locks while keeping the
+                #    HSTMT and prepared plan intact, so the parent Cursor can
+                #    be re-executed.
+                try:
+                    cur.hstmt._close_cursor()  # pylint: disable=protected-access
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    # Elevated to WARNING: unlike the diag-drain failures
+                    # (which only cost us some warning text), a failed
+                    # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
+                    # and its locks/tempdb resources open on SQL Server
+                    # until this parent Cursor is closed or re-executed.
+                    # DEBUG is typically disabled in production, so that
+                    # leak would be invisible; WARNING makes it visible.
+                    logger.warning(
+                        "arrow_reader cleanup: _close_cursor failed (%s); "
+                        "server-side cursor may remain open until this "
+                        "Cursor is closed or re-executed",
+                        e,
+                    )
+
+                # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
+                #    runs unconditionally because SQL_CLOSE can return
+                #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
+                #    warning records on the HSTMT diag stack; the previous
+                #    "only on failure" path would silently drop those.
+                try:
+                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
+
+                # 4) Reset cursor bookkeeping to a clean "no result set"
+                #    state.  rowcount becomes -1 to signal that the prior
+                #    result is no longer meaningful.
+                try:
+                    cur._clear_rownumber()  # pylint: disable=protected-access
+                    cur.rowcount = -1
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
+
+        gen = batch_generator()
+        inner = pyarrow.RecordBatchReader.from_batches(schema, gen)
+        return _ArrowReader(self, inner, gen, pyarrow.ArrowInvalid)
 
     def nextset(self) -> Optional[bool]:
         """
@@ -2858,6 +3169,205 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return True
 
     # ── Mapping from ODBC connection-string keywords (lowercase, as _parse returns)
+    def _build_pycore_context(self) -> dict:
+        """Build the connection context dict expected by mssql_py_core.
+
+        Parses the underlying ODBC connection string, validates the SERVER
+        parameter, and (when Azure AD auth is in use) either registers a
+        ServicePrincipal token factory or acquires a fresh access token,
+        replacing credential fields as py-core requires. Returns a dict that
+        can be handed to ``PyCoreConnection``. Shared by :meth:`bulkcopy`
+        and :meth:`bulkcopy_arrow` so both paths get identical auth handling.
+
+        Raises:
+            RuntimeError: connection string unavailable or token acquisition failed.
+            ValueError: SERVER parameter missing.
+        """
+        # Get and parse connection string
+        if not hasattr(self.connection, "connection_str"):
+            logger.error("_build_pycore_context: Connection string not available")
+            raise RuntimeError("Connection string not available for bulk copy")
+
+        # Use the proper connection string parser that handles braced values
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+
+        parser = _ConnectionStringParser(validate_keywords=False)
+        params = parser._parse(self.connection.connection_str)
+
+        # Check for server parameter (accepts synonyms: server, addr, address)
+        if not (params.get("server") or params.get("addr") or params.get("address")):
+            raise ValueError("SERVER parameter is required in connection string")
+
+        # Translate parsed connection string into the dict py-core expects.
+        pycore_context = connstr_to_pycore_params(params)
+
+        # Forward the cursor's query timeout to py-core so the bulkcopy
+        # connection uses the same limit instead of py-core's compiled-in 15s
+        # default. _timeout is the snapshot taken at cursor creation (same value
+        # _set_timeout uses). Accept any int the public Connection.timeout setter
+        # accepts (including IntEnum) but exclude bool, then normalise to a plain
+        # int so py-core's u32 extract is unambiguous. 0 stays a "no override":
+        # py-core's default connect path treats 0 as no deadline, but its TCP
+        # attempt path turns 0 into a 0ms timeout that fails instantly, so we
+        # leave 0 unset and let py-core apply its own 15s default.
+        connect_timeout = self._timeout
+        if isinstance(connect_timeout, int) and not isinstance(connect_timeout, bool):
+            if connect_timeout > 0:
+                pycore_context["connect_timeout"] = int(connect_timeout)
+
+        # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
+        if self.connection._token_provider is not None:
+            # User-supplied credential — use it directly for a fresh token.
+            from mssql_python.auth import acquire_raw_token_from_credential
+
+            try:
+                raw_token, _ = acquire_raw_token_from_credential(self.connection._token_provider)
+            except (OperationalError, InterfaceError) as e:
+                # Preserve the original exception *type* so the same failure is
+                # catchable the same way from connect() and bulkcopy(): an empty
+                # or invalid token raises InterfaceError, while a provider or
+                # transport failure raises OperationalError. Re-wrapping every
+                # case as OperationalError would make an InterfaceError from
+                # connect() surface as OperationalError here, splitting one
+                # failure across two DB-API error categories.
+                raise type(e)(
+                    driver_error=(
+                        "Bulk copy failed: unable to acquire token from custom credential"
+                    ),
+                    ddbc_error=str(e),
+                ) from e
+            pycore_context["access_token"] = raw_token
+            logger.debug(
+                "Bulk copy: acquired fresh token from custom credential (%s)",
+                type(self.connection._token_provider).__name__,
+            )
+        elif self.connection._auth_type:
+            # Fresh token acquisition for mssql-py-core connection
+            from mssql_python.auth import AADAuth, ServicePrincipalAuth
+            from mssql_python.constants import _AuthInternal
+
+            if self.connection._auth_type == _AuthInternal.SERVICE_PRINCIPAL:
+                # Callback-based path: tenant_id is only known from the STS URL
+                # the server returns mid-handshake, so we register a factory
+                # that py-core invokes during FedAuth (workflow 0x02).
+                # Cert-based ServicePrincipal is not supported on this path.
+                client_id = params.get("uid", "")
+                client_secret = params.get("pwd", "")
+                if not client_id or not client_secret:
+                    raise RuntimeError(
+                        "Bulk copy with Authentication=ActiveDirectoryServicePrincipal "
+                        "currently supports client-secret only. "
+                        "Provide UID (client_id) and PWD (client_secret) in the "
+                        "connection string."
+                    )
+                try:
+                    factory = ServicePrincipalAuth.make_token_factory(client_id, client_secret)
+                except (RuntimeError, ValueError) as e:
+                    raise RuntimeError(
+                        f"Bulk copy failed: unable to build ServicePrincipal token factory: {e}"
+                    ) from e
+                pycore_context["entra_id_token_factory"] = factory
+                # Keep authentication/user_name/password in pycore_context —
+                # py-core's auth validator + transformer need them to resolve
+                # the auth method to ActiveDirectoryServicePrincipal before
+                # the factory is dispatched at handshake time.
+                logger.debug("Bulk copy: registered ServicePrincipal token factory")
+            else:
+                # Pre-acquired token path. Used for Default, DeviceCode,
+                # Interactive (non-Windows), MSI (system- or user-assigned),
+                # and any other AD method whose tenant_id is discoverable
+                # client-side via Azure Identity SDK. credential kwargs
+                # (e.g. user-assigned MSI client_id) were captured by
+                # Connection.__init__ before remove_sensitive_params stripped
+                # UID from connection_str. re-parsing here would miss them.
+                try:
+                    raw_token = AADAuth.get_raw_token(
+                        self.connection._auth_type,
+                        self.connection._credential_kwargs,
+                    )
+                except (RuntimeError, ValueError) as e:
+                    raise RuntimeError(
+                        f"Bulk copy failed: unable to acquire Azure AD token "
+                        f"for auth_type '{self.connection._auth_type}': {e}"
+                    ) from e
+                pycore_context["access_token"] = raw_token
+                # Token replaces credential fields — py-core's validator rejects
+                # access_token combined with authentication/user_name/password.
+                for key in ("authentication", "user_name", "password"):
+                    pycore_context.pop(key, None)
+                logger.debug(
+                    "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
+                    self.connection._auth_type,
+                )
+
+        return pycore_context
+
+    def _looks_like_arrow_source(self, data) -> bool:
+        """Return True if ``data`` should be routed to :meth:`bulkcopy_arrow`.
+
+        Soft check: never imports pyarrow eagerly and never raises. Anything
+        exposing the Arrow C-stream PyCapsule protocol counts, as do the
+        concrete pyarrow container types when pyarrow is importable.
+        """
+        if data is None:
+            return False
+        if hasattr(data, "__arrow_c_stream__") or hasattr(data, "__arrow_c_array__"):
+            return True
+        try:
+            import pyarrow as pa
+        except ImportError:
+            return False
+        return isinstance(data, (pa.Table, pa.RecordBatch, pa.RecordBatchReader))
+
+    @staticmethod
+    def _bulkcopy_core_and_validate(table_name, batch_size, timeout):
+        """Import the native core and validate the args shared by ``bulkcopy``
+        and ``bulkcopy_arrow``. Returns the imported ``mssql_py_core`` module."""
+        try:
+            import mssql_py_core
+        except ImportError as exc:
+            logger.error("bulkcopy: Failed to import mssql_py_core module")
+            raise ImportError(
+                "Bulk copy requires the mssql_py_core library which is not available. "
+                "This is an unexpected error. "
+            ) from exc
+
+        if not table_name or not isinstance(table_name, str):
+            logger.error("bulkcopy: Invalid table_name parameter")
+            raise ValueError("table_name must be a non-empty string")
+
+        if not isinstance(batch_size, int):
+            raise TypeError(
+                f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
+            )
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
+
+        if not isinstance(timeout, int) or isinstance(timeout, bool):
+            raise TypeError(f"timeout must be a non-negative integer, got {type(timeout).__name__}")
+        if timeout < 0:
+            raise ValueError(f"timeout must be non-negative, got {timeout}")
+
+        return mssql_py_core
+
+    @staticmethod
+    def _bulkcopy_teardown(pycore_context, pycore_cursor, pycore_connection):
+        """Scrub credential material from the context and close native
+        bulk-copy resources. Safe to call with partially-initialized state."""
+        if pycore_context:
+            for key in ("password", "user_name", "access_token", "entra_id_token_factory"):
+                pycore_context.pop(key, None)
+        for resource in (pycore_cursor, pycore_connection):
+            if resource and hasattr(resource, "close"):
+                try:
+                    resource.close()
+                except Exception as cleanup_error:
+                    logger.debug(
+                        "Failed to close bulk copy resource %s: %s",
+                        type(resource).__name__,
+                        cleanup_error,
+                    )
+
     def bulkcopy(
         self,
         table_name: str,
@@ -2933,26 +3443,25 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         Raises:
             ImportError: If mssql_py_core library is not installed
-            TypeError: If data is None, not iterable, or is a string/bytes
+            TypeError: If data is None, not iterable, is a string/bytes, or is an
+                Arrow source (use :meth:`bulkcopy_arrow` for those)
             ValueError: If table_name is empty or parameters are invalid
             RuntimeError: If connection string is not available
         """
         # Fast check if logging is enabled to avoid overhead
         is_logging_enabled = logger.is_debug_enabled
 
-        try:
-            import mssql_py_core
-        except ImportError as exc:
-            logger.error("_bulkcopy: Failed to import mssql_py_core module")
-            raise ImportError(
-                "Bulk copy requires the mssql_py_core library which is not available. "
-                "This is an unexpected error. "
-            ) from exc
+        # Steer Arrow-shaped sources to the dedicated method instead of
+        # silently re-routing or failing deep inside the tuple validator.
+        if self._looks_like_arrow_source(data):
+            raise TypeError(
+                "bulkcopy() expects an iterable of row tuples or Row objects. "
+                "For pyarrow.Table / RecordBatch / RecordBatchReader / objects "
+                "implementing __arrow_c_stream__/__arrow_c_array__, call "
+                "cursor.bulkcopy_arrow() instead."
+            )
 
-        # Validate inputs
-        if not table_name or not isinstance(table_name, str):
-            logger.error("_bulkcopy: Invalid table_name parameter")
-            raise ValueError("table_name must be a non-empty string")
+        mssql_py_core = self._bulkcopy_core_and_validate(table_name, batch_size, timeout)
 
         # Validate that data is iterable (but not a string or bytes, which are technically iterable)
         if data is None:
@@ -2967,111 +3476,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 f"data must be an iterable of tuples or lists, got non-iterable {type(data).__name__}"
             )
 
-        # Validate batch_size type and value (0 means server optimal)
-        if not isinstance(batch_size, int):
-            raise TypeError(
-                f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
-            )
-        if batch_size < 0:
-            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
-
-        # Validate timeout type and value
-        if not isinstance(timeout, int) or isinstance(timeout, bool):
-            raise TypeError(f"timeout must be a non-negative integer, got {type(timeout).__name__}")
-        if timeout < 0:
-            raise ValueError(f"timeout must be non-negative, got {timeout}")
-
-        # Get and parse connection string
-        if not hasattr(self.connection, "connection_str"):
-            logger.error("_bulkcopy: Connection string not available")
-            raise RuntimeError("Connection string not available for bulk copy")
-
-        # Use the proper connection string parser that handles braced values
-        from mssql_python.connection_string_parser import _ConnectionStringParser
-
-        parser = _ConnectionStringParser(validate_keywords=False)
-        params = parser._parse(self.connection.connection_str)
-
-        # Check for server parameter (accepts synonyms: server, addr, address)
-        if not (params.get("server") or params.get("addr") or params.get("address")):
-            raise ValueError("SERVER parameter is required in connection string")
-
-        # Translate parsed connection string into the dict py-core expects.
-        pycore_context = connstr_to_pycore_params(params)
-
-        # Forward the cursor's query timeout to py-core so the bulkcopy
-        # connection uses the same limit instead of py-core's compiled-in 15s
-        # default. _timeout is the snapshot taken at cursor creation (same value
-        # _set_timeout uses). Accept any int the public Connection.timeout setter
-        # accepts (including IntEnum) but exclude bool, then normalise to a plain
-        # int so py-core's u32 extract is unambiguous. 0 stays a "no override":
-        # py-core's default connect path treats 0 as no deadline, but its TCP
-        # attempt path turns 0 into a 0ms timeout that fails instantly, so we
-        # leave 0 unset and let py-core apply its own 15s default.
-        connect_timeout = self._timeout
-        if isinstance(connect_timeout, int) and not isinstance(connect_timeout, bool):
-            if connect_timeout > 0:
-                pycore_context["connect_timeout"] = int(connect_timeout)
-
-        # Token acquisition — only thing cursor must handle (needs azure-identity SDK)
-        if self.connection._auth_type:
-            # Fresh token acquisition for mssql-py-core connection
-            from mssql_python.auth import AADAuth, ServicePrincipalAuth
-            from mssql_python.constants import _AuthInternal
-
-            if self.connection._auth_type == _AuthInternal.SERVICE_PRINCIPAL:
-                # Callback-based path: tenant_id is only known from the STS URL
-                # the server returns mid-handshake, so we register a factory
-                # that py-core invokes during FedAuth (workflow 0x02).
-                # Cert-based ServicePrincipal is not supported on this path.
-                client_id = params.get("uid", "")
-                client_secret = params.get("pwd", "")
-                if not client_id or not client_secret:
-                    raise RuntimeError(
-                        "Bulk copy with Authentication=ActiveDirectoryServicePrincipal "
-                        "currently supports client-secret only. "
-                        "Provide UID (client_id) and PWD (client_secret) in the "
-                        "connection string."
-                    )
-                try:
-                    factory = ServicePrincipalAuth.make_token_factory(client_id, client_secret)
-                except (RuntimeError, ValueError) as e:
-                    raise RuntimeError(
-                        f"Bulk copy failed: unable to build ServicePrincipal token factory: {e}"
-                    ) from e
-                pycore_context["entra_id_token_factory"] = factory
-                # Keep authentication/user_name/password in pycore_context —
-                # py-core's auth validator + transformer need them to resolve
-                # the auth method to ActiveDirectoryServicePrincipal before
-                # the factory is dispatched at handshake time.
-                logger.debug("Bulk copy: registered ServicePrincipal token factory")
-            else:
-                # Pre-acquired token path. Used for Default, DeviceCode,
-                # Interactive (non-Windows), MSI (system- or user-assigned),
-                # and any other AD method whose tenant_id is discoverable
-                # client-side via Azure Identity SDK. credential kwargs
-                # (e.g. user-assigned MSI client_id) were captured by
-                # Connection.__init__ before remove_sensitive_params stripped
-                # UID from connection_str. re-parsing here would miss them.
-                try:
-                    raw_token = AADAuth.get_raw_token(
-                        self.connection._auth_type,
-                        self.connection._credential_kwargs,
-                    )
-                except (RuntimeError, ValueError) as e:
-                    raise RuntimeError(
-                        f"Bulk copy failed: unable to acquire Azure AD token "
-                        f"for auth_type '{self.connection._auth_type}': {e}"
-                    ) from e
-                pycore_context["access_token"] = raw_token
-                # Token replaces credential fields — py-core's validator rejects
-                # access_token combined with authentication/user_name/password.
-                for key in ("authentication", "user_name", "password"):
-                    pycore_context.pop(key, None)
-                logger.debug(
-                    "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
-                    self.connection._auth_type,
-                )
+        pycore_context = self._build_pycore_context()
 
         pycore_connection = None
         pycore_cursor = None
@@ -3140,35 +3545,136 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 type(e).__name__,
                 str(e),
             )
-            # Re-raise without exposing connection context in the error chain
-            # to prevent credential leakage in stack traces
-            raise type(e)(str(e)) from None
+            # Re-raise the original exception, preserving its type, args, and
+            # traceback. The finally block scrubs credentials, and Python
+            # tracebacks don't expose local values, so no reconstruction is needed.
+            raise
 
         finally:
-            # Clear sensitive data to minimize memory exposure. The
-            # entra_id_token_factory closure captures client_secret, so drop
-            # our dict reference to it (Rust still holds an Arc until the
-            # connection is dropped, but at least we don't keep an extra ref).
-            if pycore_context:
-                for key in (
-                    "password",
-                    "user_name",
-                    "access_token",
-                    "entra_id_token_factory",
-                ):
-                    pycore_context.pop(key, None)
-            # Clean up bulk copy resources
-            for resource in (pycore_cursor, pycore_connection):
-                if resource and hasattr(resource, "close"):
-                    try:
-                        resource.close()
-                    except Exception as cleanup_error:
-                        # Log cleanup errors only - aids troubleshooting without masking original exception
-                        logger.debug(
-                            "Failed to close bulk copy resource %s: %s",
-                            type(resource).__name__,
-                            cleanup_error,
-                        )
+            self._bulkcopy_teardown(pycore_context, pycore_cursor, pycore_connection)
+
+    def bulkcopy_arrow(
+        self,
+        table_name: str,
+        source,
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
+    ):
+        """Bulk-copy from an Apache Arrow source straight into TDS.
+
+        ``source`` may be any of:
+
+        * ``pyarrow.Table``
+        * ``pyarrow.RecordBatch``
+        * ``pyarrow.RecordBatchReader``
+        * any object exposing ``__arrow_c_stream__`` (Arrow PyCapsule stream
+          interface — e.g. polars/pandas DataFrames ≥ 2.2, duckdb results)
+        * any object exposing ``__arrow_c_array__`` (single-batch PyCapsule
+          array interface)
+        * an iterable of ``pyarrow.RecordBatch`` (all batches must share the
+          same schema)
+
+        Compared to :meth:`bulkcopy`, this path skips per-cell Python
+        round-trips: each batch's typed Arrow buffers are read directly by
+        the Rust core and streamed into the TDS bulk-load packets. Schema and
+        column-mapping semantics, the options, and the returned dictionary are
+        identical to :meth:`bulkcopy`.
+
+        Args:
+            table_name: Target table name (may include schema, e.g. 'dbo.MyTable').
+            source: Arrow source (see above).
+            batch_size: Rows per TDS commit. Default 0 uses server optimal.
+            timeout: Operation timeout in seconds. Default 30. 0 disables the
+                bulk copy operation timeout.
+            column_mappings: Same two formats as :meth:`bulkcopy`. When omitted,
+                Arrow fields map to destination columns by ordinal position.
+            keep_identity: Preserve identity values from the source.
+            check_constraints: Check constraints during bulk copy.
+            table_lock: Use a table-level lock instead of row-level locks.
+            keep_nulls: Preserve null values instead of using column defaults.
+            fire_triggers: Fire insert triggers on the target table.
+            use_internal_transaction: Use an internal transaction per batch.
+
+        Returns:
+            Dictionary with ``rows_copied``, ``batch_count``, ``elapsed_time``
+            and ``rows_per_second``.
+
+        Raises:
+            ImportError: If the mssql_py_core library is not installed.
+            TypeError: If ``source`` is None, a str, or bytes.
+            ValueError: If ``table_name`` is empty or parameters are invalid.
+            RuntimeError: If the connection string is not available.
+
+        Example:
+            >>> import pyarrow as pa
+            >>> table = pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+            >>> result = cursor.bulkcopy_arrow("dbo.MyTable", table)
+            >>> result["rows_copied"]
+            3
+        """
+        is_logging_enabled = logger.is_debug_enabled
+
+        mssql_py_core = self._bulkcopy_core_and_validate(table_name, batch_size, timeout)
+
+        if source is None or isinstance(source, (str, bytes)):
+            got = "None" if source is None else type(source).__name__
+            raise TypeError(
+                "source must be a pyarrow Table/RecordBatch/RecordBatchReader, "
+                "an iterable of RecordBatch, or an object implementing "
+                f"__arrow_c_stream__/__arrow_c_array__, got {got}"
+            )
+
+        pycore_context = self._build_pycore_context()
+
+        pycore_connection = None
+        pycore_cursor = None
+        try:
+            pycore_connection = mssql_py_core.PyCoreConnection(
+                pycore_context, python_logger=logger if is_logging_enabled else None
+            )
+            pycore_cursor = pycore_connection.cursor()
+
+            result = pycore_cursor.bulkcopy_arrow(
+                table_name,
+                source,
+                batch_size=batch_size,
+                timeout=timeout,
+                column_mappings=column_mappings,
+                keep_identity=keep_identity,
+                check_constraints=check_constraints,
+                table_lock=table_lock,
+                keep_nulls=keep_nulls,
+                fire_triggers=fire_triggers,
+                use_internal_transaction=use_internal_transaction,
+                python_logger=logger if is_logging_enabled else None,
+            )
+
+            logger.info(
+                "bulkcopy_arrow: completed - rows_copied=%s, batch_count=%s, elapsed_time=%s",
+                result.get("rows_copied", "N/A"),
+                result.get("batch_count", "N/A"),
+                result.get("elapsed_time", "N/A"),
+            )
+            return result
+
+        except Exception as e:
+            logger.debug(
+                "bulkcopy_arrow failed for table '%s': %s: %s",
+                table_name,
+                type(e).__name__,
+                str(e),
+            )
+            raise
+
+        finally:
+            self._bulkcopy_teardown(pycore_context, pycore_cursor, pycore_connection)
 
     def __enter__(self):
         """

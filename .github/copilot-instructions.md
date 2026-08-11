@@ -15,7 +15,7 @@ Paths you will touch:
 
 - `mssql_python/pybind/CMakeLists.txt` — all platform/architecture build conditionals live here.
 - `mssql_python/pybind/build.sh` / `build.bat` — build entry points; `configure_dylibs.sh` fixes macOS dylib paths.
-- `mssql_python/libs/{windows,macos,linux}/...` — prebuilt ODBC binaries. **NEVER hand-edit these.**
+- `mssql_python_odbc/libs/{windows,macos,linux}/...` — prebuilt ODBC binaries (moved out of the mssql-python wheel into the standalone `mssql-python-odbc` package in Phase 2). **NEVER hand-edit these.**
 - `setup.py` / `pyproject.toml` — packaging and wheel/platform tagging.
 - `mssql_python/mssql_python.pyi` + `mssql_python/py.typed` — PEP 561 type stubs. Update stubs when the public API changes.
 - `tests/` — mostly-numbered `test_NNN_*.py` files (a live-SQL-Server integration suite plus no-DB dependency checks).
