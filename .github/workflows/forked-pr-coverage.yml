@@ -27,85 +27,78 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success'
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name != github.repository
     permissions:
+      actions: read
       pull-requests: write
       contents: read
     
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Download coverage data
+      - name: Validate coverage data and post comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          # Download artifact with error handling for non-existent artifacts
-          if ! gh run download ${{ github.event.workflow_run.id }} \
+          set -euo pipefail
+
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo "Invalid workflow run ID"
+            exit 1
+          }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Invalid workflow head SHA"
+            exit 1
+          }
+
+          ARTIFACT_DIR="$(mktemp -d "${RUNNER_TEMP}/coverage-comment-data.XXXXXX")"
+          PULLS_FILE="${RUNNER_TEMP}/associated-pulls.json"
+          COMMENT_FILE="${RUNNER_TEMP}/coverage-comment.json"
+          PR_NUMBER_FILE="${RUNNER_TEMP}/coverage-pr-number"
+
+          gh run download "$RUN_ID" \
             --repo ${{ github.repository }} \
-            --name coverage-comment-data 2>&1; then
-            echo "⚠️ No coverage-comment-data artifact found"
-            echo "This is expected for same-repo PRs (they post comments directly)"
-            echo "Exiting gracefully..."
-            exit 0
-          fi
-          
-          # Verify artifact was downloaded
-          if [[ ! -f pr-info.json ]]; then
-            echo "⚠️ Artifact downloaded but pr-info.json not found"
-            echo "This may indicate an issue with artifact upload"
-            exit 1
-          fi
+            --name coverage-comment-data \
+            --dir "$ARTIFACT_DIR"
 
-      - name: Read coverage data
-        id: coverage
-        run: |
-          if [[ ! -f pr-info.json ]]; then
-            echo "❌ pr-info.json not found"
-            exit 1
-          fi
-          
-          cat pr-info.json
-          
-          # Extract values from JSON with proper quoting
-          PR_NUMBER="$(jq -r '.pr_number' pr-info.json)"
-          COVERAGE_PCT="$(jq -r '.coverage_percentage' pr-info.json)"
-          COVERED_LINES="$(jq -r '.covered_lines' pr-info.json)"
-          TOTAL_LINES="$(jq -r '.total_lines' pr-info.json)"
-          PATCH_PCT="$(jq -r '.patch_coverage_pct' pr-info.json)"
-          LOW_COV_FILES="$(jq -r '.low_coverage_files' pr-info.json)"
-          PATCH_SUMMARY="$(jq -r '.patch_coverage_summary' pr-info.json)"
-          ADO_URL="$(jq -r '.ado_url' pr-info.json)"
-          
-          # Export to env for next step (single-line values)
-          echo "PR_NUMBER=${PR_NUMBER}" >> $GITHUB_ENV
-          echo "COVERAGE_PERCENTAGE=${COVERAGE_PCT}" >> $GITHUB_ENV
-          echo "COVERED_LINES=${COVERED_LINES}" >> $GITHUB_ENV
-          echo "TOTAL_LINES=${TOTAL_LINES}" >> $GITHUB_ENV
-          echo "PATCH_COVERAGE_PCT=${PATCH_PCT}" >> $GITHUB_ENV
-          echo "ADO_URL=${ADO_URL}" >> $GITHUB_ENV
-          
-          # Handle multiline values with proper quoting
-          {
-            echo "LOW_COVERAGE_FILES<<EOF"
-            echo "$LOW_COV_FILES"
-            echo "EOF"
-          } >> $GITHUB_ENV
-          
-          {
-            echo "PATCH_COVERAGE_SUMMARY<<EOF"
-            echo "$PATCH_SUMMARY"
-            echo "EOF"
-          } >> $GITHUB_ENV
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" > "$PULLS_FILE"
 
-      - name: Comment coverage summary on PR
-        uses: ./.github/actions/post-coverage-comment
-        with:
-          pr_number: ${{ env.PR_NUMBER }}
-          coverage_percentage: ${{ env.COVERAGE_PERCENTAGE }}
-          covered_lines: ${{ env.COVERED_LINES }}
-          total_lines: ${{ env.TOTAL_LINES }}
-          patch_coverage_pct: ${{ env.PATCH_COVERAGE_PCT }}
-          low_coverage_files: ${{ env.LOW_COVERAGE_FILES }}
-          patch_coverage_summary: ${{ env.PATCH_COVERAGE_SUMMARY }}
-          ado_url: ${{ env.ADO_URL }}
+          python .github/scripts/prepare_fork_coverage_comment.py \
+            --artifact-directory "$ARTIFACT_DIR" \
+            --event "$GITHUB_EVENT_PATH" \
+            --associated-pulls "$PULLS_FILE" \
+            --comment-output "$COMMENT_FILE" \
+            --pr-number-output "$PR_NUMBER_FILE"
+
+          PR_NUMBER="$(cat "$PR_NUMBER_FILE")"
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Validator returned an invalid PR number"
+            exit 1
+          }
+
+          COMMENT_ID="$(
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --jq 'add | map(select(
+                .user.login == "github-actions[bot]" and
+                (.body | contains("<!-- mssql-python-code-coverage -->"))
+              )) | .[0].id // empty'
+          )"
+
+          if [[ -n "$COMMENT_ID" ]]; then
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" \
+              --input "$COMMENT_FILE" > /dev/null
+          else
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --input "$COMMENT_FILE" > /dev/null
+          fi
