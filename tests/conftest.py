@@ -26,6 +26,12 @@ class _MaskedConnectionString(str):
     credential into CI logs on any failure in any test that takes conn_str,
     not just the ones asserting on connection strings. Masking repr() keeps
     the value fully usable while keeping the password out of that output.
+
+    This has to be a subclass rather than a call to
+    sanitize_connection_string() at the point of use: pytest reads repr() off
+    the object it holds, str.__repr__ cannot be reassigned on the builtin, and
+    sanitizing the fixture value itself would leave the tests unable to
+    connect.
     """
 
     __slots__ = ()
