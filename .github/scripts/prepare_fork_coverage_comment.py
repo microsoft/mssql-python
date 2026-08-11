@@ -124,13 +124,13 @@ def validate_artifact(artifact_directory: Path) -> dict:
     if not artifact_directory.is_dir() or artifact_directory.is_symlink():
         raise ValidationError("artifact path must be a directory")
 
-    files = []
-    for path in artifact_directory.rglob("*"):
-        if path.is_symlink():
-            raise ValidationError("artifact must not contain symbolic links")
-        if path.is_file():
-            files.append(path.relative_to(artifact_directory).as_posix())
-    if files != ["pr-info.json"]:
+    entries = list(artifact_directory.iterdir())
+    if (
+        len(entries) != 1
+        or entries[0].name != "pr-info.json"
+        or not entries[0].is_file()
+        or entries[0].is_symlink()
+    ):
         raise ValidationError("artifact must contain only pr-info.json")
 
     data = _load_json(artifact_directory / "pr-info.json")

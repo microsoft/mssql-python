@@ -75,6 +75,13 @@ def test_rejects_unexpected_artifact_payload(valid_artifact):
         coverage_comment.validate_artifact(valid_artifact)
 
 
+def test_rejects_unexpected_artifact_directory(valid_artifact):
+    (valid_artifact / "nested" / "empty").mkdir(parents=True)
+
+    with pytest.raises(coverage_comment.ValidationError, match="only pr-info.json"):
+        coverage_comment.validate_artifact(valid_artifact)
+
+
 def test_escapes_multiline_file_data_in_comment(valid_artifact):
     path = valid_artifact / "pr-info.json"
     data = json.loads(path.read_text(encoding="utf-8"))
