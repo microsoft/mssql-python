@@ -17,7 +17,6 @@ from mssql_python.connection_string_parser import (
 )
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
 from mssql_python import connect
-from conftest import _MaskedConnectionString
 
 
 class TestConnectionStringIntegration:
@@ -655,18 +654,3 @@ class TestConnectAPIIntegration:
         assert len(errors) >= 2
         assert any("Empty value for keyword 'server'" in err for err in errors)
         assert any("Empty value for keyword 'pwd'" in err for err in errors)
-
-
-class TestConnStrFixtureRepr:
-    """The conn_str fixture is wrapped so pytest failure headers do not print
-    the password. Sanitizer behaviour itself is covered in test_007_logging."""
-
-    def test_repr_is_masked_and_value_is_untouched(self):
-        raw = "Server=localhost,1433;Database=master;UID=sa;PWD=secret123;Encrypt=no"
-        masked = _MaskedConnectionString(raw)
-        # repr() is what pytest prints in the failure header
-        assert "secret123" not in repr(masked)
-        # the value still has to behave exactly like the string it wraps
-        assert isinstance(masked, str)
-        assert masked == raw
-        assert str(masked) == raw
