@@ -3,6 +3,8 @@
 
 """Basic integration tests for bulkcopy via the mssql_python driver."""
 
+import time
+
 import pytest
 
 # Skip the entire module when mssql_py_core can't be loaded (e.g. it's not
@@ -438,6 +440,78 @@ def test_bulkcopy_tuple_passthrough(cursor):
     finally:
         cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
         cursor.connection.commit()
+
+
+def test_bulkcopy_accepts_timeout_zero(cursor):
+    """GH-697: timeout=0 means no timeout per the BCP spec, so it must not be rejected."""
+    table_name = "mssql_python_bcp_timeout_zero"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name VARCHAR(20))")
+        cursor.connection.commit()
+
+        result = cursor.bulkcopy(table_name, [(1, "Alice"), (2, "Bob")], timeout=0)
+        assert result["rows_copied"] == 2
+
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 2
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_timeout_zero_disables_the_timeout(cursor):
+    """GH-697: a copy that times out at timeout=1 completes at timeout=0.
+
+    The source paces itself with sleeps so the copy always outlives a 1 second
+    timeout regardless of machine speed. Same source both times, so the only
+    variable is the timeout value.
+    """
+    table_name = "mssql_python_bcp_timeout_zero_behaviour"
+
+    def slow_rows():
+        for i in range(30):
+            time.sleep(0.1)  # 3s total, comfortably past the 1s timeout
+            yield (i, f"row{i}")
+
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name NVARCHAR(50))")
+        cursor.connection.commit()
+
+        # baseline: the timeout is real and fires on this source
+        with pytest.raises(Exception, match="(?i)timeout"):
+            cursor.bulkcopy(table_name, slow_rows(), timeout=1)
+
+        cursor.execute(f"DELETE FROM {table_name}")
+        cursor.connection.commit()
+
+        # same source, timeout disabled: runs to completion
+        result = cursor.bulkcopy(table_name, slow_rows(), timeout=0)
+        assert result["rows_copied"] == 30
+
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 30
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_rejects_invalid_timeouts(cursor):
+    """GH-697: negatives and bools stay rejected. Validation fires before any DB work."""
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=-1)
+
+    with pytest.raises(TypeError, match="timeout must be a non-negative integer"):
+        cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=1.5)
+
+    # bool is an int subclass, so False would otherwise slip through as 0
+    # and silently disable the timeout.
+    for flag in (False, True):
+        with pytest.raises(TypeError, match="timeout must be a non-negative integer"):
+            cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=flag)
 
 
 def test_bulkcopy_empty_iterator(cursor):
