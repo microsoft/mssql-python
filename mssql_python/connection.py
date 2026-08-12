@@ -14,7 +14,8 @@ Resource Management:
 import weakref
 import re
 import codecs
-from typing import Any, Dict, Optional, Union, List, Tuple, Callable, TYPE_CHECKING
+import warnings
+from typing import Any, Dict, Optional, Union, List, Tuple, Callable, Protocol, TYPE_CHECKING
 import threading
 
 import mssql_python
@@ -46,6 +47,7 @@ from mssql_python.auth import (
     remove_sensitive_params,
     get_auth_token_info,
     compute_identity_key,
+    compute_token_identity,
 )
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
@@ -54,11 +56,33 @@ from mssql_python.constants import (
     _RESERVED_PARAMETERS,
     _KEY_AUTHENTICATION,
     _KEY_UID,
+    _KEY_PWD,
+    _KEY_TRUSTED_CONNECTION,
     _AuthInternal,
 )
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
+
+
+class TokenProvider(Protocol):
+    """Structural type for the ``token_provider`` parameter.
+
+    Any object exposing a ``get_token(scope)`` method that returns an object
+    with a ``.token`` attribute (the raw JWT string) satisfies this protocol.
+    It is intentionally broader than ``azure.core.credentials.TokenCredential``
+    -- whose ``get_token`` requires the ``(*scopes, **kwargs)`` shape -- so that
+    a minimal ``get_token(scope)`` implementation (for example, a thin wrapper
+    around a token obtained from Microsoft Fabric's ``mssparkutils``) is
+    accepted by static type checkers, matching the documented contract. Every
+    ``azure-identity`` credential (``DefaultAzureCredential``,
+    ``AzureCliCredential``, ...) also conforms.
+    """
+
+    def get_token(self, scope: str) -> Any:
+        """Return an object with a ``.token`` attribute for ``scope``."""
+        ...
+
 
 # Add SQL_WMETADATA constant for metadata decoding configuration
 SQL_WMETADATA: int = -99  # Special flag for column name decoding
@@ -140,10 +164,10 @@ def _validate_utf16_wchar_compatibility(
 
         # Generate context-appropriate error messages
         if "ctype" in context:
-            driver_error = f"SQL_WCHAR ctype only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR ctype only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR ctype"
         else:
-            driver_error = f"SQL_WCHAR only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR"
 
         raise ProgrammingError(
@@ -252,6 +276,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
+        token_provider: Optional["TokenProvider"] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -271,12 +296,54 @@ class Connection:
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
+            token_provider (object, optional): Advanced token provider for Microsoft Entra ID
+                authentication. Must expose a callable ``.get_token(scope)`` method that returns
+                an object with a ``.token`` attribute.
+
+                This parameter is mutually exclusive with ``Authentication=`` in the connection
+                string and with ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]``; supplying more than
+                one token source raises ``InterfaceError`` at connect time.
+
+                If ``UID``/``PWD``/``Trusted_Connection`` are also present in the connection
+                string they are ignored (access-token auth wins) and a warning is emitted.
+
+                .. note::
+                    The token scope is fixed to the Azure **commercial** cloud
+                    (``https://database.windows.net/.default``). Sovereign clouds (Azure US
+                    Government, Azure China, Azure Germany) are **out of scope** for this
+                    parameter — a token acquired for a different audience is rejected by SQL
+                    Server at login. For sovereign clouds, acquire the token yourself and pass
+                    it via ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`` instead.
+
+                .. note::
+                    Connection pooling is enabled for access-token connections
+                    (``token_provider=``, built-in ``Authentication=ActiveDirectory*``, or a raw
+                    ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]``). The native pool key is
+                    identity-aware — the sanitized connection string plus a per-identity suffix
+                    (``msi:``/``acct:``/``tok:``) — so different principals sharing the same
+                    server/database land in distinct pool buckets and are never handed each
+                    other's authenticated connection, while same-identity reuse still benefits
+                    from pooling.
+
+                .. note::
+                    Token lifecycle limitations: the access token is a *pre-connect* ODBC
+                    attribute, so it cannot be refreshed on a live connection. Long-lived
+                    connections must be recycled by the application once the token nears expiry,
+                    and Continuous Access Evaluation (CAE) claims challenges are not handled.
+                    These require native driver support and are tracked as follow-up work.
+                    Interactive credentials (e.g. ``InteractiveBrowserCredential``) block
+                    ``connect()`` until the user completes sign-in; prefer non-interactive
+                    credentials in server contexts.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
             None
 
         Raises:
+            InterfaceError: If ``token_provider`` is misused (combined with another token
+                source, or lacking a valid ``.get_token`` method), or the credential returns
+                no valid token.
+            OperationalError: If acquiring a token from ``token_provider`` fails.
             ValueError: If the connection string is invalid or connection fails.
 
         This method sets up the initial state for the connection object,
@@ -301,7 +368,11 @@ class Connection:
         self.connection_str, parsed_params = self._construct_connection_string(
             connection_str, **kwargs
         )
-        self._attrs_before = attrs_before or {}
+        # Shallow-copy so we never mutate the caller's dict (e.g. when the
+        # token_provider path injects SQL_COPT_SS_ACCESS_TOKEN). Mutating the
+        # caller's object would leak the access token into user state and break
+        # re-using the same attrs_before dict across multiple connections.
+        self._attrs_before = dict(attrs_before) if attrs_before else {}
 
         # Initialize encoding settings with defaults for Python 3
         # Python 3 only has str (which is Unicode), so we use utf-16le by default
@@ -340,6 +411,16 @@ class Connection:
         # fresh token; re-parsing self.connection_str at that point would miss
         # them because UID is already gone.
         self._credential_kwargs: Optional[Dict[str, str]] = None
+        # User-supplied token provider for custom Entra ID authentication.
+        # Stored so bulk copy can call .get_token() for a fresh JWT later.
+        self._token_provider: Optional["TokenProvider"] = None
+        # POSIX timestamp (seconds) at which the current access token expires,
+        # captured from the credential's AccessToken result. None when unknown.
+        # The token is a pre-connect ODBC attribute and cannot be refreshed on
+        # a live connection — this is exposed for diagnostics/logging only.
+        # A custom token_provider may report a float POSIX timestamp, so the
+        # hint is Optional[float] (int is accepted under the numeric tower).
+        self._token_expires_on: Optional[float] = None
 
         # Composite, identity-aware pool key. Empty means "key the native pool
         # on the connection string" (legacy behavior, used for non-token auth).
@@ -359,9 +440,14 @@ class Connection:
         # ``_token_factory``.
         self._token_factory = None
 
+        # Custom token_provider= parameter — takes priority, mutually exclusive
+        # with Authentication= in the connection string.
+        if token_provider is not None:
+            self._configure_token_provider(token_provider, parsed_params)
+
         # Handle Entra ID authentication if specified.
         # The parsed dict is used directly — no re-parsing of the connection string.
-        if _KEY_AUTHENTICATION in parsed_params:
+        elif _KEY_AUTHENTICATION in parsed_params:
             auth_type = process_auth_parameters(parsed_params)
 
             if auth_type:
@@ -419,28 +505,58 @@ class Connection:
                             ddbc_error=str(e),
                         ) from e
 
-                def _make_token_factory():
-                    # Deferred connect-attrs provider handed to native. Native
-                    # invokes it only when it actually opens a physical
-                    # connection (a pool miss or non-pooled connect), so a
+                def _make_token_factory(expected_account: Optional[str] = None):
+                    # Build the deferred connect-attrs provider handed to native.
+                    # Native invokes the returned callable only when it actually
+                    # opens a physical connection (a pool miss, non-pooled
+                    # connect, or near-expiry refresh on checkout), so a
                     # same-identity pool hit never pays for a token.
-                    attrs = dict(base_attrs)
-                    info = _acquire_token_info()
-                    if info and info.token_struct:
-                        attrs[token_attr] = info.token_struct
-                        return attrs, info.expires_on
-                    # Fail closed: a token-backed pool must never open a
-                    # physical connection without the token it is meant to
-                    # carry. get_auth_token_info already raises when
-                    # acquisition fails; this guards the empty-token edge so
-                    # native never connects with Authentication= stripped.
-                    raise InterfaceError(
-                        driver_error=(
-                            "Unable to acquire an Entra ID access token for "
-                            f"authentication type '{auth_type}'."
-                        ),
-                        ddbc_error="Token factory produced no usable token.",
-                    )
+                    #
+                    # ``expected_account`` binds an account-keyed (``acct:``)
+                    # pool to the exact account it was keyed on: the shared
+                    # interactive/device-code credential can silently switch
+                    # signed-in accounts between pooling and a later refresh, and
+                    # opening a *different* principal's connection inside this
+                    # pool would hand a caller a connection authenticated as the
+                    # wrong account. MSI pools pass ``None`` (their identity is
+                    # fixed by params, not by a mutable signed-in account).
+                    def _token_factory():
+                        attrs = dict(base_attrs)
+                        info = _acquire_token_info()
+                        if info and info.token_struct:
+                            if (
+                                expected_account is not None
+                                and info.home_account_id != expected_account
+                            ):
+                                # Fail closed: the signed-in account changed out
+                                # from under this account-keyed pool. Refuse
+                                # rather than authenticate as the new principal.
+                                raise InterfaceError(
+                                    driver_error=(
+                                        "The signed-in account changed between "
+                                        "pooling and connect for authentication "
+                                        f"type '{auth_type}'; refusing to open a "
+                                        "connection for a different account in "
+                                        "this pool."
+                                    ),
+                                    ddbc_error="Account mismatch in token factory.",
+                                )
+                            attrs[token_attr] = info.token_struct
+                            return attrs, info.expires_on
+                        # Fail closed: a token-backed pool must never open a
+                        # physical connection without the token it is meant to
+                        # carry. get_auth_token_info already raises when
+                        # acquisition fails; this guards the empty-token edge so
+                        # native never connects with Authentication= stripped.
+                        raise InterfaceError(
+                            driver_error=(
+                                "Unable to acquire an Entra ID access token for "
+                                f"authentication type '{auth_type}'."
+                            ),
+                            ddbc_error="Token factory produced no usable token.",
+                        )
+
+                    return _token_factory
 
                 identity = compute_identity_key(auth_type, credential_kwargs)
                 if identity:
@@ -452,8 +568,9 @@ class Connection:
 
                     # Lazy token acquisition: native invokes this only
                     # when it opens a physical connection, so same-identity pool
-                    # hits never pay for a token.
-                    self._token_factory = _make_token_factory
+                    # hits never pay for a token. MSI identity is param-derived,
+                    # so there is no signed-in account to bind.
+                    self._token_factory = _make_token_factory()
                 else:
                     # Token/account-dependent identity: acquire once to derive
                     # the key. Interactive / Device-code yield a stable
@@ -476,8 +593,11 @@ class Connection:
                     if identity and identity.startswith("acct:"):
                         # Account-stable key: safe to defer to the factory so a
                         # same-account pool hit skips token acquisition and a
-                        # near-expiry checkout can refresh silently.
-                        self._token_factory = _make_token_factory
+                        # near-expiry checkout can refresh silently. Bind the
+                        # factory to this exact account so a concurrent sign-in
+                        # that flips the shared credential's account can never
+                        # open a different principal's connection in this pool.
+                        self._token_factory = _make_token_factory(expected_account=home_account_id)
                     elif token:
                         # Token-hash key: bind the pooled connection to this
                         # exact token so its hash always matches the pool key.
@@ -568,7 +688,17 @@ class Connection:
                     ddbc_error="Non-binary access token attribute rejected.",
                 )
             if isinstance(_raw_token, (bytes, bytearray)):
-                _token_identity = compute_identity_key("default", token_struct=bytes(_raw_token))
+                # Freeze a mutable bytearray token to immutable bytes ONCE and
+                # store it back, so the pool-key hash below and the later native
+                # connect both read the exact same value. Hashing the bytearray
+                # and letting native read it separately would be a TOCTOU: a
+                # caller mutating the bytearray in between would bind the pooled
+                # connection to a key that no longer matches its token.
+                _frozen_token = bytes(_raw_token)
+                self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = _frozen_token
+                # This raw token has no param-derivable identity, so key it on
+                # the token hash directly.
+                _token_identity = compute_token_identity(_frozen_token)
                 if _token_identity:
                     self._pool_key = self.connection_str + "\x00" + _token_identity
 
@@ -576,6 +706,7 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
+
         try:
             self._conn = ddbc_bindings.Connection(
                 self.connection_str,
@@ -604,6 +735,107 @@ class Connection:
                 f"Unexpected error during connection registration: {type(e).__name__}: {e}"
             )
 
+    def _configure_token_provider(
+        self, token_provider: "TokenProvider", parsed_params: Dict[str, str]
+    ) -> None:
+        """Validate a custom ``token_provider`` and wire it for pooled auth.
+
+        Validates that ``token_provider`` is not combined with another token
+        source and exposes a ``get_token()`` method, strips sensitive params
+        from the connection string, and acquires a token once up front so an
+        invalid credential fails fast at connect() and the expiry is captured.
+        The acquired token is placed in ``attrs_before``; the pool is keyed on
+        the token hash (``tok:``) by the safety net in ``__init__`` so distinct
+        tokens never share a pooled connection. Mutually exclusive with
+        ``Authentication=`` and a manual ``attrs_before`` access token.
+
+        Raises:
+            InterfaceError: If ``token_provider`` is combined with another token
+                source, or lacks a ``get_token(scope)`` method.
+            OperationalError: If acquiring a token from ``token_provider`` fails.
+        """
+        if _KEY_AUTHENTICATION in parsed_params:
+            raise InterfaceError(
+                driver_error=(
+                    "Cannot specify both 'token_provider' parameter and "
+                    "'Authentication' in the connection string. "
+                    "Use one or the other."
+                ),
+                ddbc_error="",
+            )
+        if ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in self._attrs_before:
+            raise InterfaceError(
+                driver_error=(
+                    "Cannot specify both 'token_provider' parameter and "
+                    "attrs_before[SQL_COPT_SS_ACCESS_TOKEN]. "
+                    "Use one token source."
+                ),
+                ddbc_error="",
+            )
+        get_token = getattr(token_provider, "get_token", None)
+        if not callable(get_token):
+            raise InterfaceError(
+                driver_error=(
+                    f"token_provider must have a .get_token() method. "
+                    f"Got {type(token_provider).__name__}."
+                ),
+                ddbc_error="",
+            )
+        # The get_token() signature is NOT inspected here: inspect.signature()
+        # is unreliable for partial/decorated/C-extension callables and would
+        # produce false warnings on valid credentials. The actual call is the
+        # source of truth — _get_token_from_credential turns a bad signature
+        # (TypeError) into a clear InterfaceError.
+        from mssql_python.auth import acquire_token_from_credential, _user_facing_stacklevel
+
+        # access-token auth ignores UID/PWD/Trusted_Connection — warn so the
+        # user is not surprised that those credentials are silently dropped.
+        dropped = [
+            key for key in (_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION) if key in parsed_params
+        ]
+        if dropped:
+            warnings.warn(
+                "token_provider is set, so the following connection-string "
+                f"credential(s) are ignored: {', '.join(sorted(dropped))}. "
+                "Remove them to silence this warning.",
+                UserWarning,
+                # Point the warning at the caller's own code rather than this
+                # internal helper, regardless of call depth (connect() vs a
+                # direct Connection()).
+                stacklevel=_user_facing_stacklevel(),
+            )
+        self._token_provider = token_provider
+
+        # Strip sensitive params (UID/PWD/Trusted_Connection) since access-token
+        # auth is used — same as the Authentication= path. Do this BEFORE
+        # building the pool key so the key is derived from the exact connection
+        # string native will connect with.
+        sanitized = remove_sensitive_params(parsed_params)
+        self.connection_str = _ConnectionStringBuilder(sanitized).build()
+
+        # Acquire the token once, up front. This validates the credential so an
+        # invalid one fails fast at connect() (raising InterfaceError/
+        # OperationalError here), captures the expiry for diagnostics, and fires
+        # the already-expired-token warning. The token is placed directly in
+        # attrs_before; the identity-aware safety net in __init__ then keys the
+        # pool on the token hash (``tok:``).
+        #
+        # NOTE: a custom token_provider is keyed on the token it mints, NOT on
+        # the provider object. Object-identity keying would be unsafe: a mutable
+        # credential (e.g. AzureCliCredential, which follows whoever is logged
+        # into the az CLI) can represent different principals over its lifetime,
+        # yet a same-object pool hit skips re-acquisition — so a caller could be
+        # handed a connection authenticated as a stale principal. Token-hash
+        # keying re-derives identity from the actual token on every physical
+        # connect, so a principal change always lands in a distinct pool. The
+        # trade-off is weaker reuse (a rotated token opens a new bucket, which
+        # the native idle sweep later evicts) and no expiry-aware refresh — the
+        # pooled connection is reused until it dies. See the pooling notes in
+        # the README.
+        token, token_expires_on = acquire_token_from_credential(token_provider)
+        self._token_expires_on = token_expires_on
+        self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
+
     def _construct_connection_string(
         self, connection_str: str = "", **kwargs: Any
     ) -> Tuple[str, Dict[str, str]]:
@@ -624,6 +856,28 @@ class Connection:
             Tuple[str, Dict[str, str]]: The constructed connection string and
                 the normalized parameter dictionary.
         """
+
+        # Reject embedded NUL (\x00) up front, for both the base string and every
+        # kwargs value. The ODBC layer terminates the connection string at the
+        # first NUL (SQL_NTS), so anything after it is silently dropped; worse,
+        # the identity-aware pool key joins the connection string and the
+        # per-identity discriminator with a NUL separator, so a NUL smuggled into
+        # a value could forge or collide pool keys. Fail closed at this Python
+        # boundary rather than relying on downstream truncation.
+        if isinstance(connection_str, str) and "\x00" in connection_str:
+            raise InterfaceError(
+                driver_error="Connection string must not contain a NUL (\\x00) character.",
+                ddbc_error="Embedded NUL in connection string.",
+            )
+        for _key, _value in kwargs.items():
+            if isinstance(_value, str) and "\x00" in _value:
+                raise InterfaceError(
+                    driver_error=(
+                        f"Connection parameter '{_key}' must not contain a NUL "
+                        "(\\x00) character."
+                    ),
+                    ddbc_error="Embedded NUL in connection parameter.",
+                )
 
         # Step 1: Parse base connection string with allowlist validation
         # The parser validates everything: unknown params, reserved params, duplicates, syntax

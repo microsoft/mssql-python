@@ -12,17 +12,15 @@ The driver is compatible with all the Python versions >= 3.10
 > **Important Note:**
 >
 > ### ODBC Driver Distribution
-> The ODBC driver binaries used by `mssql-python` are now distributed through a dedicated companion package:
+> The ODBC driver binaries used by `mssql-python` are distributed exclusively through a dedicated companion package:
 >
 > - Package: `mssql-python-odbc`
 > - Import name: `mssql_python_odbc`
-> - Current version: **18.6.2**
+> - Current version: **18.6.2.1**
 >
-> When installed, `mssql-python` automatically depends on and loads the ODBC driver binaries from `mssql-python-odbc`.
+> `mssql-python` depends on `mssql-python-odbc==18.6.2.1` and loads the ODBC driver binaries from it at import time. `pip install mssql-python` transparently pulls the companion package alongside it — no separate install step is required.
 >
-> To ensure a smooth transition, the current release retains the bundled binaries within the `libs/` directory and uses them as a fallback if the external package is unavailable. Existing installations will continue to work without modification.
->
-> **Note:** The bundled `libs/` fallback is deprecated and will be removed in a future release. Beginning with a subsequent release, the ODBC binaries will be supplied exclusively through the `mssql-python-odbc` package. We recommend validating environments against the standalone package ahead of this change.
+> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. `mssql-python` will fail to import if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
 
 ## Installation
  
@@ -168,7 +166,7 @@ For more information see the [Code of Conduct FAQ](https://opensource.microsoft.
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
  
 ## License
-The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](https://github.com/microsoft/mssql-python/tree/alphaChanges/mssql_python/libs) folder 
+The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](https://github.com/microsoft/mssql-python/tree/main/mssql_python_odbc/libs) folder 
 that are licensed under MICROSOFT SOFTWARE LICENSE TERMS.
  
 Please review the [LICENSE](LICENSE) file for more details.

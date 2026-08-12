@@ -25,7 +25,10 @@ DRIVER_DYLIB_NAME="libmsodbcsql.${DRIVER_MAJOR}.dylib"
 # install_name_tool and codesign both work cross-arch. Fixing only the host arch
 # is what shipped the broken arm64 driver in issue #656.
 for ARCH in arm64 x86_64; do
-LIB_DIR="$PROJECT_DIR/libs/macos/$ARCH/lib"
+# Post-split the driver dylibs ship in the standalone mssql_python_odbc package
+# (a pure-data sibling of mssql_python), so configure them there. Mirrors the
+# ODBC_VERSION_FILE path above.
+LIB_DIR="$PROJECT_DIR/../mssql_python_odbc/libs/macos/$ARCH/lib"
 LIBMSODBCSQL_PATH="$LIB_DIR/$DRIVER_DYLIB_NAME"
 LIBMSODBCSQL_NAME="$DRIVER_DYLIB_NAME"
 LIBODBCINST_PATH="$LIB_DIR/libodbcinst.2.dylib"

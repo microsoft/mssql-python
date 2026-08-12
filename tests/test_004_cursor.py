@@ -2258,6 +2258,42 @@ def test_executemany_ints_with_none(cursor, db_connection):
         db_connection.commit()
 
 
+def test_executemany_numeric_types_with_late_none(cursor, db_connection):
+    """Test fixed-width numeric array indicators when NULL follows non-NULL values."""
+    try:
+        cursor.execute("""CREATE TABLE #pytest_numeric_late_none (
+                id INT NOT NULL,
+                tinyint_val TINYINT NULL,
+                smallint_val SMALLINT NULL,
+                int_val INT NULL,
+                float_val FLOAT NULL
+            )""")
+        null_rows = {80, 83}
+        data = [
+            (
+                row_id,
+                None if row_id in null_rows else row_id,
+                None if row_id in null_rows else 1000 + row_id,
+                None if row_id in null_rows else 100000 + row_id,
+                None if row_id in null_rows else 100000.5 + row_id,
+            )
+            for row_id in range(86)
+        ]
+
+        for _ in range(10):
+            cursor.execute("TRUNCATE TABLE #pytest_numeric_late_none")
+            cursor.executemany("INSERT INTO #pytest_numeric_late_none VALUES (?, ?, ?, ?, ?)", data)
+            assert cursor.rowcount == len(data)
+            db_connection.commit()
+
+            cursor.execute("""SELECT id, tinyint_val, smallint_val, int_val, float_val
+                FROM #pytest_numeric_late_none ORDER BY id""")
+            assert [tuple(row) for row in cursor.fetchall()] == list(data)
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_numeric_late_none")
+        db_connection.commit()
+
+
 def test_executemany_strings_of_various_lengths(cursor, db_connection):
     """Test executemany with strings of different lengths."""
     try:

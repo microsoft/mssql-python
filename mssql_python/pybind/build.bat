@@ -163,7 +163,11 @@ if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     )
     echo [DIAGNOSTIC] Parent is: !PARENT_DIR!
 
-    set VCREDIST_DLL_PATH=!PARENT_DIR!\libs\windows\!ARCH!\vcredist\msvcp140.dll
+    REM The VC++ runtime (msvcp140.dll) now ships with the driver binaries in the
+    REM standalone mssql-python-odbc package (mssql_python_odbc\libs), not under
+    REM mssql_python\libs. We still copy it next to the built .pyd because the
+    REM extension is built /MD and loads msvcp140.dll from its own directory.
+    set VCREDIST_DLL_PATH=!PARENT_DIR!\..\mssql_python_odbc\libs\windows\!ARCH!\vcredist\msvcp140.dll
     echo [DIAGNOSTIC] Looking for msvcp140.dll at "!VCREDIST_DLL_PATH!"
 
     if exist "!VCREDIST_DLL_PATH!" (
