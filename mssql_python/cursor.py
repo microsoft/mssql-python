@@ -3343,10 +3343,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if batch_size < 0:
             raise ValueError(f"batch_size must be non-negative, got {batch_size}")
 
-        if not isinstance(timeout, int):
-            raise TypeError(f"timeout must be a positive integer, got {type(timeout).__name__}")
-        if timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
+        if not isinstance(timeout, int) or isinstance(timeout, bool):
+            raise TypeError(f"timeout must be a non-negative integer, got {type(timeout).__name__}")
+        if timeout < 0:
+            raise ValueError(f"timeout must be non-negative, got {timeout}")
 
         return mssql_py_core
 
@@ -3403,7 +3403,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             batch_size: Number of rows to send per batch. Default 0 uses server optimal.
 
-            timeout: Operation timeout in seconds. Default is 30.
+            timeout: Operation timeout in seconds. Default is 30. 0 disables the
+                bulk copy operation timeout.
 
             column_mappings: Maps source data columns to target table column names.
                 Two formats supported:
@@ -3590,7 +3591,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             table_name: Target table name (may include schema, e.g. 'dbo.MyTable').
             source: Arrow source (see above).
             batch_size: Rows per TDS commit. Default 0 uses server optimal.
-            timeout: Operation timeout in seconds. Default 30.
+            timeout: Operation timeout in seconds. Default 30. 0 disables the
+                bulk copy operation timeout.
             column_mappings: Same two formats as :meth:`bulkcopy`. When omitted,
                 Arrow fields map to destination columns by ordinal position.
             keep_identity: Preserve identity values from the source.
