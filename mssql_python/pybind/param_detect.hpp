@@ -163,14 +163,18 @@ inline NumericData build_numeric_data(PyObject* as_tuple, PyObject* digits, int 
 // yields the code point at each index regardless of kind, so a WKT prefix is
 // detected even when a later non-ASCII char forces the string into a wider kind.
 // The legacy path uses str.startswith, which is kind-independent, so native must
-// be too for parity.
+// be too for parity. N is deduced from the literal (includes the trailing NUL),
+// so callers never pass a hand-counted length that could drift from the string.
+template <Py_ssize_t N>
 inline bool StartsWithAscii(unsigned int kind, const void* data, Py_ssize_t length,
-                            const char* prefix, Py_ssize_t prefixLen) {
+                            const char (&prefix)[N]) {
+    constexpr Py_ssize_t prefixLen = N - 1;
     if (length < prefixLen) {
         return false;
     }
     for (Py_ssize_t j = 0; j < prefixLen; ++j) {
-        if (PyUnicode_READ(kind, data, j) != static_cast<Py_UCS4>(static_cast<unsigned char>(prefix[j]))) {
+        if (PyUnicode_READ(kind, data, j) !=
+            static_cast<Py_UCS4>(static_cast<unsigned char>(prefix[j]))) {
             return false;
         }
     }
@@ -314,9 +318,9 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             // NVARCHAR precision > 4000 with "Invalid precision value"). Folding geometry into
             // is_unicode instead keeps geometry on NVARCHAR for both size regimes and lets the
             // length gate stream large values via DAE, which actually binds.
-            if (StartsWithAscii(kind, udata, length, "POINT", 5) ||
-                StartsWithAscii(kind, udata, length, "LINESTRING", 10) ||
-                StartsWithAscii(kind, udata, length, "POLYGON", 7)) {
+            if (StartsWithAscii(kind, udata, length, "POINT") ||
+                StartsWithAscii(kind, udata, length, "LINESTRING") ||
+                StartsWithAscii(kind, udata, length, "POLYGON")) {
                 is_unicode = true;
             }
 

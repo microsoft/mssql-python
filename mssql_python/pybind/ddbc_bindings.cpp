@@ -2144,16 +2144,12 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             // The DAE token is the &paramInfos[i] we handed to SQLBindParameter as the
             // parameter value (see BindParameters), and paramInfos is sized up front and
             // never reallocated, so the token casts straight back to its ParamInfo instead
-            // of scanning. Validate it points inside the vector (in range and aligned to an
-            // element) before trusting it, so a bogus token throws rather than dereferencing
-            // arbitrary memory.
+            // of scanning. Range-check it against the vector before trusting it, so a bogus
+            // token throws rather than dereferencing arbitrary memory.
             const ParamInfo* matchedInfo = reinterpret_cast<const ParamInfo*>(paramToken);
             const ParamInfo* first = paramInfos.data();
             const ParamInfo* last = first + paramInfos.size();
-            if (matchedInfo < first || matchedInfo >= last ||
-                (reinterpret_cast<uintptr_t>(matchedInfo) - reinterpret_cast<uintptr_t>(first)) %
-                        sizeof(ParamInfo) !=
-                    0) {
+            if (matchedInfo < first || matchedInfo >= last) {
                 ThrowStdException("SQLExecute: unrecognized paramToken from SQLParamData");
             }
             PyObject* pyObj = matchedInfo->dataPtr.ptr();
