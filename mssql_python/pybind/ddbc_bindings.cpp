@@ -2097,14 +2097,19 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             }
             if (rc != SQL_NEED_DATA) break;
 
-            const ParamInfo* matchedInfo = nullptr;
-            for (auto& info : paramInfos) {
-                if (reinterpret_cast<SQLPOINTER>(const_cast<ParamInfo*>(&info)) == paramToken) {
-                    matchedInfo = &info;
-                    break;
-                }
-            }
-            if (!matchedInfo) {
+            // The DAE token is the &paramInfos[i] we handed to SQLBindParameter as the
+            // parameter value (see BindParameters), and paramInfos is sized up front and
+            // never reallocated, so the token casts straight back to its ParamInfo instead
+            // of scanning. Validate it points inside the vector (in range and aligned to an
+            // element) before trusting it, so a bogus token throws rather than dereferencing
+            // arbitrary memory.
+            const ParamInfo* matchedInfo = reinterpret_cast<const ParamInfo*>(paramToken);
+            const ParamInfo* first = paramInfos.data();
+            const ParamInfo* last = first + paramInfos.size();
+            if (matchedInfo < first || matchedInfo >= last ||
+                (reinterpret_cast<uintptr_t>(matchedInfo) - reinterpret_cast<uintptr_t>(first)) %
+                        sizeof(ParamInfo) !=
+                    0) {
                 ThrowStdException("SQLExecute: unrecognized paramToken from SQLParamData");
             }
             PyObject* pyObj = matchedInfo->dataPtr.ptr();
@@ -2134,18 +2139,20 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     ThrowStdException("SQLExecute: unsupported C type for str in DAE");
                 }
             } else if (PyBytes_Check(pyObj) || PyByteArray_Check(pyObj)) {
-                // Handle bytes and bytearray separately — pybind11's bytes
-                // caster does not safely convert bytearray.
+                // matchedInfo->dataPtr holds a strong ref to pyObj for the whole loop.
                 const char* dataPtr = nullptr;
                 size_t totalBytes = 0;
-                std::string bytesStorage;  // lifetime must span the loop
+                std::string bytesStorage;  // only used for the bytearray copy below
 
                 if (PyBytes_Check(pyObj)) {
-                    bytesStorage = borrow<py::bytes>(pyObj);
-                    dataPtr = bytesStorage.data();
-                    totalBytes = bytesStorage.size();
+                    // bytes is immutable and kept alive by the strong ref above, so stream
+                    // straight from its internal buffer with no copy. This is the large-blob
+                    // DAE path, so skipping a full payload copy is the whole point.
+                    dataPtr = PyBytes_AS_STRING(pyObj);
+                    totalBytes = static_cast<size_t>(PyBytes_GET_SIZE(pyObj));
                 } else {
-                    // bytearray is mutable — copy to stable buffer before streaming
+                    // bytearray is mutable and the GIL is released mid-stream, so copy to a
+                    // stable buffer before streaming.
                     bytesStorage.assign(PyByteArray_AS_STRING(pyObj),
                                         static_cast<size_t>(PyByteArray_GET_SIZE(pyObj)));
                     dataPtr = bytesStorage.data();
