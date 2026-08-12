@@ -2258,6 +2258,42 @@ def test_executemany_ints_with_none(cursor, db_connection):
         db_connection.commit()
 
 
+def test_executemany_numeric_types_with_late_none(cursor, db_connection):
+    """Test fixed-width numeric array indicators when NULL follows non-NULL values."""
+    try:
+        cursor.execute("""CREATE TABLE #pytest_numeric_late_none (
+                id INT NOT NULL,
+                tinyint_val TINYINT NULL,
+                smallint_val SMALLINT NULL,
+                int_val INT NULL,
+                float_val FLOAT NULL
+            )""")
+        null_rows = {80, 83}
+        data = [
+            (
+                row_id,
+                None if row_id in null_rows else row_id,
+                None if row_id in null_rows else 1000 + row_id,
+                None if row_id in null_rows else 100000 + row_id,
+                None if row_id in null_rows else 100000.5 + row_id,
+            )
+            for row_id in range(86)
+        ]
+
+        for _ in range(10):
+            cursor.execute("TRUNCATE TABLE #pytest_numeric_late_none")
+            cursor.executemany("INSERT INTO #pytest_numeric_late_none VALUES (?, ?, ?, ?, ?)", data)
+            assert cursor.rowcount == len(data)
+            db_connection.commit()
+
+            cursor.execute("""SELECT id, tinyint_val, smallint_val, int_val, float_val
+                FROM #pytest_numeric_late_none ORDER BY id""")
+            assert [tuple(row) for row in cursor.fetchall()] == list(data)
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_numeric_late_none")
+        db_connection.commit()
+
+
 def test_executemany_strings_of_various_lengths(cursor, db_connection):
     """Test executemany with strings of different lengths."""
     try:
@@ -14870,6 +14906,12 @@ def test_row_output_converter_overflow_error(cursor, db_connection):
 def test_row_output_converter_general_exception(cursor, db_connection):
     """Test Row output converter general exception handling (Lines 198-206)."""
 
+    # Snapshot converters up front so the finally can ALWAYS restore them, even if
+    # an assertion below fails. Otherwise the {12: failing_converter} entry would
+    # leak onto the shared connection and corrupt every later VARCHAR fetch.
+    had_converters_attr = hasattr(cursor.connection, "_output_converters")
+    original_converters = getattr(cursor.connection, "_output_converters", {})
+
     try:
         # Create a table with string column
         drop_table_if_exists(cursor, "#pytest_exception_test")
@@ -14887,17 +14929,17 @@ def test_row_output_converter_general_exception(cursor, db_connection):
         )
         db_connection.commit()
 
-        # Create a custom output converter that will raise a general exception
+        # A converter that always raises, to exercise the "converter raised ->
+        # keep the original value" path. Registered under integer SQL type 12
+        # (SQL_VARCHAR); after the GH #684 fix this integer key actually
+        # dispatches and string values arrive as UTF-16LE bytes, so we raise
+        # unconditionally rather than guarding on the decoded text.
         def failing_converter(value):
-            if value == "test_value":
-                raise RuntimeError("Custom converter error for testing")
-            return value
+            raise RuntimeError("Custom converter error for testing")
 
         # Add the converter to the connection (if supported)
-        original_converters = {}
-        if hasattr(cursor.connection, "_output_converters"):
-            original_converters = getattr(cursor.connection, "_output_converters", {})
-            cursor.connection._output_converters = {12: failing_converter}  # VARCHAR SQL type
+        if had_converters_attr:
+            cursor.connection._output_converters = {12: failing_converter}  # SQL_VARCHAR
 
         # Fetch the data - this should trigger lines 198-206 in row.py
         cursor.execute("SELECT id, text_col FROM #pytest_exception_test")
@@ -14912,13 +14954,13 @@ def test_row_output_converter_general_exception(cursor, db_connection):
         # The exception should be handled and original value kept
         assert row[1] == "test_value", "Value should be kept as original due to exception handling"
 
-        # Restore original converters
-        if hasattr(cursor.connection, "_output_converters"):
-            cursor.connection._output_converters = original_converters
-
     except Exception as e:
         pytest.fail(f"Output converter general exception test failed: {e}")
     finally:
+        # Always restore converters (even on assertion failure) so a leaked
+        # converter can never poison subsequent tests on the shared connection.
+        if had_converters_attr:
+            cursor.connection._output_converters = original_converters
         drop_table_if_exists(cursor, "#pytest_exception_test")
         db_connection.commit()
 
@@ -16399,6 +16441,50 @@ def test_executemany_describe_col_exception_sets_description_none(conn_str):
         conn.close()
     finally:
         mssql_python.native_uuid = original
+
+
+def test_execute_describe_col_exception_resets_description_and_sql_types(conn_str):
+    """execute() must reset description AND _column_sql_types when DDBCSQLDescribeCol raises.
+
+    Guards the except branch in execute() (GH #684) that sets both
+    self.description = None and self._column_sql_types = None, so a stale
+    per-column SQL-type list can't survive into the next converter-map build.
+    """
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+    try:
+        # Run a normal SELECT first so description and the parallel SQL-type
+        # codes are populated (the reset below then has something to clear).
+        cursor.execute("SELECT CAST(1 AS INT) AS n")
+        cursor.fetchall()
+        assert cursor.description is not None
+        assert cursor._column_sql_types is not None
+
+        call_count = 0
+
+        def describe_raises(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Simulated DDBCSQLDescribeCol failure")
+
+        # Force DDBCSQLDescribeCol to raise so execute()'s except branch runs.
+        with patch.object(
+            mssql_python.cursor.ddbc_bindings,
+            "DDBCSQLDescribeCol",
+            side_effect=describe_raises,
+        ):
+            cursor.execute("SELECT CAST(1 AS INT) AS n")
+
+        assert call_count >= 1, "DDBCSQLDescribeCol mock should have been called"
+        assert (
+            cursor.description is None
+        ), "description should be None after DDBCSQLDescribeCol raises"
+        assert (
+            cursor._column_sql_types is None
+        ), "_column_sql_types should be reset to None after DDBCSQLDescribeCol raises"
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

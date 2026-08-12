@@ -35,15 +35,22 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.11.0
+## What's new in v1.13.0
+
+### Enhancements
+
+- **ODBC Driver Now Ships Exclusively via `mssql-python-odbc`** - The `libs/` fallback introduced in v1.12.0 has been removed. `mssql-python` now hard-depends on `mssql-python-odbc==18.6.2.1`; `pip install mssql-python` still Just Works and transparently pulls the driver package. Wheels are smaller and driver binaries are managed independently (#693).
+- **Apache Arrow Bulk Copy** - New `Cursor.bulkcopy_arrow(table_name, source)` method for high-performance bulk loading from `pyarrow.Table`, `RecordBatch`, or any object exposing the Arrow C Data Interface, avoiding Python row materialization. The classic `bulkcopy()` now raises `TypeError` for Arrow inputs and steers users to the new method (#665).
+- **`token_provider=` Parameter for Azure Identity** - `connect()` now accepts a `token_provider` object with a `.get_token(scope)` method, enabling `DefaultAzureCredential`, `AzureCliCredential`, `ManagedIdentityCredential`, and any custom credential from `azure-identity`. Bulk copy re-acquires a fresh token per operation. Mutually exclusive with `Authentication=` in the connection string (#603).
+- **Identity-Aware Connection Pooling with Token-Expiry Refresh** - The pool now keys on the security context (connection string + identity discriminator) so a connection authenticated as user A can never be handed to user B. Token acquisition is deferred to pool misses, and pooled connections whose token is within 5 minutes of expiry are refreshed automatically (#660).
 
 ### Bug Fixes
 
-- **SSH-Tunnel / In-Process Forwarder Deadlock** - The driver now releases the GIL around blocking ODBC teardown calls (`SQLFreeHandle`/`SQLFreeStmt`) and `SQLDescribeParam`, preventing deadlocks when the connection is routed through an in-process Python TCP forwarder (#604).
-- **BINARY/VARBINARY NULL Parameters in Temp Tables** - Unknown NULL parameter types are now pre-resolved before binding, with actionable `setinputsizes` guidance, fixing errors when inserting NULL binary values into temp tables or table variables (#654).
-- **Context Manager Transaction Semantics** - The `Connection` context manager now commits on clean exit and rolls back on exception (with `autocommit=False`), matching the documented behavior (#639).
-- **macOS Apple Silicon Import Failure** - Bundled macOS ODBC dylibs are now configured for all shipped architectures, so `import mssql_python` works on Apple Silicon without requiring a separate `brew install unixodbc` (#661).
-- **Service Principal Bulk Copy Freeze** - Fixed a GIL-deadlock that froze `bulkcopy` when authenticating with a service principal (#666, via `mssql_py_core` 0.1.6).
+- **Silent Zero-Row `executemany` Batches on Late NULLs** - Fixed numeric array parameter binding paths (`TINYINT` / `SMALLINT` / `INT` / `FLOAT`) that left indicator slots uninitialized when a NULL appeared partway through the batch, causing the batch to insert zero rows without raising (#702, issue #670).
+- **`SQL_WVARCHAR` Output Converter Applied to Non-String Columns** - The legacy `SQL_WVARCHAR` catch-all no longer runs against `INT` / `DECIMAL` / `DATE` columns. Registering a single `SQL_WVARCHAR` converter used to mangle every non-string column value; the fallback is now gated on `str`/`bytes` mapped types, matching `Row._apply_output_converters` (#692, issue #691).
+- **Integer-Keyed Output Converters Now Fire** - `Connection.add_output_converter(SQL_DECIMAL, ...)` and any other integer ODBC SQL type code as a key now dispatch correctly. Previously the converter dictionary was keyed only by Python type, so integer-keyed registrations were silently stored but never invoked, diverging from `pyodbc` and from the driver's own documentation. Integer keys take precedence over Python-type keys, and `SQL_DECIMAL` vs `SQL_NUMERIC` are dispatched distinctly (#690, issue #684).
+- **`RecordBatchReader.Close()` for Arrow Result Sets** - `Cursor.arrow_reader()` now returns a wrapped reader whose `.close()` stops fetching, releases the server-side cursor, resets cursor state, and leaves the parent cursor usable. Supports idempotent close and context-manager usage (#644, issue #643).
+- **`AttributeError` on Partially-Initialized `Cursor` Cleanup** - `Cursor.__init__` now sets `self.closed = False` and `self.hstmt = None` before any code that can raise, `close()` defends with `getattr(self, "closed", True)`, and `__del__` uses the correct `sys.is_finalizing()` guard, so half-constructed cursors no longer emit unraisable exceptions during garbage collection (#646, issue #642).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

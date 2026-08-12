@@ -390,6 +390,7 @@ SQLEndTranFunc SQLEndTran_ptr = nullptr;
 SQLFreeHandleFunc SQLFreeHandle_ptr = nullptr;
 SQLDisconnectFunc SQLDisconnect_ptr = nullptr;
 SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
+SQLCancelFunc SQLCancel_ptr = nullptr;
 
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
@@ -1102,27 +1103,89 @@ void ThrowStdException(const std::string& message) {
 }
 std::string GetLastErrorMessage();
 
-// TODO: Move this to Python
-std::string GetModuleDirectory() {
+// Resolve the base directory that contains the ODBC driver `libs/` tree.
+//
+// Post-split, the driver binaries ship in the standalone `mssql_python_odbc`
+// package (a pure-data sibling with no native extension). We import it and use
+// its directory as the base that `GetDriverPathCpp` (and the Windows
+// `mssql-auth.dll` lookup) append `libs` to.
+//
+// Post-split the standalone package is REQUIRED: if it is missing or does not
+// ship this platform's driver binaries we raise a clear, actionable error
+// instead of silently falling back to bundled libs (there are none). Importing
+// `mssql_python_odbc` here is Alpine/musl-safe precisely because it is a
+// separate pure package: it cannot trigger the partially-initialized-module
+// circular import that motivated resolving these paths in C++ in the first place.
+//
+// (`GetDriverPathCpp` is defined further below; forward-declared here so we can
+// verify the external package actually ships this platform's driver binary.)
+std::string GetDriverPathCpp(const std::string& moduleDir);
+
+std::string GetOdbcLibsBaseDir() {
     namespace fs = std::filesystem;
-    py::object module = py::module::import("mssql_python");
-    py::object module_path = module.attr("__file__");
-    std::string module_file = module_path.cast<std::string>();
+    // This function calls into the Python C-API (py::module::import, attribute
+    // access, casts), so it must run with the GIL held. It is a no-op when the
+    // GIL is already held — which it is at the sole current call site, during
+    // module initialization — but acquiring it here self-documents the C-API
+    // dependency and keeps a future GIL-released caller from turning this into a
+    // hard crash.
+    py::gil_scoped_acquire gil;
+    try {
+        py::object module = py::module::import("mssql_python_odbc");
+        py::object module_path = module.attr("__file__");
+        std::string module_file = module_path.cast<std::string>();
 
-    // Use std::filesystem::path for cross-platform path handling
-    // This properly handles UTF-8 encoded paths on all platforms
-    fs::path modulePath(module_file);
-    fs::path parentDir = modulePath.parent_path();
+        fs::path parentDir = fs::path(module_file).parent_path();
 
-    // Log path extraction for observability
-    LOG("GetModuleDirectory: Extracted directory - "
-        "original_path='%s', directory='%s'",
-        module_file.c_str(), parentDir.string().c_str());
-
-    // Return UTF-8 encoded string for consistent handling
-    // If parentDir is empty or invalid, subsequent operations (like LoadDriverLibrary)
-    // will fail naturally with clear error messages
-    return parentDir.string();
+        // The external package is authoritative and REQUIRED: it must ship a
+        // COMPLETE set of this platform's driver binaries. In a source/dev
+        // checkout (and in CI) the package is importable from the repo root but
+        // its `libs/` tree is gitignored and either absent or only partially
+        // populated; there is no bundled fallback anymore, so fail hard rather
+        // than resolve to a directory that has no usable driver.
+        //
+        // "Complete" means the ODBC driver itself and, on Windows, the
+        // co-located `mssql-auth.dll` that LoadDriverOrThrowException loads
+        // unconditionally. Verifying both here keeps this resolver's notion of a
+        // usable base dir consistent with what the loader below actually needs.
+        std::error_code ec;
+        fs::path externalDriver(GetDriverPathCpp(parentDir.string()));
+        bool externalComplete = fs::exists(externalDriver, ec);
+#ifdef _WIN32
+        if (externalComplete) {
+            fs::path externalAuthDll = externalDriver.parent_path() / "mssql-auth.dll";
+            externalComplete = fs::exists(externalAuthDll, ec);
+        }
+#endif
+        if (!externalComplete) {
+            LOG("GetOdbcLibsBaseDir: mssql_python_odbc present at '%s' but its ODBC driver "
+                "binaries are missing or incomplete for this platform",
+                parentDir.string().c_str());
+            ThrowStdException(
+                "The 'mssql-python-odbc' package is installed but its ODBC driver binaries "
+                "are missing or incomplete for this platform. Reinstall it with: "
+                "pip install --force-reinstall mssql-python-odbc");
+        }
+        LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
+            parentDir.string().c_str());
+        return parentDir.string();
+    } catch (const py::error_already_set& e) {
+        if (e.matches(PyExc_ModuleNotFoundError)) {
+            // Phase 2: the standalone package is required. Turn the missing
+            // dependency into a clear, actionable error instead of a fallback.
+            LOG("GetOdbcLibsBaseDir: required package mssql_python_odbc is not installed (%s)",
+                e.what());
+            ThrowStdException(
+                "The required 'mssql-python-odbc' package (which ships the ODBC driver "
+                "binaries) is not installed. Install it with: pip install mssql-python-odbc");
+        }
+        // A different import-time error means the package is installed but
+        // broken; surface it instead of silently masking the real problem.
+        LOG("GetOdbcLibsBaseDir: importing mssql_python_odbc failed unexpectedly (%s); "
+            "re-raising",
+            e.what());
+        throw;
+    }
 }
 
 // Platform-agnostic function to load the driver dynamic library
@@ -1188,6 +1251,12 @@ std::string GetLastErrorMessage() {
  * all supported platforms.
  */
 std::string GetDriverPathCpp(const std::string& moduleDir) {
+#if !defined(MSODBCSQL_VERSION_MAJOR) || !defined(MSODBCSQL_VERSION_MAJOR_MINOR)
+#error \
+    "MSODBCSQL_VERSION_MAJOR / MSODBCSQL_VERSION_MAJOR_MINOR must be defined at build time. " \
+    "They are derived from mssql_python_odbc.__version__ in CMakeLists.txt so the driver " \
+    "filename can never drift from the packaged driver version."
+#endif
     namespace fs = std::filesystem;
     fs::path basePath(moduleDir);
 
@@ -1215,13 +1284,22 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
         platform = "debian_ubuntu";  // Default to debian_ubuntu for other distros
     }
 
-    fs::path driverPath =
-        basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.6.so.2.1";
+    // The msodbcsql version embedded in the driver filename is injected at build
+    // time from mssql_python_odbc.__version__ (the single source of truth for the
+    // driver version) via the MSODBCSQL_VERSION_* macros defined in
+    // CMakeLists.txt. This keeps the native resolver and the Python package
+    // version from ever drifting: GetOdbcLibsBaseDir() calls fs::exists() on this
+    // exact path to decide whether the external package is "complete", so a stale
+    // name would fail that completeness check and raise a hard error. (The
+    // ".so.2.1" suffix is the driver's ELF soname, independent of the product version.)
+    fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" /
+                          ("libmsodbcsql-" MSODBCSQL_VERSION_MAJOR_MINOR ".so.2.1");
     return driverPath.string();
 
 #elif defined(__APPLE__)
     platform = "macos";
-    fs::path driverPath = basePath / "libs" / platform / arch / "lib" / "libmsodbcsql.18.dylib";
+    fs::path driverPath = basePath / "libs" / platform / arch / "lib" /
+                          ("libmsodbcsql." MSODBCSQL_VERSION_MAJOR ".dylib");
     return driverPath.string();
 
 #elif defined(_WIN32)
@@ -1229,7 +1307,8 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     // Normalize x86_64 to x64 for Windows naming
     if (arch == "x86_64")
         arch = "x64";
-    fs::path driverPath = basePath / "libs" / platform / arch / "msodbcsql18.dll";
+    fs::path driverPath =
+        basePath / "libs" / platform / arch / ("msodbcsql" MSODBCSQL_VERSION_MAJOR ".dll");
     return driverPath.string();
 
 #else
@@ -1240,8 +1319,12 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
 DriverHandle LoadDriverOrThrowException() {
     namespace fs = std::filesystem;
 
-    std::string moduleDir = GetModuleDirectory();
-    LOG("LoadDriverOrThrowException: Module directory resolved to '%s'", moduleDir.c_str());
+    // Resolve the base dir from the standalone `mssql_python_odbc` package
+    // (required post-split; raises if missing or incomplete). Both the driver
+    // path and the Windows `mssql-auth.dll` path below are derived from this
+    // directory.
+    std::string moduleDir = GetOdbcLibsBaseDir();
+    LOG("LoadDriverOrThrowException: ODBC libs base directory resolved to '%s'", moduleDir.c_str());
 
     std::string archStr = ARCHITECTURE;
     LOG("LoadDriverOrThrowException: Architecture detected as '%s'", archStr.c_str());
@@ -1341,6 +1424,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
     SQLFreeHandle_ptr = GetFunctionPointer<SQLFreeHandleFunc>(handle, "SQLFreeHandle");
     SQLFreeStmt_ptr = GetFunctionPointer<SQLFreeStmtFunc>(handle, "SQLFreeStmt");
+    SQLCancel_ptr = GetFunctionPointer<SQLCancelFunc>(handle, "SQLCancel");
 
     SQLGetDiagRec_ptr = GetFunctionPointer<SQLGetDiagRecFunc>(handle, "SQLGetDiagRecW");
 
@@ -1380,10 +1464,27 @@ DriverLoader& DriverLoader::getInstance() {
 }
 
 void DriverLoader::loadDriver() {
+    // The driver-load work runs inside std::call_once so it happens exactly once
+    // per process. Critically, we must NOT let an exception propagate *out of* the
+    // call_once callable: on musl libc (Alpine/musllinux) libstdc++ routes
+    // std::call_once through pthread_once, which cannot propagate an exception
+    // from the callable and calls std::terminate() (SIGABRT) instead -- turning
+    // the actionable "install mssql-python-odbc" error into a hard crash. So we
+    // capture any failure as an exception_ptr inside the callable and rethrow it
+    // below, in a normal context that pybind11 can translate into a Python
+    // exception. The stored error persists, so every subsequent call re-raises the
+    // same actionable message instead of silently proceeding without a driver.
     std::call_once(m_onceFlag, [this]() {
-        LoadDriverOrThrowException();
-        m_driverLoaded = true;
+        try {
+            LoadDriverOrThrowException();
+            m_driverLoaded = true;
+        } catch (...) {
+            m_loadError = std::current_exception();
+        }
     });
+    if (m_loadError) {
+        std::rethrow_exception(m_loadError);
+    }
 }
 
 // SqlHandle definition
@@ -1499,6 +1600,53 @@ void SqlHandle::close_cursor() {
     }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
         ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
+    }
+}
+
+void SqlHandle::cancel() {
+    // SQLCancel is intentionally lenient: it is a no-op on non-STMT handles,
+    // already-freed handles, or if the driver does not expose it. This lets
+    // _ArrowReader.close() call it unconditionally without coordinating with
+    // the fetch thread. The GIL is released so a blocked fetch thread can
+    // observe the cancel and return.
+    //
+    // Cross-thread invariant (why no mutex is needed):
+    //   The only cross-thread pattern this driver blesses is exactly the one
+    //   ODBC blesses: cancel() may be called from a thread *other than* the
+    //   fetch thread to unblock an in-flight SQLFetch/SQLExecute on the same
+    //   HSTMT. Per the ODBC spec, SQLCancel (with the SQLGetDiagRec/Field
+    //   family) is the only entry point safe to call across threads on the
+    //   same statement handle. All other operations on a Cursor/SqlHandle
+    //   are single-owner: per DB API 2.0 and the Cursor thread-safety note
+    //   in cursor.py, callers must not share a Cursor for its lifecycle
+    //   operations (execute/fetch/close/free) across threads. Under that
+    //   contract, free() / close_cursor() / SQLFreeHandle can never be in
+    //   flight on this handle concurrently with cancel(), so the read of
+    //   _handle above and the SQLCancel_ptr(h) call below cannot race a
+    //   free() that clears _handle.
+    //
+    //   A std::mutex here would only close the cancel()-vs-free() window;
+    //   it would NOT close the (equally real) free()-vs-fetch window
+    //   without also locking every fetch — which would serialize network
+    //   I/O and defeat the whole point of cross-thread cancel. The right
+    //   place to defend against a misuse (Cursor shared across threads for
+    //   close vs. reader-cancel) is at the Python Cursor layer, not here.
+    if (_type != SQL_HANDLE_STMT || !_handle || _implicitly_freed) {
+        return;
+    }
+    if (!SQLCancel_ptr) {
+        return;
+    }
+    SQLHANDLE h = _handle;
+    SQLRETURN ret;
+    {
+        py::gil_scoped_release release;
+        ret = SQLCancel_ptr(h);
+    }
+    // SQLCancel may return SQL_SUCCESS_WITH_INFO when there was nothing to
+    // cancel; that is fine. We only throw on hard failure.
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
+        ThrowStdException("SQLCancel failed");
     }
 }
 
@@ -2082,17 +2230,14 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d, count=%zu",
                         paramIndex, paramSetSize);
                     int* dataArray = AllocateParamBufferArray<int>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray =
-                                    AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                             dataArray[i] = 0;
                             strLenOrIndArray[i] = SQL_NULL_DATA;
                         } else {
                             dataArray[i] = columnValues[i].cast<int>();
-                            if (strLenOrIndArray)
-                                strLenOrIndArray[i] = 0;
+                            strLenOrIndArray[i] = 0;
                         }
                     }
                     LOG("BindParameterArray: SQL_C_LONG bound - param_index=%d", paramIndex);
@@ -2104,17 +2249,14 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d, count=%zu",
                         paramIndex, paramSetSize);
                     double* dataArray = AllocateParamBufferArray<double>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray =
-                                    AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                             dataArray[i] = 0;
                             strLenOrIndArray[i] = SQL_NULL_DATA;
                         } else {
                             dataArray[i] = columnValues[i].cast<double>();
-                            if (strLenOrIndArray)
-                                strLenOrIndArray[i] = 0;
+                            strLenOrIndArray[i] = 0;
                         }
                     }
                     LOG("BindParameterArray: SQL_C_DOUBLE bound - "
@@ -2163,11 +2305,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         paramIndex, paramSetSize);
                     unsigned char* dataArray =
                         AllocateParamBufferArray<unsigned char>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray =
-                                    AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                             dataArray[i] = 0;
                             strLenOrIndArray[i] = SQL_NULL_DATA;
                         } else {
@@ -2180,8 +2320,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                                   std::to_string(i));
                             }
                             dataArray[i] = static_cast<unsigned char>(intVal);
-                            if (strLenOrIndArray)
-                                strLenOrIndArray[i] = 0;
+                            strLenOrIndArray[i] = 0;
                         }
                     }
                     LOG("BindParameterArray: SQL_C_TINYINT bound - "
@@ -2196,11 +2335,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d, count=%zu",
                         paramIndex, paramSetSize);
                     short* dataArray = AllocateParamBufferArray<short>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray =
-                                    AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                             dataArray[i] = 0;
                             strLenOrIndArray[i] = SQL_NULL_DATA;
                         } else {
@@ -2214,8 +2351,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                                   std::to_string(i));
                             }
                             dataArray[i] = static_cast<short>(intVal);
-                            if (strLenOrIndArray)
-                                strLenOrIndArray[i] = 0;
+                            strLenOrIndArray[i] = 0;
                         }
                     }
                     LOG("BindParameterArray: SQL_C_SHORT bound - "
@@ -5837,8 +5973,13 @@ SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
 
 static std::once_flag pooling_init_flag;
 void enable_pooling(int maxSize, int idleTimeout) {
+    // configure() locks in the default max_size/idle_timeout for the process and
+    // must run exactly once, but re-arming must happen on every enable so a
+    // disable_pooling() -> enable_pooling() cycle resumes pooling (the
+    // std::call_once body would otherwise be skipped on the second enable).
     std::call_once(pooling_init_flag,
                    [&]() { ConnectionPoolManager::getInstance().configure(maxSize, idleTimeout); });
+    ConnectionPoolManager::getInstance().setAccepting(true);
 }
 
 // Thread-safe decimal separator setting
@@ -5900,11 +6041,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")
         .def("_close_cursor", &SqlHandle::close_cursor,
-             "Internal: close the cursor without freeing the prepared statement");
+             "Internal: close the cursor without freeing the prepared statement")
+        .def("_cancel", &SqlHandle::cancel,
+             "Internal: cancel an in-progress statement (SQLCancel). "
+             "Safe to call from another thread; no-op if unsupported or idle.");
 
     py::class_<ConnectionHandle>(m, "Connection")
-        .def(py::init<const std::u16string&, bool, const py::dict&>(), py::arg("conn_str"),
-             py::arg("use_pool"), py::arg("attrs_before") = py::dict())
+        .def(py::init<const std::u16string&, bool, const py::dict&, const std::u16string&,
+                      const py::object&>(),
+             py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict(),
+             py::arg("pool_key") = std::u16string(), py::arg("token_factory") = py::none())
         .def("close", &ConnectionHandle::close, "Close the connection")
         .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
@@ -5916,6 +6062,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
+    m.def("disable_pooling", []() {
+        // Disarm new-pool creation *before* closing so a connect racing this
+        // disable cannot resurrect a pool after the map is cleared: any
+        // acquireConnection serialized after setAccepting(false) declines and
+        // falls back to a non-pooled connection. closePools() then reaps every
+        // pool created before the disarm.
+        auto& manager = ConnectionPoolManager::getInstance();
+        manager.setAccepting(false);
+        manager.closePools();
+    }, "Disable global connection pooling and close all pools");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),

@@ -402,6 +402,145 @@ print("Cleanup successful")
     assert "Exception" not in result.stderr
 
 
+def test_cursor_del_half_initialized_cursor_no_errors():
+    """Regression: ``Cursor.__del__`` / ``close()`` must tolerate Cursor instances
+    missing the ``closed`` attribute (e.g. objects created via ``Cursor.__new__``),
+    so GC does not emit unraisable exceptions.
+
+    Two bugs used to fire in that path and produce a
+    ``PytestUnraisableExceptionWarning`` in CI:
+      * Bug A: ``close()`` did ``if self.closed:`` and raised
+        ``AttributeError: 'Cursor' object has no attribute 'closed'``;
+      * Bug B: the ``__del__`` exception handler then did
+        ``sys._is_finalizing()`` (typo for ``sys.is_finalizing``) and raised
+        a second AttributeError, masking Bug A.
+
+    NOTE: unraisable exceptions from ``__del__`` flow through
+    ``sys.unraisablehook`` — NOT through the ``warnings`` module — so
+    ``warnings.catch_warnings(record=True)`` never sees them. We install
+    a temporary ``sys.unraisablehook`` to observe them directly.
+    """
+    import gc
+    from mssql_python.cursor import Cursor
+
+    class _BogusConn:
+        pass
+
+    # --- Bug A regression guard: explicit close() must tolerate the
+    # missing ``closed`` attribute. On unfixed cursor.py this raises
+    # ``AttributeError`` synchronously and the test fails right here.
+    c1 = Cursor.__new__(Cursor)
+    c1._connection = _BogusConn()
+    c1.hstmt = None
+    assert "closed" not in c1.__dict__, "test fixture must omit 'closed' attribute"
+    c1.close()
+
+    # --- Bug B regression guard: drive a fresh partial cursor through
+    # ``__del__`` without calling close() first. On unfixed cursor.py,
+    # ``__del__`` calls close() -> Bug A AttributeError -> the exception
+    # handler calls ``sys._is_finalizing()`` -> Bug B AttributeError
+    # escapes through ``sys.unraisablehook``. On the fixed code path,
+    # close() succeeds inside __del__ and no unraisable is emitted.
+    captured = []
+
+    def _hook(unraisable):
+        captured.append(unraisable)
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = _hook
+    try:
+        c2 = Cursor.__new__(Cursor)
+        c2._connection = _BogusConn()
+        c2.hstmt = None
+        assert "closed" not in c2.__dict__
+        del c2
+        gc.collect()  # belt-and-suspenders; refcount already reached zero.
+    finally:
+        sys.unraisablehook = old_hook
+
+    offenders = [
+        u
+        for u in captured
+        if isinstance(u.exc_value, AttributeError)
+        and ("closed" in str(u.exc_value) or "_is_finalizing" in str(u.exc_value))
+    ]
+    assert not offenders, (
+        f"unexpected unraisable AttributeError from Cursor.__del__: "
+        f"{[str(u.exc_value) for u in offenders]}"
+    )
+
+
+def test_cursor_init_failure_leaves_consistent_state(conn_str, monkeypatch):
+    """Structural-fix regression: ``Cursor.__init__`` must set
+    ``self.closed = False`` and ``self.hstmt = None`` *before* any statement
+    that can raise.  If ``_initialize_cursor`` fails (e.g. HSTMT alloc),
+    the partially-constructed cursor must still be safely closeable and
+    must not leak a server-side handle on the way to the GC.
+
+    Before the fix the partial cursor had no ``closed`` attribute at all,
+    causing ``__del__`` -> ``close()`` to raise ``AttributeError`` and
+    surface as ``PytestUnraisableExceptionWarning`` in CI.
+
+    NOTE: the failed ``Cursor.__init__`` never installs a strong ref anywhere
+    (``Connection._cursors`` is a ``WeakSet``), so the partial object's
+    refcount reaches zero the moment the exception unwinds out of
+    ``conn.cursor()`` — ``__del__`` runs synchronously right there, not on
+    the next ``gc.collect()``. We therefore wrap ``sys.unraisablehook``
+    only around the ``conn.cursor()`` call, and observe unraisables through
+    the hook rather than through ``warnings.catch_warnings`` (which never
+    sees them).
+
+    NOTE 2: the ``RuntimeError`` MUST be constructed inline inside
+    ``_raise`` — do NOT bind it to a local outside the function.  A
+    local like ``boom = RuntimeError(...)`` in the enclosing frame keeps
+    the raised exception's ``__traceback__`` alive, which in turn keeps
+    the partial ``Cursor`` frame alive past the ``sys.unraisablehook``
+    restore, so ``__del__`` never fires inside the hook window and the
+    assertion silently becomes a no-op (passes on unfixed cursor.py).
+    """
+    from mssql_python import connect
+    from mssql_python.cursor import Cursor
+
+    conn = connect(conn_str)
+    try:
+
+        def _raise(self):
+            # Instantiate the exception inline; see NOTE 2 in the docstring
+            # for why we must not bind this to an enclosing-frame local.
+            raise RuntimeError("simulated HSTMT allocation failure")
+
+        monkeypatch.setattr(Cursor, "_initialize_cursor", _raise)
+
+        captured = []
+
+        def _hook(unraisable):
+            captured.append(unraisable)
+
+        old_hook = sys.unraisablehook
+        sys.unraisablehook = _hook
+        try:
+            with pytest.raises(RuntimeError, match="simulated HSTMT"):
+                conn.cursor()
+        finally:
+            sys.unraisablehook = old_hook
+
+        offenders = [u for u in captured if isinstance(u.exc_value, AttributeError)]
+        assert not offenders, (
+            "failed __init__ produced unraisable AttributeError in __del__: "
+            f"{[str(u.exc_value) for u in offenders]}"
+        )
+
+        # Connection must still be usable after the failed cursor creation.
+        # This implicitly verifies _cursors tracking wasn't corrupted.
+        monkeypatch.undo()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        assert cur.fetchone()[0] == 1
+        cur.close()
+    finally:
+        conn.close()
+
+
 def test_cursor_operations_after_close_raise_errors(conn_str):
     """Test that all cursor operations raise appropriate errors after close"""
     conn = connect(conn_str)

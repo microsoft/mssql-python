@@ -4,7 +4,19 @@ Licensed under the MIT license.
 Type stubs for mssql_python package - based on actual public API
 """
 
-from typing import Any, Dict, List, Mapping, Optional, Union, Tuple, Sequence, Callable, Iterator
+from typing import (
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Union,
+    Tuple,
+    Sequence,
+    Callable,
+    Iterator,
+    Iterable,
+)
 import datetime
 import logging
 import pyarrow
@@ -207,7 +219,57 @@ class Cursor:
     # Arrow Extension Methods (requires pyarrow)
     def arrow_batch(self, batch_size: int = 8192) -> pyarrow.RecordBatch: ...
     def arrow(self, batch_size: int = 8192) -> pyarrow.Table: ...
-    def arrow_reader(self, batch_size: int = 8192) -> pyarrow.RecordBatchReader: ...
+    def arrow_reader(self, batch_size: int = 8192) -> "_ArrowReader": ...
+
+# pyarrow.RecordBatchReader-compatible wrapper returned by Cursor.arrow_reader.
+# Not part of the DB-API 2.0 surface and not intended to be instantiated
+# directly by users; declared here so the return type of arrow_reader is
+# accurate for static type checkers.  Attributes not listed here (e.g.
+# ``read_all``, ``read_pandas``, ``cast``) are delegated at runtime to the
+# wrapped ``pyarrow.RecordBatchReader`` via ``__getattr__``.
+class _ArrowReader:
+    @property
+    def closed(self) -> bool: ...
+    @property
+    def schema(self) -> pyarrow.Schema: ...
+    def read_next_batch(self) -> pyarrow.RecordBatch: ...
+    def close(self) -> None: ...
+    def __arrow_c_stream__(self, requested_schema: Any = ...) -> Any: ...
+    def __iter__(self) -> "_ArrowReader": ...
+    def __next__(self) -> pyarrow.RecordBatch: ...
+    def __enter__(self) -> "_ArrowReader": ...
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None: ...
+    def __getattr__(self, name: str) -> Any: ...
+
+    # Bulk Copy
+    def bulkcopy(
+        self,
+        table_name: str,
+        data: Iterable[Union[Tuple[Any, ...], Row]],
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
+    ) -> Dict[str, Any]: ...
+    def bulkcopy_arrow(
+        self,
+        table_name: str,
+        source: Any,
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
+    ) -> Dict[str, Any]: ...
 
 # DB-API 2.0 Connection Object
 # https://www.python.org/dev/peps/pep-0249/#connection-objects
@@ -266,7 +328,9 @@ class Connection:
     ) -> None: ...
     def getdecoding(self, sqltype: int) -> Dict[str, Union[str, int]]: ...
     def set_attr(self, attribute: int, value: Union[int, str, bytes, bytearray]) -> None: ...
-    def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None: ...
+    def add_output_converter(
+        self, sqltype: Union[int, type], func: Callable[[Any], Any]
+    ) -> None: ...
     def get_output_converter(self, sqltype: Union[int, type]) -> Optional[Callable[[Any], Any]]: ...
     def remove_output_converter(self, sqltype: Union[int, type]) -> None: ...
     def clear_output_converters(self) -> None: ...
