@@ -51,11 +51,11 @@ fi
 # Generate random password for SQL Server
 echo ""
 echo "Generating SQL Server password..."
-umask 077
 SA_PASSWORD="$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)Aa1!"
+# mktemp creates 0600; chmod before writing keeps it owner-only without touching the global umask.
 SQL_ENV_FILE="$(mktemp)"
-printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\n' "$SA_PASSWORD" > "$SQL_ENV_FILE"
 chmod 600 "$SQL_ENV_FILE"
+printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\n' "$SA_PASSWORD" > "$SQL_ENV_FILE"
 
 # Start SQL Server container (use Azure SQL Edge for ARM64 compatibility)
 # This is optional - if Docker-in-Docker fails, the devcontainer still works
@@ -90,7 +90,8 @@ DB_CONNECTION_STRING="Server=localhost,1433;Database=master;UID=sa;PWD=$SA_PASSW
 
 # Keep the credential in a user-only file and source it from interactive shells.
 MSSQL_ENV_FILE="$HOME/.mssql_python_env"
-printf "export DB_CONNECTION_STRING='%s'\n" "$DB_CONNECTION_STRING" > "$MSSQL_ENV_FILE"
+# Scope umask to this write only so the file is owner-only from creation; global umask stays untouched.
+( umask 077; printf "export DB_CONNECTION_STRING='%s'\n" "$DB_CONNECTION_STRING" > "$MSSQL_ENV_FILE" )
 chmod 600 "$MSSQL_ENV_FILE"
 
 # Remove plaintext entries left by older versions of this script.
