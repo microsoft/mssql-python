@@ -111,9 +111,7 @@ PARAM_TEST_DATA = [
 ]
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 14), reason="PEP 765 warnings begin in Python 3.14"
-)
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="PEP 765 warnings begin in Python 3.14")
 def test_cursor_compiles_with_warnings_as_errors():
     """The driver source must compile when SyntaxWarning is promoted to an error."""
     cursor_source = Path(__file__).parents[1] / "mssql_python" / "cursor.py"
