@@ -165,20 +165,22 @@ stages:
               docker pull mcr.microsoft.com/mssql/server:2022-latest
               docker run --name sqlserver \
                 -e ACCEPT_EULA=Y \
-                -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+                -e MSSQL_SA_PASSWORD \
                 -p 1433:1433 -d \
                 mcr.microsoft.com/mssql/server:2022-latest
               
               # Wait for SQL Server to accept connections (up to 60 seconds)
               # sqlcmd -C flag = trust server certificate (for TLS connection)
               for i in {1..30}; do
-                docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-                  -S localhost -U SA -P "$DB_PASSWORD" -C -Q "SELECT 1" && break
+                docker exec -e SQLCMDPASSWORD sqlserver /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U SA -C -Q "SELECT 1" && break
                 sleep 2
               done
             displayName: 'Start SQL Server (Docker)'
             env:
               DB_PASSWORD: $(DB_PASSWORD)
+              MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+              SQLCMDPASSWORD: $(DB_PASSWORD)
           
           # =========================
           # MSSQL_PY_CORE INSTALLATION
