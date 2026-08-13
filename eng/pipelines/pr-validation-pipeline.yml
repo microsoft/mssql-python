@@ -113,19 +113,20 @@ jobs:
         
         Write-Host "Running SQL Server setup..."
         $configPath = Join-Path $env:TEMP "sql2022-setup.ini"
-        @"
-[OPTIONS]
-QUIET="True"
-ACTION="Install"
-FEATURES=SQLEngine
-INSTANCENAME=MSSQLSERVER
-SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"
-SQLSYSADMINACCOUNTS="BUILTIN\Administrators"
-TCPENABLED="1"
-SECURITYMODE="SQL"
-SAPWD="$env:DB_PASSWORD"
-IACCEPTSQLSERVERLICENSETERMS="True"
-"@ | Set-Content -Path $configPath -Encoding ASCII
+        $configLines = @(
+          '[OPTIONS]'
+          'QUIET="True"'
+          'ACTION="Install"'
+          'FEATURES=SQLEngine'
+          'INSTANCENAME=MSSQLSERVER'
+          'SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"'
+          'SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
+          'TCPENABLED="1"'
+          'SECURITYMODE="SQL"'
+          "SAPWD=`"$env:DB_PASSWORD`""
+          'IACCEPTSQLSERVERLICENSETERMS="True"'
+        )
+        Set-Content -Path $configPath -Value $configLines -Encoding ASCII
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         icacls $configPath /inheritance:r /grant:r "${identity}:(R)" "SYSTEM:(R)" | Out-Null
         try {
@@ -200,19 +201,20 @@ IACCEPTSQLSERVERLICENSETERMS="True"
         
         Write-Host "Running SQL Server setup..."
         $configPath = Join-Path $env:TEMP "sql2025-setup.ini"
-        @"
-[OPTIONS]
-QUIET="True"
-ACTION="Install"
-FEATURES=SQLEngine
-INSTANCENAME=MSSQLSERVER
-SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"
-SQLSYSADMINACCOUNTS="BUILTIN\Administrators"
-TCPENABLED="1"
-SECURITYMODE="SQL"
-SAPWD="$env:DB_PASSWORD"
-IACCEPTSQLSERVERLICENSETERMS="True"
-"@ | Set-Content -Path $configPath -Encoding ASCII
+        $configLines = @(
+          '[OPTIONS]'
+          'QUIET="True"'
+          'ACTION="Install"'
+          'FEATURES=SQLEngine'
+          'INSTANCENAME=MSSQLSERVER'
+          'SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"'
+          'SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
+          'TCPENABLED="1"'
+          'SECURITYMODE="SQL"'
+          "SAPWD=`"$env:DB_PASSWORD`""
+          'IACCEPTSQLSERVERLICENSETERMS="True"'
+        )
+        Set-Content -Path $configPath -Value $configLines -Encoding ASCII
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         icacls $configPath /inheritance:r /grant:r "${identity}:(R)" "SYSTEM:(R)" | Out-Null
         try {
