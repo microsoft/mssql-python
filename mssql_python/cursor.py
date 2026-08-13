@@ -2647,7 +2647,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
         processed_parameters = []
-        for row in seq_of_parameters:
+        for row_index, row in enumerate(seq_of_parameters):
             processed_row = list(row)
             for i, val in enumerate(processed_row):
                 if val is None:
@@ -2672,8 +2672,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         try:
                             processed_row[i] = format(decimal.Decimal(str(val)), "f")
                         except Exception as e:  # pylint: disable=broad-exception-caught
+                            # Do not embed the parameter value or the full row in
+                            # the message: rows may contain PII (SSNs, emails,
+                            # balances) that would leak into caller error handlers,
+                            # tracebacks, and log/APM stores. Report metadata only
+                            # (row index, column index, value type); the original
+                            # decimal error is preserved via exception chaining.
                             raise ValueError(
-                                f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
+                                f"Failed to convert parameter to Decimal at row {row_index}, "
+                                f"column {i} (value type: {type(val).__name__})"
                             ) from e
             processed_parameters.append(processed_row)
 

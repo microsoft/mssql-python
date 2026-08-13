@@ -10451,7 +10451,12 @@ def test_setinputsizes_sql_decimal_null(db_connection):
 
 
 def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
-    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503)."""
+    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503).
+
+    The raised message must be metadata-only: it reports the row index, column
+    index, and value type, but must NOT embed the offending value or the full
+    parameter row (which may contain PII such as SSNs/emails/balances).
+    """
     cursor = db_connection.cursor()
 
     cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
@@ -10460,11 +10465,22 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
 
         cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
 
-        with pytest.raises(ValueError, match="Failed to convert parameter"):
+        sensitive_value = "123-45-6789"  # stand-in for PII in the failing row
+        with pytest.raises(ValueError) as exc_info:
             cursor.executemany(
                 "INSERT INTO #test_sis_dec_bad (Price) VALUES (?)",
-                [("not_a_number",)],
+                [(sensitive_value,)],
             )
+
+        message = str(exc_info.value)
+        # Contract: metadata is present...
+        assert "Failed to convert parameter" in message
+        assert "row 0" in message
+        assert "column 0" in message
+        assert "str" in message  # value type name
+        # ...and the sensitive value / raw row is NOT leaked into the message.
+        assert sensitive_value not in message
+        assert "(" not in message  # no repr of the parameter tuple
     finally:
         cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
 
