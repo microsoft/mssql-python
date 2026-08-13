@@ -10,7 +10,10 @@ Note: The cursor function is not yet implemented, so related tests are commented
 
 import pytest
 import os
+import subprocess
+import sys
 from datetime import datetime, date, time, timedelta, timezone
+from pathlib import Path
 import time as time_module
 import decimal
 from contextlib import closing
@@ -106,6 +109,23 @@ PARAM_TEST_DATA = [
         1.23456789,
     ),
 ]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 14), reason="PEP 765 warnings begin in Python 3.14"
+)
+def test_cursor_compiles_with_warnings_as_errors():
+    """The driver source must compile when SyntaxWarning is promoted to an error."""
+    cursor_source = Path(__file__).parents[1] / "mssql_python" / "cursor.py"
+
+    result = subprocess.run(
+        [sys.executable, "-W", "error", "-m", "py_compile", str(cursor_source)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def drop_table_if_exists(cursor, table_name):

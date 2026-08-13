@@ -3042,54 +3042,52 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # body.  This is the single canonical cleanup site.
                 cur = cursor_ref[0]
                 cursor_ref[0] = None
-                if cur is None or cur.closed or cur.hstmt is None:
-                    return
+                if cur is not None and not cur.closed and cur.hstmt is not None:
+                    # 1) Drain diagnostics produced by the (possibly cancelled)
+                    #    fetch *before* SQL_CLOSE so we don't lose them.
+                    try:
+                        cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
 
-                # 1) Drain diagnostics produced by the (possibly cancelled)
-                #    fetch *before* SQL_CLOSE so we don't lose them.
-                try:
-                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
+                    # 2) Release the server-side cursor & locks while keeping the
+                    #    HSTMT and prepared plan intact, so the parent Cursor can
+                    #    be re-executed.
+                    try:
+                        cur.hstmt._close_cursor()  # pylint: disable=protected-access
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        # Elevated to WARNING: unlike the diag-drain failures
+                        # (which only cost us some warning text), a failed
+                        # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
+                        # and its locks/tempdb resources open on SQL Server
+                        # until this parent Cursor is closed or re-executed.
+                        # DEBUG is typically disabled in production, so that
+                        # leak would be invisible; WARNING makes it visible.
+                        logger.warning(
+                            "arrow_reader cleanup: _close_cursor failed (%s); "
+                            "server-side cursor may remain open until this "
+                            "Cursor is closed or re-executed",
+                            e,
+                        )
 
-                # 2) Release the server-side cursor & locks while keeping the
-                #    HSTMT and prepared plan intact, so the parent Cursor can
-                #    be re-executed.
-                try:
-                    cur.hstmt._close_cursor()  # pylint: disable=protected-access
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    # Elevated to WARNING: unlike the diag-drain failures
-                    # (which only cost us some warning text), a failed
-                    # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
-                    # and its locks/tempdb resources open on SQL Server
-                    # until this parent Cursor is closed or re-executed.
-                    # DEBUG is typically disabled in production, so that
-                    # leak would be invisible; WARNING makes it visible.
-                    logger.warning(
-                        "arrow_reader cleanup: _close_cursor failed (%s); "
-                        "server-side cursor may remain open until this "
-                        "Cursor is closed or re-executed",
-                        e,
-                    )
+                    # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
+                    #    runs unconditionally because SQL_CLOSE can return
+                    #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
+                    #    warning records on the HSTMT diag stack; the previous
+                    #    "only on failure" path would silently drop those.
+                    try:
+                        cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
 
-                # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
-                #    runs unconditionally because SQL_CLOSE can return
-                #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
-                #    warning records on the HSTMT diag stack; the previous
-                #    "only on failure" path would silently drop those.
-                try:
-                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
-
-                # 4) Reset cursor bookkeeping to a clean "no result set"
-                #    state.  rowcount becomes -1 to signal that the prior
-                #    result is no longer meaningful.
-                try:
-                    cur._clear_rownumber()  # pylint: disable=protected-access
-                    cur.rowcount = -1
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
+                    # 4) Reset cursor bookkeeping to a clean "no result set"
+                    #    state.  rowcount becomes -1 to signal that the prior
+                    #    result is no longer meaningful.
+                    try:
+                        cur._clear_rownumber()  # pylint: disable=protected-access
+                        cur.rowcount = -1
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
 
         gen = batch_generator()
         inner = pyarrow.RecordBatchReader.from_batches(schema, gen)

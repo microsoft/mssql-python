@@ -688,6 +688,95 @@ def test_arrow_reader_close_retries_after_failed_attempt(cursor: mssql_python.Cu
 #     leak the server-side cursor or crash close()
 
 
+@pytest.mark.parametrize(
+    ("closed", "has_hstmt"),
+    [(True, True), (False, False)],
+    ids=["closed-cursor", "missing-hstmt"],
+)
+def test_arrow_reader_propagates_fetch_error_when_cleanup_is_skipped(closed, has_hstmt):
+    """A defensive cleanup guard must not turn a fetch error into end-of-stream."""
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+            self.hstmt = object()
+            self.calls = 0
+
+        def _check_closed(self):
+            pass
+
+        def _ensure_pyarrow(self):
+            return pa
+
+        def arrow_batch(self, _batch_size):
+            self.calls += 1
+            if self.calls == 1:
+                return pa.record_batch([pa.array([], type=pa.int64())], names=["value"])
+
+            self.closed = closed
+            self.hstmt = object() if has_hstmt else None
+            raise RuntimeError("fetch failed")
+
+    fake_cursor = FakeCursor()
+    reader = mssql_python.Cursor.arrow_reader(fake_cursor, batch_size=1)
+    try:
+        with pytest.raises(RuntimeError, match="fetch failed"):
+            reader.read_next_batch()
+    finally:
+        reader.close()
+
+
+def test_arrow_reader_propagates_fetch_error_after_cleanup(monkeypatch):
+    """Fetch errors must survive the normal cleanup path, which must still run."""
+    from mssql_python import cursor as cursor_mod
+
+    class FakeHstmt:
+        def __init__(self):
+            self.close_calls = 0
+
+        def _cancel(self):
+            pass
+
+        def _close_cursor(self):
+            self.close_calls += 1
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+            self.hstmt = FakeHstmt()
+            self.messages = []
+            self.rowcount = 1
+            self.calls = 0
+            self.rownumber_cleared = False
+
+        def _check_closed(self):
+            pass
+
+        def _ensure_pyarrow(self):
+            return pa
+
+        def _clear_rownumber(self):
+            self.rownumber_cleared = True
+
+        def arrow_batch(self, _batch_size):
+            self.calls += 1
+            if self.calls == 1:
+                return pa.record_batch([pa.array([], type=pa.int64())], names=["value"])
+            raise RuntimeError("fetch failed")
+
+    monkeypatch.setattr(cursor_mod.ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda _h: [])
+    fake_cursor = FakeCursor()
+    reader = mssql_python.Cursor.arrow_reader(fake_cursor, batch_size=1)
+    try:
+        with pytest.raises(RuntimeError, match="fetch failed"):
+            reader.read_next_batch()
+        assert fake_cursor.hstmt.close_calls == 1
+        assert fake_cursor.rownumber_cleared is True
+        assert fake_cursor.rowcount == -1
+    finally:
+        reader.close()
+
+
 def test_arrow_reader_getattr_refuses_private_names(cursor: mssql_python.Cursor):
     """__getattr__ refuses leading-underscore names so a partially-constructed
     instance during __del__ cannot recurse forever trying to resolve its own
