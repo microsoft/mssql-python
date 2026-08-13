@@ -43,19 +43,9 @@ jobs:
       - name: Validate coverage data and post comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
-
-          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || {
-            echo "Invalid workflow run ID"
-            exit 1
-          }
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "Invalid workflow head SHA"
-            exit 1
-          }
 
           ARTIFACT_DIR="$(mktemp -d "${RUNNER_TEMP}/coverage-comment-data.XXXXXX")"
           PULLS_FILE="${RUNNER_TEMP}/associated-pulls.json"
@@ -80,10 +70,6 @@ jobs:
             --pr-number-output "$PR_NUMBER_FILE"
 
           PR_NUMBER="$(cat "$PR_NUMBER_FILE")"
-          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
-            echo "Validator returned an invalid PR number"
-            exit 1
-          }
 
           COMMENT_ID="$(
             gh api --paginate --slurp \

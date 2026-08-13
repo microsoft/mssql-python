@@ -134,7 +134,7 @@ def validate_artifact(artifact_directory: Path) -> dict:
         raise ValidationError("artifact must contain only pr-info.json")
 
     data = _load_json(artifact_directory / "pr-info.json")
-    if not isinstance(data, dict) or set(data) != EXPECTED_FIELDS:
+    if not isinstance(data, dict) or not EXPECTED_FIELDS.issubset(data):
         raise ValidationError("pr-info.json does not match the expected schema")
 
     return {

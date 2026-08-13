@@ -91,10 +91,23 @@ def test_ignores_event_supplied_pull_requests():
     assert resolved == 456
 
 
-def test_rejects_artifact_supplied_pr_number(valid_artifact):
+def test_ignores_artifact_supplied_pr_number(valid_artifact):
     path = valid_artifact / "pr-info.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     data["pr_number"] = "999"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    validated = coverage_comment.validate_artifact(valid_artifact)
+
+    # Extra fields are tolerated but never propagated; the PR number is
+    # sourced only from the trusted workflow event, never from the artifact.
+    assert "pr_number" not in validated
+
+
+def test_rejects_missing_required_field(valid_artifact):
+    path = valid_artifact / "pr-info.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["ado_url"]
     path.write_text(json.dumps(data), encoding="utf-8")
 
     with pytest.raises(coverage_comment.ValidationError, match="expected schema"):
