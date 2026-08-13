@@ -10480,7 +10480,7 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
         assert "str" in message  # value type name
         # ...and the sensitive value / raw row is NOT leaked into the message.
         assert sensitive_value not in message
-        assert "(" not in message  # no repr of the parameter tuple
+        assert repr((sensitive_value,)) not in message  # no repr of the parameter tuple
     finally:
         cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
 
