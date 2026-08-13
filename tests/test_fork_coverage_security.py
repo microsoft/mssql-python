@@ -44,11 +44,25 @@ def _event(pull_requests=None):
     }
 
 
-def test_prepares_safe_comment_for_trusted_event_pr(valid_artifact, tmp_path):
+def test_prepares_safe_comment_for_forked_pr(valid_artifact, tmp_path):
     event_path = tmp_path / "event.json"
     pulls_path = tmp_path / "pulls.json"
-    event_path.write_text(json.dumps(_event([{"number": 123}])), encoding="utf-8")
-    pulls_path.write_text("[]", encoding="utf-8")
+    event_path.write_text(json.dumps(_event()), encoding="utf-8")
+    pulls_path.write_text(
+        json.dumps(
+            [
+                {
+                    "number": 123,
+                    "head": {"sha": "a" * 40},
+                    "base": {
+                        "ref": "main",
+                        "repo": {"full_name": "microsoft/mssql-python"},
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     pr_number, body = coverage_comment.prepare_comment(valid_artifact, event_path, pulls_path)
 
@@ -56,6 +70,25 @@ def test_prepares_safe_comment_for_trusted_event_pr(valid_artifact, tmp_path):
     assert coverage_comment.COMMENT_MARKER in body
     assert "buildId=46466" in body
     assert coverage_comment.ADO_PROJECT_ID in body
+
+
+def test_ignores_event_supplied_pull_requests():
+    associated_pulls = [
+        {
+            "number": 456,
+            "head": {"sha": "a" * 40},
+            "base": {
+                "ref": "main",
+                "repo": {"full_name": "microsoft/mssql-python"},
+            },
+        }
+    ]
+
+    # An attacker-controlled workflow_run.pull_requests entry must never
+    # short-circuit resolution; only the trusted head SHA match is honored.
+    resolved = coverage_comment.resolve_pr_number(_event([{"number": 999}]), associated_pulls)
+
+    assert resolved == 456
 
 
 def test_rejects_artifact_supplied_pr_number(valid_artifact):

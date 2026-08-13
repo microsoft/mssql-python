@@ -170,12 +170,6 @@ def resolve_pr_number(event: dict, associated_pulls: list) -> int:
     if head_repository.get("full_name") == repository_name:
         raise ValidationError("workflow run did not originate from a fork")
 
-    event_pulls = workflow_run.get("pull_requests") or []
-    if len(event_pulls) == 1:
-        number = event_pulls[0].get("number")
-        if isinstance(number, int) and number > 0:
-            return number
-
     if not isinstance(associated_pulls, list):
         raise ValidationError("associated pull request response must be a list")
     matching_pulls = [
