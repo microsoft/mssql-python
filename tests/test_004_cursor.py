@@ -13,6 +13,7 @@ import os
 from datetime import datetime, date, time, timedelta, timezone
 import time as time_module
 import decimal
+import traceback
 from contextlib import closing
 import threading
 import mssql_python
@@ -10481,8 +10482,59 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
         # ...and the sensitive value / raw row is NOT leaked into the message.
         assert sensitive_value not in message
         assert repr((sensitive_value,)) not in message  # no repr of the parameter tuple
+        # ...nor into the chained cause or the fully formatted traceback, which
+        # is what tracebacks and APM/log shippers actually capture.
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert sensitive_value not in formatted
     finally:
         cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+
+
+def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
+    """A parameter whose str() raises must not leak the exception text (GH-503).
+
+    Exception chaining (raise ... from e) can surface a value-bearing cause
+    through __cause__ and formatted tracebacks. For a value whose str() raises,
+    the chain must be suppressed so the metadata-only guarantee holds across
+    tracebacks and APM/log shippers, not just str(exc).
+    """
+    cursor = db_connection.cursor()
+
+    secret = "secret-987-65-4321"
+
+    class ExplodingStr:
+        def __str__(self):
+            raise ValueError(secret)
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_explode (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError) as exc_info:
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_explode (Price) VALUES (?)",
+                [(ExplodingStr(),)],
+            )
+
+        # The metadata-only message must not carry the secret, and the chain
+        # must be suppressed so neither __cause__ nor the formatted traceback
+        # exposes it.
+        assert secret not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert secret not in formatted
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
 
 
 def test_setinputsizes_sql_decimal_high_precision(db_connection):
