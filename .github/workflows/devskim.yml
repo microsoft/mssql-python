@@ -13,6 +13,9 @@ on:
   schedule:
     - cron: '44 7 * * 5'
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: DevSkim
@@ -24,6 +27,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1
