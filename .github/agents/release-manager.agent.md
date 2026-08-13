@@ -166,7 +166,7 @@ gh pr create \
   --reviewer jahnvi480 --reviewer sumitmsft --reviewer bewithgaurav --reviewer subrata-ms
 ```
 
-PR body must include: `AB#<WORK_ITEM_ID>`, summary of all changes grouped by Enhancements / Bug Fixes, version bump note.
+PR body must include: `AB#<WORK_ITEM_ID>`, a `### Summary` section summarizing all changes grouped by Enhancements / Bug Fixes, and a version bump note. The summary heading must be exactly `### Summary`.
 
 > **Do NOT merge this PR until Step 9.**
 
@@ -176,7 +176,9 @@ PR body must include: `AB#<WORK_ITEM_ID>`, summary of all changes grouped by Enh
 
 Immediately after creating the GitHub PR, compose the full release notes using the **Release Notes Format** below. Fetch each included PR's body (`gh pr view <N> --repo microsoft/mssql-python --json body`) to populate the `What changed / Who benefits / Impact` fields — do not fabricate these from the PR title alone.
 
-Present the complete draft to the user for approval. Save the approved text — it will be used verbatim in Step 9.
+Write the draft to a Markdown file at `release-notes-X.X.X.md` in the repo root so the user can review and edit it directly. Present the complete draft to the user for approval. Save the approved `.md` content — it will be used verbatim in Step 9.
+
+> ⚠️ **Keep this file UNTRACKED.** It must NOT be committed into the release PR (GitHub or ADO). The 3-file edits in Steps 3b/5b add files by explicit name — never run `git add .` or `git commit -a` on the `release/X.X.X` branch while this file exists. After Step 9 completes, delete it (`release-notes-X.X.X.md`).
 
 ---
 
@@ -320,11 +322,13 @@ Once confirmed, verify the release is indexed on PyPI before proceeding:
 
 1. **Merge GitHub release PR** (`release/X.X.X` → `main`)
 2. **Create GitHub Release:**
+   > ⚠️ The notes file lives in the **GitHub repo root**, but by this point the working directory is likely the **ADO repo** (Step 5a ran `cd <ADO_REPO_PATH>`). `cd` back to the GitHub repo root first, or pass the file's **absolute path** to `--notes-file`. A bare/`./`-prefixed relative path resolves against the current directory and will fail if you are not in the GitHub repo root.
    ```bash
+   cd <GH_REPO_PATH>   # ensure cwd is the GitHub repo root where release-notes-X.X.X.md was created
    gh release create vX.X.X \
      --repo microsoft/mssql-python \
      --title "Release Notes - Version X.X.X" \
-     --notes "<approved-draft-from-step-3.5>" \
+     --notes-file release-notes-X.X.X.md \
      --latest
    ```
 3. **Smoke test** — verify the published wheel is installable and correct:

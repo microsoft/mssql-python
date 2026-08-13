@@ -35,21 +35,22 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.9.0
+## What's new in v1.13.0
 
 ### Enhancements
 
-- **Row Objects in Bulk Copy** - `bulkcopy` now accepts `Row` objects (and lists) directly, automatically converting each row to a tuple so data fetched from a query can be bulk-inserted without manual conversion (#615).
+- **ODBC Driver Now Ships Exclusively via `mssql-python-odbc`** - The `libs/` fallback introduced in v1.12.0 has been removed. `mssql-python` now hard-depends on `mssql-python-odbc==18.6.2.1`; `pip install mssql-python` still Just Works and transparently pulls the driver package. Wheels are smaller and driver binaries are managed independently (#693).
+- **Apache Arrow Bulk Copy** - New `Cursor.bulkcopy_arrow(table_name, source)` method for high-performance bulk loading from `pyarrow.Table`, `RecordBatch`, or any object exposing the Arrow C Data Interface, avoiding Python row materialization. The classic `bulkcopy()` now raises `TypeError` for Arrow inputs and steers users to the new method (#665).
+- **`token_provider=` Parameter for Azure Identity** - `connect()` now accepts a `token_provider` object with a `.get_token(scope)` method, enabling `DefaultAzureCredential`, `AzureCliCredential`, `ManagedIdentityCredential`, and any custom credential from `azure-identity`. Bulk copy re-acquires a fresh token per operation. Mutually exclusive with `Authentication=` in the connection string (#603).
+- **Identity-Aware Connection Pooling with Token-Expiry Refresh** - The pool now keys on the security context (connection string + identity discriminator) so a connection authenticated as user A can never be handed to user B. Token acquisition is deferred to pool misses, and pooled connections whose token is within 5 minutes of expiry are refreshed automatically (#660).
 
 ### Bug Fixes
 
-- **macOS / Linux Import Failure** - simdutf is now always statically linked via FetchContent, embedding its symbols into the extension and fixing import failures on machines without simdutf installed at the CI build path (#608).
-- **Incorrect Type Fallback for NULL Parameters** - `SQLDescribeParam` results are now cached per statement when binding `NULL` parameters, fixing incorrect type fallbacks for all-NULL columns and VARBINARY types while also eliminating redundant server round-trips (#614).
-- **executemany Large Decimal Handling** - Fixed a `SQL_C_NUMERIC` type mismatch that caused runtime errors when inserting `Decimal` values outside the SQL Server `MONEY` range via `executemany` (#611).
-- **Exception Pickling** - All DB-API exception subclasses and `ConnectionStringParseError` now implement `__reduce__`, so they survive pickle/unpickle round-trips with all attributes preserved (#616).
-- **PRINT Messages in nextset()** - Diagnostic messages (e.g., SQL Server PRINT output) from subsequent result sets are now captured correctly when `SQL_SUCCESS_WITH_INFO` is returned during `nextset()` (#618).
-- **Row Objects in executemany DAE Path** - `executemany` now converts `Row` objects to tuples in the DAE fallback path, fixing failures when writing to `varchar(max)` columns (#630).
-- **Static Type-Checking of Fetch Methods** - `fetchone`, `fetchmany`, and `fetchall` are no longer reassigned as instance attributes, fixing type-checking failures under `ty` and other static type checkers (#631).
+- **Silent Zero-Row `executemany` Batches on Late NULLs** - Fixed numeric array parameter binding paths (`TINYINT` / `SMALLINT` / `INT` / `FLOAT`) that left indicator slots uninitialized when a NULL appeared partway through the batch, causing the batch to insert zero rows without raising (#702, issue #670).
+- **`SQL_WVARCHAR` Output Converter Applied to Non-String Columns** - The legacy `SQL_WVARCHAR` catch-all no longer runs against `INT` / `DECIMAL` / `DATE` columns. Registering a single `SQL_WVARCHAR` converter used to mangle every non-string column value; the fallback is now gated on `str`/`bytes` mapped types, matching `Row._apply_output_converters` (#692, issue #691).
+- **Integer-Keyed Output Converters Now Fire** - `Connection.add_output_converter(SQL_DECIMAL, ...)` and any other integer ODBC SQL type code as a key now dispatch correctly. Previously the converter dictionary was keyed only by Python type, so integer-keyed registrations were silently stored but never invoked, diverging from `pyodbc` and from the driver's own documentation. Integer keys take precedence over Python-type keys, and `SQL_DECIMAL` vs `SQL_NUMERIC` are dispatched distinctly (#690, issue #684).
+- **`RecordBatchReader.Close()` for Arrow Result Sets** - `Cursor.arrow_reader()` now returns a wrapped reader whose `.close()` stops fetching, releases the server-side cursor, resets cursor state, and leaves the parent cursor usable. Supports idempotent close and context-manager usage (#644, issue #643).
+- **`AttributeError` on Partially-Initialized `Cursor` Cleanup** - `Cursor.__init__` now sets `self.closed = False` and `self.hstmt = None` before any code that can raise, `close()` defends with `getattr(self, "closed", True)`, and `__del__` uses the correct `sys.is_finalizing()` guard, so half-constructed cursors no longer emit unraisable exceptions during garbage collection (#646, issue #642).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

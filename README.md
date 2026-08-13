@@ -9,6 +9,19 @@ The driver is compatible with all the Python versions >= 3.10
 > **Note:**
 > This project is now Generally Available (GA) and ready for production use. We’ve completed core functionality and incorporated feedback from the preview phase.
 > 
+> **Important Note:**
+>
+> ### ODBC Driver Distribution
+> The ODBC driver binaries used by `mssql-python` are distributed exclusively through a dedicated companion package:
+>
+> - Package: `mssql-python-odbc`
+> - Import name: `mssql_python_odbc`
+> - Current version: **18.6.2.1**
+>
+> `mssql-python` depends on `mssql-python-odbc==18.6.2.1` and loads the ODBC driver binaries from it at import time. `pip install mssql-python` transparently pulls the companion package alongside it — no separate install step is required.
+>
+> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. `mssql-python` will fail to import if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
+
 ## Installation
  
 **Windows:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
@@ -73,6 +86,12 @@ EntraID authentication is now fully supported on MacOS and Linux but with certai
 ### Connection Pooling
  
 The Microsoft mssql_python driver provides built-in support for connection pooling, which helps improve performance and scalability by reusing active database connections instead of creating a new connection for every request. This feature is enabled by default. For more information, refer [Connection Pooling Wiki](https://github.com/microsoft/mssql-python/wiki/Connection#connection-pooling).
+
+> **Interactive / Device-code authentication in multi-user processes:** For `ActiveDirectoryInteractive` and `ActiveDirectoryDeviceCode`, the driver caches one credential instance per authentication type for the lifetime of the process so that pooled reconnects refresh silently instead of re-prompting. As a result, every interactive connection opened in the same process shares that one signed-in account — the first user to authenticate. If your application serves multiple end users from a single process, do **not** rely on interactive/device-code auth to isolate them; instead supply your own per-user token via a token provider so each user's connection is keyed to their own identity.
+
+> **Bring-your-own token (`token_provider` / raw access token):** When you supply your own access token (via a token provider or a raw token in `attrs_before`), managing its lifetime is **your application's responsibility**. The driver stores a pooled connection under the identity that opened it, but it cannot refresh a token it did not mint. If a pooled connection is reused after its token has expired, the reconnect (ODBC's implicit connection resiliency) will fail. Ensure your token provider returns a currently-valid token on every call, and account for token expiry in your own logic. The driver's built-in expiry-aware checkout (refreshing a pooled connection whose token is near expiry) only applies to Managed Identity and interactive/device-code pools, whose tokens the driver can silently re-mint — not to bring-your-own tokens.
+
+> **`DefaultAzureCredential` is not recommended for multi-user pooling:** `ActiveDirectoryDefault` resolves to whatever ambient identity `DefaultAzureCredential` discovers (environment, managed identity, developer sign-in, etc.), which is a single process-wide identity. It is well suited to single-identity services but does **not** distinguish between end users, so pooled connections opened with it are not isolated per user. The driver emits a one-time warning in this case. For genuinely multi-user workloads, use a per-user token provider instead. (You will also see this noted in the emitted log warning.) Because a `DefaultAzureCredential` pool is keyed on the token hash rather than a stable identity, it is also **not** expiry-aware: the driver-acquired token is reused until the connection dies, so it is best suited to short-lived or single-identity use.
 
 ### DBAPI v2.0 Compliance
  
@@ -147,7 +166,7 @@ For more information see the [Code of Conduct FAQ](https://opensource.microsoft.
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
  
 ## License
-The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](https://github.com/microsoft/mssql-python/tree/alphaChanges/mssql_python/libs) folder 
+The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](https://github.com/microsoft/mssql-python/tree/main/mssql_python_odbc/libs) folder 
 that are licensed under MICROSOFT SOFTWARE LICENSE TERMS.
  
 Please review the [LICENSE](LICENSE) file for more details.

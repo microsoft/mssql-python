@@ -26,7 +26,7 @@ def bench_no_cache(n: int) -> list[float]:
     times = []
     for _ in range(n):
         start = time.perf_counter()
-        cred = DefaultAzureCredential()
+        cred = DefaultAzureCredential()  # CodeQL [SM05139] Development-only microbenchmark, not product code; intentionally uses DefaultAzureCredential to measure credential instance caching overhead.
         cred.get_token("https://database.windows.net/.default")
         times.append(time.perf_counter() - start)
     return times
@@ -36,7 +36,7 @@ def bench_with_cache(n: int) -> list[float]:
     """Simulate the NEW behavior: reuse a single credential instance."""
     from azure.identity import DefaultAzureCredential
 
-    cred = DefaultAzureCredential()
+    cred = DefaultAzureCredential()  # CodeQL [SM05139] Development-only microbenchmark, not product code; intentionally uses DefaultAzureCredential to measure credential instance caching overhead.
     times = []
     for _ in range(n):
         start = time.perf_counter()

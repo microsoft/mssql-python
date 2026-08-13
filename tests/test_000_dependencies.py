@@ -6,6 +6,9 @@ This file tests that all required dependencies are present for the current platf
 import pytest
 import platform
 import os
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,6 +22,7 @@ class DependencyTester:
         self.platform_name = platform.system().lower()
         self.raw_architecture = platform.machine().lower()
         self.module_dir = self._get_module_directory()
+        self.libs_base_dir = self._get_libs_base_dir()
         self.normalized_arch = self._normalize_architecture()
 
     def _get_module_directory(self):
@@ -31,6 +35,33 @@ class DependencyTester:
         except ImportError:
             # Fallback to relative path from tests directory
             return Path(__file__).parent.parent / "mssql_python"
+
+    def _get_libs_base_dir(self):
+        """Directory that contains the ``libs/`` driver payload the loader will use.
+
+        Mirrors the native resolver (``GetOdbcLibsBaseDir`` in ddbc_bindings.cpp):
+        the external ``mssql_python_odbc`` package is authoritative whenever it is
+        installed and actually ships the driver; otherwise the driver is resolved
+        from ``mssql_python``'s own bundled ``libs/``. Keeping the expected paths in
+        lockstep with the loader means these dependency assertions validate the SAME
+        driver the runtime loads -- including the package-split scenario where the
+        bundled ``mssql_python/libs`` is absent and the driver comes only from the
+        separately installed ``mssql_python_odbc`` package. When that package is not
+        installed the base is unchanged, so single-wheel CI keeps enforcing that
+        ``mssql_python`` bundles its own libs.
+        """
+        try:
+            import mssql_python_odbc
+            import mssql_python.ddbc_bindings as ddbc
+
+            external_base = Path(mssql_python_odbc.__file__).parent
+            driver = ddbc.GetDriverPathCpp(str(external_base))
+            if driver and Path(driver).exists():
+                return external_base
+        except Exception:
+            # No external package (or it can't resolve a driver) -> bundled libs.
+            pass
+        return self.module_dir
 
     def _normalize_architecture(self):
         """Normalize architecture names for the given platform."""
@@ -64,23 +95,12 @@ class DependencyTester:
         return arch_lower
 
     def _detect_linux_distro(self):
-        """Detect Linux distribution for driver path selection."""
-        distro_name = "debian_ubuntu"  # default
-        """
-        #ifdef __linux__
-        if (fs::exists("/etc/alpine-release")) {
-            platform = "alpine";
-        } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
-            platform = "rhel";
-        } else if (fs::exists("/etc/SuSE-release") || fs::exists("/etc/SUSE-brand")) {
-            platform = "suse";
-        } else {
-            platform = "debian_ubuntu";
-        }
+        """Detect Linux distribution for driver path selection.
 
-        fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.6.so.2.1";
-        return driverPath.string();
+        Mirrors the ``/etc/*-release`` probing in the native ``GetDriverPathCpp``
+        so the expected paths agree with what the C++ resolver looks for.
         """
+        distro_name = "debian_ubuntu"  # default
         try:
             if Path("/etc/alpine-release").exists():
                 distro_name = "alpine"
@@ -95,6 +115,58 @@ class DependencyTester:
 
         return distro_name
 
+    def _driver_version_parts(self):
+        """Return ``(major, minor)`` of the bundled msodbcsql driver.
+
+        Derived from ``mssql_python_odbc.__version__`` -- the single source of
+        truth for the driver version. If that package is not installed, fall
+        back to the native resolver's own filename so the expected paths still
+        track whatever the compiled extension actually looks for (rather than a
+        hardcoded literal that could silently drift on a version bump).
+
+        Only a missing package triggers the fallback: an installed-but-malformed
+        ``__version__`` is surfaced (not swallowed) so a corrupt package fails
+        loudly instead of silently masking behind the native resolver.
+        """
+        try:
+            import mssql_python_odbc
+        except ImportError:
+            import mssql_python.ddbc_bindings as ddbc
+
+            name = os.path.basename(ddbc.GetDriverPathCpp("base"))
+            match = re.search(r"(\d+)(?:\.(\d+))?", name)
+            if match is None:
+                raise AssertionError(
+                    f"Could not derive driver version from resolved filename {name!r}"
+                )
+            return match.group(1), (match.group(2) or "")
+
+        parts = mssql_python_odbc.__version__.split(".")
+        if len(parts) < 2:
+            raise AssertionError(
+                "mssql_python_odbc.__version__ is malformed "
+                f"(expected 'major.minor[.patch]', got {mssql_python_odbc.__version__!r})"
+            )
+        return parts[0], parts[1]
+
+    def _driver_filename(self):
+        """Return the msodbcsql driver filename for the current platform.
+
+        Built from the version parts (see :meth:`_driver_version_parts`) so it
+        stays in lockstep with the native resolver's ``GetDriverPathCpp``.
+        """
+        major, minor = self._driver_version_parts()
+        if self.platform_name == "windows":
+            return f"msodbcsql{major}.dll"
+        if self.platform_name == "darwin":
+            return f"libmsodbcsql.{major}.dylib"
+        if not minor:
+            raise AssertionError(
+                f"Linux driver filename needs a minor version but none was derived (major={major!r})"
+            )
+        # Linux embeds the major.minor plus the ELF soname suffix.
+        return f"libmsodbcsql-{major}.{minor}.so.2.1"
+
     def get_expected_dependencies(self):
         """Get expected dependencies for the current platform and architecture."""
         if self.platform_name == "windows":
@@ -108,10 +180,10 @@ class DependencyTester:
 
     def _get_windows_dependencies(self):
         """Get Windows dependencies based on architecture."""
-        base_path = self.module_dir / "libs" / "windows" / self.normalized_arch
+        base_path = self.libs_base_dir / "libs" / "windows" / self.normalized_arch
 
         dependencies = [
-            base_path / "msodbcsql18.dll",
+            base_path / self._driver_filename(),
             base_path / "msodbcdiag18.dll",
             base_path / "mssql-auth.dll",
             base_path / "vcredist" / "msvcp140.dll",
@@ -125,10 +197,10 @@ class DependencyTester:
 
         # macOS uses universal2 binaries, but we need to check both arch directories
         for arch in ["arm64", "x86_64"]:
-            base_path = self.module_dir / "libs" / "macos" / arch / "lib"
+            base_path = self.libs_base_dir / "libs" / "macos" / arch / "lib"
             dependencies.extend(
                 [
-                    base_path / "libmsodbcsql.18.dylib",
+                    base_path / self._driver_filename(),
                     base_path / "libodbcinst.2.dylib",
                 ]
             )
@@ -146,10 +218,10 @@ class DependencyTester:
         elif runtime_arch in ["aarch64"]:
             runtime_arch = "arm64"
 
-        base_path = self.module_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
+        base_path = self.libs_base_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
 
         dependencies = [
-            base_path / "libmsodbcsql-18.6.so.2.1",
+            base_path / self._driver_filename(),
             base_path / "libodbcinst.so.2",
         ]
 
@@ -188,29 +260,33 @@ class DependencyTester:
 
         if platform_name == "windows":
             driver_path = (
-                Path(self.module_dir) / "libs" / "windows" / normalized_arch / "msodbcsql18.dll"
+                Path(self.libs_base_dir)
+                / "libs"
+                / "windows"
+                / normalized_arch
+                / self._driver_filename()
             )
 
         elif platform_name == "darwin":
             driver_path = (
-                Path(self.module_dir)
+                Path(self.libs_base_dir)
                 / "libs"
                 / "macos"
                 / normalized_arch
                 / "lib"
-                / "libmsodbcsql.18.dylib"
+                / self._driver_filename()
             )
 
         elif platform_name == "linux":
             distro_name = self._detect_linux_distro()
             driver_path = (
-                Path(self.module_dir)
+                Path(self.libs_base_dir)
                 / "libs"
                 / "linux"
                 / distro_name
                 / normalized_arch
                 / "lib"
-                / "libmsodbcsql-18.6.so.2.1"
+                / self._driver_filename()
             )
 
         else:
@@ -308,7 +384,7 @@ class TestArchitectureSpecificDependencies:
     def test_windows_vcredist_dependency(self):
         """Test that Windows builds include vcredist dependencies."""
         vcredist_path = (
-            dependency_tester.module_dir
+            dependency_tester.libs_base_dir
             / "libs"
             / "windows"
             / dependency_tester.normalized_arch
@@ -324,7 +400,7 @@ class TestArchitectureSpecificDependencies:
     def test_windows_auth_dependency(self):
         """Test that Windows builds include authentication library."""
         auth_path = (
-            dependency_tester.module_dir
+            dependency_tester.libs_base_dir
             / "libs"
             / "windows"
             / dependency_tester.normalized_arch
@@ -337,9 +413,9 @@ class TestArchitectureSpecificDependencies:
     def test_macos_universal_dependencies(self):
         """Test that macOS builds include dependencies for both architectures."""
         for arch in ["arm64", "x86_64"]:
-            base_path = dependency_tester.module_dir / "libs" / "macos" / arch / "lib"
+            base_path = dependency_tester.libs_base_dir / "libs" / "macos" / arch / "lib"
 
-            msodbcsql_path = base_path / "libmsodbcsql.18.dylib"
+            msodbcsql_path = base_path / dependency_tester._driver_filename()
             libodbcinst_path = base_path / "libodbcinst.2.dylib"
 
             assert msodbcsql_path.exists(), f"macOS {arch} ODBC driver not found: {msodbcsql_path}"
@@ -347,13 +423,120 @@ class TestArchitectureSpecificDependencies:
                 libodbcinst_path.exists()
             ), f"macOS {arch} ODBC installer library not found: {libodbcinst_path}"
 
+    @pytest.mark.skipif(dependency_tester.platform_name != "darwin", reason="macOS-specific test")
+    def test_macos_driver_load_chain_is_relocatable(self):
+        """Ensure the macOS driver's bundled load chain contains no absolute paths.
+
+        Guards against GitHub issue #656. On a fresh Apple Silicon Mac (without
+        ``brew install unixodbc``) importing mssql_python fails because the arm64
+        ``libmsodbcsql.18.dylib`` shipped in the wheel still hardcodes
+        ``/opt/homebrew/lib/libodbcinst.2.dylib`` instead of
+        ``@loader_path/libodbcinst.2.dylib``.
+
+        Root cause: ``pybind/configure_dylibs.sh`` only rewrites the dylibs for
+        the *build host* architecture (``ARCH=$(uname -m)``). macOS wheels are
+        universal2 but built on an x86_64 runner, so only the x86_64 driver gets
+        relocated; the arm64 driver ships with Homebrew-absolute dependencies.
+
+        At runtime ``ddbc_bindings`` ``dlopen``s ``libmsodbcsql.18.dylib``
+        DIRECTLY (it does not go through the unixODBC driver manager), so this
+        test walks exactly that load graph: starting from the driver and
+        following only its *bundled* sibling dependencies. Any bundled sibling
+        reached via an absolute path would fail to load on a machine without
+        Homebrew.
+
+        ``otool -L`` reads Mach-O load commands of any architecture regardless of
+        the host, so inspecting BOTH the arm64 and x86_64 drivers lets a single
+        x86_64 CI runner catch the arm64-only packaging bug. Non-bundled
+        dependencies (system libs under /usr/lib or /System, and the documented
+        external openssl prerequisite) are intentionally ignored.
+        """
+        otool = shutil.which("otool")
+        if otool is None:
+            pytest.skip("otool not available on this system")
+
+        def direct_bundled_deps(dylib_path, bundled_names):
+            """Return (absolute_hits, relocatable_hits) for bundled sibling deps.
+
+            The first line of ``otool -L`` output is the file being inspected and
+            the second is the library's own install id (LC_ID_DYLIB); both are
+            self-references and are skipped by ignoring deps whose basename equals
+            the file's own name.
+            """
+            result = subprocess.run([otool, "-L", str(dylib_path)], capture_output=True, text=True)
+            if result.returncode != 0:
+                return None, None
+
+            absolute_hits, relocatable_hits = [], []
+            for line in result.stdout.splitlines()[1:]:
+                dep = line.strip().split(" (compatibility")[0].strip()
+                if not dep:
+                    continue
+                base = os.path.basename(dep)
+                if base == dylib_path.name or base not in bundled_names:
+                    continue  # self-reference or a non-bundled/external dependency
+                if dep.startswith("/"):
+                    absolute_hits.append((base, dep))
+                else:
+                    relocatable_hits.append(base)
+            return absolute_hits, relocatable_hits
+
+        problems = []
+        checked_arches = []
+        for arch in ["arm64", "x86_64"]:
+            lib_dir = dependency_tester.libs_base_dir / "libs" / "macos" / arch / "lib"
+            driver = lib_dir / "libmsodbcsql.18.dylib"
+            if not driver.exists():
+                continue
+            checked_arches.append(arch)
+
+            bundled = {p.name: p for p in lib_dir.glob("*.dylib")}
+
+            # Depth-first walk of the driver's bundled load chain (queue.pop() is
+            # LIFO). Order does not matter here: we visit every reachable bundled
+            # dylib and collect all absolute-path problems regardless of traversal.
+            visited, queue = set(), [driver]
+            while queue:
+                current = queue.pop()
+                if current.name in visited:
+                    continue
+                visited.add(current.name)
+
+                absolute_hits, relocatable_hits = direct_bundled_deps(current, bundled)
+                if absolute_hits is None or relocatable_hits is None:
+                    problems.append(f"{arch}/{current.name}: otool failed to inspect the library")
+                    continue
+
+                for base, dep in absolute_hits:
+                    problems.append(
+                        f"{arch}/{current.name} loads bundled '{base}' via absolute "
+                        f"path '{dep}' (expected @loader_path); this breaks on "
+                        f"machines without Homebrew"
+                    )
+                for base in relocatable_hits:
+                    queue.append(bundled[base])
+
+        # Fail loudly instead of passing vacuously if no bundled driver was found
+        # to validate (e.g. the packaging layout changed).
+        assert checked_arches, (
+            "no bundled macOS driver found to validate under "
+            "libs/macos/{arm64,x86_64}/lib/libmsodbcsql.18.dylib "
+            "(packaging layout may have changed)"
+        )
+
+        assert not problems, (
+            "macOS driver load chain contains hardcoded absolute dependency paths "
+            "that break on machines without Homebrew (see GitHub issue #656):\n  "
+            + "\n  ".join(problems)
+        )
+
     @pytest.mark.skipif(dependency_tester.platform_name != "linux", reason="Linux-specific test")
     def test_linux_distribution_dependencies(self):
         """Test that Linux builds include distribution-specific dependencies."""
         distro_name = dependency_tester._detect_linux_distro()
 
         # Test that the distribution directory exists
-        distro_path = dependency_tester.module_dir / "libs" / "linux" / distro_name
+        distro_path = dependency_tester.libs_base_dir / "libs" / "linux" / distro_name
 
         assert distro_path.exists(), f"Linux distribution directory not found: {distro_path}"
 
@@ -428,9 +611,9 @@ def test_get_driver_path_from_ddbc_bindings():
     try:
         import mssql_python.ddbc_bindings as ddbc
 
-        module_dir = dependency_tester.module_dir
+        libs_base = dependency_tester.libs_base_dir
 
-        driver_path = ddbc.GetDriverPathCpp(str(module_dir))
+        driver_path = ddbc.GetDriverPathCpp(str(libs_base))
 
         # The driver path should be same as one returned by the Python function
         expected_path = dependency_tester.get_expected_driver_path()
@@ -659,3 +842,75 @@ def test_ddbc_bindings_no_module_found_error():
     assert python_version in expected_error
     assert architecture in expected_error
     assert extension in expected_error
+
+
+class TestOdbcPackageSplit:
+    """Coverage for the standalone ``mssql-python-odbc`` driver package.
+
+    The ODBC driver binaries are being split out of ``mssql-python`` into the
+    ``mssql-python-odbc`` package. Driver-path resolution has a single owner --
+    the native C++ resolver (``GetDriverPathCpp``); the Python package only
+    ships the binaries and exposes ``__version__``. These tests therefore use
+    the native resolver rather than a duplicate Python path builder.
+    """
+
+    def test_odbc_package_ships_driver_for_platform(self):
+        """The odbc package (if installed) ships this platform's driver binary.
+
+        Skips cleanly when ``mssql-python-odbc`` is not installed or its
+        ``libs/`` tree has not been synced (fresh source checkout / CI before
+        the binaries are placed). When ``libs/`` is present it MUST contain this
+        platform's driver, otherwise the package is broken.
+        """
+        odbc = pytest.importorskip("mssql_python_odbc")
+
+        libs_dir = odbc.get_libs_dir()
+        if not os.path.isdir(libs_dir):
+            pytest.skip(
+                "mssql_python_odbc/libs not present (fresh checkout or binaries "
+                "not built/synced for this platform)"
+            )
+
+        import mssql_python.ddbc_bindings as ddbc
+
+        package_dir = os.path.dirname(os.path.abspath(odbc.__file__))
+        driver_path = ddbc.GetDriverPathCpp(package_dir)
+
+        assert os.path.isfile(driver_path), (
+            "mssql-python-odbc ships a libs/ tree but no driver for this "
+            f"platform at: {driver_path}"
+        )
+
+    def test_cpp_driver_filename_matches_odbc_version(self):
+        """Guard against C++/Python version drift.
+
+        The driver version in ``GetDriverPathCpp``'s resolved filename (e.g.
+        ``libmsodbcsql-18.6.so.2.1`` on Linux) is injected at build time from
+        ``mssql_python_odbc.__version__`` -- the single source of truth -- via
+        the ``MSODBCSQL_VERSION_*`` macros in ``CMakeLists.txt``, so a fresh
+        build cannot drift. This test additionally catches a *stale* compiled
+        extension being tested against updated sources (the filename baked into
+        the binary would then disagree with the current ``__version__``). Each
+        platform's CI validates its own compiled filename.
+        """
+        odbc = pytest.importorskip("mssql_python_odbc")
+
+        import mssql_python.ddbc_bindings as ddbc
+
+        # GetDriverPathCpp only builds a path string; the base dir need not
+        # exist. It resolves for the host platform via compile-time #ifdefs.
+        filename = os.path.basename(ddbc.GetDriverPathCpp("base"))
+        major, minor = odbc.__version__.split(".")[:2]
+
+        if platform.system().lower() == "linux":
+            # e.g. __version__ "18.6.2" -> "libmsodbcsql-18.6.so..."
+            assert (
+                f"-{major}.{minor}.so" in filename
+            ), f"Linux driver filename {filename!r} disagrees with odbc __version__ {odbc.__version__!r}"
+        else:
+            # Windows (msodbcsql18.dll) / macOS (libmsodbcsql.18.dylib) key off
+            # the major version only. Match the exact digit run (word boundary)
+            # so e.g. major "18" does not spuriously match "msodbcsql182.dll".
+            assert re.search(
+                rf"(?<!\d){re.escape(major)}(?!\d)", filename
+            ), f"Driver filename {filename!r} disagrees with odbc __version__ major {major!r}"

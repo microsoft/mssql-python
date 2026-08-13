@@ -5,6 +5,7 @@
 
 // pybind11.h must be the first include
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -114,6 +115,12 @@ typedef SQLRETURN(SQL_API* SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
 typedef SQLRETURN(SQL_API* SQLDisconnectFunc)(SQLHDBC);
 typedef SQLRETURN(SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 
+// Cancel API (GH: arrow_reader.close): SQLCancel is one of the two ODBC
+// functions guaranteed safe to call from a thread other than the one running
+// SQLFetch/SQLExecute, so it is used by _ArrowReader.close() to unblock
+// in-flight fetches before SQLFreeStmt(SQL_CLOSE).
+typedef SQLRETURN(SQL_API* SQLCancelFunc)(SQLHSTMT);
+
 // Diagnostic APIs
 typedef SQLRETURN(SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*,
                                               SQLINTEGER*, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
@@ -171,6 +178,7 @@ extern SQLEndTranFunc SQLEndTran_ptr;
 extern SQLFreeHandleFunc SQLFreeHandle_ptr;
 extern SQLDisconnectFunc SQLDisconnect_ptr;
 extern SQLFreeStmtFunc SQLFreeStmt_ptr;
+extern SQLCancelFunc SQLCancel_ptr;
 
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
@@ -231,6 +239,11 @@ class DriverLoader {
 
     bool m_driverLoaded;
     std::once_flag m_onceFlag;
+    // Captures a failure raised inside the std::call_once callable so loadDriver()
+    // can rethrow it from a normal context. This is required on musl libc
+    // (Alpine/musllinux), where an exception must not escape the call_once
+    // callable directly -- see loadDriver() for details.
+    std::exception_ptr m_loadError;
 };
 
 #include <unordered_map>
@@ -257,6 +270,13 @@ class SqlHandle {
     SQLSMALLINT type() const;
     void free();
     void close_cursor();
+    // Cancel an in-progress statement (SQLCancel). Safe to call from a
+    // thread other than the one running the fetch — this is the *only*
+    // ODBC entry point (along with SQLGetDiagField/Rec) for which the spec
+    // guarantees cross-thread safety. Releases the GIL while calling.
+    // No-op for non-STMT handles, freed handles, or when the function is
+    // unavailable.
+    void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
 
     // Mark this handle as implicitly freed (freed by parent handle)

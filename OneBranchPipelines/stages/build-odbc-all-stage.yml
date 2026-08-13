@@ -1,0 +1,217 @@
+# ODBC "Build All" Single-Host Stage Template
+# ============================================================================
+# Builds ALL platform-specific `mssql-python-odbc` wheels (Windows x64/arm64,
+# macOS universal2, Linux manylinux/musllinux x86_64/aarch64 = 7 wheels) on ONE
+# Windows agent.
+#
+# Why this is safe to do on a single host: the `mssql-python-odbc` package ships
+# ONLY pre-built ODBC driver binaries (pure data) — there is NO compiled Python
+# extension and NO per-Python-version matrix. Every platform's driver binaries
+# are committed under `mssql_python_odbc/libs/`, so the build host is irrelevant
+# to the wheel CONTENTS: only the wheel's platform TAG and the selected `libs/`
+# subtree matter. `setup_odbc.py` honours the `ODBC_TARGET_PLATFORM_TAG` /
+# `ODBC_TARGET_ARCH` environment overrides to cross-produce each target's wheel
+# (see `get_platform_info` / `_target_libs_globs`), and marks the tag as
+# explicitly supplied so `wheel` does not re-derive a macOS tag from the host.
+#
+# This replaces the previous 7 separate ODBC stages (2 Windows + 1 macOS + 4
+# Linux) and their macOS/Linux agents, collapsing the ODBC build to a single fast
+# stage that emits all 7 wheels as one artifact (`drop_<stageName>_<jobName>`),
+# which `ConsolidateOdbc` then picks up via its `drop_ODBC_*` item pattern.
+parameters:
+  # Stage identifier (e.g., 'ODBC_BuildAll').
+  - name: stageName
+    type: string
+    default: 'ODBC_BuildAll'
+  # Job identifier within the stage.
+  - name: jobName
+    type: string
+    default: 'BuildWheel'
+  # OneBranch build type: 'Official' (production) or 'NonOfficial' (dev/test).
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+  # Any supported interpreter can produce the Python-agnostic wheels.
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  # The full release matrix of ODBC wheels to produce from this one host.
+  # Each entry drives ODBC_TARGET_PLATFORM_TAG (wheel tag) + ODBC_TARGET_ARCH
+  # (libs/ subtree selector) for one `setup_odbc.py bdist_wheel` invocation.
+  - name: odbcTargets
+    type: object
+    default:
+      - { tag: 'win_amd64', arch: 'x64' }
+      - { tag: 'win_arm64', arch: 'arm64' }
+      # macOS: universal2 data-only wheel. Tagged macosx_15_0 to match the main
+      # mssql-python wheel (setup.py / setup_odbc.py) so BOTH wheels share one macOS
+      # floor. The driver dylibs themselves run on macOS 11+, but the tag tracks the
+      # mssql-python wheel; the macOS build/test agent is macos-latest (macOS-15),
+      # where a macosx_15_0 wheel installs, so this gets install-tested end to end.
+      - { tag: 'macosx_15_0_universal2', arch: 'universal2' }
+      - { tag: 'manylinux_2_28_x86_64', arch: 'x86_64' }
+      - { tag: 'manylinux_2_28_aarch64', arch: 'aarch64' }
+      - { tag: 'musllinux_1_2_x86_64', arch: 'x86_64' }
+      - { tag: 'musllinux_1_2_aarch64', arch: 'aarch64' }
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'ODBC Build All Wheels (single host)'
+    # This stage MUST run first: the mssql-python build stages depend on
+    # ConsolidateOdbc, which depends on this stage. It is declared LAST in the
+    # orchestrator YAML (right after Consolidate), so WITHOUT an explicit empty
+    # dependsOn, Azure's implicit "depends on the previous stage" rule would chain it
+    # to Consolidate and form a cycle:
+    #   ODBC_BuildAll -> Consolidate -> (18 platform builds) -> ConsolidateOdbc -> ODBC_BuildAll
+    # which fails the pipeline at compile time. An empty dependsOn breaks that implicit
+    # link so ODBC_BuildAll has no dependencies and runs first.
+    dependsOn: []
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Build all 7 ODBC wheels on one Windows host'
+        # Reuse the same custom 1ES Windows pool as the mssql-python build.
+        pool:
+          type: windows
+          isCustom: true
+          name: Python-1ES-pool
+          demands:
+          - imageOverride -equals PYTHON-1ES-MMS2022
+        timeoutInMinutes: 60
+
+        variables:
+          # OneBranch output directory for artifacts.
+          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+          # OneBranch-required variable (unused on Windows stages).
+          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+
+        steps:
+          # Driver binaries are committed under mssql_python_odbc/libs; shallow checkout is enough.
+          - checkout: self
+            fetchDepth: 1
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+              architecture: 'x64'
+              addToPath: true
+            displayName: 'Use Python ${{ parameters.pythonVersion }}'
+
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              python -m pip install --upgrade pip
+              python -m pip install setuptools wheel build twine
+            displayName: 'Install build tooling'
+
+          # Build every target wheel by driving setup_odbc.py's ODBC_TARGET_* overrides.
+          # One step per target (compile-time expanded from odbcTargets). build/ +
+          # egg-info are wiped before each build so a previous target's staged libs/
+          # can never leak into the next wheel; all wheels accumulate in dist/.
+          - ${{ each t in parameters.odbcTargets }}:
+            - powershell: |
+                $ErrorActionPreference = "Stop"
+                Remove-Item -Recurse -Force build, mssql_python_odbc.egg-info -ErrorAction SilentlyContinue
+                $env:ODBC_TARGET_PLATFORM_TAG = "${{ t.tag }}"
+                $env:ODBC_TARGET_ARCH = "${{ t.arch }}"
+                python setup_odbc.py bdist_wheel
+                if ($LASTEXITCODE -ne 0) { Write-Error "ODBC wheel build failed for ${{ t.tag }}"; exit 1 }
+              displayName: 'Build ODBC wheel: ${{ t.tag }}'
+
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              Write-Host "Produced wheels:"
+              Get-ChildItem dist\*.whl | ForEach-Object { Write-Host "  - $($_.Name)" }
+              python -m twine check dist\*.whl
+            displayName: 'List + twine check wheels'
+
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\dist'
+              Contents: '*.whl'
+              TargetFolder: '$(ob_outputDirectory)\wheels'
+            displayName: 'Stage wheel artifacts'
+
+          # Assert EVERY wheel ships ONLY its own platform's driver binaries — a data
+          # wheel that packaged the wrong (or an incomplete) subtree would still pass
+          # `twine check`. This is the single-host cross-build's safety net: it proves
+          # the ODBC_TARGET_* overrides selected the right libs/ subtree per tag and
+          # that no foreign-platform binaries leaked in.
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              $wheelDir = "$(ob_outputDirectory)\wheels"
+
+              # tag -> @{ Must = <substrings all required>; Forbid = <substrings none allowed> }
+              # Must uses the EXACT driver filenames (not loose 'msodbcsql'/'.so'/'.dylib',
+              # which also match support files like 1033/msodbcsqlr18.rll or libodbcinst.so.2),
+              # so the check proves the actual ODBC DRIVER binary is packaged, not just a
+              # sibling. Linux uses the version-major prefix so a driver MINOR bump won't
+              # false-fail this gate.
+              $expect = @{
+                'win_amd64'              = @{ Must = @('libs/windows/x64/', 'msodbcsql18.dll', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/arm64/') }
+                'win_arm64'              = @{ Must = @('libs/windows/arm64/', 'msodbcsql18.dll', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/x64/') }
+                'macosx_15_0_universal2' = @{ Must = @('libs/macos/arm64/', 'libs/macos/x86_64/', 'libmsodbcsql.18.dylib', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/linux/') }
+                'manylinux_2_28_x86_64'  = @{ Must = @('libs/linux/debian_ubuntu/x86_64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
+                'manylinux_2_28_aarch64' = @{ Must = @('libs/linux/debian_ubuntu/arm64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/x86_64/') }
+                'musllinux_1_2_x86_64'   = @{ Must = @('libs/linux/alpine/x86_64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
+                'musllinux_1_2_aarch64'  = @{ Must = @('libs/linux/alpine/arm64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/x86_64/') }
+              }
+
+              $failed = $false
+              foreach ($tag in $expect.Keys) {
+                $whl = Get-ChildItem -Path $wheelDir -Filter "*$tag.whl" | Select-Object -First 1
+                if (-not $whl) {
+                  Write-Error "Missing expected ODBC wheel for tag '$tag'"
+                  $failed = $true
+                  continue
+                }
+                $zip = [System.IO.Compression.ZipFile]::OpenRead($whl.FullName)
+                $names = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
+                $zip.Dispose()
+                foreach ($m in $expect[$tag].Must) {
+                  if (-not ($names | Where-Object { $_ -like "*$m*" })) {
+                    Write-Error "$($whl.Name): MISSING required content '$m'"
+                    $failed = $true
+                  }
+                }
+                foreach ($f in $expect[$tag].Forbid) {
+                  if ($names | Where-Object { $_ -like "*$f*" }) {
+                    Write-Error "$($whl.Name): contains FOREIGN content '$f' (wrong-platform binaries leaked)"
+                    $failed = $true
+                  }
+                }
+                if (-not $failed) { Write-Host "OK: $($whl.Name) ships only its own platform's libs" }
+              }
+              if ($failed) { exit 1 }
+              Write-Host "All 7 ODBC wheels verified: each ships only its own platform's driver."
+            displayName: 'Assert each ODBC wheel is platform-correct'
+
+          # OneBranch requires artifact naming: drop_<stageName>_<jobName>.
+          # ConsolidateOdbc picks this up via its 'drop_ODBC_*' item pattern.
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish ODBC Wheels Artifact'
+            inputs:
+              targetPath: '$(ob_outputDirectory)'
+              artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
+              publishLocation: 'pipeline'
+
+          # Component Governance + OneBranch AntiMalware notification.
+          - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self
+            parameters:
+              scanPath: '$(ob_outputDirectory)'
+              artifactType: 'pkg'
+
+          # Scan the redistributed driver binaries + wheels for malware (Official only).
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - ODBC Wheels (Official)'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  SessionTimeout: 60
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1
