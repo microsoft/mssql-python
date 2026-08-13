@@ -117,7 +117,7 @@ def test_cursor_compiles_with_warnings_as_errors():
     cursor_source = Path(__file__).parents[1] / "mssql_python" / "cursor.py"
 
     result = subprocess.run(
-        [sys.executable, "-W", "error", "-m", "py_compile", str(cursor_source)],
+        [sys.executable, "-B", "-W", "error", "-m", "py_compile", str(cursor_source)],
         capture_output=True,
         text=True,
         check=False,
