@@ -379,12 +379,27 @@ def test_string_with_embedded_nulls(cursor):
 
 
 def test_integer_overflow_detected(cursor):
-    """Integers beyond int64 range trigger overflow detection in C++ and bind as BIGINT.
-    SQL Server cannot store values outside [-2^63, 2^63-1] in BIGINT, so these raise."""
-    with pytest.raises(Exception):
-        cursor.execute("SELECT ?", [2**63])
-    with pytest.raises(Exception):
-        cursor.execute("SELECT ?", [-(2**63) - 1])
+    """Integers beyond int64 range are rejected at detect time on both paths with an
+    identical clear message, not a generic cast failure deep in binding. SQL Server has
+    no integer type wider than BIGINT (signed 64-bit)."""
+    for value in (2**63, -(2**63) - 1, 2**64):
+        expected = f"integer {value} is out of range for SQL BIGINT [-2^63, 2^63-1]"
+        # Native path (C++ DetectParamTypes) via execute().
+        with pytest.raises(ValueError) as native_exc:
+            cursor.execute("SELECT ?", [value])
+        # Legacy path (Python _map_sql_type) directly.
+        with pytest.raises(ValueError) as legacy_exc:
+            cursor._map_sql_type(value, [value], 0)
+        # Parity contract: byte-identical message on both paths.
+        assert str(native_exc.value) == expected
+        assert str(legacy_exc.value) == expected
+
+
+def test_integer_bigint_boundary_still_binds(cursor):
+    """The int64 boundaries themselves are valid BIGINT and must still round-trip."""
+    for value in (2**63 - 1, -(2**63)):
+        cursor.execute("SELECT ?", [value])
+        assert cursor.fetchone()[0] == value
 
 
 @pytest.mark.parametrize("value", [decimal.Decimal("NaN"), decimal.Decimal("sNaN")])

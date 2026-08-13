@@ -262,11 +262,24 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                     info.paramCType = SQL_C_SBIGINT;
                     info.columnSize = 19;
                 }
-            } else {
+            } else if (overflow != 0) {
+                // Python int outside [INT64_MIN, INT64_MAX] cannot bind as SQL BIGINT.
+                // Reject here with a clear message rather than mislabelling it BIGINT and
+                // letting param.cast<int64_t>() fail later with a generic pybind11 error.
                 PyErr_Clear();
-                info.paramSQLType = SQL_BIGINT;
-                info.paramCType = SQL_C_SBIGINT;
-                info.columnSize = 19;
+                py::object as_str = steal(PyObject_Str(obj));
+                if (!as_str) {
+                    // PyObject_Str can fail (e.g. CPython's int->str digit limit for a
+                    // multi-thousand-digit int). Drop that error and fall back to a
+                    // placeholder so we still raise our own clear ValueError.
+                    PyErr_Clear();
+                }
+                std::string s = as_str ? as_str.cast<std::string>() : std::string("<int>");
+                throw py::value_error("integer " + s +
+                                      " is out of range for SQL BIGINT [-2^63, 2^63-1]");
+            } else {
+                // A real Python error from PyLong_AsLongLongAndOverflow, not overflow.
+                throw py::error_already_set();
             }
             info.decimalDigits = 0;
             continue;

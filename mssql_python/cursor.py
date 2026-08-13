@@ -50,6 +50,10 @@ SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
+# SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
+# encoding and must be rejected at detect time on both paths (see _map_sql_type).
+BIGINT_MIN: int = -(2**63)
+BIGINT_MAX: int = 2**63 - 1
 
 
 def _normalize_time_param(value, c_type):
@@ -718,6 +722,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     10,
                     0,
                     False,
+                )
+            # Beyond INTEGER, the only integer SQL type is BIGINT (signed 64-bit). An int
+            # outside its range cannot bind, so reject here with a clear message rather than
+            # labelling it BIGINT and failing later at the C++ cast. Mirrors the native path.
+            if value_to_check > BIGINT_MAX or min_to_check < BIGINT_MIN:
+                offending = value_to_check if value_to_check > BIGINT_MAX else min_to_check
+                raise ValueError(
+                    f"integer {offending} is out of range for SQL BIGINT [-2^63, 2^63-1]"
                 )
             logger.debug("_map_sql_type: INT -> BIGINT - index=%d", i)
             return (

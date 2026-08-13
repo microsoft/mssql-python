@@ -636,14 +636,10 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 if (!py::isinstance<py::int_>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                int64_t value = param.cast<int64_t>();
-                // Range validation for signed 64-bit integer
-                if (value < std::numeric_limits<int64_t>::min() ||
-                    value > std::numeric_limits<int64_t>::max()) {
-                    ThrowStdException("Signed 64-bit integer parameter out of "
-                                      "range at paramIndex " +
-                                      std::to_string(paramIndex));
-                }
+                // Both detection paths (DetectParamTypes / _map_sql_type) reject out-of-int64
+                // ints before binding, so those callers only reach here with bindable values.
+                // A setinputsizes() override that forces SQL_C_SBIGINT on an out-of-range int
+                // skips detection; that value fails the cast below, same as before this change.
                 dataPtr = static_cast<void*>(
                     AllocateParamBuffer<int64_t>(paramBuffers, param.cast<int64_t>()));
                 break;
@@ -652,13 +648,6 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
             case SQL_C_ULONG: {
                 if (!py::isinstance<py::int_>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
-                }
-                uint64_t value = param.cast<uint64_t>();
-                // Range validation for unsigned 64-bit integer
-                if (value > std::numeric_limits<uint64_t>::max()) {
-                    ThrowStdException("Unsigned 64-bit integer parameter out "
-                                      "of range at paramIndex " +
-                                      std::to_string(paramIndex));
                 }
                 dataPtr = static_cast<void*>(
                     AllocateParamBuffer<uint64_t>(paramBuffers, param.cast<uint64_t>()));
