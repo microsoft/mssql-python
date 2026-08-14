@@ -461,6 +461,11 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
+  # Colima + SQL Server container setup averages ~12.5 min but has a long tail
+  # (setup has been observed at 17-39 min). The ADO default job timeout is 60 min,
+  # which the setup tail plus tests plus the 20-min benchmark step can exceed,
+  # getting the job killed mid-step. Give the job enough headroom for the tail.
+  timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
 
@@ -483,7 +488,9 @@ jobs:
     displayName: 'Use Python $(pythonVersion) on macOS'
 
   - script: |
-      brew update
+      # Note: no `brew update` here. The hosted macOS runner ships an up-to-date
+      # Homebrew; `brew update` re-syncs the entire formula index (network-bound,
+      # ~1-3 min) for no benefit and is a large chunk of setup time.
       # Uninstall existing CMake to avoid tap conflicts
       brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
       # Install CMake from homebrew/core
@@ -491,7 +498,8 @@ jobs:
     displayName: 'Install CMake'
 
   - script: |
-      brew update
+      # No `brew update` (see the CMake step) - it re-syncs the whole formula
+      # index and is pure setup overhead on an already-current runner.
       brew install docker colima
 
       # Start Colima with extra resources
