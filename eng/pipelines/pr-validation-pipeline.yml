@@ -1029,7 +1029,19 @@ jobs:
       # rseq emulation, eliminating the crash at the emulator level. Together
       # with the GLIBC_TUNABLES rseq disable on the Debian container below,
       # this gives two independent guards so the segfault can no longer occur.
-      docker run --rm --privileged tonistiigi/binfmt:qemu-v9.2.2 --install arm64
+      #
+      # Uninstall any arm64 handler the agent may already have registered
+      # before installing this pinned image's QEMU. tonistiigi/binfmt's
+      # `--install` is a no-op if a handler is already registered (the kernel
+      # returns EEXIST and binfmt leaves the existing one in place), so without
+      # the uninstall we could silently keep the agent's older QEMU and defeat
+      # the fix on the Ubuntu leg. This mirrors the old `--reset`; note that
+      # tonistiigi/binfmt has no `--reset` flag (that belonged to
+      # multiarch/qemu-user-static) -- uninstall+install is the equivalent.
+      # `--uninstall arm64` maps through binfmt's arch config to the
+      # `qemu-aarch64` handler (matched by the `-aarch64` suffix) and is a
+      # harmless no-op when nothing is registered.
+      docker run --rm --privileged tonistiigi/binfmt:qemu-v9.2.2 --uninstall arm64 --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -1046,7 +1058,9 @@ jobs:
       # via GLIBC_TUNABLES removes the trigger with no functional impact (rseq
       # is only a perf optimization). Set at container creation so every
       # subsequent `docker exec` inherits it. Ubuntu 22.04 (glibc 2.35) is not
-      # affected in practice, so this is scoped strictly to the Debian leg.
+      # affected in practice, so only this GLIBC_TUNABLES/rseq-disable guard is
+      # scoped to the Debian leg -- the ARM64 emulation itself is shared by
+      # both matrix legs.
       EXTRA_ENV=""
       if [ "$(distroName)" = "Debian" ]; then
         EXTRA_ENV="-e GLIBC_TUNABLES=glibc.pthread.rseq=0"
