@@ -33,6 +33,25 @@ using py::literals::operator""_a;
 #include <sql.h>
 #include <sqlext.h>
 
+//-------------------------------------------------------------------------------------------------
+// SQL Server specific ODBC constants
+//
+// These are not exposed via sql.h / sqlext.h, so they are defined here. They live in this shared
+// header rather than in a single .cpp because both the parameter-detection path
+// (param_detect.hpp) and the fetch paths in ddbc_bindings.cpp need them.
+//-------------------------------------------------------------------------------------------------
+
+#define SQL_SS_TIME2 (-154)
+#define SQL_SS_TIMESTAMPOFFSET (-155)
+#define SQL_C_SS_TIME2 (0x4000)
+#define SQL_C_SS_TIMESTAMPOFFSET (0x4001)
+#define MAX_DIGITS_IN_NUMERIC 64
+#define SQL_MAX_NUMERIC_LEN 16
+#define SQL_SS_XML (-152)
+#define SQL_SS_UDT (-151)
+#define SQL_SS_VARIANT (-150)
+#define SQL_CA_SS_VARIANT_TYPE (1215)
+
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
 
