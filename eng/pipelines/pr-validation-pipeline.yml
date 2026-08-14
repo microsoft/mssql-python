@@ -1013,7 +1013,11 @@ jobs:
         distroName: 'Ubuntu'
         archName: 'arm64'
       Debian_ARM64:
-        dockerImage: 'debian:12'
+        # Python 3.11 is preinstalled (byte-compiled natively at image-build
+        # time) so we never run the apt python3 post-install byte-compilation
+        # that SIGSEGVs (exit 139) under QEMU user-mode emulation. Still Debian
+        # 12 (bookworm) underneath, so the msodbcsql18 debian/12 repo applies.
+        dockerImage: 'python:3.11-bookworm'
         distroName: 'Debian'
         archName: 'arm64'
 
@@ -1027,20 +1031,8 @@ jobs:
 
   - script: |
       # Create a Docker container for testing on ARM64
-      #
-      # The arm64 test image runs under QEMU user-mode emulation on the x86_64
-      # agent. QEMU mishandles glibc restartable sequences (rseq) -- which
-      # modern glibc enables by default -- causing random SIGSEGVs (exit 139)
-      # when the emulated arm64 Python is invoked for apt byte-compilation
-      # during dependency installation. Disabling rseq via GLIBC_TUNABLES
-      # removes the trigger with no functional impact (rseq is only a perf
-      # optimization). Set at container creation so every subsequent
-      # `docker exec` inherits it. Applied to both matrix legs (Debian 12 /
-      # glibc 2.36 and Ubuntu 22.04 / glibc 2.35) since both share the same
-      # emulated-arm64 path and both glibc versions ship rseq.
       docker run -d --name test-container-$(distroName)-$(archName) \
         --platform linux/arm64 \
-        -e GLIBC_TUNABLES=glibc.pthread.rseq=0 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
@@ -1102,13 +1094,19 @@ jobs:
         "
       else
         # Debian ARM64
+        # Python (with pip, venv and dev headers) is already provided by the
+        # python:3.11-bookworm base image under /usr/local, so we do NOT
+        # apt-install python3* here -- the apt python3 post-install byte-
+        # compilation is what SIGSEGVs (exit 139) under QEMU emulation. pybind11
+        # comes from pip (requirements.txt); only non-Python build tools are
+        # pulled from apt, none of which depend on the Debian python3 package.
         docker exec test-container-$(distroName)-$(archName) bash -c "
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
           apt-get update
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+          apt-get install -y cmake curl wget gnupg build-essential
           # Verify architecture
           uname -m
           dpkg --print-architecture
