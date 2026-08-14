@@ -38,7 +38,7 @@ stages:
   - stage: PublishConda
     displayName: 'Publish Conda Packages (microsoft channel)'
     dependsOn: ReleasePackages
-    condition: and(succeeded(), eq('${{ parameters.publishToConda }}', true))
+    condition: and(succeeded(), eq(${{ parameters.publishToConda }}, true))
     jobs:
       - job: BuildTestPublishConda
         displayName: 'Build, test-before-live, and publish conda packages'
@@ -130,7 +130,7 @@ stages:
           # 5. Publish BOTH packages together, version-locked, to microsoft channel
           - task: PowerShell@2
             displayName: 'Publish to anaconda.org/microsoft'
-            condition: and(succeeded(), eq('${{ parameters.publishToConda }}', true))
+            condition: and(succeeded(), eq(${{ parameters.publishToConda }}, true))
             env:
               ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
             inputs:

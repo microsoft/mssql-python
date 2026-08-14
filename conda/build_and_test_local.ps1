@@ -3,8 +3,8 @@
 #
 # Builds BOTH conda packages (driver + binding) by repackaging the currently-live
 # PyPI wheels, assembles a LOCAL conda channel, installs into a clean env, and runs
-# an import + (optional) live-connect smoke test. Requires NO `microsoft` channel
-# and NO onboarding/permission — it validates 100% of the mechanics offline.
+# an import + (optional) live-connect smoke test. Requires NO channel onboarding/
+# permission (but uses -c microsoft / -c conda-forge to resolve dependencies).
 #
 # Prereq: conda + conda-build + anaconda-client on PATH (Miniforge/Miniconda).
 #
@@ -54,7 +54,7 @@ Write-Host "== 5. Clean-env install from LOCAL + microsoft + conda-forge ==" -Fo
 # flask/six as runtime deps, dragging in celery/boto3/botocore (~9 MB) -- see
 # conda-forge/azure-core-feedstock#71. --strict-channel-priority keeps the locally built
 # packages authoritative and lets `microsoft` own only the azure-* SDK packages.
-conda create -y -n $TestEnv "python=$PyVer" -c "file:///$BldDir" -c microsoft -c conda-forge --strict-channel-priority mssql-python
+conda create -y -n $TestEnv "python=$PyVer" -c "file:///$BldDir" -c microsoft -c conda-forge --strict-channel-priority --override-channels mssql-python
 Assert-LastExit "install mssql-python from local channel"
 
 Write-Host "== 6a. Functional: import + version ==" -ForegroundColor Cyan

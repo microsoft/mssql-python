@@ -25,7 +25,7 @@ package:
 
 build:
   number: 0
-  script: {{ PYTHON }} -m pip install --no-deps mssql-python=={{ version }} -vv
+  script: {{ PYTHON }} -m pip install --no-deps{% if environ.get('ARTIFACTS_PY') %} --no-index --find-links "{{ environ.get('ARTIFACTS_PY') }}"{% endif %} mssql-python=={{ version }} -vv
 
 requirements:
   host:

@@ -24,7 +24,7 @@ package:
 
 build:
   number: 0
-  script: {{ PYTHON }} -m pip install --no-deps mssql-python-odbc=={{ version }} -vv
+  script: {{ PYTHON }} -m pip install --no-deps{% if environ.get('ARTIFACTS_ODBC') %} --no-index --find-links "{{ environ.get('ARTIFACTS_ODBC') }}"{% endif %} mssql-python-odbc=={{ version }} -vv
 
 requirements:
   host:
@@ -40,7 +40,7 @@ test:
 about:
   home: https://github.com/microsoft/mssql-python
   # Proprietary Microsoft ODBC Driver 18 payload — Microsoft EULA.
-  # TODO(before publish): point license_file at the driver EULA text, not repo LICENSE.
+  # TODO(before publish): set license_file to the Driver 18 EULA text shipped with the driver payload.
   license: LicenseRef-Microsoft-Proprietary
   license_file: ../../LICENSE
   summary: Microsoft ODBC Driver 18 payload for mssql-python (internal companion package)
