@@ -1,0 +1,57 @@
+{% set name = "mssql-python" %}
+{% set version = "1.13.0" %}          # LOCAL prototype target; bump to 1.14.0 after the Aug 20 release
+{% set odbc_version = "18.6.2.1" %}   # keep in lockstep with mssql_python_odbc.__version__
+
+# ---------------------------------------------------------------------------
+# The Python binding (native C++ `ddbc_bindings` + Rust `mssql_py_core`).
+#
+# This recipe REPACKAGES the signed, platform/Python-specific
+# `mssql_python-<ver>-cp3xx-cp3xx-<plat>.whl` — no compilation. Because it carries
+# a native extension, the package is NOT `noarch`; one build per OS/arch/CPython.
+#
+# The proprietary driver is NOT in this package — it is pulled in via the
+# version-locked `mssql-python-odbc` run dependency (model 7B). Both packages are
+# published together and version-locked (see issue #706 sequencing).
+#
+# LOCAL prototype (this file): the wheel is pulled from PyPI. In CI, swap the
+# build script to consume the signed release artifacts:
+#     %PYTHON% -m pip install --no-deps --no-index --find-links %ARTIFACTS% \
+#         mssql-python==%PKG_VERSION% -vv
+# ---------------------------------------------------------------------------
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+build:
+  number: 0
+  script: {{ PYTHON }} -m pip install --no-deps mssql-python=={{ version }} -vv
+
+requirements:
+  host:
+    - python
+    - pip
+  run:
+    - python
+    - azure-identity >=1.12.0
+    - mssql-python-odbc =={{ odbc_version }}
+
+test:
+  imports:
+    - mssql_python
+
+about:
+  home: https://github.com/microsoft/mssql-python
+  license: MIT
+  license_file: ../../LICENSE
+  summary: Microsoft driver for Python to interact with SQL Server / Azure SQL
+  description: |
+    mssql-python is Microsoft's DB API 2.0 (PEP 249) driver for SQL Server,
+    Azure SQL, and Azure Synapse. Installs the Microsoft ODBC Driver 18 via the
+    companion `mssql-python-odbc` package.
+  dev_url: https://github.com/microsoft/mssql-python
+  doc_url: https://github.com/microsoft/mssql-python/wiki
+
+extra:
+  recipe-maintainers:
+    - jahnvithakkar

@@ -1,0 +1,54 @@
+{% set name = "mssql-python-odbc" %}
+{% set version = "18.6.2.1" %}
+
+# ---------------------------------------------------------------------------
+# Companion driver package: the Microsoft ODBC Driver 18 payload.
+#
+# This recipe REPACKAGES the already-signed, platform-specific
+# `mssql_python_odbc-<ver>-py3-none-<plat>.whl` — it does NOT compile anything.
+#
+# PROPRIETARY: the driver binaries ship under the Microsoft ODBC Driver EULA,
+# which is exactly why this package can never go to conda-forge and must live on
+# the Microsoft-owned `microsoft` Anaconda channel.
+#
+# LOCAL prototype (this file): the wheel is pulled from PyPI so we can build and
+# validate the mechanics with no channel/permission. In CI, swap the build
+# script to consume the signed release artifacts instead of PyPI:
+#     %PYTHON% -m pip install --no-deps --no-index --find-links %ARTIFACTS% \
+#         mssql-python-odbc==%PKG_VERSION% -vv
+# ---------------------------------------------------------------------------
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+build:
+  number: 0
+  script: {{ PYTHON }} -m pip install --no-deps mssql-python-odbc=={{ version }} -vv
+
+requirements:
+  host:
+    - python
+    - pip
+  run:
+    - python
+
+test:
+  imports:
+    - mssql_python_odbc
+
+about:
+  home: https://github.com/microsoft/mssql-python
+  # Proprietary Microsoft ODBC Driver 18 payload — Microsoft EULA.
+  # TODO(before publish): point license_file at the driver EULA text, not repo LICENSE.
+  license: LicenseRef-Microsoft-Proprietary
+  license_file: ../../LICENSE
+  summary: Microsoft ODBC Driver 18 payload for mssql-python (internal companion package)
+  description: |
+    Internal implementation package. Do not install or upgrade directly — install
+    `mssql-python`, which depends on the exact matching version of this package.
+  dev_url: https://github.com/microsoft/mssql-python
+
+extra:
+  recipe-maintainers:
+    - jahnvithakkar

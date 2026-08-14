@@ -1,0 +1,147 @@
+# =============================================================================
+# DRAFT — Conda publish stage for mssql-python + mssql-python-odbc
+# =============================================================================
+# Status: NOT wired into official-release-pipeline.yml. Integrate ONLY AFTER the
+# `microsoft` Anaconda channel onboarding is approved and an org/service-scoped
+# ANACONDA_API_TOKEN is provisioned as the 'Anaconda Publishing' variable group.
+#
+# Mirrors the ODBC-split release discipline:
+#   1. Download the SIGNED, consolidated wheels for BOTH packages from build
+#      definition 2199 (the same artifacts the PyPI release publishes).
+#   2. Build both conda packages by REPACKAGING those signed wheels
+#      (--no-index --find-links, never PyPI) via conda-build.
+#   3. GATE: test-before-live (local channel install + import + live-connect
+#      smoke). Fail the stage if it does not pass — never `|| true` past it.
+#   4. Publish BOTH packages together, version-locked, to anaconda.org/microsoft.
+#
+# NOTE: this single-leg draft builds on a Windows agent. A full rollout builds one
+# leg per platform/CPython (mirroring the wheel matrix) so every .conda slice is
+# produced on its native agent.
+#
+# To wire in: add this stage to official-release-pipeline.yml AFTER the
+# ReleasePackages (PyPI) stage; add a `publishToConda` boolean parameter and the
+# 'Anaconda Publishing' variable group.
+# =============================================================================
+
+parameters:
+  - name: publishToConda
+    displayName: 'Publish conda packages to microsoft channel'
+    type: boolean
+    default: false
+  - name: mssqlPythonVersion
+    type: string
+  - name: odbcVersion
+    type: string
+    default: '18.6.2.1'
+
+stages:
+  - stage: PublishConda
+    displayName: 'Publish Conda Packages (microsoft channel)'
+    dependsOn: ReleasePackages
+    condition: and(succeeded(), eq('${{ parameters.publishToConda }}', true))
+    jobs:
+      - job: BuildTestPublishConda
+        displayName: 'Build, test-before-live, and publish conda packages'
+        pool:
+          type: windows
+          isCustom: true
+          name: Python-1ES-pool
+          demands:
+            - imageOverride -equals PYTHON-1ES-MMS2022
+        variables:
+          - group: 'Anaconda Publishing'   # ANACONDA_API_TOKEN (org/service-scoped)
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          - name: condaBldDir
+            value: '$(Agent.TempDirectory)/conda-bld'
+        steps:
+          # 1. Download the SIGNED consolidated wheels for BOTH packages (def 2199)
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download mssql-python signed wheels'
+            inputs:
+              buildType: 'specific'
+              project: '$(System.TeamProject)'
+              definition: 2199
+              buildVersionToDownload: 'specific'
+              buildId: $(resources.pipeline.buildPipeline.runID)
+              artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+              targetPath: '$(Build.SourcesDirectory)/artifacts/mssql-python'
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download mssql-python-odbc signed wheels'
+            inputs:
+              buildType: 'specific'
+              project: '$(System.TeamProject)'
+              definition: 2199
+              buildVersionToDownload: 'specific'
+              buildId: $(resources.pipeline.buildPipeline.runID)
+              artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+              targetPath: '$(Build.SourcesDirectory)/artifacts/mssql-python-odbc'
+
+          # 2. conda tooling
+          - task: PowerShell@2
+            displayName: 'Ensure conda-build + anaconda-client'
+            inputs:
+              targetType: inline
+              script: |
+                conda install -y -n base conda-build anaconda-client
+                if ($LASTEXITCODE -ne 0) { throw "conda tooling install failed" }
+
+          # 3. Build both conda packages from the SIGNED wheels (driver first)
+          - task: PowerShell@2
+            displayName: 'Build conda packages from signed wheels (--no-index)'
+            inputs:
+              targetType: inline
+              script: |
+                $env:CONDA_BLD_PATH = "$(condaBldDir)"
+                $odbcDist = "$(Build.SourcesDirectory)/artifacts/mssql-python-odbc/dist"
+                $pyDist   = "$(Build.SourcesDirectory)/artifacts/mssql-python/dist"
+                # The recipes' build script must use, in CI:
+                #   %PYTHON% -m pip install --no-deps --no-index --find-links <dist> <pkg>==<ver>
+                # (set via CONDA env vars ARTIFACTS_ODBC / ARTIFACTS_PY consumed by meta.yaml).
+                $env:ARTIFACTS_ODBC = $odbcDist
+                $env:ARTIFACTS_PY   = $pyDist
+                conda build "$(Build.SourcesDirectory)/conda/mssql-python-odbc" --no-test --output-folder "$(condaBldDir)"
+                if ($LASTEXITCODE -ne 0) { throw "conda build mssql-python-odbc failed" }
+                conda build "$(Build.SourcesDirectory)/conda/mssql-python" --no-test --output-folder "$(condaBldDir)"
+                if ($LASTEXITCODE -ne 0) { throw "conda build mssql-python failed" }
+
+          # 4. GATE — test-before-live. Do NOT publish if this fails.
+          - task: PowerShell@2
+            displayName: 'GATE: install + import + smoke (blocks publish on failure)'
+            inputs:
+              targetType: inline
+              script: |
+                conda index "$(condaBldDir)"
+                # Mirror the real user install path (-c microsoft): azure-core/azure-identity
+                # resolve from the lean `microsoft` channel, NOT conda-forge (whose azure-core
+                # recipe over-declares flask/six -> celery/boto3/botocore; see
+                # conda-forge/azure-core-feedstock#71). --strict-channel-priority keeps the
+                # freshly built companion + binding authoritative over any published build.
+                conda create -y -n conda-verify -c "file:///$(condaBldDir)" -c microsoft -c conda-forge --strict-channel-priority --override-channels mssql-python
+                if ($LASTEXITCODE -ne 0) { throw "conda-verify env solve failed — companion did not resolve" }
+                conda run -n conda-verify python -c "import mssql_python; print('conda import OK', mssql_python.__version__)"
+                if ($LASTEXITCODE -ne 0) { throw "conda import failed — BLOCKING publish" }
+                if ($env:DB_CONNECTION_STRING) {
+                  conda run -n conda-verify python -c "import os,mssql_python;c=mssql_python.connect(os.environ['DB_CONNECTION_STRING']);print('SELECT 1 =>',c.cursor().execute('SELECT 1').fetchone())"
+                  if ($LASTEXITCODE -ne 0) { throw "conda live-connect smoke failed — BLOCKING publish" }
+                }
+
+          # 5. Publish BOTH packages together, version-locked, to microsoft channel
+          - task: PowerShell@2
+            displayName: 'Publish to anaconda.org/microsoft'
+            condition: and(succeeded(), eq('${{ parameters.publishToConda }}', true))
+            env:
+              ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
+            inputs:
+              targetType: inline
+              script: |
+                $pkgs = Get-ChildItem -Path "$(condaBldDir)" -Recurse -Include *.conda,*.tar.bz2 |
+                        Where-Object { $_.Name -like 'mssql-python*' }
+                if (-not $pkgs) { throw "no conda artifacts found to publish" }
+                foreach ($p in $pkgs) {
+                  Write-Host "Uploading $($p.Name)"
+                  anaconda --token $env:ANACONDA_API_TOKEN upload --user microsoft "$($p.FullName)"
+                  if ($LASTEXITCODE -ne 0) { throw "anaconda upload failed for $($p.Name)" }
+                }
+                Write-Host "Both conda packages published to anaconda.org/microsoft"
