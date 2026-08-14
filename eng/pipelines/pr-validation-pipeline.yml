@@ -516,15 +516,32 @@ jobs:
         -d $(sqlServerImage)
 
       # Starting SQL Server container…
+      sql_ready=false
       for i in {1..30}; do
+        if docker exec sqlserver \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$DB_PASSWORD" \
+          -C -Q "SELECT 1"; then
+          sql_ready=true
+          break
+        fi
+        sleep 2
+      done
+      if [ "$sql_ready" != true ]; then
+        # one last probe, in case it came up during the final sleep
         docker exec sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
           -P "$DB_PASSWORD" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
+          -C -Q "SELECT 1" || {
+            echo "SQL Server did not become ready after 30 attempts"
+            docker logs --tail 200 sqlserver || true
+            exit 1
+          }
+      fi
     displayName: 'Pull & start SQL Server (Docker)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -2454,15 +2471,32 @@ jobs:
         -d mcr.microsoft.com/mssql/server:2022-latest
 
       # Wait until SQL Server is ready
+      sql_ready=false
       for i in {1..30}; do
+        if docker exec sqlserver \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "SELECT 1"; then
+          sql_ready=true
+          break
+        fi
+        sleep 2
+      done
+      if [ "$sql_ready" != true ]; then
+        # one last probe, in case it came up during the final sleep
         docker exec sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
           -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
+          -C -Q "SELECT 1" || {
+            echo "SQL Server did not become ready after 30 attempts"
+            docker logs --tail 200 sqlserver || true
+            exit 1
+          }
+      fi
     displayName: 'Start SQL Server container'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
