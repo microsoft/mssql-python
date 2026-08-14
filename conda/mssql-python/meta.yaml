@@ -1,6 +1,10 @@
 {% set name = "mssql-python" %}
-{% set version = "1.13.0" %}          # LOCAL prototype target; bump to 1.14.0 after the Aug 20 release
-{% set odbc_version = "18.6.2.1" %}   # keep in lockstep with mssql_python_odbc.__version__
+# Single source of truth: the publish pipeline exports MSSQL_PYTHON_VERSION /
+# MSSQL_ODBC_VERSION derived from the signed wheel filenames, so the package
+# version AND the companion pin below can never drift. Defaults are the LOCAL
+# prototype target; bump after the Aug 20 release.
+{% set version = environ.get('MSSQL_PYTHON_VERSION', '1.13.0') %}
+{% set odbc_version = environ.get('MSSQL_ODBC_VERSION', '18.6.2.1') %}
 
 # ---------------------------------------------------------------------------
 # The Python binding (native C++ `ddbc_bindings` + Rust `mssql_py_core`).
@@ -33,8 +37,17 @@ requirements:
     - pip
   run:
     - python
-    - azure-identity >=1.12.0
+    # No version floor: on the `microsoft` channel azure-identity / azure-core / msal
+    # ship as CalVer (e.g. 2026.06.01), so a semver floor like `>=1.12.0` is a
+    # misleading no-op there (every published build already satisfies it).
+    - azure-identity
     - mssql-python-odbc =={{ odbc_version }}
+    # conda drops the wheel's platform tag (manylinux_2_28 / macosx_15_0); re-assert
+    # that floor as a virtual-package run constraint so it can't install on an
+    # unsupported host. The wheel install in the companion's build already requires
+    # these, so this is never stricter than what actually shipped.
+    - __glibc >=2.28      # [linux]
+    - __osx >=15.0        # [osx]
 
 test:
   imports:

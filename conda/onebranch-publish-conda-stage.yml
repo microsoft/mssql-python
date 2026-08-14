@@ -19,8 +19,14 @@
 # produced on its native agent.
 #
 # To wire in: add this stage to official-release-pipeline.yml AFTER the
-# ReleasePackages (PyPI) stage; add a `publishToConda` boolean parameter and the
-# 'Anaconda Publishing' variable group.
+# ReleasePackages (PyPI) stage; add a `publishToConda` boolean parameter, the
+# 'Anaconda Publishing' variable group, and — because this stage reads
+# $(resources.pipeline.buildPipeline.runID) — a matching `resources: pipelines:`
+# block in the ROOT pipeline, e.g.:
+#     resources:
+#       pipelines:
+#         - pipeline: buildPipeline
+#           source: <mssql-python build def 2199 pipeline name>
 # =============================================================================
 
 parameters:
@@ -96,11 +102,21 @@ stages:
                 $env:CONDA_BLD_PATH = "$(condaBldDir)"
                 $odbcDist = "$(Build.SourcesDirectory)/artifacts/mssql-python-odbc/dist"
                 $pyDist   = "$(Build.SourcesDirectory)/artifacts/mssql-python/dist"
-                # The recipes' build script must use, in CI:
-                #   %PYTHON% -m pip install --no-deps --no-index --find-links <dist> <pkg>==<ver>
-                # (set via CONDA env vars ARTIFACTS_ODBC / ARTIFACTS_PY consumed by meta.yaml).
+
+                # A publish job must NEVER silently fall back to PyPI. Require the signed
+                # wheels to be present; fail loudly if either artifact dir has none.
+                if (-not (Get-ChildItem $odbcDist -Filter *.whl -ErrorAction SilentlyContinue)) { throw "No mssql-python-odbc wheel in $odbcDist -- refusing to build (would fall back to PyPI)" }
+                if (-not (Get-ChildItem $pyDist   -Filter *.whl -ErrorAction SilentlyContinue)) { throw "No mssql-python wheel in $pyDist -- refusing to build (would fall back to PyPI)" }
+
+                # ARTIFACTS_* -> the recipes install offline (--no-index --find-links).
+                # MSSQL_*_VERSION -> single source of truth for the package version AND the
+                # version-locked companion pin (wired from the stage parameters), so the two
+                # literals can never drift.
                 $env:ARTIFACTS_ODBC = $odbcDist
                 $env:ARTIFACTS_PY   = $pyDist
+                $env:MSSQL_PYTHON_VERSION = "${{ parameters.mssqlPythonVersion }}"
+                $env:MSSQL_ODBC_VERSION   = "${{ parameters.odbcVersion }}"
+
                 conda build "$(Build.SourcesDirectory)/conda/mssql-python-odbc" --no-test --output-folder "$(condaBldDir)"
                 if ($LASTEXITCODE -ne 0) { throw "conda build mssql-python-odbc failed" }
                 conda build "$(Build.SourcesDirectory)/conda/mssql-python" --no-test --output-folder "$(condaBldDir)"
@@ -122,6 +138,13 @@ stages:
                 if ($LASTEXITCODE -ne 0) { throw "conda-verify env solve failed — companion did not resolve" }
                 conda run -n conda-verify python -c "import mssql_python; print('conda import OK', mssql_python.__version__)"
                 if ($LASTEXITCODE -ne 0) { throw "conda import failed — BLOCKING publish" }
+                # DB-less driver-load proof: importing mssql_python loads the native ODBC
+                # driver (std::call_once); the probe additionally attempts a connect to an
+                # unreachable port so a *connection* error proves the driver loaded and is
+                # arch-correct, while a driver-not-found error fails the gate. This gates on
+                # the DRIVER even when DB_CONNECTION_STRING is absent.
+                conda run -n conda-verify python "$(Build.SourcesDirectory)/conda/driver_load_probe.py"
+                if ($LASTEXITCODE -ne 0) { throw "driver-load proof failed — BLOCKING publish" }
                 if ($env:DB_CONNECTION_STRING) {
                   conda run -n conda-verify python -c "import os,mssql_python;c=mssql_python.connect(os.environ['DB_CONNECTION_STRING']);print('SELECT 1 =>',c.cursor().execute('SELECT 1').fetchone())"
                   if ($LASTEXITCODE -ne 0) { throw "conda live-connect smoke failed — BLOCKING publish" }
@@ -136,12 +159,27 @@ stages:
             inputs:
               targetType: inline
               script: |
-                $pkgs = Get-ChildItem -Path "$(condaBldDir)" -Recurse -Include *.conda,*.tar.bz2 |
-                        Where-Object { $_.Name -like 'mssql-python*' }
+                $pkgs = @(Get-ChildItem -Path "$(condaBldDir)" -Recurse -Include *.conda,*.tar.bz2 |
+                          Where-Object { $_.Name -like 'mssql-python*' })
                 if (-not $pkgs) { throw "no conda artifacts found to publish" }
-                foreach ($p in $pkgs) {
-                  Write-Host "Uploading $($p.Name)"
-                  anaconda --token $env:ANACONDA_API_TOKEN upload --user microsoft "$($p.FullName)"
-                  if ($LASTEXITCODE -ne 0) { throw "anaconda upload failed for $($p.Name)" }
+
+                # #706: the companion (mssql-python-odbc) and the binding (mssql-python) must
+                # ship TOGETHER. Publish the companion FIRST so the binding's pinned dependency
+                # resolves the instant it lands, and refuse to publish a mismatched pair.
+                $companion = @($pkgs | Where-Object { $_.Name -like 'mssql-python-odbc-*' })
+                $binding   = @($pkgs | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' })
+                if ($companion.Count -eq 0) { throw "no companion (mssql-python-odbc) package to publish" }
+                if ($binding.Count   -eq 0) { throw "no binding (mssql-python) package to publish" }
+                if ($companion.Count -ne $binding.Count) { throw "#706 violation: $($companion.Count) companion vs $($binding.Count) binding packages -- refusing to publish a mismatched pair" }
+
+                function Publish-One($f) {
+                  Write-Host "Uploading $($f.Name)"
+                  # --skip-existing makes re-runs idempotent (no --force needed).
+                  anaconda --token $env:ANACONDA_API_TOKEN upload --user microsoft --skip-existing "$($f.FullName)"
+                  if ($LASTEXITCODE -ne 0) { throw "anaconda upload failed for $($f.Name)" }
                 }
-                Write-Host "Both conda packages published to anaconda.org/microsoft"
+                Write-Host "==== publishing companion (mssql-python-odbc) FIRST ===="
+                foreach ($p in $companion) { Publish-One $p }
+                Write-Host "==== publishing binding (mssql-python) ===="
+                foreach ($p in $binding) { Publish-One $p }
+                Write-Host "Published $($companion.Count) companion + $($binding.Count) binding conda packages to anaconda.org/microsoft"

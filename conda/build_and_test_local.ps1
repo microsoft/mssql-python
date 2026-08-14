@@ -65,13 +65,17 @@ Write-Host "== 6b. Assert the driver companion is present (came from conda, not 
 conda run -n $TestEnv python -c "import mssql_python_odbc, os; print('driver companion OK:', mssql_python_odbc.__version__); print('located at:', os.path.dirname(mssql_python_odbc.__file__))"
 Assert-LastExit "import mssql_python_odbc companion"
 
+Write-Host "== 6c. DB-less driver-load proof (real ODBC driver must load, not just the shim) ==" -ForegroundColor Cyan
+conda run -n $TestEnv python "$RepoRoot\conda\driver_load_probe.py"
+Assert-LastExit "driver-load proof"
+
 if ($env:DB_CONNECTION_STRING) {
-    Write-Host "== 6c. Live connect smoke (SELECT 1) ==" -ForegroundColor Cyan
+    Write-Host "== 6d. Live connect smoke (SELECT 1) ==" -ForegroundColor Cyan
     conda run -n $TestEnv python -c "import os,mssql_python; c=mssql_python.connect(os.environ['DB_CONNECTION_STRING']); print('SELECT 1 =>', c.cursor().execute('SELECT 1').fetchone())"
     Assert-LastExit "live connect smoke"
 }
 else {
-    Write-Host "== 6c. SKIPPED live connect (set DB_CONNECTION_STRING to enable) ==" -ForegroundColor Yellow
+    Write-Host "== 6d. SKIPPED live connect (set DB_CONNECTION_STRING to enable) ==" -ForegroundColor Yellow
 }
 
 Write-Host ""
