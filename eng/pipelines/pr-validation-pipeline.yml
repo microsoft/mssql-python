@@ -461,8 +461,20 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
+  # Colima + SQL Server container setup averages ~12.5 min but has a long tail
+  # (setup has been observed at 17-39 min). The ADO default job timeout is 60 min,
+  # which the setup tail plus tests plus the 20-min benchmark step can exceed,
+  # getting the job killed mid-step. Give the job enough headroom for the tail.
+  timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
+
+  variables:
+    # pip's on-disk download/wheel cache. Persisted across runs by the Cache@2
+    # task below so `pip install -r requirements.txt` reuses wheels instead of
+    # re-downloading them on every run. Exposed to script steps as the
+    # $PIP_CACHE_DIR environment variable, which pip honors automatically.
+    PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip-cache
 
   strategy:
     matrix:
@@ -482,66 +494,130 @@ jobs:
       addToPath: true
     displayName: 'Use Python $(pythonVersion) on macOS'
 
+  - task: Cache@2
+    inputs:
+      key: 'pip | "$(Agent.OS)" | "$(pythonVersion)" | requirements.txt'
+      restoreKeys: |
+        pip | "$(Agent.OS)" | "$(pythonVersion)"
+        pip | "$(Agent.OS)"
+      path: $(PIP_CACHE_DIR)
+    displayName: 'Cache pip packages'
+
   - script: |
-      brew update
-      # Uninstall existing CMake to avoid tap conflicts
+      # Single serialized Homebrew transaction. brew holds a global lock, so
+      # installing cmake, docker, and colima together is both faster than three
+      # separate `brew install` calls and lets the next step overlap the Colima
+      # VM boot + SQL setup with the Python build.
+      # No `brew update` here: the hosted macOS runner ships an up-to-date
+      # Homebrew and a full formula re-sync is ~1-3 min of pure setup overhead.
+      # Uninstall the preinstalled CMake first to avoid tap conflicts.
       brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
-      # Install CMake from homebrew/core
-      brew install cmake
-    displayName: 'Install CMake'
+      brew install cmake docker colima
+    displayName: 'Install build & container tooling (Homebrew)'
 
   - script: |
-      brew update
-      brew install docker colima
+      set -e
+      # Overlap the ENTIRE container-side setup (Colima VM boot -> image pull ->
+      # container start -> SQL readiness) with the CPU-bound Python setup (pip
+      # install + pybind build). The two chains are independent until pytest, so
+      # we run the container chain in the background and the build in the
+      # foreground, then wait for the container before continuing.
+      #
+      # On the Intel macOS-15 hosted runner the linux/amd64 SQL Server image runs
+      # natively (no emulation); the dominant container costs are the Colima VM
+      # boot (~2-4 min) and the ~2 GB image pull, both of which are hidden behind
+      # the build here.
+      #
+      # NOTE: this deliberately merges what used to be separate steps (start
+      # Colima, pull+start SQL, install Python deps, build pybind). Splitting them
+      # back out restores the previous per-step timing breakdown.
+      setup_sql() {
+        echo "[sql] Starting Colima VM..."
+        colima start --cpu 4 --memory 8 --disk 50
+        docker context use colima >/dev/null || true
+        docker version
 
-      # Start Colima with extra resources
-      colima start --cpu 4 --memory 8 --disk 50
+        echo "[sql] Pulling SQL Server image..."
+        docker pull "$(sqlServerImage)"
 
-      # Optional: set Docker context (usually automatic)
-      docker context use colima >/dev/null || true
+        echo "[sql] Starting SQL Server container..."
+        docker run \
+          --name sqlserver \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+          -p 1433:1433 \
+          -d "$(sqlServerImage)"
 
-      # Confirm Docker is operational
-      docker version
-      docker ps
-    displayName: 'Install and start Colima-based Docker'
+        echo "[sql] Waiting for SQL Server to accept connections..."
+        for i in {1..30}; do
+          if docker exec sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U SA -P "$DB_PASSWORD" \
+            -C -Q "SELECT 1"; then
+            echo "[sql] SQL Server is ready."
+            return 0
+          fi
+          sleep 2
+        done
+        echo "[sql] SQL Server did not become ready in time." >&2
+        return 1
+      }
 
-  - script: |
-      # Pull and run SQL Server container
-      docker pull $(sqlServerImage)
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-        -p 1433:1433 \
-        -d $(sqlServerImage)
+      echo "Starting container setup (Colima + SQL Server) in the background..."
+      setup_sql > /tmp/sql_setup.log 2>&1 &
+      SQL_PID=$!
 
-      # Starting SQL Server container…
-      for i in {1..30}; do
-        docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$DB_PASSWORD" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
-    displayName: 'Pull & start SQL Server (Docker)'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
+      echo "Installing Python dependencies (overlapped with container setup)..."
       python -m pip install --upgrade pip
       pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
 
-  - script: |
-      cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
+      echo "Building pybind bindings (.so) (overlapped with container setup)..."
+      ( cd mssql_python/pybind && ./build.sh )
+
+      echo "Waiting for container setup (Colima + SQL Server) to finish..."
+      if ! wait "$SQL_PID"; then
+        echo "Container setup failed:"
+        cat /tmp/sql_setup.log
+        exit 1
+      fi
+      cat /tmp/sql_setup.log
+    displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
       platform: unix
+
+  - script: |
+      # Uninstall any system/Homebrew ODBC before tests so pytest exercises the
+      # driver and driver manager bundled in the wheel, not a system copy. Mirrors
+      # the Linux jobs. Every command is guarded so this is a no-op when nothing is
+      # installed (the hosted runner may or may not ship unixODBC).
+      echo "Removing Homebrew ODBC packages (if installed)..."
+      brew uninstall --ignore-dependencies --force msodbcsql18 mssql-tools18 unixodbc 2>/dev/null \
+        || echo "  no Homebrew ODBC packages to remove"
+
+      echo "Removing leftover driver-manager dylibs and config from Homebrew prefixes..."
+      for prefix in /opt/homebrew /usr/local; do
+        rm -f "$prefix"/lib/libodbc.*.dylib "$prefix"/lib/libodbcinst.*.dylib \
+              "$prefix"/lib/libodbc.dylib "$prefix"/lib/libodbcinst.dylib
+        rm -rf "$prefix"/opt/msodbcsql18 "$prefix"/opt/unixodbc
+        rm -f "$prefix"/etc/odbcinst.ini "$prefix"/etc/odbc.ini
+      done
+      rm -f /etc/odbcinst.ini /etc/odbc.ini "$HOME/.odbcinst.ini" "$HOME/.odbc.ini"
+
+      echo "Confirming no system unixODBC driver manager remains on the default search path:"
+      if ls /opt/homebrew/lib/libodbc.*.dylib /usr/local/lib/libodbc.*.dylib 2>/dev/null; then
+        echo "  WARNING: a system libodbc is still present"
+      else
+        echo "  none found (good)"
+      fi
+
+      echo "Verifying the bundled x86_64 driver load chain is intact:"
+      otool -L mssql_python_odbc/libs/macos/x86_64/lib/libmsodbcsql.18.dylib \
+        || echo "  bundled driver not found"
+    displayName: 'Uninstall system ODBC Driver before running tests on macOS'
 
   - script: |
       echo "Build successful, running tests now"
@@ -615,6 +691,8 @@ jobs:
   - script: |
       echo "Installing ODBC Driver 18 for pyodbc..."
       brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
+      # Newer Homebrew refuses to load formulae from third-party taps unless the tap is trusted
+      brew trust microsoft/mssql-release || echo "brew trust failed; attempting install anyway"
       HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 || echo "ODBC Driver 18 install failed — pyodbc benchmarks will be skipped"
       pip install pyodbc
       echo "Running performance benchmarks..."
@@ -740,6 +818,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         
@@ -801,6 +882,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
@@ -811,7 +895,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.6.so.2.1
+        ldd mssql_python_odbc/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
 
@@ -975,7 +1059,11 @@ jobs:
         distroName: 'Ubuntu'
         archName: 'arm64'
       Debian_ARM64:
-        dockerImage: 'debian:12'
+        # Python 3.11 is preinstalled (byte-compiled natively at image-build
+        # time) so we never run the apt python3 post-install byte-compilation
+        # that SIGSEGVs (exit 139) under QEMU user-mode emulation. Still Debian
+        # 12 (bookworm) underneath, so the msodbcsql18 debian/12 repo applies.
+        dockerImage: 'python:3.11-bookworm'
         distroName: 'Debian'
         archName: 'arm64'
 
@@ -1038,32 +1126,47 @@ jobs:
       # Install dependencies in the ARM64 container
       if [ "$(distroName)" = "Ubuntu" ]; then
         docker exec test-container-$(distroName)-$(archName) bash -c "
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
+          apt-get update
           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
           # Verify architecture
           uname -m
           dpkg --print-architecture
+          python3 --version
+          cmake --version
         "
       else
         # Debian ARM64
+        # Python (with pip, venv and dev headers) is already provided by the
+        # python:3.11-bookworm base image under /usr/local, so we do NOT
+        # apt-install python3* here -- the apt python3 post-install byte-
+        # compilation is what SIGSEGVs (exit 139) under QEMU emulation. pybind11
+        # comes from pip (requirements.txt); only non-Python build tools are
+        # pulled from apt, none of which depend on the Debian python3 package.
         docker exec test-container-$(distroName)-$(archName) bash -c "
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+          apt-get update
+          apt-get install -y cmake curl wget gnupg build-essential
           # Verify architecture
           uname -m
           dpkg --print-architecture
+          python3 --version
+          cmake --version
         "
       fi
     displayName: 'Install basic dependencies in $(distroName) ARM64 container'
 
   - script: |
       # Install ODBC driver in the ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName)-$(archName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         
@@ -1094,9 +1197,14 @@ jobs:
   - script: |
       # Install Python dependencies in the ARM64 container using virtual environment
       docker exec test-container-$(distroName)-$(archName) bash -c "
+        set -euo pipefail
         # Create a virtual environment
         python3 -m venv /opt/venv
         source /opt/venv/bin/activate
+
+        # Ensure the expected runtime tools are available before build/test steps
+        command -v python >/dev/null 2>&1
+        command -v cmake >/dev/null 2>&1
         
         # Install dependencies in the virtual environment
         python -m pip install --upgrade pip
@@ -1110,7 +1218,14 @@ jobs:
   - script: |
       # Build pybind bindings in the ARM64 container
       docker exec test-container-$(distroName)-$(archName) bash -c "
+        set -euo pipefail
+        if [ ! -f /opt/venv/bin/activate ]; then
+          echo '/opt/venv/bin/activate is missing. Python dependency setup did not complete.'
+          exit 1
+        fi
         source /opt/venv/bin/activate
+        command -v python >/dev/null 2>&1
+        command -v cmake >/dev/null 2>&1
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
@@ -1126,6 +1241,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName)-$(archName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
@@ -1136,7 +1254,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.6.so.2.1
+        ldd mssql_python_odbc/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
 
@@ -1236,6 +1354,9 @@ jobs:
 
   - script: |
       # Install dependencies in the RHEL 9 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9 bash -c "
         # Enable CodeReady Builder repository for additional packages
         dnf update -y
@@ -1340,6 +1461,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9 bash -c "
         dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
         rm -f /usr/bin/sqlcmd
@@ -1349,7 +1473,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.6.so.2.1
+        ldd mssql_python_odbc/libs/linux/rhel/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
 
@@ -1457,6 +1581,9 @@ jobs:
 
   - script: |
       # Install dependencies in the RHEL 9 ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9-arm64 bash -c "
         # Enable CodeReady Builder repository for additional packages
         dnf update -y
@@ -1565,6 +1692,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9-arm64 bash -c "
         dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
         rm -f /usr/bin/sqlcmd
@@ -1574,7 +1704,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.6.so.2.1
+        ldd mssql_python_odbc/libs/linux/rhel/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
 
@@ -1718,6 +1848,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the Alpine x86_64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine bash -c "
         # Detect architecture for ODBC driver download
         case \$(uname -m) in
@@ -1798,6 +1931,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine bash -c "
         # Remove system ODBC installation
         apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
@@ -1808,7 +1944,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.6.so.2.1 || echo 'Driver library not found'
+        ldd mssql_python_odbc/libs/linux/alpine/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
 
@@ -1968,6 +2104,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the Alpine ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine-arm64 bash -c "
         # Detect architecture for ODBC driver download
         case \$(uname -m) in
@@ -2049,6 +2188,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine-arm64 bash -c "
         # Remove system ODBC installation
         apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
@@ -2059,7 +2201,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.6.so.2.1 || echo 'Driver library not found'
+        ldd mssql_python_odbc/libs/linux/alpine/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
 
