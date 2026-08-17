@@ -14435,32 +14435,22 @@ def test_xml_malformed_input(cursor, db_connection):
 
 
 def test_decimal_special_values_coverage(cursor):
-    """Test decimal processing with special values like NaN and Infinity (Lines 213-221)."""
+    """Non-finite Decimals are rejected explicitly by `_get_numeric_data`."""
     from decimal import Decimal
 
-    # Test special decimal values that have string exponents
+    # NaN reports exponent 'n', sNaN reports 'N', Infinity reports 'F'. None of
+    # them has a SQL NUMERIC encoding, so all three must raise ValueError rather
+    # than falling through to precision=38 and packing a silent zero.
     test_values = [
-        Decimal("NaN"),  # Should have str exponent 'n'
-        Decimal("Infinity"),  # Should have str exponent 'F'
-        Decimal("-Infinity"),  # Should have str exponent 'F'
+        Decimal("NaN"),
+        Decimal("sNaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
     ]
 
     for special_val in test_values:
-        try:
-            # This should trigger the special value handling path (lines 217-218)
-            # But there's a bug in the code - it doesn't handle string exponents properly after line 218
+        with pytest.raises(ValueError, match="non-finite"):
             cursor._get_numeric_data(special_val)
-        except (ValueError, TypeError) as e:
-            # Expected - either ValueError for unsupported values or TypeError due to str/int comparison
-            # This exercises the special value code path (lines 217-218) even though it errors later
-            assert (
-                "not supported" in str(e)
-                or "Precision of the numeric value is too high" in str(e)
-                or "'>' not supported between instances of 'str' and 'int'" in str(e)
-            )
-        except Exception as e:
-            # Other exceptions are also acceptable as we're testing error paths
-            pass
 
 
 def test_decimal_negative_exponent_edge_cases(cursor):
