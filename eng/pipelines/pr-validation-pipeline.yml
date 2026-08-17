@@ -514,16 +514,47 @@ jobs:
     displayName: 'Install and start Colima-based Docker'
 
   - script: |
-      # Pull and run SQL Server container
-      docker pull $(sqlServerImage)
+      set -e
+      # Overlap the SQL Server image pull with the CPU-bound setup below.
+      #
+      # On the Intel macOS-15 hosted runner the linux/amd64 SQL Server image runs
+      # natively (no emulation), so the dominant cost here is the ~2 GB `docker
+      # pull` over the network, not container boot. That pull is pure I/O, so we
+      # start it in the background and run pip install + the pybind build (CPU
+      # work) while it downloads, then wait for it before starting the container.
+      #
+      # NOTE: this deliberately merges what used to be three separate steps
+      # (pull+start SQL, install Python deps, build pybind) so the download is
+      # hidden behind the build. Splitting them back out restores the previous
+      # per-step timing breakdown.
+      echo "Starting SQL Server image pull in the background..."
+      docker pull "$(sqlServerImage)" > /tmp/sql_image_pull.log 2>&1 &
+      PULL_PID=$!
+
+      echo "Installing Python dependencies (overlapped with the image pull)..."
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+
+      echo "Building pybind bindings (.so) (overlapped with the image pull)..."
+      ( cd mssql_python/pybind && ./build.sh )
+
+      echo "Waiting for the SQL Server image pull to finish..."
+      if ! wait "$PULL_PID"; then
+        echo "docker pull failed:"
+        cat /tmp/sql_image_pull.log
+        exit 1
+      fi
+      cat /tmp/sql_image_pull.log
+
+      echo "Starting SQL Server container..."
       docker run \
         --name sqlserver \
         -e ACCEPT_EULA=Y \
         -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
         -p 1433:1433 \
-        -d $(sqlServerImage)
+        -d "$(sqlServerImage)"
 
-      # Starting SQL Server container…
+      # Wait for SQL Server to accept connections.
       for i in {1..30}; do
         docker exec sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
@@ -533,19 +564,9 @@ jobs:
           -C -Q "SELECT 1" && break
         sleep 2
       done
-    displayName: 'Pull & start SQL Server (Docker)'
+    displayName: 'Build + start SQL Server (image pull overlapped with build)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
-
-  - script: |
-      cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
 
   - template: steps/install-mssql-py-core.yml
     parameters:
