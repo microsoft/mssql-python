@@ -559,7 +559,23 @@ jobs:
           fi
           sleep 2
         done
+
+        # One last probe: the loop sleeps after its final attempt, so SQL can
+        # become reachable in that window and would otherwise be missed.
+        if docker exec sqlserver \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost -U SA -P "$DB_PASSWORD" \
+          -C -Q "SELECT 1"; then
+          echo "[sql] SQL Server is ready."
+          return 0
+        fi
+
+        # sqlcmd only reports that the client could not connect. When the
+        # container itself exited (bad password policy, EULA, OOM, port clash)
+        # the reason is in the container's own log, so surface it here.
         echo "[sql] SQL Server did not become ready in time." >&2
+        echo "[sql] ---- docker logs sqlserver (last 200 lines) ----" >&2
+        docker logs --tail 200 sqlserver >&2 || true
         return 1
       }
 
@@ -2510,32 +2526,15 @@ jobs:
         -d mcr.microsoft.com/mssql/server:2022-latest
 
       # Wait until SQL Server is ready
-      sql_ready=false
       for i in {1..30}; do
-        if docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1"; then
-          sql_ready=true
-          break
-        fi
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # one last probe, in case it came up during the final sleep
         docker exec sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
           -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" || {
-            echo "SQL Server did not become ready after 30 attempts"
-            docker logs --tail 200 sqlserver || true
-            exit 1
-          }
-      fi
+          -C -Q "SELECT 1" && break
+        sleep 2
+      done
     displayName: 'Start SQL Server container'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
