@@ -469,6 +469,13 @@ jobs:
   pool:
     vmImage: 'macos-latest'
 
+  variables:
+    # pip's on-disk download/wheel cache. Persisted across runs by the Cache@2
+    # task below so `pip install -r requirements.txt` reuses wheels instead of
+    # re-downloading them on every run. Exposed to script steps as the
+    # $PIP_CACHE_DIR environment variable, which pip honors automatically.
+    PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip-cache
+
   strategy:
     matrix:
       SQL2022:
@@ -487,84 +494,94 @@ jobs:
       addToPath: true
     displayName: 'Use Python $(pythonVersion) on macOS'
 
+  - task: Cache@2
+    inputs:
+      key: 'pip | "$(Agent.OS)" | "$(pythonVersion)" | requirements.txt'
+      restoreKeys: |
+        pip | "$(Agent.OS)" | "$(pythonVersion)"
+        pip | "$(Agent.OS)"
+      path: $(PIP_CACHE_DIR)
+    displayName: 'Cache pip packages'
+
   - script: |
-      # Note: no `brew update` here. The hosted macOS runner ships an up-to-date
-      # Homebrew; `brew update` re-syncs the entire formula index (network-bound,
-      # ~1-3 min) for no benefit and is a large chunk of setup time.
-      # Uninstall existing CMake to avoid tap conflicts
+      # Single serialized Homebrew transaction. brew holds a global lock, so
+      # installing cmake, docker, and colima together is both faster than three
+      # separate `brew install` calls and lets the next step overlap the Colima
+      # VM boot + SQL setup with the Python build.
+      # No `brew update` here: the hosted macOS runner ships an up-to-date
+      # Homebrew and a full formula re-sync is ~1-3 min of pure setup overhead.
+      # Uninstall the preinstalled CMake first to avoid tap conflicts.
       brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
-      # Install CMake from homebrew/core
-      brew install cmake
-    displayName: 'Install CMake'
-
-  - script: |
-      # No `brew update` (see the CMake step) - it re-syncs the whole formula
-      # index and is pure setup overhead on an already-current runner.
-      brew install docker colima
-
-      # Start Colima with extra resources
-      colima start --cpu 4 --memory 8 --disk 50
-
-      # Optional: set Docker context (usually automatic)
-      docker context use colima >/dev/null || true
-
-      # Confirm Docker is operational
-      docker version
-      docker ps
-    displayName: 'Install and start Colima-based Docker'
+      brew install cmake docker colima
+    displayName: 'Install build & container tooling (Homebrew)'
 
   - script: |
       set -e
-      # Overlap the SQL Server image pull with the CPU-bound setup below.
+      # Overlap the ENTIRE container-side setup (Colima VM boot -> image pull ->
+      # container start -> SQL readiness) with the CPU-bound Python setup (pip
+      # install + pybind build). The two chains are independent until pytest, so
+      # we run the container chain in the background and the build in the
+      # foreground, then wait for the container before continuing.
       #
       # On the Intel macOS-15 hosted runner the linux/amd64 SQL Server image runs
-      # natively (no emulation), so the dominant cost here is the ~2 GB `docker
-      # pull` over the network, not container boot. That pull is pure I/O, so we
-      # start it in the background and run pip install + the pybind build (CPU
-      # work) while it downloads, then wait for it before starting the container.
+      # natively (no emulation); the dominant container costs are the Colima VM
+      # boot (~2-4 min) and the ~2 GB image pull, both of which are hidden behind
+      # the build here.
       #
-      # NOTE: this deliberately merges what used to be three separate steps
-      # (pull+start SQL, install Python deps, build pybind) so the download is
-      # hidden behind the build. Splitting them back out restores the previous
-      # per-step timing breakdown.
-      echo "Starting SQL Server image pull in the background..."
-      docker pull "$(sqlServerImage)" > /tmp/sql_image_pull.log 2>&1 &
-      PULL_PID=$!
+      # NOTE: this deliberately merges what used to be separate steps (start
+      # Colima, pull+start SQL, install Python deps, build pybind). Splitting them
+      # back out restores the previous per-step timing breakdown.
+      setup_sql() {
+        echo "[sql] Starting Colima VM..."
+        colima start --cpu 4 --memory 8 --disk 50
+        docker context use colima >/dev/null || true
+        docker version
 
-      echo "Installing Python dependencies (overlapped with the image pull)..."
+        echo "[sql] Pulling SQL Server image..."
+        docker pull "$(sqlServerImage)"
+
+        echo "[sql] Starting SQL Server container..."
+        docker run \
+          --name sqlserver \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+          -p 1433:1433 \
+          -d "$(sqlServerImage)"
+
+        echo "[sql] Waiting for SQL Server to accept connections..."
+        for i in {1..30}; do
+          if docker exec sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U SA -P "$DB_PASSWORD" \
+            -C -Q "SELECT 1"; then
+            echo "[sql] SQL Server is ready."
+            return 0
+          fi
+          sleep 2
+        done
+        echo "[sql] SQL Server did not become ready in time." >&2
+        return 1
+      }
+
+      echo "Starting container setup (Colima + SQL Server) in the background..."
+      setup_sql > /tmp/sql_setup.log 2>&1 &
+      SQL_PID=$!
+
+      echo "Installing Python dependencies (overlapped with container setup)..."
       python -m pip install --upgrade pip
       pip install -r requirements.txt
 
-      echo "Building pybind bindings (.so) (overlapped with the image pull)..."
+      echo "Building pybind bindings (.so) (overlapped with container setup)..."
       ( cd mssql_python/pybind && ./build.sh )
 
-      echo "Waiting for the SQL Server image pull to finish..."
-      if ! wait "$PULL_PID"; then
-        echo "docker pull failed:"
-        cat /tmp/sql_image_pull.log
+      echo "Waiting for container setup (Colima + SQL Server) to finish..."
+      if ! wait "$SQL_PID"; then
+        echo "Container setup failed:"
+        cat /tmp/sql_setup.log
         exit 1
       fi
-      cat /tmp/sql_image_pull.log
-
-      echo "Starting SQL Server container..."
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-        -p 1433:1433 \
-        -d "$(sqlServerImage)"
-
-      # Wait for SQL Server to accept connections.
-      for i in {1..30}; do
-        docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$DB_PASSWORD" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
-    displayName: 'Build + start SQL Server (image pull overlapped with build)'
+      cat /tmp/sql_setup.log
+    displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
