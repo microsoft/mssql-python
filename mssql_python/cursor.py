@@ -50,6 +50,10 @@ SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
+# SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
+# encoding and must be rejected at detect time on both paths (see _map_sql_type).
+BIGINT_MIN: int = -(2**63)
+BIGINT_MAX: int = 2**63 - 1
 
 
 def _normalize_time_param(value, c_type):
@@ -506,29 +510,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         num_digits = len(digits_tuple)
         exponent = decimal_as_tuple.exponent
 
-        # Handle special values (NaN, Infinity, etc.)
+        # NaN / sNaN / Infinity report a string exponent ('n', 'N', 'F') instead of an
+        # int. There is no SQL NUMERIC encoding for them, so refuse here rather than
+        # falling through to precision=38 and letting the digit packing below emit a
+        # silent zero. The native detection path raises ValueError for the same input.
         if isinstance(exponent, str):
-            # For special values like 'n' (NaN), 'N' (sNaN), 'F' (Infinity)
-            # Return default precision and scale
-            precision = 38  # SQL Server default max precision
+            raise ValueError("Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC")
+
+        # Calculate the SQL precision & scale
+        #   precision = no. of significant digits
+        #   scale     = no. digits after decimal point
+        if exponent >= 0:
+            # digits=314, exp=2 ---> '31400' --> precision=5, scale=0
+            precision = num_digits + exponent
             scale = 0
+        elif (-1 * exponent) <= num_digits:
+            # digits=3140, exp=-3 ---> '3.140' --> precision=4, scale=3
+            precision = num_digits
+            scale = exponent * -1
         else:
-            # Calculate the SQL precision & scale
-            #   precision = no. of significant digits
-            #   scale     = no. digits after decimal point
-            if exponent >= 0:
-                # digits=314, exp=2 ---> '31400' --> precision=5, scale=0
-                precision = num_digits + exponent
-                scale = 0
-            elif (-1 * exponent) <= num_digits:
-                # digits=3140, exp=-3 ---> '3.140' --> precision=4, scale=3
-                precision = num_digits
-                scale = exponent * -1
-            else:
-                # digits=3140, exp=-5 ---> '0.03140' --> precision=5, scale=5
-                # TODO: double check the precision calculation here with SQL documentation
-                precision = exponent * -1
-                scale = exponent * -1
+            # digits=3140, exp=-5 ---> '0.03140' --> precision=5, scale=5
+            # TODO: double check the precision calculation here with SQL documentation
+            precision = exponent * -1
+            scale = exponent * -1
 
         if precision > 38:
             raise ValueError(
@@ -719,6 +723,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     0,
                     False,
                 )
+            # Beyond INTEGER, the only integer SQL type is BIGINT (signed 64-bit). An int
+            # outside its range cannot bind, so reject here with a clear message rather than
+            # labelling it BIGINT and failing later at the C++ cast. Mirrors the native path.
+            if value_to_check > BIGINT_MAX or min_to_check < BIGINT_MIN:
+                offending = value_to_check if value_to_check > BIGINT_MAX else min_to_check
+                raise ValueError(
+                    f"integer {offending} is out of range for SQL BIGINT [-2^63, 2^63-1]"
+                )
             logger.debug("_map_sql_type: INT -> BIGINT - index=%d", i)
             return (
                 ddbc_sql_const.SQL_BIGINT.value,
@@ -746,27 +758,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             num_digits = len(digits_tuple)
             exponent = decimal_as_tuple.exponent
 
-            # Handle special values (NaN, Infinity, etc.)
+            # NaN / sNaN / Infinity report a string exponent ('n', 'N', 'F'). Reject them
+            # before the MONEY range comparison below, which would otherwise raise
+            # decimal.InvalidOperation for NaN, and before _get_numeric_data, which used to
+            # fail with TypeError for Infinity. The native detection path raises ValueError
+            # for the same input, so both paths now agree on type and message.
             if isinstance(exponent, str):
                 logger.debug(
-                    "_map_sql_type: DECIMAL special value - index=%d, exponent=%s", i, exponent
+                    "_map_sql_type: DECIMAL non-finite value - index=%d, exponent=%s", i, exponent
                 )
-                # For special values like 'n' (NaN), 'N' (sNaN), 'F' (Infinity)
-                # Return default precision and scale
-                precision = 38  # SQL Server default max precision
+                raise ValueError("Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC")
+
+            # Calculate the SQL precision (same logic as _get_numeric_data)
+            if exponent >= 0:
+                precision = num_digits + exponent
+            elif (-1 * exponent) <= num_digits:
+                precision = num_digits
             else:
-                # Calculate the SQL precision (same logic as _get_numeric_data)
-                if exponent >= 0:
-                    precision = num_digits + exponent
-                elif (-1 * exponent) <= num_digits:
-                    precision = num_digits
-                else:
-                    precision = exponent * -1
-                logger.debug(
-                    "_map_sql_type: DECIMAL precision calculated - index=%d, precision=%d",
-                    i,
-                    precision,
-                )
+                precision = exponent * -1
+            logger.debug(
+                "_map_sql_type: DECIMAL precision calculated - index=%d, precision=%d",
+                i,
+                precision,
+            )
 
             if precision > 38:
                 logger.debug(
@@ -1236,6 +1250,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     ) -> Tuple[int, int, int, int, bool]:
         """
         Maps parameter types for the given parameter.
+
+        Python-side type detection. The standard execute() path no longer calls this —
+        DetectParamTypes does the same job in C++ without crossing the pybind11
+        boundary per parameter. Two callers remain: the legacy execute() branch used
+        when setinputsizes overrides are active, and executemany(). The former goes
+        away once setinputsizes is handled natively; the latter needs its own
+        native columnwise detection before this can be deleted outright.
+
         Args:
             parameter: parameter to bind.
         Returns:
@@ -1757,11 +1779,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
 
-        # Apply timeout if set (non-zero)
-        logger.debug("execute: Creating parameter type list")
-        param_info = ddbc_bindings.ParamInfo
-        parameters_type = []
-
         # Validate that inputsizes matches parameter count if both are present
         if parameters and self._inputsizes:
             if len(self._inputsizes) != len(parameters):
@@ -1773,11 +1790,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     Warning,
                 )
 
-        if parameters:
-            for i, param in enumerate(parameters):
-                paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
-                parameters_type.append(paraminfo)
-
         # Prepare caching: skip SQLPrepare when re-executing the same SQL
         # with parameters. The HSTMT is reused via _soft_reset_cursor, so the
         # server-side plan from the previous SQLPrepare is still valid.
@@ -1786,30 +1798,64 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        if logger.isEnabledFor(logging.DEBUG):
-            for i, param in enumerate(parameters):
-                logger.debug(
-                    """Parameter number: %s, Parameter: %s,
-                    Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                    i + 1,
-                    param,
-                    str(type(param)),
-                    parameters_type[i].paramSQLType,
-                    parameters_type[i].paramCType,
-                    parameters_type[i].columnSize,
-                    parameters_type[i].decimalDigits,
-                    parameters_type[i].inputOutputType,
-                )
-
-        ret = ddbc_bindings.DDBCSQLExecute(
-            self.hstmt,
-            operation,
-            parameters,
-            parameters_type,
-            self.is_stmt_prepared,
-            effective_use_prepare,
-            encoding_settings,
+        # Standard path: when no inputsizes override, type detection + bind + execute
+        # all happen in C++ via DDBCSQLExecute. ParamInfo never crosses the pybind11
+        # boundary. This is the path ~99% of calls take.
+        use_standard_execute = parameters and not (
+            self._inputsizes and any(s is not None for s in self._inputsizes)
         )
+
+        if use_standard_execute:
+            ret = ddbc_bindings.DDBCSQLExecute(
+                self.hstmt,
+                operation,
+                parameters,
+                self.is_stmt_prepared,
+                effective_use_prepare,
+                encoding_settings,
+            )
+        else:
+            # LEGACY PATH — slated for removal in a future optimization round.
+            #
+            # Kept only for setinputsizes() callers, where the user's explicit type
+            # overrides have to be honoured instead of C++ detecting types itself.
+            # Type detection happens in Python here, so every parameter round-trips
+            # through pybind11 as a ParamInfo object, which is what makes it slow.
+            # Once setinputsizes overrides are handled natively, this branch and
+            # DDBCSQLExecuteLegacy both go away.
+            parameters_type = []
+            if parameters:
+                param_info = ddbc_bindings.ParamInfo
+                for i, param in enumerate(parameters):
+                    paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
+                    parameters_type.append(paraminfo)
+
+            if logger.isEnabledFor(logging.DEBUG):
+                for i, param in enumerate(parameters):
+                    logger.debug(
+                        """Parameter number: %s, Parameter: %s,
+                        Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                        i + 1,
+                        param,
+                        str(type(param)),
+                        parameters_type[i].paramSQLType,
+                        parameters_type[i].paramCType,
+                        parameters_type[i].columnSize,
+                        parameters_type[i].decimalDigits,
+                        parameters_type[i].inputOutputType,
+                    )
+
+            # Legacy binding: accepts the pre-built ParamInfo list from Python.
+            # Goes away with the branch above.
+            ret = ddbc_bindings.DDBCSQLExecuteLegacy(
+                self.hstmt,
+                operation,
+                parameters,
+                parameters_type,
+                self.is_stmt_prepared,
+                effective_use_prepare,
+                encoding_settings,
+            )
         # Check return code
         try:
 
@@ -3063,54 +3109,52 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # body.  This is the single canonical cleanup site.
                 cur = cursor_ref[0]
                 cursor_ref[0] = None
-                if cur is None or cur.closed or cur.hstmt is None:
-                    return
+                if not cur.closed and cur.hstmt is not None:
+                    # 1) Drain diagnostics produced by the (possibly cancelled)
+                    #    fetch *before* SQL_CLOSE so we don't lose them.
+                    try:
+                        cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
 
-                # 1) Drain diagnostics produced by the (possibly cancelled)
-                #    fetch *before* SQL_CLOSE so we don't lose them.
-                try:
-                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
+                    # 2) Release the server-side cursor & locks while keeping the
+                    #    HSTMT and prepared plan intact, so the parent Cursor can
+                    #    be re-executed.
+                    try:
+                        cur.hstmt._close_cursor()  # pylint: disable=protected-access
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        # Elevated to WARNING: unlike the diag-drain failures
+                        # (which only cost us some warning text), a failed
+                        # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
+                        # and its locks/tempdb resources open on SQL Server
+                        # until this parent Cursor is closed or re-executed.
+                        # DEBUG is typically disabled in production, so that
+                        # leak would be invisible; WARNING makes it visible.
+                        logger.warning(
+                            "arrow_reader cleanup: _close_cursor failed (%s); "
+                            "server-side cursor may remain open until this "
+                            "Cursor is closed or re-executed",
+                            e,
+                        )
 
-                # 2) Release the server-side cursor & locks while keeping the
-                #    HSTMT and prepared plan intact, so the parent Cursor can
-                #    be re-executed.
-                try:
-                    cur.hstmt._close_cursor()  # pylint: disable=protected-access
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    # Elevated to WARNING: unlike the diag-drain failures
-                    # (which only cost us some warning text), a failed
-                    # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
-                    # and its locks/tempdb resources open on SQL Server
-                    # until this parent Cursor is closed or re-executed.
-                    # DEBUG is typically disabled in production, so that
-                    # leak would be invisible; WARNING makes it visible.
-                    logger.warning(
-                        "arrow_reader cleanup: _close_cursor failed (%s); "
-                        "server-side cursor may remain open until this "
-                        "Cursor is closed or re-executed",
-                        e,
-                    )
+                    # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
+                    #    runs unconditionally because SQL_CLOSE can return
+                    #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
+                    #    warning records on the HSTMT diag stack; the previous
+                    #    "only on failure" path would silently drop those.
+                    try:
+                        cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
 
-                # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
-                #    runs unconditionally because SQL_CLOSE can return
-                #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
-                #    warning records on the HSTMT diag stack; the previous
-                #    "only on failure" path would silently drop those.
-                try:
-                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
-
-                # 4) Reset cursor bookkeeping to a clean "no result set"
-                #    state.  rowcount becomes -1 to signal that the prior
-                #    result is no longer meaningful.
-                try:
-                    cur._clear_rownumber()  # pylint: disable=protected-access
-                    cur.rowcount = -1
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
+                    # 4) Reset cursor bookkeeping to a clean "no result set"
+                    #    state.  rowcount becomes -1 to signal that the prior
+                    #    result is no longer meaningful.
+                    try:
+                        cur._clear_rownumber()  # pylint: disable=protected-access
+                        cur.rowcount = -1
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
 
         gen = batch_generator()
         inner = pyarrow.RecordBatchReader.from_batches(schema, gen)

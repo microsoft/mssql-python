@@ -513,6 +513,7 @@ class TestAdditionalPybindFunctions:
             "DDBCSetDecimalSeparator",
             "DDBCSQLExecDirect",
             "DDBCSQLExecute",
+            "DDBCSQLExecuteLegacy",
             "DDBCSQLRowCount",
             "DDBCSQLFetch",
             "DDBCSQLNumResultCols",
