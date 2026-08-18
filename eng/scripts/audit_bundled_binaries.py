@@ -20,6 +20,14 @@ Extra ELF check: any binary that depends on a BUNDLED sibling must carry an
 ``$ORIGIN`` RUNPATH, otherwise the loader will never find that sibling on a
 minimal base (this is precisely the libodbcinst.so.2 fix).
 
+Reachability: only defects on the transitive load graph rooted at the DRIVER the
+binding actually dlopens (``libmsodbcsql`` / ``msodbcsql``) fail the gate. A
+vendored library that nothing in that graph pulls in -- e.g. the unixODBC
+driver-manager ``libodbc.2.dylib`` on macOS, which mssql-python never loads (it
+opens ``libmsodbcsql`` directly) -- is inert dead weight: a bad install-name /
+rpath / missing arch slice on it can never break a real load, so it is reported
+as ``UNREACHABLE`` (informational) rather than a VIOLATION.
+
 Analyzers are lazy-imported so a leg only needs the analyzer for its own files:
 ELF via pyelftools, Mach-O via macholib, PE via pefile.
 
@@ -152,6 +160,21 @@ _BINARY_EXT = {".so", ".dylib", ".dll", ".pyd", ".exe", ".bundle"}
 # target link graph (skip).
 _LIB_NAME_RE = re.compile(r"\.(so|dylib|dll|pyd|bundle)(\.\d+)*$", re.IGNORECASE)
 
+# The binaries the Python binding actually loads at runtime -- the roots of the
+# dynamic load graph. Reachability from these decides whether a dependency defect
+# can affect a real load (enforced) or sits on inert dead weight (informational).
+# On Windows the driver additionally pulls in msodbcdiag + the mandatory Entra
+# auth DLL, so both are roots.
+_DRIVER_ROOT_RE = {
+    "linux": [re.compile(r"^libmsodbcsql", re.IGNORECASE)],
+    "macos": [re.compile(r"^libmsodbcsql", re.IGNORECASE)],
+    "windows": [
+        re.compile(r"^msodbcsql", re.IGNORECASE),
+        re.compile(r"^msodbcdiag", re.IGNORECASE),
+        re.compile(r"^mssql-auth", re.IGNORECASE),
+    ],
+}
+
 
 def _compile(patterns: list[str]) -> list[re.Pattern]:
     return [re.compile(p, re.IGNORECASE) for p in patterns]
@@ -267,7 +290,7 @@ def _pe_info(path: str):
 class Finding:
     binary: str
     dep: str
-    category: str  # BUNDLED | BASE | DECLARED | VIOLATION | RPATH
+    category: str  # BUNDLED | BASE | DECLARED | VIOLATION | RPATH | UNREACHABLE
 
 
 @dataclass
@@ -316,6 +339,40 @@ def _classify(
     return "VIOLATION"
 
 
+def _reachable_from_driver(analyzed: dict[str, dict], os_name: str) -> set[str]:
+    """Transitive closure of the load graph rooted at the driver binary/-ies.
+
+    Edges follow each binary's dependency basenames to any SAME-payload binary. If
+    no driver root is found (unexpected -- a driver payload always ships one), fail
+    closed by treating EVERY binary as reachable so nothing is silently exempted.
+    """
+    base_to_rel: dict[str, str] = {}
+    for rel in analyzed:
+        base = os.path.basename(rel)
+        key = base.lower() if os_name == "windows" else base
+        base_to_rel.setdefault(key, rel)
+
+    roots_re = _DRIVER_ROOT_RE[os_name]
+    roots = [rel for rel in analyzed if any(rx.match(os.path.basename(rel)) for rx in roots_re)]
+    if not roots:
+        return set(analyzed)
+
+    reachable: set[str] = set()
+    queue = list(roots)
+    while queue:
+        cur = queue.pop()
+        if cur in reachable:
+            continue
+        reachable.add(cur)
+        for dep in analyzed[cur]["deps"]:
+            base = _basename(dep)
+            key = base.lower() if os_name == "windows" else base
+            tgt = base_to_rel.get(key)
+            if tgt is not None and tgt not in reachable:
+                queue.append(tgt)
+    return reachable
+
+
 def audit(payload: str, os_name: str, require_arch: str | None) -> Report:
     rep = Report()
     binaries = list(_iter_binaries(payload))
@@ -339,6 +396,9 @@ def audit(payload: str, os_name: str, require_arch: str | None) -> Report:
     want_kind = {"linux": "elf", "macos": "macho", "windows": "pe"}[os_name]
     arch_norm = {"aarch64": "arm64"}.get((require_arch or "").lower(), (require_arch or "").lower())
 
+    # ---- pass 1: analyze every target-format binary, collecting its deps (needed
+    # both to classify AND to compute the runtime reachability closure below). ----
+    analyzed: dict[str, dict] = {}
     for path, kind in binaries:
         rel = os.path.relpath(path, payload)
         if kind == "other":
@@ -354,34 +414,53 @@ def audit(payload: str, os_name: str, require_arch: str | None) -> Report:
             continue
         try:
             if kind == "elf":
-                needed, runpath, _machine = _elf_info(path)
-                deps = needed
+                deps, runpath, _machine = _elf_info(path)
+                arches: set[str] = set()
             elif kind == "macho":
                 deps, arches = _macho_info(path)
                 runpath = None
-                if arch_norm and arch_norm not in {a.lower() for a in arches}:
-                    rep.findings.append(Finding(rel, f"<arch slice {arch_norm}>", "VIOLATION"))
             else:  # pe
                 deps, _machine = _pe_info(path)
                 runpath = None
+                arches = set()
         except ImportError as exc:
             rep.errors.append(f"missing analyzer for {want_kind}: {exc}")
             return rep
         except Exception as exc:  # noqa: BLE001 - report and continue auditing
             rep.errors.append(f"{rel}: failed to analyze ({exc})")
             continue
+        analyzed[rel] = {"kind": kind, "deps": deps, "runpath": runpath, "arches": arches}
+
+    # ---- reachability: only defects on the driver's actual load graph gate the
+    # build; findings on inert dead weight are reported UNREACHABLE (see docstring).
+    reachable = _reachable_from_driver(analyzed, os_name)
+
+    # ---- pass 2: classify each analyzed binary's deps ----
+    for rel, info in analyzed.items():
+        kind = info["kind"]
+        is_reach = rel in reachable
+
+        if kind == "macho" and arch_norm and arch_norm not in {a.lower() for a in info["arches"]}:
+            rep.findings.append(
+                Finding(
+                    rel, f"<arch slice {arch_norm}>", "VIOLATION" if is_reach else "UNREACHABLE"
+                )
+            )
 
         depends_on_bundled = False
-        for dep in deps:
+        for dep in info["deps"]:
             cat = _classify(dep, os_name, bundled, base_re, decl_re)
             if cat == "BUNDLED":
                 depends_on_bundled = True
+            elif cat == "VIOLATION" and not is_reach:
+                cat = "UNREACHABLE"
             rep.findings.append(Finding(rel, dep, cat))
 
         # ELF: a binary that needs a bundled sibling must carry $ORIGIN in RUNPATH,
         # else the loader cannot find it on a minimal base (the libodbcinst fix).
-        if kind == "elf" and depends_on_bundled:
-            rp = runpath or ""
+        # Only enforced on the real load graph -- an unreachable binary is inert.
+        if kind == "elf" and depends_on_bundled and is_reach:
+            rp = info["runpath"] or ""
             if "$ORIGIN" not in rp and "${ORIGIN}" not in rp:
                 rep.findings.append(Finding(rel, f"RUNPATH='{rp}' (needs $ORIGIN)", "RPATH"))
     return rep
