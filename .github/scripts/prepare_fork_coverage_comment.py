@@ -160,6 +160,7 @@ def resolve_pr_number(event: dict, associated_pulls: list) -> int:
     default_branch = repository.get("default_branch")
     head_sha = workflow_run.get("head_sha")
     head_repository = workflow_run.get("head_repository") or {}
+    head_repository_name = head_repository.get("full_name")
 
     if not isinstance(repository_name, str) or not repository_name:
         raise ValidationError("event is missing the repository name")
@@ -167,7 +168,9 @@ def resolve_pr_number(event: dict, associated_pulls: list) -> int:
         raise ValidationError("event is missing the default branch")
     if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
         raise ValidationError("workflow run has an invalid head SHA")
-    if head_repository.get("full_name") == repository_name:
+    if not isinstance(head_repository_name, str) or not head_repository_name:
+        raise ValidationError("workflow run is missing the head repository")
+    if head_repository_name == repository_name:
         raise ValidationError("workflow run did not originate from a fork")
 
     if not isinstance(associated_pulls, list):
@@ -176,6 +179,7 @@ def resolve_pr_number(event: dict, associated_pulls: list) -> int:
         pull
         for pull in associated_pulls
         if pull.get("head", {}).get("sha") == head_sha
+        and pull.get("head", {}).get("repo", {}).get("full_name") == head_repository_name
         and pull.get("base", {}).get("ref") == default_branch
         and pull.get("base", {}).get("repo", {}).get("full_name") == repository_name
         and isinstance(pull.get("number"), int)

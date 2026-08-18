@@ -44,25 +44,22 @@ def _event(pull_requests=None):
     }
 
 
+def _pull(number=123, head_sha="a" * 40, head_repo="contributor/mssql-python"):
+    return {
+        "number": number,
+        "head": {"sha": head_sha, "repo": {"full_name": head_repo}},
+        "base": {
+            "ref": "main",
+            "repo": {"full_name": "microsoft/mssql-python"},
+        },
+    }
+
+
 def test_prepares_safe_comment_for_forked_pr(valid_artifact, tmp_path):
     event_path = tmp_path / "event.json"
     pulls_path = tmp_path / "pulls.json"
     event_path.write_text(json.dumps(_event()), encoding="utf-8")
-    pulls_path.write_text(
-        json.dumps(
-            [
-                {
-                    "number": 123,
-                    "head": {"sha": "a" * 40},
-                    "base": {
-                        "ref": "main",
-                        "repo": {"full_name": "microsoft/mssql-python"},
-                    },
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
+    pulls_path.write_text(json.dumps([_pull(number=123)]), encoding="utf-8")
 
     pr_number, body = coverage_comment.prepare_comment(valid_artifact, event_path, pulls_path)
 
@@ -73,16 +70,7 @@ def test_prepares_safe_comment_for_forked_pr(valid_artifact, tmp_path):
 
 
 def test_ignores_event_supplied_pull_requests():
-    associated_pulls = [
-        {
-            "number": 456,
-            "head": {"sha": "a" * 40},
-            "base": {
-                "ref": "main",
-                "repo": {"full_name": "microsoft/mssql-python"},
-            },
-        }
-    ]
+    associated_pulls = [_pull(number=456)]
 
     # An attacker-controlled workflow_run.pull_requests entry must never
     # short-circuit resolution; only the trusted head SHA match is honored.
@@ -165,29 +153,32 @@ def test_rejects_untrusted_ado_urls(valid_artifact, url):
 
 
 def test_resolves_pr_by_workflow_head_sha_when_event_list_is_empty():
+    associated_pulls = [_pull(number=456)]
+
+    assert coverage_comment.resolve_pr_number(_event(), associated_pulls) == 456
+
+
+def test_resolves_correct_fork_when_two_forks_share_head_sha():
+    # Two forks sitting on the same commit must not collide; the head
+    # repository from the trusted workflow_run event disambiguates them.
     associated_pulls = [
-        {
-            "number": 456,
-            "head": {"sha": "a" * 40},
-            "base": {
-                "ref": "main",
-                "repo": {"full_name": "microsoft/mssql-python"},
-            },
-        }
+        _pull(number=456, head_repo="contributor/mssql-python"),
+        _pull(number=789, head_repo="other/mssql-python"),
     ]
 
     assert coverage_comment.resolve_pr_number(_event(), associated_pulls) == 456
 
 
+def test_rejects_event_missing_head_repository():
+    event = _event()
+    del event["workflow_run"]["head_repository"]
+
+    with pytest.raises(coverage_comment.ValidationError, match="head repository"):
+        coverage_comment.resolve_pr_number(event, [_pull()])
+
+
 def test_rejects_ambiguous_pr_resolution():
-    pull = {
-        "number": 456,
-        "head": {"sha": "a" * 40},
-        "base": {
-            "ref": "main",
-            "repo": {"full_name": "microsoft/mssql-python"},
-        },
-    }
+    pull = _pull(number=456)
 
     with pytest.raises(coverage_comment.ValidationError, match="exactly one"):
         coverage_comment.resolve_pr_number(_event(), [pull, {**pull, "number": 789}])

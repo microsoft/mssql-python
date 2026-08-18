@@ -60,7 +60,7 @@ jobs:
           gh api --paginate --slurp \
             -H "Accept: application/vnd.github+json" \
             "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
-            --jq 'add' > "$PULLS_FILE"
+            | jq 'add' > "$PULLS_FILE"
 
           python .github/scripts/prepare_fork_coverage_comment.py \
             --artifact-directory "$ARTIFACT_DIR" \
@@ -74,7 +74,7 @@ jobs:
           COMMENT_ID="$(
             gh api --paginate --slurp \
               "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-              --jq 'add | map(select(
+              | jq -r 'add | map(select(
                 .user.login == "github-actions[bot]" and
                 (.body | contains("<!-- mssql-python-code-coverage -->"))
               )) | .[0].id // empty'
