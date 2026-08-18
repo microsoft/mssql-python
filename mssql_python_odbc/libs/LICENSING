@@ -17,3 +17,18 @@ These components are part of the Microsoft Visual C++ Redistributable and are go
 - msvcp140.dll – Microsoft C++ Standard Library runtime, required for running C++ applications.  
 
 For redistribution and usage terms, refer to: mssql_python\libs\win\MICROSOFT_VISUAL_STUDIO_LICENSE.txt
+
+
+B. The libltdl library bundled in the mssql_python\libs\macos and mssql_python\libs\linux folders is third-party open-source software.
+====================================================================================================
+
+1. GNU Libtool -- libltdl (LGPL-2.1-or-later)
+libltdl is part of GNU Libtool and is used by the Microsoft ODBC driver manager (libodbcinst). It is
+shipped as libltdl.7.dylib on macOS and libltdl.so.7 on Linux, and is linked DYNAMICALLY. It is licensed
+under the GNU Lesser General Public License, version 2.1 or later (LGPL-2.1-or-later), with the GNU
+Libtool exception.
+
+The corresponding source is available from the GNU project at https://www.gnu.org/software/libtool/
+(release tarballs at https://ftp.gnu.org/gnu/libtool/). The full LGPL-2.1 license text is available at
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt, and a copy is shipped alongside the binary as
+LIBLTDL_LGPL_LICENSE.txt in each mssql_python\libs\linux\<distro>\<arch>\lib folder.
