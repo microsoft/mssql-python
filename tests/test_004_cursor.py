@@ -10537,6 +10537,113 @@ def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
         cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
 
 
+def test_setinputsizes_sql_decimal_non_decimal_exception_no_leak(db_connection):
+    """Cover the non-DecimalException conversion branch with no value leak (GH-503).
+
+    ``format(decimal.Decimal("1e999999999999999999"), "f")`` raises MemoryError
+    (not a decimal.DecimalException) quickly and deterministically, exercising
+    the branch that re-raises with the chain suppressed. The resulting
+    ValueError must be metadata-only: no chained cause, and the offending input
+    must be absent from both the message and the fully formatted traceback.
+    """
+    cursor = db_connection.cursor()
+
+    # A syntactically valid Decimal whose fixed-point expansion is astronomically
+    # large; format(..., "f") raises MemoryError rather than a DecimalException.
+    sensitive_value = "1e999999999999999999"
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mem")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_mem (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError) as exc_info:
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_mem (Price) VALUES (?)",
+                [(sensitive_value,)],
+            )
+
+        message = str(exc_info.value)
+        # Metadata-only message...
+        assert "Failed to convert parameter" in message
+        assert "row 0" in message
+        assert "column 0" in message
+        # ...no chained cause (the non-DecimalException branch suppresses it)...
+        assert exc_info.value.__cause__ is None
+        # ...and the input is absent from the message and formatted traceback.
+        assert sensitive_value not in message
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert sensitive_value not in formatted
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mem")
+
+
+def test_executemany_debug_log_no_parameter_values(db_connection):
+    """executemany() DEBUG logging must not emit parameter values or rows (GH-503).
+
+    The batch-execution debug log previously dumped the first 5 full parameter
+    rows, leaking the same PII the exception path now redacts. This test enables
+    DEBUG capture, runs a successful batch of sensitive-looking values, and
+    asserts the values are absent from the logs while batch metadata is present
+    (the metadata assertion is a positive control proving capture is working, so
+    the absence assertions are meaningful rather than vacuous).
+    """
+    import logging as _logging
+    import io
+    from mssql_python.logging import logger, driver_logger
+
+    cursor = db_connection.cursor()
+
+    # Values that stand in for PII; both insert successfully into an NVARCHAR
+    # column so execution reaches the batch debug-log statement.
+    ssn = "123-45-6789"
+    email = "jane.doe@example.com"
+
+    log_stream = io.StringIO()
+    test_handler = _logging.StreamHandler(log_stream)
+    test_handler.setLevel(_logging.DEBUG)
+
+    # Save state we mutate so the global logger is restored afterwards.
+    original_cached_level = logger._cached_level
+    original_driver_level = driver_logger.level
+
+    cursor.execute("DROP TABLE IF EXISTS #test_dbg_no_pii")
+    try:
+        cursor.execute("CREATE TABLE #test_dbg_no_pii (Data NVARCHAR(50))")
+
+        # Enable DEBUG: bypass the wrapper's cached-level gate and lower the
+        # underlying stdlib logger, then attach our capturing handler.
+        logger._cached_level = _logging.DEBUG
+        driver_logger.setLevel(_logging.DEBUG)
+        driver_logger.addHandler(test_handler)
+
+        cursor.executemany(
+            "INSERT INTO #test_dbg_no_pii (Data) VALUES (?)",
+            [(ssn,), (email,)],
+        )
+
+        test_handler.flush()
+        log_contents = log_stream.getvalue()
+
+        # Positive control: batch metadata is logged (proves capture works).
+        assert "Executing batch query with 2 parameter sets" in log_contents
+        # Redaction: no parameter value or row representation is emitted.
+        assert ssn not in log_contents
+        assert email not in log_contents
+        assert repr((ssn,)) not in log_contents
+        assert repr((email,)) not in log_contents
+    finally:
+        driver_logger.removeHandler(test_handler)
+        driver_logger.setLevel(original_driver_level)
+        logger._cached_level = original_cached_level
+        cursor.execute("DROP TABLE IF EXISTS #test_dbg_no_pii")
+
+
 def test_setinputsizes_sql_decimal_high_precision(db_connection):
     """Test setinputsizes with SQL_DECIMAL preserves full DECIMAL(38,18) precision (GH-503)."""
     cursor = db_connection.cursor()

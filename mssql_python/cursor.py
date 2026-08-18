@@ -2703,14 +2703,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Get encoding settings
         encoding_settings = self._get_encoding_settings()
 
-        # Add debug logging
+        # Debug logging: emit batch metadata only. Never log parameter values or
+        # row representations here -- rows may contain PII (SSNs, emails,
+        # balances) that would leak into log files and APM/log shippers even
+        # though this is a DEBUG-level statement. Metadata (batch size, column
+        # count) is sufficient for diagnostics without exposing user data.
         logger.debug(
-            "Executing batch query with %d parameter sets:\n%s",
+            "Executing batch query with %d parameter sets (%d columns per row)",
             len(seq_of_parameters),
-            "\n".join(
-                f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}"
-                for i, p in enumerate(seq_of_parameters[:5])
-            ),  # Limit to first 5 rows for large batches
+            len(parameters_type),
         )
 
         ret = ddbc_bindings.SQLExecuteMany(
