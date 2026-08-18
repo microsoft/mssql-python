@@ -54,6 +54,25 @@ requirements:
     - pip                    # [not win]
   run:
     - python
+    # --- conda-declared security deps ---------------------------------------
+    # The proprietary driver links crypto/auth libraries that MUST receive conda's
+    # security updates rather than being frozen into the vendored payload -- mirroring
+    # conda-forge libpq, which DECLARES openssl + krb5 instead of vendoring them.
+    # (Glue-only libs with no security cadence -- libltdl, the VC++ runtime DLL -- are
+    # bundled/handled separately; only crypto/auth is declared here.)
+    #
+    # OpenSSL: the driver dlopen's libssl/libcrypto for TLS (Encrypt=yes). Because it
+    # is dlopen'd (not an ELF NEEDED entry) conda-build's overlinking can't see it, so
+    # it must be declared explicitly. Windows uses SChannel, so this is POSIX-only.
+    - openssl                 # [not win]
+    # Kerberos: libmsodbcsql NEEDs libkrb5.so.3 + libgssapi_krb5.so.2 on Linux. macOS
+    # uses the system Kerberos.framework and Windows uses SSPI, so krb5 is Linux-only
+    # -- and never vendored (same policy as conda-forge libpq's `krb5 # [not osx]`).
+    - krb5                    # [linux]
+    # Windows VC++ runtime: msodbcsql18.dll imports VCRUNTIME140.dll, but the vendored
+    # vcredist ships only msvcp140.dll. Declare the security-serviced conda runtime so
+    # VCRUNTIME140.dll is present (rather than vendoring yet another copy of it).
+    - vc14_runtime            # [win]
     # conda drops the wheel's platform tag (manylinux_2_28 / macosx_15_0); re-assert
     # the floor so the proprietary driver payload can't be installed on an
     # unsupported host. The wheel install in this recipe's build already requires
