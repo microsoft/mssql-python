@@ -2,11 +2,13 @@
 # Build + validate the mssql-python + mssql-python-odbc conda packages from
 # prebuilt (ESRP-signed) wheels, fully offline via a local --find-links dir.
 # ============================================================================
-# Bash port of build-conda-packages.ps1 for the macOS (osx-arm64) and Linux
-# (linux-64) build legs. conda-build provisions a real per-subdir HOST env and
-# pip-installs the matching wheel (see conda/*/build.sh), so this MUST run on the
-# matching native agent — osx-arm64 on Apple Silicon, linux-64 on the glibc
-# x86_64 host — exactly like the wheel matrix. It does NOT cross-build.
+# Bash port of build-conda-packages.ps1 for the macOS and Linux build legs.
+# conda-build provisions a per-subdir HOST env and installs the matching wheel
+# (see conda/*/build.sh). It runs NATIVELY for linux-64 and osx-64, under QEMU
+# binfmt for linux-aarch64, and as a CROSS-build for osx-arm64 on the Intel macOS
+# agent (there is no reverse Rosetta, so the arm64 Python is never executed --
+# conda/*/build.sh extract the universal2 wheel without Python and the section-7
+# runtime import is skipped; the pipeline's static arm64-slice audit stands in).
 #
 # Args:
 #   $1 WheelsDir           find-links dir holding the mssql-python + mssql-python-odbc wheels
@@ -15,12 +17,14 @@
 #   $4 MssqlPythonVersion  version to stamp on mssql-python
 #   $5 OdbcVersion         version to stamp on mssql-python-odbc
 #   $6 PythonVersions      optional comma-separated (e.g. "3.11,3.12"); empty = auto-detect
-#   $7 CondaSubdir         optional target subdir (e.g. osx-64, linux-aarch64) to
-#                          CROSS-target via CONDA_SUBDIR; empty = build the host's
-#                          native subdir. Cross-targeting relies on the host being
-#                          able to RUN the target's Python for the import validation
-#                          (Rosetta 2 for osx-64 on Apple Silicon; QEMU binfmt for
-#                          linux-aarch64 on an x86_64 host).
+#   $7 CondaSubdir         optional target subdir (e.g. osx-64, osx-arm64,
+#                          linux-aarch64) to CROSS-target via CONDA_SUBDIR; empty =
+#                          build the host's native subdir. The section-7 runtime
+#                          import validation requires the host to be able to RUN the
+#                          target's Python -- true natively, under Rosetta 2 (osx-64
+#                          on Apple Silicon) and under QEMU binfmt (linux-aarch64 on
+#                          x86_64). For osx-arm64 on the Intel agent it is NOT, so
+#                          that leg auto-skips the import (static arch audit stands in).
 set -euo pipefail
 
 WheelsDir="${1:?WheelsDir required}"
@@ -125,9 +129,11 @@ export MSSQL_ODBC_VERSION="$OdbcVersion"
 
 # Cross-subdir builds: force conda-build AND the verify `conda create` to target the
 # requested subdir instead of the host's native one. Both honor CONDA_SUBDIR, so the
-# packages are stamped for $CondaSubdir and the import validation solves that subdir
-# (running the target Python under Rosetta 2 / QEMU as noted above). Left unset for a
-# native build (osx-arm64 on Apple Silicon, linux-64 on the glibc x86_64 host).
+# packages are stamped for $CondaSubdir. The section-7 import validation solves that
+# subdir and runs the target Python where the host can execute it (natively, under
+# Rosetta 2 for osx-64, or under QEMU binfmt for linux-aarch64); on the osx-arm64
+# cross-build (Intel agent, no reverse Rosetta) section 7 auto-detects that the target
+# Python can't run and skips the import. Left unset for a native build.
 if [ -n "$CondaSubdir" ]; then
   export CONDA_SUBDIR="$CondaSubdir"
   echo "Cross-targeting conda subdir: CONDA_SUBDIR=$CONDA_SUBDIR"
@@ -176,6 +182,16 @@ for py in $pyvers; do
   # -> celery/boto3/botocore (~9 MB); see conda-forge/azure-core-feedstock#71.
   # --strict-channel-priority keeps the freshly built local companion + binding authoritative.
   "$conda" create -y -n "$envName" -c "$bld" -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
+  # On a non-emulated cross-build (osx-arm64 on an Intel agent -- no reverse Rosetta)
+  # the solved target Python cannot execute here, so the runtime import / driver-load
+  # proof is impossible. The pipeline's static arm64-slice audit (lipo/otool/file on
+  # the arm64 Mach-O payload) is the stand-in for it on that leg -- identical assurance
+  # to the shipping PyPI universal2 arm64 slice, which is likewise only static-checked.
+  # Native and QEMU-emulated legs run the real import + driver-load probe below.
+  if ! "$conda" run -n "$envName" python -c "import sys" >/dev/null 2>&1; then
+    echo "=== [py $py] target Python not executable on host ($(uname -s)/$(uname -m), CONDA_SUBDIR=${CONDA_SUBDIR:-native}); skipping runtime import -- static arch audit covers this cross leg. ==="
+    continue
+  fi
   echo "=== [py $py] import companion + binding ==="
   "$conda" run -n "$envName" python -c "import mssql_python_odbc; print('COMPANION_OK', mssql_python_odbc.__version__)"
   "$conda" run -n "$envName" python -c "import mssql_python; print('BINDING_OK', mssql_python.__version__)"

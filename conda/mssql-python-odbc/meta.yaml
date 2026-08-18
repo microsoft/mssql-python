@@ -29,6 +29,12 @@ build:
   #     permissions" on these recipes.
   binary_relocation: false
   detect_binary_files_with_prefix: false
+  # macOS builds this recipe for BOTH osx-64 (native on the Intel agent) and
+  # osx-arm64 (CROSS-built there). conda-build's .pyc byte-compilation runs the
+  # TARGET Python, which for osx-arm64 cannot execute on Intel -- so skip pyc on
+  # macOS (Python regenerates it at import). Linux/Windows legs are unaffected.
+  skip_compile_pyc:
+    - "**/*.py"                # [osx]
   # WHEELS_DIR is exported by the pipeline (or a local harness) and passed into the
   # isolated conda-build environment so bld.bat / build.sh can install the prebuilt,
   # ESRP-signed wheel from --find-links, fully offline. This mirrors CI: no PyPI.
