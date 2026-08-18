@@ -11,20 +11,28 @@
 #   - RELEASE pipeline: conda completeness is GATED — an incomplete or mis-paired
 #     conda set must never be shipped.
 #
-# What it enforces:
-#   - required subdirs: every subdir in `requiredSubdirs` (the PyPI-parity set:
-#     win-64, osx-64, osx-arm64, linux-64, linux-aarch64) is present. This catches
-#     a leg that silently produced NOTHING, or produced the WRONG subdir (e.g.
-#     osx-64 stamped as osx-arm64) — a bare total-count check cannot.
-#   - allowed subdirs: no package is stamped with an UNEXPECTED subdir outside
-#     `allowedSubdirs`.
-#   - #706 pairing: within every subdir AND globally, an mssql-python binding and its
-#     matching mssql-python-odbc companion SHIP TOGETHER (both present or both absent)
-#     — never a companion-only bump (the exact mistake that triggered #706), and never
-#     a binding whose companion is missing. This is a PRESENCE pairing, not an equal-
-#     count one: the Windows companion is a SINGLE Python-agnostic package built once
-#     in ODBC_BuildAll that serves all per-Python win-64 bindings (macOS/Linux still
-#     build the companion per-Python, so there the counts also happen to match).
+# What it enforces (all from each package's AUTHORITATIVE info/index.json, never
+# folder names or bare counts -- so a mis-stamped subdir or a dropped Python
+# variant cannot slip through):
+#   - real subdir: every package's info/index.json `subdir` is in `allowedSubdirs`
+#     AND equals the folder it was staged into (catches an osx-64 package copied
+#     into osx-arm64/, which a folder-name check cannot).
+#   - required subdirs: every subdir in `requiredSubdirs` (the PyPI-parity set)
+#     is present.
+#   - Python matrix: on every required subdir the mssql-python binding covers
+#     EVERY expected Python (`pythonVersions`) -- catches e.g. 3 of 5 win-64
+#     bindings shipping against the single companion.
+#   - versions: all packages of a name share one version (and match the expected
+#     version when `mssqlPythonVersion` / `odbcVersion` are supplied).
+#   - #706 pairing: a binding and its companion SHIP TOGETHER (both present or
+#     both absent) -- never a companion-only bump. The Windows companion is a
+#     SINGLE Python-agnostic package built once in ODBC_BuildAll that serves all
+#     per-Python win-64 bindings, so pairing is PRESENCE-based; where the
+#     companion is per-Python (macOS/Linux, count > 1) it must pair 1:1.
+#
+# The check is implemented in conda/validate_conda_release.py (unit-tested by
+# tests/test_027_conda_release_metadata.py), which reads the zstd-compressed
+# info/index.json embedded in every .conda.
 #
 # win-arm64 is intentionally NOT in the parity set: an x64 agent cannot import-
 # validate an arm64 conda package (same reason its wheel skips pytest), so it needs
@@ -57,6 +65,20 @@ parameters:
   - name: allowedSubdirs
     type: string
     default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Comma-separated Python versions the binding matrix MUST cover on every required
+  # subdir. The gate reads each binding's pyXY build tag from info/index.json.
+  - name: pythonVersions
+    type: string
+    default: '3.10,3.11,3.12,3.13,3.14'
+  # Optional EXACT expected versions. When set, the gate asserts every package's
+  # info/index.json version matches; when empty it still enforces one-version-per-
+  # package consistency plus the subdir / matrix / pairing checks.
+  - name: mssqlPythonVersion
+    type: string
+    default: ''
+  - name: odbcVersion
+    type: string
+    default: ''
   # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
   - name: labelPrefix
     type: string
@@ -75,7 +97,7 @@ steps:
       targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
 
   - task: PowerShell@2
-    displayName: '${{ parameters.labelPrefix }}Validate conda release readiness (required subdirs + #706 pairing)'
+    displayName: '${{ parameters.labelPrefix }}Validate conda release readiness (metadata: subdirs + Python matrix + #706 pairing)'
     inputs:
       targetType: 'inline'
       script: |
@@ -86,94 +108,35 @@ steps:
           exit 1
         }
 
-        $required = '${{ parameters.requiredSubdirs }}'.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-        $allowed  = '${{ parameters.allowedSubdirs }}'.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-
-        $pkgs = @(Get-ChildItem -Path $root -Recurse -Include *.conda, *.tar.bz2)
-        if ($pkgs.Count -eq 0) {
-          Write-Error "No conda packages found under $root. Refusing to proceed with an empty conda set."
+        $gate = "$(Build.SourcesDirectory)/conda/validate_conda_release.py"
+        if (-not (Test-Path $gate)) {
+          Write-Error "Metadata gate script not found at $gate."
           exit 1
         }
 
-        # A package's immediate parent folder name IS its conda subdir.
-        $bySubdir = $pkgs | Group-Object { $_.Directory.Name }
-        function Get-Binding($grp)   { @($grp | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
-        function Get-Companion($grp) { @($grp | Where-Object { $_.Name -like 'mssql-python-odbc-*' }) }
-
-        Write-Host "Discovered $($pkgs.Count) conda package(s) across $($bySubdir.Count) subdir(s):"
-        foreach ($g in ($bySubdir | Sort-Object Name)) {
-          Write-Host ("  {0,-14} binding={1} companion={2}" -f $g.Name, (Get-Binding $g.Group).Count, (Get-Companion $g.Group).Count)
-        }
-        Write-Host "Required subdirs : $($required -join ', ')"
-        Write-Host "Allowed subdirs  : $($allowed -join ', ')"
-
-        $failed = $false
-
-        # 1. No package stamped with an UNEXPECTED subdir (catches a mis-stamped leg).
-        foreach ($g in $bySubdir) {
-          if ($allowed -notcontains $g.Name) {
-            Write-Host "##vso[task.logissue type=error]Unexpected conda subdir '$($g.Name)' (not in allowedSubdirs)."
-            $failed = $true
-          }
-        }
-
-        # 2. Every REQUIRED subdir present, with >=1 binding AND >=1 companion.
-        #    The companion may be a SINGLE Python-agnostic package that serves MANY
-        #    per-Python bindings -- e.g. win-64 ships 5 bindings but 1 companion built
-        #    once in ODBC_BuildAll (Windows Lib\site-packages is not version-pathed).
-        #    So this checks PRESENCE, not equal COUNTS (macOS/Linux still build the
-        #    companion per-Python, so there counts happen to match).
-        $foundSubdirs = @($bySubdir | ForEach-Object { $_.Name })
-        foreach ($req in $required) {
-          if ($foundSubdirs -notcontains $req) {
-            Write-Host "##vso[task.logissue type=error]Required conda subdir '$req' is MISSING."
-            $failed = $true
-            continue
-          }
-          $grp = ($bySubdir | Where-Object { $_.Name -eq $req }).Group
-          $b = (Get-Binding $grp).Count
-          $c = (Get-Companion $grp).Count
-          if ($b -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no binding (mssql-python) package."; $failed = $true }
-          if ($c -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no companion (mssql-python-odbc) package."; $failed = $true }
-          # When the companion is per-Python (c > 1, e.g. macOS/Linux), keep the strict
-          # 1:1 pairing that catches a leg dropping a binding or companion. When it is a
-          # SINGLE Python-agnostic package (c == 1, e.g. win-64 built once in
-          # ODBC_BuildAll), it legitimately serves many bindings, so only require b >= 1.
-          if ($c -gt 1 -and $b -ne $c) { Write-Host "##vso[task.logissue type=error]#706 violation in '$req': $b binding vs $c per-Python companion (must pair 1:1)."; $failed = $true }
-        }
-
-        # 3. #706 pairing across EVERY subdir (required or optional): a binding and its
-        #    companion must SHIP TOGETHER. With the once-built companion this is a
-        #    PRESENCE pairing (both-or-neither), not an equal-count pairing: a companion
-        #    without ANY binding is the #706 companion-only bump, and a binding without
-        #    a companion cannot resolve its version-locked `mssql-python-odbc ==<ver>`.
-        foreach ($g in $bySubdir) {
-          $b = (Get-Binding $g.Group).Count
-          $c = (Get-Companion $g.Group).Count
-          if (($b -gt 0) -ne ($c -gt 0)) {
-            Write-Host "##vso[task.logissue type=error]#706 violation in '$($g.Name)': binding=$b companion=$c (a binding and its companion must ship together)."
-            $failed = $true
-          }
-        }
-
-        # 4. Global #706 guard: never a companion-only or binding-only release (the
-        #    exact mistake behind #706 is a companion published with no binding at all).
-        $binding   = Get-Binding $pkgs
-        $companion = Get-Companion $pkgs
-        if ($companion.Count -gt 0 -and $binding.Count -eq 0) {
-          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($companion.Count) companion package(s) with NO binding (companion-only release)."
-          $failed = $true
-        }
-        if ($binding.Count -gt 0 -and $companion.Count -eq 0) {
-          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($binding.Count) binding package(s) with NO companion."
-          $failed = $true
-        }
-
-        if ($failed) {
-          Write-Error "Conda release readiness FAILED. Refusing to proceed with an incomplete/mis-paired conda set."
+        # The gate reads each package's AUTHORITATIVE info/index.json (a zstd tar
+        # inside every .conda) rather than trusting folder names or counts. zstd is
+        # stdlib on py3.14+; install the `zstandard` backend so the reader always works.
+        python -m pip install --quiet --disable-pip-version-check zstandard
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Failed to install the 'zstandard' backend needed to read .conda metadata."
           exit 1
         }
 
-        Write-Host ""
-        Write-Host "OK: required subdirs all present and #706-paired; $($binding.Count) binding + $($companion.Count) companion conda packages."
+        # Pass EXACT version expectations only when supplied; the gate still enforces
+        # one-version-per-package consistency when they are empty.
+        $extra = @()
+        if ('${{ parameters.mssqlPythonVersion }}'.Trim()) { $extra += @('--mssql-python-version', ('${{ parameters.mssqlPythonVersion }}'.Trim())) }
+        if ('${{ parameters.odbcVersion }}'.Trim())        { $extra += @('--mssql-python-odbc-version', ('${{ parameters.odbcVersion }}'.Trim())) }
+
+        python "$gate" `
+          --root "$root" `
+          --required-subdirs '${{ parameters.requiredSubdirs }}' `
+          --allowed-subdirs '${{ parameters.allowedSubdirs }}' `
+          --pythons '${{ parameters.pythonVersions }}' `
+          @extra
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Conda release readiness FAILED. Refusing to proceed with an incomplete/mis-labeled/mis-paired conda set."
+          exit 1
+        }
         Write-Host "Conda set is release-ready (the publish step is gated separately)."
