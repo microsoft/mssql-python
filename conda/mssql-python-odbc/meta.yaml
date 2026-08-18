@@ -36,9 +36,16 @@ build:
     - WHEELS_DIR
 
 requirements:
+  # Windows conda site-packages (`Lib\site-packages`) is NOT Python-version-pathed,
+  # so the driver payload is Python-AGNOSTIC there: build with NO `python`/`pip` in
+  # host (bld.bat extracts the wheel with `tar`, not pip) so conda-build emits ONE
+  # win-* package with no `pyXY` build string -- the exact analog of the PyPI
+  # `py3-none-win_*` wheel, built once per platform instead of once per Python.
+  # POSIX site-packages IS version-pathed (`lib/pythonX.Y/site-packages`), so there
+  # the importable payload stays per-Python (build.sh keeps the pip install).
   host:
-    - python
-    - pip
+    - python                 # [not win]
+    - pip                    # [not win]
   run:
     - python
     # conda drops the wheel's platform tag (manylinux_2_28 / macosx_15_0); re-assert

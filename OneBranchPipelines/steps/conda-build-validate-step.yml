@@ -72,8 +72,37 @@ parameters:
   - name: continueOnError
     type: boolean
     default: false
+  # Which package(s) this step builds. Windows legs build ONLY the per-Python binding
+  # ('binding'); the Python-agnostic companion (mssql-python-odbc) is built ONCE in the
+  # ODBC_BuildAll stage and SEEDED here so the binding's version-locked
+  # `mssql-python-odbc ==<ver>` pin resolves in the validation solve WITHOUT rebuilding
+  # the companion per Python. Use 'all' to also build the companion (legacy behaviour).
+  - name: package
+    type: string
+    default: 'binding'
+  # Artifact holding the prebuilt companion conda, staged under conda/<subdir>/ by the
+  # ODBC_BuildAll stage. Downloaded + seeded in 'binding' mode.
+  - name: driverCondaArtifact
+    type: string
+    default: 'drop_ODBC_BuildAll_BuildWheel'
+  # Local folder the prebuilt companion conda is downloaded to (binding mode only).
+  - name: driverCondaDownloadDir
+    type: string
+    default: '$(Agent.TempDirectory)/driver-conda'
 
 steps:
+  # binding mode: fetch the Python-agnostic companion conda built once in ODBC_BuildAll
+  # so the binding's `mssql-python-odbc ==<ver>` pin resolves in the validation solve.
+  - ${{ if eq(parameters.package, 'binding') }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download prebuilt companion conda (ODBC_BuildAll)'
+      condition: ne('${{ parameters.targetArch }}', 'arm64')
+      inputs:
+        buildType: 'current'
+        artifactName: '${{ parameters.driverCondaArtifact }}'
+        itemPattern: '**/conda/**/*.conda'
+        targetPath: '${{ parameters.driverCondaDownloadDir }}'
+
   - powershell: |
       $ErrorActionPreference = 'Stop'
 
@@ -108,13 +137,21 @@ steps:
       Write-Host "Derived versions -> mssql-python=$mssqlVer  mssql-python-odbc=$odbcVer"
 
       # Build + validate the conda packages for THIS leg's single Python version.
+      # 'binding' mode seeds the companion from the ODBC_BuildAll download (splatted
+      # only when present) instead of rebuilding it per Python.
+      $driverArg = @()
+      if ('${{ parameters.package }}' -eq 'binding') {
+        $driverArg = @('-DriverCondaDir', "${{ parameters.driverCondaDownloadDir }}")
+      }
       & "${{ parameters.scriptPath }}" `
         -WheelsDir $links `
         -RecipeRoot "${{ parameters.recipeRoot }}" `
         -OutputDir "${{ parameters.outputDir }}" `
         -MssqlPythonVersion $mssqlVer `
         -OdbcVersion $odbcVer `
-        -PythonVersions "${{ parameters.pythonVersion }}"
+        -PythonVersions "${{ parameters.pythonVersion }}" `
+        -Package '${{ parameters.package }}' `
+        @driverArg
       if ($LASTEXITCODE -ne 0) { Write-Error "conda build+validate failed (exit $LASTEXITCODE)"; exit 1 }
 
       # Stage the built conda packages onto the leg's artifact so the consolidate

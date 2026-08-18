@@ -9,15 +9,18 @@
 # to publish an incomplete conda set), symmetric with how the wheel/odbc drops are
 # best-effort collected in the build and gated at release time.
 #
-# Expected packages (validated conda subdirs; each leg emits BOTH the binding and
-# the version-locked companion, and both carry the Python build string):
-#   win-64        : 5 py (3.10-3.14) x (mssql-python + mssql-python-odbc) = 10
-#   osx-64        : 5 py x 2  (Intel Mac, cross-built under Rosetta 2)     = 10
-#   osx-arm64     : 5 py x 2  (Apple Silicon, native)                      = 10
-#   linux-64      : 5 py x 2  (glibc x86_64 host, native)                  = 10
-#   linux-aarch64 : 5 py x 2  (x86_64 host + QEMU, best-effort)            = 10
+# Expected packages (validated conda subdirs). The per-Python BINDING (mssql-python)
+# is emitted by each build leg. The version-locked COMPANION (mssql-python-odbc) is
+# still emitted per-Python by the macOS/Linux legs, but on Windows it is built ONCE
+# (Python-agnostic -- Lib\site-packages is not version-pathed) in the ODBC_BuildAll
+# stage and collected here from that stage's drop instead of once per Python leg:
+#   win-64        : 5 py x mssql-python + 1 companion (once, ODBC_BuildAll)  = 6
+#   osx-64        : 5 py x 2  (Intel Mac, cross-built under Rosetta 2)       = 10
+#   osx-arm64     : 5 py x 2  (Apple Silicon, native)                        = 10
+#   linux-64      : 5 py x 2  (glibc x86_64 host, native)                    = 10
+#   linux-aarch64 : 5 py x 2  (x86_64 host + QEMU, best-effort)              = 10
 #   ------------------------------------------------------------------------------
-#   TOTAL (PyPI parity minus win-arm64 + musllinux)                        = 50
+#   TOTAL (PyPI parity minus win-arm64 + musllinux)                          = 46
 # win-arm64 (no import-validation host on x64) and musllinux (no conda musl subdir)
 # are intentionally NOT conda-built. This job is BEST-EFFORT and never hard-fails on
 # a short set; the release pipeline's conda-release-step enforces the hard gate
@@ -50,10 +53,12 @@ jobs:
         fetchDepth: 1
 
       # The conda packages are staged INSIDE the mssql-python build-leg artifacts
-      # (drop_Win_*, drop_MacOS_*, drop_Linux_*) under conda/<subdir>/. Scope the
-      # download to those stages (same set the wheel consolidate uses) so every
-      # leg's conda output is gathered in one place. The wheels ride along in the
-      # download but are ignored below (we only pick *.conda / *.tar.bz2).
+      # (drop_Win_*, drop_MacOS_*, drop_Linux_*) under conda/<subdir>/, EXCEPT the
+      # win-64 companion (mssql-python-odbc), which is built ONCE in ODBC_BuildAll and
+      # rides its drop under conda/win-64/. Scope the download to those stages so every
+      # leg's conda output plus the once-built Windows companion is gathered in one
+      # place. The wheels ride along in the download but are ignored below (we only
+      # pick *.conda / *.tar.bz2).
       - task: DownloadPipelineArtifact@2
         displayName: 'Download All Platform Artifacts'
         inputs:
@@ -62,6 +67,7 @@ jobs:
             drop_Win_*/**
             drop_MacOS_*/**
             drop_Linux_*/**
+            drop_ODBC_BuildAll_*/**
           targetPath: '$(Pipeline.Workspace)/all-artifacts'
 
       - bash: |
@@ -94,7 +100,7 @@ jobs:
             n=$(find "$d" -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)
             printf '  %-14s %s\n' "$sub" "$n"
           done
-          echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 50)"
+          echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 46)"
 
           # BEST-EFFORT: warn only, never exit non-zero — a conda hiccup on any leg
           # must not fail this build or block the wheel release. The release pipeline's

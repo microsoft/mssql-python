@@ -155,17 +155,34 @@ steps:
           }
           $grp = ($bySubdir | Where-Object { $_.Name -eq $req }).Group
           $b = (Get-Binding $grp).Count; $c = (Get-Companion $grp).Count
-          if ($b -eq 0 -or $c -eq 0 -or $b -ne $c) {
-            Write-Host "##vso[task.logissue type=error]#706 violation in '$req': $b binding vs $c companion."
-            $failed = $true
-          }
+          # PRESENCE, not equal counts: the Windows companion is a SINGLE Python-
+          # agnostic package (built once in ODBC_BuildAll) serving all per-Python
+          # win-64 bindings, so b(5) != c(1) is EXPECTED there and not a violation.
+          # macOS/Linux still build the companion per-Python (c > 1) and keep 1:1.
+          if ($b -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no binding (mssql-python) package."; $failed = $true }
+          if ($c -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no companion (mssql-python-odbc) package."; $failed = $true }
+          if ($c -gt 1 -and $b -ne $c) { Write-Host "##vso[task.logissue type=error]#706 violation in '$req': $b binding vs $c per-Python companion (must pair 1:1)."; $failed = $true }
         }
 
         # #706: split into companion (mssql-python-odbc) and binding (mssql-python).
         $companion = Get-Companion $pkgs
         $binding   = Get-Binding $pkgs
-        if ($companion.Count -ne $binding.Count) {
-          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($companion.Count) companion vs $($binding.Count) binding packages."
+        # #706 pairing per subdir (both-or-neither): a companion without ANY binding is
+        # the companion-only bump behind #706; a binding without a companion cannot
+        # resolve its version-locked `mssql-python-odbc ==<ver>` pin.
+        foreach ($g in $bySubdir) {
+          $gb = (Get-Binding $g.Group).Count; $gc = (Get-Companion $g.Group).Count
+          if (($gb -gt 0) -ne ($gc -gt 0)) {
+            Write-Host "##vso[task.logissue type=error]#706 violation in '$($g.Name)': binding=$gb companion=$gc (a binding and its companion must ship together)."
+            $failed = $true
+          }
+        }
+        if ($companion.Count -gt 0 -and $binding.Count -eq 0) {
+          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($companion.Count) companion package(s) with NO binding (companion-only release)."
+          $failed = $true
+        }
+        if ($binding.Count -gt 0 -and $companion.Count -eq 0) {
+          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($binding.Count) binding package(s) with NO companion."
           $failed = $true
         }
 

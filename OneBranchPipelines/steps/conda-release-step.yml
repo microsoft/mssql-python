@@ -18,10 +18,13 @@
 #     osx-64 stamped as osx-arm64) — a bare total-count check cannot.
 #   - allowed subdirs: no package is stamped with an UNEXPECTED subdir outside
 #     `allowedSubdirs`.
-#   - #706 pairing: within every subdir AND globally, each mssql-python binding
-#     ships WITH its matching mssql-python-odbc companion in equal number — never a
-#     companion-only bump (the exact mistake that triggered #706), and never a
-#     binding whose companion is missing.
+#   - #706 pairing: within every subdir AND globally, an mssql-python binding and its
+#     matching mssql-python-odbc companion SHIP TOGETHER (both present or both absent)
+#     — never a companion-only bump (the exact mistake that triggered #706), and never
+#     a binding whose companion is missing. This is a PRESENCE pairing, not an equal-
+#     count one: the Windows companion is a SINGLE Python-agnostic package built once
+#     in ODBC_BuildAll that serves all per-Python win-64 bindings (macOS/Linux still
+#     build the companion per-Python, so there the counts also happen to match).
 #
 # win-arm64 is intentionally NOT in the parity set: an x64 agent cannot import-
 # validate an arm64 conda package (same reason its wheel skips pytest), so it needs
@@ -114,7 +117,12 @@ steps:
           }
         }
 
-        # 2. Every REQUIRED subdir present and internally #706-paired (binding==companion, both > 0).
+        # 2. Every REQUIRED subdir present, with >=1 binding AND >=1 companion.
+        #    The companion may be a SINGLE Python-agnostic package that serves MANY
+        #    per-Python bindings -- e.g. win-64 ships 5 bindings but 1 companion built
+        #    once in ODBC_BuildAll (Windows Lib\site-packages is not version-pathed).
+        #    So this checks PRESENCE, not equal COUNTS (macOS/Linux still build the
+        #    companion per-Python, so there counts happen to match).
         $foundSubdirs = @($bySubdir | ForEach-Object { $_.Name })
         foreach ($req in $required) {
           if ($foundSubdirs -notcontains $req) {
@@ -127,14 +135,37 @@ steps:
           $c = (Get-Companion $grp).Count
           if ($b -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no binding (mssql-python) package."; $failed = $true }
           if ($c -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no companion (mssql-python-odbc) package."; $failed = $true }
-          if ($b -ne $c) { Write-Host "##vso[task.logissue type=error]#706 violation in '$req': $b binding vs $c companion."; $failed = $true }
+          # When the companion is per-Python (c > 1, e.g. macOS/Linux), keep the strict
+          # 1:1 pairing that catches a leg dropping a binding or companion. When it is a
+          # SINGLE Python-agnostic package (c == 1, e.g. win-64 built once in
+          # ODBC_BuildAll), it legitimately serves many bindings, so only require b >= 1.
+          if ($c -gt 1 -and $b -ne $c) { Write-Host "##vso[task.logissue type=error]#706 violation in '$req': $b binding vs $c per-Python companion (must pair 1:1)."; $failed = $true }
         }
 
-        # 3. Global #706 pairing across ALL subdirs (no orphan anywhere, incl. optional ones).
+        # 3. #706 pairing across EVERY subdir (required or optional): a binding and its
+        #    companion must SHIP TOGETHER. With the once-built companion this is a
+        #    PRESENCE pairing (both-or-neither), not an equal-count pairing: a companion
+        #    without ANY binding is the #706 companion-only bump, and a binding without
+        #    a companion cannot resolve its version-locked `mssql-python-odbc ==<ver>`.
+        foreach ($g in $bySubdir) {
+          $b = (Get-Binding $g.Group).Count
+          $c = (Get-Companion $g.Group).Count
+          if (($b -gt 0) -ne ($c -gt 0)) {
+            Write-Host "##vso[task.logissue type=error]#706 violation in '$($g.Name)': binding=$b companion=$c (a binding and its companion must ship together)."
+            $failed = $true
+          }
+        }
+
+        # 4. Global #706 guard: never a companion-only or binding-only release (the
+        #    exact mistake behind #706 is a companion published with no binding at all).
         $binding   = Get-Binding $pkgs
         $companion = Get-Companion $pkgs
-        if ($binding.Count -ne $companion.Count) {
-          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($binding.Count) binding vs $($companion.Count) companion packages."
+        if ($companion.Count -gt 0 -and $binding.Count -eq 0) {
+          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($companion.Count) companion package(s) with NO binding (companion-only release)."
+          $failed = $true
+        }
+        if ($binding.Count -gt 0 -and $companion.Count -eq 0) {
+          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($binding.Count) binding package(s) with NO companion."
           $failed = $true
         }
 
