@@ -688,6 +688,21 @@ def test_arrow_reader_close_retries_after_failed_attempt(cursor: mssql_python.Cu
 #     leak the server-side cursor or crash close()
 
 
+def test_arrow_reader_propagates_fetch_error_when_parent_cursor_is_closed(conn_str):
+    """Closing the parent cursor must not turn the next fetch error into end-of-stream."""
+    conn = mssql_python.connect(conn_str)
+    try:
+        tmp = conn.cursor()
+        reader = tmp.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+        _ = reader.read_next_batch()
+        tmp.close()
+
+        with pytest.raises(mssql_python.ProgrammingError, match="cursor is closed"):
+            reader.read_next_batch()
+    finally:
+        conn.close()
+
+
 def test_arrow_reader_getattr_refuses_private_names(cursor: mssql_python.Cursor):
     """__getattr__ refuses leading-underscore names so a partially-constructed
     instance during __del__ cannot recurse forever trying to resolve its own
