@@ -144,6 +144,14 @@ _DECLARED_WINDOWS = [
 
 _BINARY_EXT = {".so", ".dylib", ".dll", ".pyd", ".exe", ".bundle"}
 
+# A file whose NAME denotes a loadable shared library / module -- also matches
+# versioned ELF sonames like ``libfoo.so.2.1`` and Mach-O ``libfoo.2.dylib``. Used
+# to decide whether a WRONG-format file is a genuine cross-platform LIBRARY leak
+# (fail) versus an inert foreign resource -- e.g. the Windows PE ``.rll`` localized-
+# message files the ODBC driver ships in EVERY OS payload -- that never enters the
+# target link graph (skip).
+_LIB_NAME_RE = re.compile(r"\.(so|dylib|dll|pyd|bundle)(\.\d+)*$", re.IGNORECASE)
+
 
 def _compile(patterns: list[str]) -> list[re.Pattern]:
     return [re.compile(p, re.IGNORECASE) for p in patterns]
@@ -337,8 +345,12 @@ def audit(payload: str, os_name: str, require_arch: str | None) -> Report:
             rep.errors.append(f"{rel}: unrecognized binary format")
             continue
         if kind != want_kind:
-            # e.g. a stray PE inside a linux payload -- flag it.
-            rep.errors.append(f"{rel}: {kind.upper()} file in a {os_name} payload")
+            # A wrong-format file that NAMES itself a shared library is a genuine
+            # cross-platform leak -> fail. A wrong-format NON-library (e.g. the
+            # Windows PE `.rll` localized-message resources the driver ships in
+            # every OS payload) is inert -- it never enters the link graph -> skip.
+            if _LIB_NAME_RE.search(os.path.basename(path)):
+                rep.errors.append(f"{rel}: {kind.upper()} file in a {os_name} payload")
             continue
         try:
             if kind == "elf":

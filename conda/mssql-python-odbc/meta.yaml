@@ -13,9 +13,10 @@ build:
   #   - overdepending: the pure-data driver payload doesn't link libpythonX.Y, so
   #     `python` (a legitimate run dep for the importable `mssql_python_odbc` module)
   #     is reported as "unused".
-  #   - overlinking: the vendored libodbc.2.dylib records an absolute Homebrew libtool
-  #     path (/opt/homebrew|/usr/local .../libltdl.7.dylib) that must NOT be rewritten
-  #     in a signed binary. libltdl itself ships inside this package.
+  #   - overlinking: this recipe repackages prebuilt, ESRP-signed dylibs whose
+  #     recorded install-name / RPATH references must stay byte-for-byte as signed;
+  #     conda-build's overlinking check targets from-source builds and mis-fires on
+  #     such vendored binaries.
   error_overlinking: false
   error_overdepending: false
   # This recipe vendors PREBUILT, ESRP-signed binaries (the ODBC Driver 18 payload +
