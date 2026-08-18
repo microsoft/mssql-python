@@ -197,6 +197,22 @@ for py in $pyvers; do
   "$conda" run -n "$envName" python -c "import mssql_python; print('BINDING_OK', mssql_python.__version__)"
   echo "=== [py $py] DB-less driver-load proof (real ODBC driver must load, not just the shim) ==="
   "$conda" run -n "$envName" python "$RecipeRoot/driver_load_probe.py"
+  # Live Encrypt=yes TLS gate -- forces the driver to dlopen its OpenSSL backend
+  # (libssl/libcrypto), which the DB-less Encrypt=no probe above NEVER exercises.
+  # Runs (BLOCKING) only when CONDA_TLS_PROBE_CONN points at a reachable server;
+  # otherwise it SKIPS loudly (it never silently passes). CAVEAT: this is
+  # conclusive ONLY on a minimal base with NO system OpenSSL -- a system libssl
+  # lets the driver's dlopen fall through and MASK an unreachable conda
+  # <PREFIX>/lib copy (exactly what full CI agents hide). The masking-IMMUNE guard
+  # is eng/scripts/audit_bundled_binaries.py, which reads the RUNPATH bytes and
+  # requires an $ORIGIN/.. climb regardless of any system libs; this gate is the
+  # complementary end-to-end backstop for a minimal-base leg.
+  if [ -n "${CONDA_TLS_PROBE_CONN:-}" ]; then
+    echo "=== [py $py] live Encrypt=yes TLS gate (OpenSSL backend must be reachable) ==="
+    "$conda" run -n "$envName" python "$RecipeRoot/tls_connect_probe.py"
+  else
+    echo "=== [py $py] Encrypt=yes TLS gate SKIPPED (set CONDA_TLS_PROBE_CONN on a minimal-base leg to enable) ==="
+  fi
   echo "=== [py $py] confirm resolved dependencies ==="
   "$conda" list -n "$envName" | grep -E 'azure-identity|mssql-python|mssql-python-odbc' || true
 done
