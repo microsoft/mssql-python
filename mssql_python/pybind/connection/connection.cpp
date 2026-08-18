@@ -98,13 +98,21 @@ void Connection::connect(const py::dict& attrs_before) {
 }
 
 void Connection::disconnect() {
+    // Determine GIL state once, up front. disconnect() runs both from
+    // pybind11-bound methods (GIL held) and from GIL-less destructor / shutdown
+    // paths: Connection::~Connection() dropping the last shared_ptr, or teardown
+    // running after the interpreter has been finalized. Every LOG()/LOG_ERROR()
+    // below is gated on hasGil because LOG() acquires the GIL internally via
+    // py::gil_scoped_acquire, which is unsafe when the GIL is not held — it can
+    // hang or std::terminate during interpreter shutdown / stack unwinding.
+    // Py_IsInitialized() is checked first: after Py_Finalize() the interpreter is
+    // gone and PyGILState_Check() is unreliable, so treat "not initialized" as
+    // "no GIL" and skip all Python calls. (#671 follow-up)
+    bool hasGil = Py_IsInitialized() != 0 && PyGILState_Check() != 0;
     if (_dbcHandle) {
-        LOG("Disconnecting from database");
-
-        // Check if we hold the GIL so we can conditionally release it.
-        // The GIL is held when called from pybind11-bound methods but may NOT
-        // be held in destructor paths (C++ shared_ptr ref-count drop, shutdown).
-        bool hasGil = PyGILState_Check() != 0;
+        if (hasGil) {
+            LOG("Disconnecting from database");
+        }
 
         // CRITICAL FIX: Mark all child statement handles as implicitly freed
         // When we free the DBC handle below, the ODBC driver will automatically free
@@ -142,13 +150,16 @@ void Connection::disconnect() {
         }  // Release lock before potentially slow SQLDisconnect call
 
         // Log after releasing _childHandlesMutex (#671): LOG()/LOG_ERROR() acquire
-        // the GIL and must not run while a native mutex is held.
-        LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
-            originalSize, afterCompactSize, originalSize - afterCompactSize);
-        LOG("Marking %zu child statement handles as implicitly freed", afterCompactSize);
-        if (badHandleCount > 0) {
-            LOG_ERROR("CRITICAL: %zu non-STMT handle(s) found in _childStatementHandles. "
-                      "This will cause a handle leak!", badHandleCount);
+        // the GIL and must not run while a native mutex is held. Also gated on
+        // hasGil so the GIL-less destructor / shutdown path never tries to log.
+        if (hasGil) {
+            LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
+                originalSize, afterCompactSize, originalSize - afterCompactSize);
+            LOG("Marking %zu child statement handles as implicitly freed", afterCompactSize);
+            if (badHandleCount > 0) {
+                LOG_ERROR("CRITICAL: %zu non-STMT handle(s) found in _childStatementHandles. "
+                          "This will cause a handle leak!", badHandleCount);
+            }
         }
 
         SQLRETURN ret;
@@ -173,7 +184,7 @@ void Connection::disconnect() {
         }
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
-    } else {
+    } else if (hasGil) {
         LOG("No connection handle to disconnect");
     }
 }
