@@ -3088,7 +3088,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # body.  This is the single canonical cleanup site.
                 cur = cursor_ref[0]
                 cursor_ref[0] = None
-                if cur is not None and not cur.closed and cur.hstmt is not None:
+                if not cur.closed and cur.hstmt is not None:
                     # 1) Drain diagnostics produced by the (possibly cancelled)
                     #    fetch *before* SQL_CLOSE so we don't lose them.
                     try:
