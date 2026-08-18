@@ -6,10 +6,22 @@
 # WHY: the vendored Linux payload ships libmsodbcsql-18.*.so + libodbcinst.so.2
 # but NOT libltdl.so.7. Measured with readelf/pyelftools:
 #   * libmsodbcsql-18.*.so : RUNPATH=$ORIGIN, NEEDED libodbcinst.so.2 (co-located,
-#                            resolves) + libkrb5/libgssapi_krb5 (system, declared).
+#                            resolves) + libkrb5.so.3/libgssapi_krb5.so.2 (declared,
+#                            NOT bundled). It ALSO dlopens libssl/libcrypto lazily
+#                            on Encrypt=yes: the OpenSSL symbols are present but
+#                            there is NO libssl/libcrypto DT_NEEDED or soname string
+#                            (the name is built at runtime), so TLS loads OpenSSL
+#                            by name at connect time, not at import.
 #   * libodbcinst.so.2     : RUNPATH=<none>, NEEDED libltdl.so.7 (NOT bundled).
 # So on a minimal Linux base the driver import throws
 #   OSError: libltdl.so.7: cannot open shared object file
+# and -- the subtler, second bug -- with RUNPATH=$ORIGIN the driver searches only
+# its OWN dir for the DECLARED libkrb5/libgssapi_krb5 (load-time NEEDED) and the
+# dlopen'd libssl/libcrypto (Encrypt=yes). In a conda env those live in
+# <PREFIX>/lib, which is NOT on the loader path (conda sets no LD_LIBRARY_PATH, and
+# binary_relocation=false means conda-build injects no rpath), so the
+# conda-DECLARED openssl/krb5 are UNREACHABLE -- it only "works" where a SYSTEM
+# copy happens to mask it (exactly what a hosted agent's system libs hide).
 # It only "works" where the host happens to have a system libltdl on the loader
 # path -- e.g. a CI container that installed unixODBC, which is exactly why the
 # Alpine test leg MASKS this today. macOS ALREADY bundles libltdl.7.dylib
@@ -20,9 +32,17 @@
 #
 # WHAT (per distro subtree for the CURRENT arch/libc):
 #   1. copy a matching-libc libltdl.so.7 next to libodbcinst.so.2,
-#   2. drop the libltdl LGPL license notice alongside it (compliance), and
+#   2. drop the libltdl LGPL license notice alongside it (compliance),
 #   3. patchelf --set-rpath '$ORIGIN' libodbcinst.so.2 so its co-located
-#      libltdl.so.7 NEEDED resolves without LD_LIBRARY_PATH.
+#      libltdl.so.7 NEEDED resolves without LD_LIBRARY_PATH, and
+#   4. patchelf --set-rpath '$ORIGIN:$ORIGIN/../..(x8)' libmsodbcsql-*.so* so the
+#      driver keeps finding co-located libodbcinst.so.2 (via $ORIGIN) AND ALSO
+#      reaches the conda <PREFIX>/lib for the DECLARED libkrb5/libgssapi_krb5 +
+#      the dlopen'd libssl/libcrypto. glibc consults the caller's DT_RUNPATH for
+#      BOTH its own direct NEEDED and its own dlopen(soname), so this one relative
+#      climb fixes both. It is inert for the PyPI wheel (the venv lib dir holds
+#      none of these -> the loader falls through to the system), so a SINGLE
+#      committed binary is correct for both the wheel and the conda repackage.
 # libltdl links only libc/libdl, so a manylinux_2_28 (glibc 2.28) libltdl is
 # portable across every glibc target we ship (debian_ubuntu + rhel + suse), and a
 # musllinux_1_2 libltdl covers alpine. ONE build per (libc, arch) serves all the
@@ -93,7 +113,13 @@ Corresponding source: https://www.gnu.org/software/libtool/
 Full LGPL-2.1 text: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
 EOF
 
-# --- install into each distro subtree for THIS arch + set $ORIGIN runpath ----
+# --- install into each distro subtree for THIS arch + set runpaths -----------
+# In a pip/conda install the driver lives at
+#   <PREFIX>/lib/pythonX.Y/site-packages/mssql_python_odbc/libs/linux/<distro>/<arch>/lib/
+# so <PREFIX>/lib is exactly 8 dirs above $ORIGIN. That depth is identical for
+# every python version and every distro/arch subtree, so one relative climb serves
+# all of them. patchelf writes the literal $ORIGIN; the loader expands it per load.
+PREFIX_LIB='$ORIGIN/../../../../../../../..'
 patched=0
 for distro in $DISTROS; do
   d="$LIBS_LINUX_ROOT/$distro/$ARCH/lib"
@@ -113,6 +139,20 @@ for distro in $DISTROS; do
   rp="$(patchelf --print-rpath "$inst")"
   [ "$rp" = '$ORIGIN' ] || { echo "ERROR: rpath not applied to $inst (got '$rp')" >&2; exit 1; }
   echo "OK: $distro/$ARCH -> bundled libltdl.so.7 + RUNPATH=\$ORIGIN on libodbcinst.so.2"
+  # The driver: keep $ORIGIN (co-located libodbcinst.so.2) AND add the climb to
+  # <PREFIX>/lib so its DECLARED, NOT-bundled deps resolve from a conda env -- the
+  # load-time NEEDED libkrb5.so.3/libgssapi_krb5.so.2 AND the libssl/libcrypto it
+  # dlopens at Encrypt=yes. Without the climb those resolve only off a SYSTEM copy.
+  drv_patched=0
+  for drv in "$d"/libmsodbcsql-*.so*; do
+    [ -f "$drv" ] || continue
+    patchelf --set-rpath "\$ORIGIN:$PREFIX_LIB" "$drv"
+    drp="$(patchelf --print-rpath "$drv")"
+    [ "$drp" = "\$ORIGIN:$PREFIX_LIB" ] || { echo "ERROR: driver rpath not applied to $drv (got '$drp')" >&2; exit 1; }
+    echo "OK: $distro/$ARCH -> RUNPATH='\$ORIGIN:$PREFIX_LIB' on $(basename "$drv")"
+    drv_patched=$((drv_patched + 1))
+  done
+  [ "$drv_patched" -gt 0 ] || { echo "ERROR: no libmsodbcsql-*.so* found in $d" >&2; exit 1; }
   patched=$((patched + 1))
 done
 [ "$patched" -gt 0 ] || { echo "ERROR: patched nothing under $LIBS_LINUX_ROOT for $LIBC/$ARCH" >&2; exit 1; }

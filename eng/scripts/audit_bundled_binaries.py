@@ -16,9 +16,14 @@ Policy: every dynamic dependency of every shipped binary must be exactly ONE of
 Anything else is a VIOLATION and fails the gate (exit 1). The canonical case this
 catches is ``libltdl.so.7`` NEEDED by ``libodbcinst.so.2`` but not bundled.
 
-Extra ELF check: any binary that depends on a BUNDLED sibling must carry an
-``$ORIGIN`` RUNPATH, otherwise the loader will never find that sibling on a
-minimal base (this is precisely the libodbcinst.so.2 fix).
+Extra ELF checks (only on the reachable load graph): (a) any binary that depends
+on a BUNDLED sibling must carry an ``$ORIGIN`` RUNPATH, else the loader will never
+find that sibling on a minimal base (the libodbcinst.so.2 -> libltdl.so.7 fix);
+and (b) any binary with a DECLARED (conda-provided, not vendored) NEEDED dep must
+have a RUNPATH that climbs ABOVE ``$ORIGIN`` (e.g. ``$ORIGIN/../..``) so that dep
+resolves from the conda ``<PREFIX>/lib`` -- a bare ``$ORIGIN`` leaves the declared
+openssl/krb5 reachable only via a masking SYSTEM copy (the same climb also fixes
+the libssl/libcrypto the driver dlopens at Encrypt=yes).
 
 Reachability: only defects on the transitive load graph rooted at the DRIVER the
 binding actually dlopens (``libmsodbcsql`` / ``msodbcsql``) fail the gate. A
@@ -346,11 +351,19 @@ def _reachable_from_driver(analyzed: dict[str, dict], os_name: str) -> set[str]:
     no driver root is found (unexpected -- a driver payload always ships one), fail
     closed by treating EVERY binary as reachable so nothing is silently exempted.
     """
-    base_to_rel: dict[str, str] = {}
+    # Resolve a dependency basename to a SAME-DIRECTORY sibling only. The vendored
+    # payload ships several independent, self-contained driver stacks side by side
+    # (one per distro/arch), and every inter-library edge is co-located ($ORIGIN /
+    # @loader_path / same-dir DLL). A global basename map would collapse the
+    # identical sonames across those stacks (e.g. debian's libmsodbcsql would
+    # "resolve" libodbcinst to alpine's musl copy, which needs no libltdl), masking
+    # a real defect in one stack as UNREACHABLE.
+    base_to_rel: dict[tuple[str, str], str] = {}
     for rel in analyzed:
+        d = os.path.dirname(rel)
         base = os.path.basename(rel)
         key = base.lower() if os_name == "windows" else base
-        base_to_rel.setdefault(key, rel)
+        base_to_rel.setdefault((d, key), rel)
 
     roots_re = _DRIVER_ROOT_RE[os_name]
     roots = [rel for rel in analyzed if any(rx.match(os.path.basename(rel)) for rx in roots_re)]
@@ -364,13 +377,28 @@ def _reachable_from_driver(analyzed: dict[str, dict], os_name: str) -> set[str]:
         if cur in reachable:
             continue
         reachable.add(cur)
+        cur_dir = os.path.dirname(cur)
         for dep in analyzed[cur]["deps"]:
             base = _basename(dep)
             key = base.lower() if os_name == "windows" else base
-            tgt = base_to_rel.get(key)
+            tgt = base_to_rel.get((cur_dir, key))
             if tgt is not None and tgt not in reachable:
                 queue.append(tgt)
     return reachable
+
+
+def _has_prefix_climb(runpath: str) -> bool:
+    """True if any RUNPATH entry climbs above $ORIGIN (e.g. ``$ORIGIN/../..``).
+
+    That climb is what lets a conda-installed DECLARED dependency in
+    ``<PREFIX>/lib`` resolve from a vendored driver whose ``$ORIGIN`` sits deep
+    under site-packages; a bare ``$ORIGIN`` (or empty RUNPATH) cannot reach it.
+    """
+    for entry in runpath.split(":"):
+        e = entry.strip()
+        if ("$ORIGIN" in e or "${ORIGIN}" in e) and ".." in e:
+            return True
+    return False
 
 
 def audit(payload: str, os_name: str, require_arch: str | None) -> Report:
@@ -448,21 +476,40 @@ def audit(payload: str, os_name: str, require_arch: str | None) -> Report:
             )
 
         depends_on_bundled = False
+        declared_needed: list[str] = []
         for dep in info["deps"]:
             cat = _classify(dep, os_name, bundled, base_re, decl_re)
             if cat == "BUNDLED":
                 depends_on_bundled = True
+            elif cat == "DECLARED":
+                declared_needed.append(_basename(dep))
             elif cat == "VIOLATION" and not is_reach:
                 cat = "UNREACHABLE"
             rep.findings.append(Finding(rel, dep, cat))
 
-        # ELF: a binary that needs a bundled sibling must carry $ORIGIN in RUNPATH,
-        # else the loader cannot find it on a minimal base (the libodbcinst fix).
-        # Only enforced on the real load graph -- an unreachable binary is inert.
-        if kind == "elf" and depends_on_bundled and is_reach:
+        # ELF RUNPATH checks -- only on the real load graph (an unreachable binary
+        # is inert). patchelf writes a literal $ORIGIN the loader expands per load.
+        if kind == "elf" and is_reach:
             rp = info["runpath"] or ""
-            if "$ORIGIN" not in rp and "${ORIGIN}" not in rp:
+            # (a) a bundled sibling must be reachable via $ORIGIN, else the loader
+            #     cannot find it on a minimal base (the libodbcinst -> libltdl fix).
+            if depends_on_bundled and "$ORIGIN" not in rp and "${ORIGIN}" not in rp:
                 rep.findings.append(Finding(rel, f"RUNPATH='{rp}' (needs $ORIGIN)", "RPATH"))
+            # (b) DECLARED (conda-provided, NOT vendored) NEEDED deps must resolve
+            #     from the conda <PREFIX>/lib, so RUNPATH must climb ABOVE $ORIGIN.
+            #     A bare $ORIGIN (or empty) leaves the declared openssl/krb5
+            #     findable only via a SYSTEM copy -- the latent bug a hosted
+            #     agent's system libs mask. (The driver also dlopens libssl/
+            #     libcrypto, which the same climb resolves.)
+            if declared_needed and not _has_prefix_climb(rp):
+                rep.findings.append(
+                    Finding(
+                        rel,
+                        f"RUNPATH='{rp}' (DECLARED {sorted(set(declared_needed))} "
+                        f"unreachable; needs an $ORIGIN/.. climb to <PREFIX>/lib)",
+                        "RPATH",
+                    )
+                )
     return rep
 
 
