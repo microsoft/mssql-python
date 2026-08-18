@@ -1,0 +1,119 @@
+# Consolidate Conda Artifacts Job Template
+# Collects the per-platform conda packages (mssql-python binding + its companion
+# mssql-python-odbc) that each build leg staged under conda/<subdir>/ and gathers
+# them into a single conda/ tree for the release pipeline to publish.
+#
+# BEST-EFFORT (build pipeline): conda is a downstream repackage of the ESRP-signed
+# wheels and must NEVER block the primary wheel deliverable, so a missing/short set
+# only WARNS here. The HARD count gate lives in the release pipeline (which refuses
+# to publish an incomplete conda set), symmetric with how the wheel/odbc drops are
+# best-effort collected in the build and gated at release time.
+#
+# Expected packages (validated conda subdirs; each leg emits BOTH the binding and
+# the version-locked companion, and both carry the Python build string):
+#   win-64        : 5 py (3.10-3.14) x (mssql-python + mssql-python-odbc) = 10
+#   osx-64        : 5 py x 2  (Intel Mac, cross-built under Rosetta 2)     = 10
+#   osx-arm64     : 5 py x 2  (Apple Silicon, native)                      = 10
+#   linux-64      : 5 py x 2  (glibc x86_64 host, native)                  = 10
+#   linux-aarch64 : 5 py x 2  (x86_64 host + QEMU, best-effort)            = 10
+#   ------------------------------------------------------------------------------
+#   TOTAL (PyPI parity minus win-arm64 + musllinux)                        = 50
+# win-arm64 (no import-validation host on x64) and musllinux (no conda musl subdir)
+# are intentionally NOT conda-built. This job is BEST-EFFORT and never hard-fails on
+# a short set; the release pipeline's conda-release-step enforces the hard gate
+# (required subdirs present + #706 pairing) before anything is published.
+parameters:
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+
+jobs:
+  - job: ConsolidateArtifacts
+    displayName: 'Consolidate All Conda Packages'
+    condition: succeeded()
+
+    pool:
+      type: linux
+      isCustom: true
+      name: Azure Pipelines
+      vmImage: 'ubuntu-latest'
+
+    variables:
+      # Consolidation only moves files; no binaries to scan.
+      - name: ob_sdl_binskim_enabled
+        value: false
+      - name: ob_outputDirectory
+        value: '$(Build.ArtifactStagingDirectory)'
+
+    steps:
+      - checkout: self
+        fetchDepth: 1
+
+      # The conda packages are staged INSIDE the mssql-python build-leg artifacts
+      # (drop_Win_*, drop_MacOS_*, drop_Linux_*) under conda/<subdir>/. Scope the
+      # download to those stages (same set the wheel consolidate uses) so every
+      # leg's conda output is gathered in one place. The wheels ride along in the
+      # download but are ignored below (we only pick *.conda / *.tar.bz2).
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download All Platform Artifacts'
+        inputs:
+          buildType: 'current'
+          itemPattern: |
+            drop_Win_*/**
+            drop_MacOS_*/**
+            drop_Linux_*/**
+          targetPath: '$(Pipeline.Workspace)/all-artifacts'
+
+      - bash: |
+          set -e
+          echo "Collecting conda packages (preserving <subdir>/ layout)..."
+          mkdir -p $(ob_outputDirectory)/conda
+
+          # Copy every mssql-python* conda package into conda/<subdir>/. The glob
+          # 'mssql-python*' matches BOTH the binding (mssql-python-*) and the
+          # companion (mssql-python-odbc-*); each build leg wrote them under a
+          # conda/<subdir>/ folder, so the parent dir name IS the target subdir.
+          found=0
+          while IFS= read -r p; do
+            subdir=$(basename "$(dirname "$p")")
+            mkdir -p "$(ob_outputDirectory)/conda/$subdir"
+            cp -v "$p" "$(ob_outputDirectory)/conda/$subdir/"
+            found=1
+          done < <(find $(Pipeline.Workspace)/all-artifacts -type f \( -name 'mssql-python*.conda' -o -name 'mssql-python*.tar.bz2' \))
+
+          echo ""
+          echo "Consolidated conda tree:"
+          find $(ob_outputDirectory)/conda -type f | sort
+
+          PKG_COUNT=$(find $(ob_outputDirectory)/conda -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)
+          echo ""
+          echo "Per-subdir conda package counts:"
+          for d in $(ob_outputDirectory)/conda/*/; do
+            [ -d "$d" ] || continue
+            sub=$(basename "$d")
+            n=$(find "$d" -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)
+            printf '  %-14s %s\n' "$sub" "$n"
+          done
+          echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 50)"
+
+          # BEST-EFFORT: warn only, never exit non-zero — a conda hiccup on any leg
+          # must not fail this build or block the wheel release. The release pipeline's
+          # conda-release-step enforces the hard gate (required subdirs + #706 pairing)
+          # before anything is published.
+          if [ "$found" != "1" ]; then
+            echo "##vso[task.logissue type=warning]No conda packages found in the build-leg artifacts."
+          else
+            echo "Collected $PKG_COUNT conda package(s) (best-effort; release-time gate enforces completeness)."
+          fi
+        displayName: 'Consolidate conda packages'
+
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Consolidated Conda Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          # Distinct name so it does not collide with the wheel consolidate artifact
+          # (drop_Consolidate_ConsolidateArtifacts) or the odbc one
+          # (drop_ConsolidateOdbc_ConsolidateArtifacts) in the same run. Matches the
+          # OneBranch auto-name for a stage named `ConsolidateConda`.
+          artifact: 'drop_ConsolidateConda_ConsolidateArtifacts'
+          publishLocation: 'pipeline'

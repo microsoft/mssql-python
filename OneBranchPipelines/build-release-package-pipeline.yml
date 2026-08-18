@@ -411,6 +411,9 @@ extends:
               odbcDependsOn:
                 - ConsolidateOdbc
               installOdbcWheel: true
+              # Conda: build+validate conda packages on every x64 leg (win-64).
+              # ARM64 has no conda target (can't provision a win-arm64 host on x64).
+              buildConda: ${{ eq(config.arch, 'x64') }}
       
       # =========================
       # MACOS BUILD STAGES
@@ -440,6 +443,8 @@ extends:
               odbcDependsOn:
                 - ConsolidateOdbc
               installOdbcWheel: true
+              # Conda: build+validate the osx-arm64 conda package on every macOS leg.
+              buildConda: true
       
       # =========================
       # LINUX BUILD STAGES
@@ -474,6 +479,11 @@ extends:
               odbcDependsOn:
                 - ConsolidateOdbc
               installOdbcWheel: true
+              # Conda: build on BOTH manylinux_2_28 legs — x86_64 natively (linux-64)
+              # and aarch64 cross-targeted via QEMU binfmt (linux-aarch64), matching
+              # the two glibc Linux wheels on PyPI. musl has no conda target, so the
+              # musllinux legs still skip conda.
+              buildConda: ${{ eq(config.tag, 'manylinux_2_28') }}
       
       # =========================
       # CONSOLIDATE STAGE
@@ -566,3 +576,39 @@ extends:
       # mssql-python build stages now install the external mssql-python-odbc wheel
       # (from ConsolidateOdbc) and run the full pytest suite against it — so the
       # external-package resolution is already validated end-to-end during the build.
+
+      # =========================================================================
+      # CONSOLIDATE CONDA STAGE
+      # =========================================================================
+      # Gathers the conda packages emitted by the conda-producing legs (win-64,
+      # osx-64, osx-arm64, linux-64, linux-aarch64) into a single conda/ tree and
+      # publishes them as `drop_ConsolidateConda_ConsolidateArtifacts`. BEST-EFFORT:
+      # it depends ONLY on the conda-producing legs (not the win-arm64 or musl legs,
+      # which have no conda target) and its job never hard-fails on a short count, so
+      # a conda hiccup can never block the wheel deliverable. The release pipeline
+      # enforces the hard conda gate (required subdirs + #706 pairing) before
+      # anything is published.
+      - stage: ConsolidateConda
+        displayName: 'Consolidate All Conda Packages'
+        dependsOn:
+          # win-64 (x64 only — win-arm64 has no conda host on an x64 agent)
+          - Win_py310_x64
+          - Win_py311_x64
+          - Win_py312_x64
+          - Win_py313_x64
+          - Win_py314_x64
+          # osx-64 + osx-arm64 (every macOS universal2 leg builds BOTH: arm64 native,
+          # x64 under Rosetta 2)
+          - MacOS_py310
+          - MacOS_py311
+          - MacOS_py312
+          - MacOS_py313
+          - MacOS_py314
+          # linux-64 (glibc x86_64 host, native) + linux-aarch64 (x86_64 host + QEMU)
+          - Linux_manylinux_2_28_x86_64
+          - Linux_manylinux_2_28_aarch64
+        jobs:
+          - template: /OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml@self
+            parameters:
+              # Match effectiveOneBranchType so scheduled builds run as 'Official'.
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'

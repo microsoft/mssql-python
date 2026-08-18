@@ -1,0 +1,195 @@
+# Conda Publish Step Template
+# ============================================================================
+# Publishes the consolidated conda packages produced by build definition 2199
+# (artifact drop_ConsolidateConda_ConsolidateArtifacts) to an Anaconda.org channel
+# using anaconda-client (`anaconda upload`).
+#
+# Reference pattern: azure-sdk-for-python's conda publish
+# (eng/pipelines/templates/stages/archetype-conda-release.yml), which runs
+# `anaconda upload --user Microsoft --skip-existing` inside a 1ES releaseJob and
+# authenticates via the ANACONDA_API_TOKEN env var. ESRP has NO Conda ContentType,
+# so anaconda-client is the sanctioned publish path.
+#
+# Two adaptations vs. azure-sdk:
+#   1. Our packages are NON-noarch (native binding + driver), so they live under
+#      per-platform subdirs (win-64 / osx-arm64 / linux-64), NOT a single noarch
+#      folder. We recurse every subdir.
+#   2. #706 ordering: the version-locked companion (mssql-python-odbc) is uploaded
+#      BEFORE the binding (mssql-python) so the binding's pinned dependency is
+#      always resolvable on the channel. We also refuse to publish a mismatched or
+#      incomplete set.
+#
+# The caller MUST:
+#   - run this ONLY after the conda-release-step.yml readiness gate has passed, and
+#   - supply ANACONDA_API_TOKEN (variable group 'Anaconda Publishing') to the job.
+# This template never puts the token on the command line (anaconda-client reads it
+# from the env), so it never appears in the logs.
+parameters:
+  # Build pipeline definition id that produced the consolidated conda artifact.
+  - name: buildDefinitionId
+    type: number
+    default: 2199
+  # Consolidated conda artifact name (see consolidate-conda-artifacts-job.yml).
+  - name: condaArtifactName
+    type: string
+    default: 'drop_ConsolidateConda_ConsolidateArtifacts'
+  # Target Anaconda.org channel/org (e.g. 'microsoft'). Empty is rejected so a
+  # test pipeline can never accidentally push to the production channel.
+  - name: condaChannel
+    type: string
+    default: ''
+  # Channel label to publish under (production packages go to 'main').
+  - name: condaLabel
+    type: string
+    default: 'main'
+  # Comma-separated subdirs a complete release MUST contain (PyPI parity minus
+  # win-arm64 and musllinux). Guards against publishing an incomplete set even if
+  # this step is run standalone. Keep in sync with conda-release-step.yml.
+  - name: requiredSubdirs
+    type: string
+    default: 'win-64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Comma-separated superset of subdirs allowed to appear; anything else fails.
+  - name: allowedSubdirs
+    type: string
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Python used to install/run anaconda-client in the release job.
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
+  - name: labelPrefix
+    type: string
+    default: ''
+
+steps:
+  - task: DownloadPipelineArtifact@2
+    displayName: '${{ parameters.labelPrefix }}Download consolidated conda packages (publish)'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: ${{ parameters.buildDefinitionId }}
+      buildVersionToDownload: 'specific'
+      buildId: $(resources.pipeline.buildPipeline.runID)
+      artifactName: '${{ parameters.condaArtifactName }}'
+      targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
+
+  - task: UsePythonVersion@0
+    displayName: '${{ parameters.labelPrefix }}Use Python ${{ parameters.pythonVersion }}'
+    inputs:
+      versionSpec: '${{ parameters.pythonVersion }}'
+      addToPath: true
+
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Install anaconda-client'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        python -m pip install --upgrade pip
+        python -m pip install anaconda-client
+        # anaconda-client installs the `anaconda` console script onto PATH.
+        anaconda --version
+
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Publish conda packages to anaconda.org/${{ parameters.condaChannel }}'
+    env:
+      # anaconda-client reads ANACONDA_API_TOKEN automatically, so the token is
+      # never passed on the command line and never appears in the logs. Supplied by
+      # the caller from the 'Anaconda Publishing' variable group.
+      ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+
+        # Refuse to publish without an explicit target channel (protects the dummy
+        # pipeline, whose default channel is empty, from ever hitting production).
+        if ([string]::IsNullOrWhiteSpace("${{ parameters.condaChannel }}")) {
+          Write-Error "condaChannel is empty. Supply the target Anaconda.org channel/org (production = 'microsoft')."
+          exit 1
+        }
+
+        if ([string]::IsNullOrWhiteSpace($env:ANACONDA_API_TOKEN)) {
+          Write-Error "ANACONDA_API_TOKEN is not set. Add the 'Anaconda Publishing' variable group to the job."
+          exit 1
+        }
+
+        $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+        if (-not (Test-Path $root)) {
+          Write-Error "Consolidated conda tree not found at $root. Did ConsolidateConda run in the selected build?"
+          exit 1
+        }
+
+        $required = '${{ parameters.requiredSubdirs }}'.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        $allowed  = '${{ parameters.allowedSubdirs }}'.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
+        $pkgs = @(Get-ChildItem -Path $root -Recurse -Include *.conda, *.tar.bz2)
+        if ($pkgs.Count -eq 0) { Write-Error "No conda packages found under $root. Refusing to publish an empty set."; exit 1 }
+
+        $bySubdir = $pkgs | Group-Object { $_.Directory.Name }
+        function Get-Binding($grp)   { @($grp | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
+        function Get-Companion($grp) { @($grp | Where-Object { $_.Name -like 'mssql-python-odbc-*' }) }
+
+        Write-Host "Discovered $($pkgs.Count) conda package(s) across $($bySubdir.Count) subdir(s):"
+        foreach ($g in ($bySubdir | Sort-Object Name)) {
+          Write-Host ("  {0,-14} binding={1} companion={2}" -f $g.Name, (Get-Binding $g.Group).Count, (Get-Companion $g.Group).Count)
+        }
+
+        $failed = $false
+
+        # No mis-stamped subdir.
+        foreach ($g in $bySubdir) {
+          if ($allowed -notcontains $g.Name) {
+            Write-Host "##vso[task.logissue type=error]Unexpected conda subdir '$($g.Name)' (not in allowedSubdirs). Refusing to publish."
+            $failed = $true
+          }
+        }
+
+        # Every required subdir present and internally #706-paired.
+        $foundSubdirs = @($bySubdir | ForEach-Object { $_.Name })
+        foreach ($req in $required) {
+          if ($foundSubdirs -notcontains $req) {
+            Write-Host "##vso[task.logissue type=error]Required conda subdir '$req' is MISSING. Refusing to publish an incomplete set."
+            $failed = $true
+            continue
+          }
+          $grp = ($bySubdir | Where-Object { $_.Name -eq $req }).Group
+          $b = (Get-Binding $grp).Count; $c = (Get-Companion $grp).Count
+          if ($b -eq 0 -or $c -eq 0 -or $b -ne $c) {
+            Write-Host "##vso[task.logissue type=error]#706 violation in '$req': $b binding vs $c companion."
+            $failed = $true
+          }
+        }
+
+        # #706: split into companion (mssql-python-odbc) and binding (mssql-python).
+        $companion = Get-Companion $pkgs
+        $binding   = Get-Binding $pkgs
+        if ($companion.Count -ne $binding.Count) {
+          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($companion.Count) companion vs $($binding.Count) binding packages."
+          $failed = $true
+        }
+
+        if ($failed) { Write-Error "Conda publish pre-check FAILED. Refusing to publish an incomplete/mis-paired set."; exit 1 }
+
+        function Publish-One($file) {
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "Uploading $($file.Directory.Name)/$($file.Name) (attempt $attempt) ..."
+            anaconda upload --user "${{ parameters.condaChannel }}" --label "${{ parameters.condaLabel }}" --skip-existing "$($file.FullName)"
+            if ($LASTEXITCODE -eq 0) { return }
+            Write-Host "Attempt $attempt failed; retrying in 5s ..."
+            Start-Sleep -Seconds 5
+          }
+          Write-Error "Failed to upload $($file.Name) after 3 attempts."
+          exit 1
+        }
+
+        # #706 ordering: companion FIRST so the binding's pinned dependency is
+        # resolvable the instant the binding lands on the channel.
+        Write-Host "==== Publishing companion (mssql-python-odbc) packages ===="
+        foreach ($p in ($companion | Sort-Object FullName)) { Publish-One $p }
+
+        Write-Host "==== Publishing binding (mssql-python) packages ===="
+        foreach ($p in ($binding | Sort-Object FullName)) { Publish-One $p }
+
+        Write-Host ""
+        Write-Host "Uploaded $($companion.Count) companion + $($binding.Count) binding conda packages to anaconda.org/${{ parameters.condaChannel }} (label ${{ parameters.condaLabel }})."

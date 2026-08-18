@@ -32,6 +32,30 @@ parameters:
     type: boolean
     default: true  # Safe to enable - uses Maven ContentType for testing
 
+  # [TEST] Conda release readiness. When true, a DECOUPLED stage downloads the
+  # consolidated conda packages (drop_ConsolidateConda_ConsolidateArtifacts) and
+  # enforces the hard completeness + #706 pairing gate. It publishes NOTHING; it is
+  # the safe place to prove the conda set is release-ready.
+  - name: releaseConda
+    displayName: '[TEST] Validate Conda Release Readiness (does not publish)'
+    type: boolean
+    default: false
+
+  # [TEST] Conda publish rehearsal. Wires the SAME anaconda-client publish path as
+  # the official pipeline for workflow testing. condaChannel is EMPTY by default and
+  # the publish step refuses to run without it, so this TEST pipeline can never push
+  # to the production 'microsoft' channel by accident. Point it at a personal/test
+  # Anaconda.org channel to rehearse the upload.
+  - name: publishToConda
+    displayName: '[TEST] Publish Conda Packages to Anaconda.org (rehearsal - set a TEST channel)'
+    type: boolean
+    default: false
+
+  - name: condaChannel
+    displayName: '[TEST] Anaconda.org channel/org (leave empty to block publishing; set a TEST channel to rehearse)'
+    type: string
+    default: ''
+
 # Variables
 variables:
   # Common variables
@@ -41,6 +65,11 @@ variables:
   # Variable groups
   - group: 'ESRP Federated Creds (AME)'  # Contains ESRP signing credentials
   - group: 'Symbols Publishing'  # Contains SymbolServer, SymbolTokenUri variables
+
+  # ANACONDA_API_TOKEN for the conda publish rehearsal lives in this variable group.
+  # Included ONLY when publishing so the validate-only path doesn't require it.
+  - ${{ if eq(parameters.publishToConda, true) }}:
+      - group: 'Anaconda Publishing'
 
   # Select which consolidated artifact to download based on the target package.
   # Both are produced by the same build pipeline (definition 2199):
@@ -422,3 +451,54 @@ extends:
                       Write-Host "3. Verify symbols in SqlClientDrivers org (if published)"
                       Write-Host "4. For PRODUCTION release, use official-release-pipeline.yml"
                       Write-Host "====================================="
+
+      # =====================================================================
+      # [TEST] CONDA RELEASE READINESS (decoupled; publishes nothing)
+      # =====================================================================
+      # Runs when releaseConda=true OR publishToConda=true. Downloads the consolidated
+      # conda packages from build definition 2199 and enforces the release-time hard
+      # gate (exact count + #706 binding/companion pairing). dependsOn: [] keeps it
+      # independent of the dummy release stage. When publishToConda=true, a second
+      # releaseJob rehearses the Anaconda.org upload (to whatever TEST channel is
+      # supplied), but ONLY after this gate succeeds.
+      - ${{ if or(eq(parameters.releaseConda, true), eq(parameters.publishToConda, true)) }}:
+        - stage: ValidateCondaRelease
+          displayName: '[TEST] Validate & Publish Conda Release'
+          dependsOn: []
+          jobs:
+            - job: ValidateConda
+              displayName: '[TEST] Validate consolidated conda packages'
+              pool:
+                type: windows
+                isCustom: true
+                name: Python-1ES-pool
+                demands:
+                - imageOverride -equals PYTHON-1ES-MMS2022
+              variables:
+                ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+              steps:
+                - template: /OneBranchPipelines/steps/conda-release-step.yml@self
+                  parameters:
+                    labelPrefix: '[TEST] '
+
+            # [TEST] Conda publish rehearsal (releaseJob). Runs only when
+            # publishToConda=true and ONLY after the ValidateConda gate succeeds. The
+            # publish step refuses to run with an empty condaChannel, so this can
+            # never reach the production 'microsoft' channel by default.
+            - ${{ if eq(parameters.publishToConda, true) }}:
+              - job: PublishConda
+                displayName: '[TEST] Publish Conda Packages to Anaconda.org'
+                dependsOn: ValidateConda
+                templateContext:
+                  type: releaseJob
+                pool:
+                  type: windows
+                variables:
+                  ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+                  WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
+                steps:
+                  - template: /OneBranchPipelines/steps/conda-publish-step.yml@self
+                    parameters:
+                      condaChannel: ${{ parameters.condaChannel }}
+                      condaLabel: 'main'
+                      labelPrefix: '[TEST] '

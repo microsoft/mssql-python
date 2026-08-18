@@ -32,6 +32,31 @@ parameters:
     type: boolean
     default: false  # Safety: Default to false to prevent accidental releases
 
+  # Conda release readiness. When true, a DECOUPLED stage downloads the consolidated
+  # conda packages (drop_ConsolidateConda_ConsolidateArtifacts) and enforces the hard
+  # completeness + #706 pairing gate. It is independent of the wheel PyPI release, so
+  # a conda check can never block a wheel release.
+  - name: releaseConda
+    displayName: 'Validate Conda Release Readiness (does not publish)'
+    type: boolean
+    default: false
+
+  # Conda PRODUCTION publish to Anaconda.org. When true, AFTER the readiness gate
+  # (ValidateConda) passes, a releaseJob uploads the consolidated conda packages via
+  # anaconda-client (ESRP has no Conda ContentType). The version-locked companion
+  # (mssql-python-odbc) is uploaded BEFORE the binding (mssql-python) per #706.
+  # Decoupled from the wheel release; default false so a normal release never
+  # touches Anaconda.
+  - name: publishToConda
+    displayName: 'Publish Conda Packages to Anaconda.org (PRODUCTION)'
+    type: boolean
+    default: false
+
+  - name: condaChannel
+    displayName: 'Anaconda.org channel/org to publish conda packages to'
+    type: string
+    default: 'microsoft'
+
 # Variables
 variables:
   # Common variables
@@ -41,6 +66,12 @@ variables:
   # Variable groups
   - group: 'ESRP Federated Creds (AME)'  # Contains ESRP signing credentials
   - group: 'Symbols Publishing'  # Contains SymbolServer, SymbolTokenUri variables
+
+  # ANACONDA_API_TOKEN for conda publishing lives in this org-scoped variable group.
+  # Included ONLY when actually publishing, so a normal wheel release doesn't require
+  # the group to exist.
+  - ${{ if eq(parameters.publishToConda, true) }}:
+      - group: 'Anaconda Publishing'
 
   # Select which consolidated artifact to download/publish based on the target
   # package. Both are produced by the same build pipeline (definition 2199):
@@ -404,3 +435,52 @@ extends:
                       Write-Host "3. Verify package on PyPI: https://pypi.org/project/${{ parameters.releasePackage }}/"
                       Write-Host "4. Verify symbols in SqlClientDrivers org (if published)"
                       Write-Host "====================================="
+
+      # =====================================================================
+      # CONDA RELEASE READINESS (decoupled; does not gate the wheel release)
+      # =====================================================================
+      # Runs when releaseConda=true OR publishToConda=true. Downloads the consolidated
+      # conda packages from build definition 2199 and enforces the release-time hard
+      # gate (exact count + #706 binding/companion pairing). dependsOn: [] keeps it
+      # independent of ReleasePackages, so a conda problem can never block the wheel
+      # PyPI release. When publishToConda=true, a second releaseJob publishes to
+      # Anaconda.org, but ONLY after this gate succeeds.
+      - ${{ if or(eq(parameters.releaseConda, true), eq(parameters.publishToConda, true)) }}:
+        - stage: ValidateCondaRelease
+          displayName: 'Validate & Publish Conda Release'
+          dependsOn: []
+          jobs:
+            - job: ValidateConda
+              displayName: 'Validate consolidated conda packages'
+              pool:
+                type: windows
+                isCustom: true
+                name: Python-1ES-pool
+                demands:
+                - imageOverride -equals PYTHON-1ES-MMS2022
+              variables:
+                ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+              steps:
+                - template: /OneBranchPipelines/steps/conda-release-step.yml@self
+
+            # Conda PRODUCTION publish (releaseJob). Runs only when publishToConda=true
+            # and ONLY after the ValidateConda gate succeeds, so we never upload an
+            # incomplete or mis-paired set. anaconda-client upload (ESRP has no Conda
+            # ContentType); companion-before-binding per #706.
+            - ${{ if eq(parameters.publishToConda, true) }}:
+              - job: PublishConda
+                displayName: 'Publish Conda Packages to Anaconda.org'
+                dependsOn: ValidateConda
+                templateContext:
+                  type: releaseJob
+                  isProduction: true
+                pool:
+                  type: windows
+                variables:
+                  ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+                  WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
+                steps:
+                  - template: /OneBranchPipelines/steps/conda-publish-step.yml@self
+                    parameters:
+                      condaChannel: ${{ parameters.condaChannel }}
+                      condaLabel: 'main'

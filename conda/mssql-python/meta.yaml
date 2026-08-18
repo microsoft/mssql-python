@@ -1,35 +1,35 @@
-{% set name = "mssql-python" %}
-# Single source of truth: the publish pipeline exports MSSQL_PYTHON_VERSION /
-# MSSQL_ODBC_VERSION derived from the signed wheel filenames, so the package
-# version AND the companion pin below can never drift. Defaults are the LOCAL
-# prototype target; bump after the Aug 20 release.
 {% set version = environ.get('MSSQL_PYTHON_VERSION', '1.13.0') %}
 {% set odbc_version = environ.get('MSSQL_ODBC_VERSION', '18.6.2.1') %}
 
-# ---------------------------------------------------------------------------
-# The Python binding (native C++ `ddbc_bindings` + Rust `mssql_py_core`).
-#
-# This recipe REPACKAGES the signed, platform/Python-specific
-# `mssql_python-<ver>-cp3xx-cp3xx-<plat>.whl` — no compilation. Because it carries
-# a native extension, the package is NOT `noarch`; one build per OS/arch/CPython.
-#
-# The proprietary driver is NOT in this package — it is pulled in via the
-# version-locked `mssql-python-odbc` run dependency (model 7B). Both packages are
-# published together and version-locked (see issue #706 sequencing).
-#
-# LOCAL prototype (this file): the wheel is pulled from PyPI. In CI, swap the
-# build script to consume the signed release artifacts:
-#     %PYTHON% -m pip install --no-deps --no-index --find-links %ARTIFACTS% \
-#         mssql-python==%PKG_VERSION% -vv
-# ---------------------------------------------------------------------------
-
 package:
-  name: {{ name|lower }}
-  version: {{ version }}
+  name: mssql-python
+  version: "{{ version }}"
 
 build:
   number: 0
-  script: {{ PYTHON }} -m pip install --no-deps{% if environ.get('ARTIFACTS_PY') %} --no-index --find-links "{{ environ.get('ARTIFACTS_PY') }}"{% endif %} mssql-python=={{ version }} -vv
+  # Like the companion, this recipe REPACKAGES a prebuilt wheel (the compiled
+  # ddbc_bindings extension + bundled runtime); it compiles nothing. conda-build's
+  # overlinking/overdepending checks target from-source builds and mis-fire on
+  # vendored binaries (e.g. ddbc_bindings linking the driver that lives in the
+  # separate companion package), so downgrade both from errors to warnings -- CI
+  # enables them as errors by default.
+  error_overlinking: false
+  error_overdepending: false
+  # Like the companion, this recipe vendors PREBUILT, signed binaries (the compiled
+  # ddbc_bindings extension + bundled VC++ runtime); conda-build must neither rewrite
+  # nor scan them:
+  #   - binary_relocation: rewriting RPATH / install-name in a signed binary corrupts
+  #     the signature.
+  #   - detect_binary_files_with_prefix: the build-prefix scan over the signed native
+  #     binaries is meaningless for a pure repackage and is the packaging step that
+  #     fails right after "Fixing permissions" on these recipes.
+  binary_relocation: false
+  detect_binary_files_with_prefix: false
+  # WHEELS_DIR is exported by the pipeline (or a local harness) and passed into the
+  # isolated conda-build environment so bld.bat / build.sh can install the prebuilt,
+  # ESRP-signed wheel from --find-links, fully offline. This mirrors CI: no PyPI.
+  script_env:
+    - WHEELS_DIR
 
 requirements:
   host:
@@ -41,11 +41,14 @@ requirements:
     # ship as CalVer (e.g. 2026.06.01), so a semver floor like `>=1.12.0` is a
     # misleading no-op there (every published build already satisfies it).
     - azure-identity
+    # Version-locked to the companion built alongside this package (issue #706:
+    # the driver package is an internal implementation detail; never upgrade it
+    # independently of mssql-python).
     - mssql-python-odbc =={{ odbc_version }}
-    # conda drops the wheel's platform tag (manylinux_2_28 / macosx_15_0); re-assert
-    # that floor as a virtual-package run constraint so it can't install on an
-    # unsupported host. The wheel install in the companion's build already requires
-    # these, so this is never stricter than what actually shipped.
+    # conda drops the wheel's platform tag (manylinux_2_28 / macosx_15_0), so
+    # re-assert that floor as a virtual-package run constraint. The wheel install
+    # in the companion's build already requires these, so this can't be stricter
+    # than what actually shipped.
     - __glibc >=2.28      # [linux]
     - __osx >=15.0        # [osx]
 
@@ -57,13 +60,11 @@ about:
   home: https://github.com/microsoft/mssql-python
   license: MIT
   license_file: ../../LICENSE
-  summary: Microsoft driver for Python to interact with SQL Server / Azure SQL
+  summary: Microsoft driver for Python to interact with SQL Server and Azure SQL.
   description: |
-    mssql-python is Microsoft's DB API 2.0 (PEP 249) driver for SQL Server,
-    Azure SQL, and Azure Synapse. Installs the Microsoft ODBC Driver 18 via the
-    companion `mssql-python-odbc` package.
-  dev_url: https://github.com/microsoft/mssql-python
-  doc_url: https://github.com/microsoft/mssql-python/wiki
+    mssql-python is a DB API 2.0 (PEP 249) compliant driver for SQL Server,
+    Azure SQL, and Azure Synapse. The proprietary ODBC Driver 18 payload ships in
+    the pinned companion package mssql-python-odbc.
 
 extra:
   recipe-maintainers:

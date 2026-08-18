@@ -29,6 +29,11 @@ parameters:
   - name: installOdbcWheel
     type: boolean
     default: false
+  # Conda: build + validate the osx-arm64 conda package from this leg's wheels.
+  # Requires installOdbcWheel (the external odbc wheel is repackaged/solved too).
+  - name: buildConda
+    type: boolean
+    default: false
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -258,7 +263,42 @@ stages:
               echo "Wheels after retag:"
               ls -lh dist/
             displayName: 'Ensure universal2 platform tag'
-          
+
+          # =========================
+          # CONDA PACKAGE (osx-arm64 — Apple Silicon, native)
+          # =========================
+          # Repackage this leg's universal2 mssql-python wheel + the external
+          # mssql-python-odbc wheel into an osx-arm64 conda package and validate
+          # solve+import on THIS Apple-Silicon agent. Non-blocking: conda never
+          # fails the wheel build.
+          - ${{ if and(parameters.buildConda, parameters.installOdbcWheel) }}:
+            - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
+              parameters:
+                condaSubdir: 'osx-arm64'
+                odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
+                odbcWheelFilter: 'mssql_python_odbc-*macosx*universal2.whl'
+                pythonVersions: ${{ parameters.pythonVersion }}
+
+          # =========================
+          # CONDA PACKAGE (osx-64 — Intel Mac, via Rosetta 2)
+          # =========================
+          # PyPI ships ONE universal2 wheel that serves BOTH Apple-Silicon and Intel
+          # Macs; conda has no universal2 subdir, so Intel Macs need a separate osx-64
+          # package. The universal2 wheel already carries the x86_64 slice, so we
+          # CROSS-target osx-64 with CONDA_SUBDIR=osx-64: conda-build stamps osx-64
+          # and the verify env's x86_64 Python + wheel run under Rosetta 2 (present on
+          # every Apple-Silicon macos-latest agent), so the import/driver-load check is
+          # still real. Same universal2 wheel, same agent, second subdir — closing the
+          # Intel-Mac parity gap vs. PyPI. Non-blocking like the osx-arm64 build.
+          - ${{ if and(parameters.buildConda, parameters.installOdbcWheel) }}:
+            - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
+              parameters:
+                condaSubdir: 'osx-64'
+                condaTargetSubdir: 'osx-64'
+                odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
+                odbcWheelFilter: 'mssql_python_odbc-*macosx*universal2.whl'
+                pythonVersions: ${{ parameters.pythonVersion }}
+
           # =========================
           # ARTIFACT PUBLISHING
           # =========================

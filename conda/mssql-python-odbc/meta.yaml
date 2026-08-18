@@ -1,32 +1,39 @@
-{% set name = "mssql-python-odbc" %}
-# Single source of truth: the publish pipeline exports MSSQL_ODBC_VERSION derived
-# from the signed wheel filename, shared with the binding recipe's version-lock pin.
 {% set version = environ.get('MSSQL_ODBC_VERSION', '18.6.2.1') %}
 
-# ---------------------------------------------------------------------------
-# Companion driver package: the Microsoft ODBC Driver 18 payload.
-#
-# This recipe REPACKAGES the already-signed, platform-specific
-# `mssql_python_odbc-<ver>-py3-none-<plat>.whl` — it does NOT compile anything.
-#
-# PROPRIETARY: the driver binaries ship under the Microsoft ODBC Driver EULA,
-# which is exactly why this package can never go to conda-forge and must live on
-# the Microsoft-owned `microsoft` Anaconda channel.
-#
-# LOCAL prototype (this file): the wheel is pulled from PyPI so we can build and
-# validate the mechanics with no channel/permission. In CI, swap the build
-# script to consume the signed release artifacts instead of PyPI:
-#     %PYTHON% -m pip install --no-deps --no-index --find-links %ARTIFACTS% \
-#         mssql-python-odbc==%PKG_VERSION% -vv
-# ---------------------------------------------------------------------------
-
 package:
-  name: {{ name|lower }}
-  version: {{ version }}
+  name: mssql-python-odbc
+  version: "{{ version }}"
 
 build:
   number: 0
-  script: {{ PYTHON }} -m pip install --no-deps{% if environ.get('ARTIFACTS_ODBC') %} --no-index --find-links "{{ environ.get('ARTIFACTS_ODBC') }}"{% endif %} mssql-python-odbc=={{ version }} -vv
+  # This recipe REPACKAGES a prebuilt, ESRP-signed wheel (the proprietary ODBC
+  # Driver 18 payload); it compiles nothing. conda-build's post-build overlinking /
+  # overdepending analysis targets from-source builds and mis-fires on vendored
+  # binaries, so downgrade both from errors to warnings (CI enables them as errors):
+  #   - overdepending: the pure-data driver payload doesn't link libpythonX.Y, so
+  #     `python` (a legitimate run dep for the importable `mssql_python_odbc` module)
+  #     is reported as "unused".
+  #   - overlinking: the vendored libodbc.2.dylib records an absolute Homebrew libtool
+  #     path (/opt/homebrew|/usr/local .../libltdl.7.dylib) that must NOT be rewritten
+  #     in a signed binary. libltdl itself ships inside this package.
+  error_overlinking: false
+  error_overdepending: false
+  # This recipe vendors PREBUILT, ESRP-signed binaries (the ODBC Driver 18 payload +
+  # the bundled VC++ runtime); conda-build must neither rewrite nor scan them:
+  #   - binary_relocation: rewriting RPATH / install-name in a signed binary corrupts
+  #     the signature, and the vendored @loader_path / Homebrew-libtool refs must stay
+  #     exactly as shipped.
+  #   - detect_binary_files_with_prefix: the build-prefix scan over the large signed
+  #     DLLs/dylibs is meaningless for a pure repackage (no prefix to relocate at
+  #     install time) and is the packaging step that fails right after "Fixing
+  #     permissions" on these recipes.
+  binary_relocation: false
+  detect_binary_files_with_prefix: false
+  # WHEELS_DIR is exported by the pipeline (or a local harness) and passed into the
+  # isolated conda-build environment so bld.bat / build.sh can install the prebuilt,
+  # ESRP-signed wheel from --find-links, fully offline. This mirrors CI: no PyPI.
+  script_env:
+    - WHEELS_DIR
 
 requirements:
   host:
@@ -50,14 +57,20 @@ about:
   # Proprietary payload: governed by the Microsoft ODBC Driver 18 EULA (+ the bundled
   # VC++ runtime license), NOT the repo's MIT LICENSE. Ship the actual EULA text.
   license: LicenseRef-Microsoft-Proprietary
+  # Vendored copies of mssql_python_odbc/licenses/*.txt (the source of truth). The
+  # build pipeline DELETES the checkout `mssql_python_odbc/` before conda-build (the
+  # driver must resolve from the installed wheel, not the checkout), so a `../../`
+  # reference to those files no longer resolves at package time -- conda-build raises
+  # "License file ... does not exist in source root dir or in recipe root dir". Keep
+  # the EULA text next to the recipe (which is not deleted) and reference it by name.
   license_file:
-    - ../../mssql_python_odbc/licenses/MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt
-    - ../../mssql_python_odbc/licenses/MICROSOFT_VISUAL_STUDIO_LICENSE.txt
-  summary: Microsoft ODBC Driver 18 payload for mssql-python (internal companion package)
+    - MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt
+    - MICROSOFT_VISUAL_STUDIO_LICENSE.txt
+  summary: Microsoft ODBC Driver 18 payload for mssql-python (companion package).
   description: |
-    Internal implementation package. Do not install or upgrade directly — install
-    `mssql-python`, which depends on the exact matching version of this package.
-  dev_url: https://github.com/microsoft/mssql-python
+    Internal implementation package for mssql-python. Do NOT install or upgrade
+    this package directly; install `mssql-python`, which pins the exact matching
+    version of this companion.
 
 extra:
   recipe-maintainers:

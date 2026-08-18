@@ -1,0 +1,148 @@
+# Conda Release Readiness Step Template
+# ============================================================================
+# Downloads the consolidated conda packages produced by the build pipeline
+# (definition 2199, artifact drop_ConsolidateConda_ConsolidateArtifacts) and
+# enforces the RELEASE-TIME hard gate that the build pipeline intentionally does
+# NOT enforce.
+#
+# Why the gate lives HERE and not in the build:
+#   - BUILD pipeline: conda is collected BEST-EFFORT (warn-only) so a conda hiccup
+#     on any leg can never fail the build or block the primary wheel release.
+#   - RELEASE pipeline: conda completeness is GATED — an incomplete or mis-paired
+#     conda set must never be shipped.
+#
+# What it enforces:
+#   - required subdirs: every subdir in `requiredSubdirs` (the PyPI-parity set:
+#     win-64, osx-64, osx-arm64, linux-64, linux-aarch64) is present. This catches
+#     a leg that silently produced NOTHING, or produced the WRONG subdir (e.g.
+#     osx-64 stamped as osx-arm64) — a bare total-count check cannot.
+#   - allowed subdirs: no package is stamped with an UNEXPECTED subdir outside
+#     `allowedSubdirs`.
+#   - #706 pairing: within every subdir AND globally, each mssql-python binding
+#     ships WITH its matching mssql-python-odbc companion in equal number — never a
+#     companion-only bump (the exact mistake that triggered #706), and never a
+#     binding whose companion is missing.
+#
+# win-arm64 is intentionally NOT in the parity set: an x64 agent cannot import-
+# validate an arm64 conda package (same reason its wheel skips pytest), so it needs
+# a native win-arm64 agent before it can be gated. musllinux has no conda subdir at
+# all (conda Linux is glibc-only), so it is correctly absent.
+#
+# Publishing to anaconda.org is a SEPARATE, still-to-be-finalized step (ESRP Conda
+# ContentType vs anaconda-client upload); this template only proves the artifact is
+# complete and correctly paired so publishing can proceed safely.
+parameters:
+  # Build pipeline definition id that produced the conda artifact.
+  - name: buildDefinitionId
+    type: number
+    default: 2199
+  # Consolidated conda artifact name (see consolidate-conda-artifacts-job.yml).
+  - name: condaArtifactName
+    type: string
+    default: 'drop_ConsolidateConda_ConsolidateArtifacts'
+  # Comma-separated subdirs that a complete release MUST contain (PyPI parity minus
+  # win-arm64 and musllinux, which have no validated conda build). If an emulated
+  # leg (osx-64 / linux-aarch64) ever proves too flaky to gate on, drop it here —
+  # no code change needed.
+  - name: requiredSubdirs
+    type: string
+    default: 'win-64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Comma-separated superset of subdirs that are ALLOWED to appear. Any discovered
+  # subdir outside this set fails the gate (guards against a mis-stamped subdir).
+  # win-arm64 is allowed-but-not-required so a future native-agent build can land
+  # without tripping the gate.
+  - name: allowedSubdirs
+    type: string
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
+  - name: labelPrefix
+    type: string
+    default: ''
+
+steps:
+  - task: DownloadPipelineArtifact@2
+    displayName: '${{ parameters.labelPrefix }}Download consolidated conda packages'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: ${{ parameters.buildDefinitionId }}
+      buildVersionToDownload: 'specific'
+      buildId: $(resources.pipeline.buildPipeline.runID)
+      artifactName: '${{ parameters.condaArtifactName }}'
+      targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
+
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Validate conda release readiness (required subdirs + #706 pairing)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+        if (-not (Test-Path $root)) {
+          Write-Error "Consolidated conda tree not found at $root. Was ConsolidateConda produced by the selected build run?"
+          exit 1
+        }
+
+        $required = '${{ parameters.requiredSubdirs }}'.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        $allowed  = '${{ parameters.allowedSubdirs }}'.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
+        $pkgs = @(Get-ChildItem -Path $root -Recurse -Include *.conda, *.tar.bz2)
+        if ($pkgs.Count -eq 0) {
+          Write-Error "No conda packages found under $root. Refusing to proceed with an empty conda set."
+          exit 1
+        }
+
+        # A package's immediate parent folder name IS its conda subdir.
+        $bySubdir = $pkgs | Group-Object { $_.Directory.Name }
+        function Get-Binding($grp)   { @($grp | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
+        function Get-Companion($grp) { @($grp | Where-Object { $_.Name -like 'mssql-python-odbc-*' }) }
+
+        Write-Host "Discovered $($pkgs.Count) conda package(s) across $($bySubdir.Count) subdir(s):"
+        foreach ($g in ($bySubdir | Sort-Object Name)) {
+          Write-Host ("  {0,-14} binding={1} companion={2}" -f $g.Name, (Get-Binding $g.Group).Count, (Get-Companion $g.Group).Count)
+        }
+        Write-Host "Required subdirs : $($required -join ', ')"
+        Write-Host "Allowed subdirs  : $($allowed -join ', ')"
+
+        $failed = $false
+
+        # 1. No package stamped with an UNEXPECTED subdir (catches a mis-stamped leg).
+        foreach ($g in $bySubdir) {
+          if ($allowed -notcontains $g.Name) {
+            Write-Host "##vso[task.logissue type=error]Unexpected conda subdir '$($g.Name)' (not in allowedSubdirs)."
+            $failed = $true
+          }
+        }
+
+        # 2. Every REQUIRED subdir present and internally #706-paired (binding==companion, both > 0).
+        $foundSubdirs = @($bySubdir | ForEach-Object { $_.Name })
+        foreach ($req in $required) {
+          if ($foundSubdirs -notcontains $req) {
+            Write-Host "##vso[task.logissue type=error]Required conda subdir '$req' is MISSING."
+            $failed = $true
+            continue
+          }
+          $grp = ($bySubdir | Where-Object { $_.Name -eq $req }).Group
+          $b = (Get-Binding $grp).Count
+          $c = (Get-Companion $grp).Count
+          if ($b -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no binding (mssql-python) package."; $failed = $true }
+          if ($c -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no companion (mssql-python-odbc) package."; $failed = $true }
+          if ($b -ne $c) { Write-Host "##vso[task.logissue type=error]#706 violation in '$req': $b binding vs $c companion."; $failed = $true }
+        }
+
+        # 3. Global #706 pairing across ALL subdirs (no orphan anywhere, incl. optional ones).
+        $binding   = Get-Binding $pkgs
+        $companion = Get-Companion $pkgs
+        if ($binding.Count -ne $companion.Count) {
+          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($binding.Count) binding vs $($companion.Count) companion packages."
+          $failed = $true
+        }
+
+        if ($failed) {
+          Write-Error "Conda release readiness FAILED. Refusing to proceed with an incomplete/mis-paired conda set."
+          exit 1
+        }
+
+        Write-Host ""
+        Write-Host "OK: required subdirs all present and #706-paired; $($binding.Count) binding + $($companion.Count) companion conda packages."
+        Write-Host "Conda set is release-ready (the publish step is gated separately)."
