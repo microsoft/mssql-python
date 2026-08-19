@@ -78,9 +78,29 @@ if [ -z "$conda" ]; then
   esac
   forgeDir="$OutputDir/miniforge"
   installer="$OutputDir/$mf"
-  url="https://github.com/conda-forge/miniforge/releases/latest/download/$mf"
-  echo "Downloading $url"
+  # Pin Miniforge to a specific release for reproducible, supply-chain-safe builds
+  # (never `latest`, which floats to whatever upstream publishes next). Override with
+  # MINIFORGE_VERSION. When MINIFORGE_SHA256 is set (to this arch's installer checksum
+  # for the pinned version) the download is verified BEFORE it is executed -- set it
+  # in the pipeline to make integrity checking mandatory.
+  mfver="${MINIFORGE_VERSION:-26.3.2-3}"
+  url="https://github.com/conda-forge/miniforge/releases/download/${mfver}/$mf"
+  echo "Downloading pinned Miniforge $mfver: $url"
   curl -fL "$url" -o "$installer"
+  if [ -n "${MINIFORGE_SHA256:-}" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual="$(sha256sum "$installer" | awk '{print $1}')"
+    else
+      actual="$(shasum -a 256 "$installer" | awk '{print $1}')"
+    fi
+    if [ "$actual" != "$MINIFORGE_SHA256" ]; then
+      echo "ERROR: Miniforge installer SHA256 mismatch: expected '$MINIFORGE_SHA256', got '$actual'." >&2
+      exit 1
+    fi
+    echo "Miniforge installer SHA256 verified."
+  else
+    echo "WARNING: MINIFORGE_SHA256 not set -- skipping installer integrity check. Set it in the pipeline to the pinned checksum of $mf @ $mfver."
+  fi
   # -u = update/reuse an existing target dir instead of erroring, in case a prior
   # run left a partial miniforge/ behind that failed the reuse check above.
   bash "$installer" -b -u -p "$forgeDir"
@@ -193,7 +213,12 @@ echo "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binaries.py)
 #    at import).
 # ---------------------------------------------------------------------------
 for py in $pyvers; do
-  envName="verify_${py//./}"
+  # Include the target subdir so the two macOS legs (osx-64 + osx-arm64) that run on
+  # the SAME agent never collide on the env name, and recreate cleanly so a re-run
+  # or a leftover env can't fail `conda create`.
+  sub="${CONDA_SUBDIR:-native}"; sub="${sub//-/_}"
+  envName="verify_${sub}_${py//./}"
+  "$conda" env remove -y -n "$envName" >/dev/null 2>&1 || true
   echo "=== [py $py] create verify env from local channel ==="
   # -c microsoft (ahead of conda-forge) so azure-core/azure-identity/msal resolve from the
   # lean `microsoft` channel, NOT conda-forge whose azure-core recipe over-declares flask/six

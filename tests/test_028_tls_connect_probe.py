@@ -84,14 +84,14 @@ def test_tls_completed_true_for_clean_connect():
 
 def test_force_tls_appends_when_absent():
     probe = _load_probe()
-    out = probe.force_tls("Server=localhost;Database=x;Uid=x;Pwd=x;")
+    out = probe.force_tls("Server=localhost;Database=x;Uid=x;Pwd=x;")  # DevSkim: ignore DS162092
     assert "Encrypt=yes" in out
     assert "TrustServerCertificate=yes" in out
 
 
 def test_force_tls_overrides_encrypt_no():
     probe = _load_probe()
-    out = probe.force_tls("Server=localhost;Encrypt=no;Database=x")
+    out = probe.force_tls("Server=localhost;Encrypt=no;Database=x")  # DevSkim: ignore DS162092
     low = out.lower()
     assert "encrypt=yes" in low
     assert "encrypt=no" not in low
@@ -99,7 +99,7 @@ def test_force_tls_overrides_encrypt_no():
 
 def test_force_tls_is_idempotent():
     probe = _load_probe()
-    once = probe.force_tls("Server=localhost;Database=x")
+    once = probe.force_tls("Server=localhost;Database=x")  # DevSkim: ignore DS162092
     twice = probe.force_tls(once)
     assert once == twice
     # Exactly one Encrypt= and one TrustServerCertificate= key.

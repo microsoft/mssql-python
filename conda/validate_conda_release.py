@@ -51,8 +51,11 @@ def read_index_json(path: str) -> dict:
     if path.endswith(".conda"):
         with zipfile.ZipFile(path) as zf:
             info_name = next(
-                n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")
+                (n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
+                None,
             )
+            if info_name is None:
+                raise ValueError(f"{path}: no info-*.tar.zst member (malformed .conda package)")
             info_blob = zf.read(info_name)
         with tarfile.open(fileobj=io.BytesIO(_zstd_decompress(info_blob))) as tf:
             member = tf.extractfile("info/index.json")
