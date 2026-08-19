@@ -70,7 +70,7 @@ python -m pytest -v                                       # 'stress' marker excl
 
 ## Security and credentials
 
-- **Committed connection strings that contain `UID`/`PWD` must use `SERVER=localhost` (or `127.0.0.1`) with dummy values.** Real remote or Azure credentials come only from secrets or the `DB_CONNECTION_STRING` env var, and are never committed. Automated credential scanning (see `.config/CredScanSuppressions.json`, `.gdn/`) can block unsafe patterns.
+- **Committed connection strings that contain `UID`/`PWD` must use `SERVER=localhost` (or `127.0.0.1`) with dummy values.** Real remote or Azure credentials come only from secrets or the `DB_CONNECTION_STRING` env var, and are never committed. Automated credential scanning (see `.gdn/`) can block unsafe patterns.
 - Do **not** put `Driver=` in a connection string — the bundled driver is selected automatically.
 - `TrustServerCertificate=yes` is local-development only; never suggest it in remote or production examples.
 

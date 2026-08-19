@@ -22,6 +22,9 @@ on:
     types:
       - completed
 
+permissions:
+  contents: read
+
 jobs:
   post-comment:
     runs-on: ubuntu-latest
