@@ -2693,7 +2693,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
         processed_parameters = []
-        for row in seq_of_parameters:
+        for row_index, row in enumerate(seq_of_parameters):
             processed_row = list(row)
             for i, val in enumerate(processed_row):
                 if val is None:
@@ -2715,12 +2715,32 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     if isinstance(val, decimal.Decimal):
                         processed_row[i] = format(val, "f")
                     else:
+                        # Do not embed the parameter value or the full row in the
+                        # message: rows may contain PII (SSNs, emails, balances)
+                        # that would leak into caller error handlers, tracebacks,
+                        # and log/APM stores. Report metadata only (row index,
+                        # column index, value type).
+                        err_msg = (
+                            f"Failed to convert parameter to Decimal at row "
+                            f"{row_index}, column {i} (value type: {type(val).__name__})"
+                        )
+                        # Split str(val) from the decimal parse so we only chain a
+                        # cause we know is value-free. decimal.DecimalException
+                        # messages (e.g. ConversionSyntax) never echo the input, so
+                        # they are safe to preserve for debugging. str(val) itself
+                        # or any other error could carry the value in its message
+                        # and surface through __cause__ / formatted tracebacks, so
+                        # those are re-raised with the chain suppressed (from None).
                         try:
-                            processed_row[i] = format(decimal.Decimal(str(val)), "f")
-                        except Exception as e:  # pylint: disable=broad-exception-caught
-                            raise ValueError(
-                                f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
-                            ) from e
+                            val_text = str(val)
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            raise ValueError(err_msg) from None
+                        try:
+                            processed_row[i] = format(decimal.Decimal(val_text), "f")
+                        except decimal.DecimalException as e:
+                            raise ValueError(err_msg) from e
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            raise ValueError(err_msg) from None
             processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
@@ -2729,14 +2749,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Get encoding settings
         encoding_settings = self._get_encoding_settings()
 
-        # Add debug logging
+        # Debug logging: emit batch metadata only. Never log parameter values or
+        # row representations here -- rows may contain PII (SSNs, emails,
+        # balances) that would leak into log files and APM/log shippers even
+        # though this is a DEBUG-level statement. Metadata (batch size, column
+        # count) is sufficient for diagnostics without exposing user data.
         logger.debug(
-            "Executing batch query with %d parameter sets:\n%s",
+            "Executing batch query with %d parameter sets (%d columns per row)",
             len(seq_of_parameters),
-            "\n".join(
-                f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}"
-                for i, p in enumerate(seq_of_parameters[:5])
-            ),  # Limit to first 5 rows for large batches
+            len(parameters_type),
         )
 
         ret = ddbc_bindings.SQLExecuteMany(
