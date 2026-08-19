@@ -36,6 +36,9 @@ build:
   # ESRP-signed wheel from --find-links, fully offline. This mirrors CI: no PyPI.
   script_env:
     - WHEELS_DIR
+    # MSSQL_ODBC_VERSION lets build.sh / bld.bat locate the matching mssql-python-odbc
+    # wheel to vendor INTO this package (the driver payload now ships inside).
+    - MSSQL_ODBC_VERSION
 
 requirements:
   host:
@@ -47,14 +50,27 @@ requirements:
     # ship as CalVer (e.g. 2026.06.01), so a semver floor like `>=1.12.0` is a
     # misleading no-op there (every published build already satisfies it).
     - azure-identity
-    # Version-locked to the companion built alongside this package (issue #706:
-    # the driver package is an internal implementation detail; never upgrade it
-    # independently of mssql-python).
-    - mssql-python-odbc =={{ odbc_version }}
+    # --- ODBC Driver 18 payload deps (folded in from the former companion) --------
+    # The proprietary driver libs now ship INSIDE this package (the v1.11.0 model:
+    # libs bundled in the wheel), so there is NO separate `mssql-python-odbc` conda
+    # package and its declared, security-serviced deps live here instead.
+    #
+    # OpenSSL: the driver dlopen's libssl/libcrypto for TLS (Encrypt=yes). Because it
+    # is dlopen'd (not an ELF NEEDED) conda-build's overlinking can't see it, so it
+    # must be declared. Linux-only, pinned >=3,<4 (Driver 18 supports the OpenSSL
+    # 1.1/3.0 ABI only; conda-forge has begun shipping openssl 4). macOS is excluded
+    # (the signed dylib dlopen's OpenSSL from a hardcoded Homebrew path -- users
+    # `brew install openssl`); Windows uses SChannel.
+    - openssl >=3,<4          # [linux]
+    # Kerberos: libmsodbcsql NEEDs libkrb5.so.3 + libgssapi_krb5.so.2 on Linux. macOS
+    # uses Kerberos.framework and Windows uses SSPI, so krb5 is Linux-only.
+    - krb5                    # [linux]
+    # Windows VC++ runtime: msodbcsql18.dll imports VCRUNTIME140.dll, but the vendored
+    # vcredist ships only msvcp140.dll. Declare the security-serviced conda runtime.
+    - vc14_runtime            # [win]
     # conda drops the wheel's platform tag (manylinux_2_28 / macosx_15_0), so
-    # re-assert that floor as a virtual-package run constraint. The wheel install
-    # in the companion's build already requires these, so this can't be stricter
-    # than what actually shipped.
+    # re-assert that floor as a virtual-package run constraint. The bundled wheels
+    # already required these, so this is never stricter than what shipped.
     - __glibc >=2.28      # [linux]
     - __osx >=15.0        # [osx]
 
@@ -64,13 +80,20 @@ test:
 
 about:
   home: https://github.com/microsoft/mssql-python
-  license: MIT
-  license_file: ../../LICENSE
+  # This package ships BOTH the MIT-licensed mssql-python code AND the proprietary
+  # Microsoft ODBC Driver 18 payload (+ the bundled VC++ runtime on Windows), so the
+  # license is the MIT code license AND the Microsoft proprietary EULA.
+  license: MIT AND LicenseRef-Microsoft-Proprietary
+  license_file:
+    - ../../LICENSE
+    - MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt
+    - MICROSOFT_VISUAL_STUDIO_LICENSE.txt
   summary: Microsoft driver for Python to interact with SQL Server and Azure SQL.
   description: |
     mssql-python is a DB API 2.0 (PEP 249) compliant driver for SQL Server,
-    Azure SQL, and Azure Synapse. The proprietary ODBC Driver 18 payload ships in
-    the pinned companion package mssql-python-odbc.
+    Azure SQL, and Azure Synapse. This conda package is self-contained: the
+    proprietary Microsoft ODBC Driver 18 payload ships inside it (the same model as
+    the v1.11.0 wheel), so no separate driver package is required.
 
 extra:
   recipe-maintainers:
