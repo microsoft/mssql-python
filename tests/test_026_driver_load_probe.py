@@ -23,6 +23,15 @@ import pytest
 
 _PROBE_PATH = Path(__file__).resolve().parent.parent / "conda" / "driver_load_probe.py"
 
+# The conda/ sources are not shipped inside the built wheel, so the installed-wheel
+# test leg copies only tests/ into an isolated dir. Skip the whole module (rather than
+# erroring at collection/run) when the conda source it exercises is absent.
+if not _PROBE_PATH.is_file():
+    pytest.skip(
+        f"conda source not present ({_PROBE_PATH}); skipping conda driver-load probe tests",
+        allow_module_level=True,
+    )
+
 
 def _load_probe():
     """Import ``conda/driver_load_probe.py`` as a standalone module."""

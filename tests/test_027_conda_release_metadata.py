@@ -17,6 +17,15 @@ import pytest
 
 _MODULE_PATH = Path(__file__).resolve().parent.parent / "conda" / "validate_conda_release.py"
 
+# The conda/ sources are not shipped inside the built wheel, so the installed-wheel
+# test leg copies only tests/ into an isolated dir. Skip the whole module (rather than
+# erroring at collection) when the conda source it exercises is absent.
+if not _MODULE_PATH.is_file():
+    pytest.skip(
+        f"conda source not present ({_MODULE_PATH}); skipping conda release metadata tests",
+        allow_module_level=True,
+    )
+
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("validate_conda_release_under_test", _MODULE_PATH)
