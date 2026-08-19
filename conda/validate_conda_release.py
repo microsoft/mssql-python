@@ -1,27 +1,17 @@
 """Metadata-based conda release-readiness gate.
 
-The release pipeline must never ship an incomplete or mis-paired conda set. The
-earlier gate grouped packages by their *folder name* and counted them, so it
-could not catch (a) a package whose real ``subdir`` (in ``info/index.json``)
-disagrees with the folder it was staged into, nor (b) a missing Python variant
-on a platform -- and after the Windows "companion built once" change the
-presence-pairing relaxation let a dropped binding slip through (e.g. 3 of 5
-win-64 bindings still looked paired against the single companion).
-
-This module reads the AUTHORITATIVE ``info/index.json`` embedded in every
-``.conda`` / ``.tar.bz2`` and validates:
+The release pipeline must never ship an incomplete conda set. This module reads
+the AUTHORITATIVE ``info/index.json`` embedded in every ``.conda`` / ``.tar.bz2``
+(never folder names or bare counts) and validates the self-contained
+``mssql-python`` package -- which vendors the ODBC Driver 18 payload, so there is
+NO separate companion package:
 
 * every package's real ``subdir`` is in the allowed set AND matches its folder
   (catches a mislabeled / mis-stamped leg);
-* names are exactly ``mssql-python`` / ``mssql-python-odbc`` and their versions
-  match the expected release versions (or, if none supplied, are internally
-  consistent -- a single version per package);
-* the full (required-subdir x Python) binding matrix is complete -- every
-  required platform ships a binding for every expected Python;
-* #706 pairing: a binding and its companion ship together (both-or-neither),
-  never a companion-only bump; the companion may be a single Python-agnostic
-  package serving many bindings (win-64), but where it is per-Python (count > 1)
-  it must pair 1:1 with the bindings.
+* the only package name is ``mssql-python`` and its version matches the expected
+  release version (or, if none supplied, is internally consistent -- one version);
+* the full (required-subdir x Python) matrix is complete -- every required
+  platform ships a package for every expected Python.
 
 Exit code 0 = release-ready; non-zero = a violation was found (blocks publish).
 """
@@ -38,7 +28,6 @@ import zipfile
 from collections import defaultdict
 
 _BINDING_NAME = "mssql-python"
-_COMPANION_NAME = "mssql-python-odbc"
 
 _PY_TAG_RE = re.compile(r"py(\d)(\d{1,2})")
 _PY_DEP_RE = re.compile(r"python\s+(\d+)\.(\d+)")
@@ -84,8 +73,7 @@ def python_tag_from_index(index: dict) -> str:
 
     Uses the build string's ``pyXY`` token first (authoritative for conda-build
     Python packages), then falls back to a ``python X.Y`` run dependency. A
-    Python-agnostic package (e.g. the once-built Windows companion, build string
-    ``0``) has neither and returns ``''``.
+    Python-agnostic package (build string ``0``) has neither and returns ``''``.
     """
     match = _PY_TAG_RE.search(str(index.get("build", "")))
     if match:
@@ -126,11 +114,15 @@ def validate(
                 f"info/index.json subdir is '{p['subdir']}'."
             )
 
-    # 2. Names known; versions match expected (or are internally consistent).
+    # 2. Only the self-contained mssql-python package may appear; versions match
+    #    expected (or are internally consistent -- one version per package).
     seen_versions: dict = defaultdict(set)
     for p in packages:
-        if p["name"] not in (_BINDING_NAME, _COMPANION_NAME):
-            errors.append(f"unexpected package name '{p['name']}' ({p['version']}).")
+        if p["name"] != _BINDING_NAME:
+            errors.append(
+                f"unexpected package name '{p['name']}' ({p['version']}); the "
+                f"self-contained conda package ships only '{_BINDING_NAME}'."
+            )
             continue
         seen_versions[p["name"]].add(p["version"])
     for name, versions in seen_versions.items():
@@ -150,57 +142,29 @@ def validate(
     for p in packages:
         by_subdir[p["subdir"]].append(p)
 
-    # 3. Required subdirs: present, binding matrix complete, companion paired.
+    # 3. Required subdirs: present with a COMPLETE per-Python matrix.
     for sub in required_subdirs:
         grp = by_subdir.get(sub, [])
         if not grp:
             errors.append(f"required subdir '{sub}' is MISSING.")
             continue
         bindings = [p for p in grp if p["name"] == _BINDING_NAME]
-        companions = [p for p in grp if p["name"] == _COMPANION_NAME]
         if not bindings:
-            errors.append(f"subdir '{sub}': no binding ({_BINDING_NAME}) package.")
-        if not companions:
-            errors.append(f"subdir '{sub}': no companion ({_COMPANION_NAME}) package.")
+            errors.append(f"subdir '{sub}': no {_BINDING_NAME} package.")
 
         for p in bindings:
             if not p["python"]:
                 errors.append(
-                    f"binding {p['name']}-{p['version']}-{p['build']} in '{sub}' has no "
+                    f"{p['name']}-{p['version']}-{p['build']} in '{sub}' has no "
                     f"detectable Python tag (build string should carry pyXY)."
                 )
         got_pythons = sorted({p["python"] for p in bindings if p["python"]})
         missing = [py for py in expected_pythons if py not in got_pythons]
         if missing:
             errors.append(
-                f"subdir '{sub}': binding matrix INCOMPLETE -- missing Python {missing} "
+                f"subdir '{sub}': matrix INCOMPLETE -- missing Python {missing} "
                 f"(present: {got_pythons or 'none'})."
             )
-
-        b, c = len(bindings), len(companions)
-        if c > 1 and b != c:
-            errors.append(
-                f"#706 pairing in '{sub}': {b} binding(s) vs {c} per-Python companion(s) "
-                f"(a per-Python companion must pair 1:1)."
-            )
-
-    # 4. #706 pairing across EVERY real subdir (required or not): both-or-neither.
-    for sub, grp in by_subdir.items():
-        b = len([p for p in grp if p["name"] == _BINDING_NAME])
-        c = len([p for p in grp if p["name"] == _COMPANION_NAME])
-        if (b > 0) != (c > 0):
-            errors.append(
-                f"#706 pairing in '{sub}': binding={b} companion={c} "
-                f"(a binding and its companion must ship together)."
-            )
-
-    # 5. Global companion-only / binding-only guard (the exact #706 mistake).
-    total_b = len([p for p in packages if p["name"] == _BINDING_NAME])
-    total_c = len([p for p in packages if p["name"] == _COMPANION_NAME])
-    if total_c > 0 and total_b == 0:
-        errors.append(f"#706 (global): {total_c} companion package(s) with NO binding.")
-    if total_b > 0 and total_c == 0:
-        errors.append(f"#706 (global): {total_b} binding package(s) with NO companion.")
 
     return errors
 
@@ -258,8 +222,9 @@ def main(argv: list | None = None) -> int:
     expected_versions = {}
     if args.mssql_python_version:
         expected_versions[_BINDING_NAME] = args.mssql_python_version
-    if args.mssql_python_odbc_version:
-        expected_versions[_COMPANION_NAME] = args.mssql_python_odbc_version
+    # --mssql-python-odbc-version is accepted for back-compat but ignored: the
+    # self-contained mssql-python package vendors the ODBC payload, so there is no
+    # separate companion package to version.
 
     print(f"Discovered {len(packages)} conda package(s):")
     for p in sorted(packages, key=lambda x: (x["subdir"], x["name"], x["python"])):

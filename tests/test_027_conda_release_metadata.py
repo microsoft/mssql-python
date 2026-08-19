@@ -2,7 +2,8 @@
 
 ``conda/validate_conda_release.py`` reads each package's authoritative
 ``info/index.json`` and enforces: real-subdir == folder, allowed subdirs, the
-full (subdir x Python) binding matrix, exact versions, and #706 pairing. These
+full (subdir x Python) matrix, and exact versions for the self-contained
+``mssql-python`` package (which vendors the ODBC payload -- no companion). These
 tests exercise the pure ``validate()`` logic with synthetic package records (no
 real ``.conda`` needed) plus one optional round-trip through the metadata reader.
 """
@@ -40,7 +41,6 @@ _REQUIRED = ["win-64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 _ALLOWED = ["win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 _PYTHONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 _MP_VER = "1.13.0"
-_ODBC_VER = "18.6.2.1"
 
 
 def _binding(subdir, py, folder=None, version=_MP_VER):
@@ -54,29 +54,13 @@ def _binding(subdir, py, folder=None, version=_MP_VER):
     }
 
 
-def _companion(subdir, py=None, folder=None, version=_ODBC_VER):
-    # py=None -> Python-agnostic (once-built Windows companion, build string "0").
-    return {
-        "folder": folder or subdir,
-        "subdir": subdir,
-        "name": "mssql-python-odbc",
-        "version": version,
-        "build": "0" if py is None else f"py{py.replace('.', '')}_0",
-        "python": py or "",
-    }
-
-
 def _healthy_set():
-    """A complete, correctly-paired release: win-64 once-companion, POSIX per-Python."""
+    """A complete release: the self-contained mssql-python package for every
+    (required subdir x Python)."""
     pkgs = []
     for sub in _REQUIRED:
         for py in _PYTHONS:
             pkgs.append(_binding(sub, py))
-        if sub == "win-64":
-            pkgs.append(_companion(sub, py=None))  # single Python-agnostic companion
-        else:
-            for py in _PYTHONS:
-                pkgs.append(_companion(sub, py=py))  # per-Python companions
     return pkgs
 
 
@@ -87,9 +71,7 @@ def _run(pkgs, expected_versions=None):
         allowed_subdirs=_ALLOWED,
         expected_pythons=_PYTHONS,
         expected_versions=(
-            expected_versions
-            if expected_versions is not None
-            else {"mssql-python": _MP_VER, "mssql-python-odbc": _ODBC_VER}
+            expected_versions if expected_versions is not None else {"mssql-python": _MP_VER}
         ),
     )
 
@@ -114,29 +96,27 @@ def test_missing_python_variant_on_win64_fails():
     assert any("win-64" in e and "INCOMPLETE" in e and "3.12" in e for e in errors)
 
 
-def test_companion_only_subdir_fails():
-    # Remove all bindings from linux-64 -> companion-only (the #706 mistake).
-    pkgs = [
-        p for p in _healthy_set() if not (p["subdir"] == "linux-64" and p["name"] == "mssql-python")
-    ]
+def test_stray_companion_package_fails():
+    # The self-contained model ships ONLY mssql-python; a stray companion package
+    # (the old separate mssql-python-odbc) must now be rejected as unexpected.
+    pkgs = _healthy_set()
+    pkgs.append(
+        {
+            "folder": "linux-64",
+            "subdir": "linux-64",
+            "name": "mssql-python-odbc",
+            "version": "18.6.2.1",
+            "build": "0",
+            "python": "",
+        }
+    )
     errors = _run(pkgs)
-    assert any("linux-64" in e and "706" in e for e in errors)
-
-
-def test_binding_without_companion_fails():
-    pkgs = [
-        p
-        for p in _healthy_set()
-        if not (p["subdir"] == "osx-64" and p["name"] == "mssql-python-odbc")
-    ]
-    errors = _run(pkgs)
-    assert any("osx-64" in e and ("706" in e or "companion" in e) for e in errors)
+    assert any("unexpected package name" in e and "mssql-python-odbc" in e for e in errors)
 
 
 def test_unexpected_subdir_fails():
     pkgs = _healthy_set()
     pkgs.append(_binding("linux-ppc64le", "3.12"))
-    pkgs.append(_companion("linux-ppc64le", py="3.12"))
     errors = _run(pkgs)
     assert any("linux-ppc64le" in e and "allowed" in e for e in errors)
 
