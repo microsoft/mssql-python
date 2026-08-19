@@ -40,7 +40,7 @@ jobs:
 
       - name: Unit-test the audit + release validator
         run: |
-          python -m pip install --quiet zstandard
+          python -m pip install --quiet pytest zstandard
           python -m pytest tests/test_029_bundled_binary_audit.py \
                            tests/test_027_conda_release_metadata.py -q
 
