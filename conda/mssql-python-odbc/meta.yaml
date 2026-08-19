@@ -64,8 +64,21 @@ requirements:
     #
     # OpenSSL: the driver dlopen's libssl/libcrypto for TLS (Encrypt=yes). Because it
     # is dlopen'd (not an ELF NEEDED entry) conda-build's overlinking can't see it, so
-    # it must be declared explicitly. Windows uses SChannel, so this is POSIX-only.
-    - openssl                 # [not win]
+    # it must be declared explicitly.
+    #   - Linux ONLY, pinned >=3,<4: the ELF driver's patched RUNPATH ($ORIGIN climb)
+    #     reaches conda's $PREFIX/lib, so conda's openssl is actually loadable here.
+    #     Driver 18 supports the OpenSSL 1.1/3.0 ABI only, and conda-forge has begun
+    #     shipping openssl 4 -- pin <4 so an incompatible major can't be pulled in and
+    #     silently break TLS.
+    #   - macOS is INTENTIONALLY excluded: the signed libmsodbcsql.18.dylib has no
+    #     LC_RPATH and dlopen's OpenSSL from a HARDCODED Homebrew path
+    #     (arm64: /opt/homebrew/opt/openssl/lib, x86_64: /usr/local/opt/openssl/lib),
+    #     which we cannot install_name_tool without invalidating the signature. A
+    #     conda-declared openssl in $PREFIX/lib would therefore never be found -- a
+    #     misleading no-op. macOS users must `brew install openssl` (this matches
+    #     Microsoft's own msodbcsql18 macOS installation docs).
+    #   - Windows uses SChannel, so OpenSSL is not involved there.
+    - openssl >=3,<4          # [linux]
     # Kerberos: libmsodbcsql NEEDs libkrb5.so.3 + libgssapi_krb5.so.2 on Linux. macOS
     # uses the system Kerberos.framework and Windows uses SSPI, so krb5 is Linux-only
     # -- and never vendored (same policy as conda-forge libpq's `krb5 # [not osx]`).
