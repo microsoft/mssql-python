@@ -61,43 +61,69 @@ fi
 # @loader_path flow) onto libmsodbcsql* and libodbcinst.so.2 so they resolve THIS
 # env's own $PREFIX/lib, location-independently.
 #
-# SIGNATURE ORDERING (explicit decision -- never silently patch signed bytes):
-#   PREFERRED: bake this SAME relative climb into the ODBC binaries at the
-#   mssql-python-odbc build step, BEFORE ESRP signing, so the shipped .so are
-#   already-signed AND already-climbed and this patchelf is a byte-for-byte no-op
-#   (zero drift; that is why binary_relocation is false). Until that lands upstream,
-#   the signed release pipeline MUST run this patch BEFORE ESRP-signing the .so (or
-#   re-sign the patched .so before publish). This build.sh is the relocation
-#   mechanism and the local/unsigned path. macOS (@loader_path + re-sign) and
-#   Windows (SChannel/SSPI) are unaffected.
+# SIGNATURE ORDERING (N4 -- a hard gate, not a comment):
+#   This recipe is ASSERTION-ONLY by default and NEVER mutates a signed .so. The
+#   relative $ORIGIN climb must be baked into the ODBC binaries at the
+#   mssql-python-odbc build step BEFORE ESRP signing, so the shipped .so are
+#   already-signed AND already-climbed; here we only VERIFY that the RUNPATH already
+#   equals the exact expected climb and FAIL if it does not (that is why
+#   binary_relocation is false -- patchelf must not touch signed bytes). For a
+#   LOCAL/DEV unsigned build ONLY, set CONDA_ALLOW_UNSIGNED_PATCH=1 to let this
+#   script patch the climb in -- that invalidates any signature and MUST NOT reach
+#   publish. A signed release whose binaries are not pre-baked FAILS here rather than
+#   shipping a patched-but-unsigned .so. macOS (@loader_path + re-sign) and Windows
+#   (SChannel/SSPI) are unaffected.
+#
+# The canonical RUNPATH is exactly "$ORIGIN:$ORIGIN/<climb>" -- both the odbc-wheel
+# bake and the dev-patch below emit that literal form, and the static audit
+# (eng/scripts/audit_bundled_binaries.py) requires the same exact climb entry.
 #
 # Linux-only by construction: the glob matches nothing in a macOS payload
 # (libs/macos/...), so this whole block is a natural no-op on the osx legs.
 prefix_lib="$PREFIX/lib"
 shopt -s nullglob
-patched_any=0
+have_linux_payload=0
+[ -d "$SP_DIR/mssql_python_odbc/libs/linux" ] && have_linux_payload=1
+drivers_seen=0
 for libdir in "$SP_DIR"/mssql_python_odbc/libs/linux/*/*/lib; do
-  # Compute the climb from THIS driver dir up to $PREFIX/lib -- derive it from the
-  # real install layout, never a hard-coded ../ count.
+  # Compute the EXACT expected climb from THIS driver dir up to $PREFIX/lib (derived
+  # from the real install layout, never a hard-coded ../ count).
   climb="$("$PYTHON" -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$prefix_lib" "$libdir")"
-  rpath="\$ORIGIN:\$ORIGIN/$climb"
+  want="\$ORIGIN:\$ORIGIN/$climb"
   for so in "$libdir"/libmsodbcsql-*.so.* "$libdir"/libodbcinst.so.2; do
     [ -e "$so" ] || continue
-    patchelf --set-rpath "$rpath" "$so"
-    got="$(patchelf --print-rpath "$so")"
-    echo "RPATH-CLIMB $(basename "$so") -> $got"
-    # Must stay relocatable: reject ANY absolute entry. A relative $ORIGIN climb has
-    # no path segment that begins with '/', so ':<slash>' only appears for an
-    # absolute (e.g. a hard-coded $PREFIX), which would break the moment the env is
-    # created or moved to a different absolute path.
-    case ":$got:" in
-      *:/*)
-        echo "ERROR: RPATH of $so has an absolute entry ('$got'); must stay relocatable." >&2
+    drivers_seen=$((drivers_seen + 1))
+    got="$(patchelf --print-rpath "$so" 2>/dev/null || true)"
+    if [ "$got" = "$want" ]; then
+      echo "RPATH-OK (pre-baked, signature intact) $(basename "$so") -> $got"
+      continue
+    fi
+    # RUNPATH is NOT the exact expected climb.
+    if [ "${CONDA_ALLOW_UNSIGNED_PATCH:-}" = "1" ]; then
+      echo "WARNING: $(basename "$so") RUNPATH '$got' != expected '$want'; patching (CONDA_ALLOW_UNSIGNED_PATCH=1, LOCAL/DEV ONLY -- this invalidates any signature and MUST NOT be published)." >&2
+      patchelf --set-rpath "$want" "$so"
+      got="$(patchelf --print-rpath "$so")"
+      # H2: compare EXACTLY to the intended value, not just "no absolute entry".
+      if [ "$got" != "$want" ]; then
+        echo "ERROR: patch did not yield the exact expected RUNPATH ('$got' != '$want')." >&2
         exit 1
-        ;;
-    esac
-    patched_any=1
+      fi
+      echo "RPATH-PATCHED (unsigned dev build) $(basename "$so") -> $got"
+    else
+      echo "ERROR: $(basename "$so") RUNPATH is '$got', not the exact expected climb '$want'." >&2
+      echo "       This recipe is assertion-only and will NOT mutate signed bytes. A signed" >&2
+      echo "       release requires the \$ORIGIN climb baked into the mssql-python-odbc binaries" >&2
+      echo "       BEFORE ESRP signing. For a LOCAL/DEV unsigned build only, re-run with" >&2
+      echo "       CONDA_ALLOW_UNSIGNED_PATCH=1 to patch here (never publish that artifact)." >&2
+      exit 1
+    fi
   done
 done
 shopt -u nullglob
-[ "$patched_any" = "1" ] && echo "LINUX_RPATH_CLIMB_OK" || true
+# H2: a Linux payload with NO driver found is a bypass hole -- a bare `conda build`
+# skipping the orchestrator audit would then ship un-asserted drivers. Fail loudly.
+if [ "$have_linux_payload" = "1" ] && [ "$drivers_seen" = "0" ]; then
+  echo "ERROR: Linux ODBC payload present but no libmsodbcsql*/libodbcinst.so.2 found to assert the #563 climb." >&2
+  exit 1
+fi
+[ "$drivers_seen" -gt 0 ] && echo "LINUX_RPATH_CLIMB_OK" || true

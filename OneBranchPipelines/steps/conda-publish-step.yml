@@ -65,6 +65,19 @@ parameters:
     default: ''
 
 steps:
+  # Infra guard: refuse to run against the placeholder definition id (see release step).
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Guard: conda-build definition id is configured'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $id = ${{ parameters.buildDefinitionId }}
+        if ($id -eq 0) {
+          Write-Error "condaBuildDefinitionId is 0 (placeholder). Set both the release pipeline's resource 'source:' name and condaBuildDefinitionId to the registered standalone conda-build pipeline."
+          exit 1
+        }
+        Write-Host "conda-build definition id = $id"
+
   - task: DownloadPipelineArtifact@2
     displayName: '${{ parameters.labelPrefix }}Download consolidated conda packages (publish)'
     inputs:
@@ -181,14 +194,12 @@ steps:
 
         if ($failed) { Write-Error "Conda publish pre-check FAILED. Refusing to publish an incomplete/mislabeled set."; exit 1 }
 
-        # Staged-then-promoted publish (atomic-ish): upload the FULL set to a private
-        # STAGING label first; only after every package lands AND the set is verified
-        # do we promote them to the public label. A mid-upload failure therefore
-        # leaves a partial set on the STAGING label only -- the public label
-        # ($condaLabel) is never partially updated. (anaconda's per-upload
-        # --skip-existing is not a remote-integrity check, so promotion is gated on an
-        # explicit re-list of every staged package.)
-        $stagingLabel = "${{ parameters.condaLabel }}_staging"
+        # Staged-then-promoted publish: upload the FULL set to a BUILD-UNIQUE staging
+        # label first; only after every package lands AND its bytes are verified do we
+        # promote to the public label. A mid-upload failure leaves a partial set on the
+        # staging label ONLY -- the public label is never partially updated. The staging
+        # label includes the build id so concurrent/retried runs never collide.
+        $stagingLabel = "${{ parameters.condaLabel }}_staging_$(Build.BuildId)"
 
         function Invoke-Anaconda($argsList) {
           for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -220,23 +231,49 @@ steps:
           }
         }
 
-        Write-Host "==== Verify: every staged package is resolvable before promoting ===="
+        Write-Host "==== Verify: SHA-256 + staging membership for every package before promoting ===="
         foreach ($p in ($binding | Sort-Object FullName)) {
           $spec = Get-Spec $p
-          & anaconda show $spec > $null 2>&1
+          $localSha = (Get-FileHash -Algorithm SHA256 -Path $p.FullName).Hash.ToLower()
+          $show = (& anaconda show $spec 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Staged package '$spec' is not resolvable on anaconda.org; refusing to promote a partial set."
             exit 1
           }
+          # anaconda show reports the uploaded file's checksum. When a sha256 is present,
+          # require an EXACT match to the local artifact (true byte integrity, unlike
+          # --skip-existing's name-only check).
+          $m = [regex]::Match($show, '(?i)sha256[^0-9a-f]*([0-9a-f]{64})')
+          if ($m.Success) {
+            $remoteSha = $m.Groups[1].Value.ToLower()
+            if ($remoteSha -ne $localSha) {
+              Write-Error "SHA-256 mismatch for '$spec': local $localSha != remote $remoteSha. Refusing to promote a corrupted/wrong artifact."
+              exit 1
+            }
+            Write-Host "SHA-256 OK $($p.Name) ($localSha)"
+          }
+          else {
+            Write-Host "NOTE: anaconda show exposed no sha256 for '$spec'; verified membership + local sha256 $localSha."
+          }
         }
 
-        Write-Host "==== Promote: move the verified set from '$stagingLabel' to '${{ parameters.condaLabel }}' ===="
+        Write-Host "==== Promote (idempotent): move the verified set from '$stagingLabel' to '${{ parameters.condaLabel }}' ===="
         foreach ($p in ($binding | Sort-Object FullName)) {
           $spec = Get-Spec $p
-          if (-not (Invoke-Anaconda @('move', '--from-label', $stagingLabel, '--to-label', "${{ parameters.condaLabel }}", $spec))) {
-            Write-Error "Failed to promote '$spec' to '${{ parameters.condaLabel }}'. Some packages may remain on '$stagingLabel'; re-run to finish promotion."
-            exit 1
+          if (Invoke-Anaconda @('move', '--from-label', $stagingLabel, '--to-label', "${{ parameters.condaLabel }}", $spec)) {
+            Write-Host "Promoted $($p.Name)."
+            continue
           }
+          # Idempotent rerun: a move can fail because THIS package was already promoted
+          # by a prior (interrupted) run. Treat 'already on the target label' as done;
+          # anything else is a real failure that must be re-run.
+          $show = (& anaconda show $spec 2>&1 | Out-String)
+          if ($show -match [regex]::Escape("${{ parameters.condaLabel }}")) {
+            Write-Host "Already on '${{ parameters.condaLabel }}' (idempotent rerun): $($p.Name)."
+            continue
+          }
+          Write-Error "Failed to promote '$spec' to '${{ parameters.condaLabel }}' and it is not already there. Re-run to finish promotion."
+          exit 1
         }
 
         Write-Host ""

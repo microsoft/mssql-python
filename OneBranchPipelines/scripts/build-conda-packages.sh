@@ -255,32 +255,58 @@ for py in $pyvers; do
   # The $ORIGIN climb makes ldd resolve krb5/gssapi/libltdl from $CONDA_PREFIX/lib
   # without LD_LIBRARY_PATH; a system or not-found binding fails the leg.
   if [ "${CONDA_ASSERT_PREFIX_REACHABLE:-}" = "1" ] && [ "$(uname -s)" = "Linux" ]; then
-    echo "=== [py $py] minimal-base ldd reachability gate (driver must bind CONDA_PREFIX/lib) ==="
+    echo "=== [py $py] minimal-base ldd reachability gate (driver MUST bind CONDA_PREFIX/lib) ==="
     env_prefix="$("$conda" run -n "$envName" python -c 'import os,sys; print(os.environ.get("CONDA_PREFIX") or sys.prefix)')"
-    drv="$("$conda" run -n "$envName" python -c 'import mssql_python,glob,os; b=os.path.dirname(mssql_python.__file__); print(glob.glob(os.path.join(b,"..","mssql_python_odbc","libs","linux","*","*","lib","libmsodbcsql*"))[0])')"
+    drv="$("$conda" run -n "$envName" python -c 'import mssql_python,glob,os; b=os.path.dirname(mssql_python.__file__); m=glob.glob(os.path.join(b,"..","mssql_python_odbc","libs","linux","*","*","lib","libmsodbcsql*")); print(m[0] if m else "")')"
+    if [ -z "$drv" ]; then
+      echo "ERROR: [py $py] no libmsodbcsql driver found in the verify env; cannot prove reachability." >&2
+      exit 1
+    fi
     inst="$(dirname "$drv")/libodbcinst.so.2"
-    reach_fail=0
+    # H2: the inspection itself MUST succeed (no `|| true`) -- a failed ldd cannot
+    # be read as "reachable". Collect the combined transitive ldd of both binaries.
+    ldd_all=""
     for lib in "$drv" "$inst"; do
       echo "--- ldd $(basename "$lib") ---"
-      ldd_out="$("$conda" run -n "$envName" ldd "$lib" 2>/dev/null || true)"
-      echo "$ldd_out"
+      if ! out="$("$conda" run -n "$envName" ldd "$lib" 2>&1)"; then
+        echo "$out"
+        echo "ERROR: [py $py] ldd failed on $(basename "$lib"); cannot verify reachability." >&2
+        exit 1
+      fi
+      echo "$out"
+      ldd_all="$ldd_all
+$out"
+    done
+    # H2: each required soname MUST be present AND resolve from $env_prefix -- a
+    # missing (not found) or system binding FAILS closed (never passes on no-match).
+    reach_fail=0
+    for want in libkrb5.so libgssapi_krb5.so libltdl.so; do
+      hits="$(printf '%s\n' "$ldd_all" | grep -F "$want" || true)"
+      if [ -z "$hits" ]; then
+        echo "MISS: required '$want' absent from ldd output (driver stopped resolving it?)." >&2
+        reach_fail=1
+        continue
+      fi
+      n_prefix=0
+      n_bad=0
       while IFS= read -r line; do
-        case "$line" in
-          *libkrb5.so*|*libgssapi_krb5.so*|*libltdl.so*)
-            resolved="$(printf '%s' "$line" | sed -nE 's/.*=> +([^ ]+).*/\1/p')"
-            case "$resolved" in
-              "$env_prefix"/*) echo "OK   $line" ;;
-              "")              echo "MISS $line"; reach_fail=1 ;;
-              *)               echo "MASK(system) $line"; reach_fail=1 ;;
-            esac
-            ;;
+        [ -n "$line" ] || continue
+        resolved="$(printf '%s' "$line" | sed -nE 's/.*=> +([^ ]+).*/\1/p')"
+        case "$resolved" in
+          "$env_prefix"/*) n_prefix=$((n_prefix + 1)); echo "OK       $line" ;;
+          "") n_bad=$((n_bad + 1)); echo "NOTFOUND $line" >&2 ;;
+          *) n_bad=$((n_bad + 1)); echo "SYSTEM   $line" >&2 ;;
         esac
       done <<EOF
-$ldd_out
+$hits
 EOF
+      if [ "$n_bad" != "0" ] || [ "$n_prefix" -lt 1 ]; then
+        echo "ERROR: '$want' did not resolve cleanly from $env_prefix/lib (prefix=$n_prefix, system/absent=$n_bad)." >&2
+        reach_fail=1
+      fi
     done
-    [ "$reach_fail" = "0" ] || { echo "ERROR: [py $py] driver bound a system/absent krb5/gssapi/libltdl instead of $env_prefix/lib (reachability broken)." >&2; exit 1; }
-    echo "REACHABILITY_OK"
+    [ "$reach_fail" = "0" ] || { echo "ERROR: [py $py] reachability gate FAILED -- a required krb5/gssapi/libltdl bound to system or was absent instead of $env_prefix/lib." >&2; exit 1; }
+    echo "REACHABILITY_OK (krb5 + gssapi_krb5 + libltdl all bound from $env_prefix/lib)"
   fi
   # Live Encrypt=yes TLS gate -- forces the driver to dlopen its OpenSSL backend
   # (libssl/libcrypto), which the DB-less Encrypt=no probe above NEVER exercises.

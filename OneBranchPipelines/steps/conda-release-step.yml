@@ -84,6 +84,21 @@ parameters:
     default: ''
 
 steps:
+  # Infra guard: the standalone conda-build definition id MUST be set. A 0 placeholder
+  # means the resource `source:` name and this numeric id disagree, so the download
+  # would silently target the wrong pipeline -- fail fast with a clear message.
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Guard: conda-build definition id is configured'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $id = ${{ parameters.buildDefinitionId }}
+        if ($id -eq 0) {
+          Write-Error "condaBuildDefinitionId is 0 (placeholder). Register the standalone conda-build pipeline in ADO, then set BOTH the release pipeline's resource 'source:' name AND condaBuildDefinitionId to it."
+          exit 1
+        }
+        Write-Host "conda-build definition id = $id"
+
   - task: DownloadPipelineArtifact@2
     displayName: '${{ parameters.labelPrefix }}Download consolidated conda packages'
     inputs:
@@ -94,6 +109,48 @@ steps:
       buildId: $(resources.pipeline.buildPipeline.runID)
       artifactName: '${{ parameters.condaArtifactName }}'
       targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
+
+  # N3 provenance: bind the downloaded artifact to the release commit. The conda-build
+  # pipeline stamps its source commit on the run; if it differs from the commit being
+  # released, a stale/older/different build was selected -- refuse it.
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Provenance: conda artifact built from the release commit'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $built = "$(resources.pipeline.buildPipeline.sourceCommit)"
+        $release = "$(Build.SourceVersion)"
+        Write-Host "conda-build source commit: $built"
+        Write-Host "release    source commit: $release"
+        if ([string]::IsNullOrWhiteSpace($built)) {
+          Write-Error "Could not determine the conda-build source commit (resources.pipeline.buildPipeline.sourceCommit is empty)."
+          exit 1
+        }
+        if ($built -ne $release) {
+          Write-Error "Provenance mismatch: the selected conda artifact was built from $built but this release is $release. Refusing to publish an artifact from a different/older build."
+          exit 1
+        }
+        Write-Host "Provenance OK: artifact built from the release commit."
+
+  # N3 re-audit: re-run the masking-immune RUNPATH audit on the EXACT downloaded
+  # artifacts (not just metadata) so a stale pre-audit .conda can never be published.
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Re-audit the exact release artifacts (RUNPATH self-containment)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+        $audit = "$(Build.SourcesDirectory)/eng/scripts/audit_bundled_binaries.py"
+        if (-not (Test-Path $root))  { Write-Error "Consolidated conda tree not found at $root."; exit 1 }
+        if (-not (Test-Path $audit)) { Write-Error "Audit script not found at $audit."; exit 1 }
+        python -m pip install --quiet --disable-pip-version-check zstandard
+        python "$audit" --root "$root"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Release-boundary RUNPATH audit FAILED on the downloaded conda artifacts. Refusing to publish."
+          exit 1
+        }
+        Write-Host "Release-boundary RUNPATH audit passed on the exact downloaded artifacts."
 
   - task: PowerShell@2
     displayName: '${{ parameters.labelPrefix }}Validate conda release readiness (metadata: subdirs + Python matrix + versions)'

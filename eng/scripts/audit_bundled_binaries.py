@@ -1,27 +1,36 @@
 #!/usr/bin/env python3
 """Masking-immune audit of the vendored Linux ODBC binaries in built conda packages.
 
-The #563 reachability fix lives in the ELF RUNPATH of the vendored driver, not in
-the recipe's dependency list. A runtime ``ldd``/import check can PASS on any host
-that happens to carry a system ``krb5``/``libltdl`` -- the driver silently binds
-the system copy and the missing conda climb goes unnoticed (exactly what the full
-CI agents hide). This audit is immune to that masking because it reads the RUNPATH
-BYTES straight out of each built ``.conda`` payload and asserts, statically:
+The #563 reachability fix lives in the ELF RUNPATH of the vendored driver, not in a
+comment or a runtime probe. A runtime ``ldd``/import check can PASS on any host that
+happens to carry a system ``krb5``/``libltdl`` -- the driver silently binds the
+system copy and a wrong/missing conda climb goes unnoticed (exactly what the full CI
+agents hide). This audit is immune to that masking: it reads the ELF bytes straight
+out of each built ``.conda`` payload -- via the ``PT_DYNAMIC`` program header the
+*loader itself* uses -- and asserts, statically and exactly:
 
-  * ``libmsodbcsql*`` and ``libodbcinst.so.2`` carry a PURELY RELATIVE ``$ORIGIN``
-    climb (``$ORIGIN`` + at least one ``..`` entry that reaches ``$PREFIX/lib``),
-    with NO absolute RPATH entry -- so the declared conda ``krb5``/``openssl``/
-    ``libltdl`` in ``$PREFIX/lib`` are actually reachable, location-independently;
-  * the driver's ``krb5``/``gssapi`` and ``libodbcinst``'s ``libltdl`` are
-    satisfied by DECLARED conda deps -- i.e. those libraries are NOT vendored
-    inside the payload (bundling crypto/krb5 is exactly what the recipe must not
-    do; it is serviced by conda instead).
+  * ``libmsodbcsql*`` and ``libodbcinst.so.2`` carry the EXACT relative ``$ORIGIN``
+    climb that lands on the package-root ``lib`` (== ``$PREFIX/lib``), computed from
+    each binary's own location -- not a substring, not "any ``..``". A too-short,
+    overshooting, or ``$ORIGINATOR`` climb FAILS;
+  * that climb entry appears in the EFFECTIVE RUNPATH: the loader honours
+    ``DT_RUNPATH`` and IGNORES ``DT_RPATH`` when ``DT_RUNPATH`` is present, so a good
+    ``DT_RPATH`` decoy behind a bad ``DT_RUNPATH`` FAILS;
+  * no absolute RPATH entry exists (stay relocatable);
+  * the run deps that SERVICE the driver -- ``krb5``, ``libtool`` (libltdl provider),
+    ``openssl`` -- are DECLARED in ``info/index.json`` ``depends`` (deleting a dep
+    from ``meta.yaml`` must fail here, not just be masked at runtime), and the driver
+    still ``DT_NEEDED``s ``libkrb5``/``libgssapi_krb5``/``libodbcinst`` (and
+    ``libodbcinst`` still needs ``libltdl``) so a driver that stopped needing krb5 is
+    caught too;
+  * no ``krb5``/``openssl``/``libltdl`` is VENDORED inside the payload (they are
+    serviced by conda, never bundled).
 
-Non-Linux packages (``win-*`` / ``osx-*``) have no such ELF payload and are
-skipped, so running this on a Windows or macOS leg is a clean no-op.
+Non-Linux packages (``win-*`` / ``osx-*``) have no such ELF payload and are skipped.
+An unreadable/malformed package FAILS (it is never silently treated as non-Linux).
 
-Exit code 0 = every Linux package is self-contained + relocatable; non-zero = a
-violation was found (blocks the build/release).
+Exit code 0 = every Linux package is exactly self-contained; non-zero = a violation
+was found (blocks the build/release).
 """
 
 from __future__ import annotations
@@ -29,7 +38,9 @@ from __future__ import annotations
 import argparse
 import glob
 import io
+import json
 import os
+import posixpath
 import struct
 import sys
 import tarfile
@@ -37,17 +48,29 @@ import zipfile
 
 # --- ELF constants ---------------------------------------------------------
 _DT_NEEDED = 1
+_DT_STRTAB = 5
 _DT_RPATH = 15
 _DT_RUNPATH = 29
-_SHT_DYNAMIC = 6
+_PT_LOAD = 1
+_PT_DYNAMIC = 2
 
-# Driver binaries whose RUNPATH must carry the $ORIGIN climb.
+# Driver binaries whose RUNPATH must carry the exact $ORIGIN climb.
 _DRIVER_PREFIXES = ("libmsodbcsql-", "libmsodbcsql.")
-_DRIVER_EXACT = ("libodbcinst.so.2",)
+_ODBCINST = "libodbcinst.so.2"
 
 # Libraries that must be serviced by DECLARED conda deps, never vendored into the
 # Linux payload (bundling these is the anti-pattern the recipe avoids).
 _MUST_NOT_VENDOR = ("libkrb5", "libgssapi", "libssl", "libcrypto", "libltdl")
+
+# conda run-deps that SERVICE the driver's krb5/openssl/libltdl. Missing any means
+# the $PREFIX/lib copy the RUNPATH climb points at would not exist -- declaration is
+# as load-bearing as the climb itself.
+_REQUIRED_DEPS = ("krb5", "libtool", "openssl")
+
+# Expected DT_NEEDED soname substrings, so a driver that silently STOPPED needing
+# krb5 (making the declared dep moot) is caught too.
+_DRIVER_NEEDED = ("libkrb5", "libgssapi_krb5", "libodbcinst")
+_ODBCINST_NEEDED = ("libltdl",)
 
 
 def _zstd_decompress(raw: bytes) -> bytes:
@@ -64,81 +87,126 @@ def _zstd_decompress(raw: bytes) -> bytes:
 
 
 def _is_elf(data: bytes) -> bool:
-    return len(data) >= 20 and data[:4] == b"\x7fELF"
+    return len(data) >= 64 and data[:4] == b"\x7fELF"
 
 
-def elf_dynamic(data: bytes, tags: tuple[int, ...]) -> dict[int, list[str]]:
-    """Return ``{tag: [strings]}`` for the requested dynamic tags.
+def elf_dynamic(data: bytes) -> dict:
+    """Return ``{'runpath': str|None, 'rpath': str|None, 'needed': [str]}``.
 
-    Parses the ELF via SECTION headers (file offsets -- no vaddr-to-offset mapping
-    needed) so it works on a raw in-memory blob extracted from the package. Handles
-    ELF32/ELF64 and both endiannesses; the shipped drivers are ELF64-LE.
+    Parses the ``PT_DYNAMIC`` program header -- the segment the LOADER actually uses
+    -- and maps ``DT_STRTAB``'s virtual address to a file offset through the
+    ``PT_LOAD`` segments, so this matches the loader's own view rather than a section
+    table that a stripped/rewritten binary might not carry. Handles ELF32/ELF64 and
+    both endiannesses; the shipped drivers are ELF64-LE.
     """
-    result: dict[int, list[str]] = {t: [] for t in tags}
+    out: dict = {"runpath": None, "rpath": None, "needed": []}
     if not _is_elf(data):
-        return result
-
+        return out
     is64 = data[4] == 2
-    endian = "<" if data[5] == 1 else ">"
+    en = "<" if data[5] == 1 else ">"
 
     if is64:
-        e_shoff = struct.unpack_from(endian + "Q", data, 0x28)[0]
-        e_shentsize = struct.unpack_from(endian + "H", data, 0x3A)[0]
-        e_shnum = struct.unpack_from(endian + "H", data, 0x3C)[0]
+        e_phoff = struct.unpack_from(en + "Q", data, 0x20)[0]
+        e_phentsize = struct.unpack_from(en + "H", data, 0x36)[0]
+        e_phnum = struct.unpack_from(en + "H", data, 0x38)[0]
     else:
-        e_shoff = struct.unpack_from(endian + "I", data, 0x20)[0]
-        e_shentsize = struct.unpack_from(endian + "H", data, 0x2E)[0]
-        e_shnum = struct.unpack_from(endian + "H", data, 0x30)[0]
-    if not e_shoff or not e_shnum:
-        return result
+        e_phoff = struct.unpack_from(en + "I", data, 0x1C)[0]
+        e_phentsize = struct.unpack_from(en + "H", data, 0x2A)[0]
+        e_phnum = struct.unpack_from(en + "H", data, 0x2C)[0]
+    if not e_phoff or not e_phnum:
+        return out
 
-    sections = []  # (sh_type, sh_offset, sh_size, sh_link, sh_entsize)
-    for i in range(e_shnum):
-        off = e_shoff + i * e_shentsize
-        if off + e_shentsize > len(data):
-            return result
-        sh_type = struct.unpack_from(endian + "I", data, off + 4)[0]
+    loads = []  # (p_vaddr, p_offset, p_filesz)
+    dyn = None  # (p_offset, p_filesz)
+    for i in range(e_phnum):
+        off = e_phoff + i * e_phentsize
+        if off + e_phentsize > len(data):
+            return out
+        p_type = struct.unpack_from(en + "I", data, off)[0]
         if is64:
-            sh_offset = struct.unpack_from(endian + "Q", data, off + 0x18)[0]
-            sh_size = struct.unpack_from(endian + "Q", data, off + 0x20)[0]
-            sh_link = struct.unpack_from(endian + "I", data, off + 0x28)[0]
-            sh_entsize = struct.unpack_from(endian + "Q", data, off + 0x38)[0]
+            p_offset = struct.unpack_from(en + "Q", data, off + 8)[0]
+            p_vaddr = struct.unpack_from(en + "Q", data, off + 16)[0]
+            p_filesz = struct.unpack_from(en + "Q", data, off + 32)[0]
         else:
-            sh_offset = struct.unpack_from(endian + "I", data, off + 0x10)[0]
-            sh_size = struct.unpack_from(endian + "I", data, off + 0x14)[0]
-            sh_link = struct.unpack_from(endian + "I", data, off + 0x18)[0]
-            sh_entsize = struct.unpack_from(endian + "I", data, off + 0x24)[0]
-        sections.append((sh_type, sh_offset, sh_size, sh_link, sh_entsize))
-
-    dyn = next((s for s in sections if s[0] == _SHT_DYNAMIC), None)
+            p_offset = struct.unpack_from(en + "I", data, off + 4)[0]
+            p_vaddr = struct.unpack_from(en + "I", data, off + 8)[0]
+            p_filesz = struct.unpack_from(en + "I", data, off + 16)[0]
+        if p_type == _PT_LOAD:
+            loads.append((p_vaddr, p_offset, p_filesz))
+        elif p_type == _PT_DYNAMIC:
+            dyn = (p_offset, p_filesz)
     if dyn is None:
-        return result
-    _, dyn_off, dyn_size, dyn_link, dyn_entsize = dyn
-    if dyn_link >= len(sections):
-        return result
-    strtab_off = sections[dyn_link][1]
-    strtab_size = sections[dyn_link][2]
-    strtab = data[strtab_off : strtab_off + strtab_size]
+        return out
+    dyn_off, dyn_size = dyn
 
-    def _read_str(pos: int) -> str:
-        end = strtab.find(b"\x00", pos)
-        return strtab[pos : (end if end >= 0 else len(strtab))].decode("utf-8", "replace")
+    def vaddr_to_off(vaddr: int):
+        for v, o, sz in loads:
+            if v <= vaddr < v + sz:
+                return vaddr - v + o
+        return None
 
-    entsize = dyn_entsize or (16 if is64 else 8)
+    strtab_vaddr = None
+    runpath_rel = None
+    rpath_rel = None
+    needed_rel: list[int] = []
+    entsize = 16 if is64 else 8
     for off in range(dyn_off, dyn_off + dyn_size, entsize):
         if off + entsize > len(data):
             break
         if is64:
-            d_tag = struct.unpack_from(endian + "q", data, off)[0]
-            d_val = struct.unpack_from(endian + "Q", data, off + 8)[0]
+            d_tag = struct.unpack_from(en + "q", data, off)[0]
+            d_val = struct.unpack_from(en + "Q", data, off + 8)[0]
         else:
-            d_tag = struct.unpack_from(endian + "i", data, off)[0]
-            d_val = struct.unpack_from(endian + "I", data, off + 4)[0]
+            d_tag = struct.unpack_from(en + "i", data, off)[0]
+            d_val = struct.unpack_from(en + "I", data, off + 4)[0]
         if d_tag == 0:  # DT_NULL terminates the array
             break
-        if d_tag in result:
-            result[d_tag].append(_read_str(d_val))
-    return result
+        if d_tag == _DT_STRTAB:
+            strtab_vaddr = d_val
+        elif d_tag == _DT_RUNPATH:
+            runpath_rel = d_val
+        elif d_tag == _DT_RPATH:
+            rpath_rel = d_val
+        elif d_tag == _DT_NEEDED:
+            needed_rel.append(d_val)
+    if strtab_vaddr is None:
+        return out
+    strtab_off = vaddr_to_off(strtab_vaddr)
+    if strtab_off is None:
+        return out
+
+    def read_str(rel: int) -> str:
+        pos = strtab_off + rel
+        end = data.find(b"\x00", pos)
+        return data[pos : (end if end >= 0 else len(data))].decode("utf-8", "replace")
+
+    if runpath_rel is not None:
+        out["runpath"] = read_str(runpath_rel)
+    if rpath_rel is not None:
+        out["rpath"] = read_str(rpath_rel)
+    out["needed"] = [read_str(n) for n in needed_rel]
+    return out
+
+
+def effective_runpath(dyn: dict):
+    """The loader ignores ``DT_RPATH`` when ``DT_RUNPATH`` is present."""
+    return dyn["runpath"] if dyn["runpath"] is not None else dyn["rpath"]
+
+
+def _entries(runpath) -> list[str]:
+    return [e for e in (runpath or "").split(":") if e]
+
+
+def expected_climb_entry(member_name: str) -> str:
+    """Exact ``$ORIGIN/<climb>`` from the member's own dir to package-root ``lib``.
+
+    conda stores python files at ``lib/pythonX.Y/site-packages/...`` and
+    ``$PREFIX/lib`` == package-root ``lib``, so the climb is the POSIX relpath from
+    the driver's directory to the top-level ``lib`` (never a hard-coded ``../`` count).
+    """
+    member_dir = posixpath.dirname(member_name)
+    climb = posixpath.relpath("lib", member_dir)
+    return "$ORIGIN/" + climb
 
 
 def _iter_payload_members(path: str):
@@ -169,117 +237,140 @@ def _iter_payload_members(path: str):
                     yield m.name, f.read()
 
 
-def _read_subdir(path: str) -> str:
-    """Return the package's real ``info/index.json`` subdir (or '')."""
-    try:
-        if path.endswith(".conda"):
-            with zipfile.ZipFile(path) as zf:
-                info_name = next(
-                    n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")
-                )
-                blob = _zstd_decompress(zf.read(info_name))
-            with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
-                member = tf.extractfile("info/index.json")
-                if member is not None:
-                    import json
+def read_index(path: str) -> dict:
+    """Return the package's ``info/index.json`` as a dict.
 
-                    return str(json.load(member).get("subdir", ""))
-        elif path.endswith(".tar.bz2"):
-            with tarfile.open(path, "r:bz2") as tf:
-                member = tf.extractfile("info/index.json")
-                if member is not None:
-                    import json
-
-                    return str(json.load(member).get("subdir", ""))
-    except Exception:
-        pass
-    return ""
-
-
-def _is_driver(basename: str) -> bool:
-    return basename in _DRIVER_EXACT or any(basename.startswith(p) for p in _DRIVER_PREFIXES)
+    RAISES on a malformed/unreadable package -- callers must NOT swallow this into a
+    silent "non-Linux, skip" (a truncated Linux package would then slip through).
+    """
+    if path.endswith(".conda"):
+        with zipfile.ZipFile(path) as zf:
+            info_name = next(
+                (n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
+                None,
+            )
+            if info_name is None:
+                raise ValueError("no info-*.tar.zst member (malformed .conda)")
+            blob = _zstd_decompress(zf.read(info_name))
+        with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
+            member = tf.extractfile("info/index.json")
+            if member is None:
+                raise ValueError("info/index.json missing")
+            return json.load(member)
+    if path.endswith(".tar.bz2"):
+        with tarfile.open(path, "r:bz2") as tf:
+            member = tf.extractfile("info/index.json")
+            if member is None:
+                raise ValueError("info/index.json missing")
+            return json.load(member)
+    raise ValueError("unrecognized conda package extension")
 
 
-def _has_relative_climb(runpaths: list[str]) -> bool:
-    """True iff the RUNPATH carries ``$ORIGIN`` AND a relative ``..`` climb entry."""
-    entries: list[str] = []
-    for rp in runpaths:
-        entries.extend(e for e in rp.split(":") if e)
-    if not any(e == "$ORIGIN" or e.startswith("$ORIGIN") for e in entries):
-        return False
-    return any("$ORIGIN" in e and ".." in e for e in entries)
-
-
-def _absolute_entries(runpaths: list[str]) -> list[str]:
-    bad: list[str] = []
-    for rp in runpaths:
-        for e in (x for x in rp.split(":") if x):
-            if e.startswith("/"):
-                bad.append(e)
-    return bad
+def _dep_names(depends) -> set:
+    """The package names (first token) of an ``info/index.json`` ``depends`` list."""
+    names = set()
+    for d in depends or []:
+        token = str(d).strip().split()
+        if token:
+            names.add(token[0])
+    return names
 
 
 def audit_package(path: str) -> list[str]:
     """Return a list of violation strings for one package (empty == clean)."""
-    subdir = _read_subdir(path)
-    # Only Linux packages carry the ELF ODBC payload this audit governs.
+    base_name = os.path.basename(path)
+    try:
+        index = read_index(path)
+    except Exception as exc:  # H2: malformed/unreadable must FAIL, never skip.
+        return [f"{base_name}: unreadable/malformed package metadata ({exc})."]
+
+    subdir = str(index.get("subdir", ""))
     if not subdir.startswith("linux"):
-        print(f"  SKIP (no Linux ELF payload): {os.path.basename(path)} [subdir={subdir or '?'}]")
+        print(f"  SKIP (no Linux ELF payload): {base_name} [subdir={subdir or '?'}]")
         return []
 
     errors: list[str] = []
+
+    # N2a: the run deps that SERVICE the driver's krb5/openssl/libltdl must be declared.
+    dep_names = _dep_names(index.get("depends"))
+    for req in _REQUIRED_DEPS:
+        if req not in dep_names:
+            errors.append(
+                f"{base_name}: info/index.json depends is missing '{req}' -- the "
+                f"$PREFIX/lib copy the RUNPATH climb targets would not exist. "
+                f"depends={sorted(dep_names)}"
+            )
+
     drivers_seen = 0
     odbcinst_seen = 0
     vendored: list[str] = []
 
     for name, data in _iter_payload_members(path):
-        base = os.path.basename(name)
+        base = posixpath.basename(name)
         # Flag any crypto/krb5/ltdl library vendored into the Linux payload.
         if "/libs/linux/" in ("/" + name) and any(
-            base.startswith(p) and (".so" in base) for p in _MUST_NOT_VENDOR
+            base.startswith(p) and ".so" in base for p in _MUST_NOT_VENDOR
         ):
             vendored.append(name)
             continue
-        if not _is_driver(base):
+
+        is_driver = any(base.startswith(p) for p in _DRIVER_PREFIXES)
+        is_inst = base == _ODBCINST
+        if not (is_driver or is_inst):
             continue
         if not _is_elf(data):
+            errors.append(f"{name}: expected an ELF binary but the header is not ELF.")
             continue
 
-        dyn = elf_dynamic(data, (_DT_RUNPATH, _DT_RPATH, _DT_NEEDED))
-        runpaths = dyn[_DT_RUNPATH] + dyn[_DT_RPATH]
-        needed = dyn[_DT_NEEDED]
+        dyn = elf_dynamic(data)
+        entries = _entries(effective_runpath(dyn))
+        needed = dyn["needed"]
+        want = expected_climb_entry(name)
 
-        if base.startswith("libmsodbcsql"):
-            drivers_seen += 1
-        elif base == "libodbcinst.so.2":
-            odbcinst_seen += 1
-
-        if not _has_relative_climb(runpaths):
+        # N1: the EXACT climb entry must be present in the EFFECTIVE RUNPATH.
+        if want not in entries:
             errors.append(
-                f"{name}: RUNPATH {runpaths or '[none]'} lacks the relative "
-                f"'$ORIGIN/..' climb to $PREFIX/lib (the #563 reachability fix). "
-                f"NEEDED={needed}"
+                f"{name}: effective RUNPATH {entries or '[none]'} does not contain the "
+                f"exact climb entry '{want}' to $PREFIX/lib (the loader uses DT_RUNPATH "
+                f"when present, else DT_RPATH). NEEDED={needed}"
             )
-        abs_entries = _absolute_entries(runpaths)
+        # Stay relocatable: reject ANY absolute entry.
+        abs_entries = [e for e in entries if e.startswith("/")]
         if abs_entries:
             errors.append(
                 f"{name}: RUNPATH has ABSOLUTE entries {abs_entries}; must stay "
                 f"relocatable (relative $ORIGIN only)."
             )
-        print(f"  {subdir}/{base}: RUNPATH={runpaths} NEEDED={[n for n in needed]}")
+
+        # N2b: the expected DT_NEEDED set must still be present.
+        if is_driver:
+            drivers_seen += 1
+            for want_need in _DRIVER_NEEDED:
+                if not any(want_need in n for n in needed):
+                    errors.append(
+                        f"{name}: driver no longer NEEDs '{want_need}*' (NEEDED={needed}); "
+                        f"the declared conda dep would go unused and reachability is unproven."
+                    )
+        if is_inst:
+            odbcinst_seen += 1
+            for want_need in _ODBCINST_NEEDED:
+                if not any(want_need in n for n in needed):
+                    errors.append(
+                        f"{name}: libodbcinst.so.2 no longer NEEDs '{want_need}*' "
+                        f"(NEEDED={needed})."
+                    )
+        print(f"  {subdir}/{base}: effective RUNPATH={entries} NEEDED={needed}")
 
     if vendored:
         errors.append(
-            f"{os.path.basename(path)}: vendors libraries that must be DECLARED conda "
-            f"deps, not bundled: {sorted(vendored)} (krb5/openssl/libltdl are serviced "
-            f"by conda, never shipped inside the payload)."
+            f"{base_name}: vendors libraries that must be DECLARED conda deps, not "
+            f"bundled: {sorted(vendored)} (krb5/openssl/libltdl are serviced by conda, "
+            f"never shipped inside the payload)."
         )
     if drivers_seen == 0:
-        errors.append(
-            f"{os.path.basename(path)}: no libmsodbcsql* driver found in a Linux package."
-        )
+        errors.append(f"{base_name}: no libmsodbcsql* driver found in a Linux package.")
     if odbcinst_seen == 0:
-        errors.append(f"{os.path.basename(path)}: no libodbcinst.so.2 found in a Linux package.")
+        errors.append(f"{base_name}: no libodbcinst.so.2 found in a Linux package.")
     return errors
 
 
@@ -305,9 +396,12 @@ def main(argv: list | None = None) -> int:
     all_errors: list[str] = []
     linux_checked = 0
     for p in paths:
-        subdir = _read_subdir(p)
-        if subdir.startswith("linux"):
-            linux_checked += 1
+        try:
+            if str(read_index(p).get("subdir", "")).startswith("linux"):
+                linux_checked += 1
+        except Exception:
+            # A malformed package is a violation, reported by audit_package below.
+            pass
         all_errors.extend(audit_package(p))
 
     if all_errors:
@@ -320,8 +414,9 @@ def main(argv: list | None = None) -> int:
         print("\nOK: no Linux packages present; nothing to audit (win/osx have no ELF payload).")
     else:
         print(
-            f"\nOK: all {linux_checked} Linux package(s) carry the relative $ORIGIN climb "
-            f"and vendor no krb5/openssl/libltdl (declared conda deps service them)."
+            f"\nOK: all {linux_checked} Linux package(s) carry the EXACT $ORIGIN climb, keep "
+            f"their krb5/gssapi/libltdl NEEDEDs, declare krb5/libtool/openssl, and vendor no "
+            f"crypto (conda services them)."
         )
     return 0
 
