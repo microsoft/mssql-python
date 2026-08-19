@@ -404,11 +404,9 @@ stages:
           # CONDA PACKAGES (x64 only)
           # =========================
           # Repackage the freshly built mssql-python wheel into the per-Python
-          # mssql-python (binding) conda package and validate it on THIS agent (which
-          # already has the wheel and a live LocalDB). The Python-AGNOSTIC companion
-          # (mssql-python-odbc) is NOT rebuilt here -- it is built ONCE in ODBC_BuildAll
-          # and SEEDED into the local channel so the binding's `mssql-python-odbc
-          # ==<ver>` pin resolves for the solve/import. Conda must be built per matching
+          # self-contained mssql-python conda package (which vendors the ODBC payload
+          # from the downloaded odbc wheel) and validate it on THIS agent (which
+          # already has the wheel and a live LocalDB). Conda must be built per matching
           # -platform leg: conda-build provisions a real win-64 host env that cannot be
           # created on any other OS. The step is x64-gated (the ARM64 host can neither
           # run pytest nor provision a win-arm64 conda env).
@@ -419,9 +417,6 @@ stages:
                 condaSubdir: 'win-64'
                 targetArch: ${{ parameters.architecture }}
                 odbcWheelFilter: 'mssql_python_odbc-*win_amd64.whl'
-                # Build ONLY the per-Python binding; seed the companion built once in
-                # ODBC_BuildAll (removes the previous per-Python companion redundancy).
-                package: 'binding'
 
           # =========================
           # SIGNED-WHEEL EVIDENCE (verification only)

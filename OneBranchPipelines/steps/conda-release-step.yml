@@ -8,8 +8,8 @@
 # Why the gate lives HERE and not in the build:
 #   - BUILD pipeline: conda is collected BEST-EFFORT (warn-only) so a conda hiccup
 #     on any leg can never fail the build or block the primary wheel release.
-#   - RELEASE pipeline: conda completeness is GATED — an incomplete or mis-paired
-#     conda set must never be shipped.
+#   - RELEASE pipeline: conda completeness is GATED -- an incomplete conda set
+#     must never be shipped.
 #
 # What it enforces (all from each package's AUTHORITATIVE info/index.json, never
 # folder names or bare counts -- so a mis-stamped subdir or a dropped Python
@@ -22,13 +22,8 @@
 #   - Python matrix: on every required subdir the mssql-python binding covers
 #     EVERY expected Python (`pythonVersions`) -- catches e.g. 3 of 5 win-64
 #     bindings shipping against the single companion.
-#   - versions: all packages of a name share one version (and match the expected
-#     version when `mssqlPythonVersion` / `odbcVersion` are supplied).
-#   - #706 pairing: a binding and its companion SHIP TOGETHER (both present or
-#     both absent) -- never a companion-only bump. The Windows companion is a
-#     SINGLE Python-agnostic package built once in ODBC_BuildAll that serves all
-#     per-Python win-64 bindings, so pairing is PRESENCE-based; where the
-#     companion is per-Python (macOS/Linux, count > 1) it must pair 1:1.
+#   - versions: all packages share one version (and match the expected version
+#     when `mssqlPythonVersion` is supplied).
 #
 # The check is implemented in conda/validate_conda_release.py (unit-tested by
 # tests/test_027_conda_release_metadata.py), which reads the zstd-compressed
@@ -97,7 +92,7 @@ steps:
       targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
 
   - task: PowerShell@2
-    displayName: '${{ parameters.labelPrefix }}Validate conda release readiness (metadata: subdirs + Python matrix + #706 pairing)'
+    displayName: '${{ parameters.labelPrefix }}Validate conda release readiness (metadata: subdirs + Python matrix + versions)'
     inputs:
       targetType: 'inline'
       script: |

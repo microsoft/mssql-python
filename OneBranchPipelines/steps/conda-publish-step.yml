@@ -14,10 +14,9 @@
 #   1. Our packages are NON-noarch (native binding + driver), so they live under
 #      per-platform subdirs (win-64 / osx-arm64 / linux-64), NOT a single noarch
 #      folder. We recurse every subdir.
-#   2. #706 ordering: the version-locked companion (mssql-python-odbc) is uploaded
-#      BEFORE the binding (mssql-python) so the binding's pinned dependency is
-#      always resolvable on the channel. We also refuse to publish a mismatched or
-#      incomplete set.
+#   2. The self-contained mssql-python package vendors the ODBC payload, so there is
+#      no separate companion to order; we still refuse to publish an incomplete or
+#      mislabeled set.
 #
 # The caller MUST:
 #   - run this ONLY after the conda-release-step.yml readiness gate has passed, and
@@ -127,12 +126,11 @@ steps:
         if ($pkgs.Count -eq 0) { Write-Error "No conda packages found under $root. Refusing to publish an empty set."; exit 1 }
 
         $bySubdir = $pkgs | Group-Object { $_.Directory.Name }
-        function Get-Binding($grp)   { @($grp | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
-        function Get-Companion($grp) { @($grp | Where-Object { $_.Name -like 'mssql-python-odbc-*' }) }
+        function Get-Binding($grp) { @($grp | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
 
         Write-Host "Discovered $($pkgs.Count) conda package(s) across $($bySubdir.Count) subdir(s):"
         foreach ($g in ($bySubdir | Sort-Object Name)) {
-          Write-Host ("  {0,-14} binding={1} companion={2}" -f $g.Name, (Get-Binding $g.Group).Count, (Get-Companion $g.Group).Count)
+          Write-Host ("  {0,-14} mssql-python={1}" -f $g.Name, (Get-Binding $g.Group).Count)
         }
 
         $failed = $false
@@ -145,7 +143,7 @@ steps:
           }
         }
 
-        # Every required subdir present and internally #706-paired.
+        # Every required subdir present with at least one mssql-python package.
         $foundSubdirs = @($bySubdir | ForEach-Object { $_.Name })
         foreach ($req in $required) {
           if ($foundSubdirs -notcontains $req) {
@@ -153,40 +151,27 @@ steps:
             $failed = $true
             continue
           }
-          $grp = ($bySubdir | Where-Object { $_.Name -eq $req }).Group
-          $b = (Get-Binding $grp).Count; $c = (Get-Companion $grp).Count
-          # PRESENCE, not equal counts: the Windows companion is a SINGLE Python-
-          # agnostic package (built once in ODBC_BuildAll) serving all per-Python
-          # win-64 bindings, so b(5) != c(1) is EXPECTED there and not a violation.
-          # macOS/Linux still build the companion per-Python (c > 1) and keep 1:1.
-          if ($b -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no binding (mssql-python) package."; $failed = $true }
-          if ($c -eq 0) { Write-Host "##vso[task.logissue type=error]Subdir '$req' has no companion (mssql-python-odbc) package."; $failed = $true }
-          if ($c -gt 1 -and $b -ne $c) { Write-Host "##vso[task.logissue type=error]#706 violation in '$req': $b binding vs $c per-Python companion (must pair 1:1)."; $failed = $true }
-        }
-
-        # #706: split into companion (mssql-python-odbc) and binding (mssql-python).
-        $companion = Get-Companion $pkgs
-        $binding   = Get-Binding $pkgs
-        # #706 pairing per subdir (both-or-neither): a companion without ANY binding is
-        # the companion-only bump behind #706; a binding without a companion cannot
-        # resolve its version-locked `mssql-python-odbc ==<ver>` pin.
-        foreach ($g in $bySubdir) {
-          $gb = (Get-Binding $g.Group).Count; $gc = (Get-Companion $g.Group).Count
-          if (($gb -gt 0) -ne ($gc -gt 0)) {
-            Write-Host "##vso[task.logissue type=error]#706 violation in '$($g.Name)': binding=$gb companion=$gc (a binding and its companion must ship together)."
+          if ((Get-Binding ($bySubdir | Where-Object { $_.Name -eq $req }).Group).Count -eq 0) {
+            Write-Host "##vso[task.logissue type=error]Subdir '$req' has no mssql-python package."
             $failed = $true
           }
         }
-        if ($companion.Count -gt 0 -and $binding.Count -eq 0) {
-          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($companion.Count) companion package(s) with NO binding (companion-only release)."
-          $failed = $true
-        }
-        if ($binding.Count -gt 0 -and $companion.Count -eq 0) {
-          Write-Host "##vso[task.logissue type=error]#706 violation (global): $($binding.Count) binding package(s) with NO companion."
+
+        # The self-contained mssql-python vendors the ODBC payload, so a stray
+        # mssql-python-odbc package (the old separate companion) must never ship.
+        $stray = @($pkgs | Where-Object { $_.Name -like 'mssql-python-odbc-*' })
+        if ($stray.Count -gt 0) {
+          Write-Host "##vso[task.logissue type=error]Found $($stray.Count) stray mssql-python-odbc package(s); the self-contained model ships only mssql-python. Refusing to publish."
           $failed = $true
         }
 
-        if ($failed) { Write-Error "Conda publish pre-check FAILED. Refusing to publish an incomplete/mis-paired set."; exit 1 }
+        $binding = Get-Binding $pkgs
+        if ($binding.Count -eq 0) {
+          Write-Host "##vso[task.logissue type=error]No mssql-python packages found. Refusing to publish an empty set."
+          $failed = $true
+        }
+
+        if ($failed) { Write-Error "Conda publish pre-check FAILED. Refusing to publish an incomplete/mislabeled set."; exit 1 }
 
         function Publish-One($file) {
           for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -200,13 +185,8 @@ steps:
           exit 1
         }
 
-        # #706 ordering: companion FIRST so the binding's pinned dependency is
-        # resolvable the instant the binding lands on the channel.
-        Write-Host "==== Publishing companion (mssql-python-odbc) packages ===="
-        foreach ($p in ($companion | Sort-Object FullName)) { Publish-One $p }
-
-        Write-Host "==== Publishing binding (mssql-python) packages ===="
+        Write-Host "==== Publishing mssql-python (self-contained) packages ===="
         foreach ($p in ($binding | Sort-Object FullName)) { Publish-One $p }
 
         Write-Host ""
-        Write-Host "Uploaded $($companion.Count) companion + $($binding.Count) binding conda packages to anaconda.org/${{ parameters.condaChannel }} (label ${{ parameters.condaLabel }})."
+        Write-Host "Uploaded $($binding.Count) mssql-python conda package(s) to anaconda.org/${{ parameters.condaChannel }} (label ${{ parameters.condaLabel }})."

@@ -1,6 +1,6 @@
 # Consolidate Conda Artifacts Job Template
-# Collects the per-platform conda packages (mssql-python binding + its companion
-# mssql-python-odbc) that each build leg staged under conda/<subdir>/ and gathers
+# Collects the per-platform self-contained mssql-python conda packages (which vendor
+# the ODBC payload) that each build leg staged under conda/<subdir>/ and gathers
 # them into a single conda/ tree for the release pipeline to publish.
 #
 # BEST-EFFORT (build pipeline): conda is a downstream repackage of the ESRP-signed
@@ -9,22 +9,20 @@
 # to publish an incomplete conda set), symmetric with how the wheel/odbc drops are
 # best-effort collected in the build and gated at release time.
 #
-# Expected packages (validated conda subdirs). The per-Python BINDING (mssql-python)
-# is emitted by each build leg. The version-locked COMPANION (mssql-python-odbc) is
-# still emitted per-Python by the macOS/Linux legs, but on Windows it is built ONCE
-# (Python-agnostic -- Lib\site-packages is not version-pathed) in the ODBC_BuildAll
-# stage and collected here from that stage's drop instead of once per Python leg:
-#   win-64        : 5 py x mssql-python + 1 companion (once, ODBC_BuildAll)  = 6
-#   osx-64        : 5 py x 2  (Intel Mac, cross-built under Rosetta 2)       = 10
-#   osx-arm64     : 5 py x 2  (Apple Silicon, native)                        = 10
-#   linux-64      : 5 py x 2  (glibc x86_64 host, native)                    = 10
-#   linux-aarch64 : 5 py x 2  (x86_64 host + QEMU, best-effort)              = 10
+# Expected packages (validated conda subdirs). The self-contained mssql-python
+# package (which vendors the ODBC payload) is emitted per-Python by each build leg;
+# there is NO separate companion package:
+#   win-64        : 5 py x mssql-python                                       = 5
+#   osx-64        : 5 py x mssql-python  (Intel Mac, cross-built via Rosetta) = 5
+#   osx-arm64     : 5 py x mssql-python  (Apple Silicon, native)              = 5
+#   linux-64      : 5 py x mssql-python  (glibc x86_64 host, native)          = 5
+#   linux-aarch64 : 5 py x mssql-python  (x86_64 host + QEMU, best-effort)    = 5
 #   ------------------------------------------------------------------------------
-#   TOTAL (PyPI parity minus win-arm64 + musllinux)                          = 46
+#   TOTAL (PyPI parity minus win-arm64 + musllinux)                          = 25
 # win-arm64 (no import-validation host on x64) and musllinux (no conda musl subdir)
 # are intentionally NOT conda-built. This job is BEST-EFFORT and never hard-fails on
 # a short set; the release pipeline's conda-release-step enforces the hard gate
-# (required subdirs present + #706 pairing) before anything is published.
+# (required subdirs present + complete Python matrix) before anything is published.
 parameters:
   - name: oneBranchType
     type: string
@@ -75,10 +73,9 @@ jobs:
           echo "Collecting conda packages (preserving <subdir>/ layout)..."
           mkdir -p $(ob_outputDirectory)/conda
 
-          # Copy every mssql-python* conda package into conda/<subdir>/. The glob
-          # 'mssql-python*' matches BOTH the binding (mssql-python-*) and the
-          # companion (mssql-python-odbc-*); each build leg wrote them under a
-          # conda/<subdir>/ folder, so the parent dir name IS the target subdir.
+          # Copy every mssql-python* conda package into conda/<subdir>/. Each build
+          # leg wrote the self-contained mssql-python package under a conda/<subdir>/
+          # folder, so the parent dir name IS the target subdir.
           found=0
           while IFS= read -r p; do
             subdir=$(basename "$(dirname "$p")")
@@ -100,7 +97,7 @@ jobs:
             n=$(find "$d" -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)
             printf '  %-14s %s\n' "$sub" "$n"
           done
-          echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 46)"
+          echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 25)"
 
           # BEST-EFFORT: warn only, never exit non-zero — a conda hiccup on any leg
           # must not fail this build or block the wheel release. The release pipeline's

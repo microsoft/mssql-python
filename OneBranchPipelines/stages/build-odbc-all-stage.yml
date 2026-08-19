@@ -193,64 +193,12 @@ stages:
             displayName: 'Assert each ODBC wheel is platform-correct'
 
           # =========================
-          # WIN-64 COMPANION CONDA (built ONCE, here with the wheels)
+          # NOTE: no conda is built in ODBC_BuildAll anymore.
           # =========================
-          # Build the mssql-python-odbc CONDA package for win-64 ONCE, in the same
-          # single host that produces the py3-none-<platform> wheels -- the conda
-          # analog of the wheel. Windows conda site-packages (Lib\site-packages) is
-          # NOT Python-version-pathed, so one package serves every Python (the recipe
-          # has no `python` in host on Windows and bld.bat extracts the wheel with
-          # `tar`); conda-build emits a single win-64 package with no `pyXY` build
-          # string. This removes the previous redundancy where EVERY per-Python
-          # mssql-python leg rebuilt an identical companion. The mssql-python (binding)
-          # conda stays per-Python on its own legs and SEEDS this package to satisfy
-          # its version-locked `mssql-python-odbc ==<ver>` pin.
-          #
-          # macOS/Linux companion conda is unchanged (still built per-Python on those
-          # legs) because POSIX site-packages IS version-pathed -- that restructure is
-          # deferred; this change is Windows-only.
-          - powershell: |
-              $ErrorActionPreference = 'Stop'
-              # find-links dir holding ONLY the win_amd64 ODBC wheel: the recipe's
-              # bld.bat globs mssql_python_odbc-*-py3-none-win_*.whl, so keep the
-              # win-64 slice unambiguous (win_arm64 has no conda target here).
-              $links = Join-Path "$(Agent.TempDirectory)" 'odbc-conda-wheels'
-              New-Item -ItemType Directory -Force -Path $links | Out-Null
-              $whl = Get-ChildItem "$(ob_outputDirectory)\wheels" -Filter 'mssql_python_odbc-*win_amd64.whl' | Select-Object -First 1
-              if (-not $whl) { Write-Error 'win_amd64 ODBC wheel not found for conda build'; exit 1 }
-              Copy-Item $whl.FullName -Destination $links -Force
-              if ($whl.Name -notmatch '^mssql_python_odbc-([^-]+)-') { Write-Error "Cannot parse version from $($whl.Name)"; exit 1 }
-              $odbcVer = $Matches[1]
-              Write-Host "Building win-64 mssql-python-odbc conda (once) from $($whl.Name) -> $odbcVer"
-
-              # -Package odbc: build the single companion (no --python) and PROVE it is
-              # Python-agnostic by importing it under both ends of the supported range.
-              # MssqlPythonVersion is unused in odbc mode; pass odbcVer as a placeholder.
-              & "$(Build.SourcesDirectory)/OneBranchPipelines/scripts/build-conda-packages.ps1" `
-                -WheelsDir $links `
-                -RecipeRoot "$(Build.SourcesDirectory)/conda" `
-                -OutputDir "$(Agent.TempDirectory)/odbc-conda-bld" `
-                -MssqlPythonVersion $odbcVer `
-                -OdbcVersion $odbcVer `
-                -PythonVersions '3.10,3.14' `
-                -Package odbc
-              if ($LASTEXITCODE -ne 0) { Write-Error "companion conda build+validate failed (exit $LASTEXITCODE)"; exit 1 }
-
-              # Stage the single built package under conda/win-64/ so it rides the ODBC
-              # artifact; the mssql-python binding legs seed it for their validation
-              # solve, and ConsolidateConda collects it into the published conda set.
-              $condaOut = Join-Path "$(ob_outputDirectory)" 'conda'
-              $built = Get-ChildItem -Path (Join-Path "$(Agent.TempDirectory)/odbc-conda-bld" 'bld') -Recurse -Include *.conda, *.tar.bz2 |
-                Where-Object { $_.Name -like 'mssql-python-odbc-*' }
-              if (-not $built) { Write-Error 'No companion conda package produced'; exit 1 }
-              foreach ($p in $built) {
-                $subdir = Split-Path -Leaf $p.DirectoryName
-                $dest = Join-Path $condaOut $subdir
-                New-Item -ItemType Directory -Force -Path $dest | Out-Null
-                Copy-Item $p.FullName -Destination $dest -Force
-                Write-Host "  staged $subdir/$($p.Name)"
-              }
-            displayName: 'Build mssql-python-odbc conda (win-64, once)'
+          # In the self-contained model the mssql-python conda package (which vendors
+          # the ODBC Driver 18 payload) is built per-Python in the platform binding
+          # legs (build-windows/macos/linux-single-stage), so this stage produces ONLY
+          # the py3-none-<platform> wheels. There is no separate companion conda.
 
           # OneBranch requires artifact naming: drop_<stageName>_<jobName>.
           # ConsolidateOdbc picks this up via its 'drop_ODBC_*' item pattern.
