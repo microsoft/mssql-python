@@ -441,7 +441,7 @@ extends:
       # =====================================================================
       # Runs when releaseConda=true OR publishToConda=true. Downloads the consolidated
       # conda packages from build definition 2199 and enforces the release-time hard
-      # gate (exact count + #706 binding/companion pairing). dependsOn: [] keeps it
+      # gate (required subdirs + full Python matrix). dependsOn: [] keeps it
       # independent of ReleasePackages, so a conda problem can never block the wheel
       # PyPI release. When publishToConda=true, a second releaseJob publishes to
       # Anaconda.org, but ONLY after this gate succeeds.
@@ -465,8 +465,8 @@ extends:
 
             # Conda PRODUCTION publish (releaseJob). Runs only when publishToConda=true
             # and ONLY after the ValidateConda gate succeeds, so we never upload an
-            # incomplete or mis-paired set. anaconda-client upload (ESRP has no Conda
-            # ContentType); companion-before-binding per #706.
+            # incomplete set. anaconda-client upload (ESRP has no Conda ContentType);
+            # the self-contained mssql-python package (no companion).
             - ${{ if eq(parameters.publishToConda, true) }}:
               - job: PublishConda
                 displayName: 'Publish Conda Packages to Anaconda.org'

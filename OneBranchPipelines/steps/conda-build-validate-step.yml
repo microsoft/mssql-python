@@ -84,16 +84,18 @@ steps:
       $links = Join-Path "${{ parameters.outputDir }}" 'wheels'
       New-Item -ItemType Directory -Force -Path $links | Out-Null
 
-      $mssqlWheel = Get-ChildItem -Path $mssqlWheelDir -Filter 'mssql_python-*.whl' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -notlike 'mssql_python_odbc-*' } | Select-Object -First 1
-      if (-not $mssqlWheel) { Write-Error "No mssql_python-*.whl found in $mssqlWheelDir"; exit 1 }
+      $mssqlWheels = @(Get-ChildItem -Path $mssqlWheelDir -Filter 'mssql_python-*.whl' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike 'mssql_python_odbc-*' })
+      if ($mssqlWheels.Count -eq 0) { Write-Error "No mssql_python-*.whl found in $mssqlWheelDir"; exit 1 }
 
       $odbcWheel = Get-ChildItem -Path $odbcWheelDir -Recurse -Filter '${{ parameters.odbcWheelFilter }}' -ErrorAction SilentlyContinue |
         Select-Object -First 1
       if (-not $odbcWheel) { Write-Error "No wheel matching '${{ parameters.odbcWheelFilter }}' found in $odbcWheelDir"; exit 1 }
 
-      Copy-Item $mssqlWheel.FullName -Destination $links -Force
-      Copy-Item $odbcWheel.FullName  -Destination $links -Force
+      # Copy EVERY mssql-python wheel (a standalone conda build passes all Python versions
+      # at once; a per-Python wheel leg simply has one) plus this platform's odbc wheel.
+      $mssqlWheels | ForEach-Object { Copy-Item $_.FullName -Destination $links -Force }
+      Copy-Item $odbcWheel.FullName -Destination $links -Force
       Write-Host "find-links wheels:"
       Get-ChildItem $links | ForEach-Object { Write-Host "  - $($_.Name)" }
 
@@ -101,7 +103,7 @@ steps:
       # ESRP-signed wheels themselves) so the conda package version can NEVER drift
       # from the wheel. Filenames: mssql_python-<ver>-cp3X-...whl and
       # mssql_python_odbc-<ver>-py3-none-...whl.
-      if ($mssqlWheel.Name -notmatch '^mssql_python-([^-]+)-') { Write-Error "Cannot parse version from $($mssqlWheel.Name)"; exit 1 }
+      if ($mssqlWheels[0].Name -notmatch '^mssql_python-([^-]+)-') { Write-Error "Cannot parse version from $($mssqlWheels[0].Name)"; exit 1 }
       $mssqlVer = $Matches[1]
       if ($odbcWheel.Name -notmatch '^mssql_python_odbc-([^-]+)-') { Write-Error "Cannot parse version from $($odbcWheel.Name)"; exit 1 }
       $odbcVer = $Matches[1]

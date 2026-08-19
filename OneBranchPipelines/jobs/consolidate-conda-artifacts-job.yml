@@ -27,6 +27,16 @@ parameters:
   - name: oneBranchType
     type: string
     default: 'Official'
+  # Artifact item pattern the consolidate job downloads. Defaults to the integrated
+  # wheel-pipeline leg artifacts; the standalone conda-build pipeline overrides it with
+  # its drop_Conda* leg artifacts.
+  - name: downloadItemPattern
+    type: string
+    default: |
+      drop_Win_*/**
+      drop_MacOS_*/**
+      drop_Linux_*/**
+      drop_ODBC_BuildAll_*/**
 
 jobs:
   - job: ConsolidateArtifacts
@@ -59,11 +69,7 @@ jobs:
         displayName: 'Download All Platform Artifacts'
         inputs:
           buildType: 'current'
-          itemPattern: |
-            drop_Win_*/**
-            drop_MacOS_*/**
-            drop_Linux_*/**
-            drop_ODBC_BuildAll_*/**
+          itemPattern: ${{ parameters.downloadItemPattern }}
           targetPath: '$(Pipeline.Workspace)/all-artifacts'
 
       - bash: |
