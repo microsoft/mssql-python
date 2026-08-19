@@ -1039,7 +1039,7 @@ std::string GetOdbcLibsBaseDir() {
 }
 
 // Platform-agnostic function to load the driver dynamic library
-DriverHandle LoadDriverLibrary(const std::string& driverPath, std::string* outError = nullptr) {
+DriverHandle LoadDriverLibrary(const std::string& driverPath) {
     LOG("LoadDriverLibrary: Attempting to load ODBC driver from path='%s'", driverPath.c_str());
 
 #ifdef _WIN32
@@ -1049,30 +1049,17 @@ DriverHandle LoadDriverLibrary(const std::string& driverPath, std::string* outEr
     fs::path pathObj(driverPath);
     HMODULE handle = LoadLibraryW(pathObj.c_str());
     if (!handle) {
-        std::string err = GetLastErrorMessage();
         LOG("LoadDriverLibrary: LoadLibraryW failed for path='%s' - %s", driverPath.c_str(),
-            err.c_str());
-        if (outError) {
-            *outError = err;
-        }
-        ThrowStdException("Failed to load library: " + driverPath + " (" + err + ")");
+            GetLastErrorMessage().c_str());
+        ThrowStdException("Failed to load library: " + driverPath);
     }
     return handle;
 #else
-    // macOS/Unix: Use dlopen. dlerror() is stateful -- reading it CLEARS the error --
-    // so capture it exactly ONCE here. The old `dlerror() ? dlerror() : ...` called it
-    // twice, and the second call returned NULL (a latent %s-of-nullptr bug) which also
-    // consumed the message before the caller could report it. Hand the captured text
-    // back via outError so the real reason (e.g. a missing OpenSSL/libltdl/krb5
-    // dependency) surfaces in the thrown exception instead of a generic message.
+    // macOS/Unix: Use dlopen
     void* handle = dlopen(driverPath.c_str(), RTLD_LAZY);
     if (!handle) {
-        const char* raw = dlerror();
-        std::string err = raw ? raw : "unknown error";
-        LOG("LoadDriverLibrary: dlopen failed for path='%s' - %s", driverPath.c_str(), err.c_str());
-        if (outError) {
-            *outError = err;
-        }
+        LOG("LoadDriverLibrary: dlopen failed for path='%s' - %s", driverPath.c_str(),
+            dlerror() ? dlerror() : "unknown error");
     }
     return handle;
 #endif
@@ -1237,15 +1224,12 @@ DriverHandle LoadDriverOrThrowException() {
         ThrowStdException("ODBC driver not found at: " + driverPath.string());
     }
 
-    std::string loadError;
-    DriverHandle handle = LoadDriverLibrary(driverPath.string(), &loadError);
+    DriverHandle handle = LoadDriverLibrary(driverPath.string());
     if (!handle) {
         LOG("LoadDriverOrThrowException: Failed to load ODBC driver - "
             "path='%s', error='%s'",
-            driverPath.string().c_str(), loadError.c_str());
-        std::string detail = loadError.empty() ? "unknown error" : loadError;
-        ThrowStdException("Failed to load the driver (" + detail +
-                          "). Please read the documentation "
+            driverPath.string().c_str(), GetLastErrorMessage().c_str());
+        ThrowStdException("Failed to load the driver. Please read the documentation "
                           "(https://github.com/microsoft/mssql-python#installation) to "
                           "install the required dependencies.");
     }

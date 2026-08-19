@@ -147,25 +147,20 @@ stages:
               # sibling. Linux uses the version-major prefix so a driver MINOR bump won't
               # false-fail this gate.
               #
-              # Every Linux wheel (glibc manylinux AND musl musllinux) additionally REQUIRES
-              # libltdl.so.7: libodbcinst.so.2 NEEDs it, so a payload without it throws
-              # `OSError: libltdl.so.7: cannot open shared object file` on a minimal Linux
-              # base (a system libltdl in the CI container otherwise MASKS it -- notably the
-              # Alpine test leg). macOS already vendors libltdl.7.dylib; this makes every
-              # shipped Linux payload equally self-contained. The file (plus a $ORIGIN RUNPATH
-              # on libodbcinst.so.2) is produced per (libc, arch) by
-              # eng/scripts/patch-linux-odbc-libs.sh -- a glibc-built libltdl for
-              # debian_ubuntu/rhel/suse, a musl-built libltdl for alpine -- and committed under
-              # mssql_python_odbc/libs/linux/<distro>/<arch>/lib/. This assertion is the
-              # fail-closed gate that keeps the vendored payload complete.
+              # NOTE on libltdl.so.7: libodbcinst.so.2 NEEDs it, but on Linux it is NOT
+              # vendored in the wheel -- it is a documented system dependency (README:
+              # apt libltdl7 / dnf libtool-ltdl / apk libtool). macOS keeps its co-located
+              # libltdl.7.dylib. So this gate does NOT require libltdl.so.7 in the Linux
+              # payload; it only asserts the proprietary driver subtree is present and no
+              # foreign-platform binaries leaked.
               $expect = @{
                 'win_amd64'              = @{ Must = @('libs/windows/x64/', 'msodbcsql18.dll', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/arm64/') }
                 'win_arm64'              = @{ Must = @('libs/windows/arm64/', 'msodbcsql18.dll', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/x64/') }
                 'macosx_15_0_universal2' = @{ Must = @('libs/macos/arm64/', 'libs/macos/x86_64/', 'libmsodbcsql.18.dylib', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/linux/') }
-                'manylinux_2_28_x86_64'  = @{ Must = @('libs/linux/debian_ubuntu/x86_64/', 'libmsodbcsql-18', 'libltdl.so.7', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
-                'manylinux_2_28_aarch64' = @{ Must = @('libs/linux/debian_ubuntu/arm64/', 'libmsodbcsql-18', 'libltdl.so.7', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/x86_64/') }
-                'musllinux_1_2_x86_64'   = @{ Must = @('libs/linux/alpine/x86_64/', 'libmsodbcsql-18', 'libltdl.so.7', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
-                'musllinux_1_2_aarch64'  = @{ Must = @('libs/linux/alpine/arm64/', 'libmsodbcsql-18', 'libltdl.so.7', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/x86_64/') }
+                'manylinux_2_28_x86_64'  = @{ Must = @('libs/linux/debian_ubuntu/x86_64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
+                'manylinux_2_28_aarch64' = @{ Must = @('libs/linux/debian_ubuntu/arm64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/x86_64/') }
+                'musllinux_1_2_x86_64'   = @{ Must = @('libs/linux/alpine/x86_64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/arm64/') }
+                'musllinux_1_2_aarch64'  = @{ Must = @('libs/linux/alpine/arm64/', 'libmsodbcsql-18', 'libs/LICENSING'); Forbid = @('libs/windows/', 'libs/macos/', '/x86_64/') }
               }
 
               $failed = $false
