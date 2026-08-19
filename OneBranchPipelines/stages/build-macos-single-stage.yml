@@ -258,7 +258,7 @@ stages:
               echo "Wheels after retag:"
               ls -lh dist/
             displayName: 'Ensure universal2 platform tag'
-
+          
           # =========================
           # ARTIFACT PUBLISHING
           # =========================

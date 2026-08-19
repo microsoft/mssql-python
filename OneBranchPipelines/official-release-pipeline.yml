@@ -404,4 +404,3 @@ extends:
                       Write-Host "3. Verify package on PyPI: https://pypi.org/project/${{ parameters.releasePackage }}/"
                       Write-Host "4. Verify symbols in SqlClientDrivers org (if published)"
                       Write-Host "====================================="
-
