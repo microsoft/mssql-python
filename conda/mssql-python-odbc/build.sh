@@ -31,3 +31,29 @@ else
   mkdir -p "$SP_DIR"
   unzip -oq "$whl" -d "$SP_DIR"
 fi
+
+# --- conda-only: make the DECLARED libtool (libltdl.so.7) reachable on Linux ----
+# libltdl.so.7 is no longer vendored; it is a `libtool` run dep that conda installs
+# into <PREFIX>/lib. The bundled unixODBC driver-manager libodbcinst.so.2 NEEDs
+# libltdl.so.7, so give it a RUNPATH that keeps $ORIGIN AND climbs from its own dir
+#   <PREFIX>/lib/pythonX.Y/site-packages/mssql_python_odbc/libs/linux/<distro>/<arch>/lib
+# up to <PREFIX>/lib (exactly 8 levels, identical for every python/distro/arch). A
+# bare $ORIGIN is not enough: conda puts no <PREFIX>/lib on the loader path. This is
+# Linux-only -- guarded by patchelf's presence (a Linux-only build dep), so it is a
+# no-op on macOS (libltdl.7.dylib is bundled co-located) and the osx cross-build
+# (no libs/linux subtree).
+if command -v patchelf >/dev/null 2>&1; then
+  ltdl_climb='$ORIGIN:$ORIGIN/../../../../../../../..'
+  n=0
+  for inst in "$SP_DIR"/mssql_python_odbc/libs/linux/*/*/lib/libodbcinst.so.2; do
+    [ -e "$inst" ] || continue
+    patchelf --set-rpath "$ltdl_climb" "$inst"
+    got="$(patchelf --print-rpath "$inst")"
+    [ "$got" = "$ltdl_climb" ] || { echo "ERROR: RUNPATH not applied to $inst (got '$got')" >&2; exit 1; }
+    echo "conda: RUNPATH '$ltdl_climb' set on $inst"
+    n=$((n + 1))
+  done
+  if [ "$n" -gt 0 ]; then
+    echo "conda: libodbcinst RUNPATH climb applied to $n subtree(s) for declared libtool/libltdl."
+  fi
+fi

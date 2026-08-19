@@ -12,9 +12,10 @@ Policy: every dynamic dependency of every shipped binary must be exactly ONE of
   * BASE     - a core OS / libc / toolchain runtime that is always present and is
                policy-allowed for manylinux / musllinux / macOS / Windows, or
   * DECLARED - a system library we deliberately DO NOT vendor but DECLARE as a
-               dependency (openssl, krb5 on Linux; the VC++ runtime on Windows).
+               dependency (openssl, krb5, libtool/libltdl on Linux; the VC++
+               runtime on Windows).
 Anything else is a VIOLATION and fails the gate (exit 1). The canonical case this
-catches is ``libltdl.so.7`` NEEDED by ``libodbcinst.so.2`` but not bundled.
+catches is a NEEDED library that is neither vendored nor on an allowlist.
 
 Extra ELF checks (only on the reachable load graph): (a) any binary that depends
 on a BUNDLED sibling must carry an ``$ORIGIN`` RUNPATH, else the loader will never
@@ -71,8 +72,10 @@ _BASE_LINUX = [
     r"^libgcc_s\.so\.\d+$",
     r"^libstdc\+\+\.so\.\d+$",
 ]
-# OpenSSL is dlopen'd at connect (not a NEEDED), krb5 IS a NEEDED of the driver;
-# both are declared (conda run deps + documented system deps), never vendored.
+# OpenSSL is dlopen'd at connect (not a NEEDED), krb5 IS a NEEDED of the driver, and
+# libltdl.so.7 is a NEEDED of the unixODBC driver-manager libodbcinst.so.2; all are
+# declared (conda run deps openssl / krb5 / libtool) and reached from <PREFIX>/lib
+# via the RUNPATH climb, never vendored.
 _DECLARED_LINUX = [
     r"^libssl\.so.*$",
     r"^libcrypto\.so.*$",
@@ -82,6 +85,7 @@ _DECLARED_LINUX = [
     r"^libkrb5support\.so\.\d+$",
     r"^libcom_err\.so\.\d+$",
     r"^libkeyutils\.so\.\d+$",
+    r"^libltdl\.so\.\d+$",
 ]
 
 # macOS: everything under /usr/lib and the system frameworks is a base OS lib.
