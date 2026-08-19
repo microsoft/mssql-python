@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-  Build and validate the mssql-python + mssql-python-odbc conda packages from
-  prebuilt (ESRP-signed) wheels, fully offline via a local --find-links directory.
+  Build and validate the self-contained mssql-python conda package (which vendors the
+  ODBC Driver 18 payload) from prebuilt (ESRP-signed) wheels, fully offline.
 
 .DESCRIPTION
   Repackages the wheels produced by build definition 2199 into conda packages using
@@ -131,8 +131,8 @@ Assert-LastExit "conda install conda-build<26"
 # ---------------------------------------------------------------------------
 if ([string]::IsNullOrWhiteSpace($PythonVersions)) {
     $pyvers = Get-ChildItem -Path $WheelsDir -Filter 'mssql_python-*win_amd64.whl' |
-        ForEach-Object { if ($_.Name -match 'cp3(\d+)') { "3.$($Matches[1])" } } |
-        Sort-Object -Unique
+    ForEach-Object { if ($_.Name -match 'cp3(\d+)') { "3.$($Matches[1])" } } |
+    Sort-Object -Unique
 }
 else {
     $pyvers = $PythonVersions.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -160,45 +160,19 @@ if ($CondaSubdir) {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Build the companion (ONCE, Python-agnostic on Windows) and/or the binding
-#    (per Python). The Windows companion recipe has NO `python` in host (see
-#    conda/mssql-python-odbc/meta.yaml `# [not win]`; bld.bat extracts the wheel
-#    with tar), so conda-build emits a SINGLE win-* package with no `pyXY` build
-#    string -- the analog of the PyPI py3-none-win_* wheel, built once per platform
-#    instead of once per Python. In 'binding' mode the companion is not rebuilt; it
-#    is seeded from -DriverCondaDir (built once in the ODBC_BuildAll stage).
+# 5. Build the self-contained mssql-python package (per Python). The recipe vendors
+#    the ODBC Driver 18 payload by extracting the mssql-python-odbc wheel into its
+#    own site-packages, so there is NO separate companion package to build.
 # ---------------------------------------------------------------------------
-$odbcRecipe = Join-Path $RecipeRoot 'mssql-python-odbc'
 $bindRecipe = Join-Path $RecipeRoot 'mssql-python'
 
-if ($Package -in @('all', 'odbc')) {
-    Write-Host "=== build mssql-python-odbc (companion, python-agnostic, once) ==="
-    & $conda build $odbcRecipe --no-test --no-anaconda-upload --output-folder $bld
-    Assert-LastExit "conda build mssql-python-odbc (once)"
+if ($Package -eq 'odbc') {
+    Write-Host "NOTE: -Package odbc is a no-op in the self-contained model (the ODBC payload"
+    Write-Host "is vendored INTO mssql-python; there is no separate companion). Nothing to build."
 }
-
-if ($DriverCondaDir) {
-    # binding mode: seed the prebuilt companion into the local channel so the binding's
-    # version-locked `mssql-python-odbc ==<ver>` pin resolves in the validation solve
-    # WITHOUT rebuilding the companion per Python.
-    Write-Host "=== seeding prebuilt companion conda from $DriverCondaDir ==="
-    $seeded = 0
-    Get-ChildItem -Path $DriverCondaDir -Recurse -Include *.conda, *.tar.bz2 -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like 'mssql-python-odbc-*' } |
-        ForEach-Object {
-            $sub = Split-Path -Leaf $_.DirectoryName
-            $dest = Join-Path $bld $sub
-            New-Item -ItemType Directory -Force -Path $dest | Out-Null
-            Copy-Item $_.FullName -Destination $dest -Force
-            Write-Host "  seeded $sub/$($_.Name)"
-            $seeded++
-        }
-    if ($seeded -eq 0) { Write-Error "No companion .conda found under $DriverCondaDir to seed"; exit 1 }
-}
-
-if ($Package -in @('all', 'binding')) {
+else {
     foreach ($py in $pyvers) {
-        Write-Host "=== [py $py] build mssql-python (binding) ==="
+        Write-Host "=== [py $py] build mssql-python (self-contained: vendors the ODBC payload) ==="
         & $conda build $bindRecipe --python $py --no-test --no-anaconda-upload --output-folder $bld
         Assert-LastExit "conda build mssql-python (py $py)"
     }
@@ -212,26 +186,14 @@ Write-Host "=== indexing local channel ==="
 Assert-LastExit "conda index"
 
 # ---------------------------------------------------------------------------
-# 7. Validate: solve a fresh env from the local channel and import both packages.
-#    This proves the version-locked companion + azure-identity dependencies resolve
-#    AND that the repackaged native binding imports (driver loads at import).
+# 7. Validate: solve a fresh env from the local channel and import the package.
+#    Proves azure-identity + the folded-in openssl/krb5 deps resolve AND that the
+#    repackaged native binding imports with its vendored ODBC payload (driver loads
+#    at import).
 # ---------------------------------------------------------------------------
 $localChannel = "file:///" + ($bld -replace '\\', '/')
 if ($Package -eq 'odbc') {
-    # Companion-only: PROVE the single package is Python-AGNOSTIC by installing it into
-    # a fresh env for EACH target Python and importing it. (No binding / driver_load
-    # probe here -- this package is pure driver data + a tiny shim; no azure deps, so
-    # the `microsoft` channel is unnecessary.)
-    foreach ($py in $pyvers) {
-        $envName = "verify_odbc_" + ($py -replace '\.', '')
-        Write-Host "=== [py $py] create verify env (companion only) ==="
-        & $conda create -y -n $envName -c $localChannel -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python-odbc
-        Assert-LastExit "conda create verify env (py $py)"
-
-        Write-Host "=== [py $py] import companion ==="
-        & $conda run -n $envName python -c "import mssql_python_odbc; print('COMPANION_OK', mssql_python_odbc.__version__)"
-        Assert-LastExit "import mssql_python_odbc (py $py)"
-    }
+    Write-Host "NOTE: -Package odbc is a no-op in the self-contained model; nothing to validate."
 }
 else {
     foreach ($py in $pyvers) {
@@ -240,27 +202,27 @@ else {
         # -c microsoft (ahead of conda-forge) so azure-core/azure-identity/msal resolve from the
         # lean `microsoft` channel, NOT conda-forge whose azure-core recipe over-declares flask/six
         # -> celery/boto3/botocore (~9 MB); see conda-forge/azure-core-feedstock#71.
-        # --strict-channel-priority keeps the freshly built local companion + binding authoritative.
+        # --strict-channel-priority keeps the freshly built local package authoritative.
         & $conda create -y -n $envName -c $localChannel -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
         Assert-LastExit "conda create verify env (py $py)"
 
-        Write-Host "=== [py $py] import companion + binding ==="
-        & $conda run -n $envName python -c "import mssql_python_odbc; print('COMPANION_OK', mssql_python_odbc.__version__)"
-        Assert-LastExit "import mssql_python_odbc (py $py)"
+        Write-Host "=== [py $py] import mssql_python + prove the vendored ODBC payload is present ==="
         & $conda run -n $envName python -c "import mssql_python; print('BINDING_OK', mssql_python.__version__)"
         Assert-LastExit "import mssql_python (py $py)"
+        & $conda run -n $envName python -c "import mssql_python_odbc; print('ODBC_PAYLOAD_OK', mssql_python_odbc.__version__)"
+        Assert-LastExit "import mssql_python_odbc (py $py)"
 
         Write-Host "=== [py $py] DB-less driver-load proof (real ODBC driver must load, not just the shim) ==="
         & $conda run -n $envName python (Join-Path $RecipeRoot 'driver_load_probe.py')
         Assert-LastExit "driver-load proof (py $py)"
 
         Write-Host "=== [py $py] confirm resolved dependencies ==="
-        & $conda list -n $envName | Select-String -Pattern 'azure-identity|mssql-python|mssql-python-odbc'
+        & $conda list -n $envName | Select-String -Pattern 'azure-identity|mssql-python|openssl|krb5'
     }
 }
 
 Write-Host "==================== built conda artifacts ===================="
 Get-ChildItem -Path $bld -Recurse -Include *.conda, *.tar.bz2 |
-    Where-Object { $_.Name -like 'mssql-python*' } |
-    ForEach-Object { Write-Host "  $($_.FullName)" }
+Where-Object { $_.Name -like 'mssql-python*' } |
+ForEach-Object { Write-Host "  $($_.FullName)" }
 Write-Host "CONDA_BUILD_OK"

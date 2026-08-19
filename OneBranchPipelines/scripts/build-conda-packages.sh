@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Build + validate the mssql-python + mssql-python-odbc conda packages from
-# prebuilt (ESRP-signed) wheels, fully offline via a local --find-links dir.
+# Build + validate the self-contained mssql-python conda package from prebuilt
+# (ESRP-signed) wheels, fully offline via a local --find-links dir. The package
+# VENDORS the ODBC Driver 18 payload -- the recipe extracts BOTH the code wheel and
+# the mssql-python-odbc wheel into one site-packages -- so there is NO separate
+# conda package (the v1.11.0 model).
 # ============================================================================
 # Bash port of build-conda-packages.ps1 for the macOS and Linux build legs.
 # conda-build provisions a per-subdir HOST env and installs the matching wheel
@@ -154,12 +157,9 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Build companion FIRST, then the binding, for each Python version
 # ---------------------------------------------------------------------------
-odbcRecipe="$RecipeRoot/mssql-python-odbc"
 bindRecipe="$RecipeRoot/mssql-python"
 for py in $pyvers; do
-  echo "=== [py $py] build mssql-python-odbc (companion) ==="
-  "$conda" build "$odbcRecipe" --python "$py" --no-test --no-anaconda-upload --output-folder "$bld"
-  echo "=== [py $py] build mssql-python (binding) ==="
+  echo "=== [py $py] build mssql-python (self-contained: vendors the ODBC payload) ==="
   "$conda" build "$bindRecipe" --python "$py" --no-test --no-anaconda-upload --output-folder "$bld"
 done
 
@@ -170,9 +170,10 @@ echo "=== indexing local channel ==="
 "$conda" index "$bld"
 
 # ---------------------------------------------------------------------------
-# 7. Validate: solve a fresh env from the local channel and import both packages.
-#    Proves the version-locked companion + azure-identity deps resolve AND that
-#    the repackaged native binding imports (the driver loads at import).
+# 7. Validate: solve a fresh env from the local channel and import the package.
+#    Proves azure-identity + the folded-in openssl/krb5 deps resolve AND that the
+#    repackaged native binding imports with its vendored ODBC payload (driver loads
+#    at import).
 # ---------------------------------------------------------------------------
 for py in $pyvers; do
   envName="verify_${py//./}"
@@ -180,7 +181,7 @@ for py in $pyvers; do
   # -c microsoft (ahead of conda-forge) so azure-core/azure-identity/msal resolve from the
   # lean `microsoft` channel, NOT conda-forge whose azure-core recipe over-declares flask/six
   # -> celery/boto3/botocore (~9 MB); see conda-forge/azure-core-feedstock#71.
-  # --strict-channel-priority keeps the freshly built local companion + binding authoritative.
+  # --strict-channel-priority keeps the freshly built local package authoritative.
   "$conda" create -y -n "$envName" -c "$bld" -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
   # On a non-emulated cross-build (osx-arm64 on an Intel agent -- no reverse Rosetta)
   # the solved target Python cannot execute here, so the runtime import / driver-load
@@ -192,9 +193,9 @@ for py in $pyvers; do
     echo "=== [py $py] target Python not executable on host ($(uname -s)/$(uname -m), CONDA_SUBDIR=${CONDA_SUBDIR:-native}); skipping runtime import -- static arch audit covers this cross leg. ==="
     continue
   fi
-  echo "=== [py $py] import companion + binding ==="
-  "$conda" run -n "$envName" python -c "import mssql_python_odbc; print('COMPANION_OK', mssql_python_odbc.__version__)"
+  echo "=== [py $py] import mssql_python + prove the vendored ODBC payload is present ==="
   "$conda" run -n "$envName" python -c "import mssql_python; print('BINDING_OK', mssql_python.__version__)"
+  "$conda" run -n "$envName" python -c "import mssql_python_odbc; print('ODBC_PAYLOAD_OK', mssql_python_odbc.__version__)"
   echo "=== [py $py] DB-less driver-load proof (real ODBC driver must load, not just the shim) ==="
   "$conda" run -n "$envName" python "$RecipeRoot/driver_load_probe.py"
   # Live Encrypt=yes TLS gate -- forces the driver to dlopen its OpenSSL backend
@@ -214,7 +215,7 @@ for py in $pyvers; do
     echo "=== [py $py] Encrypt=yes TLS gate SKIPPED (set CONDA_TLS_PROBE_CONN on a minimal-base leg to enable) ==="
   fi
   echo "=== [py $py] confirm resolved dependencies ==="
-  "$conda" list -n "$envName" | grep -E 'azure-identity|mssql-python|mssql-python-odbc' || true
+  "$conda" list -n "$envName" | grep -E 'azure-identity|mssql-python|openssl|krb5' || true
 done
 
 echo "==================== built conda artifacts ===================="
