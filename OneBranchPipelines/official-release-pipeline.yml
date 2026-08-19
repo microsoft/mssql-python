@@ -34,8 +34,8 @@ parameters:
 
   # Conda release readiness. When true, a DECOUPLED stage downloads the consolidated
   # conda packages (drop_ConsolidateConda_ConsolidateArtifacts) and enforces the hard
-  # completeness + #706 pairing gate. It is independent of the wheel PyPI release, so
-  # a conda check can never block a wheel release.
+  # completeness gate (required subdirs + full Python matrix). It is independent of
+  # the wheel PyPI release, so a conda check can never block a wheel release.
   - name: releaseConda
     displayName: 'Validate Conda Release Readiness (does not publish)'
     type: boolean
@@ -43,8 +43,8 @@ parameters:
 
   # Conda PRODUCTION publish to Anaconda.org. When true, AFTER the readiness gate
   # (ValidateConda) passes, a releaseJob uploads the consolidated conda packages via
-  # anaconda-client (ESRP has no Conda ContentType). The version-locked companion
-  # (mssql-python-odbc) is uploaded BEFORE the binding (mssql-python) per #706.
+  # anaconda-client (ESRP has no Conda ContentType). This is the self-contained
+  # mssql-python package (it vendors the ODBC payload -- no separate companion).
   # Decoupled from the wheel release; default false so a normal release never
   # touches Anaconda.
   - name: publishToConda
