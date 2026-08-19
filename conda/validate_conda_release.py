@@ -137,20 +137,46 @@ def validate(
                 if v != exp:
                     errors.append(f"{name}: version '{v}' != expected '{exp}'.")
 
+    # 2b. Reject duplicate (name, version, subdir, python) keys. Two packages with
+    #     an identical key are never legitimate -- it means one leg's package bled
+    #     into another subdir's staging folder (the shared-output-dir hazard) or was
+    #     staged twice. The per-subdir matrix check below collapses variants into a
+    #     set, so a duplicate would silently MASK a genuinely missing variant; fail
+    #     loudly on the duplicate instead.
+    key_folders: dict = defaultdict(list)
+    for p in packages:
+        key_folders[(p["name"], p["version"], p["subdir"], p["python"])].append(p["folder"])
+    for (name, version, subdir, python), folders in sorted(key_folders.items()):
+        if len(folders) > 1:
+            errors.append(
+                f"DUPLICATE: {name}-{version} (subdir '{subdir}', python "
+                f"'{python or '-'}') appears {len(folders)}x (staged in {sorted(folders)})."
+            )
+
     # Group by the REAL (metadata) subdir, never the folder name.
     by_subdir: dict = defaultdict(list)
     for p in packages:
         by_subdir[p["subdir"]].append(p)
 
-    # 3. Required subdirs: present with a COMPLETE per-Python matrix.
+    # 3. Required subdirs must be PRESENT; every present ALLOWED subdir must ship a
+    #    COMPLETE per-Python matrix. Validating present-but-not-required subdirs too
+    #    (not just the required set) stops a partially built allowed subdir -- e.g. a
+    #    half-finished win-arm64 -- from slipping through to publish just because it
+    #    is not in the required set.
     for sub in required_subdirs:
-        grp = by_subdir.get(sub, [])
-        if not grp:
+        if not by_subdir.get(sub):
             errors.append(f"required subdir '{sub}' is MISSING.")
+
+    for sub in sorted(by_subdir):
+        if sub not in allowed_subdirs:
+            # Not an allowed subdir: already flagged per-package in step 1. Skip the
+            # matrix work so the error set stays focused on the root cause.
             continue
+        grp = by_subdir[sub]
         bindings = [p for p in grp if p["name"] == _BINDING_NAME]
         if not bindings:
             errors.append(f"subdir '{sub}': no {_BINDING_NAME} package.")
+            continue
 
         for p in bindings:
             if not p["python"]:

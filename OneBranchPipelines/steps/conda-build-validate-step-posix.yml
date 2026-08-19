@@ -40,7 +40,11 @@ parameters:
   - name: recipeRoot
     type: string
     default: '$(Build.SourcesDirectory)/conda'
-  # Space-free working dir for the conda croot + Miniforge + built packages.
+  # Space-free working dir for the conda croot + Miniforge + built packages. The
+  # step APPENDS the target subdir to this (see OUT below) so two legs sharing one
+  # agent (macOS builds osx-arm64 AND osx-64 on the same Intel agent) never share a
+  # bld tree -- otherwise the blocking osx-64 leg's staging `find` would also sweep
+  # up the best-effort osx-arm64 packages (cross-subdir bleed-through).
   - name: outputDir
     type: string
     default: '$(Agent.TempDirectory)/conda-bld'
@@ -74,7 +78,9 @@ steps:
 
       MSSQL_WHEEL_DIR="${{ parameters.mssqlWheelDir }}"
       ODBC_WHEEL_DIR="${{ parameters.odbcWheelDir }}"
-      OUT="${{ parameters.outputDir }}"
+      # Append the target subdir so each leg on a SHARED agent (macOS osx-arm64 +
+      # osx-64) gets its OWN bld tree -- no cross-subdir bleed-through at staging.
+      OUT="${{ parameters.outputDir }}/${{ parameters.condaSubdir }}"
       LINKS="$OUT/wheels"
       rm -rf "$LINKS"; mkdir -p "$LINKS"
 
@@ -113,18 +119,28 @@ steps:
         "${{ parameters.pythonVersions }}" \
         "${{ parameters.condaTargetSubdir }}"
 
-      # Stage the built conda packages onto the leg artifact so the consolidate
-      # stage can collect them (preserve the conda subdir folder layout).
+      # Stage this leg's conda packages onto the artifact for the consolidate stage,
+      # preserving the conda subdir layout. Stage ONLY packages whose conda-build
+      # output subdir matches THIS leg's target (metadata-matched, not a blind tree
+      # sweep) so a shared agent (macOS osx-arm64 + osx-64) can never bleed one leg's
+      # packages into the other's artifact. conda-build writes each package into a
+      # bld/<subdir>/ folder that equals its info/index.json subdir, so the folder
+      # name IS the authoritative subdir.
+      TARGET_SUBDIR="${{ parameters.condaTargetSubdir }}"
+      [ -n "$TARGET_SUBDIR" ] || TARGET_SUBDIR="${{ parameters.condaSubdir }}"
       CONDA_OUT="$(ob_outputDirectory)/conda"
-      mkdir -p "$CONDA_OUT"
+      mkdir -p "$CONDA_OUT/$TARGET_SUBDIR"
       staged=0
       while IFS= read -r p; do
         subdir="$(basename "$(dirname "$p")")"
-        mkdir -p "$CONDA_OUT/$subdir"
-        cp -f "$p" "$CONDA_OUT/$subdir/"
-        echo "  staged $subdir/$(basename "$p")"
+        if [ "$subdir" != "$TARGET_SUBDIR" ]; then
+          echo "  skip (subdir '$subdir' != target '$TARGET_SUBDIR'): $(basename "$p")"
+          continue
+        fi
+        cp -f "$p" "$CONDA_OUT/$TARGET_SUBDIR/"
+        echo "  staged $TARGET_SUBDIR/$(basename "$p")"
         staged=1
       done < <(find "$OUT/bld" -type f \( -name 'mssql-python*.conda' -o -name 'mssql-python*.tar.bz2' \))
-      [ "$staged" = "1" ] || { echo "ERROR: no conda packages were produced" >&2; exit 1; }
+      [ "$staged" = "1" ] || { echo "ERROR: no conda packages matching target subdir '$TARGET_SUBDIR' were produced in $OUT/bld" >&2; exit 1; }
     displayName: 'Conda build + validate (${{ parameters.condaSubdir }})'
     continueOnError: ${{ parameters.continueOnError }}

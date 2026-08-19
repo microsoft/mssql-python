@@ -2,9 +2,10 @@
 # OneBranch STANDALONE Conda Release Pipeline (mssql-python)
 # =========================================================================================
 # Decoupled from the wheel/PyPI release. Downloads the consolidated conda packages produced
-# by the build pipeline (definition 2199, artifact drop_ConsolidateConda_ConsolidateArtifacts),
-# enforces the release-readiness gate (conda-release-step: required subdirs + full Python
-# matrix + one version), and -- when publishToConda=true -- publishes the SELF-CONTAINED
+# by the STANDALONE conda-build pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) -- NOT the wheel pipeline (def 2199), which no
+# longer produces any conda artifact -- enforces the release-readiness gate (conda-release-
+# step: required subdirs + full Python matrix + one version), and -- when publishToConda=true -- publishes the SELF-CONTAINED
 # mssql-python conda package to Anaconda.org via anaconda-client (conda-publish-step; ESRP
 # has no Conda ContentType). There is a single self-contained package (it vendors the ODBC
 # Driver 18 payload); no companion.
@@ -30,6 +31,22 @@ parameters:
     displayName: 'Anaconda.org channel label'
     type: string
     default: 'main'
+  # Infra setup: ADO definition id of the STANDALONE conda-build pipeline
+  # (conda-build-pipeline.yml), whose ConsolidateConda stage produces
+  # drop_ConsolidateConda_ConsolidateArtifacts. This is NOT the wheel pipeline
+  # (def 2199). Set it once the conda-build pipeline is registered in ADO; 0 is a
+  # placeholder that must be overridden before a real run.
+  - name: condaBuildDefinitionId
+    displayName: 'Conda-build pipeline ADO definition id'
+    type: number
+    default: 0
+  # The exact mssql-python version being released. When set, the readiness gate
+  # asserts EVERY conda package matches it (not just internal one-version
+  # consistency). Leave empty only for a consistency-only dry run.
+  - name: mssqlPythonVersion
+    displayName: 'Expected mssql-python release version (e.g. 1.13.0)'
+    type: string
+    default: ''
 
 variables:
   - template: /OneBranchPipelines/variables/common-variables.yml@self
@@ -48,7 +65,12 @@ resources:
   # The build pipeline whose consolidated conda artifact this pipeline validates + publishes.
   pipelines:
     - pipeline: buildPipeline
-      source: 'Build-Release-Package-Pipeline'
+      # Infra setup: the STANDALONE conda-build pipeline (backed by
+      # conda-build-pipeline.yml), whose ConsolidateConda stage publishes
+      # drop_ConsolidateConda_ConsolidateArtifacts. Update to its exact ADO
+      # definition name once registered. NOT the wheel pipeline
+      # (Build-Release-Package-Pipeline / def 2199), which no longer builds conda.
+      source: 'Conda-Build-Pipeline'
       trigger: none
 
 extends:
@@ -97,6 +119,9 @@ extends:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
             steps:
               - template: /OneBranchPipelines/steps/conda-release-step.yml@self
+                parameters:
+                  buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
+                  mssqlPythonVersion: '${{ parameters.mssqlPythonVersion }}'
 
           # PRODUCTION publish (releaseJob) -- runs ONLY when publishToConda=true and
           # ONLY after the ValidateConda gate succeeds, so an incomplete set is never
@@ -116,5 +141,6 @@ extends:
               steps:
                 - template: /OneBranchPipelines/steps/conda-publish-step.yml@self
                   parameters:
+                    buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
                     condaChannel: '${{ parameters.condaChannel }}'
                     condaLabel: '${{ parameters.condaLabel }}'

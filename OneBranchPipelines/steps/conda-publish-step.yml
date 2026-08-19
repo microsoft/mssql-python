@@ -1,8 +1,9 @@
 # Conda Publish Step Template
 # ============================================================================
-# Publishes the consolidated conda packages produced by build definition 2199
-# (artifact drop_ConsolidateConda_ConsolidateArtifacts) to an Anaconda.org channel
-# using anaconda-client (`anaconda upload`).
+# Publishes the consolidated conda packages produced by the STANDALONE conda-build
+# pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) to an Anaconda.org channel using
+# anaconda-client (`anaconda upload`).
 #
 # Reference pattern: azure-sdk-for-python's conda publish
 # (eng/pipelines/templates/stages/archetype-conda-release.yml), which runs
@@ -24,10 +25,13 @@
 # This template never puts the token on the command line (anaconda-client reads it
 # from the env), so it never appears in the logs.
 parameters:
-  # Build pipeline definition id that produced the consolidated conda artifact.
+  # Infra setup: ADO definition id of the STANDALONE conda-build pipeline
+  # (conda-build-pipeline.yml) that produced the consolidated conda artifact -- NOT
+  # the wheel pipeline (def 2199). The release pipeline passes the real id; 0 is a
+  # placeholder that must be overridden.
   - name: buildDefinitionId
     type: number
-    default: 2199
+    default: 0
   # Consolidated conda artifact name (see consolidate-conda-artifacts-job.yml).
   - name: condaArtifactName
     type: string
@@ -85,7 +89,11 @@ steps:
       script: |
         $ErrorActionPreference = 'Stop'
         python -m pip install --upgrade pip
-        python -m pip install anaconda-client
+        # Pin anaconda-client: this PRODUCTION job holds ANACONDA_API_TOKEN, so the
+        # publish tool must be a fixed, reviewed version -- never float 'latest' from
+        # public PyPI into a credentialed release. Infra hardening: move this to an
+        # internal feed and hash-pin (--require-hashes).
+        python -m pip install "anaconda-client==1.12.3"
         # anaconda-client installs the `anaconda` console script onto PATH.
         anaconda --version
 
@@ -173,20 +181,63 @@ steps:
 
         if ($failed) { Write-Error "Conda publish pre-check FAILED. Refusing to publish an incomplete/mislabeled set."; exit 1 }
 
-        function Publish-One($file) {
+        # Staged-then-promoted publish (atomic-ish): upload the FULL set to a private
+        # STAGING label first; only after every package lands AND the set is verified
+        # do we promote them to the public label. A mid-upload failure therefore
+        # leaves a partial set on the STAGING label only -- the public label
+        # ($condaLabel) is never partially updated. (anaconda's per-upload
+        # --skip-existing is not a remote-integrity check, so promotion is gated on an
+        # explicit re-list of every staged package.)
+        $stagingLabel = "${{ parameters.condaLabel }}_staging"
+
+        function Invoke-Anaconda($argsList) {
           for ($attempt = 1; $attempt -le 3; $attempt++) {
-            Write-Host "Uploading $($file.Directory.Name)/$($file.Name) (attempt $attempt) ..."
-            anaconda upload --user "${{ parameters.condaChannel }}" --label "${{ parameters.condaLabel }}" --skip-existing "$($file.FullName)"
-            if ($LASTEXITCODE -eq 0) { return }
-            Write-Host "Attempt $attempt failed; retrying in 5s ..."
+            & anaconda @argsList
+            if ($LASTEXITCODE -eq 0) { return $true }
+            Write-Host "attempt $attempt failed; retrying in 5s ..."
             Start-Sleep -Seconds 5
           }
-          Write-Error "Failed to upload $($file.Name) after 3 attempts."
-          exit 1
+          return $false
         }
 
-        Write-Host "==== Publishing mssql-python (self-contained) packages ===="
-        foreach ($p in ($binding | Sort-Object FullName)) { Publish-One $p }
+        function Get-Spec($file) {
+          # <user>/<name>/<version>/<basename> from <name>-<version>-<build>.<ext>.
+          # The package name may contain '-', so peel the trailing version + build.
+          $stem = $file.Name -replace '\.(conda|tar\.bz2)$', ''
+          $parts = $stem.Split('-')
+          if ($parts.Count -lt 3) { Write-Error "Cannot parse conda spec from '$($file.Name)'."; exit 1 }
+          $version = $parts[$parts.Count - 2]
+          $name = ($parts[0..($parts.Count - 3)]) -join '-'
+          return "${{ parameters.condaChannel }}/$name/$version/$($file.Name)"
+        }
+
+        Write-Host "==== Stage: upload $($binding.Count) package(s) to label '$stagingLabel' ===="
+        foreach ($p in ($binding | Sort-Object FullName)) {
+          Write-Host "Uploading $($p.Directory.Name)/$($p.Name) -> $stagingLabel ..."
+          if (-not (Invoke-Anaconda @('upload', '--user', "${{ parameters.condaChannel }}", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)"))) {
+            Write-Error "Failed to stage $($p.Name) after 3 attempts. The public label was NOT touched."
+            exit 1
+          }
+        }
+
+        Write-Host "==== Verify: every staged package is resolvable before promoting ===="
+        foreach ($p in ($binding | Sort-Object FullName)) {
+          $spec = Get-Spec $p
+          & anaconda show $spec > $null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Staged package '$spec' is not resolvable on anaconda.org; refusing to promote a partial set."
+            exit 1
+          }
+        }
+
+        Write-Host "==== Promote: move the verified set from '$stagingLabel' to '${{ parameters.condaLabel }}' ===="
+        foreach ($p in ($binding | Sort-Object FullName)) {
+          $spec = Get-Spec $p
+          if (-not (Invoke-Anaconda @('move', '--from-label', $stagingLabel, '--to-label', "${{ parameters.condaLabel }}", $spec))) {
+            Write-Error "Failed to promote '$spec' to '${{ parameters.condaLabel }}'. Some packages may remain on '$stagingLabel'; re-run to finish promotion."
+            exit 1
+          }
+        }
 
         Write-Host ""
-        Write-Host "Uploaded $($binding.Count) mssql-python conda package(s) to anaconda.org/${{ parameters.condaChannel }} (label ${{ parameters.condaLabel }})."
+        Write-Host "Published $($binding.Count) mssql-python conda package(s) to anaconda.org/${{ parameters.condaChannel }} (label ${{ parameters.condaLabel }}) via staging label '$stagingLabel'."

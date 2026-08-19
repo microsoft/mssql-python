@@ -186,6 +186,23 @@ Write-Host "=== indexing local channel ==="
 Assert-LastExit "conda index"
 
 # ---------------------------------------------------------------------------
+# 6b. Masking-immune RUNPATH audit of the freshly built packages (#563).
+# ---------------------------------------------------------------------------
+# BLOCKING static gate that reads the ELF RUNPATH bytes of the vendored Linux ODBC
+# binaries and requires the relative $ORIGIN climb. win-64 packages carry no ELF
+# payload so this is a clean no-op here, but it is wired on EVERY leg so a Linux
+# package can never reach publish without the #563 self-containment being proven.
+$auditScript = Join-Path (Split-Path $RecipeRoot -Parent) 'eng/scripts/audit_bundled_binaries.py'
+if (-not (Test-Path $auditScript)) {
+    Write-Error "RUNPATH audit script not found at $auditScript"
+    exit 1
+}
+Write-Host "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binaries.py) ==="
+& $conda run -n base python -m pip install --quiet --disable-pip-version-check zstandard
+& $conda run -n base python $auditScript --root $bld
+Assert-LastExit "RUNPATH self-containment audit"
+
+# ---------------------------------------------------------------------------
 # 7. Validate: solve a fresh env from the local channel and import the package.
 #    Proves azure-identity + the folded-in openssl/krb5 deps resolve AND that the
 #    repackaged native binding imports with its vendored ODBC payload (driver loads

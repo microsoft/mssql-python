@@ -48,3 +48,56 @@ else
   echo "Extracting '$odbc_whl' -> '$SP_DIR'"
   unzip -oq "$odbc_whl" -d "$SP_DIR"
 fi
+
+# ---------------------------------------------------------------------------
+# Linux driver reachability (#563) -- the core fix.
+# ---------------------------------------------------------------------------
+# Declaring krb5/openssl/libltdl as conda deps drops one consistent copy of each
+# into $PREFIX/lib, but that is INERT on its own: the vendored ODBC binaries ship
+# with a bare DT_RUNPATH=$ORIGIN (no climb), so on a minimal conda base the loader
+# never looks in $PREFIX/lib -- it falls through to SYSTEM krb5 (the #563 mixing
+# crash) and cannot find libltdl.so.7 at all. Reachability, not declaration, is the
+# lever: stamp a PURELY RELATIVE $ORIGIN climb (the ELF twin of the macOS
+# @loader_path flow) onto libmsodbcsql* and libodbcinst.so.2 so they resolve THIS
+# env's own $PREFIX/lib, location-independently.
+#
+# SIGNATURE ORDERING (explicit decision -- never silently patch signed bytes):
+#   PREFERRED: bake this SAME relative climb into the ODBC binaries at the
+#   mssql-python-odbc build step, BEFORE ESRP signing, so the shipped .so are
+#   already-signed AND already-climbed and this patchelf is a byte-for-byte no-op
+#   (zero drift; that is why binary_relocation is false). Until that lands upstream,
+#   the signed release pipeline MUST run this patch BEFORE ESRP-signing the .so (or
+#   re-sign the patched .so before publish). This build.sh is the relocation
+#   mechanism and the local/unsigned path. macOS (@loader_path + re-sign) and
+#   Windows (SChannel/SSPI) are unaffected.
+#
+# Linux-only by construction: the glob matches nothing in a macOS payload
+# (libs/macos/...), so this whole block is a natural no-op on the osx legs.
+prefix_lib="$PREFIX/lib"
+shopt -s nullglob
+patched_any=0
+for libdir in "$SP_DIR"/mssql_python_odbc/libs/linux/*/*/lib; do
+  # Compute the climb from THIS driver dir up to $PREFIX/lib -- derive it from the
+  # real install layout, never a hard-coded ../ count.
+  climb="$("$PYTHON" -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$prefix_lib" "$libdir")"
+  rpath="\$ORIGIN:\$ORIGIN/$climb"
+  for so in "$libdir"/libmsodbcsql-*.so.* "$libdir"/libodbcinst.so.2; do
+    [ -e "$so" ] || continue
+    patchelf --set-rpath "$rpath" "$so"
+    got="$(patchelf --print-rpath "$so")"
+    echo "RPATH-CLIMB $(basename "$so") -> $got"
+    # Must stay relocatable: reject ANY absolute entry. A relative $ORIGIN climb has
+    # no path segment that begins with '/', so ':<slash>' only appears for an
+    # absolute (e.g. a hard-coded $PREFIX), which would break the moment the env is
+    # created or moved to a different absolute path.
+    case ":$got:" in
+      *:/*)
+        echo "ERROR: RPATH of $so has an absolute entry ('$got'); must stay relocatable." >&2
+        exit 1
+        ;;
+    esac
+    patched_any=1
+  done
+done
+shopt -u nullglob
+[ "$patched_any" = "1" ] && echo "LINUX_RPATH_CLIMB_OK" || true

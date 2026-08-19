@@ -170,6 +170,23 @@ echo "=== indexing local channel ==="
 "$conda" index "$bld"
 
 # ---------------------------------------------------------------------------
+# 6b. Masking-immune RUNPATH audit of the freshly built packages (#563).
+# ---------------------------------------------------------------------------
+# BLOCKING static gate: read the ELF RUNPATH BYTES of the vendored Linux ODBC
+# binaries in every built .conda and require the relative $ORIGIN climb (+ no
+# vendored krb5/openssl/libltdl). Immune to the system-lib masking that hides an
+# unreachable conda copy from a runtime ldd/import on a full agent; win/osx
+# packages carry no ELF payload and are skipped. `set -e` makes a violation abort.
+auditScript="$(cd "$(dirname "$RecipeRoot")" && pwd)/eng/scripts/audit_bundled_binaries.py"
+if [ ! -f "$auditScript" ]; then
+  echo "ERROR: RUNPATH audit script not found at $auditScript" >&2
+  exit 1
+fi
+echo "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binaries.py) ==="
+"$conda" run -n base python -m pip install --quiet --disable-pip-version-check zstandard
+"$conda" run -n base python "$auditScript" --root "$bld"
+
+# ---------------------------------------------------------------------------
 # 7. Validate: solve a fresh env from the local channel and import the package.
 #    Proves azure-identity + the folded-in openssl/krb5 deps resolve AND that the
 #    repackaged native binding imports with its vendored ODBC payload (driver loads
@@ -183,21 +200,63 @@ for py in $pyvers; do
   # -> celery/boto3/botocore (~9 MB); see conda-forge/azure-core-feedstock#71.
   # --strict-channel-priority keeps the freshly built local package authoritative.
   "$conda" create -y -n "$envName" -c "$bld" -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
-  # On a non-emulated cross-build (osx-arm64 on an Intel agent -- no reverse Rosetta)
-  # the solved target Python cannot execute here, so the runtime import / driver-load
-  # proof is impossible. The pipeline's static arm64-slice audit (lipo/otool/file on
-  # the arm64 Mach-O payload) is the stand-in for it on that leg -- identical assurance
-  # to the shipping PyPI universal2 arm64 slice, which is likewise only static-checked.
-  # Native and QEMU-emulated legs run the real import + driver-load probe below.
-  if ! "$conda" run -n "$envName" python -c "import sys" >/dev/null 2>&1; then
-    echo "=== [py $py] target Python not executable on host ($(uname -s)/$(uname -m), CONDA_SUBDIR=${CONDA_SUBDIR:-native}); skipping runtime import -- static arch audit covers this cross leg. ==="
-    continue
+  # Whether the freshly built package's Python can EXECUTE on this host.
+  target_runnable=1
+  "$conda" run -n "$envName" python -c "import sys" >/dev/null 2>&1 || target_runnable=0
+  if [ "$target_runnable" = "0" ]; then
+    # The ONLY leg allowed to skip the runtime proof is the osx-arm64 cross-build on
+    # an Intel agent (no reverse Rosetta): the arm64 Python genuinely cannot run here,
+    # and the pipeline's static arm64-slice audit (lipo/otool/file on the arm64 Mach-O
+    # payload) stands in -- the same assurance as the shipping PyPI universal2 arm64
+    # slice. Every OTHER target (linux-64/osx-64 native, linux-aarch64 under QEMU
+    # binfmt) MUST run its own import; a leg that cannot is a real failure, never a
+    # silent pass -- otherwise a broken linux-aarch64 package ships unvalidated.
+    if [ "${CONDA_SUBDIR:-}" = "osx-arm64" ] && [ "$(uname -s)" = "Darwin" ]; then
+      echo "=== [py $py] osx-arm64 cross on Intel: target Python not executable; skipping runtime import (static arm64-slice audit covers this leg). ==="
+      continue
+    fi
+    echo "ERROR: [py $py] target Python for CONDA_SUBDIR=${CONDA_SUBDIR:-native} is not executable on $(uname -s)/$(uname -m), and this is NOT the osx-arm64 cross-build. Refusing to silently skip validation (linux-aarch64 requires QEMU binfmt to be registered on this leg)." >&2
+    exit 1
   fi
   echo "=== [py $py] import mssql_python + prove the vendored ODBC payload is present ==="
   "$conda" run -n "$envName" python -c "import mssql_python; print('BINDING_OK', mssql_python.__version__)"
   "$conda" run -n "$envName" python -c "import mssql_python_odbc; print('ODBC_PAYLOAD_OK', mssql_python_odbc.__version__)"
   echo "=== [py $py] DB-less driver-load proof (real ODBC driver must load, not just the shim) ==="
   "$conda" run -n "$envName" python "$RecipeRoot/driver_load_probe.py"
+  # Minimal-base reachability gate (#563): on a Linux leg with NO system
+  # krb5/libltdl (set CONDA_ASSERT_PREFIX_REACHABLE=1), prove the vendored driver
+  # binds the env's OWN $CONDA_PREFIX/lib copies via the $ORIGIN climb -- not a
+  # system fallthrough that would MASK an unreachable conda lib on a full agent.
+  # The $ORIGIN climb makes ldd resolve krb5/gssapi/libltdl from $CONDA_PREFIX/lib
+  # without LD_LIBRARY_PATH; a system or not-found binding fails the leg.
+  if [ "${CONDA_ASSERT_PREFIX_REACHABLE:-}" = "1" ] && [ "$(uname -s)" = "Linux" ]; then
+    echo "=== [py $py] minimal-base ldd reachability gate (driver must bind CONDA_PREFIX/lib) ==="
+    env_prefix="$("$conda" run -n "$envName" python -c 'import os,sys; print(os.environ.get("CONDA_PREFIX") or sys.prefix)')"
+    drv="$("$conda" run -n "$envName" python -c 'import mssql_python,glob,os; b=os.path.dirname(mssql_python.__file__); print(glob.glob(os.path.join(b,"..","mssql_python_odbc","libs","linux","*","*","lib","libmsodbcsql*"))[0])')"
+    inst="$(dirname "$drv")/libodbcinst.so.2"
+    reach_fail=0
+    for lib in "$drv" "$inst"; do
+      echo "--- ldd $(basename "$lib") ---"
+      ldd_out="$("$conda" run -n "$envName" ldd "$lib" 2>/dev/null || true)"
+      echo "$ldd_out"
+      while IFS= read -r line; do
+        case "$line" in
+          *libkrb5.so*|*libgssapi_krb5.so*|*libltdl.so*)
+            resolved="$(printf '%s' "$line" | sed -nE 's/.*=> +([^ ]+).*/\1/p')"
+            case "$resolved" in
+              "$env_prefix"/*) echo "OK   $line" ;;
+              "")              echo "MISS $line"; reach_fail=1 ;;
+              *)               echo "MASK(system) $line"; reach_fail=1 ;;
+            esac
+            ;;
+        esac
+      done <<EOF
+$ldd_out
+EOF
+    done
+    [ "$reach_fail" = "0" ] || { echo "ERROR: [py $py] driver bound a system/absent krb5/gssapi/libltdl instead of $env_prefix/lib (reachability broken)." >&2; exit 1; }
+    echo "REACHABILITY_OK"
+  fi
   # Live Encrypt=yes TLS gate -- forces the driver to dlopen its OpenSSL backend
   # (libssl/libcrypto), which the DB-less Encrypt=no probe above NEVER exercises.
   # Runs (BLOCKING) only when CONDA_TLS_PROBE_CONN points at a reachable server;

@@ -147,6 +147,27 @@ def test_missing_required_subdir_fails():
     assert any("linux-aarch64" in e and "MISSING" in e for e in errors)
 
 
+def test_duplicate_package_fails():
+    # The identical package staged twice (same name/version/subdir/python) -- e.g. a
+    # leg's package collected twice from a shared output dir. A set-based matrix
+    # check would silently absorb it; the gate must reject the duplicate outright so
+    # it can never mask a genuinely missing variant.
+    pkgs = _healthy_set()
+    pkgs.append(_binding("linux-64", "3.12"))  # exact duplicate of an existing entry
+    errors = _run(pkgs)
+    assert any("DUPLICATE" in e and "linux-64" in e and "3.12" in e for e in errors)
+
+
+def test_present_allowed_subdir_partial_matrix_fails():
+    # win-arm64 is ALLOWED but not REQUIRED. If it shows up only partially built it
+    # must still fail the gate, else a half-finished allowed subdir slips to publish
+    # simply because it is not in the required set.
+    pkgs = _healthy_set()
+    pkgs.append(_binding("win-arm64", "3.10"))  # only one of five Pythons
+    errors = _run(pkgs)
+    assert any("win-arm64" in e and "INCOMPLETE" in e for e in errors)
+
+
 def test_python_tag_from_index():
     assert vcr.python_tag_from_index({"build": "py311_0"}) == "3.11"
     assert vcr.python_tag_from_index({"build": "py310h1a2b3c_0"}) == "3.10"

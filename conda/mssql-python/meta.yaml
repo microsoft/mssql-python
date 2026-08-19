@@ -41,6 +41,14 @@ build:
     - MSSQL_ODBC_VERSION
 
 requirements:
+  # Linux reachability fix (#563): patchelf stamps a relative $ORIGIN RPATH climb
+  # onto the vendored ODBC binaries in build.sh so the DECLARED conda
+  # krb5/openssl/libltdl in $PREFIX/lib are actually REACHABLE. Declaration alone is
+  # inert -- the driver ships with a bare DT_RUNPATH=$ORIGIN (no climb) and would
+  # fall through to SYSTEM krb5/libltdl (the exact #563 mixing bug). Build-time only,
+  # Linux only (macOS uses @loader_path, Windows has no RPATH).
+  build:
+    - patchelf            # [linux]
   host:
     - python
     - pip
@@ -65,6 +73,12 @@ requirements:
     # Kerberos: libmsodbcsql NEEDs libkrb5.so.3 + libgssapi_krb5.so.2 on Linux. macOS
     # uses Kerberos.framework and Windows uses SSPI, so krb5 is Linux-only.
     - krb5                    # [linux]
+    # libltdl: libodbcinst.so.2 (the unixODBC driver manager the ODBC driver loads
+    # through) NEEDs libltdl.so.7, which is NOT bundled on Linux. Declare libtool
+    # (which provides libltdl.so.7); the $ORIGIN RPATH climb in build.sh makes the
+    # driver resolve THIS env's copy instead of failing "libltdl.so.7 not found".
+    # Linux-only (macOS bundles libltdl.7.dylib; Windows has no ltdl).
+    - libtool                 # [linux]
     # Windows VC++ runtime: msodbcsql18.dll imports VCRUNTIME140.dll, but the vendored
     # vcredist ships only msvcp140.dll. Declare the security-serviced conda runtime.
     - vc14_runtime            # [win]

@@ -1,8 +1,9 @@
 # Conda Release Readiness Step Template
 # ============================================================================
-# Downloads the consolidated conda packages produced by the build pipeline
-# (definition 2199, artifact drop_ConsolidateConda_ConsolidateArtifacts) and
-# enforces the RELEASE-TIME hard gate that the build pipeline intentionally does
+# Downloads the consolidated conda packages produced by the STANDALONE conda-build
+# pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) and enforces the RELEASE-TIME hard
+# gate that the build pipeline intentionally does
 # NOT enforce.
 #
 # Why the gate lives HERE and not in the build:
@@ -38,10 +39,13 @@
 # ContentType vs anaconda-client upload); this template only proves the artifact is
 # complete and correctly paired so publishing can proceed safely.
 parameters:
-  # Build pipeline definition id that produced the conda artifact.
+  # Infra setup: ADO definition id of the STANDALONE conda-build pipeline
+  # (conda-build-pipeline.yml) that produced the conda artifact -- NOT the wheel
+  # pipeline (def 2199), which no longer builds conda. The release pipeline passes
+  # the real id; 0 is a placeholder that must be overridden.
   - name: buildDefinitionId
     type: number
-    default: 2199
+    default: 0
   # Consolidated conda artifact name (see consolidate-conda-artifacts-job.yml).
   - name: condaArtifactName
     type: string
