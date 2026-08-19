@@ -10,7 +10,9 @@ Note: The cursor function is not yet implemented, so related tests are commented
 
 import pytest
 import os
+import warnings
 from datetime import datetime, date, time, timedelta, timezone
+from pathlib import Path
 import time as time_module
 import decimal
 from contextlib import closing
@@ -106,6 +108,15 @@ PARAM_TEST_DATA = [
         1.23456789,
     ),
 ]
+
+
+def test_package_sources_compile_with_warnings_as_errors():
+    """Every package source must compile when warnings are promoted to errors."""
+    package_dir = Path(__file__).parents[1] / "mssql_python"
+    for source in sorted(package_dir.glob("*.py")):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(source.read_text(encoding="utf-8"), str(source), "exec")
 
 
 def drop_table_if_exists(cursor, table_name):
