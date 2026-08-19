@@ -139,9 +139,15 @@ steps:
       # Build + validate the conda packages for THIS leg's single Python version.
       # 'binding' mode seeds the companion from the ODBC_BuildAll download (splatted
       # only when present) instead of rebuilding it per Python.
-      $driverArg = @()
+      #
+      # MUST be a HASHTABLE, not an array: array splatting binds POSITIONALLY, so
+      # @('-DriverCondaDir', <dir>) passed '-DriverCondaDir' as a literal value into
+      # the first free positional param ($CondaSubdir). That set CONDA_SUBDIR=-DriverCondaDir
+      # and conda-build then parsed the platform as '' -> `KeyError: ''`. Hashtable
+      # splatting binds by NAME, so -DriverCondaDir is bound to $DriverCondaDir correctly.
+      $driverArg = @{}
       if ('${{ parameters.package }}' -eq 'binding') {
-        $driverArg = @('-DriverCondaDir', "${{ parameters.driverCondaDownloadDir }}")
+        $driverArg = @{ DriverCondaDir = "${{ parameters.driverCondaDownloadDir }}" }
       }
       & "${{ parameters.scriptPath }}" `
         -WheelsDir $links `
