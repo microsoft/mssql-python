@@ -43,12 +43,6 @@ build:
     - WHEELS_DIR
 
 requirements:
-  build:
-    # patchelf (Linux-only) rewrites the RUNPATH of the bundled unixODBC
-    # libodbcinst.so.2 in build.sh so the DECLARED libtool/libltdl.so.7 resolves
-    # from the conda <PREFIX>/lib. macOS bundles libltdl.7.dylib co-located and
-    # Windows uses no ltdl, so it is needed only on Linux.
-    - patchelf                # [linux]
   # Windows conda site-packages (`Lib\site-packages`) is NOT Python-version-pathed,
   # so the driver payload is Python-AGNOSTIC there: build with NO `python`/`pip` in
   # host (bld.bat extracts the wheel with `tar`, not pip) so conda-build emits ONE
@@ -65,9 +59,8 @@ requirements:
     # The proprietary driver links crypto/auth libraries that MUST receive conda's
     # security updates rather than being frozen into the vendored payload -- mirroring
     # conda-forge libpq, which DECLARES openssl + krb5 instead of vendoring them.
-    # (The glue libs libltdl and the VC++ runtime are ALSO declared below -- via
-    # `libtool` and `vc14_runtime` -- so conda, not the vendored payload, services
-    # them; only the proprietary driver + its resources stay bundled.)
+    # (Glue-only libs with no security cadence -- libltdl, the VC++ runtime DLL -- are
+    # bundled/handled separately; only crypto/auth is declared here.)
     #
     # OpenSSL: the driver dlopen's libssl/libcrypto for TLS (Encrypt=yes). Because it
     # is dlopen'd (not an ELF NEEDED entry) conda-build's overlinking can't see it, so
@@ -90,12 +83,6 @@ requirements:
     # uses the system Kerberos.framework and Windows uses SSPI, so krb5 is Linux-only
     # -- and never vendored (same policy as conda-forge libpq's `krb5 # [not osx]`).
     - krb5                    # [linux]
-    # libltdl: the bundled unixODBC driver-manager libodbcinst.so.2 NEEDs
-    # libltdl.so.7 (GNU Libtool's ltdl). We DECLARE it via conda-forge `libtool`
-    # instead of vendoring it, so conda installs one serviceable copy into
-    # <PREFIX>/lib; build.sh gives libodbcinst.so.2 a RUNPATH climb to reach it.
-    # Linux-only: macOS bundles libltdl.7.dylib co-located, Windows uses no ltdl.
-    - libtool                 # [linux]
     # Windows VC++ runtime: msodbcsql18.dll imports VCRUNTIME140.dll, but the vendored
     # vcredist ships only msvcp140.dll. Declare the security-serviced conda runtime so
     # VCRUNTIME140.dll is present (rather than vendoring yet another copy of it).
