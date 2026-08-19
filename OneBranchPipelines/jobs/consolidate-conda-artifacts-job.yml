@@ -51,12 +51,10 @@ jobs:
         fetchDepth: 1
 
       # The conda packages are staged INSIDE the mssql-python build-leg artifacts
-      # (drop_Win_*, drop_MacOS_*, drop_Linux_*) under conda/<subdir>/, EXCEPT the
-      # win-64 companion (mssql-python-odbc), which is built ONCE in ODBC_BuildAll and
-      # rides its drop under conda/win-64/. Scope the download to those stages so every
-      # leg's conda output plus the once-built Windows companion is gathered in one
-      # place. The wheels ride along in the download but are ignored below (we only
-      # pick *.conda / *.tar.bz2).
+      # (drop_Win_*, drop_MacOS_*, drop_Linux_*) under conda/<subdir>/. Scope the
+      # download to those stages so every leg's self-contained mssql-python conda is
+      # gathered in one place. (drop_ODBC_BuildAll_* is included only for its wheels,
+      # which ride along and are ignored below -- we pick only *.conda / *.tar.bz2.)
       - task: DownloadPipelineArtifact@2
         displayName: 'Download All Platform Artifacts'
         inputs:
@@ -101,8 +99,8 @@ jobs:
 
           # BEST-EFFORT: warn only, never exit non-zero — a conda hiccup on any leg
           # must not fail this build or block the wheel release. The release pipeline's
-          # conda-release-step enforces the hard gate (required subdirs + #706 pairing)
-          # before anything is published.
+          # conda-release-step enforces the hard gate (required subdirs + full Python
+          # matrix) before anything is published.
           if [ "$found" != "1" ]; then
             echo "##vso[task.logissue type=warning]No conda packages found in the build-leg artifacts."
           else

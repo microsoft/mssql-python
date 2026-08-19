@@ -586,14 +586,14 @@ extends:
       # it depends ONLY on the conda-producing legs (not the win-arm64 or musl legs,
       # which have no conda target) and its job never hard-fails on a short count, so
       # a conda hiccup can never block the wheel deliverable. The release pipeline
-      # enforces the hard conda gate (required subdirs + #706 pairing) before
+      # enforces the hard conda gate (required subdirs + full Python matrix) before
       # anything is published.
       - stage: ConsolidateConda
         displayName: 'Consolidate All Conda Packages'
         dependsOn:
           # win-64 (x64 only — win-arm64 has no conda host on an x64 agent).
-          # NOTE: these legs now emit ONLY the per-Python mssql-python (binding) conda;
-          # the win-64 companion (mssql-python-odbc) is built once in ODBC_BuildAll.
+          # These legs emit the per-Python self-contained mssql-python conda (which
+          # vendors the ODBC payload); there is no separate companion package.
           - Win_py310_x64
           - Win_py311_x64
           - Win_py312_x64
@@ -609,7 +609,8 @@ extends:
           # linux-64 (glibc x86_64 host, native) + linux-aarch64 (x86_64 host + QEMU)
           - Linux_manylinux_2_28_x86_64
           - Linux_manylinux_2_28_aarch64
-          # win-64 companion (mssql-python-odbc) is built ONCE here (Python-agnostic).
+          # ODBC_BuildAll produces the mssql-python-odbc WHEELS that the conda legs
+          # vendor into the self-contained package (no conda is built in that stage).
           - ODBC_BuildAll
         jobs:
           - template: /OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml@self

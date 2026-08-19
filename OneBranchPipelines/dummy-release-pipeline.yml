@@ -34,8 +34,8 @@ parameters:
 
   # [TEST] Conda release readiness. When true, a DECOUPLED stage downloads the
   # consolidated conda packages (drop_ConsolidateConda_ConsolidateArtifacts) and
-  # enforces the hard completeness + #706 pairing gate. It publishes NOTHING; it is
-  # the safe place to prove the conda set is release-ready.
+  # enforces the hard completeness gate (required subdirs + full Python matrix). It
+  # publishes NOTHING; it is the safe place to prove the conda set is release-ready.
   - name: releaseConda
     displayName: '[TEST] Validate Conda Release Readiness (does not publish)'
     type: boolean
@@ -457,7 +457,7 @@ extends:
       # =====================================================================
       # Runs when releaseConda=true OR publishToConda=true. Downloads the consolidated
       # conda packages from build definition 2199 and enforces the release-time hard
-      # gate (exact count + #706 binding/companion pairing). dependsOn: [] keeps it
+      # gate (required subdirs + full Python matrix). dependsOn: [] keeps it
       # independent of the dummy release stage. When publishToConda=true, a second
       # releaseJob rehearses the Anaconda.org upload (to whatever TEST channel is
       # supplied), but ONLY after this gate succeeds.
