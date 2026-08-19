@@ -29,11 +29,6 @@ parameters:
   - name: installOdbcWheel
     type: boolean
     default: false
-  # Conda: build + validate the osx-arm64 conda package from this leg's wheels.
-  # Requires installOdbcWheel (the external odbc wheel is repackaged/solved too).
-  - name: buildConda
-    type: boolean
-    default: false
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -263,92 +258,6 @@ stages:
               echo "Wheels after retag:"
               ls -lh dist/
             displayName: 'Ensure universal2 platform tag'
-
-          # =========================
-          # STATIC arm64 SLICE AUDIT (osx-arm64 cross-build guardrail)
-          # =========================
-          # macos-latest is an INTEL Mac agent (the Apple-Silicon macOS image is a
-          # paused limited preview), so the osx-arm64 conda package below is CROSS-built
-          # and its arm64 runtime CANNOT be executed here. This BLOCKING audit is the
-          # stand-in for that missing runtime import: it proves the shipped payload
-          # actually contains real arm64 Mach-O slices. A thinned / x86_64-only binary
-          # stamped osx-arm64 fails the leg. Same assurance level as the PyPI universal2
-          # arm64 slice, which PR-validation (also Intel) likewise only static-checks.
-          - ${{ if and(parameters.buildConda, parameters.installOdbcWheel) }}:
-            - bash: |
-                set -euo pipefail
-                fail=0
-                echo "--- 1. binding native extension (ddbc_bindings) must carry an arm64 slice ---"
-                whl="$(ls "$(Build.SourcesDirectory)"/dist/mssql_python-*.whl 2>/dev/null | grep -v mssql_python_odbc | head -1)"
-                [ -n "$whl" ] || { echo "ERROR: no mssql-python wheel in dist/"; exit 1; }
-                tmp="$(mktemp -d)"; unzip -oq "$whl" -d "$tmp"
-                ext="$(find "$tmp" -name 'ddbc_bindings*.so' | head -1)"
-                [ -n "$ext" ] || { echo "ERROR: ddbc_bindings*.so not found in $(basename "$whl")"; exit 1; }
-                archs="$(lipo -archs "$ext" 2>/dev/null || true)"
-                echo "  $(basename "$ext"): ${archs:-$(file -b "$ext")}"
-                if echo "$archs" | grep -qw arm64 || file -b "$ext" | grep -qw arm64; then
-                  echo "  OK: ddbc_bindings has an arm64 slice"
-                else
-                  echo "  ERROR: ddbc_bindings has NO arm64 slice (thinned/x86_64-only) -- refusing to stamp osx-arm64"; fail=1
-                fi
-                echo "--- 2. companion driver dylibs must be arm64 Mach-O ---"
-                odbc="$(find "$(Pipeline.Workspace)/odbc_wheels" -name 'mssql_python_odbc-*macosx*universal2.whl' | head -1)"
-                [ -n "$odbc" ] || { echo "ERROR: no macOS odbc wheel under odbc_wheels/"; exit 1; }
-                otmp="$(mktemp -d)"; unzip -oq "$odbc" -d "$otmp"
-                armdir="$(find "$otmp" -path '*/libs/macos/arm64/lib' -type d | head -1)"
-                [ -n "$armdir" ] || { echo "ERROR: libs/macos/arm64/lib not found in odbc wheel"; exit 1; }
-                found=0
-                for dy in "$armdir"/*.dylib; do
-                  [ -e "$dy" ] || continue
-                  found=1
-                  a="$(lipo -archs "$dy" 2>/dev/null || true)"
-                  echo "  $(basename "$dy"): ${a:-$(file -b "$dy")}"
-                  if echo "$a" | grep -qw arm64 || file -b "$dy" | grep -qw arm64; then :; else
-                    echo "    ERROR: $(basename "$dy") has NO arm64 slice"; fail=1
-                  fi
-                done
-                [ "$found" = 1 ] || { echo "ERROR: no *.dylib under $armdir"; fail=1; }
-                [ "$fail" = 0 ] || { echo "STATIC arm64 SLICE AUDIT FAILED"; exit 1; }
-                echo "STATIC arm64 SLICE AUDIT PASSED"
-              displayName: 'Static arm64 slice audit (osx-arm64 cross-build guardrail)'
-
-          # =========================
-          # CONDA PACKAGE (osx-arm64 — CROSS-built on the Intel agent)
-          # =========================
-          # macos-latest is an Intel Mac (the Apple-Silicon image is a paused preview)
-          # and there is no reverse Rosetta, so the arm64 Python cannot run here. We
-          # CROSS-build with CONDA_SUBDIR=osx-arm64: conda/*/build.sh extract the
-          # universal2 wheel's arm64 slice WITHOUT running Python, and the section-7
-          # runtime import auto-skips (the static arm64-slice audit above is the gate).
-          # continueOnError makes the runtime import non-fatal on THIS leg only,
-          # mirroring the QEMU-emulated linux-aarch64 precedent.
-          - ${{ if and(parameters.buildConda, parameters.installOdbcWheel) }}:
-            - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
-              parameters:
-                condaSubdir: 'osx-arm64'
-                condaTargetSubdir: 'osx-arm64'
-                continueOnError: true
-                odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
-                odbcWheelFilter: 'mssql_python_odbc-*macosx*universal2.whl'
-                pythonVersions: ${{ parameters.pythonVersion }}
-
-          # =========================
-          # CONDA PACKAGE (osx-64 — NATIVE on the Intel agent)
-          # =========================
-          # macos-latest is an Intel Mac, so osx-64 is the NATIVE build: conda-build,
-          # the verify env's x86_64 Python and the universal2 wheel all run for real
-          # here, so the import + DB-less driver-load proof is genuine (BLOCKING). PyPI
-          # ships ONE universal2 wheel for both Mac arches; conda has no universal2
-          # subdir, so this native osx-64 package plus the cross-built osx-arm64 one
-          # above together close the Intel/Apple-Silicon parity gap vs. PyPI.
-          - ${{ if and(parameters.buildConda, parameters.installOdbcWheel) }}:
-            - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
-              parameters:
-                condaSubdir: 'osx-64'
-                condaTargetSubdir: 'osx-64'
-                odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
-                odbcWheelFilter: 'mssql_python_odbc-*macosx*universal2.whl'
-                pythonVersions: ${{ parameters.pythonVersion }}
 
           # =========================
           # ARTIFACT PUBLISHING

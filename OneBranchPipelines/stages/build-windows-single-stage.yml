@@ -42,11 +42,6 @@ parameters:
   - name: signWindowsBinaries
     type: boolean
     default: true
-  # Conda: build + validate conda packages from this leg's wheels (x64 only).
-  # Requires installOdbcWheel (the external odbc wheel is repackaged/solved too).
-  - name: buildConda
-    type: boolean
-    default: false
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -399,24 +394,6 @@ stages:
               set ARCHITECTURE=$(targetArch)
               python setup.py bdist_wheel
             displayName: 'Build wheel package'
-
-          # =========================
-          # CONDA PACKAGES (x64 only)
-          # =========================
-          # Repackage the freshly built mssql-python wheel into the per-Python
-          # self-contained mssql-python conda package (which vendors the ODBC payload
-          # from the downloaded odbc wheel) and validate it on THIS agent (which
-          # already has the wheel and a live LocalDB). Conda must be built per matching
-          # -platform leg: conda-build provisions a real win-64 host env that cannot be
-          # created on any other OS. The step is x64-gated (the ARM64 host can neither
-          # run pytest nor provision a win-arm64 conda env).
-          - ${{ if and(parameters.buildConda, parameters.installOdbcWheel) }}:
-            - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
-              parameters:
-                pythonVersion: ${{ parameters.pythonVersion }}
-                condaSubdir: 'win-64'
-                targetArch: ${{ parameters.architecture }}
-                odbcWheelFilter: 'mssql_python_odbc-*win_amd64.whl'
 
           # =========================
           # SIGNED-WHEEL EVIDENCE (verification only)

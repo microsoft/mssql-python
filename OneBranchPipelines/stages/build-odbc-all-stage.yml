@@ -146,13 +146,6 @@ stages:
               # so the check proves the actual ODBC DRIVER binary is packaged, not just a
               # sibling. Linux uses the version-major prefix so a driver MINOR bump won't
               # false-fail this gate.
-              #
-              # NOTE on libltdl.so.7: libodbcinst.so.2 NEEDs it, but on Linux it is NOT
-              # vendored in the wheel -- it is a documented system dependency (README:
-              # apt libltdl7 / dnf libtool-ltdl / apk libtool). macOS keeps its co-located
-              # libltdl.7.dylib. So this gate does NOT require libltdl.so.7 in the Linux
-              # payload; it only asserts the proprietary driver subtree is present and no
-              # foreign-platform binaries leaked.
               $expect = @{
                 'win_amd64'              = @{ Must = @('libs/windows/x64/', 'msodbcsql18.dll', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/arm64/') }
                 'win_arm64'              = @{ Must = @('libs/windows/arm64/', 'msodbcsql18.dll', 'mssql-auth.dll', 'libs/LICENSING'); Forbid = @('libs/linux/', 'libs/macos/', 'libs/windows/x64/') }
@@ -191,14 +184,6 @@ stages:
               if ($failed) { exit 1 }
               Write-Host "All 7 ODBC wheels verified: each ships only its own platform's driver."
             displayName: 'Assert each ODBC wheel is platform-correct'
-
-          # =========================
-          # NOTE: no conda is built in ODBC_BuildAll anymore.
-          # =========================
-          # In the self-contained model the mssql-python conda package (which vendors
-          # the ODBC Driver 18 payload) is built per-Python in the platform binding
-          # legs (build-windows/macos/linux-single-stage), so this stage produces ONLY
-          # the py3-none-<platform> wheels. There is no separate companion conda.
 
           # OneBranch requires artifact naming: drop_<stageName>_<jobName>.
           # ConsolidateOdbc picks this up via its 'drop_ODBC_*' item pattern.
