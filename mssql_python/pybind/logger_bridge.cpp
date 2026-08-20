@@ -181,9 +181,11 @@ void LoggerBridge::log(int level, const char* file, int line, const char* format
         complete_message.resize(MAX_LOG_SIZE);
     }
 
-    // Lock for Python call (minimize critical section)
-    std::lock_guard<std::mutex> lock(mutex_);
-
+    // No native mutex here (#671): the GIL acquired below already serializes the
+    // Python API calls, and cached_logger_ is immutable after initialize().
+    // Taking a std::mutex before the GIL inverts lock order against the normal
+    // path (a thread that holds the GIL enters native code that logs), which
+    // deadlocks under concurrent logging.
     try {
         // Acquire GIL for Python API call
         py::gil_scoped_acquire gil;
