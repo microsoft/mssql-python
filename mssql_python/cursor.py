@@ -2693,7 +2693,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
         processed_parameters = []
-        for row in seq_of_parameters:
+        for row_index, row in enumerate(seq_of_parameters):
             processed_row = list(row)
             for i, val in enumerate(processed_row):
                 if val is None:
@@ -2715,12 +2715,32 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     if isinstance(val, decimal.Decimal):
                         processed_row[i] = format(val, "f")
                     else:
+                        # Do not embed the parameter value or the full row in the
+                        # message: rows may contain PII (SSNs, emails, balances)
+                        # that would leak into caller error handlers, tracebacks,
+                        # and log/APM stores. Report metadata only (row index,
+                        # column index, value type).
+                        err_msg = (
+                            f"Failed to convert parameter to Decimal at row "
+                            f"{row_index}, column {i} (value type: {type(val).__name__})"
+                        )
+                        # Split str(val) from the decimal parse so we only chain a
+                        # cause we know is value-free. decimal.DecimalException
+                        # messages (e.g. ConversionSyntax) never echo the input, so
+                        # they are safe to preserve for debugging. str(val) itself
+                        # or any other error could carry the value in its message
+                        # and surface through __cause__ / formatted tracebacks, so
+                        # those are re-raised with the chain suppressed (from None).
                         try:
-                            processed_row[i] = format(decimal.Decimal(str(val)), "f")
-                        except Exception as e:  # pylint: disable=broad-exception-caught
-                            raise ValueError(
-                                f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
-                            ) from e
+                            val_text = str(val)
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            raise ValueError(err_msg) from None
+                        try:
+                            processed_row[i] = format(decimal.Decimal(val_text), "f")
+                        except decimal.DecimalException as e:
+                            raise ValueError(err_msg) from e
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            raise ValueError(err_msg) from None
             processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
@@ -2729,14 +2749,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Get encoding settings
         encoding_settings = self._get_encoding_settings()
 
-        # Add debug logging
+        # Debug logging: emit batch metadata only. Never log parameter values or
+        # row representations here -- rows may contain PII (SSNs, emails,
+        # balances) that would leak into log files and APM/log shippers even
+        # though this is a DEBUG-level statement. Metadata (batch size, column
+        # count) is sufficient for diagnostics without exposing user data.
         logger.debug(
-            "Executing batch query with %d parameter sets:\n%s",
+            "Executing batch query with %d parameter sets (%d columns per row)",
             len(seq_of_parameters),
-            "\n".join(
-                f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}"
-                for i, p in enumerate(seq_of_parameters[:5])
-            ),  # Limit to first 5 rows for large batches
+            len(parameters_type),
         )
 
         ret = ddbc_bindings.SQLExecuteMany(
@@ -3088,54 +3109,52 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # body.  This is the single canonical cleanup site.
                 cur = cursor_ref[0]
                 cursor_ref[0] = None
-                if cur is None or cur.closed or cur.hstmt is None:
-                    return
+                if not cur.closed and cur.hstmt is not None:
+                    # 1) Drain diagnostics produced by the (possibly cancelled)
+                    #    fetch *before* SQL_CLOSE so we don't lose them.
+                    try:
+                        cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
 
-                # 1) Drain diagnostics produced by the (possibly cancelled)
-                #    fetch *before* SQL_CLOSE so we don't lose them.
-                try:
-                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
+                    # 2) Release the server-side cursor & locks while keeping the
+                    #    HSTMT and prepared plan intact, so the parent Cursor can
+                    #    be re-executed.
+                    try:
+                        cur.hstmt._close_cursor()  # pylint: disable=protected-access
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        # Elevated to WARNING: unlike the diag-drain failures
+                        # (which only cost us some warning text), a failed
+                        # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
+                        # and its locks/tempdb resources open on SQL Server
+                        # until this parent Cursor is closed or re-executed.
+                        # DEBUG is typically disabled in production, so that
+                        # leak would be invisible; WARNING makes it visible.
+                        logger.warning(
+                            "arrow_reader cleanup: _close_cursor failed (%s); "
+                            "server-side cursor may remain open until this "
+                            "Cursor is closed or re-executed",
+                            e,
+                        )
 
-                # 2) Release the server-side cursor & locks while keeping the
-                #    HSTMT and prepared plan intact, so the parent Cursor can
-                #    be re-executed.
-                try:
-                    cur.hstmt._close_cursor()  # pylint: disable=protected-access
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    # Elevated to WARNING: unlike the diag-drain failures
-                    # (which only cost us some warning text), a failed
-                    # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
-                    # and its locks/tempdb resources open on SQL Server
-                    # until this parent Cursor is closed or re-executed.
-                    # DEBUG is typically disabled in production, so that
-                    # leak would be invisible; WARNING makes it visible.
-                    logger.warning(
-                        "arrow_reader cleanup: _close_cursor failed (%s); "
-                        "server-side cursor may remain open until this "
-                        "Cursor is closed or re-executed",
-                        e,
-                    )
+                    # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
+                    #    runs unconditionally because SQL_CLOSE can return
+                    #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
+                    #    warning records on the HSTMT diag stack; the previous
+                    #    "only on failure" path would silently drop those.
+                    try:
+                        cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
 
-                # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
-                #    runs unconditionally because SQL_CLOSE can return
-                #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
-                #    warning records on the HSTMT diag stack; the previous
-                #    "only on failure" path would silently drop those.
-                try:
-                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
-
-                # 4) Reset cursor bookkeeping to a clean "no result set"
-                #    state.  rowcount becomes -1 to signal that the prior
-                #    result is no longer meaningful.
-                try:
-                    cur._clear_rownumber()  # pylint: disable=protected-access
-                    cur.rowcount = -1
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
+                    # 4) Reset cursor bookkeeping to a clean "no result set"
+                    #    state.  rowcount becomes -1 to signal that the prior
+                    #    result is no longer meaningful.
+                    try:
+                        cur._clear_rownumber()  # pylint: disable=protected-access
+                        cur.rowcount = -1
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
 
         gen = batch_generator()
         inner = pyarrow.RecordBatchReader.from_batches(schema, gen)
