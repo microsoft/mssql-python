@@ -197,10 +197,18 @@ for py in $pyvers; do
 done
 
 # ---------------------------------------------------------------------------
-# 6. No explicit index: conda-build --output-folder already writes each subdir's
-#    repodata.json (solvable by section 7). The standalone `conda index` subcommand
-#    is unavailable in some conda builds (miniforge) and is redundant here.
+# 6. Make the local output folder a VALID conda channel.
+#    conda-build --output-folder already wrote $bld/<subdir>/repodata.json for the
+#    platform we built, but a conda channel is only valid if it ALSO carries
+#    noarch/repodata.json (even empty) -- otherwise `conda create -c file://$bld`
+#    fails with "UnavailableInvalidChannel ... must contain noarch/repodata.json".
+#    Create it directly rather than via `conda index`, whose subcommand is absent
+#    from miniforge (it moved to the standalone conda-index package).
 # ---------------------------------------------------------------------------
+mkdir -p "$bld/noarch"
+if [ ! -f "$bld/noarch/repodata.json" ]; then
+  printf '%s' '{"info":{"subdir":"noarch"},"packages":{},"packages.conda":{}}' > "$bld/noarch/repodata.json"
+fi
 
 # ---------------------------------------------------------------------------
 # 6b. Masking-immune RUNPATH audit of the freshly built packages (#563).
