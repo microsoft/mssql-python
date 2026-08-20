@@ -236,6 +236,13 @@ def test_audit_fails_on_absolute_rpath(tmp_path):
     assert any("ABSOLUTE" in e for e in errors)
 
 
+def test_audit_fails_missing_bare_origin(tmp_path):
+    # Climb entry present but bare $ORIGIN dropped -> the driver can no longer resolve
+    # its co-located sibling libodbcinst.so.2 even though $PREFIX/lib is reachable.
+    errors = audit.audit_package(_make_pkg(tmp_path, runpath=_CLIMB_ENTRY))
+    assert any("bare '$ORIGIN'" in e for e in errors)
+
+
 # --- N2: declared deps + DT_NEEDED -----------------------------------------
 
 
@@ -255,6 +262,48 @@ def test_audit_fails_missing_declared_openssl(tmp_path):
     depends = ["python", "azure-identity", "krb5", "libtool"]  # no openssl
     errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
     assert any("missing 'openssl'" in e for e in errors)
+
+
+def test_audit_fails_openssl_not_range_pinned(tmp_path):
+    # openssl present but not pinned to the Driver-18 ABI range (>=3,<4).
+    depends = ["python", "azure-identity", "krb5", "libtool", "openssl"]
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    assert any("range-pinned" in e for e in errors)
+
+
+def test_audit_fails_driver_missing_from_one_subdir(tmp_path):
+    # debian_ubuntu is complete, but rhel ships only libodbcinst (driver dropped). A
+    # package-global count would pass since debian_ubuntu supplies a driver; per-subdir
+    # presence must catch the rhel gap.
+    rhel_lib = "lib/python3.12/site-packages/mssql_python_odbc/libs/linux/rhel/x86_64/lib"
+    p = tmp_path / "mssql-python-1.13.0-py312_0.tar.bz2"
+    with tarfile.open(p, "w:bz2") as tf:
+
+        def add(name, data):
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+
+        add(
+            "info/index.json",
+            json.dumps(
+                {
+                    "name": "mssql-python",
+                    "version": "1.13.0",
+                    "build": "py312_0",
+                    "subdir": "linux-64",
+                    "depends": _GOOD_DEPENDS,
+                }
+            ).encode(),
+        )
+        add(
+            f"{_LIBDIR}/libmsodbcsql-18.6.so.2.1", _make_elf64(_GOOD_RUNPATH, needed=_DRIVER_NEEDED)
+        )
+        add(f"{_LIBDIR}/libodbcinst.so.2", _make_elf64(_GOOD_RUNPATH, needed=_INST_NEEDED))
+        # rhel: libodbcinst only -- the driver is missing from this subdir.
+        add(f"{rhel_lib}/libodbcinst.so.2", _make_elf64(_GOOD_RUNPATH, needed=_INST_NEEDED))
+    errors = audit.audit_package(str(p))
+    assert any("rhel" in e and "libmsodbcsql" in e for e in errors)
 
 
 def test_audit_fails_driver_lost_needed(tmp_path):

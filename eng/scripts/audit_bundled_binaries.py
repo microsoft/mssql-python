@@ -300,15 +300,35 @@ def audit_package(path: str) -> list[str]:
                 f"$PREFIX/lib copy the RUNPATH climb targets would not exist. "
                 f"depends={sorted(dep_names)}"
             )
+    # openssl must be RANGE-pinned for Driver 18 (which supports only the OpenSSL
+    # 1.1/3.0 ABI; conda-forge has begun shipping openssl 4), not merely present.
+    if "openssl" in dep_names:
+        spec = next(
+            (str(d) for d in (index.get("depends") or []) if str(d).split()[:1] == ["openssl"]),
+            "openssl",
+        )
+        constraint = spec[len("openssl") :].strip()
+        if ">=3" not in constraint or "<4" not in constraint:
+            errors.append(
+                f"{base_name}: openssl dep '{spec}' is not range-pinned '>=3,<4' "
+                f"(Driver 18 supports only the OpenSSL 1.1/3.0 ABI)."
+            )
 
-    drivers_seen = 0
-    odbcinst_seen = 0
+    lib_dirs: set = set()
+    dirs_with_driver: set = set()
+    dirs_with_inst: set = set()
     vendored: list[str] = []
 
     for name, data in _iter_payload_members(path):
         base = posixpath.basename(name)
+        norm = "/" + name
+        member_dir = posixpath.dirname(name)
+        # Track every driver lib dir (mssql_python_odbc/libs/linux/<distro>/<arch>/lib).
+        if "/libs/linux/" in norm and member_dir.endswith("/lib"):
+            lib_dirs.add(member_dir)
+
         # Flag any crypto/krb5/ltdl library vendored into the Linux payload.
-        if "/libs/linux/" in ("/" + name) and any(
+        if "/libs/linux/" in norm and any(
             base.startswith(p) and ".so" in base for p in _MUST_NOT_VENDOR
         ):
             vendored.append(name)
@@ -327,6 +347,14 @@ def audit_package(path: str) -> list[str]:
         needed = dyn["needed"]
         want = expected_climb_entry(name)
 
+        # Bare $ORIGIN must ALSO be present: it is how the driver resolves its
+        # co-located sibling libodbcinst.so.2. Losing it breaks driver-manager loading
+        # even when the $PREFIX/lib climb entry is intact.
+        if "$ORIGIN" not in entries:
+            errors.append(
+                f"{name}: effective RUNPATH {entries or '[none]'} lacks bare '$ORIGIN' "
+                f"(co-located sibling resolution for libodbcinst.so.2). NEEDED={needed}"
+            )
         # N1: the EXACT climb entry must be present in the EFFECTIVE RUNPATH.
         if want not in entries:
             errors.append(
@@ -344,7 +372,7 @@ def audit_package(path: str) -> list[str]:
 
         # N2b: the expected DT_NEEDED set must still be present.
         if is_driver:
-            drivers_seen += 1
+            dirs_with_driver.add(member_dir)
             for want_need in _DRIVER_NEEDED:
                 if not any(want_need in n for n in needed):
                     errors.append(
@@ -352,7 +380,7 @@ def audit_package(path: str) -> list[str]:
                         f"the declared conda dep would go unused and reachability is unproven."
                     )
         if is_inst:
-            odbcinst_seen += 1
+            dirs_with_inst.add(member_dir)
             for want_need in _ODBCINST_NEEDED:
                 if not any(want_need in n for n in needed):
                     errors.append(
@@ -367,10 +395,19 @@ def audit_package(path: str) -> list[str]:
             f"bundled: {sorted(vendored)} (krb5/openssl/libltdl are serviced by conda, "
             f"never shipped inside the payload)."
         )
-    if drivers_seen == 0:
-        errors.append(f"{base_name}: no libmsodbcsql* driver found in a Linux package.")
-    if odbcinst_seen == 0:
-        errors.append(f"{base_name}: no libodbcinst.so.2 found in a Linux package.")
+    # Per-subdir presence: EVERY discovered driver lib dir must ship BOTH a driver and
+    # libodbcinst.so.2. A package-global count would let a driver missing from ONE
+    # distro subdir (alpine/debian_ubuntu/rhel/suse) slip past.
+    if not lib_dirs:
+        errors.append(
+            f"{base_name}: no mssql_python_odbc/libs/linux/*/*/lib directory found in a "
+            f"Linux package."
+        )
+    for d in sorted(lib_dirs):
+        if d not in dirs_with_driver:
+            errors.append(f"{base_name}: '{d}' has no libmsodbcsql* driver.")
+        if d not in dirs_with_inst:
+            errors.append(f"{base_name}: '{d}' has no libodbcinst.so.2.")
     return errors
 
 
