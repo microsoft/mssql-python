@@ -237,6 +237,19 @@ echo "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binaries.py)
 # extension) would shadow the conda-installed package -> "No ddbc_bindings module
 # found". $OutputDir is outside the repo checkout.
 cd "$OutputDir"
+# conda's channel URL parser treats any path COMPONENT equal to a known conda subdir
+# (osx-arm64, osx-64, linux-64, linux-aarch64, win-64, noarch) as the platform subdir
+# and STRIPS it from the channel root. The pipeline isolates each leg under a
+# subdir-NAMED dir (OutputDir=.../<subdir>), so $bld's path contains that token and
+# `conda create -c "$bld"` would resolve to the WRONG, token-stripped path (.../bld,
+# which has no repodata) -> "UnavailableInvalidChannel ... must contain noarch/...".
+# Copy the freshly built channel (platform subdir + the section-6 noarch stub) into a
+# token-FREE, per-leg-unique dir so conda parses the channel path verbatim.
+legName="${OutputDir##*/}"                                   # e.g. osx-arm64 / linux-64
+localChannel="$(dirname "$OutputDir")/verifychan_${legName//[^A-Za-z0-9]/_}"
+rm -rf "$localChannel"; mkdir -p "$localChannel"
+cp -a "$bld"/. "$localChannel"/
+echo "verify channel (token-free alias of $bld): $localChannel"
 for py in $pyvers; do
   # Include the target subdir so the two macOS legs (osx-64 + osx-arm64) that run on
   # the SAME agent never collide on the env name, and recreate cleanly so a re-run
@@ -249,7 +262,7 @@ for py in $pyvers; do
   # lean `microsoft` channel, NOT conda-forge whose azure-core recipe over-declares flask/six
   # -> celery/boto3/botocore (~9 MB); see conda-forge/azure-core-feedstock#71.
   # --strict-channel-priority keeps the freshly built local package authoritative.
-  "$conda" create -y -n "$envName" -c "$bld" -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
+  "$conda" create -y -n "$envName" -c "$localChannel" -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
   # Whether the freshly built package's Python can EXECUTE on this host.
   target_runnable=1
   "$conda" run -n "$envName" python -c "import sys" >/dev/null 2>&1 || target_runnable=0
