@@ -345,6 +345,12 @@ def audit_package(path: str) -> list[str]:
         dyn = elf_dynamic(data)
         entries = _entries(effective_runpath(dyn))
         needed = dyn["needed"]
+        # musl/alpine variants (NEEDED libc.musl*) link differently -- their libodbcinst
+        # statically resolves libltdl, so the glibc DT_NEEDED requirements below do not
+        # apply. There is no musl conda subdir (conda Linux is glibc-only); these variants
+        # ride along in the payload but are never the conda load target. The climb /
+        # presence / no-vendored checks still apply to them.
+        is_musl = any("libc.musl" in n for n in needed)
         want = expected_climb_entry(name)
 
         # Bare $ORIGIN must ALSO be present: it is how the driver resolves its
@@ -370,23 +376,26 @@ def audit_package(path: str) -> list[str]:
                 f"relocatable (relative $ORIGIN only)."
             )
 
-        # N2b: the expected DT_NEEDED set must still be present.
+        # N2b: the expected DT_NEEDED set must still be present (glibc variants only;
+        # musl links these statically / differently, and is not a conda target).
         if is_driver:
             dirs_with_driver.add(member_dir)
-            for want_need in _DRIVER_NEEDED:
-                if not any(want_need in n for n in needed):
-                    errors.append(
-                        f"{name}: driver no longer NEEDs '{want_need}*' (NEEDED={needed}); "
-                        f"the declared conda dep would go unused and reachability is unproven."
-                    )
+            if not is_musl:
+                for want_need in _DRIVER_NEEDED:
+                    if not any(want_need in n for n in needed):
+                        errors.append(
+                            f"{name}: driver no longer NEEDs '{want_need}*' (NEEDED={needed}); "
+                            f"the declared conda dep would go unused and reachability is unproven."
+                        )
         if is_inst:
             dirs_with_inst.add(member_dir)
-            for want_need in _ODBCINST_NEEDED:
-                if not any(want_need in n for n in needed):
-                    errors.append(
-                        f"{name}: libodbcinst.so.2 no longer NEEDs '{want_need}*' "
-                        f"(NEEDED={needed})."
-                    )
+            if not is_musl:
+                for want_need in _ODBCINST_NEEDED:
+                    if not any(want_need in n for n in needed):
+                        errors.append(
+                            f"{name}: libodbcinst.so.2 no longer NEEDs '{want_need}*' "
+                            f"(NEEDED={needed})."
+                        )
         print(f"  {subdir}/{base}: effective RUNPATH={entries} NEEDED={needed}")
 
     if vendored:

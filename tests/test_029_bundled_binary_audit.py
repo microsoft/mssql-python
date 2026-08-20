@@ -319,6 +319,56 @@ def test_audit_fails_odbcinst_lost_libltdl(tmp_path):
     assert any("libltdl" in e and "no longer NEED" in e for e in errors)
 
 
+def test_audit_allows_musl_variant_without_libltdl(tmp_path):
+    # The alpine/musl libodbcinst NEEDs libc.musl* and statically links ltdl, so the
+    # glibc libltdl DT_NEEDED requirement must NOT fail it. Package has a complete glibc
+    # debian_ubuntu variant plus an alpine/musl variant.
+    alpine_lib = "lib/python3.12/site-packages/mssql_python_odbc/libs/linux/alpine/x86_64/lib"
+    p = tmp_path / "mssql-python-1.13.0-py312_0.tar.bz2"
+    with tarfile.open(p, "w:bz2") as tf:
+
+        def add(name, data):
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+
+        add(
+            "info/index.json",
+            json.dumps(
+                {
+                    "name": "mssql-python",
+                    "version": "1.13.0",
+                    "build": "py312_0",
+                    "subdir": "linux-64",
+                    "depends": _GOOD_DEPENDS,
+                }
+            ).encode(),
+        )
+        # glibc debian_ubuntu (complete: NEEDs libltdl/krb5).
+        add(
+            f"{_LIBDIR}/libmsodbcsql-18.6.so.2.1", _make_elf64(_GOOD_RUNPATH, needed=_DRIVER_NEEDED)
+        )
+        add(f"{_LIBDIR}/libodbcinst.so.2", _make_elf64(_GOOD_RUNPATH, needed=_INST_NEEDED))
+        # alpine/musl: driver + inst link libc.musl and do NOT NEED libltdl.
+        add(
+            f"{alpine_lib}/libmsodbcsql-18.6.so.2.1",
+            _make_elf64(
+                _GOOD_RUNPATH,
+                needed=[
+                    "libodbcinst.so.2",
+                    "libkrb5.so.3",
+                    "libgssapi_krb5.so.2",
+                    "libc.musl-x86_64.so.1",
+                ],
+            ),
+        )
+        add(
+            f"{alpine_lib}/libodbcinst.so.2",
+            _make_elf64(_GOOD_RUNPATH, needed=["libc.musl-x86_64.so.1"]),
+        )
+    assert audit.audit_package(str(p)) == []
+
+
 # --- vendoring + malformed + non-linux -------------------------------------
 
 
