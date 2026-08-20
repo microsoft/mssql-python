@@ -196,11 +196,10 @@ else {
 }
 
 # ---------------------------------------------------------------------------
-# 6. Index the freshly built local channel
+# 6. No explicit index: conda-build --output-folder already writes each subdir's
+#    repodata.json (solvable by section 7). The standalone `conda index` subcommand
+#    was split into the separate conda-index package and is redundant here.
 # ---------------------------------------------------------------------------
-Write-Host "=== indexing local channel ==="
-& $conda index $bld
-Assert-LastExit "conda index"
 
 # ---------------------------------------------------------------------------
 # 6b. Masking-immune RUNPATH audit of the freshly built packages (#563).
@@ -230,6 +229,11 @@ if ($Package -eq 'odbc') {
     Write-Host "NOTE: -Package odbc is a no-op in the self-contained model; nothing to validate."
 }
 else {
+    # Run the verify imports from a NEUTRAL dir: `python -c` prepends the cwd to
+    # sys.path, and the pipeline runs from the repo checkout whose in-tree
+    # mssql_python\ (source, no compiled .pyd) would shadow the conda-installed
+    # package -> "No ddbc_bindings module found". $OutputDir is outside the repo.
+    Set-Location $OutputDir
     foreach ($py in $pyvers) {
         $envName = "verify_" + ($py -replace '\.', '')
         Write-Host "=== [py $py] create verify env from local channel ==="

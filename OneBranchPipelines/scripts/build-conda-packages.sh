@@ -197,10 +197,10 @@ for py in $pyvers; do
 done
 
 # ---------------------------------------------------------------------------
-# 6. Index the freshly built local channel
+# 6. No explicit index: conda-build --output-folder already writes each subdir's
+#    repodata.json (solvable by section 7). The standalone `conda index` subcommand
+#    is unavailable in some conda builds (miniforge) and is redundant here.
 # ---------------------------------------------------------------------------
-echo "=== indexing local channel ==="
-"$conda" run -n "$condaBuildEnv" conda index "$bld"
 
 # ---------------------------------------------------------------------------
 # 6b. Masking-immune RUNPATH audit of the freshly built packages (#563).
@@ -224,6 +224,11 @@ echo "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binaries.py)
 #    repackaged native binding imports with its vendored ODBC payload (driver loads
 #    at import).
 # ---------------------------------------------------------------------------
+# Run from a NEUTRAL dir: `python -c` prepends the cwd to sys.path, and the pipeline
+# runs from the repo checkout whose in-tree mssql_python/ (source, no compiled
+# extension) would shadow the conda-installed package -> "No ddbc_bindings module
+# found". $OutputDir is outside the repo checkout.
+cd "$OutputDir"
 for py in $pyvers; do
   # Include the target subdir so the two macOS legs (osx-64 + osx-arm64) that run on
   # the SAME agent never collide on the env name, and recreate cleanly so a re-run

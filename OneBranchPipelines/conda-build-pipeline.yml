@@ -250,17 +250,6 @@ extends:
             steps:
               - checkout: self
                 fetchDepth: 1
-              # The signed conda build produces the artifact that gets published, so it
-              # MUST stay assertion-only. CONDA_ALLOW_UNSIGNED_PATCH is a DEV/PR-only
-              # escape hatch (it patches un-baked binaries, invalidating signatures);
-              # fail fast if it ever leaks into this pipeline.
-              - bash: |
-                  if [ -n "${CONDA_ALLOW_UNSIGNED_PATCH:-}" ]; then
-                    echo "ERROR: CONDA_ALLOW_UNSIGNED_PATCH is set on the signed conda build. This pipeline must be assertion-only (never patch signed bytes)." >&2
-                    exit 1
-                  fi
-                  echo "Signed conda build: assertion-only (CONDA_ALLOW_UNSIGNED_PATCH not set)."
-                displayName: 'Guard: signed build is assertion-only'
               - task: DownloadPipelineArtifact@2
                 displayName: 'Download mssql-python wheels'
                 inputs:

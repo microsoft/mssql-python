@@ -61,22 +61,17 @@ fi
 # @loader_path flow) onto libmsodbcsql* and libodbcinst.so.2 so they resolve THIS
 # env's own $PREFIX/lib, location-independently.
 #
-# SIGNATURE ORDERING (N4 -- a hard gate, not a comment):
-#   This recipe is ASSERTION-ONLY by default and NEVER mutates a signed .so. The
-#   relative $ORIGIN climb must be baked into the ODBC binaries at the
-#   mssql-python-odbc build step BEFORE ESRP signing, so the shipped .so are
-#   already-signed AND already-climbed; here we only VERIFY that the RUNPATH already
-#   equals the exact expected climb and FAIL if it does not (that is why
-#   binary_relocation is false -- patchelf must not touch signed bytes). For a
-#   LOCAL/DEV unsigned build ONLY, set CONDA_ALLOW_UNSIGNED_PATCH=1 to let this
-#   script patch the climb in -- that invalidates any signature and MUST NOT reach
-#   publish. A signed release whose binaries are not pre-baked FAILS here rather than
-#   shipping a patched-but-unsigned .so. macOS (@loader_path + re-sign) and Windows
-#   (SChannel/SSPI) are unaffected.
+# SIGNATURE SAFETY:
+#   The Linux ODBC .so are NOT ESRP code-signed -- the mssql-python-odbc pipeline only
+#   MALWARE-SCANS them (there is no CodeSign task). Only Windows .dll (Authenticode)
+#   and macOS .dylib (codesign) are code-signed, and this recipe never patches those
+#   (the climb is Linux-only). So stamping the relative $ORIGIN climb here breaks no
+#   signature. If the binaries already carry the EXACT climb (e.g. a future odbc-side
+#   pre-bake before signing), the patch is a byte-for-byte no-op.
 #
-# The canonical RUNPATH is exactly "$ORIGIN:$ORIGIN/<climb>" -- both the odbc-wheel
-# bake and the dev-patch below emit that literal form, and the static audit
-# (eng/scripts/audit_bundled_binaries.py) requires the same exact climb entry.
+# The canonical RUNPATH is exactly "$ORIGIN:$ORIGIN/<climb>" -- the patch below emits
+# that literal form, and the static audit (eng/scripts/audit_bundled_binaries.py)
+# requires the same exact climb entry.
 #
 # Linux-only by construction: the glob matches nothing in a macOS payload
 # (libs/macos/...), so this whole block is a natural no-op on the osx legs.
@@ -95,28 +90,18 @@ for libdir in "$SP_DIR"/mssql_python_odbc/libs/linux/*/*/lib; do
     drivers_seen=$((drivers_seen + 1))
     got="$(patchelf --print-rpath "$so" 2>/dev/null || true)"
     if [ "$got" = "$want" ]; then
-      echo "RPATH-OK (pre-baked, signature intact) $(basename "$so") -> $got"
+      echo "RPATH-OK (already baked) $(basename "$so") -> $got"
       continue
     fi
-    # RUNPATH is NOT the exact expected climb.
-    if [ "${CONDA_ALLOW_UNSIGNED_PATCH:-}" = "1" ]; then
-      echo "WARNING: $(basename "$so") RUNPATH '$got' != expected '$want'; patching (CONDA_ALLOW_UNSIGNED_PATCH=1, LOCAL/DEV ONLY -- this invalidates any signature and MUST NOT be published)." >&2
-      patchelf --set-rpath "$want" "$so"
-      got="$(patchelf --print-rpath "$so")"
-      # H2: compare EXACTLY to the intended value, not just "no absolute entry".
-      if [ "$got" != "$want" ]; then
-        echo "ERROR: patch did not yield the exact expected RUNPATH ('$got' != '$want')." >&2
-        exit 1
-      fi
-      echo "RPATH-PATCHED (unsigned dev build) $(basename "$so") -> $got"
-    else
-      echo "ERROR: $(basename "$so") RUNPATH is '$got', not the exact expected climb '$want'." >&2
-      echo "       This recipe is assertion-only and will NOT mutate signed bytes. A signed" >&2
-      echo "       release requires the \$ORIGIN climb baked into the mssql-python-odbc binaries" >&2
-      echo "       BEFORE ESRP signing. For a LOCAL/DEV unsigned build only, re-run with" >&2
-      echo "       CONDA_ALLOW_UNSIGNED_PATCH=1 to patch here (never publish that artifact)." >&2
+    # Stamp the exact $ORIGIN climb (safe -- these Linux .so are not code-signed).
+    patchelf --set-rpath "$want" "$so"
+    got="$(patchelf --print-rpath "$so")"
+    # H2: compare EXACTLY to the intended value, not just "no absolute entry".
+    if [ "$got" != "$want" ]; then
+      echo "ERROR: patch did not yield the exact expected RUNPATH ('$got' != '$want')." >&2
       exit 1
     fi
+    echo "RPATH-PATCHED $(basename "$so") -> $got"
   done
 done
 shopt -u nullglob
