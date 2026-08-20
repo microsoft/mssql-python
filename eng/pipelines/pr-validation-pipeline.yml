@@ -292,7 +292,7 @@ jobs:
         exit 1
       }
     displayName: 'Download and restore AdventureWorks2022 database'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -307,7 +307,7 @@ jobs:
       artifact: 'perf-baseline-$(sqlVersion)'
       path: $(Build.SourcesDirectory)
     displayName: 'Download baseline from main'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Rename downloaded baseline so the script finds it (artifact may be in a subfolder)
@@ -320,7 +320,7 @@ jobs:
         Write-Host "No baseline file downloaded (first run or artifact missing)"
       }
     displayName: 'Prepare baseline file'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Run performance benchmarks on SQL Server 2022
@@ -412,7 +412,7 @@ jobs:
       Write-Host "`nRunning performance benchmarks..."
       python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
     displayName: 'Run performance benchmarks on SQL Server 2022/2025'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -672,7 +672,7 @@ jobs:
       rm -f /tmp/AdventureWorks2022.bak
       docker exec sqlserver rm -f /tmp/AdventureWorks2022.bak || true
     displayName: 'Download and restore AdventureWorks2022 database on macOS'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -688,7 +688,7 @@ jobs:
       artifact: 'perf-baseline-macOS-$(sqlVersion)'
       path: $(Build.SourcesDirectory)
     displayName: 'Download macOS baseline from main'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   - script: |
@@ -700,7 +700,7 @@ jobs:
         echo "No baseline file downloaded (first run or artifact missing)"
       fi
     displayName: 'Prepare macOS baseline file'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Run performance benchmarks on macOS
@@ -714,7 +714,7 @@ jobs:
       echo "Running performance benchmarks..."
       python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
     displayName: 'Run performance benchmarks on macOS $(sqlVersion)'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     timeoutInMinutes: 20
     continueOnError: true
     env:
