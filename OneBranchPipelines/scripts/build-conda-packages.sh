@@ -124,8 +124,16 @@ echo "Using conda: $conda"
 # builds + validates (it never runs `anaconda upload`). Publishing installs its
 # own anaconda-client in conda-publish-step.yml. Keeping it out of the build env
 # also drops the anaconda-auth conda plugin, which the crash report fingered.
-echo "=== installing conda-build (<26) ==="
-"$conda" install -y -n base "conda-build<26"
+#
+# Use a DEDICATED env instead of `install -n base`: a pre-installed conda whose base
+# is pinned to a too-new python (the GitHub-hosted runner's Miniconda pins python
+# 3.14, which no conda-build<26 supports) makes a base install UNSOLVABLE. A fresh env
+# lets conda pick a python conda-build<26 supports, independent of the base pin.
+# conda-forge only (--override-channels) avoids the defaults-channel ToS; zstandard
+# rides along so the RUNPATH audit reads .conda metadata from this same env.
+condaBuildEnv="conda_builder"
+echo "=== creating dedicated conda-build env ($condaBuildEnv: conda-build<26) ==="
+"$conda" create -y -n "$condaBuildEnv" -c conda-forge --override-channels "conda-build<26" zstandard
 
 # ---------------------------------------------------------------------------
 # 3. Determine which Python versions to build (auto-detect from mssql_python wheels)
@@ -185,14 +193,14 @@ fi
 bindRecipe="$RecipeRoot/mssql-python"
 for py in $pyvers; do
   echo "=== [py $py] build mssql-python (self-contained: vendors the ODBC payload) ==="
-  "$conda" build "$bindRecipe" --python "$py" --no-test --no-anaconda-upload --output-folder "$bld"
+  "$conda" run -n "$condaBuildEnv" conda-build "$bindRecipe" --python "$py" --no-test --no-anaconda-upload --output-folder "$bld"
 done
 
 # ---------------------------------------------------------------------------
 # 6. Index the freshly built local channel
 # ---------------------------------------------------------------------------
 echo "=== indexing local channel ==="
-"$conda" index "$bld"
+"$conda" run -n "$condaBuildEnv" conda index "$bld"
 
 # ---------------------------------------------------------------------------
 # 6b. Masking-immune RUNPATH audit of the freshly built packages (#563).
@@ -208,8 +216,7 @@ if [ ! -f "$auditScript" ]; then
   exit 1
 fi
 echo "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binaries.py) ==="
-"$conda" run -n base python -m pip install --quiet --disable-pip-version-check zstandard
-"$conda" run -n base python "$auditScript" --root "$bld"
+"$conda" run -n "$condaBuildEnv" python "$auditScript" --root "$bld"
 
 # ---------------------------------------------------------------------------
 # 7. Validate: solve a fresh env from the local channel and import the package.
