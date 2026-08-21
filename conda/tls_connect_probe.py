@@ -202,7 +202,7 @@ def main():
         print(
             "TLS_PROBE_SKIPPED: CONDA_TLS_PROBE_CONN is set but is not a connection string "
             "(no 'key=value' pair). It is NOT a yes/no toggle -- set it to a reachable SQL "
-            "Server connection string like 'Server=host,1433;Uid=user;Pwd=***' to run the "
+            "Server connection string (with Server, user and password keywords) to run the "
             "Encrypt=yes gate, or leave it empty to skip."
         )
         return

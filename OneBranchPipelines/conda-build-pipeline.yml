@@ -45,7 +45,7 @@ parameters:
   # $PREFIX/lib -- no static audit can. Supply a reachable server (from a secret var)
   # to activate conda/tls_connect_probe.py on the Linux leg; empty = the probe SKIPs.
   - name: condaTlsProbeConn
-    displayName: 'TLS probe: FULL SQL connection string e.g. Server=host,1433;Uid=u;Pwd=*** (NOT yes/no; empty = skip)'
+    displayName: 'TLS probe: a full SQL Server connection string; NOT a yes/no toggle; empty = skip'
     type: string
     default: ''
   # H1: enable the minimal-base ldd reachability gate (CONDA_ASSERT_PREFIX_REACHABLE).
