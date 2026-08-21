@@ -1,0 +1,146 @@
+# =========================================================================================
+# OneBranch STANDALONE Conda Release Pipeline (mssql-python)
+# =========================================================================================
+# Decoupled from the wheel/PyPI release. Downloads the consolidated conda packages produced
+# by the STANDALONE conda-build pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) -- NOT the wheel pipeline (def 2199), which no
+# longer produces any conda artifact -- enforces the release-readiness gate (conda-release-
+# step: required subdirs + full Python matrix + one version), and -- when publishToConda=true -- publishes the SELF-CONTAINED
+# mssql-python conda package to Anaconda.org via anaconda-client (conda-publish-step; ESRP
+# has no Conda ContentType). There is a single self-contained package (it vendors the ODBC
+# Driver 18 payload); no companion.
+#
+# Always Official (a publish is a deliberate, gated action). Manual trigger only.
+# The OneBranch YAML needs an actual ADO run to fully validate.
+# =========================================================================================
+name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaRelease
+
+trigger: none
+pr: none
+
+parameters:
+  - name: publishToConda
+    displayName: 'Publish Conda Packages to Anaconda.org (PRODUCTION)'
+    type: boolean
+    default: false  # Safety: default to a validate-only dry run.
+  - name: condaChannel
+    displayName: 'Anaconda.org channel/org to publish to'
+    type: string
+    default: 'microsoft'
+  - name: condaLabel
+    displayName: 'Anaconda.org channel label'
+    type: string
+    default: 'main'
+  # Infra setup: ADO definition id of the STANDALONE conda-build pipeline
+  # (conda-build-pipeline.yml), whose ConsolidateConda stage produces
+  # drop_ConsolidateConda_ConsolidateArtifacts. This is NOT the wheel pipeline
+  # (def 2199). Set it once the conda-build pipeline is registered in ADO; 0 is a
+  # placeholder that must be overridden before a real run.
+  - name: condaBuildDefinitionId
+    displayName: 'Conda-build pipeline ADO definition id'
+    type: number
+    default: 0
+  # The exact mssql-python version being released. When set, the readiness gate
+  # asserts EVERY conda package matches it (not just internal one-version
+  # consistency). Leave empty only for a consistency-only dry run.
+  - name: mssqlPythonVersion
+    displayName: 'Expected mssql-python release version (e.g. 1.13.0)'
+    type: string
+    default: ''
+
+variables:
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
+  # ANACONDA_API_TOKEN lives in this org-scoped group; included ONLY when publishing so a
+  # validate-only run never requires the group to exist.
+  - ${{ if eq(parameters.publishToConda, true) }}:
+      - group: 'Anaconda Publishing'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'OneBranch.Pipelines/GovernedTemplates'
+      ref: 'refs/heads/main'
+  # The build pipeline whose consolidated conda artifact this pipeline validates + publishes.
+  pipelines:
+    - pipeline: buildPipeline
+      # Infra setup: the STANDALONE conda-build pipeline (backed by
+      # conda-build-pipeline.yml), whose ConsolidateConda stage publishes
+      # drop_ConsolidateConda_ConsolidateArtifacts. Update to its exact ADO
+      # definition name once registered. NOT the wheel pipeline
+      # (Build-Release-Package-Pipeline / def 2199), which no longer builds conda.
+      source: 'Conda-Build-Pipeline'
+      trigger: none
+
+extends:
+  template: 'v2/OneBranch.Official.CrossPlat.yml@templates'
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Version: '2022'
+    globalSdl:
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)/.gdn/.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)/.gdn/.gdnsuppress
+        suppressionSet: default
+      binskim:
+        enabled: true
+        break: true
+      credscan:
+        enabled: true
+      policheck:
+        enabled: true
+        break: true
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
+      publishLogs:
+        enabled: true
+      tsa:
+        enabled: true
+        configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
+
+    stages:
+      - stage: CondaRelease
+        displayName: 'Validate & Publish Conda Release'
+        jobs:
+          # Gate: prove the consolidated conda set is complete (required subdirs +
+          # full Python matrix + one version) before anything is published.
+          - job: ValidateConda
+            displayName: 'Validate consolidated conda packages'
+            pool:
+              type: windows
+              isCustom: true
+              name: Python-1ES-pool
+              demands:
+              - imageOverride -equals PYTHON-1ES-MMS2022
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+            steps:
+              - template: /OneBranchPipelines/steps/conda-release-step.yml@self
+                parameters:
+                  buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
+                  mssqlPythonVersion: '${{ parameters.mssqlPythonVersion }}'
+
+          # PRODUCTION publish (releaseJob) -- runs ONLY when publishToConda=true and
+          # ONLY after the ValidateConda gate succeeds, so an incomplete set is never
+          # uploaded. anaconda-client reads ANACONDA_API_TOKEN from the env (never the
+          # command line), so the token never appears in the logs.
+          - ${{ if eq(parameters.publishToConda, true) }}:
+            - job: PublishConda
+              displayName: 'Publish conda packages to Anaconda.org'
+              dependsOn: ValidateConda
+              templateContext:
+                type: releaseJob
+                isProduction: true
+              pool:
+                type: windows
+              variables:
+                ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+              steps:
+                - template: /OneBranchPipelines/steps/conda-publish-step.yml@self
+                  parameters:
+                    buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
+                    condaChannel: '${{ parameters.condaChannel }}'
+                    condaLabel: '${{ parameters.condaLabel }}'

@@ -1,0 +1,3 @@
+# Keep shell build scripts LF so conda-build works on Linux/macOS agents,
+# regardless of the checkout host's core.autocrlf setting.
+*.sh text eol=lf

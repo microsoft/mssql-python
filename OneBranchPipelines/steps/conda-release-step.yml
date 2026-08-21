@@ -1,0 +1,198 @@
+# Conda Release Readiness Step Template
+# ============================================================================
+# Downloads the consolidated conda packages produced by the STANDALONE conda-build
+# pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) and enforces the RELEASE-TIME hard
+# gate that the build pipeline intentionally does
+# NOT enforce.
+#
+# Why the gate lives HERE and not in the build:
+#   - BUILD pipeline: conda is collected BEST-EFFORT (warn-only) so a conda hiccup
+#     on any leg can never fail the build or block the primary wheel release.
+#   - RELEASE pipeline: conda completeness is GATED -- an incomplete conda set
+#     must never be shipped.
+#
+# What it enforces (all from each package's AUTHORITATIVE info/index.json, never
+# folder names or bare counts -- so a mis-stamped subdir or a dropped Python
+# variant cannot slip through):
+#   - real subdir: every package's info/index.json `subdir` is in `allowedSubdirs`
+#     AND equals the folder it was staged into (catches an osx-64 package copied
+#     into osx-arm64/, which a folder-name check cannot).
+#   - required subdirs: every subdir in `requiredSubdirs` (the PyPI-parity set)
+#     is present.
+#   - Python matrix: on every required subdir the mssql-python binding covers
+#     EVERY expected Python (`pythonVersions`) -- catches e.g. 3 of 5 win-64
+#     bindings shipping against the single companion.
+#   - versions: all packages share one version (and match the expected version
+#     when `mssqlPythonVersion` is supplied).
+#
+# The check is implemented in conda/validate_conda_release.py (unit-tested by
+# tests/test_027_conda_release_metadata.py), which reads the zstd-compressed
+# info/index.json embedded in every .conda.
+#
+# win-arm64 is intentionally NOT in the parity set: an x64 agent cannot import-
+# validate an arm64 conda package (same reason its wheel skips pytest), so it needs
+# a native win-arm64 agent before it can be gated. musllinux has no conda subdir at
+# all (conda Linux is glibc-only), so it is correctly absent.
+#
+# Publishing to anaconda.org is a SEPARATE, still-to-be-finalized step (ESRP Conda
+# ContentType vs anaconda-client upload); this template only proves the artifact is
+# complete and correctly paired so publishing can proceed safely.
+parameters:
+  # Infra setup: ADO definition id of the STANDALONE conda-build pipeline
+  # (conda-build-pipeline.yml) that produced the conda artifact -- NOT the wheel
+  # pipeline (def 2199), which no longer builds conda. The release pipeline passes
+  # the real id; 0 is a placeholder that must be overridden.
+  - name: buildDefinitionId
+    type: number
+    default: 0
+  # Consolidated conda artifact name (see consolidate-conda-artifacts-job.yml).
+  - name: condaArtifactName
+    type: string
+    default: 'drop_ConsolidateConda_ConsolidateArtifacts'
+  # Comma-separated subdirs that a complete release MUST contain (PyPI parity minus
+  # win-arm64 and musllinux, which have no validated conda build). If an emulated
+  # leg (osx-64 / linux-aarch64) ever proves too flaky to gate on, drop it here —
+  # no code change needed.
+  - name: requiredSubdirs
+    type: string
+    default: 'win-64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Comma-separated superset of subdirs that are ALLOWED to appear. Any discovered
+  # subdir outside this set fails the gate (guards against a mis-stamped subdir).
+  # win-arm64 is allowed-but-not-required so a future native-agent build can land
+  # without tripping the gate.
+  - name: allowedSubdirs
+    type: string
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Comma-separated Python versions the binding matrix MUST cover on every required
+  # subdir. The gate reads each binding's pyXY build tag from info/index.json.
+  - name: pythonVersions
+    type: string
+    default: '3.10,3.11,3.12,3.13,3.14'
+  # Optional EXACT expected versions. When set, the gate asserts every package's
+  # info/index.json version matches; when empty it still enforces one-version-per-
+  # package consistency plus the subdir / matrix / pairing checks.
+  - name: mssqlPythonVersion
+    type: string
+    default: ''
+  - name: odbcVersion
+    type: string
+    default: ''
+  # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
+  - name: labelPrefix
+    type: string
+    default: ''
+
+steps:
+  # Infra guard: the standalone conda-build definition id MUST be set. A 0 placeholder
+  # means the resource `source:` name and this numeric id disagree, so the download
+  # would silently target the wrong pipeline -- fail fast with a clear message.
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Guard: conda-build definition id is configured'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $id = ${{ parameters.buildDefinitionId }}
+        if ($id -eq 0) {
+          Write-Error "condaBuildDefinitionId is 0 (placeholder). Register the standalone conda-build pipeline in ADO, then set BOTH the release pipeline's resource 'source:' name AND condaBuildDefinitionId to it."
+          exit 1
+        }
+        Write-Host "conda-build definition id = $id"
+
+  - task: DownloadPipelineArtifact@2
+    displayName: '${{ parameters.labelPrefix }}Download consolidated conda packages'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: ${{ parameters.buildDefinitionId }}
+      buildVersionToDownload: 'specific'
+      buildId: $(resources.pipeline.buildPipeline.runID)
+      artifactName: '${{ parameters.condaArtifactName }}'
+      targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
+
+  # N3 provenance: bind the downloaded artifact to the release commit. The conda-build
+  # pipeline stamps its source commit on the run; if it differs from the commit being
+  # released, a stale/older/different build was selected -- refuse it.
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Provenance: conda artifact built from the release commit'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $built = "$(resources.pipeline.buildPipeline.sourceCommit)"
+        $release = "$(Build.SourceVersion)"
+        Write-Host "conda-build source commit: $built"
+        Write-Host "release    source commit: $release"
+        if ([string]::IsNullOrWhiteSpace($built)) {
+          Write-Error "Could not determine the conda-build source commit (resources.pipeline.buildPipeline.sourceCommit is empty)."
+          exit 1
+        }
+        if ($built -ne $release) {
+          Write-Error "Provenance mismatch: the selected conda artifact was built from $built but this release is $release. Refusing to publish an artifact from a different/older build."
+          exit 1
+        }
+        Write-Host "Provenance OK: artifact built from the release commit."
+
+  # N3 re-audit: re-run the masking-immune RUNPATH audit on the EXACT downloaded
+  # artifacts (not just metadata) so a stale pre-audit .conda can never be published.
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Re-audit the exact release artifacts (RUNPATH self-containment)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+        $audit = "$(Build.SourcesDirectory)/eng/scripts/audit_bundled_binaries.py"
+        if (-not (Test-Path $root))  { Write-Error "Consolidated conda tree not found at $root."; exit 1 }
+        if (-not (Test-Path $audit)) { Write-Error "Audit script not found at $audit."; exit 1 }
+        python -m pip install --quiet --disable-pip-version-check zstandard
+        python "$audit" --root "$root"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Release-boundary RUNPATH audit FAILED on the downloaded conda artifacts. Refusing to publish."
+          exit 1
+        }
+        Write-Host "Release-boundary RUNPATH audit passed on the exact downloaded artifacts."
+
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Validate conda release readiness (metadata: subdirs + Python matrix + versions)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+        if (-not (Test-Path $root)) {
+          Write-Error "Consolidated conda tree not found at $root. Was ConsolidateConda produced by the selected build run?"
+          exit 1
+        }
+
+        $gate = "$(Build.SourcesDirectory)/conda/validate_conda_release.py"
+        if (-not (Test-Path $gate)) {
+          Write-Error "Metadata gate script not found at $gate."
+          exit 1
+        }
+
+        # The gate reads each package's AUTHORITATIVE info/index.json (a zstd tar
+        # inside every .conda) rather than trusting folder names or counts. zstd is
+        # stdlib on py3.14+; install the `zstandard` backend so the reader always works.
+        python -m pip install --quiet --disable-pip-version-check zstandard
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Failed to install the 'zstandard' backend needed to read .conda metadata."
+          exit 1
+        }
+
+        # Pass EXACT version expectations only when supplied; the gate still enforces
+        # one-version-per-package consistency when they are empty.
+        $extra = @()
+        if ('${{ parameters.mssqlPythonVersion }}'.Trim()) { $extra += @('--mssql-python-version', ('${{ parameters.mssqlPythonVersion }}'.Trim())) }
+        if ('${{ parameters.odbcVersion }}'.Trim())        { $extra += @('--mssql-python-odbc-version', ('${{ parameters.odbcVersion }}'.Trim())) }
+
+        python "$gate" `
+          --root "$root" `
+          --required-subdirs '${{ parameters.requiredSubdirs }}' `
+          --allowed-subdirs '${{ parameters.allowedSubdirs }}' `
+          --pythons '${{ parameters.pythonVersions }}' `
+          @extra
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Conda release readiness FAILED. Refusing to proceed with an incomplete/mis-labeled/mis-paired conda set."
+          exit 1
+        }
+        Write-Host "Conda set is release-ready (the publish step is gated separately)."
