@@ -84,14 +84,14 @@ def test_tls_completed_true_for_clean_connect():
 
 def test_force_tls_appends_when_absent():
     probe = _load_probe()
-    out = probe.force_tls("Server=localhost;Database=x;Uid=x;Pwd=x;")  # DevSkim: ignore DS162092
+    out = probe.force_tls("Server=dbserver;Database=x")
     assert "Encrypt=yes" in out
     assert "TrustServerCertificate=yes" in out
 
 
 def test_force_tls_overrides_encrypt_no():
     probe = _load_probe()
-    out = probe.force_tls("Server=localhost;Encrypt=no;Database=x")  # DevSkim: ignore DS162092
+    out = probe.force_tls("Server=dbserver;Encrypt=no;Database=x")
     low = out.lower()
     assert "encrypt=yes" in low
     assert "encrypt=no" not in low
@@ -99,7 +99,7 @@ def test_force_tls_overrides_encrypt_no():
 
 def test_force_tls_is_idempotent():
     probe = _load_probe()
-    once = probe.force_tls("Server=localhost;Database=x")  # DevSkim: ignore DS162092
+    once = probe.force_tls("Server=dbserver;Database=x")
     twice = probe.force_tls(once)
     assert once == twice
     # Exactly one Encrypt= and one TrustServerCertificate= key.
@@ -130,9 +130,7 @@ def _key_count(probe, conn, wanted):
 def test_force_tls_dedups_duplicate_encrypt():
     """A duplicate Encrypt (old regex fixed only the first -> parser 'Duplicate keyword')."""
     probe = _load_probe()
-    out = probe.force_tls(
-        "Server=localhost;Encrypt=yes;Database=x;Encrypt=no"
-    )  # DevSkim: ignore DS162092
+    out = probe.force_tls("Server=dbserver;Encrypt=yes;Database=x;Encrypt=no")
     assert _key_count(probe, out, "encrypt") == 1
     assert "encrypt=no" not in out.lower()
     assert _every_segment_has_value(probe, out)
@@ -141,7 +139,7 @@ def test_force_tls_dedups_duplicate_encrypt():
 def test_force_tls_handles_valueless_encrypt():
     """A bare 'Encrypt' (no '=value') must not leave a value-less keyword behind."""
     probe = _load_probe()
-    out = probe.force_tls("Server=localhost;Encrypt;Database=x")  # DevSkim: ignore DS162092
+    out = probe.force_tls("Server=dbserver;Encrypt;Database=x")
     assert _key_count(probe, out, "encrypt") == 1
     assert _every_segment_has_value(probe, out)
 
@@ -149,7 +147,7 @@ def test_force_tls_handles_valueless_encrypt():
 def test_force_tls_preserves_braced_value_with_semicolon():
     """An ODBC braced value may contain ';'; it must survive intact (MS-ODBCSTR)."""
     probe = _load_probe()
-    out = probe.force_tls("Server=localhost;Pwd={a;b};Encrypt=no")  # DevSkim: ignore DS162092
+    out = probe.force_tls("Server=dbserver;Pwd={a;b};Encrypt=no")
     assert "Pwd={a;b}" in out
     assert _key_count(probe, out, "encrypt") == 1
     assert "encrypt=no" not in out.lower()
@@ -159,13 +157,13 @@ def test_force_tls_preserves_braced_value_with_semicolon():
 @pytest.mark.parametrize(
     "raw",
     [
-        "Server=localhost;Database=master;Uid=sa;Pwd=StrongP@ss1",  # DevSkim: ignore DS162092
-        "Server=localhost",
-        "server=localhost;encrypt=no;trustservercertificate=no",
-        "Server = localhost ; Encrypt = no ; TrustServerCertificate = no",
-        "Server=localhost;Encrypt=Strict",
-        "Encrypt=yes;Server=localhost",
-        "Server=tcp:localhost,1433;Database=master;Uid=sa;Pwd=P@ss",  # DevSkim: ignore DS162092
+        "Server=dbserver;Database=master",
+        "Server=dbserver",
+        "server=dbserver;encrypt=no;trustservercertificate=no",
+        "Server = dbserver ; Encrypt = no ; TrustServerCertificate = no",
+        "Server=dbserver;Encrypt=Strict",
+        "Encrypt=yes;Server=dbserver",
+        "Server=tcp:dbserver,1433;Database=master",
     ],
 )
 def test_force_tls_output_is_parseable(raw):
@@ -192,12 +190,12 @@ def test_split_top_level_respects_braces():
 def test_redact_masks_values_and_flags_bare_segments():
     """The debug line must never leak a value and must surface a no-value segment."""
     probe = _load_probe()
-    red = probe._redact("Server=localhost;Pwd=Secret!;Encrypt=yes")  # DevSkim: ignore DS162092
-    assert "Secret" not in red
+    red = probe._redact("Server=dbserver;Pwd=REDACTME;Encrypt=yes")
+    assert "REDACTME" not in red
     assert "Pwd=***" in red
     assert "Server=***" in red
     # a segment with no '=' (the shape that trips the parser) is surfaced verbatim.
-    assert "<<NO-VALUE:" in probe._redact("Server=localhost;bogus;Encrypt=yes")
+    assert "<<NO-VALUE:" in probe._redact("Server=dbserver;bogus;Encrypt=yes")
 
 
 # --- misconfiguration guard: a bare 'yes' is NOT a connection string --------------
@@ -214,8 +212,8 @@ def test_bare_word_is_not_a_connection_string(bogus):
 @pytest.mark.parametrize(
     "good",
     [
-        "Server=localhost",
-        "Uid=sa;Pwd=x",  # DevSkim: ignore DS162092
+        "Server=dbserver",
+        "Database=master;Encrypt=no",
         "Server=host,1433;Encrypt=yes",
     ],
 )
