@@ -106,8 +106,12 @@ about:
   license: MIT AND LicenseRef-Microsoft-Proprietary
   license_file:
     - ../../LICENSE
-    - MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt
-    - MICROSOFT_VISUAL_STUDIO_LICENSE.txt
+    # The proprietary EULAs live canonically with the ODBC payload; reference them
+    # there instead of committing duplicate copies in the recipe. conda-build resolves
+    # license_file relative to the recipe dir at package time and embeds them in
+    # info/licenses/.
+    - ../../mssql_python_odbc/licenses/MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt
+    - ../../mssql_python_odbc/licenses/MICROSOFT_VISUAL_STUDIO_LICENSE.txt
   summary: Microsoft driver for Python to interact with SQL Server and Azure SQL.
   description: |
     mssql-python is a DB API 2.0 (PEP 249) compliant driver for SQL Server,
