@@ -295,7 +295,12 @@ for py in $pyvers; do
   if [ "${CONDA_ASSERT_PREFIX_REACHABLE:-}" = "1" ] && [ "$(uname -s)" = "Linux" ]; then
     echo "=== [py $py] minimal-base ldd reachability gate (driver MUST bind CONDA_PREFIX/lib) ==="
     env_prefix="$("$conda" run -n "$envName" python -c 'import os,sys; print(os.environ.get("CONDA_PREFIX") or sys.prefix)')"
-    drv="$("$conda" run -n "$envName" python -c 'import mssql_python,glob,os; b=os.path.dirname(mssql_python.__file__); m=glob.glob(os.path.join(b,"..","mssql_python_odbc","libs","linux","*","*","lib","libmsodbcsql*")); print(m[0] if m else "")')"
+    # Inspect the SAME driver variant the loader actually binds on THIS host. mssql_python
+    # (GetDriverPathCpp in ddbc_bindings.cpp) selects libs/linux/<distro>/<arch> by probing
+    # /etc/*-release; a blind glob instead grabs the alphabetically-first 'alpine' (musl)
+    # variant, which needs libc.musl (absent on glibc) and whose libodbcinst does NOT link
+    # libltdl -> a false "libltdl absent" failure. Mirror that selection exactly.
+    drv="$("$conda" run -n "$envName" python -c 'import mssql_python,glob,os,platform; b=os.path.dirname(mssql_python.__file__); d=("alpine" if os.path.exists("/etc/alpine-release") else "rhel" if (os.path.exists("/etc/redhat-release") or os.path.exists("/etc/centos-release")) else "suse" if (os.path.exists("/etc/SuSE-release") or os.path.exists("/etc/SUSE-brand")) else "debian_ubuntu"); a=("arm64" if platform.machine() in ("aarch64","arm64") else "x86_64"); m=glob.glob(os.path.join(b,"..","mssql_python_odbc","libs","linux",d,a,"lib","libmsodbcsql*")); print(m[0] if m else "")')"
     if [ -z "$drv" ]; then
       echo "ERROR: [py $py] no libmsodbcsql driver found in the verify env; cannot prove reachability." >&2
       exit 1
