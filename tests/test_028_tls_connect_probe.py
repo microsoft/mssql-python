@@ -198,3 +198,37 @@ def test_redact_masks_values_and_flags_bare_segments():
     assert "Server=***" in red
     # a segment with no '=' (the shape that trips the parser) is surfaced verbatim.
     assert "<<NO-VALUE:" in probe._redact("Server=localhost;bogus;Encrypt=yes")
+
+
+# --- misconfiguration guard: a bare 'yes' is NOT a connection string --------------
+# CONDA_TLS_PROBE_CONN is a full connection string, not a yes/no toggle. A bare word
+# (the toggle mistake) must SKIP loudly, never fail the leg on a parse error.
+
+
+@pytest.mark.parametrize("bogus", ["yes", "true", "1", "no", "enable", "on", "false"])
+def test_bare_word_is_not_a_connection_string(bogus):
+    probe = _load_probe()
+    assert probe._is_probe_connection_string(bogus) is False
+
+
+@pytest.mark.parametrize(
+    "good",
+    [
+        "Server=localhost",
+        "Uid=sa;Pwd=x",  # DevSkim: ignore DS162092
+        "Server=host,1433;Encrypt=yes",
+    ],
+)
+def test_real_connection_string_is_recognized(good):
+    probe = _load_probe()
+    assert probe._is_probe_connection_string(good) is True
+
+
+@pytest.mark.parametrize("value", ["", "yes", "true", "1"])
+def test_main_skips_loudly_for_missing_or_toggle_value(monkeypatch, capsys, value):
+    """Empty OR a bare-word 'toggle' value must SKIP loudly (return before importing the
+    native driver), never fail the leg on a connection-string parse error."""
+    probe = _load_probe()
+    monkeypatch.setenv("CONDA_TLS_PROBE_CONN", value)
+    probe.main()  # returns cleanly; must NOT reach `import mssql_python`
+    assert "TLS_PROBE_SKIPPED" in capsys.readouterr().out

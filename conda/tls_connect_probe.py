@@ -174,6 +174,16 @@ def _redact(conn):
     return ";".join(shown)
 
 
+def _is_probe_connection_string(raw):
+    """True if ``raw`` looks like an ODBC connection string (has a key=value pair).
+
+    Guards the common misconfiguration of treating CONDA_TLS_PROBE_CONN as a yes/no
+    toggle: a bare ``yes``/``true``/``1`` has no ``=``, so it cannot be a connection
+    string and must not be handed to the parser (which would fail on a bare keyword).
+    """
+    return "=" in raw
+
+
 def main():
     raw = os.environ.get("CONDA_TLS_PROBE_CONN", "").strip()
     if not raw:
@@ -181,6 +191,19 @@ def main():
             "TLS_PROBE_SKIPPED: set CONDA_TLS_PROBE_CONN to a reachable SQL Server "
             "connection string (on a minimal base with no system OpenSSL) to run "
             "this Encrypt=yes gate."
+        )
+        return
+
+    if not _is_probe_connection_string(raw):
+        # A bare word like "yes"/"true"/"1" is the "I thought it was a yes/no toggle"
+        # misconfiguration. It is NOT a connection string, so feeding it to the driver
+        # only fails the leg on an unrelated parse error ("keyword 'yes' has no value").
+        # Skip LOUDLY instead -- the static RUNPATH audit still guards OpenSSL layout.
+        print(
+            "TLS_PROBE_SKIPPED: CONDA_TLS_PROBE_CONN is set but is not a connection string "
+            "(no 'key=value' pair). It is NOT a yes/no toggle -- set it to a reachable SQL "
+            "Server connection string like 'Server=host,1433;Uid=user;Pwd=***' to run the "
+            "Encrypt=yes gate, or leave it empty to skip."
         )
         return
 
