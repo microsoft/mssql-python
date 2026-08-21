@@ -44,7 +44,6 @@ OpenSSL backend unreachable / handshake did not complete (blocks publish).
 """
 
 import os
-import re
 import sys
 
 # Outcomes that can ONLY occur AFTER a mandatory (Encrypt=yes) TLS handshake has
@@ -100,6 +99,32 @@ def describe(exc):
     return msg[:300]
 
 
+def _split_top_level(conn):
+    """Split an ODBC connection string on TOP-LEVEL ``;`` only.
+
+    An ODBC value wrapped in ``{...}`` may itself contain ``;`` (MS-ODBCSTR), so a
+    naive ``split(';')`` would shred braced values. Track brace depth and break only
+    at depth 0.
+    """
+    segments = []
+    buf = ""
+    depth = 0
+    for ch in conn.strip():
+        if ch == "{":
+            depth += 1
+            buf += ch
+        elif ch == "}":
+            depth = max(0, depth - 1)
+            buf += ch
+        elif ch == ";" and depth == 0:
+            segments.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    segments.append(buf)
+    return segments
+
+
 def force_tls(conn):
     """Force ``Encrypt=yes`` and ``TrustServerCertificate=yes`` on the string.
 
@@ -107,18 +132,46 @@ def force_tls(conn):
     the gate). TrustServerCertificate=yes lets it reach the auth stage against a
     local dev server's self-signed cert -- this is a local connectivity gate, NOT
     a security assertion, and must never be copied into a production connection.
+
+    Rebuild-from-tokens (NOT regex substitution): brace-aware split on top-level
+    ``;``, DROP any existing Encrypt / TrustServerCertificate segment (case-
+    insensitive -- including a valueless ``Encrypt`` or a duplicate), then append the
+    canonical pair exactly once. A regex substitution can corrupt the string -- e.g.
+    ``Encrypt=;yes`` becomes ``Encrypt=yes;yes``, leaving a bare ``yes`` the parser
+    rejects with "keyword 'yes' has no value", and a duplicate ``Encrypt`` slips
+    through as a "Duplicate keyword" error; rebuilding from tokens cannot.
     """
+    kept = []
+    for seg in _split_top_level(conn):
+        token = seg.strip()
+        if not token:
+            continue
+        key = token.split("=", 1)[0].strip().lower()
+        if key in ("encrypt", "trustservercertificate"):
+            continue  # drop any existing (incl. valueless / duplicate); re-added below
+        kept.append(token)
+    kept.append("Encrypt=yes")
+    kept.append("TrustServerCertificate=yes")
+    return ";".join(kept)
 
-    def set_kv(s, key, val):
-        pat = re.compile(r"(?i)(^|;)\s*" + re.escape(key) + r"\s*=\s*[^;]*")
-        if pat.search(s):
-            return pat.sub(lambda m: (m.group(1) or "") + key + "=" + val, s, count=1)
-        return s + ";" + key + "=" + val
 
-    conn = conn.strip().rstrip(";")
-    conn = set_kv(conn, "Encrypt", "yes")
-    conn = set_kv(conn, "TrustServerCertificate", "yes")
-    return conn
+def _redact(conn):
+    """Render the connection string's STRUCTURE with every value masked.
+
+    Safe to log: shows the keys (and their order) so a malformed string is
+    diagnosable, but never a secret value. A segment with no ``=`` -- the exact shape
+    that trips the parser -- is surfaced verbatim so the failure explains itself.
+    """
+    shown = []
+    for seg in _split_top_level(conn):
+        token = seg.strip()
+        if not token:
+            continue
+        if "=" in token:
+            shown.append(token.split("=", 1)[0].strip() + "=***")
+        else:
+            shown.append("<<NO-VALUE:" + token + ">>")
+    return ";".join(shown)
 
 
 def main():
@@ -132,6 +185,7 @@ def main():
         return
 
     conn_str = force_tls(raw)
+    print("TLS_PROBE using (values redacted): " + _redact(conn_str))
 
     # Deferred so this module can be imported (and the classifier unit-tested)
     # WITHOUT the compiled extension / driver payload.

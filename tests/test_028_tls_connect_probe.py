@@ -105,3 +105,96 @@ def test_force_tls_is_idempotent():
     # Exactly one Encrypt= and one TrustServerCertificate= key.
     assert twice.lower().count("encrypt=") == 1
     assert twice.lower().count("trustservercertificate=") == 1
+
+
+# --- hardening: force_tls must never hand the parser a malformed string ----------
+# The mssql_python parser splits on top-level ';' and rejects any segment without an
+# '=' ("keyword '<x>' has no value") or a duplicated keyword. A regex substitution
+# could produce exactly those; rebuilding from tokens must not.
+
+
+def _every_segment_has_value(probe, conn):
+    """Mirror the parser's rule: each non-empty top-level ';'-segment needs '='."""
+    return all("=" in seg.strip() for seg in probe._split_top_level(conn) if seg.strip())
+
+
+def _key_count(probe, conn, wanted):
+    total = 0
+    for seg in probe._split_top_level(conn):
+        token = seg.strip()
+        if token and token.split("=", 1)[0].strip().lower() == wanted:
+            total += 1
+    return total
+
+
+def test_force_tls_dedups_duplicate_encrypt():
+    """A duplicate Encrypt (old regex fixed only the first -> parser 'Duplicate keyword')."""
+    probe = _load_probe()
+    out = probe.force_tls(
+        "Server=localhost;Encrypt=yes;Database=x;Encrypt=no"
+    )  # DevSkim: ignore DS162092
+    assert _key_count(probe, out, "encrypt") == 1
+    assert "encrypt=no" not in out.lower()
+    assert _every_segment_has_value(probe, out)
+
+
+def test_force_tls_handles_valueless_encrypt():
+    """A bare 'Encrypt' (no '=value') must not leave a value-less keyword behind."""
+    probe = _load_probe()
+    out = probe.force_tls("Server=localhost;Encrypt;Database=x")  # DevSkim: ignore DS162092
+    assert _key_count(probe, out, "encrypt") == 1
+    assert _every_segment_has_value(probe, out)
+
+
+def test_force_tls_preserves_braced_value_with_semicolon():
+    """An ODBC braced value may contain ';'; it must survive intact (MS-ODBCSTR)."""
+    probe = _load_probe()
+    out = probe.force_tls("Server=localhost;Pwd={a;b};Encrypt=no")  # DevSkim: ignore DS162092
+    assert "Pwd={a;b}" in out
+    assert _key_count(probe, out, "encrypt") == 1
+    assert "encrypt=no" not in out.lower()
+    assert _every_segment_has_value(probe, out)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Server=localhost;Database=master;Uid=sa;Pwd=StrongP@ss1",  # DevSkim: ignore DS162092
+        "Server=localhost",
+        "server=localhost;encrypt=no;trustservercertificate=no",
+        "Server = localhost ; Encrypt = no ; TrustServerCertificate = no",
+        "Server=localhost;Encrypt=Strict",
+        "Encrypt=yes;Server=localhost",
+        "Server=tcp:localhost,1433;Database=master;Uid=sa;Pwd=P@ss",  # DevSkim: ignore DS162092
+    ],
+)
+def test_force_tls_output_is_parseable(raw):
+    """Every realistic input yields a string whose every segment has a value and
+    carries exactly one Encrypt=yes / TrustServerCertificate=yes."""
+    probe = _load_probe()
+    out = probe.force_tls(raw)
+    assert _every_segment_has_value(probe, out)
+    assert _key_count(probe, out, "encrypt") == 1
+    assert _key_count(probe, out, "trustservercertificate") == 1
+    assert "encrypt=yes" in out.lower()
+    assert "trustservercertificate=yes" in out.lower()
+
+
+def test_split_top_level_respects_braces():
+    probe = _load_probe()
+    assert probe._split_top_level("Server=x;Pwd={a;b};Encrypt=no") == [
+        "Server=x",
+        "Pwd={a;b}",
+        "Encrypt=no",
+    ]
+
+
+def test_redact_masks_values_and_flags_bare_segments():
+    """The debug line must never leak a value and must surface a no-value segment."""
+    probe = _load_probe()
+    red = probe._redact("Server=localhost;Pwd=Secret!;Encrypt=yes")  # DevSkim: ignore DS162092
+    assert "Secret" not in red
+    assert "Pwd=***" in red
+    assert "Server=***" in red
+    # a segment with no '=' (the shape that trips the parser) is surfaced verbatim.
+    assert "<<NO-VALUE:" in probe._redact("Server=localhost;bogus;Encrypt=yes")
