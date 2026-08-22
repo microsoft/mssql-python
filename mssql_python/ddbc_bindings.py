@@ -107,7 +107,8 @@ def get_module_architecture(platform_name_param):
 
     Returns:
         str: 'universal2' on macOS, otherwise the normalized architecture with
-        the Windows x64 build renamed to 'amd64' to match the shipped binary
+        the Windows x64 build renamed to 'amd64' and the Windows x86 build
+        renamed to 'win32', matching the file names the build produces
     """
     # Special handling for macOS universal2 binaries
     if platform_name_param == "darwin":
@@ -117,9 +118,13 @@ def get_module_architecture(platform_name_param):
         platform_name_param, get_interpreter_architecture(platform_name_param)
     )
 
-    # Handle Windows-specific naming for binary files
+    # Handle Windows-specific naming for binary files. The build names the
+    # x64 artifact 'amd64' and the x86 artifact 'win32' (see pybind/build.bat
+    # and pybind/CMakeLists.txt), so the loader has to look for those tokens.
     if platform_name_param == "windows" and architecture_name == "x64":
         architecture_name = "amd64"
+    elif platform_name_param == "windows" and architecture_name == "x86":
+        architecture_name = "win32"
     return architecture_name
 
 
@@ -161,6 +166,7 @@ def find_module_path(module_dir_param, python_version_param, architecture_param,
     warnings.warn(
         f"Using fallback module file {module_files[0]} instead of {expected_module}",
         RuntimeWarning,
+        stacklevel=2,
     )
     return os.path.join(module_dir_param, module_files[0])
 

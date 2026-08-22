@@ -875,8 +875,9 @@ def test_ddbc_bindings_no_module_found_error(tmp_path):
         ("win-amd64", "AMD64", "amd64", "amd64"),
         # native ARM64 interpreter
         ("win-arm64", "ARM64", "arm64", "arm64"),
-        # 32 bit interpreter on a 64 bit host
-        ("win32", "AMD64", "win32", "x86"),
+        # 32 bit interpreter on a 64 bit host; the build names that artifact
+        # with the win32 token (pybind/build.bat, pybind/CMakeLists.txt)
+        ("win32", "AMD64", "win32", "win32"),
     ],
 )
 def test_windows_architecture_follows_interpreter_not_host(
