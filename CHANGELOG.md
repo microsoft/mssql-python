@@ -62,6 +62,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `VARBINARY`/`BINARY` `NULL` bindings to fail when a non-NULL parameter was
   bound first. The driver now pre-resolves unknown NULL parameter types before
   any `SQLBindParameter` calls, avoiding ODBC ordinal confusion.
+- **GH-726:** The extension loader now derives the Windows architecture from
+  `sysconfig.get_platform()` (the interpreter build) instead of
+  `platform.machine()` (the host CPU). An x64 interpreter on a Windows ARM64
+  machine previously looked for `ddbc_bindings.cpXY-arm64.pyd`, missed, and
+  took the fallback path on every import; it now resolves the `amd64` binary
+  the `win_amd64` wheel ships. The fallback notice is now emitted as a
+  `RuntimeWarning` instead of being printed to stdout.
 
 ## [1.0.0-alpha] - 2025-02-24
 

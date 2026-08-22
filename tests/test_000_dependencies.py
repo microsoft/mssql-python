@@ -12,7 +12,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from mssql_python.ddbc_bindings import normalize_architecture
+from mssql_python.ddbc_bindings import (
+    find_module_path,
+    get_interpreter_architecture,
+    get_module_architecture,
+    normalize_architecture,
+)
 
 
 class DependencyTester:
@@ -20,7 +25,7 @@ class DependencyTester:
 
     def __init__(self):
         self.platform_name = platform.system().lower()
-        self.raw_architecture = platform.machine().lower()
+        self.raw_architecture = get_interpreter_architecture(self.platform_name)
         self.module_dir = self._get_module_directory()
         self.libs_base_dir = self._get_libs_base_dir()
         self.normalized_arch = self._normalize_architecture()
@@ -802,46 +807,125 @@ def test_ddbc_bindings_import_error_scenarios():
             normalize_architecture(platform_name, arch)
 
 
-def test_ddbc_bindings_warning_fallback_scenario():
-    """Test the warning message scenario for fallback module (Lines 114-116)."""
+def test_ddbc_bindings_exact_module_match_is_silent(tmp_path, capsys):
+    """find_module_path returns the exact match without any warning or stdout output."""
 
-    # We can't easily simulate the exact fallback scenario during testing
-    # since it would require manipulating the file system during import
-    # But we can test that the warning logic would work conceptually
+    expected_module = "ddbc_bindings.cp310-amd64.pyd"
+    (tmp_path / expected_module).write_bytes(b"")
+    (tmp_path / "ddbc_bindings.cp39-amd64.pyd").write_bytes(b"")
 
-    import io
-    import contextlib
+    import warnings
 
-    # Simulate the warning print statement
-    expected_module = "ddbc_bindings.cp310-win_amd64.pyd"
-    fallback_module = "ddbc_bindings.cp39-win_amd64.pyd"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        module_path = find_module_path(str(tmp_path), "cp310", "amd64", ".pyd")
 
-    # Capture stdout to verify warning format
-    f = io.StringIO()
-    with contextlib.redirect_stdout(f):
-        print(f"Warning: Using fallback module file {fallback_module} instead of {expected_module}")
-
-    output = f.getvalue()
-    assert "Warning: Using fallback module file" in output
-    assert fallback_module in output
-    assert expected_module in output
+    assert module_path == str(tmp_path / expected_module)
+    assert capsys.readouterr().out == ""
 
 
-def test_ddbc_bindings_no_module_found_error():
-    """Test error when no ddbc_bindings module is found (Lines 110-112)."""
+def test_ddbc_bindings_warning_fallback_scenario(tmp_path, capsys):
+    """The fallback module pick is reported through warnings, not printed to stdout (GH-726)."""
 
-    # Test the error message format that would be used
+    expected_module = "ddbc_bindings.cp310-amd64.pyd"
+    fallback_module = "ddbc_bindings.cp39-amd64.pyd"
+    (tmp_path / fallback_module).write_bytes(b"")
+    (tmp_path / "other_file.txt").write_bytes(b"")
+
+    with pytest.warns(RuntimeWarning, match="Using fallback module file") as record:
+        module_path = find_module_path(str(tmp_path), "cp310", "amd64", ".pyd")
+
+    assert module_path == str(tmp_path / fallback_module)
+    message = str(record[0].message)
+    assert fallback_module in message
+    assert expected_module in message
+    # Nothing may be written to stdout: callers that pipe script output must not
+    # receive a stray warning line prepended to their data.
+    assert capsys.readouterr().out == ""
+
+
+def test_ddbc_bindings_no_module_found_error(tmp_path):
+    """Test error when no ddbc_bindings module is found."""
+
     python_version = "cp310"
     architecture = "x64"
     extension = ".pyd"
 
-    expected_error = f"No ddbc_bindings module found for {python_version}-{architecture} with extension {extension}"
+    # Files with the wrong extension or the wrong prefix must not be picked up
+    (tmp_path / "ddbc_bindings.cp310-x64.so").write_bytes(b"")
+    (tmp_path / "other_file.pyd").write_bytes(b"")
 
-    # Verify the error message format is correct
+    with pytest.raises(ImportError) as exc_info:
+        find_module_path(str(tmp_path), python_version, architecture, extension)
+
+    expected_error = str(exc_info.value)
     assert "No ddbc_bindings module found for" in expected_error
     assert python_version in expected_error
     assert architecture in expected_error
     assert extension in expected_error
+
+
+@pytest.mark.parametrize(
+    "interpreter_platform, host_machine, expected_raw_arch, expected_module_arch",
+    [
+        # x64 interpreter on a Windows ARM64 host: platform.machine() reports the
+        # host CPU, but the installed wheel is win_amd64 (GH-726)
+        ("win-amd64", "ARM64", "amd64", "amd64"),
+        # native x64 interpreter on an x64 host
+        ("win-amd64", "AMD64", "amd64", "amd64"),
+        # native ARM64 interpreter
+        ("win-arm64", "ARM64", "arm64", "arm64"),
+        # 32 bit interpreter on a 64 bit host
+        ("win32", "AMD64", "win32", "x86"),
+    ],
+)
+def test_windows_architecture_follows_interpreter_not_host(
+    monkeypatch, interpreter_platform, host_machine, expected_raw_arch, expected_module_arch
+):
+    """On Windows the loader must derive the architecture from the interpreter build."""
+
+    import sysconfig
+
+    monkeypatch.setattr(sysconfig, "get_platform", lambda: interpreter_platform)
+    monkeypatch.setattr(platform, "machine", lambda: host_machine)
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+
+    assert get_interpreter_architecture("windows") == expected_raw_arch
+    assert get_module_architecture("windows") == expected_module_arch
+
+
+def test_expected_extension_matches_loader_on_windows_arm64_host(monkeypatch):
+    """The test helper and the loader agree on an x64 interpreter on an ARM64 host (GH-726)."""
+
+    import sysconfig
+
+    monkeypatch.setattr(sysconfig, "get_platform", lambda: "win-amd64")
+    monkeypatch.setattr(platform, "machine", lambda: "ARM64")
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+
+    python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    expected_name = f"ddbc_bindings.{python_version}-{get_module_architecture('windows')}.pyd"
+
+    assert expected_name == f"ddbc_bindings.{python_version}-amd64.pyd"
+    assert DependencyTester().get_expected_python_extension().name == expected_name
+
+
+def test_non_windows_architecture_uses_platform_machine(monkeypatch):
+    """Linux keeps using platform.machine(); macOS always resolves to universal2."""
+
+    import sysconfig
+
+    # A misleading sysconfig value must be ignored outside Windows
+    monkeypatch.setattr(sysconfig, "get_platform", lambda: "win-amd64")
+    monkeypatch.setattr(platform, "machine", lambda: "aarch64")
+
+    assert get_interpreter_architecture("linux") == "aarch64"
+    assert get_module_architecture("linux") == "arm64"
+
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    assert get_interpreter_architecture("linux") == "x86_64"
+    assert get_module_architecture("linux") == "x86_64"
+    assert get_module_architecture("darwin") == "universal2"
 
 
 class TestOdbcPackageSplit:
