@@ -335,3 +335,13 @@ Get-ChildItem -Path $bld -Recurse -Include *.conda, *.tar.bz2 |
 Where-Object { $_.Name -like 'mssql-python*' } |
 ForEach-Object { Write-Host "  $($_.FullName)" }
 Write-Host "CONDA_BUILD_OK"
+# Reset the process exit code to 0 on success. On the win-arm64 best-effort leg the last native
+# command in the verify loop is the runnable-check `conda run` that INTENTIONALLY fails -- the
+# arm64 Python cannot launch on the x64 host (exit 216 = ERROR_EXE_MACHINE_TYPE_MISMATCH) -- so we
+# skip the import and `continue`. That non-zero $LASTEXITCODE would otherwise linger as the value
+# the caller sees and fail the leg even though every package built and its deps resolved. We must
+# NOT use PowerShell `exit 0` here: the .yml step calls this script with `& ...` in-session, so
+# `exit` would terminate the whole step BEFORE it stages the packages. A trailing SUCCESSFUL native
+# command resets $LASTEXITCODE and returns control to the caller (so staging runs). Any REAL failure
+# already exited 1 via Assert-LastExit / the explicit `exit 1` paths above.
+cmd /c "exit 0"
