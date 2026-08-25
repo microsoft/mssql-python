@@ -260,6 +260,15 @@ else {
     # mssql_python\ (source, no compiled .pyd) would shadow the conda-installed
     # package -> "No ddbc_bindings module found". $OutputDir is outside the repo.
     Set-Location $OutputDir
+    # The verify loop drives native `conda` commands (env remove / run) that legitimately
+    # write to stderr on their NON-FATAL paths: `conda env remove` on an absent env (fresh
+    # agent / first run), and `conda run` when the cross-built arm64 Python can't execute on
+    # this x64 host. Under the script-wide $ErrorActionPreference='Stop', PowerShell escalates
+    # ANY native stderr write to a terminating NativeCommandError, aborting the leg BEFORE the
+    # exit-code checks below (this is what failed both win-64 and win-arm64 at `conda env
+    # remove`). Switch to 'Continue' for the verify section and gate control flow on
+    # $LASTEXITCODE / Assert-LastExit instead -- the same intent as the bash port's `|| true`.
+    $ErrorActionPreference = 'Continue'
     # A win-arm64 package is CROSS-built on the x64 agent: its deps resolve (from Anaconda
     # defaults + the microsoft noarch azure-identity/msal), but the arm64 Python cannot
     # execute here, so the runtime import is best-effort/auto-skipped -- the same contract
