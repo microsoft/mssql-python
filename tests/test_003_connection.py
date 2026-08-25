@@ -2642,11 +2642,15 @@ def test_constructor_login_timeout_honored_on_unresponsive_server():
     # never arrives — bounded by the 3s login timeout.
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        listener.bind(("127.0.0.1", 0))
+        # Loopback-only listener: this is a hermetic test fixture, not runtime or
+        # debug code. The loopback literal is centralized here so the DevSkim
+        # localhost check (DS162092) has a single, clearly-scoped suppression.
+        loopback = "127.0.0.1"  # DevSkim: ignore DS162092
+        listener.bind((loopback, 0))
         listener.listen(1)
         port = listener.getsockname()[1]
         unresponsive = (
-            f"Server=127.0.0.1,{port};Database=master;Encrypt=no;TrustServerCertificate=yes;"
+            f"Server={loopback},{port};Database=master;Encrypt=no;TrustServerCertificate=yes;"
         )
         start = time.time()
         with pytest.raises(Exception):
