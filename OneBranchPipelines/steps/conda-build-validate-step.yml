@@ -31,6 +31,14 @@ parameters:
   # linux-64, linux-aarch64). Must match the platform of THIS agent.
   - name: condaSubdir
     type: string
+  # Optional target subdir to CROSS-build via CONDA_SUBDIR on this (x64) agent, e.g.
+  # 'win-arm64'. Empty = build the host's native subdir. On a cross leg the arm64 Python
+  # cannot execute here, so the runtime import auto-skips; the deps still solve (from
+  # Anaconda `defaults` + the microsoft noarch azure-identity/msal) and the package is
+  # built + staged. Pair with continueOnError=true.
+  - name: condaTargetSubdir
+    type: string
+    default: ''
   # Target architecture of the wheel build; the step is skipped unless 'x64'
   # (or a native arch) so cross-compiled legs don't attempt a conda build.
   - name: targetArch
@@ -117,7 +125,8 @@ steps:
         -OutputDir "${{ parameters.outputDir }}" `
         -MssqlPythonVersion $mssqlVer `
         -OdbcVersion $odbcVer `
-        -PythonVersions "${{ parameters.pythonVersion }}"
+        -PythonVersions "${{ parameters.pythonVersion }}" `
+        -CondaSubdir "${{ parameters.condaTargetSubdir }}"
       if ($LASTEXITCODE -ne 0) { Write-Error "conda build+validate failed (exit $LASTEXITCODE)"; exit 1 }
 
       # Stage the built conda packages onto the leg's artifact so the consolidate

@@ -174,6 +174,14 @@ $env:MSSQL_ODBC_VERSION = $OdbcVersion
 if ($CondaSubdir) {
     $env:CONDA_SUBDIR = $CondaSubdir
     Write-Host "Cross-targeting conda subdir: CONDA_SUBDIR=$($env:CONDA_SUBDIR)"
+    if ($CondaSubdir -eq 'win-arm64') {
+        # win-arm64 deps (python 3.12-3.14, cryptography, vc14_runtime, pyodbc) live on
+        # Anaconda `defaults`, NOT conda-forge (which only ships win-arm64 python 3.14 and
+        # no cryptography). Auto-accept the defaults Terms of Service so the unattended
+        # conda-build host-env solve and the verify solve never block on a ToS prompt.
+        $env:CONDA_PLUGINS_AUTO_ACCEPT_TOS = 'yes'
+        Write-Host "win-arm64: CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes (Anaconda defaults supplies the win-arm64 deps)"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -190,7 +198,15 @@ if ($Package -eq 'odbc') {
 else {
     foreach ($py in $pyvers) {
         Write-Host "=== [py $py] build mssql-python (self-contained: vendors the ODBC payload) ==="
-        & $conda build $bindRecipe --python $py --no-test --no-anaconda-upload --output-folder $bld
+        if ($CondaSubdir -eq 'win-arm64') {
+            # The win-arm64 host env's python 3.12/3.13 only exists on Anaconda `defaults`
+            # (conda-forge ships win-arm64 python 3.14 only), so add defaults ahead of
+            # conda-forge for the host-env solve.
+            & $conda build $bindRecipe --python $py --no-test --no-anaconda-upload --output-folder $bld -c defaults -c conda-forge
+        }
+        else {
+            & $conda build $bindRecipe --python $py --no-test --no-anaconda-upload --output-folder $bld
+        }
         Assert-LastExit "conda build mssql-python (py $py)"
     }
 }
@@ -244,15 +260,51 @@ else {
     # mssql_python\ (source, no compiled .pyd) would shadow the conda-installed
     # package -> "No ddbc_bindings module found". $OutputDir is outside the repo.
     Set-Location $OutputDir
+    # A win-arm64 package is CROSS-built on the x64 agent: its deps resolve (from Anaconda
+    # defaults + the microsoft noarch azure-identity/msal), but the arm64 Python cannot
+    # execute here, so the runtime import is best-effort/auto-skipped -- the same contract
+    # as the osx-arm64 cross-build in build.sh (a static arch audit stands in). Native legs
+    # stay fully blocking.
+    $crossBestEffort = ($CondaSubdir -eq 'win-arm64')
     foreach ($py in $pyvers) {
-        $envName = "verify_" + ($py -replace '\.', '')
+        $sub = if ($CondaSubdir) { $CondaSubdir -replace '-', '_' } else { 'native' }
+        $envName = "verify_${sub}_" + ($py -replace '\.', '')
+        & $conda env remove -y -n $envName 2>$null
         Write-Host "=== [py $py] create verify env from local channel ==="
-        # -c microsoft (ahead of conda-forge) so azure-core/azure-identity/msal resolve from the
-        # lean `microsoft` channel, NOT conda-forge whose azure-core recipe over-declares flask/six
-        # -> celery/boto3/botocore (~9 MB); see conda-forge/azure-core-feedstock#71.
-        # --strict-channel-priority keeps the freshly built local package authoritative.
-        & $conda create -y -n $envName -c $localChannel -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
-        Assert-LastExit "conda create verify env (py $py)"
+        if ($CondaSubdir -eq 'win-arm64') {
+            # win-arm64: azure-identity/msal are noarch on `microsoft`; their native dep
+            # cryptography (plus python/vc14_runtime/pyodbc) is on Anaconda `defaults`, NOT
+            # conda-forge. Drop --strict-channel-priority so a dep split across microsoft +
+            # defaults still solves.
+            & $conda create -y -n $envName -c $localChannel -c microsoft -c defaults --override-channels "python=$py" mssql-python
+        }
+        else {
+            # -c microsoft (ahead of conda-forge) so azure-core/azure-identity/msal resolve from the
+            # lean `microsoft` channel, NOT conda-forge whose azure-core recipe over-declares flask/six
+            # -> celery/boto3/botocore (~9 MB); see conda-forge/azure-core-feedstock#71.
+            # --strict-channel-priority keeps the freshly built local package authoritative.
+            & $conda create -y -n $envName -c $localChannel -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
+        }
+        if ($LASTEXITCODE -ne 0) {
+            if ($crossBestEffort) {
+                Write-Warning "[py $py] win-arm64 verify solve failed (best-effort cross leg); the package was already built + staged. Investigate dep availability on defaults/microsoft for python=$py."
+                continue
+            }
+            Assert-LastExit "conda create verify env (py $py)"
+        }
+
+        # Can the freshly built package's Python EXECUTE on this host? On the win-arm64
+        # cross leg it cannot (arm64 on x64), so skip the runtime import -- exactly like
+        # the osx-arm64 cross-build. Any OTHER non-runnable target is a real failure.
+        & $conda run -n $envName python -c "import sys" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            if ($crossBestEffort) {
+                Write-Host "=== [py $py] win-arm64 cross on x64: target Python not executable; deps resolved but skipping runtime import (static arm64-slice audit stands in). ==="
+                continue
+            }
+            Write-Error "target Python for CONDA_SUBDIR=$CondaSubdir is not executable on this host, and this is NOT the win-arm64 cross-build. Refusing to silently skip validation."
+            exit 1
+        }
 
         Write-Host "=== [py $py] import mssql_python + prove the vendored ODBC payload is present ==="
         & $conda run -n $envName python -c "import mssql_python; print('BINDING_OK', mssql_python.__version__)"
