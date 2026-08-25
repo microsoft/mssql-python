@@ -292,7 +292,13 @@ class Connection:
                                           Use this for attributes that must be set before
                                           connecting, such as SQL_ATTR_LOGIN_TIMEOUT,
                                           SQL_ATTR_ODBC_CURSORS, and SQL_ATTR_PACKET_SIZE.
-            timeout (int): Login timeout in seconds. 0 means no timeout.
+            timeout (int): Login (connection-attempt) timeout in seconds. 0 (default)
+                means the driver default is used. This sets SQL_ATTR_LOGIN_TIMEOUT
+                before connecting and bounds how long ``connect()`` waits to
+                establish the connection. It is distinct from the
+                ``Connection.timeout`` property, which is the per-statement query
+                timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]`` takes
+                precedence over this value.
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
@@ -628,7 +634,20 @@ class Connection:
             self._auth_type = auth_type or extract_auth_type(parsed_params)
 
         self._closed = False
-        self._timeout = timeout
+
+        # ``timeout`` (constructor arg) is the LOGIN/connection-attempt timeout,
+        # matching pyodbc: it sets SQL_ATTR_LOGIN_TIMEOUT before connecting and
+        # bounds how long connect() waits. It is distinct from Connection.timeout
+        # (the per-statement QUERY timeout, tracked by self._timeout and applied
+        # to cursors), which defaults to 0 = disabled. Validate it the same way
+        # as the Connection.timeout setter so both entry points reject bad input
+        # identically. Only inject the login timeout when the caller asked for
+        # one (> 0) and did not already set it explicitly via attrs_before (an
+        # explicit attrs_before value wins).
+        self._timeout = 0
+        login_timeout = self._validate_timeout(timeout)
+        if login_timeout > 0:
+            self._attrs_before.setdefault(ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value, login_timeout)
 
         # Using WeakSet which automatically removes cursors when they are no
         # longer in use
@@ -917,6 +936,33 @@ class Connection:
 
         return conn_str, normalized_params
 
+    @staticmethod
+    def _validate_timeout(value: int) -> int:
+        """
+        Validate a timeout value (login or query) and normalize it to ``int``.
+
+        Shared by ``__init__`` (login timeout) and the ``timeout`` setter (query
+        timeout) so both entry points reject invalid input identically and can
+        never drift apart.
+
+        Args:
+            value (int): Timeout in seconds. Must be a non-negative integer.
+
+        Returns:
+            int: The validated timeout value.
+
+        Raises:
+            TypeError: If ``value`` is not an integer (``bool`` is rejected too).
+            ValueError: If ``value`` is negative.
+        """
+        # ``bool`` is a subclass of ``int``; reject it explicitly so a stray
+        # ``timeout=True`` cannot slip through as ``1`` (a classic int/bool footgun).
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError("Timeout must be an integer")
+        if value < 0:
+            raise ValueError("Timeout cannot be negative")
+        return value
+
     @property
     def timeout(self) -> int:
         """
@@ -943,11 +989,7 @@ class Connection:
             It cannot be changed for individual cursors or SQL statements.
             If a query timeout occurs, an OperationalError exception will be raised.
         """
-        if not isinstance(value, int):
-            raise TypeError("Timeout must be an integer")
-        if value < 0:
-            raise ValueError("Timeout cannot be negative")
-        self._timeout = value
+        self._timeout = self._validate_timeout(value)
         logger.info(f"Query timeout set to {value} seconds")
 
     @property
