@@ -2626,29 +2626,41 @@ def test_constructor_timeout_respects_explicit_attrs_before(conn_str):
         conn.close()
 
 
-def test_constructor_login_timeout_honored_on_unreachable_server():
-    """GH #725: connect(timeout=N) bounds the connection attempt.
+def test_constructor_login_timeout_honored_on_unresponsive_server():
+    """GH #725: connect(timeout=N) bounds the login/handshake attempt.
 
-    Against an unreachable host, connect() must fail at roughly the login
-    timeout rather than the (much longer) driver default. No credentials are
-    included: the connection string is well-formed and the TCP SYN to a
-    non-routable address is dropped before any auth, so the login timeout —
-    not a parse or auth failure — is what ends the attempt.
+    Uses a local listening socket that accepts the TCP connection but never
+    responds to the TDS prelogin, so the driver blocks in the login handshake
+    until SQL_ATTR_LOGIN_TIMEOUT fires. This is deterministic and independent of
+    external network/firewall behavior (unlike routing to a blackholed IP), so
+    it cannot false-fail on restricted-egress CI.
     """
-    # 192.0.2.1 = TEST-NET-1 (RFC 5737): guaranteed non-routable, so the TCP
-    # SYN is dropped and connect() blocks until the login timeout fires.
-    unreachable = "Server=192.0.2.1,1433;Database=master;Encrypt=no;TrustServerCertificate=yes;"
-    start = time.time()
-    with pytest.raises(Exception):
-        connect(unreachable, timeout=3).close()
-    elapsed = time.time() - start
-    # Lower bound: the string is valid, so we do not fail instantly on a parse or
-    # auth error — the elapsed time actually reflects the login-timeout path and
-    # would catch a regression that made the timeout fire immediately or not at all.
-    assert elapsed >= 2.0, f"Connect failed in {elapsed:.1f}s; login timeout not exercised"
-    # Upper bound: well under the ~15s driver default, proving the 3s login
-    # timeout was actually applied.
-    assert elapsed < 12, f"Login timeout not honored; connect took {elapsed:.1f}s"
+    import socket
+
+    # Listen but never accept()/respond: the kernel completes the TCP handshake
+    # (so connect() succeeds), then the driver waits for a prelogin reply that
+    # never arrives — bounded by the 3s login timeout.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        unresponsive = (
+            f"Server=127.0.0.1,{port};Database=master;Encrypt=no;TrustServerCertificate=yes;"
+        )
+        start = time.time()
+        with pytest.raises(Exception):
+            connect(unresponsive, timeout=3).close()
+        elapsed = time.time() - start
+        # Lower bound: the TCP connect succeeds instantly, so any elapsed >= 2s
+        # proves the driver actually waited in the login handshake and the login
+        # timeout (not an immediate failure) ended it.
+        assert elapsed >= 2.0, f"Connect failed in {elapsed:.1f}s; login timeout not exercised"
+        # Upper bound: well under the ~15s driver default, proving the 3s login
+        # timeout was actually applied.
+        assert elapsed < 12, f"Login timeout not honored; connect took {elapsed:.1f}s"
+    finally:
+        listener.close()
 
 
 def test_constructor_timeout_rejects_invalid_values(conn_str):
@@ -2658,10 +2670,10 @@ def test_constructor_timeout_rejects_invalid_values(conn_str):
     in the native layer. Validation happens before any connection is attempted.
     """
     for bad in (-1, -5, -100):
-        with pytest.raises(ValueError, match="Timeout cannot be negative"):
+        with pytest.raises(ValueError, match="Login timeout cannot be negative"):
             connect(conn_str, timeout=bad)
     for bad in ("10", 10.5, None, [], {}, True, False):
-        with pytest.raises(TypeError, match="Timeout must be an integer"):
+        with pytest.raises(TypeError, match="Login timeout must be an integer"):
             connect(conn_str, timeout=bad)
 
 
@@ -5211,7 +5223,7 @@ def test_timeout_edge_cases_and_boundaries(db_connection):
         # Test invalid timeout values (should raise ValueError)
         invalid_values = [-1, -5, -100]
         for invalid_val in invalid_values:
-            with pytest.raises(ValueError, match="Timeout cannot be negative"):
+            with pytest.raises(ValueError, match="Query timeout cannot be negative"):
                 db_connection.timeout = invalid_val
 
         # Test non-integer timeout values (should raise TypeError)
@@ -5222,7 +5234,7 @@ def test_timeout_edge_cases_and_boundaries(db_connection):
 
         # bool is a subclass of int but is not a valid timeout value
         for bad_bool in [True, False]:
-            with pytest.raises(TypeError, match="Timeout must be an integer"):
+            with pytest.raises(TypeError, match="Query timeout must be an integer"):
                 db_connection.timeout = bad_bool
 
         print("Successfully tested timeout edge cases and boundaries")

@@ -299,7 +299,9 @@ class Connection:
                 connect and is not covered by this attribute.) It is distinct from
                 the ``Connection.timeout`` property, which is the per-statement
                 query timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
-                takes precedence over this value.
+                takes precedence over this value. (pyodbc migration note: pyodbc
+                lets a positive ``timeout=`` override ``attrs_before``; here the
+                explicit ``attrs_before`` entry wins.)
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
@@ -392,7 +394,7 @@ class Connection:
         # one (> 0) and did not already set it explicitly via attrs_before (an
         # explicit attrs_before value wins).
         self._timeout = 0
-        login_timeout = self._validate_timeout(timeout)
+        login_timeout = self._validate_timeout(timeout, kind="Login timeout")
         if login_timeout > 0:
             self._attrs_before.setdefault(ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value, login_timeout)
 
@@ -939,16 +941,18 @@ class Connection:
         return conn_str, normalized_params
 
     @staticmethod
-    def _validate_timeout(value: int) -> int:
+    def _validate_timeout(value: int, kind: str = "Timeout") -> int:
         """
         Validate a timeout value (login or query) and normalize it to ``int``.
 
         Shared by ``__init__`` (login timeout) and the ``timeout`` setter (query
         timeout) so both entry points reject invalid input identically and can
-        never drift apart.
+        never drift apart. ``kind`` only customizes the error-message wording
+        ("Login timeout" vs "Query timeout"); the validation rules are identical.
 
         Args:
             value (int): Timeout in seconds. Must be a non-negative integer.
+            kind (str): Human-readable label used in error messages.
 
         Returns:
             int: The validated timeout value.
@@ -960,9 +964,9 @@ class Connection:
         # ``bool`` is a subclass of ``int``; reject it explicitly so a stray
         # ``timeout=True`` cannot slip through as ``1`` (a classic int/bool footgun).
         if isinstance(value, bool) or not isinstance(value, int):
-            raise TypeError("Timeout must be an integer")
+            raise TypeError(f"{kind} must be an integer")
         if value < 0:
-            raise ValueError("Timeout cannot be negative")
+            raise ValueError(f"{kind} cannot be negative")
         return value
 
     @property
@@ -991,7 +995,7 @@ class Connection:
             It cannot be changed for individual cursors or SQL statements.
             If a query timeout occurs, an OperationalError exception will be raised.
         """
-        self._timeout = self._validate_timeout(value)
+        self._timeout = self._validate_timeout(value, kind="Query timeout")
         logger.info(f"Query timeout set to {value} seconds")
 
     @property
