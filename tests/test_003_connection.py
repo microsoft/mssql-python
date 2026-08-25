@@ -2630,21 +2630,24 @@ def test_constructor_login_timeout_honored_on_unreachable_server():
     """GH #725: connect(timeout=N) bounds the connection attempt.
 
     Against an unreachable host, connect() must fail at roughly the login
-    timeout rather than the (much longer) driver default.
+    timeout rather than the (much longer) driver default. No credentials are
+    included: the connection string is well-formed and the TCP SYN to a
+    non-routable address is dropped before any auth, so the login timeout —
+    not a parse or auth failure — is what ends the attempt.
     """
     # 192.0.2.1 = TEST-NET-1 (RFC 5737): guaranteed non-routable, so the TCP
     # SYN is dropped and connect() blocks until the login timeout fires.
-    unreachable = (
-        "Server=192.0.2.1,1433;Database=master;Uid=probe;Pwd=dummy;"
-        "Encrypt=no;TrustServerCertificate=yes;"
-    )
+    unreachable = "Server=192.0.2.1,1433;Database=master;Encrypt=no;TrustServerCertificate=yes;"
     start = time.time()
     with pytest.raises(Exception):
         connect(unreachable, timeout=3).close()
     elapsed = time.time() - start
-    # Generous upper bound: must be well under the ~15s driver default, proving
-    # the login timeout was actually applied. Lower bound guards against an
-    # immediate non-timeout failure masking the behavior.
+    # Lower bound: the string is valid, so we do not fail instantly on a parse or
+    # auth error — the elapsed time actually reflects the login-timeout path and
+    # would catch a regression that made the timeout fire immediately or not at all.
+    assert elapsed >= 2.0, f"Connect failed in {elapsed:.1f}s; login timeout not exercised"
+    # Upper bound: well under the ~15s driver default, proving the 3s login
+    # timeout was actually applied.
     assert elapsed < 12, f"Login timeout not honored; connect took {elapsed:.1f}s"
 
 
@@ -4928,9 +4931,14 @@ def test_getinfo_comprehensive_edge_case_coverage(db_connection):
 
 
 def test_timeout_long_running_query_with_small_timeout(conn_str):
-    """Test that a long-running query with small timeout (1-2 seconds) raises timeout error.
+    """Validate the two distinct timeout behaviors after GH #725.
 
-    This test replicates exactly what test_timeout_bug.py does to ensure consistency.
+    Test 1: the constructor ``timeout`` is the LOGIN (connection-attempt)
+    timeout, so a small value must NOT abort a long-running query — the 5s
+    WAITFOR completes and ``Connection.timeout`` (the query timeout) stays 0.
+
+    Test 2: the ``Connection.timeout`` property IS the per-statement query
+    timeout, so setting it to 2s must abort a 5s WAITFOR with a timeout error.
     """
     import time
     import mssql_python

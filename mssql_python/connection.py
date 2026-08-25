@@ -294,11 +294,12 @@ class Connection:
                                           SQL_ATTR_ODBC_CURSORS, and SQL_ATTR_PACKET_SIZE.
             timeout (int): Login (connection-attempt) timeout in seconds. 0 (default)
                 means the driver default is used. This sets SQL_ATTR_LOGIN_TIMEOUT
-                before connecting and bounds how long ``connect()`` waits to
-                establish the connection. It is distinct from the
-                ``Connection.timeout`` property, which is the per-statement query
-                timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]`` takes
-                precedence over this value.
+                before connecting and bounds the login/network connection attempt.
+                (Microsoft Entra ID token acquisition happens before the ODBC
+                connect and is not covered by this attribute.) It is distinct from
+                the ``Connection.timeout`` property, which is the per-statement
+                query timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
+                takes precedence over this value.
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
@@ -379,6 +380,21 @@ class Connection:
         # caller's object would leak the access token into user state and break
         # re-using the same attrs_before dict across multiple connections.
         self._attrs_before = dict(attrs_before) if attrs_before else {}
+
+        # Validate and apply the LOGIN/connection-attempt timeout up front —
+        # before any Entra/token acquisition below — so invalid input (negative,
+        # non-int, bool) fails fast without triggering a network or interactive
+        # token fetch. ``timeout`` matches pyodbc's login timeout: it sets
+        # SQL_ATTR_LOGIN_TIMEOUT and bounds the login/network connection attempt.
+        # It is distinct from Connection.timeout (the per-statement QUERY timeout,
+        # tracked by self._timeout and applied to cursors), which defaults to
+        # 0 = disabled. Only inject the login timeout when the caller asked for
+        # one (> 0) and did not already set it explicitly via attrs_before (an
+        # explicit attrs_before value wins).
+        self._timeout = 0
+        login_timeout = self._validate_timeout(timeout)
+        if login_timeout > 0:
+            self._attrs_before.setdefault(ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value, login_timeout)
 
         # Initialize encoding settings with defaults for Python 3
         # Python 3 only has str (which is Unicode), so we use utf-16le by default
@@ -634,20 +650,6 @@ class Connection:
             self._auth_type = auth_type or extract_auth_type(parsed_params)
 
         self._closed = False
-
-        # ``timeout`` (constructor arg) is the LOGIN/connection-attempt timeout,
-        # matching pyodbc: it sets SQL_ATTR_LOGIN_TIMEOUT before connecting and
-        # bounds how long connect() waits. It is distinct from Connection.timeout
-        # (the per-statement QUERY timeout, tracked by self._timeout and applied
-        # to cursors), which defaults to 0 = disabled. Validate it the same way
-        # as the Connection.timeout setter so both entry points reject bad input
-        # identically. Only inject the login timeout when the caller asked for
-        # one (> 0) and did not already set it explicitly via attrs_before (an
-        # explicit attrs_before value wins).
-        self._timeout = 0
-        login_timeout = self._validate_timeout(timeout)
-        if login_timeout > 0:
-            self._attrs_before.setdefault(ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value, login_timeout)
 
         # Using WeakSet which automatically removes cursors when they are no
         # longer in use
