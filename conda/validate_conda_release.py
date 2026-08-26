@@ -10,8 +10,9 @@ NO separate companion package:
   (catches a mislabeled / mis-stamped leg);
 * the only package name is ``mssql-python`` and its version matches the expected
   release version (or, if none supplied, is internally consistent -- one version);
-* the full (required-subdir x Python) matrix is complete -- every required
-  platform ships a package for every expected Python.
+* the (required-subdir x Python) matrix is complete -- every required platform
+  ships a package for every expected Python, honoring any per-subdir Python
+  override (e.g. win-arm64 ships only 3.12-3.14).
 
 Exit code 0 = release-ready; non-zero = a violation was found (blocks publish).
 """
@@ -31,6 +32,11 @@ _BINDING_NAME = "mssql-python"
 
 _PY_TAG_RE = re.compile(r"py(\d)(\d{1,2})")
 _PY_DEP_RE = re.compile(r"python\s+(\d+)\.(\d+)")
+
+# Some subdirs legitimately ship a REDUCED Python matrix. win-arm64's conda
+# dependencies (cryptography, pyodbc) are published on Anaconda `defaults` only
+# for Python 3.12+, so 3.10/3.11 cannot be built there -- expect 3.12-3.14 only.
+_DEFAULT_SUBDIR_PYTHONS = "win-arm64=3.12,3.13,3.14"
 
 
 def _zstd_decompress(raw: bytes) -> bytes:
@@ -94,15 +100,20 @@ def validate(
     allowed_subdirs: list[str],
     expected_pythons: list[str],
     expected_versions: dict | None = None,
+    subdir_pythons: dict | None = None,
 ) -> list[str]:
     """Return a list of human-readable violation strings (empty == release-ready).
 
     ``packages`` is a list of dicts with keys: ``folder`` (staged subdir folder),
     ``subdir`` (real info/index.json subdir), ``name``, ``version``, ``build``,
     ``python`` (``X.Y`` or ``''``).
+
+    ``subdir_pythons`` maps a subdir to the Python versions expected FOR THAT
+    subdir, overriding ``expected_pythons`` (e.g. win-arm64 ships only 3.12-3.14).
     """
     errors: list[str] = []
     expected_versions = expected_versions or {}
+    subdir_pythons = subdir_pythons or {}
 
     # 1. Authoritative subdir must be allowed AND match the folder it was staged in.
     for p in packages:
@@ -187,8 +198,9 @@ def validate(
                     f"{p['name']}-{p['version']}-{p['build']} in '{sub}' has no "
                     f"detectable Python tag (build string should carry pyXY)."
                 )
+        sub_expected = subdir_pythons.get(sub, expected_pythons)
         got_pythons = sorted({p["python"] for p in bindings if p["python"]})
-        missing = [py for py in expected_pythons if py not in got_pythons]
+        missing = [py for py in sub_expected if py not in got_pythons]
         if missing:
             errors.append(
                 f"subdir '{sub}': matrix INCOMPLETE -- missing Python {missing} "
@@ -228,6 +240,18 @@ def _split(value: str) -> list[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def _parse_subdir_pythons(value: str) -> dict:
+    """Parse ``subdir=py,py;subdir2=py,py`` into ``{subdir: [py, ...]}``."""
+    result: dict = {}
+    for chunk in value.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        subdir, _, pys = chunk.partition("=")
+        result[subdir.strip()] = _split(pys)
+    return result
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="Root of the consolidated conda tree.")
@@ -239,6 +263,11 @@ def main(argv: list | None = None) -> int:
         default="win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64",
     )
     parser.add_argument("--pythons", default="3.10,3.11,3.12,3.13,3.14")
+    parser.add_argument(
+        "--subdir-pythons",
+        default=_DEFAULT_SUBDIR_PYTHONS,
+        help="Per-subdir Python overrides, e.g. 'win-arm64=3.12,3.13,3.14'.",
+    )
     parser.add_argument("--mssql-python-version", default=None)
     parser.add_argument("--mssql-python-odbc-version", default=None)
     args = parser.parse_args(argv)
@@ -255,12 +284,16 @@ def main(argv: list | None = None) -> int:
     # self-contained mssql-python package vendors the ODBC payload, so there is no
     # separate companion package to version.
 
+    subdir_pythons = _parse_subdir_pythons(args.subdir_pythons)
+
     print(f"Discovered {len(packages)} conda package(s):")
     for p in sorted(packages, key=lambda x: (x["subdir"], x["name"], x["python"])):
         print(
             f"  {p['subdir']:<14} {p['name']:<18} {p['version']:<12} "
             f"py={p['python'] or '-':<5} build={p['build']}"
         )
+    if subdir_pythons:
+        print(f"Per-subdir Python overrides: {subdir_pythons}")
 
     errors = validate(
         packages,
@@ -268,6 +301,7 @@ def main(argv: list | None = None) -> int:
         allowed_subdirs=_split(args.allowed_subdirs),
         expected_pythons=_split(args.pythons),
         expected_versions=expected_versions,
+        subdir_pythons=subdir_pythons,
     )
 
     if errors:

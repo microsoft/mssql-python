@@ -168,6 +168,55 @@ def test_present_allowed_subdir_partial_matrix_fails():
     assert any("win-arm64" in e and "INCOMPLETE" in e for e in errors)
 
 
+def test_win_arm64_reduced_matrix_passes_with_override():
+    # win-arm64 legitimately ships only 3.12-3.14 (Anaconda `defaults` has no
+    # cryptography/pyodbc for 3.10/3.11). With the per-subdir override it must PASS.
+    pkgs = _healthy_set()
+    for py in ["3.12", "3.13", "3.14"]:
+        pkgs.append(_binding("win-arm64", py))
+    errors = vcr.validate(
+        pkgs,
+        required_subdirs=_REQUIRED,
+        allowed_subdirs=_ALLOWED,
+        expected_pythons=_PYTHONS,
+        expected_versions={"mssql-python": _MP_VER},
+        subdir_pythons={"win-arm64": ["3.12", "3.13", "3.14"]},
+    )
+    assert errors == []
+
+
+def test_win_arm64_reduced_matrix_still_fails_when_incomplete():
+    # Even with the reduced expectation, a missing 3.13 must still fail.
+    pkgs = _healthy_set()
+    for py in ["3.12", "3.14"]:
+        pkgs.append(_binding("win-arm64", py))
+    errors = vcr.validate(
+        pkgs,
+        required_subdirs=_REQUIRED,
+        allowed_subdirs=_ALLOWED,
+        expected_pythons=_PYTHONS,
+        expected_versions={"mssql-python": _MP_VER},
+        subdir_pythons={"win-arm64": ["3.12", "3.13", "3.14"]},
+    )
+    assert any("win-arm64" in e and "INCOMPLETE" in e and "3.13" in e for e in errors)
+
+
+def test_default_subdir_pythons_reduces_win_arm64():
+    # The shipped CLI default carries the win-arm64 reduction so the pipeline needs
+    # no extra flag; parsing it yields the expected mapping.
+    assert vcr._parse_subdir_pythons(vcr._DEFAULT_SUBDIR_PYTHONS) == {
+        "win-arm64": ["3.12", "3.13", "3.14"]
+    }
+
+
+def test_parse_subdir_pythons():
+    assert vcr._parse_subdir_pythons("") == {}
+    assert vcr._parse_subdir_pythons("a=3.10;b=3.11,3.12") == {
+        "a": ["3.10"],
+        "b": ["3.11", "3.12"],
+    }
+
+
 def test_python_tag_from_index():
     assert vcr.python_tag_from_index({"build": "py311_0"}) == "3.11"
     assert vcr.python_tag_from_index({"build": "py310h1a2b3c_0"}) == "3.10"
