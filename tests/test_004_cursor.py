@@ -10,9 +10,12 @@ Note: The cursor function is not yet implemented, so related tests are commented
 
 import pytest
 import os
+import warnings
 from datetime import datetime, date, time, timedelta, timezone
+from pathlib import Path
 import time as time_module
 import decimal
+import traceback
 from contextlib import closing
 import threading
 import mssql_python
@@ -106,6 +109,15 @@ PARAM_TEST_DATA = [
         1.23456789,
     ),
 ]
+
+
+def test_package_sources_compile_with_warnings_as_errors():
+    """Every package source must compile when warnings are promoted to errors."""
+    package_dir = Path(__file__).parents[1] / "mssql_python"
+    for source in sorted(package_dir.glob("*.py")):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(source.read_text(encoding="utf-8"), str(source), "exec")
 
 
 def drop_table_if_exists(cursor, table_name):
@@ -10451,7 +10463,12 @@ def test_setinputsizes_sql_decimal_null(db_connection):
 
 
 def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
-    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503)."""
+    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503).
+
+    The raised message must be metadata-only: it reports the row index, column
+    index, and value type, but must NOT embed the offending value or the full
+    parameter row (which may contain PII such as SSNs/emails/balances).
+    """
     cursor = db_connection.cursor()
 
     cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
@@ -10460,13 +10477,182 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
 
         cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
 
-        with pytest.raises(ValueError, match="Failed to convert parameter"):
+        sensitive_value = "123-45-6789"  # stand-in for PII in the failing row
+        with pytest.raises(ValueError) as exc_info:
             cursor.executemany(
                 "INSERT INTO #test_sis_dec_bad (Price) VALUES (?)",
-                [("not_a_number",)],
+                [(sensitive_value,)],
             )
+
+        message = str(exc_info.value)
+        # Contract: metadata is present...
+        assert "Failed to convert parameter" in message
+        assert "row 0" in message
+        assert "column 0" in message
+        assert "str" in message  # value type name
+        # ...and the sensitive value / raw row is NOT leaked into the message.
+        assert sensitive_value not in message
+        assert repr((sensitive_value,)) not in message  # no repr of the parameter tuple
+        # ...nor into the chained cause or the fully formatted traceback, which
+        # is what tracebacks and APM/log shippers actually capture.
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert sensitive_value not in formatted
     finally:
         cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+
+
+def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
+    """A parameter whose str() raises must not leak the exception text (GH-503).
+
+    Exception chaining (raise ... from e) can surface a value-bearing cause
+    through __cause__ and formatted tracebacks. For a value whose str() raises,
+    the chain must be suppressed so the metadata-only guarantee holds across
+    tracebacks and APM/log shippers, not just str(exc).
+    """
+    cursor = db_connection.cursor()
+
+    secret = "secret-987-65-4321"
+
+    class ExplodingStr:
+        def __str__(self):
+            raise ValueError(secret)
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_explode (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError) as exc_info:
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_explode (Price) VALUES (?)",
+                [(ExplodingStr(),)],
+            )
+
+        # The metadata-only message must not carry the secret, and the chain
+        # must be suppressed so neither __cause__ nor the formatted traceback
+        # exposes it.
+        assert secret not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert secret not in formatted
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
+
+
+def test_setinputsizes_sql_decimal_non_decimal_exception_no_leak(db_connection):
+    """Cover the non-DecimalException conversion branch with no value leak (GH-503).
+
+    ``format(decimal.Decimal("1e999999999999999999"), "f")`` raises MemoryError
+    (not a decimal.DecimalException) quickly and deterministically, exercising
+    the branch that re-raises with the chain suppressed. The resulting
+    ValueError must be metadata-only: no chained cause, and the offending input
+    must be absent from both the message and the fully formatted traceback.
+    """
+    cursor = db_connection.cursor()
+
+    # A syntactically valid Decimal whose fixed-point expansion is astronomically
+    # large; format(..., "f") raises MemoryError rather than a DecimalException.
+    sensitive_value = "1e999999999999999999"
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mem")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_mem (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError) as exc_info:
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_mem (Price) VALUES (?)",
+                [(sensitive_value,)],
+            )
+
+        message = str(exc_info.value)
+        # Metadata-only message...
+        assert "Failed to convert parameter" in message
+        assert "row 0" in message
+        assert "column 0" in message
+        # ...no chained cause (the non-DecimalException branch suppresses it)...
+        assert exc_info.value.__cause__ is None
+        # ...and the input is absent from the message and formatted traceback.
+        assert sensitive_value not in message
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert sensitive_value not in formatted
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mem")
+
+
+def test_executemany_debug_log_no_parameter_values(db_connection):
+    """executemany() DEBUG logging must not emit parameter values or rows (GH-503).
+
+    The batch-execution debug log previously dumped the first 5 full parameter
+    rows, leaking the same PII the exception path now redacts. This test enables
+    DEBUG capture, runs a successful batch of sensitive-looking values, and
+    asserts the values are absent from the logs while batch metadata is present
+    (the metadata assertion is a positive control proving capture is working, so
+    the absence assertions are meaningful rather than vacuous).
+    """
+    import logging as _logging
+    import io
+    from mssql_python.logging import logger, driver_logger
+
+    cursor = db_connection.cursor()
+
+    # Values that stand in for PII; both insert successfully into an NVARCHAR
+    # column so execution reaches the batch debug-log statement.
+    ssn = "123-45-6789"
+    email = "jane.doe@example.com"
+
+    log_stream = io.StringIO()
+    test_handler = _logging.StreamHandler(log_stream)
+    test_handler.setLevel(_logging.DEBUG)
+
+    # Save state we mutate so the global logger is restored afterwards.
+    original_cached_level = logger._cached_level
+    original_driver_level = driver_logger.level
+
+    cursor.execute("DROP TABLE IF EXISTS #test_dbg_no_pii")
+    try:
+        cursor.execute("CREATE TABLE #test_dbg_no_pii (Data NVARCHAR(50))")
+
+        # Enable DEBUG: bypass the wrapper's cached-level gate and lower the
+        # underlying stdlib logger, then attach our capturing handler.
+        logger._cached_level = _logging.DEBUG
+        driver_logger.setLevel(_logging.DEBUG)
+        driver_logger.addHandler(test_handler)
+
+        cursor.executemany(
+            "INSERT INTO #test_dbg_no_pii (Data) VALUES (?)",
+            [(ssn,), (email,)],
+        )
+
+        test_handler.flush()
+        log_contents = log_stream.getvalue()
+
+        # Positive control: batch metadata is logged (proves capture works).
+        assert "Executing batch query with 2 parameter sets" in log_contents
+        # Redaction: no parameter value or row representation is emitted.
+        assert ssn not in log_contents
+        assert email not in log_contents
+        assert repr((ssn,)) not in log_contents
+        assert repr((email,)) not in log_contents
+    finally:
+        driver_logger.removeHandler(test_handler)
+        driver_logger.setLevel(original_driver_level)
+        logger._cached_level = original_cached_level
+        cursor.execute("DROP TABLE IF EXISTS #test_dbg_no_pii")
 
 
 def test_setinputsizes_sql_decimal_high_precision(db_connection):
@@ -14417,32 +14603,22 @@ def test_xml_malformed_input(cursor, db_connection):
 
 
 def test_decimal_special_values_coverage(cursor):
-    """Test decimal processing with special values like NaN and Infinity (Lines 213-221)."""
+    """Non-finite Decimals are rejected explicitly by `_get_numeric_data`."""
     from decimal import Decimal
 
-    # Test special decimal values that have string exponents
+    # NaN reports exponent 'n', sNaN reports 'N', Infinity reports 'F'. None of
+    # them has a SQL NUMERIC encoding, so all three must raise ValueError rather
+    # than falling through to precision=38 and packing a silent zero.
     test_values = [
-        Decimal("NaN"),  # Should have str exponent 'n'
-        Decimal("Infinity"),  # Should have str exponent 'F'
-        Decimal("-Infinity"),  # Should have str exponent 'F'
+        Decimal("NaN"),
+        Decimal("sNaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
     ]
 
     for special_val in test_values:
-        try:
-            # This should trigger the special value handling path (lines 217-218)
-            # But there's a bug in the code - it doesn't handle string exponents properly after line 218
+        with pytest.raises(ValueError, match="non-finite"):
             cursor._get_numeric_data(special_val)
-        except (ValueError, TypeError) as e:
-            # Expected - either ValueError for unsupported values or TypeError due to str/int comparison
-            # This exercises the special value code path (lines 217-218) even though it errors later
-            assert (
-                "not supported" in str(e)
-                or "Precision of the numeric value is too high" in str(e)
-                or "'>' not supported between instances of 'str' and 'int'" in str(e)
-            )
-        except Exception as e:
-            # Other exceptions are also acceptable as we're testing error paths
-            pass
 
 
 def test_decimal_negative_exponent_edge_cases(cursor):
