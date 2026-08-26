@@ -28,6 +28,7 @@ from mssql_python.connection_string_parser import sanitize_connection_string
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
+from mssql_python.odbc_provider import ProviderManager
 from mssql_python.exceptions import (
     Warning,  # pylint: disable=redefined-builtin
     Error,
@@ -359,6 +360,12 @@ class Connection:
             >>> # Return native uuid.UUID objects instead of strings
             >>> conn = ms.connect("Server=myserver;Database=mydb", native_uuid=True)
         """
+        # Resolve and freeze the ODBC provider before the native driver loads,
+        # then hand the selection to the native loader so it imports the matching
+        # provider package.
+        _provider = ProviderManager.ensure_available()
+        ddbc_bindings.set_odbc_provider(_provider)
+
         # Store per-connection native_uuid override.
         # None means "use module-level mssql_python.native_uuid".
         if native_uuid is not None and not isinstance(native_uuid, bool):

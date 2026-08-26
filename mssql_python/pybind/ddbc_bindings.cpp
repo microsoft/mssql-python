@@ -971,6 +971,86 @@ std::string GetLastErrorMessage();
 // verify the external package actually ships this platform's driver binary.)
 std::string GetDriverPathCpp(const std::string& moduleDir);
 
+// -----------------------------------------------------------------------------
+// ODBC provider selection
+//
+// Two providers are supported: the classic Microsoft ODBC Driver 18
+// ("msodbcsql18", shipped by mssql_python_odbc) and the Rust driver
+// ("mssql-odbc", shipped by mssql_python_rust_odbc). Python is the authoritative
+// resolver (env var -> module property -> default) and pushes the chosen id here
+// via set_odbc_provider() before the driver loads. The native side keeps an
+// env-var fallback and a hardcoded default so the well-tested classic path still
+// works if the push has not happened yet.
+// -----------------------------------------------------------------------------
+#include <cctype>
+#include <cstdlib>
+
+namespace {
+constexpr const char* kProviderMsodbcsql18 = "msodbcsql18";
+constexpr const char* kProviderMssqlOdbc = "mssql-odbc";
+
+std::mutex g_providerMutex;
+std::string g_selectedProvider;  // pushed from Python before load; "" = unset
+
+std::string NormalizeProviderId(const std::string& id) {
+    std::string out;
+    out.reserve(id.size());
+    for (char c : id) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            continue;
+        }
+        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return out;
+}
+
+std::string GetEnvValue(const char* name) {
+#ifdef _WIN32
+    char* buf = nullptr;
+    size_t sz = 0;
+    if (_dupenv_s(&buf, &sz, name) == 0 && buf != nullptr) {
+        std::string value(buf);
+        free(buf);
+        return value;
+    }
+    return std::string();
+#else
+    const char* value = std::getenv(name);
+    return value ? std::string(value) : std::string();
+#endif
+}
+}  // namespace
+
+void SetSelectedProvider(const std::string& id) {
+    std::lock_guard<std::mutex> lock(g_providerMutex);
+    g_selectedProvider = NormalizeProviderId(id);
+}
+
+// Effective provider id: Python push -> env var -> default. Any unrecognized
+// value falls back to the classic default; Python is the authoritative validator
+// and already fails closed on an unknown selection.
+std::string GetSelectedProviderId() {
+    {
+        std::lock_guard<std::mutex> lock(g_providerMutex);
+        if (!g_selectedProvider.empty()) {
+            return (g_selectedProvider == kProviderMssqlOdbc) ? kProviderMssqlOdbc
+                                                              : kProviderMsodbcsql18;
+        }
+    }
+    if (NormalizeProviderId(GetEnvValue("MSSQL_PYTHON_ODBC_PROVIDER")) == kProviderMssqlOdbc) {
+        return kProviderMssqlOdbc;
+    }
+    return kProviderMsodbcsql18;
+}
+
+std::string ProviderPackageForId(const std::string& id) {
+    return (id == kProviderMssqlOdbc) ? "mssql_python_rust_odbc" : "mssql_python_odbc";
+}
+
+std::string ProviderDistForId(const std::string& id) {
+    return (id == kProviderMssqlOdbc) ? "mssql-python-rust-odbc" : "mssql-python-odbc";
+}
+
 std::string GetOdbcLibsBaseDir() {
     namespace fs = std::filesystem;
     // This function calls into the Python C-API (py::module::import, attribute
@@ -980,8 +1060,11 @@ std::string GetOdbcLibsBaseDir() {
     // dependency and keeps a future GIL-released caller from turning this into a
     // hard crash.
     py::gil_scoped_acquire gil;
+    const std::string providerId = GetSelectedProviderId();
+    const std::string packageName = ProviderPackageForId(providerId);
+    const std::string distName = ProviderDistForId(providerId);
     try {
-        py::object module = py::module::import("mssql_python_odbc");
+        py::object module = py::module::import(packageName.c_str());
         py::object module_path = module.attr("__file__");
         std::string module_file = module_path.cast<std::string>();
 
@@ -1008,13 +1091,13 @@ std::string GetOdbcLibsBaseDir() {
         }
 #endif
         if (!externalComplete) {
-            LOG("GetOdbcLibsBaseDir: mssql_python_odbc present at '%s' but its ODBC driver "
+            LOG("GetOdbcLibsBaseDir: %s present at '%s' but its ODBC driver "
                 "binaries are missing or incomplete for this platform",
-                parentDir.string().c_str());
+                packageName.c_str(), parentDir.string().c_str());
             ThrowStdException(
-                "The 'mssql-python-odbc' package is installed but its ODBC driver binaries "
+                "The '" + distName + "' package is installed but its ODBC driver binaries "
                 "are missing or incomplete for this platform. Reinstall it with: "
-                "pip install --force-reinstall mssql-python-odbc");
+                "pip install --force-reinstall " + distName);
         }
         LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
             parentDir.string().c_str());
@@ -1023,11 +1106,11 @@ std::string GetOdbcLibsBaseDir() {
         if (e.matches(PyExc_ModuleNotFoundError)) {
             // Phase 2: the standalone package is required. Turn the missing
             // dependency into a clear, actionable error instead of a fallback.
-            LOG("GetOdbcLibsBaseDir: required package mssql_python_odbc is not installed (%s)",
-                e.what());
+            LOG("GetOdbcLibsBaseDir: required package %s is not installed (%s)",
+                packageName.c_str(), e.what());
             ThrowStdException(
-                "The required 'mssql-python-odbc' package (which ships the ODBC driver "
-                "binaries) is not installed. Install it with: pip install mssql-python-odbc");
+                "The required '" + distName + "' package (which ships the ODBC driver "
+                "binaries) is not installed. Install it with: pip install " + distName);
         }
         // A different import-time error means the package is installed but
         // broken; surface it instead of silently masking the real problem.
@@ -1122,6 +1205,24 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     throw std::runtime_error("Unsupported architecture");
 #endif
 
+    // Rust provider (mssql-odbc): an unversioned `msodbcsql18` cdylib under an
+    // mssql-python-defined libs/ layout. mssql-python owns the provider wheel, so
+    // this layout is authoritative and finalized alongside that wheel build.
+    if (GetSelectedProviderId() == kProviderMssqlOdbc) {
+#ifdef __linux__
+        return (basePath / "libs" / "linux" / arch / "lib" / "libmsodbcsql18.so").string();
+#elif defined(__APPLE__)
+        return (basePath / "libs" / "macos" / arch / "lib" / "libmsodbcsql18.dylib").string();
+#elif defined(_WIN32)
+        {
+            std::string winArch = (arch == "x86_64") ? "x64" : arch;
+            return (basePath / "libs" / "windows" / winArch / "msodbcsql18.dll").string();
+        }
+#else
+        throw std::runtime_error("Unsupported platform");
+#endif
+    }
+
 // Detect platform and set path
 #ifdef __linux__
     if (fs::exists("/etc/alpine-release")) {
@@ -1215,8 +1316,12 @@ DriverHandle LoadDriverOrThrowException() {
         LOG("LoadDriverOrThrowException: mssql-auth.dll not found at '%s' - "
             "Entra ID authentication will not be available",
             authDllPath.string().c_str());
-        ThrowStdException("mssql-auth.dll not found. If you are using Entra "
-                          "ID, please ensure it is present.");
+        // mssql-auth.dll ships with the classic driver; the Rust provider does
+        // not require it, so its absence is only fatal for msodbcsql18.
+        if (GetSelectedProviderId() != kProviderMssqlOdbc) {
+            ThrowStdException("mssql-auth.dll not found. If you are using Entra "
+                              "ID, please ensure it is present.");
+        }
     }
 #endif
 
@@ -6022,6 +6127,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
     m.def("GetDriverPathCpp", &GetDriverPathCpp, "Get the path to the ODBC driver");
+    m.def("set_odbc_provider", &SetSelectedProvider,
+          "Select the ODBC provider ('msodbcsql18' or 'mssql-odbc') before the driver loads");
 
     // Define parameter info class
     py::class_<ParamInfo>(m, "ParamInfo")

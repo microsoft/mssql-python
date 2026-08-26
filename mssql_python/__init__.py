@@ -75,6 +75,20 @@ from .constants import ConstantsDDBC, GetInfoConstants, get_info_constants
 # Pooling
 from .pooling import PoolingManager
 
+# ODBC provider selection
+from .odbc_provider import ProviderManager
+
+
+def get_odbc_provider_info() -> dict:
+    """Return the selected ODBC provider for diagnostics.
+
+    Reports the provider ``id``, the ``package`` that ships its native binaries,
+    the selection ``source`` (once resolved), and whether the choice is
+    ``frozen`` (loaded and no longer changeable).
+    """
+    return ProviderManager.get_info()
+
+
 # Global registry for tracking active connections (using weak references)
 _active_connections = weakref.WeakSet()
 _connections_lock = threading.Lock()
@@ -510,6 +524,9 @@ __all__ = [
     # Module properties
     "lowercase",
     "native_uuid",
+    "odbc_provider",
+    # ODBC provider diagnostics
+    "get_odbc_provider_info",
 ]
 
 
@@ -582,6 +599,21 @@ class _MSSQLModule(types.ModuleType):
             raise ValueError("native_uuid must be a boolean value")
         with _settings_lock:
             _settings.native_uuid = value
+
+    @property
+    def odbc_provider(self) -> str:
+        """Get the ODBC provider that will be (or was) loaded.
+
+        Honored only when set before the first connection; a later change is
+        ignored with a warning. The ``MSSQL_PYTHON_ODBC_PROVIDER`` environment
+        variable takes precedence over this property.
+        """
+        return ProviderManager.effective()
+
+    @odbc_provider.setter
+    def odbc_provider(self, value: str) -> None:
+        """Set the ODBC provider selection."""
+        ProviderManager.set_property(value)
 
 
 # Replace the current module with our custom module class
