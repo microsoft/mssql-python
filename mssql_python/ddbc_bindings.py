@@ -140,11 +140,12 @@ def find_module_path(module_dir_param, python_version_param, architecture_param,
 
     Returns:
         str: Path of the exactly matching module file. If it does not exist, the
-        first ddbc_bindings file with the right extension is returned instead
-        and a RuntimeWarning is emitted.
+        first ddbc_bindings file built for this interpreter's version tag is
+        returned instead and a RuntimeWarning is emitted.
 
     Raises:
-        ImportError: If no ddbc_bindings file with the right extension exists
+        ImportError: If no ddbc_bindings file for this interpreter's version
+        tag exists with the right extension
     """
     expected_module = f"ddbc_bindings.{python_version_param}-{architecture_param}{extension_param}"
     module_path_found = os.path.join(module_dir_param, expected_module)
@@ -152,12 +153,18 @@ def find_module_path(module_dir_param, python_version_param, architecture_param,
     if os.path.exists(module_path_found):
         return module_path_found
 
-    # Fallback to searching for any matching module if the specific one isn't found
-    module_files = [
+    # Fallback: only binaries built for this interpreter's version tag are
+    # loadable, since the cpXY tags are version specific rather than abi3. A
+    # different architecture may still work (for example a universal2 build),
+    # but a different Python version fails later inside importlib with a
+    # confusing DLL or symbol error, so it is excluded here. Sorted so the
+    # pick is deterministic when several candidates remain.
+    module_files = sorted(
         f
         for f in os.listdir(module_dir_param)
-        if f.startswith("ddbc_bindings.") and f.endswith(extension_param)
-    ]
+        if f.startswith(f"ddbc_bindings.{python_version_param}-")
+        and f.endswith(extension_param)
+    )
     if not module_files:
         raise ImportError(
             f"No ddbc_bindings module found for {python_version_param}-{architecture_param} "

@@ -828,7 +828,7 @@ def test_ddbc_bindings_warning_fallback_scenario(tmp_path, capsys):
     """The fallback module pick is reported through warnings, not printed to stdout (GH-726)."""
 
     expected_module = "ddbc_bindings.cp310-amd64.pyd"
-    fallback_module = "ddbc_bindings.cp39-amd64.pyd"
+    fallback_module = "ddbc_bindings.cp310-arm64.pyd"
     (tmp_path / fallback_module).write_bytes(b"")
     (tmp_path / "other_file.txt").write_bytes(b"")
 
@@ -842,6 +842,30 @@ def test_ddbc_bindings_warning_fallback_scenario(tmp_path, capsys):
     # Nothing may be written to stdout: callers that pipe script output must not
     # receive a stray warning line prepended to their data.
     assert capsys.readouterr().out == ""
+
+
+def test_fallback_never_returns_wrong_python_version(tmp_path):
+    """A binary for another Python version must not be selected (GH-726).
+
+    The cpXY tags are version specific, so a cp39 build cannot load under
+    cp310; picking it turns a clean ImportError into a DLL load failure
+    from deeper inside importlib.
+    """
+    (tmp_path / "ddbc_bindings.cp39-amd64.pyd").write_bytes(b"")
+
+    with pytest.raises(ImportError):
+        find_module_path(str(tmp_path), "cp310", "amd64", ".pyd")
+
+
+def test_fallback_pick_is_deterministic(tmp_path):
+    """With several same version candidates the lexically first is chosen."""
+    (tmp_path / "ddbc_bindings.cp310-win32.pyd").write_bytes(b"")
+    (tmp_path / "ddbc_bindings.cp310-arm64.pyd").write_bytes(b"")
+
+    with pytest.warns(RuntimeWarning):
+        module_path = find_module_path(str(tmp_path), "cp310", "amd64", ".pyd")
+
+    assert module_path == str(tmp_path / "ddbc_bindings.cp310-arm64.pyd")
 
 
 def test_ddbc_bindings_no_module_found_error(tmp_path):
