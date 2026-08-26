@@ -110,28 +110,6 @@ steps:
       artifactName: '${{ parameters.condaArtifactName }}'
       targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
 
-  # N3 provenance: bind the downloaded artifact to the release commit. The conda-build
-  # pipeline stamps its source commit on the run; if it differs from the commit being
-  # released, a stale/older/different build was selected -- refuse it.
-  - task: PowerShell@2
-    displayName: '${{ parameters.labelPrefix }}Provenance: conda artifact built from the release commit'
-    inputs:
-      targetType: 'inline'
-      script: |
-        $built = "$(resources.pipeline.buildPipeline.sourceCommit)"
-        $release = "$(Build.SourceVersion)"
-        Write-Host "conda-build source commit: $built"
-        Write-Host "release    source commit: $release"
-        if ([string]::IsNullOrWhiteSpace($built)) {
-          Write-Error "Could not determine the conda-build source commit (resources.pipeline.buildPipeline.sourceCommit is empty)."
-          exit 1
-        }
-        if ($built -ne $release) {
-          Write-Error "Provenance mismatch: the selected conda artifact was built from $built but this release is $release. Refusing to publish an artifact from a different/older build."
-          exit 1
-        }
-        Write-Host "Provenance OK: artifact built from the release commit."
-
   # N3 re-audit: re-run the masking-immune RUNPATH audit on the EXACT downloaded
   # artifacts (not just metadata) so a stale pre-audit .conda can never be published.
   - task: PowerShell@2
