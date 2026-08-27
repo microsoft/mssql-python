@@ -162,8 +162,7 @@ def find_module_path(module_dir_param, python_version_param, architecture_param,
     module_files = sorted(
         f
         for f in os.listdir(module_dir_param)
-        if f.startswith(f"ddbc_bindings.{python_version_param}-")
-        and f.endswith(extension_param)
+        if f.startswith(f"ddbc_bindings.{python_version_param}-") and f.endswith(extension_param)
     )
     if not module_files:
         raise ImportError(
