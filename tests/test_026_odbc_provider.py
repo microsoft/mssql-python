@@ -142,7 +142,9 @@ def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
             raise ModuleNotFoundError(f"No module named '{name}'")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(sys.modules[ProviderManager.__module__].importlib, "import_module", fake_import)
+    monkeypatch.setattr(
+        sys.modules[ProviderManager.__module__].importlib, "import_module", fake_import
+    )
     with pytest.raises(ImportError) as excinfo:
         ProviderManager.ensure_available()
     message = str(excinfo.value)

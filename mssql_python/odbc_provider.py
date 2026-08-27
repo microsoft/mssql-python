@@ -51,9 +51,7 @@ def _normalize(value: str) -> str:
     canonical = value.strip().lower()
     if canonical not in _PACKAGE_BY_PROVIDER:
         valid = ", ".join(sorted(_PACKAGE_BY_PROVIDER))
-        raise ValueError(
-            f"Unknown ODBC provider {value!r}. Valid providers are: {valid}."
-        )
+        raise ValueError(f"Unknown ODBC provider {value!r}. Valid providers are: {valid}.")
     return canonical
 
 
