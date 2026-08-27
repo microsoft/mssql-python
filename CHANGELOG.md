@@ -57,7 +57,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
-- Bug fix: Resolved issue with connection timeout.
+- **GH-725:** The `timeout` parameter of `connect()` / `Connection(...)` now
+  correctly sets the **login (connection-attempt) timeout**
+  (`SQL_ATTR_LOGIN_TIMEOUT`), matching pyodbc and its own docstring. Previously
+  it was silently applied as the per-statement **query** timeout, so
+  `connect(timeout=N)` did not bound the connection attempt and instead aborted
+  long-running queries. **Behavioral change:** the constructor `timeout` no
+  longer affects `Connection.timeout` (the query timeout, still settable via the
+  property, default `0`); an explicit `attrs_before[SQL_ATTR_LOGIN_TIMEOUT]`
+  takes precedence over the `timeout` kwarg. Timeout values are now validated
+  consistently at both entry points: the constructor `timeout` and the
+  `Connection.timeout` setter reject negative, non-integer, and `bool` values
+  (previously `Connection.timeout = True`/`False` was accepted as `1`/`0`).
 - **GH-627:** Fixed `SQLDescribeParam` ordinal remapping bug that caused
   `VARBINARY`/`BINARY` `NULL` bindings to fail when a non-NULL parameter was
   bound first. The driver now pre-resolves unknown NULL parameter types before
