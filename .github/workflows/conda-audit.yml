@@ -20,11 +20,13 @@ on:
       - 'conda/**'
       - 'eng/scripts/audit_bundled_binaries.py'
       - 'eng/scripts/assert_pe_machine.py'
+      - 'eng/scripts/conda_resolve_check.py'
       - 'OneBranchPipelines/scripts/build-conda-packages.sh'
       - 'tests/test_027_conda_release_metadata.py'
       - 'tests/test_029_bundled_binary_audit.py'
       - 'tests/test_030_pe_machine_assert.py'
       - 'tests/test_031_tls_probe_required.py'
+      - 'tests/test_032_conda_resolve_check.py'
       - '.github/workflows/conda-audit.yml'
 
 permissions:
@@ -52,6 +54,7 @@ jobs:
                            tests/test_029_bundled_binary_audit.py \
                            tests/test_030_pe_machine_assert.py \
                            tests/test_031_tls_probe_required.py \
+                           tests/test_032_conda_resolve_check.py \
                            tests/test_027_conda_release_metadata.py -q
 
       - name: Fetch the shipped linux wheels from PyPI
