@@ -29,6 +29,15 @@ if errorlevel 1 (
   echo Extracting "!CODE_WHL!" into "%SP%"
   tar -xf "!CODE_WHL!" -C "%SP%"
   if errorlevel 1 exit 1
+  REM No arm64 Windows build of mssql_py_core exists yet, so the win-arm64 code wheel
+  REM bundles the x64 (win_amd64) one. An x64 .pyd cannot load on arm64 -- it would
+  REM crash bulk copy AND fails the PE-arch assert -- so REMOVE it from the win-arm64
+  REM package. Bulk copy then raises a clean "not available" error (the import is lazy);
+  REM the rest of the DBAPI is unaffected (ddbc_bindings is native arm64). Restore once
+  REM an arm64 mssql_py_core ships in the feed.
+  echo Removing x64 mssql_py_core from the win-arm64 package; bulk copy is unavailable on win-arm64 until an arm64 build ships.
+  if exist "%SP%\mssql_py_core" rmdir /s /q "%SP%\mssql_py_core"
+  if exist "%SP%\mssql_py_core.libs" rmdir /s /q "%SP%\mssql_py_core.libs"
 ) else (
   "%PYTHON%" -m pip install --no-deps --no-index --find-links "%WHEELS_DIR%" %PKG_NAME%==%PKG_VERSION% -vv
   if errorlevel 1 exit 1
