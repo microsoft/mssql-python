@@ -8,7 +8,9 @@
 # step: required subdirs + full Python matrix + one version), and -- when publishToConda=true -- publishes the SELF-CONTAINED
 # mssql-python conda package to Anaconda.org via anaconda-client (conda-publish-step; ESRP
 # has no Conda ContentType). There is a single self-contained package (it vendors the ODBC
-# Driver 18 payload); no companion.
+# Driver 18 payload); no companion. When publishToConda=false (the default), the same gate
+# runs and a DRY-RUN step prints the exact `anaconda upload` plan WITHOUT uploading -- so a
+# validate-only run of THIS pipeline replaces the old separate dummy pipeline.
 #
 # Always Official (a publish is a deliberate, gated action). Manual trigger only.
 # The OneBranch YAML needs an actual ADO run to fully validate.
@@ -122,6 +124,56 @@ extends:
                 parameters:
                   buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
                   mssqlPythonVersion: '${{ parameters.mssqlPythonVersion }}'
+
+              # Dry run (publishToConda=false): enumerate every package and print the exact
+              # `anaconda upload` plan WITHOUT uploading, so a validate-only run shows precisely
+              # what a real publish WOULD do. Reuses the conda tree the gate already downloaded
+              # into $(Build.SourcesDirectory)/conda-artifacts. This replaces the old dummy pipeline.
+              - ${{ if eq(parameters.publishToConda, false) }}:
+                - task: PowerShell@2
+                  displayName: 'Dry-run publish plan (validate-only): enumerate packages + print the anaconda upload plan (NO upload)'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      $ErrorActionPreference = 'Stop'
+
+                      $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+                      if (-not (Test-Path $root)) {
+                        Write-Error "Consolidated conda tree not found at $root. Did the readiness gate download it?"
+                        exit 1
+                      }
+
+                      $pkgs = @(Get-ChildItem -Path $root -Recurse -Include *.conda, *.tar.bz2)
+                      if ($pkgs.Count -eq 0) { Write-Error "No conda packages found under $root."; exit 1 }
+
+                      # mssql-python bindings only (the self-contained model ships no companion).
+                      function Get-Binding($items) { @($items | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
+                      $bySubdir = $pkgs | Group-Object { $_.Directory.Name } | Sort-Object Name
+
+                      Write-Host "====================================="
+                      Write-Host "[DRY-RUN CONDA RELEASE] discovered $($pkgs.Count) package(s) across $($bySubdir.Count) subdir(s):"
+                      foreach ($g in $bySubdir) {
+                        Write-Host ("  {0,-14} {1} mssql-python package(s)" -f $g.Name, (Get-Binding $g.Group).Count)
+                      }
+
+                      # A self-contained release ships ONLY mssql-python; flag (don't fail) a stray companion.
+                      $stray = @($pkgs | Where-Object { $_.Name -like 'mssql-python-odbc-*' })
+                      if ($stray.Count -gt 0) {
+                        Write-Host "##vso[task.logissue type=warning]$($stray.Count) stray mssql-python-odbc package(s) present; the self-contained model ships only mssql-python."
+                      }
+
+                      Write-Host "`nanaconda upload PLAN (DRY-RUN - NOT executed):"
+                      Write-Host "  target channel/org : ${{ parameters.condaChannel }}"
+                      Write-Host "  target label       : ${{ parameters.condaLabel }}"
+                      foreach ($p in ($pkgs | Sort-Object FullName)) {
+                        $subdir = Split-Path -Leaf (Split-Path -Parent $p.FullName)
+                        Write-Host "  WOULD RUN: anaconda upload --user ${{ parameters.condaChannel }} --label ${{ parameters.condaLabel }} --skip-existing  $subdir/$($p.Name)"
+                      }
+
+                      Write-Host "`n====================================="
+                      Write-Host "DRY-RUN COMPLETE: no 'anaconda upload' was executed (publishToConda=false)."
+                      Write-Host "For a real (gated, staged-then-promoted) publish, re-run with publishToConda=true."
+                      Write-Host "====================================="
 
           # PRODUCTION publish (releaseJob) -- runs ONLY when publishToConda=true and
           # ONLY after the ValidateConda gate succeeds, so an incomplete set is never
