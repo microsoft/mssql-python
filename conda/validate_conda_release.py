@@ -264,7 +264,8 @@ def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="Root of the consolidated conda tree.")
     parser.add_argument(
-        "--required-subdirs", default="win-64,osx-64,osx-arm64,linux-64,linux-aarch64"
+        "--required-subdirs",
+        default="win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64",
     )
     parser.add_argument(
         "--allowed-subdirs",

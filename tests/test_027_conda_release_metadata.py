@@ -220,6 +220,38 @@ def test_extra_unsupported_python_fails():
     assert any("win-arm64" in e and "UNSUPPORTED" in e and "3.10" in e for e in errors)
 
 
+def test_v1_required_includes_win_arm64_passes():
+    # v1 parity: win-arm64 is REQUIRED. A complete set (win-arm64 at 3.12-3.14 via the
+    # per-subdir override) passes.
+    required = ["win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
+    pkgs = _healthy_set()
+    for py in ["3.12", "3.13", "3.14"]:
+        pkgs.append(_binding("win-arm64", py))
+    errors = vcr.validate(
+        pkgs,
+        required_subdirs=required,
+        allowed_subdirs=_ALLOWED,
+        expected_pythons=_PYTHONS,
+        expected_versions={"mssql-python": _MP_VER},
+        subdir_pythons={"win-arm64": ["3.12", "3.13", "3.14"]},
+    )
+    assert errors == []
+
+
+def test_v1_missing_win_arm64_now_fails():
+    # With win-arm64 REQUIRED, a set that omits it must now fail (it silently passed before).
+    required = ["win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
+    errors = vcr.validate(
+        _healthy_set(),  # the original required parity, MINUS win-arm64
+        required_subdirs=required,
+        allowed_subdirs=_ALLOWED,
+        expected_pythons=_PYTHONS,
+        expected_versions={"mssql-python": _MP_VER},
+        subdir_pythons={"win-arm64": ["3.12", "3.13", "3.14"]},
+    )
+    assert any("win-arm64" in e and "MISSING" in e for e in errors)
+
+
 def test_default_subdir_pythons_reduces_win_arm64():
     # The shipped CLI default carries the win-arm64 reduction so the pipeline needs
     # no extra flag; parsing it yields the expected mapping.

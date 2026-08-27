@@ -30,10 +30,13 @@
 # tests/test_027_conda_release_metadata.py), which reads the zstd-compressed
 # info/index.json embedded in every .conda.
 #
-# win-arm64 is intentionally NOT in the parity set: an x64 agent cannot import-
-# validate an arm64 conda package (same reason its wheel skips pytest), so it needs
-# a native win-arm64 agent before it can be gated. musllinux has no conda subdir at
-# all (conda Linux is glibc-only), so it is correctly absent.
+# win-arm64 IS in the required parity set (v1): although the arm64 Python cannot be
+# import-validated on the x64 build agent, the build now enforces a BLOCKING --dry-run
+# dependency solve PLUS a PE machine-type assert on the vendored arm64 .pyd/.dll, so a
+# broken or wrong-arch win-arm64 package FAILS the build instead of silently dropping.
+# Its matrix is 3.12-3.14 (the gate's per-subdir override), since Anaconda `defaults`
+# has no win-arm64 python for 3.10/3.11. musllinux has no conda subdir at all (conda
+# Linux is glibc-only), so it is correctly absent.
 #
 # Publishing to anaconda.org is a SEPARATE, still-to-be-finalized step (ESRP Conda
 # ContentType vs anaconda-client upload); this template only proves the artifact is
@@ -50,17 +53,17 @@ parameters:
   - name: condaArtifactName
     type: string
     default: 'drop_ConsolidateConda_ConsolidateArtifacts'
-  # Comma-separated subdirs that a complete release MUST contain (PyPI parity minus
-  # win-arm64 and musllinux, which have no validated conda build). If an emulated
-  # leg (osx-64 / linux-aarch64) ever proves too flaky to gate on, drop it here —
-  # no code change needed.
+  # Comma-separated subdirs that a complete release MUST contain (full PyPI parity
+  # minus musllinux, which has no conda subdir). win-arm64 IS included: the build
+  # enforces its --dry-run solve + PE-arch assert, so a missing/broken win-arm64
+  # blocks the release. If an emulated leg (osx-64 / linux-aarch64) ever proves too
+  # flaky to gate on, drop it here — no code change needed.
   - name: requiredSubdirs
     type: string
-    default: 'win-64,osx-64,osx-arm64,linux-64,linux-aarch64'
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
   # Comma-separated superset of subdirs that are ALLOWED to appear. Any discovered
   # subdir outside this set fails the gate (guards against a mis-stamped subdir).
-  # win-arm64 is allowed-but-not-required so a future native-agent build can land
-  # without tripping the gate.
+  # (win-arm64 is now also in requiredSubdirs above.)
   - name: allowedSubdirs
     type: string
     default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'

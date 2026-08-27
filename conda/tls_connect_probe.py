@@ -37,7 +37,10 @@ the complementary end-to-end backstop.
 
 Config: set ``CONDA_TLS_PROBE_CONN`` to a reachable SQL Server connection string
 (creds may be wrong -- reaching ``Login failed`` still proves TLS). If it is not
-set the gate SKIPS loudly (exit 0) -- it never silently passes.
+set the gate SKIPS loudly (exit 0) -- it never silently passes. Set
+``CONDA_TLS_PROBE_REQUIRED=1`` on the minimal-base leg to make the gate MANDATORY:
+a missing OR malformed connection string then FAILS (exit non-zero) instead of
+skipping, so a typo (a bare ``yes``) can never silently no-op it.
 
 Exit code 0 = TLS handshake completed (OpenSSL reachable) OR skipped; non-zero =
 OpenSSL backend unreachable / handshake did not complete (blocks publish).
@@ -184,9 +187,30 @@ def _is_probe_connection_string(raw):
     return "=" in raw
 
 
+def _required():
+    """True when the Encrypt=yes gate is MANDATORY on this leg.
+
+    Set ``CONDA_TLS_PROBE_REQUIRED=1`` on the minimal-base leg that MUST exercise the
+    dlopen'd OpenSSL backend. In required mode a MISSING or MALFORMED
+    ``CONDA_TLS_PROBE_CONN`` FAILS the leg instead of skipping -- so a typo (a bare
+    ``yes``) or an unset secret can never silently no-op the one gate that actually
+    tests OpenSSL reachability. When not required (the default) an unset/malformed
+    value skips loudly, as before.
+    """
+    return os.environ.get("CONDA_TLS_PROBE_REQUIRED", "").strip().lower() in ("1", "true", "yes")
+
+
 def main():
     raw = os.environ.get("CONDA_TLS_PROBE_CONN", "").strip()
+    required = _required()
     if not raw:
+        if required:
+            sys.exit(
+                "TLS_PROBE_REQUIRED_BUT_UNSET: CONDA_TLS_PROBE_REQUIRED is on but "
+                "CONDA_TLS_PROBE_CONN is empty. The Encrypt=yes OpenSSL-reachability gate is "
+                "MANDATORY on this leg -- provide a reachable (test/staging, least-privilege) "
+                "SQL Server connection string."
+            )
         print(
             "TLS_PROBE_SKIPPED: set CONDA_TLS_PROBE_CONN to a reachable SQL Server "
             "connection string (on a minimal base with no system OpenSSL) to run "
@@ -196,9 +220,15 @@ def main():
 
     if not _is_probe_connection_string(raw):
         # A bare word like "yes"/"true"/"1" is the "I thought it was a yes/no toggle"
-        # misconfiguration. It is NOT a connection string, so feeding it to the driver
-        # only fails the leg on an unrelated parse error ("keyword 'yes' has no value").
-        # Skip LOUDLY instead -- the static RUNPATH audit still guards OpenSSL layout.
+        # misconfiguration: it is NOT a connection string (no 'key=value' pair).
+        if required:
+            sys.exit(
+                "TLS_PROBE_MISCONFIGURED: CONDA_TLS_PROBE_CONN is set but is not a connection "
+                "string (no 'key=value' pair) -- a bare 'yes'/'true'/'1' is NOT a yes/no toggle. "
+                "The gate is MANDATORY on this leg; set it to a reachable SQL Server connection "
+                "string (Server, user, password)."
+            )
+        # Not required: skip LOUDLY -- the static RUNPATH audit still guards OpenSSL layout.
         print(
             "TLS_PROBE_SKIPPED: CONDA_TLS_PROBE_CONN is set but is not a connection string "
             "(no 'key=value' pair). It is NOT a yes/no toggle -- set it to a reachable SQL "

@@ -14,9 +14,10 @@
 #   pyodbc-feedstock — each conda package must be built on its matching platform.
 #
 # SCOPE / LIMITATIONS (first cut, intentionally conservative):
-#   * x64 / native only. Skipped on cross-arch legs (e.g. Windows ARM64) because
-#     the import validation cannot execute on the x64 host AND conda cannot
-#     provision a win-arm64 host env there — same reason pytest is skipped there.
+#   * Native legs are import-validated. A CROSS leg (condaTargetSubdir set, e.g.
+#     win-arm64 on x64) cannot execute the target Python, so its runtime import
+#     auto-skips -- but the recipe still enforces a BLOCKING --dry-run dependency
+#     solve and (win-arm64) a PE machine-type assert, so it is validated, not trusted.
 #   * musllinux has NO conda target (conda linux-* is glibc), so this step is
 #     never included on the musllinux legs.
 #

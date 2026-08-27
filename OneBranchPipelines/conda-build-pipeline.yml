@@ -154,13 +154,15 @@ extends:
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*win_amd64.whl'
               # win-arm64 conda build: CROSS-built on THIS x64 agent via CONDA_SUBDIR.
-              # BEST-EFFORT (continueOnError) -- the arm64 Python cannot execute on x64, so
-              # the runtime import auto-skips; the deps still solve from Anaconda `defaults`
-              # (which ships win-arm64 python 3.12-3.14, cryptography, vc14_runtime, pyodbc)
-              # plus the microsoft noarch azure-identity/msal, and the package is built +
-              # staged. Scoped to 3.12-3.14: neither defaults nor conda-forge has a win-arm64
-              # python for 3.10/3.11. Its own bld tree + subdir-scoped verify env keep it
-              # from colliding with the native win-64 leg on this shared agent.
+              # BLOCKING (v1): the arm64 Python cannot execute on x64, so the runtime import
+              # auto-skips -- but the build enforces a BLOCKING `conda create --dry-run` solve
+              # (deps resolve from Anaconda `defaults`, which ships win-arm64 python 3.12-3.14,
+              # cryptography, vc14_runtime, pyodbc, plus the microsoft noarch azure-identity/
+              # msal) AND a PE machine-type assert on the vendored arm64 .pyd/.dll, so an
+              # unsolvable or wrong-arch package FAILS the leg instead of silently dropping.
+              # Scoped to 3.12-3.14: neither defaults nor conda-forge has a win-arm64 python
+              # for 3.10/3.11. Its own bld tree + subdir-scoped verify env keep it from
+              # colliding with the native win-64 leg on this shared agent.
               - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
                 parameters:
                   pythonVersion: '3.12,3.13,3.14'
@@ -170,7 +172,6 @@ extends:
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*win_arm64.whl'
                   outputDir: '$(Agent.TempDirectory)/conda-bld-winarm64'
-                  continueOnError: true
               - task: PublishPipelineArtifact@1
                 displayName: 'Publish win-64 conda artifact'
                 inputs:
