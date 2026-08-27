@@ -153,16 +153,17 @@ extends:
                   targetArch: 'x64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*win_amd64.whl'
-              # win-arm64 conda build: CROSS-built on THIS x64 agent via CONDA_SUBDIR.
-              # BLOCKING (v1): the arm64 Python cannot execute on x64, so the runtime import
-              # auto-skips -- but the build enforces a BLOCKING `conda create --dry-run` solve
-              # (deps resolve from Anaconda `defaults`, which ships win-arm64 python 3.12-3.14,
-              # cryptography, vc14_runtime, pyodbc, plus the microsoft noarch azure-identity/
-              # msal) AND a PE machine-type assert on the vendored arm64 .pyd/.dll, so an
-              # unsolvable or wrong-arch package FAILS the leg instead of silently dropping.
-              # Scoped to 3.12-3.14: neither defaults nor conda-forge has a win-arm64 python
-              # for 3.10/3.11. Its own bld tree + subdir-scoped verify env keep it from
-              # colliding with the native win-64 leg on this shared agent.
+              # win-arm64 conda build: CROSS-built on THIS x64 agent via CONDA_SUBDIR, in the
+              # SAME job as win-64. continueOnError=true so a win-arm64 hiccup (e.g. an Anaconda
+              # `defaults` outage that breaks its solve) can NEVER nuke the native win-64 publish
+              # that shares this job -- BLAST-RADIUS isolation. Enforcement does NOT weaken: the
+              # leg still runs a BLOCKING `conda create --dry-run` solve + a PE machine-type assert
+              # internally (so a broken/wrong-arch package is never staged), AND win-arm64 is in
+              # the release gate's requiredSubdirs -- so a MISSING win-arm64 blocks the RELEASE.
+              # Net: a win-arm64 failure isolates to win-arm64 (win-64 still ships) yet still
+              # blocks the publish via the gate. Scoped to 3.12-3.14: neither defaults nor
+              # conda-forge has a win-arm64 python for 3.10/3.11. Its own bld tree + subdir-scoped
+              # verify env keep it from colliding with win-64 on this shared agent.
               - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
                 parameters:
                   pythonVersion: '3.12,3.13,3.14'
@@ -172,6 +173,7 @@ extends:
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*win_arm64.whl'
                   outputDir: '$(Agent.TempDirectory)/conda-bld-winarm64'
+                  continueOnError: true
               - task: PublishPipelineArtifact@1
                 displayName: 'Publish win-64 conda artifact'
                 inputs:

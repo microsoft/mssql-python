@@ -31,12 +31,13 @@
 # info/index.json embedded in every .conda.
 #
 # win-arm64 IS in the required parity set (v1): although the arm64 Python cannot be
-# import-validated on the x64 build agent, the build now enforces a BLOCKING --dry-run
+# import-validated on the x64 build agent, its build leg runs a BLOCKING --dry-run
 # dependency solve PLUS a PE machine-type assert on the vendored arm64 .pyd/.dll, so a
-# broken or wrong-arch win-arm64 package FAILS the build instead of silently dropping.
-# Its matrix is 3.12-3.14 (the gate's per-subdir override), since Anaconda `defaults`
-# has no win-arm64 python for 3.10/3.11. musllinux has no conda subdir at all (conda
-# Linux is glibc-only), so it is correctly absent.
+# broken or wrong-arch package is never STAGED. That build leg is continueOnError (so a
+# win-arm64 hiccup can't nuke the shared win-64 publish), and THIS release gate is where
+# win-arm64 is enforced: a missing win-arm64 fails the gate. Its matrix is 3.12-3.14 (the
+# gate's per-subdir override), since Anaconda `defaults` has no win-arm64 python for
+# 3.10/3.11. musllinux has no conda subdir at all (conda Linux is glibc-only), so absent.
 #
 # Publishing to anaconda.org is a SEPARATE, still-to-be-finalized step (ESRP Conda
 # ContentType vs anaconda-client upload); this template only proves the artifact is

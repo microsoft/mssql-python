@@ -386,6 +386,15 @@ def audit_package(path: str) -> list[str]:
                 f"{name}: RUNPATH has unexpected relative entries {unexpected_rel}; the "
                 f"effective RUNPATH must be exactly ['$ORIGIN', '{want}'] (got {entries})."
             )
+        # The recipe promises the EXACT canonical ORDER "$ORIGIN:$ORIGIN/<climb>" ($ORIGIN
+        # first, so the co-located sibling resolves before the $PREFIX/lib climb). Enforce
+        # order too (not just the set) -- only when both are present, since a missing entry
+        # is already reported above -- so a reversed RUNPATH is caught.
+        if "$ORIGIN" in entries and want in entries and entries != ["$ORIGIN", want]:
+            errors.append(
+                f"{name}: RUNPATH order is {entries}; the canonical form is "
+                f"['$ORIGIN', '{want}'] ($ORIGIN must come first)."
+            )
 
         # N2b: the expected DT_NEEDED set must still be present (glibc variants only;
         # musl links these statically / differently, and is not a conda target).

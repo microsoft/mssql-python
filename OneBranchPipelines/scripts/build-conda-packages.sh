@@ -394,14 +394,24 @@ EOF
   # is eng/scripts/audit_bundled_binaries.py, which reads the RUNPATH bytes and
   # requires an $ORIGIN/.. climb regardless of any system libs; this gate is the
   # complementary end-to-end backstop for a minimal-base leg.
-  if [ -n "${CONDA_TLS_PROBE_CONN:-}" ] || [ "${CONDA_TLS_PROBE_REQUIRED:-}" = "1" ]; then
+  # Decide whether to invoke the Encrypt=yes gate. Run it when a connection string is set,
+  # OR when CONDA_TLS_PROBE_REQUIRED is anything OTHER than an explicit off/empty value. The
+  # probe (tls_connect_probe.py) is the single source of truth for required-mode semantics --
+  # it enforces on a truthy value and FAILS LOUD on an unrecognized one -- so the shell and
+  # Python agree on truthiness (1/true/yes/on) and an ambiguous typo can't silently skip here.
+  _tls_req="$(printf '%s' "${CONDA_TLS_PROBE_REQUIRED:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$_tls_req" in
+    "" | 0 | false | no | off) _tls_req_active=0 ;;
+    *) _tls_req_active=1 ;;
+  esac
+  if [ -n "${CONDA_TLS_PROBE_CONN:-}" ] || [ "$_tls_req_active" = "1" ]; then
     echo "=== [py $py] live Encrypt=yes TLS gate (OpenSSL backend must be reachable) ==="
     if [ "$emulated_cross" = "1" ]; then
       "$conda" run -n "$envName" python "$RecipeRoot/tls_connect_probe.py" \
         || echo "SKIP (emulated cross under QEMU binfmt): qemu-user cannot run the aarch64 driver's TLS/OpenSSL init; best-effort on the emulated leg (static RUNPATH audit covers OpenSSL layout)."
     else
-      # Non-emulated: the probe is fail-closed. With CONDA_TLS_PROBE_REQUIRED=1 a missing or
-      # malformed connection string FAILS here (a typo can't silently no-op the gate).
+      # Non-emulated: the probe is fail-closed. With a truthy CONDA_TLS_PROBE_REQUIRED a
+      # missing or malformed connection string FAILS here (a typo can't silently no-op it).
       "$conda" run -n "$envName" python "$RecipeRoot/tls_connect_probe.py"
     fi
   else

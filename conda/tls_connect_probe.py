@@ -54,7 +54,6 @@ import sys
 # negotiated the encrypted channel. Matched case-insensitively.
 _TLS_COMPLETED_MARKERS = (
     "login failed for user",  # LOGIN7 rejected -> handshake already done
-    "18456",  # SQL Server login-failed error number
     "cannot open database",  # authenticated, database validation stage
     "changed database context",  # connected successfully
     "password did not match",
@@ -87,7 +86,15 @@ def tls_completed(exc):
     if exc is None:
         return True
     msg = str(exc).lower()
-    return any(marker in msg for marker in _TLS_COMPLETED_MARKERS)
+    if any(marker in msg for marker in _TLS_COMPLETED_MARKERS):
+        return True
+    # SQL Server login-failed error 18456 is post-handshake proof, but the BARE number can
+    # appear in an unrelated pre-TLS error (a port, an IP octet, an id). Only accept it when
+    # it co-occurs with a login context (SQLSTATE 28000 or the word 'login'), so a network/
+    # timeout error that merely contains '18456' cannot pass as TLS-completed.
+    if "18456" in msg and ("login" in msg or "28000" in msg):
+        return True
+    return False
 
 
 def describe(exc):
@@ -187,17 +194,32 @@ def _is_probe_connection_string(raw):
     return "=" in raw
 
 
+# Recognized boolean spellings for CONDA_TLS_PROBE_REQUIRED (kept in sync with the shell
+# truthiness in build-conda-packages.sh so the two never disagree).
+_REQUIRED_TRUTHY = ("1", "true", "yes", "on")
+_REQUIRED_FALSY = ("", "0", "false", "no", "off")
+
+
 def _required():
     """True when the Encrypt=yes gate is MANDATORY on this leg.
 
-    Set ``CONDA_TLS_PROBE_REQUIRED=1`` on the minimal-base leg that MUST exercise the
-    dlopen'd OpenSSL backend. In required mode a MISSING or MALFORMED
-    ``CONDA_TLS_PROBE_CONN`` FAILS the leg instead of skipping -- so a typo (a bare
-    ``yes``) or an unset secret can never silently no-op the one gate that actually
-    tests OpenSSL reachability. When not required (the default) an unset/malformed
-    value skips loudly, as before.
+    Set ``CONDA_TLS_PROBE_REQUIRED`` to a truthy value (1/true/yes/on) on the minimal-base
+    leg that MUST exercise the dlopen'd OpenSSL backend. In required mode a MISSING or
+    MALFORMED ``CONDA_TLS_PROBE_CONN`` FAILS the leg instead of skipping -- so a typo or an
+    unset secret can never silently no-op the one gate that actually tests OpenSSL
+    reachability. An UNRECOGNIZED value (e.g. the typo 'tru') FAILS LOUD rather than
+    silently disabling the gate.
     """
-    return os.environ.get("CONDA_TLS_PROBE_REQUIRED", "").strip().lower() in ("1", "true", "yes")
+    raw = os.environ.get("CONDA_TLS_PROBE_REQUIRED", "").strip().lower()
+    if raw in _REQUIRED_TRUTHY:
+        return True
+    if raw in _REQUIRED_FALSY:
+        return False
+    sys.exit(
+        f"CONDA_TLS_PROBE_REQUIRED={os.environ.get('CONDA_TLS_PROBE_REQUIRED')!r} is not a "
+        f"recognized boolean (use 1/true/yes/on or 0/false/no/off). Refusing to guess whether "
+        f"the mandatory TLS gate is on."
+    )
 
 
 def main():
