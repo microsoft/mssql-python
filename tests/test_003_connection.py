@@ -2599,16 +2599,22 @@ def test_constructor_timeout_does_not_become_query_timeout(conn_str):
     """GH #725: connect(timeout=N) must NOT abort a long-running query.
 
     A short login timeout should have no effect on a query that runs longer
-    than that timeout, because it only bounds the connection attempt.
+    than that timeout, because it only bounds the connection attempt. The
+    constructor timeout must also leave ``Connection.timeout`` (the query
+    timeout) at its 0 default.
     """
     conn = connect(conn_str, timeout=3)
     try:
+        assert conn.timeout == 0, "Constructor timeout must not set the query timeout"
         cursor = conn.cursor()
         # WAITFOR runs ~5s, longer than the 3s login timeout. If the login
         # timeout were (wrongly) applied as a query timeout, this would raise
         # OperationalError 'Query timeout expired'.
+        start = time.monotonic()
         cursor.execute("WAITFOR DELAY '00:00:05'; SELECT 1")
+        elapsed = time.monotonic() - start
         assert cursor.fetchval() == 1, "Long query must complete; login timeout must not abort it"
+        assert elapsed >= 4.0, f"Query returned too early ({elapsed:.2f}s); WAITFOR not honored"
     finally:
         conn.close()
 
@@ -2652,10 +2658,18 @@ def test_constructor_login_timeout_honored_on_unresponsive_server():
         unresponsive = (
             f"Server={loopback},{port};Database=master;Encrypt=no;TrustServerCertificate=yes;"
         )
-        start = time.time()
-        with pytest.raises(Exception):
+        start = time.monotonic()
+        with pytest.raises(OperationalError) as exc:
             connect(unresponsive, timeout=3).close()
-        elapsed = time.time() - start
+        elapsed = time.monotonic() - start
+        # Assert it is a genuine login-timeout diagnostic, not some other failure
+        # that merely happened to land in the timing window (a parse error,
+        # connection reset, etc.). SQL Server surfaces the login timeout as
+        # OperationalError carrying 'timeout'/'258'/SQLSTATE 'HYT' in the message.
+        msg = str(exc.value).lower()
+        assert (
+            "timeout" in msg or "258" in msg or "hyt" in msg
+        ), f"Expected a login-timeout diagnostic, got: {exc.value}"
         # Lower bound: the TCP connect succeeds instantly, so any elapsed >= 2s
         # proves the driver actually waited in the login handshake and the login
         # timeout (not an immediate failure) ended it.
@@ -4947,87 +4961,26 @@ def test_getinfo_comprehensive_edge_case_coverage(db_connection):
 
 
 def test_timeout_long_running_query_with_small_timeout(conn_str):
-    """Validate the two distinct timeout behaviors after GH #725.
-
-    Test 1: the constructor ``timeout`` is the LOGIN (connection-attempt)
-    timeout, so a small value must NOT abort a long-running query — the 5s
-    WAITFOR completes and ``Connection.timeout`` (the query timeout) stays 0.
-
-    Test 2: the ``Connection.timeout`` property IS the per-statement query
+    """GH #725: the ``Connection.timeout`` property IS the per-statement query
     timeout, so setting it to 2s must abort a 5s WAITFOR with a timeout error.
+
+    The complementary direction — the constructor ``timeout`` is the LOGIN
+    timeout and must NOT abort a long query — is covered by
+    ``test_constructor_timeout_does_not_become_query_timeout``.
     """
-    import time
-    import mssql_python
-
-    print(f"DEBUG: Connection string: {conn_str}")
-
-    # Test 1: Constructor timeout is the LOGIN timeout (GH #725), so it must
-    # NOT abort a long-running query — the 5s WAITFOR should complete.
-    print("DEBUG: [Test 1] Creating connection with login timeout=2 seconds")
-    connection = mssql_python.connect(conn_str, timeout=2)
-    print(f"DEBUG: Connection created, query-timeout property: {connection.timeout}")
-
-    try:
-        assert connection.timeout == 0, "Constructor timeout must not set the query timeout"
-        cursor = connection.cursor()
-        start_time = time.perf_counter()
-        print("DEBUG: Executing WAITFOR DELAY '00:00:05' (5 seconds)")
-
-        try:
-            cursor.execute("WAITFOR DELAY '00:00:05'; SELECT 1")
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: [OK] Query completed after {elapsed:.2f}s (login timeout did not abort)")
-            assert cursor.fetchval() == 1, "Long query must complete despite login timeout"
-            assert elapsed >= 4.0, f"Query returned too early ({elapsed:.2f}s); WAITFOR not honored"
-        finally:
-            cursor.close()
-            connection.close()
-
-    except Exception as e:
-        print(f"DEBUG: Unexpected error in test: {e}")
-        if connection:
-            connection.close()
-        raise
-
-    # Test 2: Set timeout dynamically (like test_timeout_bug.py)
-    print("DEBUG: [Test 2] Setting timeout dynamically via property")
-    connection = mssql_python.connect(conn_str)
-    print(f"DEBUG: Initial timeout: {connection.timeout}")
+    connection = connect(conn_str)
     connection.timeout = 2
-    print(f"DEBUG: After setting: {connection.timeout}")
-
+    assert connection.timeout == 2, "Query timeout should be set via the property"
     try:
         cursor = connection.cursor()
-        start_time = time.perf_counter()
-
-        try:
+        start = time.monotonic()
+        with pytest.raises(OperationalError) as exc:
             cursor.execute("WAITFOR DELAY '00:00:05'")
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: BUG CONFIRMED: Query completed without timeout after {elapsed:.2f}s")
-            # This is the main test - if we get here, timeout is not working
-            assert (
-                False
-            ), f"Timeout should have occurred after ~2s, but query completed in {elapsed:.2f}s"
-        except mssql_python.OperationalError as e:
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: [OK] Query timed out after {elapsed:.2f}s: {e}")
-            assert elapsed < 4.0, f"Timeout took too long: {elapsed:.2f}s"
-            assert "timeout" in str(e).lower(), f"Not a timeout error: {e}"
-        except Exception as e:
-            elapsed = time.perf_counter() - start_time
-            print(
-                f"DEBUG: [OK] Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}"
-            )
-            assert elapsed < 4.0, f"Exception took too long: {elapsed:.2f}s"
-        finally:
-            cursor.close()
-            connection.close()
-
-    except Exception as e:
-        print(f"DEBUG: Unexpected error in dynamic timeout test: {e}")
-        if connection:
-            connection.close()
-        raise
+        elapsed = time.monotonic() - start
+        assert "timeout" in str(exc.value).lower(), f"Not a timeout error: {exc.value}"
+        assert elapsed < 4.0, f"Query timeout should fire at ~2s, but took {elapsed:.2f}s"
+    finally:
+        connection.close()
 
 
 def test_cursor_timeout_single_execute(db_connection):
