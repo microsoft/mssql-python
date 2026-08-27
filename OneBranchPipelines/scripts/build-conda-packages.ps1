@@ -97,25 +97,27 @@ if (-not $conda) {
     $installer = Join-Path $OutputDir 'Miniforge3-Windows-x86_64.exe'
     $forgeDir = Join-Path $OutputDir 'miniforge'
     # Pin Miniforge to a specific release for reproducible, supply-chain-safe builds
-    # (never 'latest', which floats). Override with MINIFORGE_VERSION. When
-    # MINIFORGE_SHA256 is set (this installer's checksum for the pinned version) the
-    # download is verified BEFORE it is executed -- set it in the pipeline to make
-    # integrity checking mandatory.
+    # (never 'latest', which floats) AND verify its SHA256 BEFORE executing -- ALWAYS,
+    # not opt-in. The checksum for the pinned version is baked in below; overriding
+    # MINIFORGE_VERSION requires MINIFORGE_SHA256 for the new installer, so a version
+    # bump can never silently skip integrity checking.
     $mfver = if ($env:MINIFORGE_VERSION) { $env:MINIFORGE_VERSION } else { '26.3.2-3' }
+    $mfsha =
+    if ($env:MINIFORGE_SHA256) { $env:MINIFORGE_SHA256 }
+    elseif ($mfver -eq '26.3.2-3') { '14A8635465B5190537DDAD6286746FFEBBC55A1ED2A7BB14A506595FE3191E1E' }
+    else {
+        Write-Error "MINIFORGE_VERSION overridden to '$mfver' but MINIFORGE_SHA256 is not set. Set it to that installer's SHA256 so the download is verified before execution."
+        exit 1
+    }
     $url = "https://github.com/conda-forge/miniforge/releases/download/$mfver/Miniforge3-Windows-x86_64.exe"
     Write-Host "Downloading pinned Miniforge ${mfver}: $url"
     Invoke-WebRequest -Uri $url -OutFile $installer
-    if ($env:MINIFORGE_SHA256) {
-        $actual = (Get-FileHash -Algorithm SHA256 -Path $installer).Hash
-        if ($actual -ne $env:MINIFORGE_SHA256) {
-            Write-Error "Miniforge installer SHA256 mismatch: expected '$($env:MINIFORGE_SHA256)', got '$actual'."
-            exit 1
-        }
-        Write-Host "Miniforge installer SHA256 verified."
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $installer).Hash
+    if ($actual -ne $mfsha) {
+        Write-Error "Miniforge installer SHA256 mismatch: expected '$mfsha', got '$actual'."
+        exit 1
     }
-    else {
-        Write-Host "WARNING: MINIFORGE_SHA256 not set -- skipping installer integrity check. Set it in the pipeline to the pinned checksum for $mfver."
-    }
+    Write-Host "Miniforge installer SHA256 verified ($mfsha)."
     # NSIS silent install; /D (target dir) MUST be last and unquoted.
     Start-Process -FilePath $installer -ArgumentList '/S', '/InstallationType=JustMe', '/AddToPath=0', "/D=$forgeDir" -Wait
     $conda = Join-Path $forgeDir 'Scripts\conda.exe'
