@@ -5,6 +5,7 @@ coverage
 unittest-xml-reporting
 psutil
 pyarrow
+polars
 
 # Runtime dependencies needed for tests
 azure-identity
