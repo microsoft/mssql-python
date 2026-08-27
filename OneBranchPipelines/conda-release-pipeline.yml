@@ -12,8 +12,11 @@
 # runs and a DRY-RUN step prints the exact `anaconda upload` plan WITHOUT uploading -- so a
 # validate-only run of THIS pipeline replaces the old separate dummy pipeline.
 #
-# Always Official (a publish is a deliberate, gated action). Manual trigger only.
-# The OneBranch YAML needs an actual ADO run to fully validate.
+# TEMPLATE by mode: publishToConda=false (dry run / dummy) extends the NonOfficial template
+# (no Production Service-Tree classification required, so a validate-only run passes the
+# inventory-compliance gate); publishToConda=true (real release) extends the Official template
+# (deliberate, gated production publish -- the definition must be classified Production to
+# actually upload). Manual trigger only. The OneBranch YAML needs an actual ADO run to fully validate.
 # =========================================================================================
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaRelease
 
@@ -76,7 +79,13 @@ resources:
       trigger: none
 
 extends:
-  template: 'v2/OneBranch.Official.CrossPlat.yml@templates'
+  # NonOfficial for a validate-only dry run (publishToConda=false): no Production Service-Tree
+  # classification is required, so the inventory-compliance gate passes. Official for a real
+  # publish (publishToConda=true): the governed production path.
+  ${{ if eq(parameters.publishToConda, true) }}:
+    template: 'v2/OneBranch.Official.CrossPlat.yml@templates'
+  ${{ else }}:
+    template: 'v2/OneBranch.NonOfficial.CrossPlat.yml@templates'
   parameters:
     featureFlags:
       WindowsHostVersion:
@@ -88,9 +97,6 @@ extends:
       suppression:
         suppressionFile: $(Build.SourcesDirectory)/.gdn/.gdnsuppress
         suppressionSet: default
-      binskim:
-        enabled: true
-        break: true
       credscan:
         enabled: true
       policheck:
@@ -99,9 +105,15 @@ extends:
         exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
       publishLogs:
         enabled: true
-      tsa:
-        enabled: true
-        configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
+      # Official-only heavy gates (binskim break + TSA). The NonOfficial dry run skips them,
+      # matching the old dummy pipeline's minimal SDL.
+      ${{ if eq(parameters.publishToConda, true) }}:
+        binskim:
+          enabled: true
+          break: true
+        tsa:
+          enabled: true
+          configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
 
     stages:
       - stage: CondaRelease
