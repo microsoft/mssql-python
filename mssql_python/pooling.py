@@ -10,6 +10,7 @@ from typing import Dict
 
 from mssql_python import ddbc_bindings
 from mssql_python.logging import logger
+from mssql_python.odbc_provider import ProviderManager
 
 
 class PoolingManager:
@@ -62,6 +63,11 @@ class PoolingManager:
                 max_size,
                 idle_timeout,
             )
+            # Enabling pooling loads the native driver; resolve and push the
+            # ODBC provider first so an explicit pooling() before any connect
+            # still honors the selection (mirrors Connection.__init__).
+            _provider = ProviderManager.ensure_available()
+            ddbc_bindings.set_odbc_provider(_provider)
             ddbc_bindings.enable_pooling(max_size, idle_timeout)
             cls._config["max_size"] = max_size
             cls._config["idle_timeout"] = idle_timeout

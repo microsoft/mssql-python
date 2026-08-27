@@ -9,6 +9,7 @@ import sys
 import threading
 import types
 import weakref
+from typing import Optional
 
 # Import settings from helpers module
 from .helpers import Settings, get_settings, _settings, _settings_lock
@@ -611,8 +612,8 @@ class _MSSQLModule(types.ModuleType):
         return ProviderManager.effective()
 
     @odbc_provider.setter
-    def odbc_provider(self, value: str) -> None:
-        """Set the ODBC provider selection."""
+    def odbc_provider(self, value: Optional[str]) -> None:
+        """Set the ODBC provider selection (or None to clear)."""
         ProviderManager.set_property(value)
 
 

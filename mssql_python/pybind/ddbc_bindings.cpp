@@ -983,7 +983,6 @@ std::string GetDriverPathCpp(const std::string& moduleDir);
 // works if the push has not happened yet.
 // -----------------------------------------------------------------------------
 #include <cctype>
-#include <cstdlib>
 
 namespace {
 constexpr const char* kProviderMsodbcsql18 = "msodbcsql18";
@@ -1003,22 +1002,6 @@ std::string NormalizeProviderId(const std::string& id) {
     }
     return out;
 }
-
-std::string GetEnvValue(const char* name) {
-#ifdef _WIN32
-    char* buf = nullptr;
-    size_t sz = 0;
-    if (_dupenv_s(&buf, &sz, name) == 0 && buf != nullptr) {
-        std::string value(buf);
-        free(buf);
-        return value;
-    }
-    return std::string();
-#else
-    const char* value = std::getenv(name);
-    return value ? std::string(value) : std::string();
-#endif
-}
 }  // namespace
 
 void SetSelectedProvider(const std::string& id) {
@@ -1026,18 +1009,12 @@ void SetSelectedProvider(const std::string& id) {
     g_selectedProvider = NormalizeProviderId(id);
 }
 
-// Effective provider id: Python push -> env var -> default. Any unrecognized
-// value falls back to the classic default; Python is the authoritative validator
-// and already fails closed on an unknown selection.
+// Effective provider id: the value pushed from Python, else the classic default.
+// Python is the authoritative resolver (env var -> module property -> default)
+// and pushes the result via set_odbc_provider() before the driver loads.
 std::string GetSelectedProviderId() {
-    {
-        std::lock_guard<std::mutex> lock(g_providerMutex);
-        if (!g_selectedProvider.empty()) {
-            return (g_selectedProvider == kProviderMssqlOdbc) ? kProviderMssqlOdbc
-                                                              : kProviderMsodbcsql18;
-        }
-    }
-    if (NormalizeProviderId(GetEnvValue("MSSQL_PYTHON_ODBC_PROVIDER")) == kProviderMssqlOdbc) {
+    std::lock_guard<std::mutex> lock(g_providerMutex);
+    if (g_selectedProvider == kProviderMssqlOdbc) {
         return kProviderMssqlOdbc;
     }
     return kProviderMsodbcsql18;
@@ -1099,8 +1076,8 @@ std::string GetOdbcLibsBaseDir() {
                 "are missing or incomplete for this platform. Reinstall it with: "
                 "pip install --force-reinstall " + distName);
         }
-        LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
-            parentDir.string().c_str());
+        LOG("GetOdbcLibsBaseDir: Using external %s package - directory='%s'",
+            packageName.c_str(), parentDir.string().c_str());
         return parentDir.string();
     } catch (const py::error_already_set& e) {
         if (e.matches(PyExc_ModuleNotFoundError)) {
@@ -1114,9 +1091,9 @@ std::string GetOdbcLibsBaseDir() {
         }
         // A different import-time error means the package is installed but
         // broken; surface it instead of silently masking the real problem.
-        LOG("GetOdbcLibsBaseDir: importing mssql_python_odbc failed unexpectedly (%s); "
+        LOG("GetOdbcLibsBaseDir: importing %s failed unexpectedly (%s); "
             "re-raising",
-            e.what());
+            packageName.c_str(), e.what());
         throw;
     }
 }

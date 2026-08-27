@@ -6,6 +6,9 @@ validation, resolve-once freezing, post-freeze warning) and the public surface
 (``mssql_python.odbc_provider`` property and ``get_odbc_provider_info()``).
 """
 
+import importlib
+import sys
+
 import pytest
 
 import mssql_python
@@ -129,6 +132,17 @@ def test_ensure_available_default_ok():
 
 def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
     monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+
+    # Force the provider package to appear absent so the test is deterministic
+    # regardless of what is installed in the environment.
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mssql_python_rust_odbc":
+            raise ModuleNotFoundError(f"No module named '{name}'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[ProviderManager.__module__].importlib, "import_module", fake_import)
     with pytest.raises(ImportError) as excinfo:
         ProviderManager.ensure_available()
     message = str(excinfo.value)
