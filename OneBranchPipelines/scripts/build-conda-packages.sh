@@ -69,38 +69,34 @@ fi
 if [ -z "$conda" ]; then
   echo "=== conda not found on PATH; installing Miniforge3 ==="
   os="$(uname -s)"; arch="$(uname -m)"
+  mfver="${MINIFORGE_VERSION:-26.3.2-3}"
   case "$os-$arch" in
-    Darwin-arm64)  mf="Miniforge3-MacOSX-arm64.sh" ;;
-    Darwin-x86_64) mf="Miniforge3-MacOSX-x86_64.sh" ;;
-    Linux-x86_64)  mf="Miniforge3-Linux-x86_64.sh" ;;
-    Linux-aarch64) mf="Miniforge3-Linux-aarch64.sh" ;;
+    Darwin-arm64)  mf="Miniforge3-${mfver}-MacOSX-arm64.sh" ;;
+    Darwin-x86_64) mf="Miniforge3-${mfver}-MacOSX-x86_64.sh" ;;
+    Linux-x86_64)  mf="Miniforge3-${mfver}-Linux-x86_64.sh" ;;
+    Linux-aarch64) mf="Miniforge3-${mfver}-Linux-aarch64.sh" ;;
     *) echo "ERROR: unsupported platform '$os-$arch' for Miniforge" >&2; exit 1 ;;
   esac
   forgeDir="$OutputDir/miniforge"
   installer="$OutputDir/$mf"
-  # Pin Miniforge to a specific release for reproducible, supply-chain-safe builds
-  # (never `latest`, which floats) AND verify its SHA256 BEFORE executing -- ALWAYS,
-  # not opt-in. The per-installer checksum for the pinned version is baked in below;
-  # overriding MINIFORGE_VERSION requires MINIFORGE_SHA256 for the new installer, so a
-  # version bump can never silently skip integrity checking.
-  mfver="${MINIFORGE_VERSION:-26.3.2-3}"
-  if [ -n "${MINIFORGE_SHA256:-}" ]; then
-    mfsha="$MINIFORGE_SHA256"
-  elif [ "$mfver" = "26.3.2-3" ]; then
-    case "$mf" in
-      Miniforge3-Linux-x86_64.sh)  mfsha="848194851a98903134187fbb4ab50efe87b003e0c0f808f97644b7524a62bf2c" ;;
-      Miniforge3-Linux-aarch64.sh) mfsha="2c113a69297e612b01ca0f320c22a3107a11f2ab9b573d79ac868a175945ce29" ;;
-      Miniforge3-MacOSX-x86_64.sh) mfsha="39273e4c89a0a1af4538010615d44ae8f44e1af41007e02def593d20f316b003" ;;
-      Miniforge3-MacOSX-arm64.sh)  mfsha="59168f1e24d0a4ad9932021170809fca836cd240e183eeeb331d5bcfc0098168" ;;
-      *) echo "ERROR: no baked-in SHA256 for '$mf' @ $mfver; set MINIFORGE_SHA256." >&2; exit 1 ;;
-    esac
-  else
-    echo "ERROR: MINIFORGE_VERSION overridden to '$mfver' but MINIFORGE_SHA256 is not set. Set it to the '$mf' installer's SHA256 so the download is verified before execution." >&2
-    exit 1
-  fi
+  # Pin Miniforge to a specific release (never `latest`, which floats) and verify its
+  # SHA256 BEFORE executing. The expected hash is NOT hard-coded in source: prefer an
+  # explicit MINIFORGE_SHA256 (a pipeline variable = strongest, out-of-source), else
+  # verify against the release's OWN published <installer>.sha256 sidecar. The installer
+  # is never executed unverified.
   url="https://github.com/conda-forge/miniforge/releases/download/${mfver}/$mf"
   echo "Downloading pinned Miniforge $mfver: $url"
   curl -fL "$url" -o "$installer"
+  if [ -n "${MINIFORGE_SHA256:-}" ]; then
+    mfsha="$MINIFORGE_SHA256"
+  else
+    curl -fL "$url.sha256" -o "$installer.sha256"
+    mfsha="$(grep -oiE '[0-9a-f]{64}' "$installer.sha256" | head -n1)"
+  fi
+  if [ -z "$mfsha" ]; then
+    echo "ERROR: could not determine the expected SHA256 for $mf." >&2
+    exit 1
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
     actual="$(sha256sum "$installer" | awk '{print $1}')"
   else
