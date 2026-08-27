@@ -976,11 +976,11 @@ std::string GetDriverPathCpp(const std::string& moduleDir);
 //
 // Two providers are supported: the classic Microsoft ODBC Driver 18
 // ("msodbcsql18", shipped by mssql_python_odbc) and the Rust driver
-// ("mssql-odbc", shipped by mssql_python_rust_odbc). Python is the authoritative
-// resolver (env var -> module property -> default) and pushes the chosen id here
-// via set_odbc_provider() before the driver loads. The native side keeps an
-// env-var fallback and a hardcoded default so the well-tested classic path still
-// works if the push has not happened yet.
+// ("mssql-odbc", shipped by mssql_python_rust_odbc). Python is the sole
+// resolver (env var -> module property -> default) and pushes the chosen id
+// here via set_odbc_provider() before the driver loads. The native side does
+// not read the environment itself; if the push has not happened yet, it falls
+// back to the hardcoded classic default.
 // -----------------------------------------------------------------------------
 #include <cctype>
 
