@@ -506,8 +506,20 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
+  # Colima + SQL Server container setup averages ~12.5 min but has a long tail
+  # (setup has been observed at 17-39 min). The ADO default job timeout is 60 min,
+  # which the setup tail plus tests plus the 20-min benchmark step can exceed,
+  # getting the job killed mid-step. Give the job enough headroom for the tail.
+  timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
+
+  variables:
+    # pip's on-disk download/wheel cache. Persisted across runs by the Cache@2
+    # task below so `pip install -r requirements.txt` reuses wheels instead of
+    # re-downloading them on every run. Exposed to script steps as the
+    # $PIP_CACHE_DIR environment variable, which pip honors automatically.
+    PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip-cache
 
   strategy:
     matrix:
@@ -527,63 +539,114 @@ jobs:
       addToPath: true
     displayName: 'Use Python $(pythonVersion) on macOS'
 
+  - task: Cache@2
+    inputs:
+      key: 'pip | "$(Agent.OS)" | "$(pythonVersion)" | requirements.txt'
+      restoreKeys: |
+        pip | "$(Agent.OS)" | "$(pythonVersion)"
+        pip | "$(Agent.OS)"
+      path: $(PIP_CACHE_DIR)
+    displayName: 'Cache pip packages'
+
   - script: |
-      brew update
-      # Uninstall existing CMake to avoid tap conflicts
+      # Single serialized Homebrew transaction. brew holds a global lock, so
+      # installing cmake, docker, and colima together is both faster than three
+      # separate `brew install` calls and lets the next step overlap the Colima
+      # VM boot + SQL setup with the Python build.
+      # No `brew update` here: the hosted macOS runner ships an up-to-date
+      # Homebrew and a full formula re-sync is ~1-3 min of pure setup overhead.
+      # Uninstall the preinstalled CMake first to avoid tap conflicts.
       brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
-      # Install CMake from homebrew/core
-      brew install cmake
-    displayName: 'Install CMake'
+      brew install cmake docker colima
+    displayName: 'Install build & container tooling (Homebrew)'
 
   - script: |
-      brew update
-      brew install docker colima
+      set -e
+      # Overlap the ENTIRE container-side setup (Colima VM boot -> image pull ->
+      # container start -> SQL readiness) with the CPU-bound Python setup (pip
+      # install + pybind build). The two chains are independent until pytest, so
+      # we run the container chain in the background and the build in the
+      # foreground, then wait for the container before continuing.
+      #
+      # On the Intel macOS-15 hosted runner the linux/amd64 SQL Server image runs
+      # natively (no emulation); the dominant container costs are the Colima VM
+      # boot (~2-4 min) and the ~2 GB image pull, both of which are hidden behind
+      # the build here.
+      #
+      # NOTE: this deliberately merges what used to be separate steps (start
+      # Colima, pull+start SQL, install Python deps, build pybind). Splitting them
+      # back out restores the previous per-step timing breakdown.
+      setup_sql() {
+        echo "[sql] Starting Colima VM..."
+        colima start --cpu 4 --memory 8 --disk 50
+        docker context use colima >/dev/null || true
+        docker version
 
-      # Start Colima with extra resources
-      colima start --cpu 4 --memory 8 --disk 50
+        echo "[sql] Pulling SQL Server image..."
+        docker pull "$(sqlServerImage)"
 
-      # Optional: set Docker context (usually automatic)
-      docker context use colima >/dev/null || true
+        echo "[sql] Starting SQL Server container..."
+        docker run \
+          --name sqlserver \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD \
+          -p 1433:1433 \
+          -d "$(sqlServerImage)"
 
-      # Confirm Docker is operational
-      docker version
-      docker ps
-    displayName: 'Install and start Colima-based Docker'
+        echo "[sql] Waiting for SQL Server to accept connections..."
+        for i in {1..30}; do
+          if docker exec -e SQLCMDPASSWORD sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U SA \
+            -C -Q "SELECT 1"; then
+            echo "[sql] SQL Server is ready."
+            return 0
+          fi
+          sleep 2
+        done
 
-  - script: |
-      # Pull and run SQL Server container
-      docker pull $(sqlServerImage)
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD \
-        -p 1433:1433 \
-        -d $(sqlServerImage)
-
-      # Starting SQL Server container…
-      for i in {1..30}; do
-        docker exec -e SQLCMDPASSWORD sqlserver \
+        # One last probe: the loop sleeps after its final attempt, so SQL can
+        # become reachable in that window and would otherwise be missed.
+        if docker exec -e SQLCMDPASSWORD sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
-    displayName: 'Pull & start SQL Server (Docker)'
+          -S localhost -U SA \
+          -C -Q "SELECT 1"; then
+          echo "[sql] SQL Server is ready."
+          return 0
+        fi
+
+        # sqlcmd only reports that the client could not connect. When the
+        # container itself exited (bad password policy, EULA, OOM, port clash)
+        # the reason is in the container's own log, so surface it here.
+        echo "[sql] SQL Server did not become ready in time." >&2
+        echo "[sql] ---- docker logs sqlserver (last 200 lines) ----" >&2
+        docker logs --tail 200 sqlserver >&2 || true
+        return 1
+      }
+
+      echo "Starting container setup (Colima + SQL Server) in the background..."
+      setup_sql > /tmp/sql_setup.log 2>&1 &
+      SQL_PID=$!
+
+      echo "Installing Python dependencies (overlapped with container setup)..."
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+
+      echo "Building pybind bindings (.so) (overlapped with container setup)..."
+      ( cd mssql_python/pybind && ./build.sh )
+
+      echo "Waiting for container setup (Colima + SQL Server) to finish..."
+      if ! wait "$SQL_PID"; then
+        echo "Container setup failed:"
+        cat /tmp/sql_setup.log
+        exit 1
+      fi
+      cat /tmp/sql_setup.log
+    displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
       MSSQL_SA_PASSWORD: $(DB_PASSWORD)
       SQLCMDPASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
-
-  - script: |
-      cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -769,6 +832,7 @@ jobs:
       
       # Wait for SQL Server to be ready
       echo "Waiting for SQL Server to start..."
+      sql_ready=false
       for i in {1..60}; do
         if docker exec -e SQLCMDPASSWORD sqlserver-$(distroName) \
           /opt/mssql-tools18/bin/sqlcmd \
@@ -776,11 +840,27 @@ jobs:
           -U SA \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
+          sql_ready=true
           break
         fi
         echo "Waiting... ($i/60)"
         sleep 2
       done
+      if [ "$sql_ready" != true ]; then
+        # the loop sleeps after its final attempt, so probe once more
+        if docker exec -e SQLCMDPASSWORD sqlserver-$(distroName) \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+        else
+          echo "SQL Server did not become ready after 60 attempts"
+          echo "---- docker logs sqlserver-$(distroName) (last 200 lines) ----"
+          docker logs --tail 200 sqlserver-$(distroName) || true
+          exit 1
+        fi
+      fi
       
       # Create test database
       docker exec -e SQLCMDPASSWORD sqlserver-$(distroName) \
@@ -1063,7 +1143,11 @@ jobs:
         distroName: 'Ubuntu'
         archName: 'arm64'
       Debian_ARM64:
-        dockerImage: 'debian:12'
+        # Python 3.11 is preinstalled (byte-compiled natively at image-build
+        # time) so we never run the apt python3 post-install byte-compilation
+        # that SIGSEGVs (exit 139) under QEMU user-mode emulation. Still Debian
+        # 12 (bookworm) underneath, so the msodbcsql18 debian/12 repo applies.
+        dockerImage: 'python:3.11-bookworm'
         distroName: 'Debian'
         archName: 'arm64'
 
@@ -1097,6 +1181,7 @@ jobs:
       
       # Wait for SQL Server to be ready
       echo "Waiting for SQL Server to start..."
+      sql_ready=false
       for i in {1..60}; do
         if docker exec -e SQLCMDPASSWORD sqlserver-$(distroName)-$(archName) \
           /opt/mssql-tools18/bin/sqlcmd \
@@ -1104,11 +1189,27 @@ jobs:
           -U SA \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
+          sql_ready=true
           break
         fi
         echo "Waiting... ($i/60)"
         sleep 2
       done
+      if [ "$sql_ready" != true ]; then
+        # the loop sleeps after its final attempt, so probe once more
+        if docker exec -e SQLCMDPASSWORD sqlserver-$(distroName)-$(archName) \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+        else
+          echo "SQL Server did not become ready after 60 attempts"
+          echo "---- docker logs sqlserver-$(distroName)-$(archName) (last 200 lines) ----"
+          docker logs --tail 200 sqlserver-$(distroName)-$(archName) || true
+          exit 1
+        fi
+      fi
       
       # Create test database
       docker exec -e SQLCMDPASSWORD sqlserver-$(distroName)-$(archName) \
@@ -1140,13 +1241,19 @@ jobs:
         "
       else
         # Debian ARM64
+        # Python (with pip, venv and dev headers) is already provided by the
+        # python:3.11-bookworm base image under /usr/local, so we do NOT
+        # apt-install python3* here -- the apt python3 post-install byte-
+        # compilation is what SIGSEGVs (exit 139) under QEMU emulation. pybind11
+        # comes from pip (requirements.txt); only non-Python build tools are
+        # pulled from apt, none of which depend on the Debian python3 package.
         docker exec test-container-$(distroName)-$(archName) bash -c "
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
           apt-get update
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+          apt-get install -y cmake curl wget gnupg build-essential
           # Verify architecture
           uname -m
           dpkg --print-architecture
@@ -1322,6 +1429,7 @@ jobs:
       
       # Wait for SQL Server to be ready
       echo "Waiting for SQL Server to start..."
+      sql_ready=false
       for i in {1..60}; do
         if docker exec -e SQLCMDPASSWORD sqlserver-rhel9 \
           /opt/mssql-tools18/bin/sqlcmd \
@@ -1329,11 +1437,27 @@ jobs:
           -U SA \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
+          sql_ready=true
           break
         fi
         echo "Waiting... ($i/60)"
         sleep 2
       done
+      if [ "$sql_ready" != true ]; then
+        # the loop sleeps after its final attempt, so probe once more
+        if docker exec -e SQLCMDPASSWORD sqlserver-rhel9 \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+        else
+          echo "SQL Server did not become ready after 60 attempts"
+          echo "---- docker logs sqlserver-rhel9 (last 200 lines) ----"
+          docker logs --tail 200 sqlserver-rhel9 || true
+          exit 1
+        fi
+      fi
       
       # Create test database
       docker exec -e SQLCMDPASSWORD sqlserver-rhel9 \
@@ -1550,6 +1674,7 @@ jobs:
       
       # Wait for SQL Server to be ready
       echo "Waiting for SQL Server to start..."
+      sql_ready=false
       for i in {1..60}; do
         if docker exec -e SQLCMDPASSWORD sqlserver-rhel9-arm64 \
           /opt/mssql-tools18/bin/sqlcmd \
@@ -1557,11 +1682,27 @@ jobs:
           -U SA \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
+          sql_ready=true
           break
         fi
         echo "Waiting... ($i/60)"
         sleep 2
       done
+      if [ "$sql_ready" != true ]; then
+        # the loop sleeps after its final attempt, so probe once more
+        if docker exec -e SQLCMDPASSWORD sqlserver-rhel9-arm64 \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+        else
+          echo "SQL Server did not become ready after 60 attempts"
+          echo "---- docker logs sqlserver-rhel9-arm64 (last 200 lines) ----"
+          docker logs --tail 200 sqlserver-rhel9-arm64 || true
+          exit 1
+        fi
+      fi
       
       # Create test database
       docker exec -e SQLCMDPASSWORD sqlserver-rhel9-arm64 \
@@ -1782,6 +1923,7 @@ jobs:
       
       # Wait for SQL Server to be ready
       echo "Waiting for SQL Server to start..."
+      sql_ready=false
       for i in {1..60}; do
         if docker exec -e SQLCMDPASSWORD sqlserver-alpine \
           /opt/mssql-tools18/bin/sqlcmd \
@@ -1789,11 +1931,27 @@ jobs:
           -U SA \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
+          sql_ready=true
           break
         fi
         echo "Waiting... ($i/60)"
         sleep 2
       done
+      if [ "$sql_ready" != true ]; then
+        # the loop sleeps after its final attempt, so probe once more
+        if docker exec -e SQLCMDPASSWORD sqlserver-alpine \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+        else
+          echo "SQL Server did not become ready after 60 attempts"
+          echo "---- docker logs sqlserver-alpine (last 200 lines) ----"
+          docker logs --tail 200 sqlserver-alpine || true
+          exit 1
+        fi
+      fi
       
       # Create test database
       docker exec -e SQLCMDPASSWORD sqlserver-alpine \
@@ -2039,6 +2197,7 @@ jobs:
       
       # Wait for SQL Server to be ready
       echo "Waiting for SQL Server to start..."
+      sql_ready=false
       for i in {1..60}; do
         if docker exec -e SQLCMDPASSWORD sqlserver-alpine-arm64 \
           /opt/mssql-tools18/bin/sqlcmd \
@@ -2046,11 +2205,27 @@ jobs:
           -U SA \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
+          sql_ready=true
           break
         fi
         echo "Waiting... ($i/60)"
         sleep 2
       done
+      if [ "$sql_ready" != true ]; then
+        # the loop sleeps after its final attempt, so probe once more
+        if docker exec -e SQLCMDPASSWORD sqlserver-alpine-arm64 \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+        else
+          echo "SQL Server did not become ready after 60 attempts"
+          echo "---- docker logs sqlserver-alpine-arm64 (last 200 lines) ----"
+          docker logs --tail 200 sqlserver-alpine-arm64 || true
+          exit 1
+        fi
+      fi
       
       # Create test database
       docker exec -e SQLCMDPASSWORD sqlserver-alpine-arm64 \
@@ -2509,14 +2684,31 @@ jobs:
         -d mcr.microsoft.com/mssql/server:2022-latest
 
       # Wait until SQL Server is ready
+      sql_ready=false
       for i in {1..30}; do
-        docker exec -e SQLCMDPASSWORD sqlserver \
+        if docker exec -e SQLCMDPASSWORD sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -C -Q "SELECT 1" && break
+          -C -Q "SELECT 1"; then
+          sql_ready=true
+          break
+        fi
         sleep 2
       done
+      if [ "$sql_ready" != true ]; then
+        # the loop sleeps after its final attempt, so probe once more
+        if ! docker exec -e SQLCMDPASSWORD sqlserver \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -C -Q "SELECT 1"; then
+          echo "SQL Server did not become ready after 30 attempts"
+          echo "---- docker logs sqlserver (last 200 lines) ----"
+          docker logs --tail 200 sqlserver || true
+          exit 1
+        fi
+      fi
     displayName: 'Start SQL Server container'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
