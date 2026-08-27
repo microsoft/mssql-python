@@ -21,6 +21,7 @@ Functions:
 
 from mssql_python.exceptions import InterfaceError, ProgrammingError, DatabaseError
 import mssql_python
+import decimal
 import sys
 import pytest
 import time
@@ -1908,6 +1909,523 @@ def test_converter_integration(db_connection):
     db_connection.clear_output_converters()
 
 
+def test_output_converter_wvarchar_not_catchall_for_non_string_columns_gh691(db_connection):
+    """GH #691: a SQL_WVARCHAR converter must not be an unconditional catch-all.
+
+    A converter registered only for SQL_WVARCHAR must be invoked for string and
+    binary columns only, and never for INT / DECIMAL / DATE columns. Before the
+    fix, the WVARCHAR converter was placed on every column that lacked a direct
+    type-keyed converter.
+
+    The converter here is a spy that records every value it receives and returns
+    an observable marker for non-bytes input instead of raising. That matters:
+    the optimized apply path swallows converter exceptions, so a converter doing
+    ``value.decode(...)`` would raise-and-be-swallowed on int/Decimal/date and
+    leave the original value intact -- hiding the bug. Recording invocations (and
+    returning a marker) makes the catch-all regression detectable: the call-count
+    assertion below fails on the unfixed code (converter fired on all columns)
+    and passes once the fallback is gated to str/bytes columns.
+    """
+    import decimal
+    import datetime
+
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+
+    converter_calls = []
+
+    def wvarchar_spy(value):
+        # Record the invocation first, before anything that could raise, so the
+        # spy captures calls even on non-string values (int/Decimal/date).
+        converter_calls.append(value)
+        if isinstance(value, bytes):
+            return "CONV:" + value.decode("utf-16-le")
+        return "CONV_NON_STRING"
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute("""
+            SELECT
+                CAST(42 AS INT)                  AS int_col,
+                CAST(3.14 AS DECIMAL(10, 2))     AS dec_col,
+                CAST('2020-01-02' AS DATE)       AS date_col,
+                CAST(N'hello' AS NVARCHAR(50))   AS str_col,
+                CAST(0x41004200 AS VARBINARY(8)) AS bin_col
+            """)
+        row = cursor.fetchone()
+
+        # Non-string columns must be untouched by the WVARCHAR converter.
+        assert isinstance(row[0], int) and row[0] == 42, f"INT column mangled: {row[0]!r}"
+        assert row[1] == decimal.Decimal("3.14"), f"DECIMAL column mangled: {row[1]!r}"
+        assert row[2] == datetime.date(2020, 1, 2), f"DATE column mangled: {row[2]!r}"
+
+        # The string column must still be converted by the WVARCHAR converter.
+        assert row[3] == "CONV:hello", f"NVARCHAR column not converted: {row[3]!r}"
+
+        # The binary column is also handled by the WVARCHAR fallback -- the gate
+        # intentionally includes bytes, mirroring Row._apply_output_converters.
+        assert row[4] == "CONV:AB", f"VARBINARY column not handled by fallback: {row[4]!r}"
+
+        # Contract check that actually catches GH #691: the converter must fire
+        # for exactly the two str/bytes columns, never as a catch-all on the
+        # INT / DECIMAL / DATE columns.
+        assert len(converter_calls) == 2, (
+            "SQL_WVARCHAR converter must fire only on the NVARCHAR and VARBINARY "
+            f"columns; it was invoked {len(converter_calls)} times on "
+            f"{converter_calls!r}"
+        )
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_integer_sql_type_key_gh684(db_connection):
+    """Integer ODBC SQL-type keys must dispatch (pyodbc-compatible). Regression for GH #684.
+
+    add_output_converter documents an integer SQL type code, but dispatch used to key on
+    the Python type in cursor.description[i][1], so integer keys silently never fired.
+    """
+    cursor = db_connection.cursor()
+    decimal_query = "SELECT CAST(19.99 AS DECIMAL(10, 2)) AS price"
+
+    try:
+        # 1) Integer SQL-type key fires (the reported bug: it used to silently no-op).
+        db_connection.add_output_converter(
+            mssql_python.SQL_DECIMAL, lambda v: None if v is None else float(v)
+        )
+        cursor.execute(decimal_query)
+        value = cursor.fetchone()[0]
+        assert isinstance(value, float), "Integer SQL_DECIMAL converter did not fire"
+        assert value == 19.99
+        db_connection.clear_output_converters()
+
+        # 2) Exact-type dispatch: an SQL_INTEGER converter must NOT touch a DECIMAL column.
+        db_connection.add_output_converter(mssql_python.SQL_INTEGER, lambda v: "SHOULD_NOT_FIRE")
+        cursor.execute(decimal_query)
+        value = cursor.fetchone()[0]
+        assert isinstance(value, decimal.Decimal), "SQL_INTEGER converter wrongly hit DECIMAL"
+        # ...but it does fire on an INTEGER column.
+        cursor.execute("SELECT CAST(42 AS INT) AS n")
+        assert cursor.fetchone()[0] == "SHOULD_NOT_FIRE", "SQL_INTEGER converter did not fire"
+        db_connection.clear_output_converters()
+
+        # 3) Integer SQL-type key takes precedence over a Python-type key on the same column.
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "python-type")
+        db_connection.add_output_converter(mssql_python.SQL_DECIMAL, lambda v: "int-type")
+        cursor.execute(decimal_query)
+        assert cursor.fetchone()[0] == "int-type", "Integer key should win over Python-type key"
+        db_connection.clear_output_converters()
+
+        # 4) Distinct converters for DECIMAL vs NUMERIC (exact type, not collapsed to Decimal).
+        db_connection.add_output_converter(mssql_python.SQL_DECIMAL, lambda v: "D")
+        db_connection.add_output_converter(mssql_python.SQL_NUMERIC, lambda v: "N")
+        cursor.execute("SELECT CAST(1.5 AS DECIMAL(10, 2)) AS x")
+        assert cursor.fetchone()[0] == "D"
+        cursor.execute("SELECT CAST(1.5 AS NUMERIC(10, 2)) AS x")
+        assert cursor.fetchone()[0] == "N"
+        db_connection.clear_output_converters()
+
+        # 5) NULL still yields None regardless of an integer-keyed converter.
+        db_connection.add_output_converter(
+            mssql_python.SQL_DECIMAL, lambda v: None if v is None else float(v)
+        )
+        cursor.execute("SELECT CAST(NULL AS DECIMAL(10, 2)) AS price")
+        assert cursor.fetchone()[0] is None
+        db_connection.clear_output_converters()
+
+        # 6) String path: an integer SQL_WVARCHAR key fires on an NVARCHAR column and
+        #    receives the raw value as UTF-16LE bytes (the documented string contract).
+        db_connection.add_output_converter(
+            mssql_python.SQL_WVARCHAR,
+            lambda v: None if v is None else "CONV:" + v.decode("utf-16-le"),
+        )
+        cursor.execute("SELECT CAST(N'hello' AS NVARCHAR(50)) AS s")
+        assert cursor.fetchone()[0] == "CONV:hello", "Integer SQL_WVARCHAR converter did not fire"
+        db_connection.clear_output_converters()
+
+        # 7) Metadata result sets also honor output converters (GH #684 metadata path).
+        #    Black-box check: a string column from a catalog result set must be passed
+        #    through the registered SQL_WVARCHAR converter, not just cached internally.
+        db_connection.add_output_converter(
+            mssql_python.SQL_WVARCHAR,
+            lambda v: None if v is None else "CONV:" + v.decode("utf-16-le"),
+        )
+        cursor.tables()
+        row = cursor.fetchone()
+        assert row is not None, "tables() should return at least one catalog row"
+        assert any(
+            isinstance(col, str) and col.startswith("CONV:") for col in row
+        ), "Metadata result sets must apply output converters to their string columns"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_wvarchar_null_string_gh691(db_connection):
+    """GH #691: a NULL string value stays None and the WVARCHAR converter is never called.
+
+    The gated fallback is placed on the NVARCHAR column (mapped type str), but the apply path
+    short-circuits on NULL, so the converter must not be invoked for a NULL value.
+    """
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    calls = []
+
+    def wvarchar_spy(value):
+        calls.append(value)
+        return "CONV:" + value.decode("utf-16-le")
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute("SELECT CAST(NULL AS NVARCHAR(20)) AS null_str")
+        value = cursor.fetchone()[0]
+        assert value is None, f"NULL NVARCHAR must remain None, got {value!r}"
+        assert calls == [], "WVARCHAR converter must not be invoked for a NULL value"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_python_type_covers_multiple_sql_types_gh684(db_connection):
+    """A single Python-type converter must cover every SQL type that materializes to it.
+
+    DECIMAL, NUMERIC, MONEY and SMALLMONEY all surface as ``decimal.Decimal`` in
+    cursor.description[i][1], so one ``add_output_converter(decimal.Decimal, ...)`` must
+    fire for all four. Conversely, an integer SQL-type key is exact-match: SQL_DECIMAL
+    (code 3) also covers MONEY/SMALLMONEY (which report code 3) but never NUMERIC (code 2).
+    """
+    cursor = db_connection.cursor()
+    query = (
+        "SELECT CAST(1.10 AS DECIMAL(10, 2)) AS dec_c, "
+        "CAST(2.20 AS NUMERIC(10, 2)) AS num_c, "
+        "CAST(3.30 AS MONEY) AS money_c, "
+        "CAST(4.40 AS SMALLMONEY) AS sm_c"
+    )
+    try:
+        # Phase 1: one Python-type converter fires for all four decimal-like columns.
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "D:" + str(v))
+        cursor.execute(query)
+        dec_c, num_c, money_c, sm_c = cursor.fetchone()
+        assert dec_c.startswith("D:"), "decimal.Decimal converter missed DECIMAL"
+        assert num_c.startswith("D:"), "decimal.Decimal converter missed NUMERIC"
+        assert money_c.startswith("D:"), "decimal.Decimal converter missed MONEY"
+        assert sm_c.startswith("D:"), "decimal.Decimal converter missed SMALLMONEY"
+        db_connection.clear_output_converters()
+
+        # Phase 2: an integer SQL_DECIMAL key is exact-match on the ODBC code. MONEY and
+        # SMALLMONEY share DECIMAL's code (3), so they fire; NUMERIC (code 2) does not.
+        db_connection.add_output_converter(mssql_python.SQL_DECIMAL, lambda v: "INT3")
+        cursor.execute(query)
+        dec_c, num_c, money_c, sm_c = cursor.fetchone()
+        assert dec_c == "INT3", "SQL_DECIMAL integer key did not fire on DECIMAL"
+        assert money_c == "INT3", "SQL_DECIMAL integer key did not fire on MONEY"
+        assert sm_c == "INT3", "SQL_DECIMAL integer key did not fire on SMALLMONEY"
+        assert isinstance(num_c, decimal.Decimal), "SQL_DECIMAL key wrongly hit NUMERIC"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_wvarchar_applies_to_varchar_column_gh691(db_connection):
+    """GH #691: the gated WVARCHAR fallback still applies to VARCHAR columns (mapped type str).
+
+    VARCHAR maps to the Python type ``str`` just like NVARCHAR, so a SQL_WVARCHAR converter
+    fires on it and receives the value as UTF-16LE bytes.
+    """
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    calls = []
+
+    def wvarchar_spy(value):
+        calls.append(value)
+        return "CONV:" + value.decode("utf-16-le")
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute("SELECT CAST('abc' AS VARCHAR(20)) AS vchar")
+        value = cursor.fetchone()[0]
+        assert value == "CONV:abc", f"VARCHAR column not converted by WVARCHAR fallback: {value!r}"
+        assert len(calls) == 1, f"WVARCHAR converter should fire once on VARCHAR, got {len(calls)}"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_wvarchar_mixed_result_set_gh691(db_connection):
+    """GH #691: in a mixed row, the WVARCHAR converter fires only on the string column.
+
+    INT and DECIMAL columns (non str/bytes mapped types) must be untouched; only the NVARCHAR
+    column is converted, and the converter is invoked exactly once.
+    """
+    import decimal
+
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    calls = []
+
+    def wvarchar_spy(value):
+        calls.append(value)
+        if isinstance(value, bytes):
+            return "CONV:" + value.decode("utf-16-le")
+        return "CONV_NON_STRING"
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute(
+            "SELECT CAST(1 AS INT) AS i, "
+            "CAST('abc' AS NVARCHAR(10)) AS s, "
+            "CAST(12.34 AS DECIMAL(10, 2)) AS d"
+        )
+        i_val, s_val, d_val = cursor.fetchone()
+        assert isinstance(i_val, int) and i_val == 1, f"INT column mangled: {i_val!r}"
+        assert s_val == "CONV:abc", f"NVARCHAR column not converted: {s_val!r}"
+        assert d_val == decimal.Decimal("12.34"), f"DECIMAL column mangled: {d_val!r}"
+        assert len(calls) == 1, (
+            "WVARCHAR converter must fire only on the NVARCHAR column; "
+            f"invoked {len(calls)} times on {calls!r}"
+        )
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_python_type_datetime_and_bytes_gh684(db_connection):
+    """Python-type converters must work for datetime and bytes columns, not just numbers.
+
+    DATETIME materializes to ``datetime.datetime`` and VARBINARY to ``bytes``; the value is
+    handed to the converter as-is (only ``str`` values are pre-encoded to UTF-16LE bytes).
+    """
+    cursor = db_connection.cursor()
+    try:
+        db_connection.add_output_converter(datetime, lambda v: "DT:" + v.isoformat())
+        db_connection.add_output_converter(bytes, lambda v: "B:" + v.hex())
+        cursor.execute(
+            "SELECT CAST('2021-06-07 08:09:10' AS DATETIME) AS dt, "
+            "CAST(0x41004200 AS VARBINARY(8)) AS b"
+        )
+        dt_val, bin_val = cursor.fetchone()
+        assert dt_val == "DT:2021-06-07T08:09:10", "datetime.datetime converter did not fire"
+        assert bin_val == "B:41004200", "bytes converter did not fire"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_wvarchar_cached_map_multiple_fetches_gh691(db_connection):
+    """GH #691: the cached converter map behaves identically across multiple fetched rows.
+
+    The gated WVARCHAR fallback is computed once per statement; every row in a multi-row
+    result must be converted consistently, and the INT column must never be touched.
+    """
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    calls = []
+
+    def wvarchar_spy(value):
+        calls.append(value)
+        if isinstance(value, bytes):
+            return "CONV:" + value.decode("utf-16-le")
+        return "CONV_NON_STRING"
+
+    cursor = db_connection.cursor()
+    db_connection.add_output_converter(sql_wvarchar, wvarchar_spy)
+    try:
+        cursor.execute(
+            "SELECT CAST(10 AS INT) AS i, CAST(N'a' AS NVARCHAR(10)) AS s "
+            "UNION ALL SELECT CAST(20 AS INT), CAST(N'b' AS NVARCHAR(10)) "
+            "UNION ALL SELECT CAST(30 AS INT), CAST(N'c' AS NVARCHAR(10))"
+        )
+        rows = cursor.fetchall()
+        assert [r[0] for r in rows] == [10, 20, 30], "INT column must be untouched on every row"
+        assert [r[1] for r in rows] == [
+            "CONV:a",
+            "CONV:b",
+            "CONV:c",
+        ], "NVARCHAR column must be converted consistently on every row"
+        # Exactly one invocation per row -- the string column only, never the INT column.
+        assert (
+            len(calls) == 3
+        ), f"WVARCHAR converter must fire once per row (3 total), got {len(calls)}: {calls!r}"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_null_value_skips_converter_gh684(db_connection):
+    """A SQL NULL is returned as None and the converter is never invoked for it.
+
+    Both apply paths short-circuit on ``value is None``, so a registered converter is not
+    called with None. A spy proves the converter never runs on the NULL column.
+    """
+    cursor = db_connection.cursor()
+    calls = []
+
+    def spy(value):
+        calls.append(value)
+        return "SHOULD_NOT_APPEAR"
+
+    try:
+        db_connection.add_output_converter(decimal.Decimal, spy)
+        cursor.execute("SELECT CAST(NULL AS DECIMAL(10, 2)) AS n")
+        value = cursor.fetchone()[0]
+        assert value is None, "SQL NULL must be returned as None"
+        assert calls == [], "Converter must not be invoked for a NULL value"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_mixed_result_set_gh684(db_connection):
+    """Distinct converters for different Python types coexist within one result set.
+
+    A single row exposing INT, DECIMAL, NVARCHAR and DATETIME columns must route each value
+    to its own type-keyed converter independently.
+    """
+    cursor = db_connection.cursor()
+    try:
+        db_connection.add_output_converter(int, lambda v: v + 1000)
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "DEC:" + str(v))
+        db_connection.add_output_converter(str, lambda v: "STR:" + v.decode("utf-16-le"))
+        db_connection.add_output_converter(datetime, lambda v: "DT:" + v.isoformat())
+        cursor.execute(
+            "SELECT CAST(7 AS INT) AS i, "
+            "CAST(1.50 AS DECIMAL(10, 2)) AS d, "
+            "CAST(N'hi' AS NVARCHAR(10)) AS s, "
+            "CAST('2021-06-07 08:09:10' AS DATETIME) AS dt"
+        )
+        i_val, d_val, s_val, dt_val = cursor.fetchone()
+        assert i_val == 1007, "int converter did not fire on INT column"
+        assert d_val == "DEC:1.50", "decimal.Decimal converter did not fire on DECIMAL column"
+        assert s_val == "STR:hi", "str converter did not fire on NVARCHAR column"
+        assert dt_val == "DT:2021-06-07T08:09:10", "datetime converter did not fire on DATETIME"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_unsupported_keys_are_noops_gh684(db_connection):
+    """Keys that match no ODBC code and no materialized Python type are harmless no-ops.
+
+    ``add_output_converter`` accepts an ``int`` or a ``type`` (pyodbc-compatible) and stores
+    whatever key is given. Dispatch, however, only matches an exact integer ODBC SQL type
+    code or a column's exact materialized Python type, so keys like ``set``, ``object`` or a
+    ``decimal.Decimal`` subclass are stored but never invoked. Spies prove they never fire
+    and the values pass through unchanged.
+    """
+    cursor = db_connection.cursor()
+
+    class MyDecimal(decimal.Decimal):
+        pass
+
+    set_calls, object_calls, subclass_calls = [], [], []
+
+    def set_spy(value):
+        set_calls.append(value)
+        return "SET_FIRED"
+
+    def object_spy(value):
+        object_calls.append(value)
+        return "OBJECT_FIRED"
+
+    def subclass_spy(value):
+        subclass_calls.append(value)
+        return "SUBCLASS_FIRED"
+
+    try:
+        db_connection.add_output_converter(set, set_spy)
+        db_connection.add_output_converter(object, object_spy)
+        db_connection.add_output_converter(MyDecimal, subclass_spy)
+        cursor.execute(
+            "SELECT CAST(5 AS INT) AS i, "
+            "CAST(6.50 AS DECIMAL(10, 2)) AS d, "
+            "CAST(N'x' AS NVARCHAR(10)) AS s, "
+            "CAST(0x4100 AS VARBINARY(4)) AS b"
+        )
+        i_val, d_val, s_val, b_val = cursor.fetchone()
+        # None of the unsupported-key converters were ever invoked.
+        assert set_calls == [], "set-keyed converter must never be invoked"
+        assert object_calls == [], "object-keyed converter must never be invoked"
+        assert subclass_calls == [], "Decimal-subclass-keyed converter must never be invoked"
+        # Values pass through unchanged as their native Python types.
+        assert i_val == 5, "INT value must be unchanged by a no-op converter"
+        assert isinstance(d_val, decimal.Decimal), "DECIMAL value must remain decimal.Decimal"
+        assert isinstance(s_val, str), "NVARCHAR value must remain str"
+        assert isinstance(b_val, (bytes, bytearray)), "VARBINARY value must remain bytes"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_cached_map_across_multiple_rows_gh684(db_connection):
+    """The per-statement converter map is cached once and applied to every fetched row.
+
+    A converter registered before execute() must convert all rows consistently, proving the
+    cached converter map is reused (not rebuilt or dropped) across a multi-row fetchall().
+    """
+    cursor = db_connection.cursor()
+    try:
+        db_connection.add_output_converter(decimal.Decimal, lambda v: "R:" + str(v))
+        cursor.execute(
+            "SELECT CAST(1.50 AS DECIMAL(10, 2)) AS d "
+            "UNION ALL SELECT CAST(2.50 AS DECIMAL(10, 2)) "
+            "UNION ALL SELECT CAST(3.50 AS DECIMAL(10, 2))"
+        )
+        rows = cursor.fetchall()
+        assert len(rows) == 3, "Expected three rows from the UNION ALL"
+        assert [r[0] for r in rows] == [
+            "R:1.50",
+            "R:2.50",
+            "R:3.50",
+        ], "Cached converter map must convert every row consistently"
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_output_converter_int_column_converter_vs_wvarchar_gating_gh691(db_connection):
+    """An INT-column converter runs; the WVARCHAR fallback never touches a non-string column.
+
+    Locks in the GH #691 gating so it cannot regress. Positive: a converter registered against
+    the INT column (via its SQL_INTEGER type code) still fires and receives the raw integer.
+    Negative: with only a SQL_WVARCHAR converter registered, that converter must NOT sneak onto
+    the INT column -- the value passes through untouched and the converter is never invoked.
+    """
+    cursor = db_connection.cursor()
+    int_query = "SELECT CAST(42 AS INT) AS n"
+    try:
+        # Positive: an INT-column converter still runs and sees the raw integer value.
+        int_calls = []
+
+        def int_spy(value):
+            int_calls.append(value)
+            return "INT:" + str(value)
+
+        db_connection.add_output_converter(mssql_python.SQL_INTEGER, int_spy)
+        cursor.execute(int_query)
+        value = cursor.fetchone()[0]
+        assert value == "INT:42", "Registered INT-column converter did not fire"
+        assert int_calls == [42], f"INT converter must see the raw int, got {int_calls!r}"
+        db_connection.clear_output_converters()
+
+        # Negative (GH #691): a WVARCHAR converter must not sneak onto the INT column.
+        wvarchar_calls = []
+
+        def wvarchar_spy(value):
+            wvarchar_calls.append(value)
+            return "SHOULD_NOT_FIRE"
+
+        db_connection.add_output_converter(mssql_python.SQL_WVARCHAR, wvarchar_spy)
+        cursor.execute(int_query)
+        value = cursor.fetchone()[0]
+        assert value == 42, f"WVARCHAR fallback must not touch the INT column, got {value!r}"
+        assert wvarchar_calls == [], (
+            "WVARCHAR converter must never be invoked on a non-string (INT) column; "
+            f"it was called on {wvarchar_calls!r}"
+        )
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
 def test_output_converter_with_null_values(db_connection):
     """Test that output converters handle NULL values correctly"""
     cursor = db_connection.cursor()
@@ -2052,21 +2570,129 @@ def test_timeout_setter(db_connection):
 
 
 def test_timeout_from_constructor(conn_str):
-    """Test setting timeout in the connection constructor"""
-    # Create a connection with timeout set
+    """The constructor timeout is the LOGIN timeout (SQL_ATTR_LOGIN_TIMEOUT).
+
+    Regression for GH #725: connect(timeout=N) must be the connection-attempt
+    (login) timeout, not the query timeout. So it is injected into
+    attrs_before as SQL_ATTR_LOGIN_TIMEOUT, and Connection.timeout (the
+    per-statement query timeout) stays at its default of 0.
+    """
     conn = connect(conn_str, timeout=45)
     try:
-        assert conn.timeout == 45, "Timeout should be set to 45 from constructor"
+        login_attr = ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value
+        assert (
+            conn._attrs_before.get(login_attr) == 45
+        ), "Constructor timeout should set SQL_ATTR_LOGIN_TIMEOUT (login timeout)"
+        assert conn.timeout == 0, "Query timeout (Connection.timeout) must stay 0"
 
-        # Create a cursor and verify it inherits the timeout
+        # A quick query must still succeed (login timeout must not become a
+        # query timeout).
         cursor = conn.cursor()
-        # Execute a quick query to ensure the timeout doesn't interfere
         cursor.execute("SELECT 1")
         result = cursor.fetchone()
-        assert result[0] == 1, "Query execution should succeed with timeout set"
+        assert result[0] == 1, "Query execution should succeed with login timeout set"
     finally:
-        # Clean up
         conn.close()
+
+
+def test_constructor_timeout_does_not_become_query_timeout(conn_str):
+    """GH #725: connect(timeout=N) must NOT abort a long-running query.
+
+    A short login timeout should have no effect on a query that runs longer
+    than that timeout, because it only bounds the connection attempt. The
+    constructor timeout must also leave ``Connection.timeout`` (the query
+    timeout) at its 0 default.
+    """
+    conn = connect(conn_str, timeout=3)
+    try:
+        assert conn.timeout == 0, "Constructor timeout must not set the query timeout"
+        cursor = conn.cursor()
+        # WAITFOR runs ~5s, longer than the 3s login timeout. If the login
+        # timeout were (wrongly) applied as a query timeout, this would raise
+        # OperationalError 'Query timeout expired'.
+        start = time.monotonic()
+        cursor.execute("WAITFOR DELAY '00:00:05'; SELECT 1")
+        elapsed = time.monotonic() - start
+        assert cursor.fetchval() == 1, "Long query must complete; login timeout must not abort it"
+        assert elapsed >= 4.0, f"Query returned too early ({elapsed:.2f}s); WAITFOR not honored"
+    finally:
+        conn.close()
+
+
+def test_constructor_timeout_respects_explicit_attrs_before(conn_str):
+    """An explicit attrs_before login timeout wins over the timeout kwarg."""
+    login_attr = ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value
+    conn = connect(conn_str, timeout=45, attrs_before={login_attr: 10})
+    try:
+        assert (
+            conn._attrs_before.get(login_attr) == 10
+        ), "Explicit attrs_before login timeout should take precedence over timeout kwarg"
+        assert conn.timeout == 0, "Query timeout (Connection.timeout) must stay 0"
+    finally:
+        conn.close()
+
+
+def test_constructor_login_timeout_honored_on_unresponsive_server():
+    """GH #725: connect(timeout=N) bounds the login/handshake attempt.
+
+    Uses a local listening socket that accepts the TCP connection but never
+    responds to the TDS prelogin, so the driver blocks in the login handshake
+    until SQL_ATTR_LOGIN_TIMEOUT fires. This is deterministic and independent of
+    external network/firewall behavior (unlike routing to a blackholed IP), so
+    it cannot false-fail on restricted-egress CI.
+    """
+    import socket
+
+    # Listen but never accept()/respond: the kernel completes the TCP handshake
+    # (so connect() succeeds), then the driver waits for a prelogin reply that
+    # never arrives — bounded by the 3s login timeout.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # Loopback-only listener: this is a hermetic test fixture, not runtime or
+        # debug code. The loopback literal is centralized here so the DevSkim
+        # localhost check (DS162092) has a single, clearly-scoped suppression.
+        loopback = "127.0.0.1"  # DevSkim: ignore DS162092
+        listener.bind((loopback, 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        unresponsive = (
+            f"Server={loopback},{port};Database=master;Encrypt=no;TrustServerCertificate=yes;"
+        )
+        start = time.monotonic()
+        with pytest.raises(OperationalError) as exc:
+            connect(unresponsive, timeout=3).close()
+        elapsed = time.monotonic() - start
+        # Assert it is a genuine login-timeout diagnostic, not some other failure
+        # that merely happened to land in the timing window (a parse error,
+        # connection reset, etc.). SQL Server surfaces the login timeout as
+        # OperationalError carrying 'timeout'/'258'/SQLSTATE 'HYT' in the message.
+        msg = str(exc.value).lower()
+        assert (
+            "timeout" in msg or "258" in msg or "hyt" in msg
+        ), f"Expected a login-timeout diagnostic, got: {exc.value}"
+        # Lower bound: the TCP connect succeeds instantly, so any elapsed >= 2s
+        # proves the driver actually waited in the login handshake and the login
+        # timeout (not an immediate failure) ended it.
+        assert elapsed >= 2.0, f"Connect failed in {elapsed:.1f}s; login timeout not exercised"
+        # Upper bound: well under the ~15s driver default, proving the 3s login
+        # timeout was actually applied.
+        assert elapsed < 12, f"Login timeout not honored; connect took {elapsed:.1f}s"
+    finally:
+        listener.close()
+
+
+def test_constructor_timeout_rejects_invalid_values(conn_str):
+    """GH #725: the constructor timeout is validated identically to the
+    Connection.timeout setter (via a single shared validator), so bad input
+    fails fast at connect() instead of silently mis-wiring or crashing later
+    in the native layer. Validation happens before any connection is attempted.
+    """
+    for bad in (-1, -5, -100):
+        with pytest.raises(ValueError, match="Login timeout cannot be negative"):
+            connect(conn_str, timeout=bad)
+    for bad in ("10", 10.5, None, [], {}, True, False):
+        with pytest.raises(TypeError, match="Login timeout must be an integer"):
+            connect(conn_str, timeout=bad)
 
 
 def test_timeout_long_query(db_connection):
@@ -4335,93 +4961,26 @@ def test_getinfo_comprehensive_edge_case_coverage(db_connection):
 
 
 def test_timeout_long_running_query_with_small_timeout(conn_str):
-    """Test that a long-running query with small timeout (1-2 seconds) raises timeout error.
+    """GH #725: the ``Connection.timeout`` property IS the per-statement query
+    timeout, so setting it to 2s must abort a 5s WAITFOR with a timeout error.
 
-    This test replicates exactly what test_timeout_bug.py does to ensure consistency.
+    The complementary direction — the constructor ``timeout`` is the LOGIN
+    timeout and must NOT abort a long query — is covered by
+    ``test_constructor_timeout_does_not_become_query_timeout``.
     """
-    import time
-    import mssql_python
-
-    print(f"DEBUG: Connection string: {conn_str}")
-
-    # Test 1: Create connection with timeout parameter (like test_timeout_bug.py)
-    print("DEBUG: [Test 1] Creating connection with timeout=2 seconds")
-    connection = mssql_python.connect(conn_str, timeout=2)
-    print(f"DEBUG: Connection created, timeout property: {connection.timeout}")
-
-    try:
-        cursor = connection.cursor()
-        start_time = time.perf_counter()
-        print("DEBUG: Executing WAITFOR DELAY '00:00:05' (5 seconds)")
-
-        try:
-            cursor.execute("WAITFOR DELAY '00:00:05'")
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: BUG CONFIRMED: Query completed without timeout after {elapsed:.2f}s")
-            pytest.skip(
-                f"Timeout not enforced - query completed in {elapsed:.2f}s (expected ~2s timeout)"
-            )
-        except mssql_python.OperationalError as e:
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: [OK] Query timed out after {elapsed:.2f}s: {e}")
-            assert elapsed < 4.0, f"Timeout took too long: {elapsed:.2f}s"
-            assert "timeout" in str(e).lower(), f"Not a timeout error: {e}"
-        except Exception as e:
-            elapsed = time.perf_counter() - start_time
-            print(
-                f"DEBUG: [OK] Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}"
-            )
-            assert elapsed < 4.0, f"Exception took too long: {elapsed:.2f}s"
-            # Accept any exception that happens quickly as it might be timeout-related
-        finally:
-            cursor.close()
-            connection.close()
-
-    except Exception as e:
-        print(f"DEBUG: Unexpected error in test: {e}")
-        if connection:
-            connection.close()
-        raise
-
-    # Test 2: Set timeout dynamically (like test_timeout_bug.py)
-    print("DEBUG: [Test 2] Setting timeout dynamically via property")
-    connection = mssql_python.connect(conn_str)
-    print(f"DEBUG: Initial timeout: {connection.timeout}")
+    connection = connect(conn_str)
     connection.timeout = 2
-    print(f"DEBUG: After setting: {connection.timeout}")
-
+    assert connection.timeout == 2, "Query timeout should be set via the property"
     try:
         cursor = connection.cursor()
-        start_time = time.perf_counter()
-
-        try:
+        start = time.monotonic()
+        with pytest.raises(OperationalError) as exc:
             cursor.execute("WAITFOR DELAY '00:00:05'")
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: BUG CONFIRMED: Query completed without timeout after {elapsed:.2f}s")
-            # This is the main test - if we get here, timeout is not working
-            assert (
-                False
-            ), f"Timeout should have occurred after ~2s, but query completed in {elapsed:.2f}s"
-        except mssql_python.OperationalError as e:
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: [OK] Query timed out after {elapsed:.2f}s: {e}")
-            assert elapsed < 4.0, f"Timeout took too long: {elapsed:.2f}s"
-            assert "timeout" in str(e).lower(), f"Not a timeout error: {e}"
-        except Exception as e:
-            elapsed = time.perf_counter() - start_time
-            print(
-                f"DEBUG: [OK] Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}"
-            )
-            assert elapsed < 4.0, f"Exception took too long: {elapsed:.2f}s"
-        finally:
-            cursor.close()
-            connection.close()
-
-    except Exception as e:
-        print(f"DEBUG: Unexpected error in dynamic timeout test: {e}")
-        if connection:
-            connection.close()
-        raise
+        elapsed = time.monotonic() - start
+        assert "timeout" in str(exc.value).lower(), f"Not a timeout error: {exc.value}"
+        assert elapsed < 4.0, f"Query timeout should fire at ~2s, but took {elapsed:.2f}s"
+    finally:
+        connection.close()
 
 
 def test_cursor_timeout_single_execute(db_connection):
@@ -4621,7 +5180,7 @@ def test_timeout_edge_cases_and_boundaries(db_connection):
         # Test invalid timeout values (should raise ValueError)
         invalid_values = [-1, -5, -100]
         for invalid_val in invalid_values:
-            with pytest.raises(ValueError, match="Timeout cannot be negative"):
+            with pytest.raises(ValueError, match="Query timeout cannot be negative"):
                 db_connection.timeout = invalid_val
 
         # Test non-integer timeout values (should raise TypeError)
@@ -4629,6 +5188,11 @@ def test_timeout_edge_cases_and_boundaries(db_connection):
         for invalid_type in invalid_types:
             with pytest.raises(TypeError):
                 db_connection.timeout = invalid_type
+
+        # bool is a subclass of int but is not a valid timeout value
+        for bad_bool in [True, False]:
+            with pytest.raises(TypeError, match="Query timeout must be an integer"):
+                db_connection.timeout = bad_bool
 
         print("Successfully tested timeout edge cases and boundaries")
 

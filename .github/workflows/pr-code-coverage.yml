@@ -5,6 +5,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   coverage-report:
     runs-on: ubuntu-latest
@@ -17,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup git for diff-cover
         run: |
@@ -58,6 +62,15 @@ jobs:
               RESULT=$(echo "$BUILD_INFO" | jq -r '.result // "unknown"')
               BUILD_ID=$(echo "$BUILD_INFO" | jq -r '.id // "unknown"')
               WEB_URL=$(echo "$BUILD_INFO" | jq -r '._links.web.href // "unknown"')
+
+              [[ "$BUILD_ID" =~ ^[0-9]+$ ]] || {
+                echo "Invalid Azure DevOps build ID"
+                exit 1
+              }
+              if [[ ${#WEB_URL} -gt 500 || "$WEB_URL" == *$'\n'* || "$WEB_URL" == *$'\r'* ]]; then
+                echo "Invalid Azure DevOps build URL"
+                exit 1
+              fi
               
               echo "✅ Found build: ID=$BUILD_ID, Status=$STATUS, Result=$RESULT"
               echo "🔗 Build URL: $WEB_URL"
@@ -204,9 +217,17 @@ jobs:
                   sort -t: -k2 -n | head -10)
               fi
               
-              echo "LOW_COVERAGE_FILES<<EOF" >> $GITHUB_ENV
-              echo "${LOW_COVERAGE_FILES:-No detailed file data available}" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+              LOW_COVERAGE_FILES="${LOW_COVERAGE_FILES:-No detailed file data available}"
+              LOW_COVERAGE_DELIMITER="coverage_$(openssl rand -hex 16)"
+              if grep -Fxq "$LOW_COVERAGE_DELIMITER" <<< "$LOW_COVERAGE_FILES"; then
+                echo "Generated delimiter unexpectedly occurs in coverage data"
+                exit 1
+              fi
+              {
+                echo "LOW_COVERAGE_FILES<<$LOW_COVERAGE_DELIMITER"
+                echo "$LOW_COVERAGE_FILES"
+                echo "$LOW_COVERAGE_DELIMITER"
+              } >> "$GITHUB_ENV"
               
               echo "✅ Coverage data extracted successfully"
             else
@@ -372,6 +393,10 @@ jobs:
             PATCH_COVERAGE=$(jq -r '.total_percent_covered // "N/A"' patch-coverage.json)
             TOTAL_STATEMENTS=$(jq -r '.total_num_lines // "N/A"' patch-coverage.json)
             MISSING_STATEMENTS=$(jq -r '.total_num_missing // "N/A"' patch-coverage.json)
+
+            if [[ ! "$PATCH_COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+              PATCH_COVERAGE="N/A"
+            fi
             
             echo "✅ Patch coverage: ${PATCH_COVERAGE}%"
             echo "📊 Total lines: $TOTAL_STATEMENTS, Missing: $MISSING_STATEMENTS"
@@ -408,9 +433,16 @@ jobs:
           
           # Extract summary for comment
           if [[ -f patch-coverage.md ]]; then
-            echo "PATCH_COVERAGE_SUMMARY<<EOF" >> $GITHUB_ENV
-            cat patch-coverage.md >> $GITHUB_ENV
-            echo "EOF" >> $GITHUB_ENV
+            PATCH_COVERAGE_DELIMITER="coverage_$(openssl rand -hex 16)"
+            if grep -Fxq "$PATCH_COVERAGE_DELIMITER" patch-coverage.md; then
+              echo "Generated delimiter unexpectedly occurs in patch coverage data"
+              exit 1
+            fi
+            {
+              echo "PATCH_COVERAGE_SUMMARY<<$PATCH_COVERAGE_DELIMITER"
+              cat patch-coverage.md
+              echo "$PATCH_COVERAGE_DELIMITER"
+            } >> "$GITHUB_ENV"
             echo "✅ Patch coverage markdown summary ready"
           else
             echo "⚠️ patch-coverage.md not generated"
@@ -421,22 +453,18 @@ jobs:
         run: |
           mkdir -p coverage-comment-data
           jq -n \
-            --arg pr_number "${{ github.event.pull_request.number }}" \
             --arg coverage_percentage "${{ env.COVERAGE_PERCENTAGE }}" \
             --arg covered_lines "${{ env.COVERED_LINES }}" \
             --arg total_lines "${{ env.TOTAL_LINES }}" \
             --arg patch_coverage_pct "${{ env.PATCH_COVERAGE_PCT }}" \
             --arg low_coverage_files "$LOW_COVERAGE_FILES" \
-            --arg patch_coverage_summary "$PATCH_COVERAGE_SUMMARY" \
             --arg ado_url "${{ env.ADO_URL }}" \
             '{
-              pr_number: $pr_number,
               coverage_percentage: $coverage_percentage,
               covered_lines: $covered_lines,
               total_lines: $total_lines,
               patch_coverage_pct: $patch_coverage_pct,
               low_coverage_files: $low_coverage_files,
-              patch_coverage_summary: $patch_coverage_summary,
               ado_url: $ado_url
             }' > coverage-comment-data/pr-info.json
           

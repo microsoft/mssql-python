@@ -10,9 +10,12 @@ Note: The cursor function is not yet implemented, so related tests are commented
 
 import pytest
 import os
+import warnings
 from datetime import datetime, date, time, timedelta, timezone
+from pathlib import Path
 import time as time_module
 import decimal
+import traceback
 from contextlib import closing
 import threading
 import mssql_python
@@ -106,6 +109,15 @@ PARAM_TEST_DATA = [
         1.23456789,
     ),
 ]
+
+
+def test_package_sources_compile_with_warnings_as_errors():
+    """Every package source must compile when warnings are promoted to errors."""
+    package_dir = Path(__file__).parents[1] / "mssql_python"
+    for source in sorted(package_dir.glob("*.py")):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(source.read_text(encoding="utf-8"), str(source), "exec")
 
 
 def drop_table_if_exists(cursor, table_name):
@@ -869,6 +881,270 @@ def test_execute_none_into_varbinary_column(cursor, db_connection):
         assert row[0] is None
     finally:
         drop_table_if_exists(cursor, "#test_varbinary_null")
+
+
+def test_gh627_execute_nonnull_before_null_varbinary(cursor, db_connection):
+    """GH-627: NULL VARBINARY should bind correctly when earlier params are non-NULL."""
+    table_name = f"pytest_gh627_execute_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == 1
+        assert row[1] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_executemany_nonnull_before_null_varbinary(cursor, db_connection):
+    """GH-627: executemany all-NULL VARBINARY column should bind after non-NULL column."""
+    table_name = f"pytest_gh627_executemany_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [(1, None), (2, None), (3, None)],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows == [[1, None], [2, None], [3, None]]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_executemany_mixed_null_nonnull_varbinary(cursor, db_connection):
+    """GH-627: executemany with mixed NULL/non-NULL VARBINARY rows should work.
+    This exercises the non-all-NULL executemany path where individual rows
+    go through BindParameters with both NULL and non-NULL binary values."""
+    table_name = f"pytest_gh627_mixed_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [(1, b"\x01\x02\x03"), (2, None), (3, b"\xaa\xbb\xcc")],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0] == [1, b"\x01\x02\x03"]
+        assert rows[1] == [2, None]
+        assert rows[2] == [3, b"\xaa\xbb\xcc"]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_null_then_nonnull_varbinary_reuse(cursor, db_connection):
+    """GH-627: Re-executing same SQL with NULL then non-NULL VARBINARY must work
+    (prepared statement + cache reuse path)."""
+    table_name = f"pytest_gh627_reuse_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(32) NULL)")
+        db_connection.commit()
+
+        # First call: NULL — triggers SQLDescribeParam and caches VARBINARY type
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        # Second call: non-NULL — reuses prepared stmt, cache entry should not interfere
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [2, b"\xde\xad\xbe\xef"],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0] == [1, None]
+        assert rows[1][0] == 2
+        assert rows[1][1] == b"\xde\xad\xbe\xef"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_execute_nonnull_before_null_binary(cursor, db_connection):
+    """GH-627: NULL BINARY (fixed-length) should bind correctly when earlier params are non-NULL."""
+    table_name = f"pytest_gh627_binary_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data BINARY(16) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == 1
+        assert row[1] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_null_varbinary_as_first_param(cursor, db_connection):
+    """GH-627: NULL VARBINARY as first parameter (ordinal 1 resolution)."""
+    table_name = f"pytest_gh627_first_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (data VARBINARY(32) NULL, id INT)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (data, id) VALUES (?, ?)",
+            [None, 1],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data, id FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] is None
+        assert row[1] == 1
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_multiple_null_varbinary_columns(cursor, db_connection):
+    """GH-627: Multiple NULL VARBINARY columns resolved in a single pre-resolve pass."""
+    table_name = f"pytest_gh627_multi_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(
+            f"CREATE TABLE {table_name} (id INT, bin1 VARBINARY(32) NULL, bin2 VARBINARY(64) NULL)"
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, bin1, bin2) VALUES (?, ?, ?)",
+            [1, None, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, bin1, bin2 FROM {table_name}")
+        row = cursor.fetchone()
+        assert row == [1, None, None]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_varbinary_max_null(cursor, db_connection):
+    """GH-627: NULL VARBINARY(MAX) column — MAX has special semantics in
+    sp_describe_undeclared_parameters."""
+    table_name = f"pytest_gh627_max_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(MAX) NULL)")
+        db_connection.commit()
+
+        cursor.execute(
+            f"INSERT INTO {table_name} (id, data) VALUES (?, ?)",
+            [1, None],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {table_name}")
+        row = cursor.fetchone()
+        assert row == [1, None]
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_gh627_executemany_temp_table_raises(cursor, db_connection):
+    """GH-627: executemany with temp table + all-NULL VARBINARY column raises
+    ProgrammingError due to SQL_VARCHAR fallback (SQLDescribeParam can't resolve
+    temp table metadata). Users should use setinputsizes to work around this."""
+    from mssql_python.exceptions import ProgrammingError
+
+    cursor.execute("CREATE TABLE #gh627_em_warn (id INT, data VARBINARY(50) NULL)")
+    db_connection.commit()
+
+    with pytest.raises(ProgrammingError):
+        cursor.executemany(
+            "INSERT INTO #gh627_em_warn (id, data) VALUES (?, ?)",
+            [(1, None), (2, None)],
+        )
+
+    cursor.execute("DROP TABLE IF EXISTS #gh627_em_warn")
+    db_connection.commit()
+
+
+def test_gh627_temp_table_null_varbinary_raises(cursor, db_connection):
+    """GH-627: Inserting NULL into a temp table VARBINARY column raises
+    ProgrammingError because SQLDescribeParam falls back to SQL_VARCHAR
+    and SQL Server rejects implicit varchar->varbinary conversion."""
+    from mssql_python.exceptions import ProgrammingError
+
+    cursor.execute("CREATE TABLE #gh627_warn (id INT, data VARBINARY(50) NULL)")
+    db_connection.commit()
+
+    with pytest.raises(ProgrammingError):
+        cursor.execute("INSERT INTO #gh627_warn (id, data) VALUES (?, ?)", [1, None])
+
+    cursor.execute("DROP TABLE IF EXISTS #gh627_warn")
+    db_connection.commit()
+
+
+def test_gh627_temp_table_setinputsizes_workaround(cursor, db_connection):
+    """GH-627: setinputsizes should resolve NULL VARBINARY binding in temp tables
+    where SQLDescribeParam cannot determine the column type."""
+    cursor.execute("CREATE TABLE #gh627_fix (id INT, data VARBINARY(100) NULL)")
+    db_connection.commit()
+
+    # Use setinputsizes to explicitly declare types for all parameters
+    from mssql_python.constants import ConstantsDDBC
+
+    cursor.setinputsizes(
+        [(ConstantsDDBC.SQL_INTEGER.value, 10, 0), (ConstantsDDBC.SQL_VARBINARY.value, 100, 0)]
+    )
+    cursor.execute("INSERT INTO #gh627_fix (id, data) VALUES (?, ?)", [1, None])
+    db_connection.commit()
+
+    cursor.execute("SELECT id, data FROM #gh627_fix")
+    row = cursor.fetchone()
+    assert row[0] == 1
+    assert row[1] is None
+
+    cursor.execute("DROP TABLE IF EXISTS #gh627_fix")
+    db_connection.commit()
+
+
+def test_gh627_physical_table_null_varbinary_succeeds(cursor, db_connection):
+    """GH-627: Physical tables should resolve via SQLDescribeParam and
+    successfully bind NULL VARBINARY without error."""
+    table_name = f"pytest_gh627_nocache_{uuid.uuid4().hex}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, data VARBINARY(50) NULL)")
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} (id, data) VALUES (?, ?)", [1, None])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {table_name}")
+        assert cursor.fetchone()[0] is None
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
 
 
 def test_varbinary_max(cursor, db_connection):
@@ -1991,6 +2267,42 @@ def test_executemany_ints_with_none(cursor, db_connection):
         assert results.count(3) == 1
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_int_none")
+        db_connection.commit()
+
+
+def test_executemany_numeric_types_with_late_none(cursor, db_connection):
+    """Test fixed-width numeric array indicators when NULL follows non-NULL values."""
+    try:
+        cursor.execute("""CREATE TABLE #pytest_numeric_late_none (
+                id INT NOT NULL,
+                tinyint_val TINYINT NULL,
+                smallint_val SMALLINT NULL,
+                int_val INT NULL,
+                float_val FLOAT NULL
+            )""")
+        null_rows = {80, 83}
+        data = [
+            (
+                row_id,
+                None if row_id in null_rows else row_id,
+                None if row_id in null_rows else 1000 + row_id,
+                None if row_id in null_rows else 100000 + row_id,
+                None if row_id in null_rows else 100000.5 + row_id,
+            )
+            for row_id in range(86)
+        ]
+
+        for _ in range(10):
+            cursor.execute("TRUNCATE TABLE #pytest_numeric_late_none")
+            cursor.executemany("INSERT INTO #pytest_numeric_late_none VALUES (?, ?, ?, ?, ?)", data)
+            assert cursor.rowcount == len(data)
+            db_connection.commit()
+
+            cursor.execute("""SELECT id, tinyint_val, smallint_val, int_val, float_val
+                FROM #pytest_numeric_late_none ORDER BY id""")
+            assert [tuple(row) for row in cursor.fetchall()] == list(data)
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_numeric_late_none")
         db_connection.commit()
 
 
@@ -10151,7 +10463,12 @@ def test_setinputsizes_sql_decimal_null(db_connection):
 
 
 def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
-    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503)."""
+    """Test setinputsizes with SQL_DECIMAL raises ValueError for unconvertible values (GH-503).
+
+    The raised message must be metadata-only: it reports the row index, column
+    index, and value type, but must NOT embed the offending value or the full
+    parameter row (which may contain PII such as SSNs/emails/balances).
+    """
     cursor = db_connection.cursor()
 
     cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
@@ -10160,13 +10477,182 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
 
         cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
 
-        with pytest.raises(ValueError, match="Failed to convert parameter"):
+        sensitive_value = "123-45-6789"  # stand-in for PII in the failing row
+        with pytest.raises(ValueError) as exc_info:
             cursor.executemany(
                 "INSERT INTO #test_sis_dec_bad (Price) VALUES (?)",
-                [("not_a_number",)],
+                [(sensitive_value,)],
             )
+
+        message = str(exc_info.value)
+        # Contract: metadata is present...
+        assert "Failed to convert parameter" in message
+        assert "row 0" in message
+        assert "column 0" in message
+        assert "str" in message  # value type name
+        # ...and the sensitive value / raw row is NOT leaked into the message.
+        assert sensitive_value not in message
+        assert repr((sensitive_value,)) not in message  # no repr of the parameter tuple
+        # ...nor into the chained cause or the fully formatted traceback, which
+        # is what tracebacks and APM/log shippers actually capture.
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert sensitive_value not in formatted
     finally:
         cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_bad")
+
+
+def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
+    """A parameter whose str() raises must not leak the exception text (GH-503).
+
+    Exception chaining (raise ... from e) can surface a value-bearing cause
+    through __cause__ and formatted tracebacks. For a value whose str() raises,
+    the chain must be suppressed so the metadata-only guarantee holds across
+    tracebacks and APM/log shippers, not just str(exc).
+    """
+    cursor = db_connection.cursor()
+
+    secret = "secret-987-65-4321"
+
+    class ExplodingStr:
+        def __str__(self):
+            raise ValueError(secret)
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_explode (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError) as exc_info:
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_explode (Price) VALUES (?)",
+                [(ExplodingStr(),)],
+            )
+
+        # The metadata-only message must not carry the secret, and the chain
+        # must be suppressed so neither __cause__ nor the formatted traceback
+        # exposes it.
+        assert secret not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert secret not in formatted
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
+
+
+def test_setinputsizes_sql_decimal_non_decimal_exception_no_leak(db_connection):
+    """Cover the non-DecimalException conversion branch with no value leak (GH-503).
+
+    ``format(decimal.Decimal("1e999999999999999999"), "f")`` raises MemoryError
+    (not a decimal.DecimalException) quickly and deterministically, exercising
+    the branch that re-raises with the chain suppressed. The resulting
+    ValueError must be metadata-only: no chained cause, and the offending input
+    must be absent from both the message and the fully formatted traceback.
+    """
+    cursor = db_connection.cursor()
+
+    # A syntactically valid Decimal whose fixed-point expansion is astronomically
+    # large; format(..., "f") raises MemoryError rather than a DecimalException.
+    sensitive_value = "1e999999999999999999"
+
+    cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mem")
+    try:
+        cursor.execute("CREATE TABLE #test_sis_dec_mem (Price DECIMAL(18,2))")
+
+        cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+
+        with pytest.raises(ValueError) as exc_info:
+            cursor.executemany(
+                "INSERT INTO #test_sis_dec_mem (Price) VALUES (?)",
+                [(sensitive_value,)],
+            )
+
+        message = str(exc_info.value)
+        # Metadata-only message...
+        assert "Failed to convert parameter" in message
+        assert "row 0" in message
+        assert "column 0" in message
+        # ...no chained cause (the non-DecimalException branch suppresses it)...
+        assert exc_info.value.__cause__ is None
+        # ...and the input is absent from the message and formatted traceback.
+        assert sensitive_value not in message
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        assert sensitive_value not in formatted
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_mem")
+
+
+def test_executemany_debug_log_no_parameter_values(db_connection):
+    """executemany() DEBUG logging must not emit parameter values or rows (GH-503).
+
+    The batch-execution debug log previously dumped the first 5 full parameter
+    rows, leaking the same PII the exception path now redacts. This test enables
+    DEBUG capture, runs a successful batch of sensitive-looking values, and
+    asserts the values are absent from the logs while batch metadata is present
+    (the metadata assertion is a positive control proving capture is working, so
+    the absence assertions are meaningful rather than vacuous).
+    """
+    import logging as _logging
+    import io
+    from mssql_python.logging import logger, driver_logger
+
+    cursor = db_connection.cursor()
+
+    # Values that stand in for PII; both insert successfully into an NVARCHAR
+    # column so execution reaches the batch debug-log statement.
+    ssn = "123-45-6789"
+    email = "jane.doe@example.com"
+
+    log_stream = io.StringIO()
+    test_handler = _logging.StreamHandler(log_stream)
+    test_handler.setLevel(_logging.DEBUG)
+
+    # Save state we mutate so the global logger is restored afterwards.
+    original_cached_level = logger._cached_level
+    original_driver_level = driver_logger.level
+
+    cursor.execute("DROP TABLE IF EXISTS #test_dbg_no_pii")
+    try:
+        cursor.execute("CREATE TABLE #test_dbg_no_pii (Data NVARCHAR(50))")
+
+        # Enable DEBUG: bypass the wrapper's cached-level gate and lower the
+        # underlying stdlib logger, then attach our capturing handler.
+        logger._cached_level = _logging.DEBUG
+        driver_logger.setLevel(_logging.DEBUG)
+        driver_logger.addHandler(test_handler)
+
+        cursor.executemany(
+            "INSERT INTO #test_dbg_no_pii (Data) VALUES (?)",
+            [(ssn,), (email,)],
+        )
+
+        test_handler.flush()
+        log_contents = log_stream.getvalue()
+
+        # Positive control: batch metadata is logged (proves capture works).
+        assert "Executing batch query with 2 parameter sets" in log_contents
+        # Redaction: no parameter value or row representation is emitted.
+        assert ssn not in log_contents
+        assert email not in log_contents
+        assert repr((ssn,)) not in log_contents
+        assert repr((email,)) not in log_contents
+    finally:
+        driver_logger.removeHandler(test_handler)
+        driver_logger.setLevel(original_driver_level)
+        logger._cached_level = original_cached_level
+        cursor.execute("DROP TABLE IF EXISTS #test_dbg_no_pii")
 
 
 def test_setinputsizes_sql_decimal_high_precision(db_connection):
@@ -14117,32 +14603,22 @@ def test_xml_malformed_input(cursor, db_connection):
 
 
 def test_decimal_special_values_coverage(cursor):
-    """Test decimal processing with special values like NaN and Infinity (Lines 213-221)."""
+    """Non-finite Decimals are rejected explicitly by `_get_numeric_data`."""
     from decimal import Decimal
 
-    # Test special decimal values that have string exponents
+    # NaN reports exponent 'n', sNaN reports 'N', Infinity reports 'F'. None of
+    # them has a SQL NUMERIC encoding, so all three must raise ValueError rather
+    # than falling through to precision=38 and packing a silent zero.
     test_values = [
-        Decimal("NaN"),  # Should have str exponent 'n'
-        Decimal("Infinity"),  # Should have str exponent 'F'
-        Decimal("-Infinity"),  # Should have str exponent 'F'
+        Decimal("NaN"),
+        Decimal("sNaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
     ]
 
     for special_val in test_values:
-        try:
-            # This should trigger the special value handling path (lines 217-218)
-            # But there's a bug in the code - it doesn't handle string exponents properly after line 218
+        with pytest.raises(ValueError, match="non-finite"):
             cursor._get_numeric_data(special_val)
-        except (ValueError, TypeError) as e:
-            # Expected - either ValueError for unsupported values or TypeError due to str/int comparison
-            # This exercises the special value code path (lines 217-218) even though it errors later
-            assert (
-                "not supported" in str(e)
-                or "Precision of the numeric value is too high" in str(e)
-                or "'>' not supported between instances of 'str' and 'int'" in str(e)
-            )
-        except Exception as e:
-            # Other exceptions are also acceptable as we're testing error paths
-            pass
 
 
 def test_decimal_negative_exponent_edge_cases(cursor):
@@ -14606,6 +15082,12 @@ def test_row_output_converter_overflow_error(cursor, db_connection):
 def test_row_output_converter_general_exception(cursor, db_connection):
     """Test Row output converter general exception handling (Lines 198-206)."""
 
+    # Snapshot converters up front so the finally can ALWAYS restore them, even if
+    # an assertion below fails. Otherwise the {12: failing_converter} entry would
+    # leak onto the shared connection and corrupt every later VARCHAR fetch.
+    had_converters_attr = hasattr(cursor.connection, "_output_converters")
+    original_converters = getattr(cursor.connection, "_output_converters", {})
+
     try:
         # Create a table with string column
         drop_table_if_exists(cursor, "#pytest_exception_test")
@@ -14623,17 +15105,17 @@ def test_row_output_converter_general_exception(cursor, db_connection):
         )
         db_connection.commit()
 
-        # Create a custom output converter that will raise a general exception
+        # A converter that always raises, to exercise the "converter raised ->
+        # keep the original value" path. Registered under integer SQL type 12
+        # (SQL_VARCHAR); after the GH #684 fix this integer key actually
+        # dispatches and string values arrive as UTF-16LE bytes, so we raise
+        # unconditionally rather than guarding on the decoded text.
         def failing_converter(value):
-            if value == "test_value":
-                raise RuntimeError("Custom converter error for testing")
-            return value
+            raise RuntimeError("Custom converter error for testing")
 
         # Add the converter to the connection (if supported)
-        original_converters = {}
-        if hasattr(cursor.connection, "_output_converters"):
-            original_converters = getattr(cursor.connection, "_output_converters", {})
-            cursor.connection._output_converters = {12: failing_converter}  # VARCHAR SQL type
+        if had_converters_attr:
+            cursor.connection._output_converters = {12: failing_converter}  # SQL_VARCHAR
 
         # Fetch the data - this should trigger lines 198-206 in row.py
         cursor.execute("SELECT id, text_col FROM #pytest_exception_test")
@@ -14648,13 +15130,13 @@ def test_row_output_converter_general_exception(cursor, db_connection):
         # The exception should be handled and original value kept
         assert row[1] == "test_value", "Value should be kept as original due to exception handling"
 
-        # Restore original converters
-        if hasattr(cursor.connection, "_output_converters"):
-            cursor.connection._output_converters = original_converters
-
     except Exception as e:
         pytest.fail(f"Output converter general exception test failed: {e}")
     finally:
+        # Always restore converters (even on assertion failure) so a leaked
+        # converter can never poison subsequent tests on the shared connection.
+        if had_converters_attr:
+            cursor.connection._output_converters = original_converters
         drop_table_if_exists(cursor, "#pytest_exception_test")
         db_connection.commit()
 
@@ -16135,6 +16617,50 @@ def test_executemany_describe_col_exception_sets_description_none(conn_str):
         conn.close()
     finally:
         mssql_python.native_uuid = original
+
+
+def test_execute_describe_col_exception_resets_description_and_sql_types(conn_str):
+    """execute() must reset description AND _column_sql_types when DDBCSQLDescribeCol raises.
+
+    Guards the except branch in execute() (GH #684) that sets both
+    self.description = None and self._column_sql_types = None, so a stale
+    per-column SQL-type list can't survive into the next converter-map build.
+    """
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+    try:
+        # Run a normal SELECT first so description and the parallel SQL-type
+        # codes are populated (the reset below then has something to clear).
+        cursor.execute("SELECT CAST(1 AS INT) AS n")
+        cursor.fetchall()
+        assert cursor.description is not None
+        assert cursor._column_sql_types is not None
+
+        call_count = 0
+
+        def describe_raises(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Simulated DDBCSQLDescribeCol failure")
+
+        # Force DDBCSQLDescribeCol to raise so execute()'s except branch runs.
+        with patch.object(
+            mssql_python.cursor.ddbc_bindings,
+            "DDBCSQLDescribeCol",
+            side_effect=describe_raises,
+        ):
+            cursor.execute("SELECT CAST(1 AS INT) AS n")
+
+        assert call_count >= 1, "DDBCSQLDescribeCol mock should have been called"
+        assert (
+            cursor.description is None
+        ), "description should be None after DDBCSQLDescribeCol raises"
+        assert (
+            cursor._column_sql_types is None
+        ), "_column_sql_types should be reset to None after DDBCSQLDescribeCol raises"
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -23,10 +23,20 @@ parameters:
   - name: oneBranchType
     type: string
     default: 'Official'
+  # Phase 2: stages this build depends on (e.g. [ConsolidateOdbc]) so the external
+  # mssql-python-odbc wheel exists before pytest. Default [] = no dependency.
+  - name: odbcDependsOn
+    type: object
+    default: []
+  # Phase 2: install the external ODBC wheel (from ConsolidateOdbc) before pytest.
+  - name: installOdbcWheel
+    type: boolean
+    default: false
 
 stages:
   - stage: ${{ parameters.stageName }}
     displayName: 'Linux ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+    dependsOn: ${{ parameters.odbcDependsOn }}
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheels - ${{ parameters.linuxTag }} ${{ parameters.arch }}'
@@ -102,24 +112,16 @@ stages:
               mkdir -p $(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)
             displayName: 'Prepare artifact directories'
           
-          - task: AzureCLI@2
-            displayName: 'Login to ACR (tdslibrs)'
-            inputs:
-              azureSubscription: 'Magnitude Test-mssql-rs-mssql-python'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                az acr login --name tdslibrs
-
           - script: |
               # Determine image based on LINUX_TAG and ARCH
-              # Images are mirrored weekly from Quay.io into tdslibrs.azurecr.io
+              # Images are published by github.com/microsoft/mssql-rs to GHCR and are
+              # public, so no registry login is required to pull them.
               # manylinux_2_28 = AlmaLinux 8 / RHEL 8 compatible (glibc 2.28)
               # musllinux_1_2  = Alpine-based (musl libc)
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
-                IMAGE="tdslibrs.azurecr.io/import/python-build/manylinux_2_28_$(ARCH):latest"
+                IMAGE="ghcr.io/microsoft/mssql-rs/import/python-build/manylinux_2_28_$(ARCH):latest"
               elif [[ "$(LINUX_TAG)" == "musllinux" ]]; then
-                IMAGE="tdslibrs.azurecr.io/import/python-build/musllinux_1_2_$(ARCH):latest"
+                IMAGE="ghcr.io/microsoft/mssql-rs/import/python-build/musllinux_1_2_$(ARCH):latest"
               else
                 echo "ERROR: Unsupported LINUX_TAG '$(LINUX_TAG)'. Expected: manylinux_2_28 or musllinux" >&2
                 exit 1
@@ -136,28 +138,62 @@ stages:
           - script: |
               set -euxo pipefail
               export PATH=$PATH:`pwd`/docker
+              CONTAINER="build-$(LINUX_TAG)-$(ARCH)"
+
+              # --- ODBC Driver Manager headers (sql.h/sqlext.h) --------------------------
+              # ddbc_bindings.h includes <sql.h>/<sqlext.h>, which on Linux come from the
+              # system unixODBC dev headers in /usr/include. Installing them INSIDE the
+              # build container via dnf/apk is unreliable on QEMU-emulated aarch64 (rpm/dnf
+              # can crash or fail under emulation), which only surfaces much later as an
+              # opaque "sql.h: No such file or directory" during compilation.
+              #
+              # These headers are pure API declarations -- architecture- and libc-agnostic
+              # -- so install unixodbc-dev NATIVELY on the x86_64 host (fast + reliable, no
+              # emulation) and copy the headers into the build container. This makes the
+              # header provisioning deterministic regardless of the container arch/libc.
+              sudo apt-get update || true
+              sudo DEBIAN_FRONTEND=noninteractive apt-get install -y unixodbc-dev
+              ODBC_HEADERS=$(dpkg -L unixodbc-dev | grep -E '^/usr/include/.*\.h$' || true)
+              if [ -z "$ODBC_HEADERS" ]; then
+                ODBC_HEADERS="/usr/include/sql.h /usr/include/sqlext.h /usr/include/sqltypes.h /usr/include/sqlucode.h /usr/include/sqlspi.h /usr/include/odbcinst.h"
+              fi
+              for h in $ODBC_HEADERS; do
+                if [ -f "$h" ]; then
+                  docker exec "$CONTAINER" mkdir -p "$(dirname "$h")"
+                  docker cp "$h" "$CONTAINER:$h"
+                fi
+              done
+
+              # --- Remaining build toolchain inside the container -----------------------
+              # The build images already ship gcc-toolset + cmake, so this is best-effort
+              # for any other deps and must NOT fail the job if the in-container package
+              # manager is flaky under emulation (the header gate below is the real check).
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
-                docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
-                  set -euxo pipefail
+                docker exec "$CONTAINER" bash -lc '
+                  set -uxo pipefail
                   if command -v dnf >/dev/null 2>&1; then
-                    dnf -y update || true
                     dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache curl || true
                   elif command -v yum >/dev/null 2>&1; then
-                    yum -y update || true
                     yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache curl || true
                   fi
                   gcc --version || true
                   cmake --version || true
                 '
               else
-                docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
-                  set -euxo pipefail
-                  apk update || true
+                docker exec "$CONTAINER" sh -lc '
+                  set -uxo pipefail
                   apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache curl || true
                   gcc --version || true
                   cmake --version || true
                 '
               fi
+
+              # --- Gate: fail loudly with the real cause if headers are still missing ----
+              if ! docker exec "$CONTAINER" test -f /usr/include/sql.h; then
+                echo "ERROR: ODBC Driver Manager headers (sql.h) missing in $CONTAINER after provisioning." >&2
+                exit 1
+              fi
+              docker exec "$CONTAINER" ls -l /usr/include/sql.h /usr/include/sqlext.h
             displayName: 'Install system build dependencies'
           
           # Start SQL Server container for pytest execution
@@ -191,6 +227,33 @@ stages:
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           
+          # =========================
+          # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
+          # =========================
+          # Phase 2 removed the bundled ODBC driver from the mssql-python wheel, so the
+          # isolated-install pytest below must obtain the driver from the external
+          # mssql-python-odbc package. Download the wheels built earlier this run
+          # (ConsolidateOdbc) into the repo dir (bind-mounted at /workspace in the build
+          # container) and flatten them so PIP_FIND_LINKS=/workspace/odbc_wheels lets the
+          # in-container `pip install <mssql_python wheel>` resolve the pinned
+          # mssql-python-odbc==18.6.2 dependency locally (no PyPI needed for it).
+          - ${{ if parameters.installOdbcWheel }}:
+            - task: DownloadPipelineArtifact@2
+              displayName: 'Download consolidated ODBC wheels'
+              inputs:
+                buildType: 'current'
+                artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                itemPattern: '**/*.whl'
+                targetPath: '$(Build.SourcesDirectory)/odbc_wheels'
+            - bash: |
+                set -euo pipefail
+                # Flatten all downloaded wheels into the find-links root so pip (via
+                # PIP_FIND_LINKS) sees them without recursion.
+                find "$(Build.SourcesDirectory)/odbc_wheels" -name '*.whl' -exec mv -f {} "$(Build.SourcesDirectory)/odbc_wheels/" \; || true
+                echo "ODBC wheels available for find-links:"
+                ls -1 "$(Build.SourcesDirectory)/odbc_wheels"/*.whl
+              displayName: 'Flatten ODBC wheels for pip find-links'
+          
           # Build wheels for all Python versions (3.10-3.14) and test each one
           - script: |
               set -euxo pipefail
@@ -206,7 +269,7 @@ stages:
                 
                 if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
                   # Manylinux (glibc-based) - use bash
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" build-$(LINUX_TAG)-$(ARCH) bash -lc '
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) bash -lc '
                     set -euxo pipefail;
                     
                     # Step 1: Setup Python environment
@@ -274,7 +337,7 @@ stages:
                   '
                 else
                   # Musllinux (musl libc-based) - use sh
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" build-$(LINUX_TAG)-$(ARCH) sh -lc '
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) sh -lc '
                     set -euxo pipefail;
                     
                     # Step 1: Setup Python environment

@@ -297,10 +297,600 @@ def test_arrow_table(cursor: mssql_python.Cursor):
 
 def test_arrow_reader(cursor: mssql_python.Cursor):
     reader = cursor.execute("select top 11 1 a from sys.objects").arrow_reader(batch_size=4)
-    assert type(reader) is pa.RecordBatchReader
+    # arrow_reader returns a RecordBatchReader-compatible wrapper (not the
+    # raw pyarrow.RecordBatchReader) so that .close() can actually stop
+    # fetching and release the server-side cursor.  Verify duck-typed
+    # compatibility instead of exact identity.
+    assert hasattr(reader, "schema")
+    assert hasattr(reader, "read_next_batch")
+    assert hasattr(reader, "close")
     batches = list(reader)
     assert [len(b) for b in batches] == [4, 4, 3]
     assert sum(len(b) for b in batches) == 11
+
+
+def test_arrow_reader_read_all_returns_table(cursor: mssql_python.Cursor):
+    """Regression: ``reader.read_all()`` is the idiomatic pyarrow way to
+    drain a reader into a Table and must work through the wrapper.  Was
+    silently missing when the class hand-enumerated the pyarrow surface;
+    covered here to lock the ``__getattr__`` delegation contract in place.
+    """
+    reader = cursor.execute("select top 11 1 a from sys.objects").arrow_reader(batch_size=4)
+    tbl = reader.read_all()
+    assert type(tbl) is pa.Table
+    assert tbl.num_rows == 11
+    assert tbl.num_columns == 1
+    # After a successful drain the reader is empty; close() must still be
+    # safe (idempotency + generator finally).
+    reader.close()
+    assert reader.closed is True
+    # Parent cursor stays usable.
+    cursor.execute("select 42")
+    assert cursor.fetchone()[0] == 42
+
+
+def test_arrow_reader_read_pandas_returns_dataframe(cursor: mssql_python.Cursor):
+    """Regression: ``reader.read_pandas()`` must delegate to the inner
+    reader and return a pandas ``DataFrame``.  Skipped if pandas isn't
+    importable in the test env.
+    """
+    pd = pytest.importorskip("pandas")
+    reader = cursor.execute("select top 7 1 a from sys.objects").arrow_reader(batch_size=3)
+    df = reader.read_pandas()
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 7
+    assert list(df.columns) == ["a"]
+    reader.close()
+
+
+def test_arrow_reader_cast_delegates(cursor: mssql_python.Cursor):
+    """Regression: ``reader.cast(target_schema)`` must delegate to the
+    inner reader.  ``cast`` returns a new pyarrow reader that projects the
+    stream to a different schema — we're not exercising the projection
+    logic itself, only that the delegation path exists and returns
+    something reader-shaped.
+    """
+    reader = cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+    # Same schema — the cast should succeed (identity projection).
+    casted = reader.cast(reader.schema)
+    assert casted is not None
+    # ``cast`` returns a real pyarrow RecordBatchReader (not another wrapper),
+    # which is fine — the consumer just wants a reader-like object.
+    assert hasattr(casted, "read_next_batch")
+    reader.close()
+
+
+def test_arrow_reader_delegates_unknown_pyarrow_method(cursor: mssql_python.Cursor):
+    """Guard against future regression: any public method the inner
+    pyarrow reader exposes must be reachable through the wrapper without
+    the class having to enumerate it explicitly.  Probes ``schema`` (a
+    property that used to be hand-written) and ``read_next_batch`` (a
+    method that used to be hand-written) via ``__getattr__``.
+    """
+    reader = cursor.execute("select top 3 1 a from sys.objects").arrow_reader(batch_size=2)
+    # schema now goes through __getattr__ delegation.
+    schema = reader.schema
+    assert schema.field(0).name == "a"
+    # read_next_batch also goes through __getattr__ (except when reached
+    # via the iteration protocol, which uses __next__).
+    batch = reader.read_next_batch()
+    assert batch.num_rows > 0
+    reader.close()
+
+
+def test_arrow_reader_delegated_method_raises_after_close(cursor: mssql_python.Cursor):
+    """Post-close access via ``__getattr__`` must raise ``ArrowInvalid``
+    to match the explicit ``__next__`` / ``__arrow_c_stream__`` semantics —
+    a delegated call must not silently succeed on a reader the user has
+    already closed.
+    """
+    reader = cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+    reader.close()
+    with pytest.raises(pa.ArrowInvalid):
+        reader.read_all()
+    with pytest.raises(pa.ArrowInvalid):
+        _ = reader.schema
+
+
+def test_arrow_reader_pycapsule_protocol(cursor: mssql_python.Cursor):
+    """The wrapper implements the Arrow PyCapsule Protocol via
+    ``__arrow_c_stream__``, so Arrow-aware consumers can accept it
+    without an ``isinstance(x, pa.RecordBatchReader)`` check.
+
+    Regression guard for the alternative to subclassing
+    ``pyarrow.RecordBatchReader`` (which is a Cython extension type and
+    can't carry our extra state).
+    """
+    if not hasattr(pa.RecordBatchReader, "from_stream"):
+        pytest.skip("pyarrow>=14 required for RecordBatchReader.from_stream")
+
+    reader = cursor.execute("select top 11 1 a from sys.objects").arrow_reader(batch_size=4)
+    assert hasattr(reader, "__arrow_c_stream__")
+    assert callable(reader.__arrow_c_stream__)
+
+    # Consume the wrapper via the PyCapsule Protocol.  ``from_stream`` calls
+    # ``__arrow_c_stream__`` internally, which transfers the C stream out of
+    # the inner reader — after this the wrapper is effectively drained but
+    # still safely closeable.
+    native = pa.RecordBatchReader.from_stream(reader)
+    assert isinstance(native, pa.RecordBatchReader)
+    total_rows = sum(b.num_rows for b in native)
+    assert total_rows == 11
+
+    # Wrapper close() must still be safe after the stream has been
+    # transferred out (idempotent + generator finally handles teardown).
+    reader.close()
+    assert reader.closed is True
+
+    # Parent cursor remains usable.
+    cursor.execute("select 42")
+    assert cursor.fetchone()[0] == 42
+
+
+def test_arrow_reader_pycapsule_protocol_raises_after_close(cursor: mssql_python.Cursor):
+    """``__arrow_c_stream__`` must refuse export after ``close()`` — matches
+    the ``read_next_batch()`` / ``schema`` post-close semantics."""
+    reader = cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+    reader.close()
+    with pytest.raises(pa.ArrowInvalid):
+        reader.__arrow_c_stream__()
+
+
+def test_arrow_reader_close_semantics(cursor: mssql_python.Cursor):
+    """``reader.close()`` must stop fetching, mark the reader closed, leave
+    the parent Cursor usable, be idempotent, and work as a context manager."""
+    reader = cursor.execute("select top 1000 1 a from sys.objects o1, sys.objects o2").arrow_reader(
+        batch_size=10
+    )
+
+    # Drain one batch then close mid-iteration.
+    first = reader.read_next_batch()
+    assert first.num_rows > 0
+    assert reader.closed is False
+
+    reader.close()
+    assert reader.closed is True
+
+    # Further reads raise (pyarrow.ArrowInvalid expected).
+    with pytest.raises(pa.ArrowInvalid):
+        reader.read_next_batch()
+    with pytest.raises(pa.ArrowInvalid):
+        next(iter(reader))
+
+    # close() is idempotent.
+    reader.close()
+    reader.close()
+
+    # Parent cursor must still be usable after the reader was closed.
+    cursor.execute("select 42")
+    row = cursor.fetchone()
+    assert row[0] == 42
+
+
+def test_arrow_reader_context_manager(cursor: mssql_python.Cursor):
+    """Using the reader as a context manager closes it on exit."""
+    with cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2) as reader:
+        assert reader.closed is False
+        _ = reader.read_next_batch()
+    assert reader.closed is True
+    # Cursor remains usable.
+    cursor.execute("select 7")
+    assert cursor.fetchone()[0] == 7
+
+
+def test_arrow_reader_gc_cleanup(cursor: mssql_python.Cursor):
+    """Dropping the reader without calling close() must still release the
+    server-side cursor — the try/finally in the batch generator runs on GC."""
+    import gc
+
+    reader = cursor.execute("select top 100 1 a from sys.objects").arrow_reader(batch_size=10)
+    _ = reader.read_next_batch()  # partial consume
+
+    # Drop the only strong reference and force collection. The generator's
+    # finally block must run, releasing the cursor so the next execute()
+    # succeeds without ProgrammingError("connection busy") etc.
+    del reader
+    gc.collect()
+
+    cursor.execute("select 5")
+    assert cursor.fetchone()[0] == 5
+
+
+@pytest.mark.stress  # large cross-join + 50ms timing race — flaky under CI CPU contention
+def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
+    """close() called from a separate thread must unblock an in-flight fetch
+    via SQLCancel and leave the parent Cursor reusable."""
+    import threading
+    import time
+
+    # Big enough cross-join that streaming will not finish in <100ms.
+    reader = cursor.execute(
+        "select top 1000000 1 a from sys.objects o1, sys.objects o2, sys.objects o3"
+    ).arrow_reader(batch_size=64)
+
+    closer_done = threading.Event()
+    closer_exc = []
+
+    def closer():
+        try:
+            time.sleep(0.05)  # let the consumer get into a fetch
+            reader.close()
+        except Exception as e:  # pragma: no cover - reported to main thread
+            closer_exc.append(e)
+        finally:
+            closer_done.set()
+
+    t = threading.Thread(target=closer, daemon=True)
+    t.start()
+
+    # Iterate; the cancel from the other thread must terminate the loop
+    # (either by exhausting cleanly or by raising) within a couple seconds.
+    rows = 0
+    try:
+        for batch in reader:
+            rows += batch.num_rows
+            if rows > 2_000_000:  # safety net — should never reach this
+                pytest.fail("reader was not cancelled by the other thread")
+    except pa.ArrowInvalid:
+        pass  # acceptable: reader was closed mid-iteration
+
+    closer_done.wait(timeout=5)
+    t.join(timeout=5)
+    # Fail loudly if the closer thread did not actually finish — otherwise a
+    # deadlock in close() would silently masquerade as a downstream failure
+    # (or, worse, hang the interpreter while the daemon thread holds the
+    # HSTMT).
+    assert (
+        closer_done.is_set()
+    ), "closer thread did not signal completion within 5s — close() may be deadlocked"
+    assert (
+        not t.is_alive()
+    ), "closer thread is still alive after join(timeout=5) — close() may be deadlocked"
+    assert not closer_exc, f"closer thread raised: {closer_exc[0]!r}"
+    assert reader.closed is True
+
+    # Parent cursor must still work after the cross-thread cancel.
+    cursor.execute("select 99")
+    assert cursor.fetchone()[0] == 99
+
+
+def test_arrow_reader_diagnostics_drained_on_close(cursor: mssql_python.Cursor):
+    """After close(), any diagnostic messages produced server-side end up on
+    cursor.messages (not silently dropped)."""
+    # Drive a result-producing query, partially read, then close.
+    reader = cursor.execute("select top 50 1 a from sys.objects").arrow_reader(batch_size=5)
+    _ = reader.read_next_batch()
+    # messages is a list of (sqlstate, text) tuples; should at least exist
+    # and not raise when the close path tries to extend it.
+    assert isinstance(cursor.messages, list)
+    reader.close()
+    assert isinstance(cursor.messages, list)
+
+
+def test_arrow_reader_drains_diagnostics_when_close_cursor_succeeds(
+    cursor: mssql_python.Cursor, monkeypatch
+):
+    """SQLFreeStmt(SQL_CLOSE) can return SQL_SUCCESS_WITH_INFO — a success
+    code that still pushes warning records onto the HSTMT diag stack.  The
+    cleanup path must drain diagnostics *unconditionally* after the close
+    attempt, not only when _close_cursor() raises, otherwise those warnings
+    would be silently dropped."""
+    from mssql_python import cursor as cursor_mod
+
+    reader = cursor.execute("select top 10 1 a from sys.objects").arrow_reader(batch_size=5)
+    _ = reader.read_next_batch()
+
+    # Snapshot any pre-close diagnostics already on the cursor so we can
+    # detect *new* records pushed by our monkeypatched drain calls.
+    pre_existing = list(cursor.messages)
+
+    real_drain = cursor_mod.ddbc_bindings.DDBCSQLGetAllDiagRecords
+    call_count = {"n": 0}
+
+    def fake_drain(hstmt):
+        call_count["n"] += 1
+        records = list(real_drain(hstmt))
+        # Inject one synthetic record per call so we can prove both the
+        # pre-close drain AND the post-close (success-path) drain ran.
+        records.append(("01000", f"synthetic warning #{call_count['n']}"))
+        return records
+
+    monkeypatch.setattr(cursor_mod.ddbc_bindings, "DDBCSQLGetAllDiagRecords", fake_drain)
+
+    # _close_cursor() should succeed (no exception); the bug would skip the
+    # post-close drain entirely on that success path.
+    reader.close()
+
+    # Strip the snapshot to look only at messages added by the cleanup path.
+    added = cursor.messages[len(pre_existing) :]
+    synthetic_texts = [m[1] for m in added if isinstance(m, tuple) and len(m) >= 2]
+
+    assert (
+        "synthetic warning #1" in synthetic_texts
+    ), "pre-close drain did not push diagnostics onto cursor.messages"
+    assert "synthetic warning #2" in synthetic_texts, (
+        "post-close drain was skipped on the SQL_CLOSE success path "
+        "(SQL_SUCCESS_WITH_INFO warnings would be lost)"
+    )
+
+
+def test_arrow_reader_close_retries_after_failed_attempt(cursor: mssql_python.Cursor):
+    """If a first close() raises before the generator is released (e.g. another
+    thread held it and gen.close() raised), a subsequent close() must retry
+    the cleanup rather than silently no-op'ing — otherwise the server-side
+    cursor would leak."""
+    reader = cursor.execute("select top 10 1 a from sys.objects").arrow_reader(batch_size=2)
+
+    real_gen = reader._generator
+    assert real_gen is not None
+
+    class FlakyGen:
+        """Generator wrapper: first close() raises and reports gi_frame as
+        still-set (simulating 'generator currently executing on another
+        thread'); second close() delegates to the real generator."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self._closed_calls = 0
+            self.gi_frame = object()  # truthy => 'still alive'
+
+        def close(self):
+            self._closed_calls += 1
+            if self._closed_calls == 1:
+                raise ValueError("generator already executing")
+            # Second call: pretend the other thread released it, delegate.
+            self.gi_frame = None
+            self._inner.close()
+
+    flaky = FlakyGen(real_gen)
+    reader._generator = flaky
+
+    # First close: should mark reader closed (racing reads must raise) but
+    # leave _generator intact so a retry is possible.
+    reader.close()
+    assert reader.closed is True
+    assert reader._generator is flaky, "failed close() must not drop the generator ref"
+    assert reader._cursor is not None, "failed close() must not drop the cursor ref"
+    assert flaky._closed_calls == 1
+
+    # Second close: must retry and complete cleanup this time.
+    reader.close()
+    assert flaky._closed_calls == 2
+    assert reader._generator is None
+    assert reader._cursor is None
+
+    # Third close: now a true no-op (fully cleaned up).
+    reader.close()
+    assert flaky._closed_calls == 2  # not invoked again
+
+    # Parent cursor still usable after the recovered close.
+    cursor.execute("select 7")
+    assert cursor.fetchone()[0] == 7
+
+
+# ── _ArrowReader cancel / cleanup edge cases (coverage-focused) ─────────────
+#
+# The tests below target the branches of _ArrowReader / arrow_reader() that
+# the existing suite doesn't reach — mostly defensive paths on the close /
+# cancel side.  They keep the wrapper's public contract locked in so future
+# refactors can't silently drop these guarantees:
+#
+#   * private-attribute lookup on the wrapper raises AttributeError (does not
+#     recursively delegate through __getattr__ into self._inner)
+#   * re-entering a closed reader as a context manager raises ArrowInvalid
+#   * __arrow_c_stream__ fails loudly when the wrapped pyarrow reader lacks
+#     the PyCapsule protocol (pyarrow < 14)
+#   * __del__ is a no-op during interpreter finalization (module globals may
+#     be gone) and never propagates an exception
+#   * the batch-generator finally block is symmetric across every teardown
+#     path — parent-cursor-already-closed, diag-drain failure, SQL_CLOSE
+#     failure, bookkeeping-reset failure — so a single ODBC glitch cannot
+#     leak the server-side cursor or crash close()
+
+
+def test_arrow_reader_propagates_fetch_error_when_parent_cursor_is_closed(conn_str):
+    """Closing the parent cursor must not turn the next fetch error into end-of-stream."""
+    conn = mssql_python.connect(conn_str)
+    try:
+        tmp = conn.cursor()
+        reader = tmp.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+        _ = reader.read_next_batch()
+        tmp.close()
+
+        with pytest.raises(mssql_python.ProgrammingError, match="cursor is closed"):
+            reader.read_next_batch()
+    finally:
+        conn.close()
+
+
+def test_arrow_reader_getattr_refuses_private_names(cursor: mssql_python.Cursor):
+    """__getattr__ refuses leading-underscore names so a partially-constructed
+    instance during __del__ cannot recurse forever trying to resolve its own
+    slot names via self._inner."""
+    reader = cursor.execute("select 1 a").arrow_reader(batch_size=10)
+    try:
+        with pytest.raises(AttributeError):
+            _ = reader._does_not_exist_anywhere
+    finally:
+        reader.close()
+
+
+def test_arrow_reader_enter_after_close_raises(cursor: mssql_python.Cursor):
+    """Using a closed reader as a context manager must raise ArrowInvalid;
+    __enter__ refuses to hand out a reader that's already been torn down."""
+    reader = cursor.execute("select 1 a").arrow_reader(batch_size=10)
+    reader.close()
+    with pytest.raises(pa.ArrowInvalid):
+        with reader:
+            pass
+
+
+def test_arrow_reader_pycapsule_missing_on_inner_raises(cursor: mssql_python.Cursor):
+    """If the wrapped pyarrow reader lacks ``__arrow_c_stream__`` (pyarrow < 14),
+    the wrapper must raise ``ArrowInvalid`` rather than silently returning
+    something invalid.  Simulated here by swapping ``_inner`` for an object
+    that does not implement the protocol."""
+    reader = cursor.execute("select 1 a").arrow_reader(batch_size=10)
+    try:
+
+        class WithoutProtocol:
+            pass
+
+        reader._inner = WithoutProtocol()
+        with pytest.raises(pa.ArrowInvalid, match=r"pyarrow>=14"):
+            reader.__arrow_c_stream__()
+    finally:
+        # close() only touches _generator / _cursor; the swapped _inner is
+        # safe.  It is nulled out at the end of close() anyway.
+        reader.close()
+
+
+def test_arrow_reader_del_skips_during_interpreter_finalization(
+    cursor: mssql_python.Cursor, monkeypatch
+):
+    """``__del__`` must return early when ``sys.is_finalizing()`` is True —
+    module globals (pyarrow, ddbc_bindings) may already be torn down and
+    touching native code at that point is unsafe.  With the guard active,
+    close() is *not* invoked, so ``_generator`` stays set."""
+    import sys as _sys
+
+    reader = cursor.execute("select 1 a").arrow_reader(batch_size=10)
+    try:
+        monkeypatch.setattr(_sys, "is_finalizing", lambda: True)
+        reader.__del__()
+        assert (
+            reader._generator is not None
+        ), "__del__ ran close() during simulated interpreter finalization"
+    finally:
+        monkeypatch.undo()
+        reader.close()
+
+
+def test_arrow_reader_del_swallows_exceptions(cursor: mssql_python.Cursor, monkeypatch):
+    """``__del__`` is best-effort — any exception raised inside it (e.g.
+    because module globals were already torn down) must be swallowed rather
+    than propagating out of a finalizer, where it would only be printed as
+    an unraisable warning at best and abort the interpreter at worst."""
+    import sys as _sys
+
+    reader = cursor.execute("select 1 a").arrow_reader(batch_size=10)
+    try:
+
+        def boom():
+            raise RuntimeError("simulated shutdown noise")
+
+        monkeypatch.setattr(_sys, "is_finalizing", boom)
+        # Must not propagate.
+        reader.__del__()
+    finally:
+        monkeypatch.undo()
+        reader.close()
+
+
+def test_arrow_reader_cleanup_no_op_when_parent_cursor_already_closed(conn_str):
+    """If the parent ``Cursor`` is closed before the reader's cleanup
+    generator runs, the ``finally`` block must safely return without
+    touching the freed HSTMT — covers the
+    ``(cur.closed or cur.hstmt is None)`` early-return.
+
+    Uses a dedicated connection so the shared module-scoped ``cursor``
+    fixture is not affected and cannot race an 'active result set' error."""
+    conn = mssql_python.connect(conn_str)
+    try:
+        tmp = conn.cursor()
+        reader = tmp.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+        _ = reader.read_next_batch()
+        tmp.close()  # frees hstmt before the reader's finally block runs
+        reader.close()  # must not raise
+        assert reader.closed is True
+    finally:
+        conn.close()
+
+
+def test_arrow_reader_cleanup_survives_diag_drain_failure(conn_str, monkeypatch):
+    """If ``DDBCSQLGetAllDiagRecords`` raises (either the pre-close drain or
+    the post-close SQL_SUCCESS_WITH_INFO drain), the cleanup path swallows
+    the exception and continues rather than propagating and skipping the
+    remaining teardown steps."""
+    from mssql_python import cursor as cursor_mod
+
+    conn = mssql_python.connect(conn_str)
+    try:
+        tmp = conn.cursor()
+        reader = tmp.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+        _ = reader.read_next_batch()
+
+        def raise_drain(_hstmt):
+            raise RuntimeError("simulated ODBC diag failure")
+
+        monkeypatch.setattr(cursor_mod.ddbc_bindings, "DDBCSQLGetAllDiagRecords", raise_drain)
+        reader.close()  # must not propagate
+        assert reader.closed is True
+        monkeypatch.undo()
+        tmp.close()
+    finally:
+        conn.close()
+
+
+def test_arrow_reader_cleanup_survives_close_cursor_failure(conn_str, monkeypatch):
+    """If ``hstmt._close_cursor()`` raises inside the cleanup generator, the
+    handler swallows and continues to the bookkeeping-reset step.  A
+    ``SQLFreeStmt(SQL_CLOSE)`` failure must be a WARNING, not a crash."""
+    from mssql_python import cursor as cursor_mod
+
+    conn = mssql_python.connect(conn_str)
+    try:
+        tmp = conn.cursor()
+        reader = tmp.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+        _ = reader.read_next_batch()
+
+        real_hstmt = tmp.hstmt
+
+        class FakeHstmt:
+            # reader.close() invokes SQLCancel via hstmt._cancel() before it
+            # closes the generator; provide a no-op so we exercise the SQL_CLOSE
+            # path specifically.
+            def _cancel(self_inner):
+                pass
+
+            def _close_cursor(self_inner):
+                raise RuntimeError("simulated SQLFreeStmt failure")
+
+        tmp.hstmt = FakeHstmt()
+        # Neutralize the diag drain — it would crash on our fake hstmt.
+        monkeypatch.setattr(cursor_mod.ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda _h: [])
+        try:
+            reader.close()
+            assert reader.closed is True
+        finally:
+            # Restore the real hstmt before closing tmp so ODBC teardown is clean.
+            tmp.hstmt = real_hstmt
+            monkeypatch.undo()
+            tmp.close()
+    finally:
+        conn.close()
+
+
+def test_arrow_reader_cleanup_survives_bookkeeping_reset_failure(conn_str, monkeypatch):
+    """If ``Cursor._clear_rownumber()`` raises, cleanup swallows and completes.
+    A bookkeeping glitch must not leave the reader in an inconsistent
+    'closed but generator alive' state."""
+    conn = mssql_python.connect(conn_str)
+    try:
+        tmp = conn.cursor()
+        reader = tmp.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+        _ = reader.read_next_batch()
+
+        def raise_clear():
+            raise RuntimeError("simulated bookkeeping failure")
+
+        monkeypatch.setattr(tmp, "_clear_rownumber", raise_clear)
+        reader.close()
+        assert reader.closed is True
+        monkeypatch.undo()
+        tmp.close()
+    finally:
+        conn.close()
 
 
 def test_arrow_long_string(cursor: mssql_python.Cursor):
