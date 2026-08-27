@@ -157,11 +157,6 @@ echo "Building conda packages for Python versions: $(echo "$pyvers" | tr '\n' ' 
 export WHEELS_DIR="$WheelsDir"
 export MSSQL_PYTHON_VERSION="$MssqlPythonVersion"
 export MSSQL_ODBC_VERSION="$OdbcVersion"
-# Forward the DEV-ONLY unsigned-patch escape hatch into conda-build (meta.yaml
-# script_env allow-lists it, else conda-build's sanitized env drops it). Empty on the
-# signed build -> build.sh stays assertion-only; the PR audit gate sets it to 1 to
-# patch the un-baked PyPI binaries.
-export CONDA_ALLOW_UNSIGNED_PATCH="${CONDA_ALLOW_UNSIGNED_PATCH:-}"
 
 # Cross-subdir builds: force conda-build AND the verify `conda create` to target the
 # requested subdir instead of the host's native one. Both honor CONDA_SUBDIR, so the

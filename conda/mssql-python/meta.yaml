@@ -41,12 +41,6 @@ build:
     # MSSQL_ODBC_VERSION lets build.sh / bld.bat locate the matching mssql-python-odbc
     # wheel to vendor INTO this package (the driver payload now ships inside).
     - MSSQL_ODBC_VERSION
-    # conda-build sanitizes the recipe's env and forwards ONLY allow-listed vars, so
-    # build.sh's DEV-ONLY escape hatch must be listed here to be reachable. The PR
-    # audit gate sets CONDA_ALLOW_UNSIGNED_PATCH=1 to patch the un-baked PyPI binaries;
-    # it MUST NEVER be set on the signed release build (conda-build-pipeline.yml
-    # hard-guards that), so the release path stays strictly assertion-only.
-    - CONDA_ALLOW_UNSIGNED_PATCH
 
 requirements:
   # Linux reachability fix (#563): patchelf stamps a relative $ORIGIN RPATH climb

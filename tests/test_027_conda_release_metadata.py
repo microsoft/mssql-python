@@ -201,6 +201,25 @@ def test_win_arm64_reduced_matrix_still_fails_when_incomplete():
     assert any("win-arm64" in e and "INCOMPLETE" in e and "3.13" in e for e in errors)
 
 
+def test_extra_unsupported_python_fails():
+    # got == expected (not just expected subset of got): an EXTRA python beyond the expected
+    # set (e.g. a win-arm64 3.10 that slipped in) must fail even though the expected 3.12-3.14
+    # are all present.
+    pkgs = _healthy_set()
+    for py in ["3.12", "3.13", "3.14"]:
+        pkgs.append(_binding("win-arm64", py))
+    pkgs.append(_binding("win-arm64", "3.10"))  # unsupported extra
+    errors = vcr.validate(
+        pkgs,
+        required_subdirs=_REQUIRED,
+        allowed_subdirs=_ALLOWED,
+        expected_pythons=_PYTHONS,
+        expected_versions={"mssql-python": _MP_VER},
+        subdir_pythons={"win-arm64": ["3.12", "3.13", "3.14"]},
+    )
+    assert any("win-arm64" in e and "UNSUPPORTED" in e and "3.10" in e for e in errors)
+
+
 def test_default_subdir_pythons_reduces_win_arm64():
     # The shipped CLI default carries the win-arm64 reduction so the pipeline needs
     # no extra flag; parsing it yields the expected mapping.

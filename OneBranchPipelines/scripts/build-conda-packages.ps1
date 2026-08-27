@@ -245,6 +245,25 @@ Write-Host "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binari
 Assert-LastExit "RUNPATH self-containment audit"
 
 # ---------------------------------------------------------------------------
+# 6c. PE machine-type assert for win-arm64 (the Windows twin of the 6b ELF audit).
+# ---------------------------------------------------------------------------
+# The arm64 runtime import is SKIPPED on the x64 cross host, so without this the
+# package's architecture is trusted purely from the wheel filename. Read the PE COFF
+# Machine field of every vendored .pyd/.dll in the freshly built win-arm64 package and
+# fail if any is not ARM64 -- so a mislabeled/mis-built wheel can never ship x64
+# binaries inside a win-arm64 package. No-op on every non-win-arm64 leg.
+if ($CondaSubdir -eq 'win-arm64') {
+    $peCheck = Join-Path (Split-Path $RecipeRoot -Parent) 'eng/scripts/assert_pe_machine.py'
+    if (-not (Test-Path $peCheck)) {
+        Write-Error "PE machine-type assert script not found at $peCheck"
+        exit 1
+    }
+    Write-Host "=== win-arm64 PE machine-type assert (vendored .pyd/.dll must be ARM64) ==="
+    & $conda run -n base python $peCheck --root $bld --subdir win-arm64
+    Assert-LastExit "win-arm64 PE machine-type assert"
+}
+
+# ---------------------------------------------------------------------------
 # 7. Validate: solve a fresh env from the local channel and import the package.
 #    Proves azure-identity + the folded-in openssl/krb5 deps resolve AND that the
 #    repackaged native binding imports with its vendored ODBC payload (driver loads
@@ -269,11 +288,12 @@ else {
     # remove`). Switch to 'Continue' for the verify section and gate control flow on
     # $LASTEXITCODE / Assert-LastExit instead -- the same intent as the bash port's `|| true`.
     $ErrorActionPreference = 'Continue'
-    # A win-arm64 package is CROSS-built on the x64 agent: its deps resolve (from Anaconda
-    # defaults + the microsoft noarch azure-identity/msal), but the arm64 Python cannot
-    # execute here, so the runtime import is best-effort/auto-skipped -- the same contract
-    # as the osx-arm64 cross-build in build.sh (a static arch audit stands in). Native legs
-    # stay fully blocking.
+    # A win-arm64 package is CROSS-built on the x64 agent. The dependency SOLVE runs on the
+    # x64 host and does NOT need the arm64 interpreter, so it stays BLOCKING on every leg (an
+    # unsolvable win-arm64 graph must fail the build, never slip through to publish and then
+    # break the user's `conda install`). ONLY the runtime import is best-effort here, because
+    # the arm64 Python cannot execute on x64 -- the same contract as the osx-arm64 cross-build
+    # in build.sh (a static arch audit stands in). Native legs stay fully blocking end-to-end.
     $crossBestEffort = ($CondaSubdir -eq 'win-arm64')
     foreach ($py in $pyvers) {
         $sub = if ($CondaSubdir) { $CondaSubdir -replace '-', '_' } else { 'native' }
@@ -281,11 +301,25 @@ else {
         & $conda env remove -y -n $envName 2>$null
         Write-Host "=== [py $py] create verify env from local channel ==="
         if ($CondaSubdir -eq 'win-arm64') {
-            # win-arm64: azure-identity/msal are noarch on `microsoft`; their native dep
-            # cryptography (plus python/vc14_runtime/pyodbc) is on Anaconda `defaults`, NOT
-            # conda-forge. Drop --strict-channel-priority so a dep split across microsoft +
-            # defaults still solves.
-            & $conda create -y -n $envName -c $localChannel -c microsoft -c defaults --override-channels "python=$py" mssql-python
+            # BLOCKING solvability gate: --dry-run resolves the FULL win-arm64 dependency graph
+            # on the x64 host (CONDA_SUBDIR=win-arm64 pins the target subdir) WITHOUT linking,
+            # post-link scripts, or executing the arm64 interpreter -- a pure "is this
+            # installable?" check that runs anywhere. An unsolvable graph fails the build here
+            # instead of shipping a package that breaks the user's `conda install`.
+            # win-arm64 deps: azure-identity/msal are noarch on `microsoft`; cryptography +
+            # python/vc14_runtime/pyodbc are on Anaconda `defaults`, NOT conda-forge -- so no
+            # --strict-channel-priority (the graph legitimately splits across microsoft+defaults).
+            & $conda create --dry-run -n $envName -c $localChannel -c microsoft -c defaults --override-channels "python=$py" mssql-python
+            Assert-LastExit "win-arm64 --dry-run solve (py $py)"
+            # Real env is BEST-EFFORT: only a real arm64 host can create+run it. The pipeline
+            # cross-builds on x64 (arm64 Python cannot execute); there the PE-machine assert
+            # (step 6c) + the static arm64-slice audit enforce arch/correctness, so a real-create
+            # failure here is not fatal -- we skip the runtime import.
+            & $conda create -y -n $envName -c $localChannel -c microsoft -c defaults --override-channels "python=$py" mssql-python 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "=== [py $py] win-arm64: SOLVES (dry-run OK); real env not creatable on this x64 host -- arch enforced by the PE assert + static audit, skipping runtime import. ==="
+                continue
+            }
         }
         else {
             # -c microsoft (ahead of conda-forge) so azure-core/azure-identity/msal resolve from the
@@ -293,12 +327,7 @@ else {
             # -> celery/boto3/botocore (~9 MB); see conda-forge/azure-core-feedstock#71.
             # --strict-channel-priority keeps the freshly built local package authoritative.
             & $conda create -y -n $envName -c $localChannel -c microsoft -c conda-forge --strict-channel-priority --override-channels "python=$py" mssql-python
-        }
-        if ($LASTEXITCODE -ne 0) {
-            if ($crossBestEffort) {
-                Write-Warning "[py $py] win-arm64 verify solve failed (best-effort cross leg); the package was already built + staged. Investigate dep availability on defaults/microsoft for python=$py."
-                continue
-            }
+            # The full create IS the solve on a native leg -- keep it BLOCKING.
             Assert-LastExit "conda create verify env (py $py)"
         }
 
@@ -308,7 +337,7 @@ else {
         & $conda run -n $envName python -c "import sys" 2>$null
         if ($LASTEXITCODE -ne 0) {
             if ($crossBestEffort) {
-                Write-Host "=== [py $py] win-arm64 cross on x64: target Python not executable; deps resolved but skipping runtime import (static arm64-slice audit stands in). ==="
+                Write-Host "=== [py $py] win-arm64 cross on x64: target Python not executable; deps SOLVED (blocking) but skipping runtime import (static arm64-slice audit stands in). ==="
                 continue
             }
             Write-Error "target Python for CONDA_SUBDIR=$CondaSubdir is not executable on this host, and this is NOT the win-arm64 cross-build. Refusing to silently skip validation."
@@ -335,13 +364,16 @@ Get-ChildItem -Path $bld -Recurse -Include *.conda, *.tar.bz2 |
 Where-Object { $_.Name -like 'mssql-python*' } |
 ForEach-Object { Write-Host "  $($_.FullName)" }
 Write-Host "CONDA_BUILD_OK"
-# Reset the process exit code to 0 on success. On the win-arm64 best-effort leg the last native
-# command in the verify loop is the runnable-check `conda run` that INTENTIONALLY fails -- the
-# arm64 Python cannot launch on the x64 host (exit 216 = ERROR_EXE_MACHINE_TYPE_MISMATCH) -- so we
-# skip the import and `continue`. That non-zero $LASTEXITCODE would otherwise linger as the value
-# the caller sees and fail the leg even though every package built and its deps resolved. We must
-# NOT use PowerShell `exit 0` here: the .yml step calls this script with `& ...` in-session, so
-# `exit` would terminate the whole step BEFORE it stages the packages. A trailing SUCCESSFUL native
-# command resets $LASTEXITCODE and returns control to the caller (so staging runs). Any REAL failure
-# already exited 1 via Assert-LastExit / the explicit `exit 1` paths above.
-cmd /c "exit 0"
+# Reset the process exit code to 0 ONLY on the win-arm64 cross leg. There, the last native command
+# in the verify loop is the runnable-check `conda run` that INTENTIONALLY fails -- the arm64 Python
+# cannot launch on the x64 host (exit 216 = ERROR_EXE_MACHINE_TYPE_MISMATCH) -- so we skip the
+# import and `continue`, leaving a non-zero $LASTEXITCODE that would otherwise fail the leg even
+# though every package built and its deps SOLVED. Scoping the reset to win-arm64 means a future
+# post-check on a native leg can never be silently masked. We must NOT use PowerShell `exit 0`: the
+# .yml step calls this script with `& ...` in-session, so `exit` would terminate the whole step
+# BEFORE it stages the packages. A trailing SUCCESSFUL native command resets $LASTEXITCODE and
+# returns control to the caller (so staging runs). Any REAL failure already exited 1 via
+# Assert-LastExit / the explicit `exit 1` paths above.
+if ($CondaSubdir -eq 'win-arm64') {
+    cmd /c "exit 0"
+}

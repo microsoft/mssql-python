@@ -206,6 +206,14 @@ def validate(
                 f"subdir '{sub}': matrix INCOMPLETE -- missing Python {missing} "
                 f"(present: {got_pythons or 'none'})."
             )
+        # Reject EXTRA pythons too (got == expected, not just expected subset of got): an
+        # unsupported build (e.g. a win-arm64 3.10 that slipped in) must never publish.
+        extra = [py for py in got_pythons if py not in sub_expected]
+        if extra:
+            errors.append(
+                f"subdir '{sub}': matrix has UNSUPPORTED Python {extra} "
+                f"(expected exactly {sub_expected})."
+            )
 
     return errors
 

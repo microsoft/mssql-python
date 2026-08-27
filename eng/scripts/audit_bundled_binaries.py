@@ -375,6 +375,17 @@ def audit_package(path: str) -> list[str]:
                 f"{name}: RUNPATH has ABSOLUTE entries {abs_entries}; must stay "
                 f"relocatable (relative $ORIGIN only)."
             )
+        # Defense-in-depth: the RELATIVE entries must be EXACTLY {$ORIGIN, want}. build.sh
+        # stamps precisely those two, so any other relative entry (a stray climb / leftover
+        # build path) is unexpected and could resolve a lib from an unintended location.
+        unexpected_rel = [
+            e for e in entries if not e.startswith("/") and e not in ("$ORIGIN", want)
+        ]
+        if unexpected_rel:
+            errors.append(
+                f"{name}: RUNPATH has unexpected relative entries {unexpected_rel}; the "
+                f"effective RUNPATH must be exactly ['$ORIGIN', '{want}'] (got {entries})."
+            )
 
         # N2b: the expected DT_NEEDED set must still be present (glibc variants only;
         # musl links these statically / differently, and is not a conda target).

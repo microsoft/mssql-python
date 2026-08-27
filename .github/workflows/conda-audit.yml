@@ -8,10 +8,10 @@
 # the declared conda deps (krb5/libtool/openssl), or the expected DT_NEEDED set fails
 # the PR automatically -- the full-agent runtime masking cannot hide it.
 #
-# The PyPI mssql-python-odbc binaries are not yet pre-baked with the climb, so the
-# recipe's assertion-only default would (correctly) refuse to mutate them; this PR
-# gate sets CONDA_ALLOW_UNSIGNED_PATCH=1 to build a DEV-patched climb and audit THAT.
-# The signed release path stays assertion-only (see conda/mssql-python/build.sh).
+# build.sh ALWAYS stamps the relative $ORIGIN climb onto the vendored Linux ODBC .so
+# (they are not code-signed, so the patch breaks no signature; an already-baked climb
+# is a byte-for-byte no-op). This gate builds one real linux-64 conda package from the
+# shipped PyPI wheels and audits the resulting climb (see conda/mssql-python/build.sh).
 name: conda-audit
 
 on:
@@ -19,9 +19,11 @@ on:
     paths:
       - 'conda/**'
       - 'eng/scripts/audit_bundled_binaries.py'
+      - 'eng/scripts/assert_pe_machine.py'
       - 'OneBranchPipelines/scripts/build-conda-packages.sh'
       - 'tests/test_027_conda_release_metadata.py'
       - 'tests/test_029_bundled_binary_audit.py'
+      - 'tests/test_030_pe_machine_assert.py'
       - '.github/workflows/conda-audit.yml'
 
 permissions:
@@ -47,6 +49,7 @@ jobs:
           # conftest to avoid that unrelated import.
           python -m pytest --noconftest \
                            tests/test_029_bundled_binary_audit.py \
+                           tests/test_030_pe_machine_assert.py \
                            tests/test_027_conda_release_metadata.py -q
 
       - name: Fetch the shipped linux wheels from PyPI
@@ -58,10 +61,6 @@ jobs:
           echo "Downloaded:"; ls -1 wheels
 
       - name: Build + audit a linux-64 conda package
-        env:
-          # PyPI odbc binaries are not pre-baked; build a DEV-patched climb here and
-          # audit it. NEVER used on the signed release path.
-          CONDA_ALLOW_UNSIGNED_PATCH: '1'
         run: |
           set -euo pipefail
           mssql_whl="$(ls wheels/mssql_python-*.whl | grep -v mssql_python_odbc | head -1)"

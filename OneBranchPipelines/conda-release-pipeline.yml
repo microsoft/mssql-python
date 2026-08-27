@@ -132,6 +132,20 @@ extends:
             variables:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
             steps:
+              # Publishing must PIN the exact version. With the provenance gate removed, an
+              # unpinned publish (empty version = "accept any single consistent version") could
+              # ship a stale/unintended artifact. Require a non-empty version when publishing.
+              - ${{ if eq(parameters.publishToConda, true) }}:
+                - task: PowerShell@2
+                  displayName: 'Guard: expected mssql-python version is required to publish'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      if ([string]::IsNullOrWhiteSpace('${{ parameters.mssqlPythonVersion }}')) {
+                        Write-Error "publishToConda=true but mssqlPythonVersion is empty. A production publish must pin the exact version (the release-readiness gate then asserts EVERY package matches it). Re-run with mssqlPythonVersion set."
+                        exit 1
+                      }
+                      Write-Host "Publish version pin: ${{ parameters.mssqlPythonVersion }}"
               - template: /OneBranchPipelines/steps/conda-release-step.yml@self
                 parameters:
                   buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
