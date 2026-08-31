@@ -81,7 +81,7 @@ from .native_provider import ProviderManager
 
 
 def get_native_provider_info() -> dict:
-    """Return the selected ODBC provider for diagnostics.
+    """Return the selected native provider for diagnostics.
 
     Reports the provider ``id``, the ``package`` that ships its native binaries,
     the selection ``source`` (once resolved), and whether the choice is
@@ -603,7 +603,7 @@ class _MSSQLModule(types.ModuleType):
 
     @property
     def native_provider(self) -> str:
-        """Get the ODBC provider that will be (or was) loaded.
+        """Get the native provider that will be (or was) loaded.
 
         Honored only when set before the first connection; a later change is
         ignored with a warning. The ``MSSQL_PYTHON_NATIVE_PROVIDER`` environment

@@ -1,7 +1,7 @@
 """
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
-Selects which ODBC provider (native driver package) mssql-python loads.
+Selects which native provider (ODBC driver package) mssql-python loads.
 
 Two providers are supported: ``msodbcsql18`` (the Microsoft ODBC Driver 18,
 shipped by ``mssql_python_odbc``) and ``mssql-odbc`` (the Rust driver, shipped
@@ -51,12 +51,12 @@ def _normalize(value: str) -> str:
     canonical = value.strip().lower()
     if canonical not in _PACKAGE_BY_PROVIDER:
         valid = ", ".join(sorted(_PACKAGE_BY_PROVIDER))
-        raise ValueError(f"Unknown ODBC provider {value!r}. Valid providers are: {valid}.")
+        raise ValueError(f"Unknown native provider {value!r}. Valid providers are: {valid}.")
     return canonical
 
 
 class ProviderManager:
-    """Process-wide, resolve-once selector for the ODBC provider.
+    """Process-wide, resolve-once selector for the native provider.
 
     The selection freezes when :meth:`resolve` first runs (at native driver
     load). A later change to the module property is ignored with a warning,
@@ -106,7 +106,7 @@ class ProviderManager:
             if cls._resolved is None:
                 cls._resolved, cls._source = cls._compute()
                 logger.info(
-                    "ODBC provider resolved to '%s' (source=%s)",
+                    "Native provider resolved to '%s' (source=%s)",
                     cls._resolved,
                     cls._source,
                 )
@@ -156,7 +156,7 @@ class ProviderManager:
                 raise
             dist = _DIST_BY_PROVIDER[provider]
             raise ImportError(
-                f"The '{provider}' ODBC provider is selected but its package "
+                f"The '{provider}' native provider is selected but its package "
                 f"'{package}' is not installed. Install it with: pip install {dist}"
             ) from exc
         return provider
@@ -203,7 +203,7 @@ class ProviderManager:
     @classmethod
     def _warn_frozen(cls) -> None:
         message = (
-            f"ODBC provider is already loaded as '{cls._resolved}'; ignoring the "
+            f"The native provider is already loaded as '{cls._resolved}'; ignoring the "
             f"change. Select a provider before the first connection, or set the "
             f"{NATIVE_PROVIDER_ENV_VAR} environment variable."
         )

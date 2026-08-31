@@ -1013,7 +1013,7 @@ std::string NormalizeProviderId(const std::string& id) {
 void SetSelectedProvider(const std::string& id) {
     const std::string normalized = NormalizeProviderId(id);
     if (normalized != kProviderMsodbcsql18 && normalized != kProviderMssqlOdbc) {
-        ThrowStdException("Unknown ODBC provider '" + id +
+        ThrowStdException("Unknown native provider '" + id +
                           "'. Valid providers are: msodbcsql18, mssql-odbc.");
     }
     std::lock_guard<std::mutex> lock(g_providerMutex);
