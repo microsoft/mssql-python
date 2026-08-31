@@ -1208,20 +1208,20 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     }
 #endif
 
-    // Rust provider (mssql-odbc): ships as `mssql-odbc.{so,dylib,dll}` (no `lib`
-    // prefix on Linux/macOS) under an mssql-python-defined libs/ layout.
-    // mssql-python owns the provider wheel, so this layout is authoritative and
-    // finalized alongside that wheel build.
+    // Rust provider (id `mssql-odbc`): its driver library ships as
+    // `mssqlodbc.{so,dylib,dll}` (no hyphen, and no `lib` prefix on Linux/macOS)
+    // under an mssql-python-defined libs/ layout. mssql-python owns the provider
+    // wheel, so this layout is authoritative and finalized alongside that build.
     if (GetSelectedProviderId() == kProviderMssqlOdbc) {
 #ifdef __linux__
-        return (basePath / "libs" / "linux" / platform / arch / "lib" / "mssql-odbc.so")
+        return (basePath / "libs" / "linux" / platform / arch / "lib" / "mssqlodbc.so")
             .string();
 #elif defined(__APPLE__)
-        return (basePath / "libs" / "macos" / arch / "lib" / "mssql-odbc.dylib").string();
+        return (basePath / "libs" / "macos" / arch / "lib" / "mssqlodbc.dylib").string();
 #elif defined(_WIN32)
         {
             std::string winArch = (arch == "x86_64") ? "x64" : arch;
-            return (basePath / "libs" / "windows" / winArch / "mssql-odbc.dll").string();
+            return (basePath / "libs" / "windows" / winArch / "mssqlodbc.dll").string();
         }
 #else
         throw std::runtime_error("Unsupported platform");
