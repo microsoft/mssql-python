@@ -230,7 +230,9 @@ def test_rust_provider_load_error_names_rust_distribution(tmp_path):
     script = textwrap.dedent("""
         import mssql_python
         try:
-            mssql_python.connect("Server=localhost;Database=x;Trusted_Connection=yes")
+            # Server value is never contacted; the driver load fails first on the
+            # incomplete stand-in package.
+            mssql_python.connect("Server=test;Database=testdb;Trusted_Connection=yes")
         except Exception as exc:  # noqa: BLE001
             print(type(exc).__name__ + ": " + str(exc))
         else:
