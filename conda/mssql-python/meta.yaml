@@ -31,12 +31,19 @@ requirements:
     # krb5/openssl/libltdl below are actually reachable. Linux-only, build-time only.
     - patchelf            # [linux]
   host:
-    - python >=3.10
+    # Bare `python` (NO version range): conda-build binds the per-Python variant from the
+    # --python matrix here, so each build emits the matching py3XX package. A range such
+    # as `python >=3.10` collapses ALL --python builds into ONE cp<newest> package (build
+    # string "py>=310") whose python_abi is pinned to 3.14, so `conda create python=3.10
+    # mssql-python` can't solve. The >=3.10 floor is enforced implicitly: only py310-py314
+    # are built and each package's python_abi pins its exact minor.
+    - python
     - pip
   run:
-    - python >=3.10
-    # Mirror the wheel's floor: conda does NOT inherit the wheel's install_requires, so
-    # without this a solve against conda-forge could pick azure-identity <1.12.0.
+    # Bare `python` for the same reason as host (the floor is the per-build python_abi,
+    # NOT a range on python -- a range breaks the per-Python solve).
+    - python
+    # conda does NOT inherit the wheel's install_requires, so pin azure-identity here.
     - azure-identity >=1.12.0
     # ODBC Driver 18 payload deps (the driver ships inside this package, so its
     # security-serviced deps are declared here). OpenSSL for TLS is dlopen'd, so
