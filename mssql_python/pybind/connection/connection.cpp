@@ -56,18 +56,17 @@ Connection::~Connection() {
 
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
-    SqlHandlePtr _envHandle;
-    {
-        // Fetch/initialize the shared env handle without holding the GIL (#671):
-        // its first-time initialization runs under a C++ static-init guard and
-        // emits log records; a thread waiting on that guard while holding the GIL
-        // would deadlock the initializing thread that needs the GIL to log.
+    // Fetch/initialize the shared env handle without holding the GIL (#671):
+    // its first-time initialization runs under a C++ static-init guard and
+    // emits log records; a thread waiting on that guard while holding the GIL
+    // would deadlock the initializing thread that needs the GIL to log.
+    auto envHandle = [&] {
         py::gil_scoped_release gil_release;
-        _envHandle = getEnvHandle();
-    }
+        return getEnvHandle();
+    }();
     SQLHANDLE dbc = nullptr;
     LOG("Allocating SQL Connection Handle");
-    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
+    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, envHandle->get(), &dbc);
     checkError(ret);
     _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
 }
