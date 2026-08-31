@@ -612,8 +612,8 @@ class _MSSQLModule(types.ModuleType):
         return ProviderManager.effective()
 
     @odbc_provider.setter
-    def odbc_provider(self, value: Optional[str]) -> None:
-        """Set the ODBC provider selection (or None to clear)."""
+    def odbc_provider(self, value: str) -> None:
+        """Set the ODBC provider selection ('msodbcsql18' or 'mssql-odbc')."""
         ProviderManager.set_property(value)
 
 

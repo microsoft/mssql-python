@@ -369,17 +369,17 @@ class Connection:
             >>> # Return native uuid.UUID objects instead of strings
             >>> conn = ms.connect("Server=myserver;Database=mydb", native_uuid=True)
         """
-        # Resolve and freeze the ODBC provider before the native driver loads,
-        # then hand the selection to the native loader so it imports the matching
-        # provider package.
-        _provider = ProviderManager.ensure_available()
-        ddbc_bindings.set_odbc_provider(_provider)
-
         # Store per-connection native_uuid override.
         # None means "use module-level mssql_python.native_uuid".
         if native_uuid is not None and not isinstance(native_uuid, bool):
             raise ValueError("native_uuid must be a boolean value or None")
         self._native_uuid = native_uuid
+
+        # Resolve and freeze the ODBC provider before the native driver loads,
+        # then hand the selection to the native loader so it imports the matching
+        # provider package.
+        _provider = ProviderManager.ensure_available()
+        ddbc_bindings._set_odbc_provider(_provider)
 
         self.connection_str, parsed_params = self._construct_connection_string(
             connection_str, **kwargs

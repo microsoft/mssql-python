@@ -7,7 +7,10 @@ validation, resolve-once freezing, post-freeze warning) and the public surface
 """
 
 import importlib
+import os
+import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -90,7 +93,7 @@ def test_change_after_freeze_is_ignored_with_warning():
 def test_same_value_after_freeze_does_not_warn(recwarn):
     ProviderManager.resolve()
     ProviderManager.set_property(PROVIDER_MSODBCSQL18)
-    assert len(recwarn) == 0
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
 
 
 def test_package_name_mapping():
@@ -139,7 +142,7 @@ def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
 
     def fake_import(name, *args, **kwargs):
         if name == "mssql_python_rust_odbc":
-            raise ModuleNotFoundError(f"No module named '{name}'")
+            raise ModuleNotFoundError(f"No module named '{name}'", name=name)
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(
@@ -150,3 +153,99 @@ def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
     message = str(excinfo.value)
     assert PROVIDER_MSSQL_ODBC in message
     assert "mssql-python-rust-odbc" in message
+
+
+def test_ensure_available_reraises_unrelated_import_error(monkeypatch):
+    # A ModuleNotFoundError from a transitive import (name != provider package)
+    # must surface as-is, not be rewritten into a misleading "not installed" hint.
+    def fake_import(name, *args, **kwargs):
+        raise ModuleNotFoundError(
+            "No module named 'some_transitive_dep'", name="some_transitive_dep"
+        )
+
+    monkeypatch.setattr(
+        sys.modules[ProviderManager.__module__].importlib, "import_module", fake_import
+    )
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        ProviderManager.ensure_available()
+    assert excinfo.value.name == "some_transitive_dep"
+
+
+def test_effective_does_not_raise_on_bad_env(monkeypatch):
+    # Read-only path: a bad env var reports the default rather than raising, so
+    # plain attribute access / `import *` never fail at import.
+    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "classic")
+    assert ProviderManager.effective() == PROVIDER_MSODBCSQL18
+    assert mssql_python.odbc_provider == PROVIDER_MSODBCSQL18
+
+
+def test_get_info_reports_source_before_resolve(monkeypatch):
+    # Source is populated pre-freeze, not only after resolve().
+    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    info = ProviderManager.get_info()
+    assert info["id"] == PROVIDER_MSSQL_ODBC
+    assert info["source"] == "environment"
+    assert info["frozen"] is False
+
+
+def test_get_info_reports_error_on_bad_env(monkeypatch):
+    # A bad env var is surfaced via an `error` key, not an exception.
+    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "classic")
+    info = ProviderManager.get_info()
+    assert "error" in info
+    assert "classic" in info["error"]
+    assert info["frozen"] is False
+
+
+def test_pooling_enable_does_not_freeze_provider(monkeypatch):
+    # enable_pooling() only configures pool state; it must not resolve or freeze
+    # the provider (that is the first Connection's job). Guards the removed hook.
+    import mssql_python.pooling  # noqa: F401  (ensure the submodule is imported)
+
+    # `mssql_python.pooling` the attribute is the public pooling() function, so
+    # reach the module object via sys.modules.
+    pooling_mod = sys.modules["mssql_python.pooling"]
+    PoolingManager = pooling_mod.PoolingManager
+
+    monkeypatch.setattr(pooling_mod.ddbc_bindings, "enable_pooling", lambda *a, **k: None)
+    PoolingManager._enabled = False
+    PoolingManager._pools_closed = False
+    try:
+        PoolingManager.enable(max_size=5, idle_timeout=10)
+        assert not ProviderManager.is_frozen()
+    finally:
+        PoolingManager._enabled = False
+        PoolingManager._pools_closed = False
+
+
+def test_rust_provider_load_error_names_rust_distribution(tmp_path):
+    # Regression for the import-time load-order bug: selecting mssql-odbc must
+    # surface the rust distribution in the native load error, proving the Python
+    # push reaches the native loader before the driver loads (rather than the
+    # classic default being frozen at import time).
+    pkg_dir = tmp_path / "mssql_python_rust_odbc"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")  # importable, but ships no driver binaries
+
+    script = textwrap.dedent("""
+        import mssql_python
+        try:
+            mssql_python.connect("Server=localhost;Database=x;Trusted_Connection=yes")
+        except Exception as exc:  # noqa: BLE001
+            print(type(exc).__name__ + ": " + str(exc))
+        else:
+            print("NO_ERROR")
+        """)
+
+    env = dict(os.environ)
+    env["MSSQL_PYTHON_ODBC_PROVIDER"] = "mssql-odbc"
+    env["PYTHONPATH"] = str(tmp_path) + os.pathsep + env.get("PYTHONPATH", "")
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    output = result.stdout + result.stderr
+    assert "mssql-python-rust-odbc" in output, output

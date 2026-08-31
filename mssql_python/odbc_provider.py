@@ -69,25 +69,30 @@ class ProviderManager:
     _source: Optional[str] = None
 
     @classmethod
-    def _compute(cls) -> Tuple[str, str]:
-        """Apply precedence env var -> module property -> default (lock-free)."""
+    def _select(cls) -> Tuple[str, str]:
+        """Return the raw (unvalidated) selection and its source (lock-free)."""
         env_value = os.environ.get(ODBC_PROVIDER_ENV_VAR)
         if env_value and env_value.strip():
-            return _normalize(env_value), "environment"
+            return env_value.strip(), "environment"
         if cls._property_value is not None:
             return cls._property_value, "property"
         return _DEFAULT_PROVIDER, "default"
 
     @classmethod
-    def set_property(cls, value: Optional[str]) -> None:
+    def _compute(cls) -> Tuple[str, str]:
+        """Apply precedence and validate; raises ``ValueError`` on an unknown id."""
+        raw, source = cls._select()
+        return _normalize(raw), source
+
+    @classmethod
+    def set_property(cls, value: str) -> None:
         """Set the module-property selection.
 
-        Accepts a provider id or ``None`` to clear. A change after the provider
-        has been resolved is ignored with a warning; the env var still takes
-        precedence over this value when both are set.
+        A change after the provider has been resolved is ignored with a warning;
+        the env var still takes precedence over this value when both are set.
         """
         with cls._lock:
-            canonical = _normalize(value) if value is not None else None
+            canonical = _normalize(value)
             if cls._resolved is not None:
                 if canonical != cls._resolved:
                     cls._warn_frozen()
@@ -109,12 +114,21 @@ class ProviderManager:
 
     @classmethod
     def effective(cls) -> str:
-        """Return the provider that would be used, without freezing it."""
+        """Return the provider that would be used, without freezing it.
+
+        Read-only path: an invalid selection is reported as the default rather
+        than raised, so plain attribute access (and ``from mssql_python import
+        *``) never fails. The hard failure is deferred to :meth:`resolve` /
+        :meth:`ensure_available`, where it is actionable.
+        """
         with cls._lock:
             if cls._resolved is not None:
                 return cls._resolved
-            provider, _ = cls._compute()
-            return provider
+            raw, _ = cls._select()
+            try:
+                return _normalize(raw)
+            except ValueError:
+                return _DEFAULT_PROVIDER
 
     @classmethod
     def package_name(cls, provider: Optional[str] = None) -> str:
@@ -134,7 +148,12 @@ class ProviderManager:
         package = _PACKAGE_BY_PROVIDER[provider]
         try:
             importlib.import_module(package)
-        except ImportError as exc:
+        except ModuleNotFoundError as exc:
+            # Only translate a genuinely-missing provider package. A
+            # ModuleNotFoundError naming something else means the package is
+            # installed but a transitive import failed, so surface the real error.
+            if exc.name != package:
+                raise
             dist = _DIST_BY_PROVIDER[provider]
             raise ImportError(
                 f"The '{provider}' ODBC provider is selected but its package "
@@ -149,14 +168,37 @@ class ProviderManager:
 
     @classmethod
     def get_info(cls) -> Dict[str, object]:
-        """Report the selected provider for diagnostics."""
-        provider = cls._resolved if cls._resolved is not None else cls.effective()
-        return {
-            "id": provider,
-            "package": _PACKAGE_BY_PROVIDER[provider],
-            "source": cls._source,
-            "frozen": cls._resolved is not None,
-        }
+        """Report the selected provider for diagnostics.
+
+        Never raises: before the provider freezes it reports the pending
+        selection and its ``source``, and an invalid selection is surfaced via
+        an ``error`` key instead of an exception.
+        """
+        with cls._lock:
+            if cls._resolved is not None:
+                return {
+                    "id": cls._resolved,
+                    "package": _PACKAGE_BY_PROVIDER[cls._resolved],
+                    "source": cls._source,
+                    "frozen": True,
+                }
+            raw, source = cls._select()
+            try:
+                provider = _normalize(raw)
+            except ValueError as exc:
+                return {
+                    "id": _DEFAULT_PROVIDER,
+                    "package": _PACKAGE_BY_PROVIDER[_DEFAULT_PROVIDER],
+                    "source": source,
+                    "frozen": False,
+                    "error": str(exc),
+                }
+            return {
+                "id": provider,
+                "package": _PACKAGE_BY_PROVIDER[provider],
+                "source": source,
+                "frozen": False,
+            }
 
     @classmethod
     def _warn_frozen(cls) -> None:
