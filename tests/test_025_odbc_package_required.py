@@ -53,7 +53,9 @@ if mode == "missing":
     class _BlockOdbc:
         def find_spec(self, name, path=None, target=None):
             if name == "mssql_python_odbc" or name.startswith("mssql_python_odbc."):
-                raise ModuleNotFoundError("No module named 'mssql_python_odbc'")
+                # Set name= to match a real missing-package ModuleNotFoundError,
+                # which callers key off of (e.g. ProviderManager.ensure_available).
+                raise ModuleNotFoundError("No module named 'mssql_python_odbc'", name=name)
             return None
 
     sys.modules.pop("mssql_python_odbc", None)
