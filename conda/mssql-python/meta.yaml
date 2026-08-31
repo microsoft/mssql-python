@@ -1,5 +1,4 @@
-{% set version = environ.get('MSSQL_PYTHON_VERSION', '1.13.0') %}
-{% set odbc_version = environ.get('MSSQL_ODBC_VERSION', '18.6.2.1') %}
+{% set version = environ.get('MSSQL_PYTHON_VERSION', '1.14.0') %}
 
 package:
   name: mssql-python
@@ -7,86 +6,52 @@ package:
 
 build:
   number: 0
-  # Like the companion, this recipe REPACKAGES a prebuilt wheel (the compiled
-  # ddbc_bindings extension + bundled runtime); it compiles nothing. conda-build's
-  # overlinking/overdepending checks target from-source builds and mis-fire on
-  # vendored binaries (e.g. ddbc_bindings linking the driver that lives in the
-  # separate companion package), so downgrade both from errors to warnings -- CI
-  # enables them as errors by default.
+  # This recipe REPACKAGES a prebuilt, signed wheel -- it compiles nothing -- so
+  # conda-build's from-source checks mis-fire on the vendored binaries. Downgrade
+  # overlinking/overdepending to warnings, and disable the relocation / prefix scans
+  # that would corrupt the signature or fail the pure-repackage packaging step.
   error_overlinking: false
   error_overdepending: false
-  # Like the companion, this recipe vendors PREBUILT, signed binaries (the compiled
-  # ddbc_bindings extension + bundled VC++ runtime); conda-build must neither rewrite
-  # nor scan them:
-  #   - binary_relocation: rewriting RPATH / install-name in a signed binary corrupts
-  #     the signature.
-  #   - detect_binary_files_with_prefix: the build-prefix scan over the signed native
-  #     binaries is meaningless for a pure repackage and is the packaging step that
-  #     fails right after "Fixing permissions" on these recipes.
   binary_relocation: false
   detect_binary_files_with_prefix: false
-  # conda-build's .pyc byte-compilation runs the TARGET Python. That target cannot
-  # execute on the build agent for two CROSS legs: osx-arm64 (built on the Intel/x86
-  # macOS agent) and win-arm64 (cross-built on the x64 agent -- Windows has no reverse
-  # emulation) -- so skip pyc on osx AND win (Python regenerates .pyc at import). The
-  # native osx-64/win-64 legs are unaffected in practice (pip already wrote .pyc).
-  # Linux legs are native or QEMU-emulated, so they keep compiling.
+  # .pyc byte-compilation runs the TARGET Python, which can't execute on the cross legs
+  # (osx-arm64 built on Intel, win-arm64 on x64). Skip pyc there; Python regenerates it.
   skip_compile_pyc:
     - "**/*.py"                # [osx or win]
-  # WHEELS_DIR is exported by the pipeline (or a local harness) and passed into the
-  # isolated conda-build environment so bld.bat / build.sh can install the prebuilt,
-  # ESRP-signed wheel from --find-links, fully offline. This mirrors CI: no PyPI.
+  # Passed into the isolated conda-build env so build.sh / bld.bat can install the
+  # prebuilt wheel from --find-links offline (WHEELS_DIR) and locate the odbc wheel to
+  # vendor in (MSSQL_ODBC_VERSION).
   script_env:
     - WHEELS_DIR
-    # MSSQL_ODBC_VERSION lets build.sh / bld.bat locate the matching mssql-python-odbc
-    # wheel to vendor INTO this package (the driver payload now ships inside).
     - MSSQL_ODBC_VERSION
 
 requirements:
-  # Linux reachability fix (#563): patchelf stamps a relative $ORIGIN RPATH climb
-  # onto the vendored ODBC binaries in build.sh so the DECLARED conda
-  # krb5/openssl/libltdl in $PREFIX/lib are actually REACHABLE. Declaration alone is
-  # inert -- the driver ships with a bare DT_RUNPATH=$ORIGIN (no climb) and would
-  # fall through to SYSTEM krb5/libltdl (the exact #563 mixing bug). Build-time only,
-  # Linux only (macOS uses @loader_path, Windows has no RPATH).
   build:
+    # patchelf stamps the $ORIGIN RPATH climb (#563) so the declared conda
+    # krb5/openssl/libltdl below are actually reachable. Linux-only, build-time only.
     - patchelf            # [linux]
   host:
-    - python
+    - python >=3.10
     - pip
   run:
-    - python
-    # No version floor: on the `microsoft` channel azure-identity / azure-core / msal
-    # ship as CalVer (e.g. 2026.06.01), so a semver floor like `>=1.12.0` is a
-    # misleading no-op there (every published build already satisfies it).
-    - azure-identity
-    # --- ODBC Driver 18 payload deps (folded in from the former companion) --------
-    # The proprietary driver libs now ship INSIDE this package (the v1.11.0 model:
-    # libs bundled in the wheel), so there is NO separate `mssql-python-odbc` conda
-    # package and its declared, security-serviced deps live here instead.
-    #
-    # OpenSSL: the driver dlopen's libssl/libcrypto for TLS (Encrypt=yes). Because it
-    # is dlopen'd (not an ELF NEEDED) conda-build's overlinking can't see it, so it
-    # must be declared. Linux-only, pinned >=3,<4 (Driver 18 supports the OpenSSL
-    # 1.1/3.0 ABI only; conda-forge has begun shipping openssl 4). macOS is excluded
-    # (the signed dylib dlopen's OpenSSL from a hardcoded Homebrew path -- users
-    # `brew install openssl`); Windows uses SChannel.
+    - python >=3.10
+    # Mirror the wheel's floor: conda does NOT inherit the wheel's install_requires, so
+    # without this a solve against conda-forge could pick azure-identity <1.12.0.
+    - azure-identity >=1.12.0
+    # ODBC Driver 18 payload deps (the driver ships inside this package, so its
+    # security-serviced deps are declared here). OpenSSL for TLS is dlopen'd, so
+    # overlinking can't see it; pinned <4 (Driver 18 supports the OpenSSL 1.1/3.0 ABI
+    # only). macOS uses Homebrew OpenSSL, Windows SChannel.
     - openssl >=3,<4          # [linux]
-    # Kerberos: libmsodbcsql NEEDs libkrb5.so.3 + libgssapi_krb5.so.2 on Linux. macOS
-    # uses Kerberos.framework and Windows uses SSPI, so krb5 is Linux-only.
+    # libmsodbcsql NEEDs libkrb5 / libgssapi_krb5 on Linux (macOS framework, Windows SSPI).
     - krb5                    # [linux]
-    # libltdl: libodbcinst.so.2 (the unixODBC driver manager the ODBC driver loads
-    # through) NEEDs libltdl.so.7, which is NOT bundled on Linux. Declare libtool
-    # (which provides libltdl.so.7); the $ORIGIN RPATH climb in build.sh makes the
-    # driver resolve THIS env's copy instead of failing "libltdl.so.7 not found".
-    # Linux-only (macOS bundles libltdl.7.dylib; Windows has no ltdl).
+    # libodbcinst.so.2 NEEDs libltdl.so.7 (not bundled); libtool provides it and the
+    # #563 climb makes the driver resolve THIS env's copy.
     - libtool                 # [linux]
-    # Windows VC++ runtime: msodbcsql18.dll imports VCRUNTIME140.dll, but the vendored
-    # vcredist ships only msvcp140.dll. Declare the security-serviced conda runtime.
+    # msodbcsql18.dll imports VCRUNTIME140.dll but the vendored vcredist ships only
+    # msvcp140.dll; declare the serviced conda runtime.
     - vc14_runtime            # [win]
-    # conda drops the wheel's platform tag (manylinux_2_28 / macosx_15_0), so
-    # re-assert that floor as a virtual-package run constraint. The bundled wheels
-    # already required these, so this is never stricter than what shipped.
+    # Re-assert the wheel's platform floor (conda drops the wheel tag); never stricter.
     - __glibc >=2.28      # [linux]
     - __osx >=15.0        # [osx]
 
@@ -96,16 +61,12 @@ test:
 
 about:
   home: https://github.com/microsoft/mssql-python
-  # This package ships BOTH the MIT-licensed mssql-python code AND the proprietary
-  # Microsoft ODBC Driver 18 payload (+ the bundled VC++ runtime on Windows), so the
-  # license is the MIT code license AND the Microsoft proprietary EULA.
+  # Ships MIT code AND the proprietary ODBC Driver 18 payload, so the license is both.
   license: MIT AND LicenseRef-Microsoft-Proprietary
   license_file:
     - ../../LICENSE
-    # The proprietary EULAs live canonically with the ODBC payload; reference them
-    # there instead of committing duplicate copies in the recipe. conda-build resolves
-    # license_file relative to the recipe dir at package time and embeds them in
-    # info/licenses/.
+    # The proprietary EULAs live with the ODBC payload; reference them there rather than
+    # duplicating. conda-build embeds them in info/licenses/.
     - ../../mssql_python_odbc/licenses/MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt
     - ../../mssql_python_odbc/licenses/MICROSOFT_VISUAL_STUDIO_LICENSE.txt
   summary: Microsoft driver for Python to interact with SQL Server and Azure SQL.

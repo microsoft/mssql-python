@@ -1,30 +1,20 @@
 #!/bin/bash
-# Repackage the prebuilt, ESRP-signed wheel into a conda package (offline).
-# PKG_NAME / PKG_VERSION are exported by conda-build; WHEELS_DIR by the pipeline/harness.
+# Repackage the prebuilt, signed mssql-python wheel into a conda package (offline) and
+# vendor the ODBC Driver 18 payload inside it -- no separate mssql-python-odbc conda
+# package. Both the code wheel and the py3-none-<plat> odbc wheel land in the SAME
+# site-packages, so mssql_python_odbc/libs/ sits beside mssql_python/ and the C++
+# loader finds the driver. conda-build exports PKG_NAME / PKG_VERSION / CONDA_PY;
+# WHEELS_DIR (one wheel per target) + MSSQL_ODBC_VERSION come from the pipeline.
 set -euo pipefail
-# Cross-arch (emulated) build: when repackaging the aarch64 wheel on an x86_64 host,
-# $PYTHON is the target-arch interpreter and runs under qemu-user. Point qemu at the
-# aarch64 glibc loader/libs (installed via libc6-arm64-cross) so it can find
-# /lib/ld-linux-aarch64.so.1 instead of aborting with "Could not open". The dir only
-# exists on the emulated aarch64 leg; setting the var elsewhere is a harmless no-op.
+# Emulated aarch64 leg: $PYTHON is the aarch64 interpreter under qemu-user; point it at
+# the aarch64 glibc loader so it doesn't abort. Harmless no-op on every other leg.
 [ -d /usr/aarch64-linux-gnu ] && export QEMU_LD_PREFIX="${QEMU_LD_PREFIX:-/usr/aarch64-linux-gnu}"
 
-# This package is SELF-CONTAINED (v1.11.0 model): the ODBC Driver 18 payload ships
-# INSIDE it, so there is NO separate mssql-python-odbc conda package. We land BOTH
-# the code wheel AND the python-agnostic py3-none-<plat> odbc wheel in the SAME
-# site-packages, so mssql_python_odbc/libs/ sits beside mssql_python/ and the C++
-# loader resolves the driver there. WHEELS_DIR is staged per-target by the pipeline,
-# so exactly one matching odbc wheel is present.
 odbc_ver="${MSSQL_ODBC_VERSION:?MSSQL_ODBC_VERSION not set}"
 
-# The normal path installs with the host-env Python -- native builds, and the
-# QEMU-emulated linux-aarch64 leg where the aarch64 Python runs under binfmt. pip
-# resolves the correct site-packages for BOTH wheels, so no unzip is needed there.
-# The osx-arm64 conda package is CROSS-built on an Intel macOS agent (no reverse
-# Rosetta): the arm64 host Python CANNOT execute and pip would abort, so extract
-# both wheels (zips) WITHOUT Python -- the same approach the Windows bld.bat uses
-# with `tar`. macOS ships `unzip`. The arm64 slice comes from the universal2 wheel;
-# conda-build still stamps osx-arm64.
+# Native / QEMU-emulated legs: the host Python runs, so pip installs both wheels. Cross
+# osx-arm64 (built on Intel): the arm64 Python can't execute, so extract both wheels
+# (zips) with unzip instead -- same approach as the Windows bld.bat.
 if "$PYTHON" -c "import sys" >/dev/null 2>&1; then
   "$PYTHON" -m pip install --no-deps --no-index --find-links "$WHEELS_DIR" "$PKG_NAME==$PKG_VERSION" -vv
   "$PYTHON" -m pip install --no-deps --no-index --find-links "$WHEELS_DIR" "mssql-python-odbc==$odbc_ver" -vv
@@ -33,11 +23,13 @@ else
   echo "extracting both wheels into \$SP_DIR without running Python."
   mkdir -p "$SP_DIR"
   pkg_underscore="${PKG_NAME//-/_}"
+  # universal2 wheels are cpXY-specific (compiled ddbc_bindings), so filter on the
+  # target CONDA_PY to never grab another interpreter's wheel (mirrors bld.bat).
   code_whl=""
-  for w in "$WHEELS_DIR/${pkg_underscore}-${PKG_VERSION}-"*.whl; do
+  for w in "$WHEELS_DIR/${pkg_underscore}-${PKG_VERSION}-cp${CONDA_PY}-"*.whl; do
     [ -e "$w" ] && { code_whl="$w"; break; }
   done
-  [ -n "$code_whl" ] || { echo "ERROR: no ${PKG_NAME}==${PKG_VERSION} wheel in '$WHEELS_DIR'" >&2; exit 1; }
+  [ -n "$code_whl" ] || { echo "ERROR: no ${PKG_NAME}==${PKG_VERSION} cp${CONDA_PY} wheel in '$WHEELS_DIR'" >&2; exit 1; }
   odbc_whl=""
   for w in "$WHEELS_DIR"/mssql_python_odbc-"$odbc_ver"-py3-none-*.whl; do
     [ -e "$w" ] && { odbc_whl="$w"; break; }
@@ -45,6 +37,14 @@ else
   [ -n "$odbc_whl" ] || { echo "ERROR: no mssql_python_odbc==$odbc_ver py3-none wheel in '$WHEELS_DIR'" >&2; exit 1; }
   echo "Extracting '$code_whl' -> '$SP_DIR'"
   unzip -oq "$code_whl" -d "$SP_DIR"
+  # osx-arm64 cross can't run the arm64 Python, so statically prove the extracted
+  # binding is for THIS interpreter -- a cpXY ddbc_bindings for another Python (the bug
+  # where every osx-arm64 build shipped the cp310 .so) would only fail at the user's
+  # import. The python-tag twin of the win-arm64 PE-arch assert.
+  ls "$SP_DIR"/mssql_python/ddbc_bindings.cp${CONDA_PY}-*.so >/dev/null 2>&1 || {
+    echo "ERROR: '$code_whl' has no mssql_python/ddbc_bindings.cp${CONDA_PY}-*.so (wrong-Python binding)." >&2
+    exit 1
+  }
   echo "Extracting '$odbc_whl' -> '$SP_DIR'"
   unzip -oq "$odbc_whl" -d "$SP_DIR"
 fi
@@ -52,51 +52,41 @@ fi
 # ---------------------------------------------------------------------------
 # Linux driver reachability (#563) -- the core fix.
 # ---------------------------------------------------------------------------
-# Declaring krb5/openssl/libltdl as conda deps drops one consistent copy of each
-# into $PREFIX/lib, but that is INERT on its own: the vendored ODBC binaries ship
-# with a bare DT_RUNPATH=$ORIGIN (no climb), so on a minimal conda base the loader
-# never looks in $PREFIX/lib -- it falls through to SYSTEM krb5 (the #563 mixing
-# crash) and cannot find libltdl.so.7 at all. Reachability, not declaration, is the
-# lever: stamp a PURELY RELATIVE $ORIGIN climb (the ELF twin of the macOS
-# @loader_path flow) onto libmsodbcsql* and libodbcinst.so.2 so they resolve THIS
-# env's own $PREFIX/lib, location-independently.
-#
-# SIGNATURE SAFETY:
-#   The Linux ODBC .so are NOT ESRP code-signed -- the mssql-python-odbc pipeline only
-#   MALWARE-SCANS them (there is no CodeSign task). Only Windows .dll (Authenticode)
-#   and macOS .dylib (codesign) are code-signed, and this recipe never patches those
-#   (the climb is Linux-only). So stamping the relative $ORIGIN climb here breaks no
-#   signature. If the binaries already carry the EXACT climb (e.g. a future odbc-side
-#   pre-bake before signing), the patch is a byte-for-byte no-op.
-#
-# The canonical RUNPATH is exactly "$ORIGIN:$ORIGIN/<climb>" -- the patch below emits
-# that literal form, and the static audit (eng/scripts/audit_bundled_binaries.py)
-# requires the same exact climb entry.
-#
-# Linux-only by construction: the glob matches nothing in a macOS payload
-# (libs/macos/...), so this whole block is a natural no-op on the osx legs.
+# Declaring krb5/openssl/libltdl as conda deps drops them in $PREFIX/lib, but that is
+# INERT: the vendored ODBC .so ship with a bare DT_RUNPATH=$ORIGIN (no climb), so the
+# loader never looks in $PREFIX/lib and falls through to SYSTEM krb5 (#563 crash) or
+# can't find libltdl.so.7. Fix: stamp a relative "$ORIGIN:$ORIGIN/<climb>" onto
+# libmsodbcsql* + libodbcinst.so.2 so they resolve THIS env's $PREFIX/lib. Safe to
+# patch -- the Linux .so are malware-scanned, not code-signed (only Windows .dll /
+# macOS .dylib are, and those are never touched). Linux-only: the glob is a no-op on
+# macOS. audit_bundled_binaries.py asserts the same exact climb.
 prefix_lib="$PREFIX/lib"
 shopt -s nullglob
 have_linux_payload=0
 [ -d "$SP_DIR/mssql_python_odbc/libs/linux" ] && have_linux_payload=1
-drivers_seen=0
+# Count the driver (libmsodbcsql) and the driver manager (libodbcinst) separately so a
+# payload missing EITHER fails loudly -- a lone libodbcinst would ship no SQL driver.
+msodbc_seen=0
+odbcinst_seen=0
 for libdir in "$SP_DIR"/mssql_python_odbc/libs/linux/*/*/lib; do
-  # Compute the EXACT expected climb from THIS driver dir up to $PREFIX/lib (derived
-  # from the real install layout, never a hard-coded ../ count).
+  # Exact climb from this driver dir up to $PREFIX/lib (from the real layout, never a
+  # hard-coded ../ count).
   climb="$("$PYTHON" -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$prefix_lib" "$libdir")"
   want="\$ORIGIN:\$ORIGIN/$climb"
   for so in "$libdir"/libmsodbcsql-*.so.* "$libdir"/libodbcinst.so.2; do
     [ -e "$so" ] || continue
-    drivers_seen=$((drivers_seen + 1))
+    case "$(basename "$so")" in
+      libmsodbcsql-*.so.*) msodbc_seen=$((msodbc_seen + 1)) ;;
+      libodbcinst.so.2)    odbcinst_seen=$((odbcinst_seen + 1)) ;;
+    esac
     got="$(patchelf --print-rpath "$so" 2>/dev/null || true)"
     if [ "$got" = "$want" ]; then
       echo "RPATH-OK (already baked) $(basename "$so") -> $got"
       continue
     fi
-    # Stamp the exact $ORIGIN climb (safe -- these Linux .so are not code-signed).
     patchelf --set-rpath "$want" "$so"
     got="$(patchelf --print-rpath "$so")"
-    # H2: compare EXACTLY to the intended value, not just "no absolute entry".
+    # Assert the EXACT intended RUNPATH, not just "no absolute entry".
     if [ "$got" != "$want" ]; then
       echo "ERROR: patch did not yield the exact expected RUNPATH ('$got' != '$want')." >&2
       exit 1
@@ -105,10 +95,10 @@ for libdir in "$SP_DIR"/mssql_python_odbc/libs/linux/*/*/lib; do
   done
 done
 shopt -u nullglob
-# H2: a Linux payload with NO driver found is a bypass hole -- a bare `conda build`
-# skipping the orchestrator audit would then ship un-asserted drivers. Fail loudly.
-if [ "$have_linux_payload" = "1" ] && [ "$drivers_seen" = "0" ]; then
-  echo "ERROR: Linux ODBC payload present but no libmsodbcsql*/libodbcinst.so.2 found to assert the #563 climb." >&2
+# A Linux payload missing the driver OR the driver manager is a bypass hole (a bare
+# `conda build` skipping the orchestrator audit would ship un-asserted binaries).
+if [ "$have_linux_payload" = "1" ] && { [ "$msodbc_seen" = "0" ] || [ "$odbcinst_seen" = "0" ]; }; then
+  echo "ERROR: Linux payload present but incomplete (libmsodbcsql=$msodbc_seen, libodbcinst.so.2=$odbcinst_seen)." >&2
   exit 1
 fi
-[ "$drivers_seen" -gt 0 ] && echo "LINUX_RPATH_CLIMB_OK" || true
+[ "$msodbc_seen" -gt 0 ] && echo "LINUX_RPATH_CLIMB_OK" || true
