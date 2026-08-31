@@ -22,6 +22,13 @@ if errorlevel 1 (
   echo Extracting "!CODE_WHL!" into "%SP%"
   tar -xf "!CODE_WHL!" -C "%SP%"
   if errorlevel 1 exit /b 1
+  REM win-arm64 cross can't run the arm64 Python, so statically prove the extracted
+  REM binding is for THIS interpreter (the osx-arm64 twin bug shipped a cp310 .so in
+  REM every build); a wrong-Python .pyd would only fail at the user's import.
+  if not exist "%SP%\mssql_python\ddbc_bindings.cp%CONDA_PY%-*.pyd" (
+    echo ERROR: extracted "!CODE_WHL!" has no mssql_python\ddbc_bindings.cp%CONDA_PY% pyd ^(wrong-Python binding^).
+    exit /b 1
+  )
   REM The win-arm64 wheel bundles the x64 mssql_py_core (no arm64 build exists yet); an
   REM x64 .pyd can't load on arm64 and fails the PE-arch assert, so strip it. Bulk copy
   REM then raises a clean "not available" error (lazy import); the rest of the DBAPI works.

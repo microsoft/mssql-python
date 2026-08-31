@@ -37,6 +37,14 @@ else
   [ -n "$odbc_whl" ] || { echo "ERROR: no mssql_python_odbc==$odbc_ver py3-none wheel in '$WHEELS_DIR'" >&2; exit 1; }
   echo "Extracting '$code_whl' -> '$SP_DIR'"
   unzip -oq "$code_whl" -d "$SP_DIR"
+  # osx-arm64 cross can't run the arm64 Python, so statically prove the extracted
+  # binding is for THIS interpreter -- a cpXY ddbc_bindings for another Python (the bug
+  # where every osx-arm64 build shipped the cp310 .so) would only fail at the user's
+  # import. The python-tag twin of the win-arm64 PE-arch assert.
+  ls "$SP_DIR"/mssql_python/ddbc_bindings.cp${CONDA_PY}-*.so >/dev/null 2>&1 || {
+    echo "ERROR: '$code_whl' has no mssql_python/ddbc_bindings.cp${CONDA_PY}-*.so (wrong-Python binding)." >&2
+    exit 1
+  }
   echo "Extracting '$odbc_whl' -> '$SP_DIR'"
   unzip -oq "$odbc_whl" -d "$SP_DIR"
 fi
