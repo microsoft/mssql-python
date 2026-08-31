@@ -28,7 +28,7 @@ from mssql_python.connection_string_parser import sanitize_connection_string
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
-from mssql_python.odbc_provider import ProviderManager
+from mssql_python.native_provider import ProviderManager
 from mssql_python.exceptions import (
     Warning,  # pylint: disable=redefined-builtin
     Error,
@@ -379,7 +379,7 @@ class Connection:
         # then hand the selection to the native loader so it imports the matching
         # provider package.
         _provider = ProviderManager.ensure_available()
-        ddbc_bindings._set_odbc_provider(_provider)
+        ddbc_bindings._set_native_provider(_provider)
 
         self.connection_str, parsed_params = self._construct_connection_string(
             connection_str, **kwargs

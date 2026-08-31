@@ -979,7 +979,7 @@ std::string GetDriverPathCpp(const std::string& moduleDir);
 // ("msodbcsql18", shipped by mssql_python_odbc) and the Rust driver
 // ("mssql-odbc", shipped by mssql_python_rust_odbc). Python is the sole
 // resolver (env var -> module property -> default) and pushes the chosen id
-// here via _set_odbc_provider() before the driver loads. The native side does
+// here via _set_native_provider() before the driver loads. The native side does
 // not read the environment itself; if the push has not happened yet, it falls
 // back to the hardcoded classic default.
 // -----------------------------------------------------------------------------
@@ -1022,7 +1022,7 @@ void SetSelectedProvider(const std::string& id) {
 
 // Effective provider id: the value pushed from Python, else the classic default.
 // Python is the authoritative resolver (env var -> module property -> default)
-// and pushes the result via _set_odbc_provider() before the driver loads.
+// and pushes the result via _set_native_provider() before the driver loads.
 std::string GetSelectedProviderId() {
     std::lock_guard<std::mutex> lock(g_providerMutex);
     if (g_selectedProvider == kProviderMssqlOdbc) {
@@ -6120,7 +6120,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
     m.def("GetDriverPathCpp", &GetDriverPathCpp, "Get the path to the ODBC driver");
-    m.def("_set_odbc_provider", &SetSelectedProvider,
+    m.def("_set_native_provider", &SetSelectedProvider,
           "Select the ODBC provider ('msodbcsql18' or 'mssql-odbc') before the driver loads");
 
     // Define parameter info class
@@ -6314,7 +6314,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // The ODBC driver is intentionally NOT loaded at import time. loadDriver()
     // is guarded by std::call_once, so an eager load here would freeze the
     // classic default before Python can push the selected provider via
-    // _set_odbc_provider(). The driver is loaded lazily at first use (e.g. the
+    // _set_native_provider(). The driver is loaded lazily at first use (e.g. the
     // Connection constructor), which always runs after that push.
     LOG("Module initialization: deferring ODBC driver load to first use");
 }

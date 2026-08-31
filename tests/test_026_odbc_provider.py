@@ -3,7 +3,7 @@ Tests for ODBC provider selection (opt-in/opt-out).
 
 Covers the ``ProviderManager`` engine (precedence, normalization, fail-closed
 validation, resolve-once freezing, post-freeze warning) and the public surface
-(``mssql_python.odbc_provider`` property and ``get_odbc_provider_info()``).
+(``mssql_python.native_provider`` property and ``get_native_provider_info()``).
 """
 
 import importlib
@@ -15,8 +15,8 @@ import textwrap
 import pytest
 
 import mssql_python
-from mssql_python.odbc_provider import (
-    ODBC_PROVIDER_ENV_VAR,
+from mssql_python.native_provider import (
+    NATIVE_PROVIDER_ENV_VAR,
     PROVIDER_MSODBCSQL18,
     PROVIDER_MSSQL_ODBC,
     ProviderManager,
@@ -26,7 +26,7 @@ from mssql_python.odbc_provider import (
 @pytest.fixture(autouse=True)
 def _reset_provider(monkeypatch):
     """Clear provider state and the env var before and after each test."""
-    monkeypatch.delenv(ODBC_PROVIDER_ENV_VAR, raising=False)
+    monkeypatch.delenv(NATIVE_PROVIDER_ENV_VAR, raising=False)
     ProviderManager._reset_for_testing()
     yield
     ProviderManager._reset_for_testing()
@@ -38,12 +38,12 @@ def test_default_is_msodbcsql18():
 
 
 def test_env_var_selects_provider(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
     assert ProviderManager.resolve() == PROVIDER_MSSQL_ODBC
 
 
 def test_env_var_is_normalized(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "  MsSql-Odbc  ")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "  MsSql-Odbc  ")
     assert ProviderManager.resolve() == PROVIDER_MSSQL_ODBC
 
 
@@ -53,13 +53,13 @@ def test_property_used_when_env_unset():
 
 
 def test_env_var_takes_precedence_over_property(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSODBCSQL18)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSODBCSQL18)
     ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
     assert ProviderManager.resolve() == PROVIDER_MSODBCSQL18
 
 
 def test_empty_env_var_falls_through_to_property(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "   ")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "   ")
     ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
     assert ProviderManager.resolve() == PROVIDER_MSSQL_ODBC
 
@@ -70,7 +70,7 @@ def test_invalid_property_fails_closed():
 
 
 def test_invalid_env_var_fails_closed(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "classic")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "classic")
     with pytest.raises(ValueError):
         ProviderManager.resolve()
 
@@ -107,7 +107,7 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     assert info["package"] == "mssql_python_odbc"
     assert info["frozen"] is False
 
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
     ProviderManager.resolve()
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSSQL_ODBC
@@ -117,13 +117,13 @@ def test_get_info_before_and_after_resolve(monkeypatch):
 
 
 def test_public_module_property_get_set():
-    assert mssql_python.odbc_provider == PROVIDER_MSODBCSQL18
-    mssql_python.odbc_provider = PROVIDER_MSSQL_ODBC
-    assert mssql_python.odbc_provider == PROVIDER_MSSQL_ODBC
+    assert mssql_python.native_provider == PROVIDER_MSODBCSQL18
+    mssql_python.native_provider = PROVIDER_MSSQL_ODBC
+    assert mssql_python.native_provider == PROVIDER_MSSQL_ODBC
 
 
-def test_public_get_odbc_provider_info():
-    info = mssql_python.get_odbc_provider_info()
+def test_public_get_native_provider_info():
+    info = mssql_python.get_native_provider_info()
     assert info["id"] == PROVIDER_MSODBCSQL18
     assert info["frozen"] is False
 
@@ -134,7 +134,7 @@ def test_ensure_available_default_ok():
 
 
 def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
 
     # Force the provider package to appear absent so the test is deterministic
     # regardless of what is installed in the environment.
@@ -174,14 +174,14 @@ def test_ensure_available_reraises_unrelated_import_error(monkeypatch):
 def test_effective_does_not_raise_on_bad_env(monkeypatch):
     # Read-only path: a bad env var reports the default rather than raising, so
     # plain attribute access / `import *` never fail at import.
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "classic")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "classic")
     assert ProviderManager.effective() == PROVIDER_MSODBCSQL18
-    assert mssql_python.odbc_provider == PROVIDER_MSODBCSQL18
+    assert mssql_python.native_provider == PROVIDER_MSODBCSQL18
 
 
 def test_get_info_reports_source_before_resolve(monkeypatch):
     # Source is populated pre-freeze, not only after resolve().
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSSQL_ODBC
     assert info["source"] == "environment"
@@ -190,7 +190,7 @@ def test_get_info_reports_source_before_resolve(monkeypatch):
 
 def test_get_info_reports_error_on_bad_env(monkeypatch):
     # A bad env var is surfaced via an `error` key, not an exception.
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "classic")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "classic")
     info = ProviderManager.get_info()
     assert "error" in info
     assert "classic" in info["error"]
@@ -238,7 +238,7 @@ def test_rust_provider_load_error_names_rust_distribution(tmp_path):
         """)
 
     env = dict(os.environ)
-    env["MSSQL_PYTHON_ODBC_PROVIDER"] = "mssql-odbc"
+    env["MSSQL_PYTHON_NATIVE_PROVIDER"] = "mssql-odbc"
     env["PYTHONPATH"] = str(tmp_path) + os.pathsep + env.get("PYTHONPATH", "")
 
     result = subprocess.run(

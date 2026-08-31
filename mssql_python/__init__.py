@@ -77,10 +77,10 @@ from .constants import ConstantsDDBC, GetInfoConstants, get_info_constants
 from .pooling import PoolingManager
 
 # ODBC provider selection
-from .odbc_provider import ProviderManager
+from .native_provider import ProviderManager
 
 
-def get_odbc_provider_info() -> dict:
+def get_native_provider_info() -> dict:
     """Return the selected ODBC provider for diagnostics.
 
     Reports the provider ``id``, the ``package`` that ships its native binaries,
@@ -525,9 +525,9 @@ __all__ = [
     # Module properties
     "lowercase",
     "native_uuid",
-    "odbc_provider",
+    "native_provider",
     # ODBC provider diagnostics
-    "get_odbc_provider_info",
+    "get_native_provider_info",
 ]
 
 
@@ -602,17 +602,17 @@ class _MSSQLModule(types.ModuleType):
             _settings.native_uuid = value
 
     @property
-    def odbc_provider(self) -> str:
+    def native_provider(self) -> str:
         """Get the ODBC provider that will be (or was) loaded.
 
         Honored only when set before the first connection; a later change is
-        ignored with a warning. The ``MSSQL_PYTHON_ODBC_PROVIDER`` environment
+        ignored with a warning. The ``MSSQL_PYTHON_NATIVE_PROVIDER`` environment
         variable takes precedence over this property.
         """
         return ProviderManager.effective()
 
-    @odbc_provider.setter
-    def odbc_provider(self, value: str) -> None:
+    @native_provider.setter
+    def native_provider(self, value: str) -> None:
         """Set the ODBC provider selection ('msodbcsql18' or 'mssql-odbc')."""
         ProviderManager.set_property(value)
 
