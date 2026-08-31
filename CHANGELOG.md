@@ -57,11 +57,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
-- Bug fix: Resolved issue with connection timeout.
+- **GH-725:** The `timeout` parameter of `connect()` / `Connection(...)` now
+  correctly sets the **login (connection-attempt) timeout**
+  (`SQL_ATTR_LOGIN_TIMEOUT`), matching pyodbc and its own docstring. Previously
+  it was silently applied as the per-statement **query** timeout, so
+  `connect(timeout=N)` did not bound the connection attempt and instead aborted
+  long-running queries. **Behavioral change:** the constructor `timeout` no
+  longer affects `Connection.timeout` (the query timeout, still settable via the
+  property, default `0`); an explicit `attrs_before[SQL_ATTR_LOGIN_TIMEOUT]`
+  takes precedence over the `timeout` kwarg. Timeout values are now validated
+  consistently at both entry points: the constructor `timeout` and the
+  `Connection.timeout` setter reject negative, non-integer, and `bool` values
+  (previously `Connection.timeout = True`/`False` was accepted as `1`/`0`).
 - **GH-627:** Fixed `SQLDescribeParam` ordinal remapping bug that caused
   `VARBINARY`/`BINARY` `NULL` bindings to fail when a non-NULL parameter was
   bound first. The driver now pre-resolves unknown NULL parameter types before
   any `SQLBindParameter` calls, avoiding ODBC ordinal confusion.
+- **GH-726:** The extension loader now derives the Windows architecture from
+  `sysconfig.get_platform()` (the interpreter build) instead of
+  `platform.machine()` (the host CPU). An x64 interpreter on a Windows ARM64
+  machine previously looked for `ddbc_bindings.cpXY-arm64.pyd`, missed, and
+  took the fallback path on every import; it now resolves the `amd64` binary
+  the `win_amd64` wheel ships. The fallback notice is now emitted as a
+  `RuntimeWarning` instead of being printed to stdout.
 
 ## [1.0.0-alpha] - 2025-02-24
 

@@ -35,22 +35,20 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.13.0
+## What's new in v1.14.0
 
 ### Enhancements
 
-- **ODBC Driver Now Ships Exclusively via `mssql-python-odbc`** - The `libs/` fallback introduced in v1.12.0 has been removed. `mssql-python` now hard-depends on `mssql-python-odbc==18.6.2.1`; `pip install mssql-python` still Just Works and transparently pulls the driver package. Wheels are smaller and driver binaries are managed independently (#693).
-- **Apache Arrow Bulk Copy** - New `Cursor.bulkcopy_arrow(table_name, source)` method for high-performance bulk loading from `pyarrow.Table`, `RecordBatch`, or any object exposing the Arrow C Data Interface, avoiding Python row materialization. The classic `bulkcopy()` now raises `TypeError` for Arrow inputs and steers users to the new method (#665).
-- **`token_provider=` Parameter for Azure Identity** - `connect()` now accepts a `token_provider` object with a `.get_token(scope)` method, enabling `DefaultAzureCredential`, `AzureCliCredential`, `ManagedIdentityCredential`, and any custom credential from `azure-identity`. Bulk copy re-acquires a fresh token per operation. Mutually exclusive with `Authentication=` in the connection string (#603).
-- **Identity-Aware Connection Pooling with Token-Expiry Refresh** - The pool now keys on the security context (connection string + identity discriminator) so a connection authenticated as user A can never be handed to user B. Token acquisition is deferred to pool misses, and pooled connections whose token is within 5 minutes of expiry are refreshed automatically (#660).
+- **Faster Parameter Detection and Execution** - Parameter type detection and binding now run in a native C++ pipeline, substantially reducing per-parameter overhead and improving throughput for wide and batched `execute()` workloads (#549).
 
 ### Bug Fixes
 
-- **Silent Zero-Row `executemany` Batches on Late NULLs** - Fixed numeric array parameter binding paths (`TINYINT` / `SMALLINT` / `INT` / `FLOAT`) that left indicator slots uninitialized when a NULL appeared partway through the batch, causing the batch to insert zero rows without raising (#702, issue #670).
-- **`SQL_WVARCHAR` Output Converter Applied to Non-String Columns** - The legacy `SQL_WVARCHAR` catch-all no longer runs against `INT` / `DECIMAL` / `DATE` columns. Registering a single `SQL_WVARCHAR` converter used to mangle every non-string column value; the fallback is now gated on `str`/`bytes` mapped types, matching `Row._apply_output_converters` (#692, issue #691).
-- **Integer-Keyed Output Converters Now Fire** - `Connection.add_output_converter(SQL_DECIMAL, ...)` and any other integer ODBC SQL type code as a key now dispatch correctly. Previously the converter dictionary was keyed only by Python type, so integer-keyed registrations were silently stored but never invoked, diverging from `pyodbc` and from the driver's own documentation. Integer keys take precedence over Python-type keys, and `SQL_DECIMAL` vs `SQL_NUMERIC` are dispatched distinctly (#690, issue #684).
-- **`RecordBatchReader.Close()` for Arrow Result Sets** - `Cursor.arrow_reader()` now returns a wrapped reader whose `.close()` stops fetching, releases the server-side cursor, resets cursor state, and leaves the parent cursor usable. Supports idempotent close and context-manager usage (#644, issue #643).
-- **`AttributeError` on Partially-Initialized `Cursor` Cleanup** - `Cursor.__init__` now sets `self.closed = False` and `self.hstmt = None` before any code that can raise, `close()` defends with `getattr(self, "closed", True)`, and `__del__` uses the correct `sys.is_finalizing()` guard, so half-constructed cursors no longer emit unraisable exceptions during garbage collection (#646, issue #642).
+- **Bulk Copy Accepts `timeout=0`** - `bulkcopy()` now treats zero as no timeout, matching the BCP API contract, while continuing to reject negative, non-integer, and boolean values (#698).
+- **Arrow Reader Fetch Exceptions Are Preserved** - Defensive cursor cleanup no longer masks the original exception raised while fetching Arrow result batches (#718).
+- **Decimal Conversion Errors No Longer Expose Parameter Values** - `executemany()` Decimal conversion failures now report metadata only, preventing parameter rows and sensitive values from leaking through exception messages or chained tracebacks (#719).
+- **Arrow View Types Work in Bulk Copy** - Polars `string_view` columns exported through the Arrow C Data Interface now round-trip correctly through `bulkcopy_arrow()` (#717, via `mssql_py_core`).
+- **`connect(timeout=)` Sets the Login Timeout** - The constructor timeout now bounds connection attempts as documented instead of setting the per-statement query timeout; timeout validation is consistent across both APIs (#728).
+- **Windows Extension Loading Uses Interpreter Architecture** - The loader now selects the native binary using the Python interpreter architecture, fixing x64 Python on Windows ARM64 hosts and avoiding fallback warnings on stdout (#727).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

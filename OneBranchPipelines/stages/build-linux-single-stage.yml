@@ -318,6 +318,8 @@ stages:
                     echo "Setting up test environment...";
                     $PY -m pip install -q pytest;
                     cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
+                    # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
+                    cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
                     cp /workspace/requirements.txt $TEST_DIR/ || true;
                     $PY -m pip install -q -r $TEST_DIR/requirements.txt || true;
@@ -386,6 +388,8 @@ stages:
                     echo "Setting up test environment...";
                     $PY -m pip install -q pytest;
                     cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
+                    # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
+                    cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
                     cp /workspace/requirements.txt $TEST_DIR/ || true;
                     $PY -m pip install -q -r $TEST_DIR/requirements.txt || true;
