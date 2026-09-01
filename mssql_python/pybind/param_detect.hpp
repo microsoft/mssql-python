@@ -1,4 +1,4 @@
-// param_detect.hpp — Python parameter type detection for the primary execute path.
+// param_detect.hpp — Python parameter type detection and explicit input-size overrides.
 //
 // Owns the first stage of the native execute pipeline:
 //
@@ -181,6 +181,94 @@ inline bool StartsWithAscii(unsigned int kind, const void* data, Py_ssize_t leng
     return true;
 }
 
+inline bool PyLongGreaterThan(PyObject* value, long long threshold) {
+    int overflow = 0;
+    long long result = PyLong_AsLongLongAndOverflow(value, &overflow);
+    if (result == -1 && PyErr_Occurred()) {
+        throw py::error_already_set();
+    }
+    return overflow > 0 || (overflow == 0 && result > threshold);
+}
+
+inline PyObject* FormatDecimalParam(PyObject* params, Py_ssize_t index, PyObject* value) {
+    py::object formatted = steal(PyObject_CallMethod(value, "__format__", "s", "f"));
+    if (!formatted) throw py::error_already_set();
+    if (PyList_SetItem(params, index, formatted.release().ptr()) != 0) {
+        throw py::error_already_set();
+    }
+    return PyList_GET_ITEM(params, index);
+}
+
+inline void NormalizeTimeParam(PyObject* params, Py_ssize_t index, SQLULEN& columnSize) {
+    PyObject* value = PyList_GET_ITEM(params, index);
+    py::object formatted = steal(PyObject_CallMethod(value, "isoformat", "s", "microseconds"));
+    if (!formatted) throw py::error_already_set();
+    if (!PyUnicode_Check(formatted.ptr())) {
+        throw py::type_error("datetime.time.isoformat() must return a str");
+    }
+    columnSize = std::max<SQLULEN>(columnSize, PyUnicode_GET_LENGTH(formatted.ptr()));
+    if (PyList_SetItem(params, index, formatted.release().ptr()) != 0) {
+        throw py::error_already_set();
+    }
+}
+
+inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssize_t index,
+                                   ParamInfo& info) {
+    py::tuple values = borrow<py::tuple>(inputSize);
+    info.paramSQLType = values[0].cast<SQLSMALLINT>();
+    info.paramCType = values[1].cast<SQLSMALLINT>();
+
+    PyObject* columnSize = values[2].ptr();
+    PyObject* decimalDigits = values[3].ptr();
+    const bool isNumeric =
+        info.paramSQLType == SQL_DECIMAL || info.paramSQLType == SQL_NUMERIC;
+
+    if (isNumeric) {
+        if (PyLongGreaterThan(columnSize, MAX_NUMERIC_PRECISION)) {
+            info.columnSize = MAX_NUMERIC_PRECISION;
+        } else {
+            SQLULEN requestedSize = values[2].cast<SQLULEN>();
+            info.columnSize = requestedSize > 0 ? requestedSize : 18;
+        }
+        info.decimalDigits =
+            PyLongGreaterThan(decimalDigits, info.columnSize)
+                ? static_cast<SQLSMALLINT>(info.columnSize)
+                : values[3].cast<SQLSMALLINT>();
+    } else {
+        info.columnSize = values[2].cast<SQLULEN>();
+        info.decimalDigits = values[3].cast<SQLSMALLINT>();
+    }
+
+    PyObject* obj = PyList_GET_ITEM(params, index);
+    if (obj == Py_None) {
+        info.paramCType = SQL_C_DEFAULT;
+        return;
+    }
+
+    if (isNumeric) {
+        info.paramCType = PARAM_C_TYPE_TEXT;
+        int isDecimal = PyObject_IsInstance(obj, PyTypeCache::get_decimal_class());
+        if (isDecimal == -1) throw py::error_already_set();
+        if (isDecimal == 1) {
+            obj = FormatDecimalParam(params, index, obj);
+        }
+    }
+
+    info.isDAE =
+        (PyUnicode_Check(obj) && PyLongGreaterThan(columnSize, MAX_INLINE_CHAR)) ||
+        ((PyBytes_Check(obj) || PyByteArray_Check(obj)) &&
+         PyLongGreaterThan(columnSize, MAX_INLINE_BINARY));
+
+    if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
+        NormalizeTimeParam(params, index, info.columnSize);
+        obj = PyList_GET_ITEM(params, index);
+    }
+
+    if (info.isDAE) {
+        info.dataPtr = borrow(obj);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DetectParamTypes: Raw CPython parameter type detection for the primary execute path.
 //
@@ -202,12 +290,13 @@ inline bool StartsWithAscii(unsigned int kind, const void* data, Py_ssize_t leng
 //   - bool before int (bool is a subclass of int in Python)
 //   - datetime before date (datetime is a subclass of date)
 //
-// Takes a raw PyObject* (must be a list). Caller guarantees it's a fresh copy
-// (cursor.py does list(actual_params)), so in-place mutation via PyList_SetItem is safe.
-inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
+// Takes raw PyObject* lists. Caller guarantees params is a fresh copy (cursor.py
+// does list(actual_params)), so in-place mutation via PyList_SetItem is safe.
+inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* inputSizes) {
     PyTypeCache::initialize();
 
     const Py_ssize_t n = PyList_GET_SIZE(params);
+    const Py_ssize_t inputSizeCount = inputSizes == Py_None ? 0 : PyList_GET_SIZE(inputSizes);
     std::vector<ParamInfo> infos(n);
 
     PyObject* decimal_type = PyTypeCache::get_decimal_class();
@@ -217,6 +306,11 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
         ParamInfo& info = infos[i];
         info.inputOutputType = SQL_PARAM_INPUT;
         info.isDAE = false;
+
+        if (i < inputSizeCount) {
+            ApplyInputSizeOverride(params, PyList_GET_ITEM(inputSizes, i), i, info);
+            continue;
+        }
 
         PyObject* obj = PyList_GET_ITEM(params, i);
 
@@ -418,18 +512,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             // overrides on time subclasses. The legacy path calls
             // isoformat(timespec="microseconds") via _normalize_time_param in cursor.py,
             // so calling the same method is what keeps the two paths in agreement.
-            py::object time_obj = steal(PyObject_CallMethod(obj, "isoformat", "s", "microseconds"));
-            if (!time_obj) throw py::error_already_set();
-            if (!PyUnicode_Check(time_obj.ptr())) {
-                throw py::type_error("datetime.time.isoformat() must return a str");
-            }
-            Py_ssize_t time_len = PyUnicode_GET_LENGTH(time_obj.ptr());
-            info.columnSize = std::max<SQLULEN>(info.columnSize, time_len);
-            // PyList_SetItem (lowercase) decrefs the old slot before stealing the new
-            // reference; safe here because cursor.py already passed a fresh list copy.
-            if (PyList_SetItem(params, i, time_obj.release().ptr()) != 0) {
-                throw py::error_already_set();
-            }
+            NormalizeTimeParam(params, i, info.columnSize);
             continue;
         }
 
@@ -533,18 +616,11 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
             }
 
             if (in_money_range) {
-                py::object formatted = steal(PyObject_CallMethod(obj, "__format__", "s", "f"));
-                if (!formatted) throw py::error_already_set();
+                PyObject* formatted = FormatDecimalParam(params, i, obj);
                 info.paramSQLType = SQL_VARCHAR;
                 info.paramCType = PARAM_C_TYPE_TEXT;
-                info.columnSize = PyUnicode_GET_LENGTH(formatted.ptr());
+                info.columnSize = PyUnicode_GET_LENGTH(formatted);
                 info.decimalDigits = 0;
-                PyObject* raw = formatted.release().ptr();
-                if (PyList_SetItem(params, i, raw) != 0) {
-                    // PyList_SetItem steals (decrefs) the item even on failure,
-                    // so raw is already freed — do NOT Py_DECREF here.
-                    throw py::error_already_set();
-                }
                 continue;
             }
 
