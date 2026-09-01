@@ -44,9 +44,16 @@ def test_no_unhardened_loadlibrary_call():
 
 def test_driver_and_auth_loads_use_constrained_search():
     code = _code_without_comments(_LOADER_SRC.read_text(encoding="utf-8"))
-    # Both the driver and the auth DLL are loaded with the hardened API.
-    assert (
-        len(re.findall(r"\bLoadLibraryExW\s*\(", code)) >= 2
-    ), "expected LoadLibraryExW for both the driver and the auth DLL loads"
-    assert "LOAD_LIBRARY_SEARCH_DEFAULT_DIRS" in code
-    assert "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR" in code
+    # Match each LoadLibraryExW( ... ); call and require BOTH flags inside that
+    # call's own argument list -- not merely somewhere in the file (the flag
+    # names also appear in the #define block, so a file-wide substring check
+    # would still pass if a call's flags were replaced with 0).
+    calls = re.findall(r"LoadLibraryExW\s*\(.*?\)\s*;", code, re.DOTALL)
+    assert len(calls) >= 2, "expected LoadLibraryExW for both the driver and the auth DLL loads"
+    for call in calls:
+        assert "LOAD_LIBRARY_SEARCH_DEFAULT_DIRS" in call, (
+            "a LoadLibraryExW call is missing LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: " + call
+        )
+        assert "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR" in call, (
+            "a LoadLibraryExW call is missing LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: " + call
+        )
