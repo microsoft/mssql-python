@@ -50,8 +50,7 @@ def test_driver_loads_despite_planted_dll_on_cwd_and_path(tmp_path):
     # driver and its dependencies) happens before the network handshake, so a
     # short login timeout is enough. We assert only that the failure is NOT a
     # driver/runtime load failure -- the connection itself is expected to fail.
-    child = textwrap.dedent(
-        """
+    child = textwrap.dedent("""
         import mssql_python
         _LOAD_FAILURES = (
             "Failed to load the driver",
@@ -69,8 +68,7 @@ def test_driver_loads_despite_planted_dll_on_cwd_and_path(tmp_path):
             for needle in _LOAD_FAILURES:
                 assert needle not in message, message
         print("DRIVER_LOADED_OK")
-        """
-    )
+        """)
 
     result = subprocess.run(
         [sys.executable, "-c", child],
