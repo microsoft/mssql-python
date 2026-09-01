@@ -6316,5 +6316,13 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // classic default before Python can push the selected provider via
     // _set_native_provider(). The driver is loaded lazily at first use (e.g. the
     // Connection constructor), which always runs after that push.
+    //
+    // We still force DriverLoader's singleton to be constructed here (without
+    // loading the driver) so its function-local static is always the first one
+    // created by this extension, matching its pre-lazy-load construction order.
+    // C++ destroys function-local statics in reverse order of construction, so
+    // this keeps DriverLoader's destructor running last at interpreter shutdown,
+    // instead of wherever the first real connection happens to land it.
+    DriverLoader::getInstance();
     LOG("Module initialization: deferring ODBC driver load to first use");
 }
