@@ -18,7 +18,6 @@
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iostream>
-#include <mutex>  // std::once_flag / std::call_once
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
@@ -1060,14 +1059,12 @@ DriverHandle LoadDriverLibrary(const std::string& driverPath) {
     // fs::path::c_str() returns wchar_t* on Windows with correct encoding
     namespace fs = std::filesystem;
     fs::path pathObj(driverPath);
-    // Resolve the vendored driver and its dependencies from trusted,
-    // package-local directories only. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR adds the
-    // driver's own folder for its dependency lookups, and
-    // LOAD_LIBRARY_SEARCH_DEFAULT_DIRS restricts the rest of the search to
-    // System32, the application directory, and directories registered via
-    // AddDllDirectory (see LoadDriverOrThrowException) -- excluding the current
-    // working directory and %PATH%, which the legacy LoadLibraryW search order
-    // would otherwise include.
+    // Resolve the vendored driver's dependencies with a constrained search
+    // path. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR adds the driver's own folder for
+    // its dependency lookups, and LOAD_LIBRARY_SEARCH_DEFAULT_DIRS restricts the
+    // rest of the search to System32 and the application directory -- excluding
+    // the current working directory and %PATH%, which the legacy LoadLibraryW
+    // search order would otherwise include.
     HMODULE handle = LoadLibraryExW(
         pathObj.c_str(), nullptr,
         LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
@@ -1219,20 +1216,6 @@ DriverHandle LoadDriverOrThrowException() {
                                                                                          : "x86";
 
     fs::path dllDir = fs::path(moduleDir) / "libs" / "windows" / archDir;
-
-    // Register the driver directory and its co-located `vcredist` subfolder as
-    // trusted DLL search directories. The vendored VC++ runtime ships under
-    // `vcredist`, which LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR does not reach on its
-    // own, so it is added explicitly here. Done once per process; the loads
-    // below (and in LoadDriverLibrary) opt into this search list via
-    // LOAD_LIBRARY_SEARCH_DEFAULT_DIRS instead of the legacy order.
-    static std::once_flag dllSearchDirsOnce;
-    std::call_once(dllSearchDirsOnce, [&dllDir]() {
-        AddDllDirectory(dllDir.c_str());
-        fs::path vcredistDir = dllDir / "vcredist";
-        AddDllDirectory(vcredistDir.c_str());
-    });
-
     fs::path authDllPath = dllDir / "mssql-auth.dll";
     if (fs::exists(authDllPath)) {
         // Use fs::path::c_str() which returns wchar_t* on Windows with proper encoding

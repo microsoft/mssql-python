@@ -2,11 +2,11 @@
 Regression guard for the Windows package-local DLL load path.
 
 The vendored ODBC driver (``msodbcsql18.dll``) and Entra auth DLL
-(``mssql-auth.dll``) must be loaded with a constrained, package-local search
-path -- ``LoadLibraryExW`` with ``LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
-LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`` and the driver + ``vcredist`` directories
-registered via ``AddDllDirectory`` -- rather than the legacy ``LoadLibraryW``
-search order, which also consults the current working directory and ``%PATH%``.
+(``mssql-auth.dll``) must be loaded with a constrained search path --
+``LoadLibraryExW`` with ``LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
+LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`` -- rather than the legacy ``LoadLibraryW``
+search order, which also consults the current working directory and ``%PATH%``
+when resolving those DLLs' dependencies.
 
 This is a source-contract test on purpose. The restriction only manifests at
 DLL-resolution time on Windows, which cannot be observed without dropping a
@@ -50,8 +50,3 @@ def test_driver_and_auth_loads_use_constrained_search():
     ), "expected LoadLibraryExW for both the driver and the auth DLL loads"
     assert "LOAD_LIBRARY_SEARCH_DEFAULT_DIRS" in code
     assert "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR" in code
-    # The bundled VC++ runtime ships under `vcredist`, which must be registered
-    # as a trusted search directory (LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR only
-    # covers each DLL's own folder).
-    assert "AddDllDirectory(" in code
-    assert "vcredist" in code
