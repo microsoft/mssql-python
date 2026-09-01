@@ -45,6 +45,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   explicit and drop the bundled binaries.
 
 ### Changed
+- Windows: the bundled ODBC driver and Entra auth DLLs are now loaded with a
+  package-local DLL search path (System32, the driver's own directory, and its
+  co-located `vcredist` runtime) instead of the default process search order,
+  so their dependencies resolve deterministically from trusted, package-local
+  directories. No API or behavior change; macOS and Linux are unaffected.
 - Connection strings and string connection parameters that contain a NUL
   (`\x00`) character are now rejected up front with `InterfaceError` instead of
   being silently truncated at the NUL by the underlying driver.
