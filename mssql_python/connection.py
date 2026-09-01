@@ -380,7 +380,7 @@ class Connection:
         # provider package. Done after the argument validation above so a call
         # that is about to raise doesn't freeze the selection as a side effect.
         _provider = ProviderManager.ensure_available()
-        ddbc_bindings.set_odbc_provider(_provider)
+        ddbc_bindings._set_odbc_provider(_provider)
 
         self.connection_str, parsed_params = self._construct_connection_string(
             connection_str, **kwargs

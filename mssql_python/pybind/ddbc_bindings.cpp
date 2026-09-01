@@ -998,7 +998,7 @@ std::string GetDriverPathCpp(const std::string& moduleDir);
 // ("msodbcsql18", shipped by mssql_python_odbc) and the Rust driver
 // ("mssql-odbc", shipped by mssql_python_rust_odbc). Python is the sole
 // resolver (env var -> module property -> default) and pushes the chosen id
-// here via set_odbc_provider() before the driver loads. The native side does
+// here via _set_odbc_provider() before the driver loads. The native side does
 // not read the environment itself; if the push has not happened yet, it falls
 // back to the hardcoded classic default.
 // -----------------------------------------------------------------------------
@@ -1011,29 +1011,45 @@ std::mutex g_providerMutex;
 std::string g_selectedProvider;  // pushed from Python before load; "" = unset
 
 std::string NormalizeProviderId(const std::string& id) {
-    std::string out;
-    out.reserve(id.size());
-    for (char c : id) {
-        if (std::isspace(static_cast<unsigned char>(c))) {
-            continue;
-        }
-        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    // Mirror Python's ProviderManager._normalize(): trim surrounding whitespace
+    // and lowercase, leaving interior characters intact so both sides agree.
+    size_t start = 0;
+    size_t end = id.size();
+    while (start < end && std::isspace(static_cast<unsigned char>(id[start]))) {
+        ++start;
+    }
+    while (end > start && std::isspace(static_cast<unsigned char>(id[end - 1]))) {
+        --end;
+    }
+    std::string out = id.substr(start, end - start);
+    for (char& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     return out;
 }
 }  // namespace
 
 void SetSelectedProvider(const std::string& id) {
-    std::string normalized = NormalizeProviderId(id);
+    const std::string normalized = NormalizeProviderId(id);
     if (normalized != kProviderMsodbcsql18 && normalized != kProviderMssqlOdbc) {
         // ProviderManager (Python) already rejects an unknown id before this is
         // ever called; this is defence-in-depth against a caller that bypasses
-        // it and talks to this native entry point directly - silently coercing
-        // an unrecognized id to the classic default would load a driver the
-        // caller didn't ask for.
+        // it and talks to this native entry point directly.
         ThrowStdException("Unknown ODBC provider '" + id +
                           "'. Valid providers are: " + kProviderMsodbcsql18 + ", " +
                           kProviderMssqlOdbc + ".");
+    }
+    if (DriverLoader::getInstance().isDriverLoaded()) {
+        // Every connection re-pushes ProviderManager's (already-frozen) choice,
+        // so this runs far more than once per process; only an actual attempt
+        // to switch providers after load is the ordering hole this guards
+        // against - re-pushing the same id must stay a silent no-op.
+        std::lock_guard<std::mutex> lock(g_providerMutex);
+        if (normalized != g_selectedProvider) {
+            ThrowStdException("Cannot change the ODBC provider after the driver has "
+                              "already loaded in this process.");
+        }
+        return;
     }
     std::lock_guard<std::mutex> lock(g_providerMutex);
     g_selectedProvider = normalized;
@@ -1041,7 +1057,7 @@ void SetSelectedProvider(const std::string& id) {
 
 // Effective provider id: the value pushed from Python, else the classic default.
 // Python is the authoritative resolver (env var -> module property -> default)
-// and pushes the result via set_odbc_provider() before the driver loads.
+// and pushes the result via _set_odbc_provider() before the driver loads.
 std::string GetSelectedProviderId() {
     std::lock_guard<std::mutex> lock(g_providerMutex);
     if (g_selectedProvider == kProviderMssqlOdbc) {
@@ -1452,6 +1468,10 @@ void DriverLoader::loadDriver() {
     if (m_loadError) {
         std::rethrow_exception(m_loadError);
     }
+}
+
+bool DriverLoader::isDriverLoaded() const {
+    return m_driverLoaded.load();
 }
 
 // SqlHandle definition
@@ -6139,7 +6159,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
     m.def("GetDriverPathCpp", &GetDriverPathCpp, "Get the path to the ODBC driver");
-    m.def("set_odbc_provider", &SetSelectedProvider,
+    m.def("_set_odbc_provider", &SetSelectedProvider,
           "Select the ODBC provider ('msodbcsql18' or 'mssql-odbc') before the driver loads");
 
     // Define parameter info class
@@ -6338,7 +6358,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Deliberately do NOT call loadDriver() here: doing so would resolve and
     // std::call_once-freeze the driver using whatever native provider is
     // selected at import time (always the default, since Python's
-    // set_odbc_provider() push - see Connection.__init__ - cannot run until
+    // _set_odbc_provider() push - see Connection.__init__ - cannot run until
     // after `import ddbc_bindings` completes). That silently locks in the
     // wrong driver whenever a caller selects a non-default provider. Loading
     // stays lazy, on first real connection attempt, by which point the
