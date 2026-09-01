@@ -554,6 +554,30 @@ class TestBulkcopyArrowLive:
         assert result["rows_copied"] == 2
         cursor.execute(f"DROP TABLE {t}")
 
+    def test_polars_string_view_c_stream(self, cursor):
+        """GH-708: Polars string columns export as Utf8View and bulk-copy directly."""
+        pl = pytest.importorskip("polars")
+        t = "mssql_python_arrow_polars_string_view"
+        _make_table(cursor, t, "id INT NOT NULL, name VARCHAR(50) NULL")
+        frame = pl.DataFrame(
+            {
+                "id": pl.Series([1, 2, 3], dtype=pl.Int32),
+                "name": ["alpha", None, "gamma"],
+            }
+        )
+        schema = pa.RecordBatchReader.from_stream(frame).schema
+        assert schema.field("name").type == pa.string_view()
+
+        result = cursor.bulkcopy_arrow(t, frame)
+        assert result["rows_copied"] == 3
+        cursor.execute(f"SELECT id, name FROM {t} ORDER BY id")
+        assert [tuple(row) for row in cursor.fetchall()] == [
+            (1, "alpha"),
+            (2, None),
+            (3, "gamma"),
+        ]
+        cursor.execute(f"DROP TABLE {t}")
+
     def test_c_array_producer_single_batch(self, cursor):
         t = "mssql_python_arrow_carray"
         _make_table(cursor, t, "id INT NOT NULL, name NVARCHAR(20) NULL")
