@@ -18,9 +18,9 @@ The driver is compatible with all the Python versions >= 3.10
 > - Import name: `mssql_python_odbc`
 > - Current version: **18.6.2.1**
 >
-> `mssql-python` depends on `mssql-python-odbc==18.6.2.1` and loads the ODBC driver binaries from it at import time. `pip install mssql-python` transparently pulls the companion package alongside it — no separate install step is required.
+> `mssql-python` depends on `mssql-python-odbc==18.6.2.1`. The ODBC driver is loaded lazily when the first connection is created. `pip install mssql-python` transparently pulls the companion package alongside it — no separate install step is required.
 >
-> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. `mssql-python` will fail to import if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
+> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. Creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
 >
 > ### ODBC Provider Selection (opt-in)
 > `mssql-python` also supports selecting an alternate native ODBC provider before the first connection, via the `mssql_python.native_provider` module property or the `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable (which takes precedence). The default, `"msodbcsql18"`, is unchanged; opting into `"mssql-odbc"` requires the separate `mssql-python-rust-odbc` package. Call `mssql_python.get_native_provider_info()` to check the selected provider and its source. This is plumbing only today — no Rust driver binaries are published yet.

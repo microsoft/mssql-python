@@ -7,7 +7,10 @@ validation, resolve-once freezing, post-freeze warning) and the public surface
 """
 
 import importlib
+import platform
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -96,6 +99,45 @@ def test_same_value_after_freeze_does_not_warn(recwarn):
 def test_package_name_mapping():
     assert ProviderManager.package_name(PROVIDER_MSODBCSQL18) == "mssql_python_odbc"
     assert ProviderManager.package_name(PROVIDER_MSSQL_ODBC) == "mssql_python_rust_odbc"
+
+
+def test_rust_provider_driver_path_matches_packaging_layout():
+    # Run in a child process because the native provider selection is
+    # intentionally process-wide and cannot be reset after it is pushed.
+    script = """
+from mssql_python import ddbc_bindings
+
+ddbc_bindings._set_odbc_provider("mssql-odbc")
+print(ddbc_bindings.GetDriverPathCpp("provider-root"))
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    machine = platform.machine().lower()
+    arch = "arm64" if machine in {"aarch64", "arm64"} else "x86_64"
+    if sys.platform == "linux":
+        libc = "glibc" if platform.libc_ver()[0] == "glibc" else "musl"
+        expected = Path(
+            "provider-root", "libs", "linux", libc, arch, "lib", "mssqlodbc.so"
+        )
+    elif sys.platform == "darwin":
+        expected = Path(
+            "provider-root", "libs", "macos", arch, "lib", "mssqlodbc.dylib"
+        )
+    elif sys.platform == "win32":
+        win_arch = "x64" if arch == "x86_64" else arch
+        expected = Path(
+            "provider-root", "libs", "windows", win_arch, "mssqlodbc.dll"
+        )
+    else:
+        pytest.skip(f"unsupported test platform: {sys.platform}")
+        return
+
+    assert Path(proc.stdout.strip()) == expected
 
 
 def test_get_info_before_and_after_resolve(monkeypatch):

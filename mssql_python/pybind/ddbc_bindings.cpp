@@ -1240,7 +1240,13 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     // finalized alongside that wheel build.
     if (GetSelectedProviderId() == kProviderMssqlOdbc) {
 #ifdef __linux__
-        return (basePath / "libs" / "linux" / arch / "lib" / "mssqlodbc.so").string();
+    #if defined(__GLIBC__)
+        constexpr const char* libc = "glibc";
+    #else
+        constexpr const char* libc = "musl";
+    #endif
+        return (basePath / "libs" / "linux" / libc / arch / "lib" / "mssqlodbc.so")
+            .string();
 #elif defined(__APPLE__)
         return (basePath / "libs" / "macos" / arch / "lib" / "mssqlodbc.dylib").string();
 #elif defined(_WIN32)
