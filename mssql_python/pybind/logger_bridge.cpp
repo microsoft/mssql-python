@@ -153,6 +153,28 @@ void LoggerBridge::log(int level, const char* file, int line, const char* format
         return;
     }
 
+    // Refuse to log once Python is shutting down (or once we can't cheaply
+    // and safely confirm it isn't). LOG() may be reached from a destructor
+    // running on a thread CPython doesn't already know about (e.g. the last
+    // shared_ptr<SqlHandle>/Connection reference being dropped by a
+    // background thread). Acquiring the GIL from such a thread while the
+    // interpreter is finalizing can crash with "Fatal Python error:
+    // gilstate_tss_set: failed to set current tstate (TSS)" once the
+    // thread-state TSS key has been torn down. Skipping a log line is
+    // harmless; crashing the process is not.
+    if (Py_IsInitialized() == 0) {
+        return;
+    }
+#if PY_VERSION_HEX >= 0x030D0000
+    if (Py_IsFinalizing()) {
+        return;
+    }
+#else
+    if (!PyGILState_Check()) {
+        return;
+    }
+#endif
+
     // Format the message
     va_list args;
     va_start(args, format);

@@ -920,31 +920,50 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 
 // Helper function to check if Python is shutting down or finalizing
 // This centralizes the shutdown detection logic to avoid code duplication
+//
+// IMPORTANT: must not blindly acquire the GIL. The previous implementation
+// used py::gil_scoped_acquire + sys._is_finalizing(), which calls
+// PyGILState_Ensure() under the hood. When invoked from a thread CPython
+// doesn't already know about (e.g. a foreign/background thread dropping the
+// last shared_ptr<SqlHandle> reference) while the interpreter is finalizing,
+// PyGILState_Ensure() can fail to register thread-local state and crash with
+// "Fatal Python error: gilstate_tss_set: failed to set current tstate (TSS)"
+// - i.e. the very safety check meant to prevent a shutdown-time crash can
+// itself cause one.
 static bool is_python_finalizing() {
+    if (Py_IsInitialized() == 0) {
+        return true;  // Python is already shut down
+    }
+#if PY_VERSION_HEX >= 0x030D0000
+    // Py_IsFinalizing() is a public, thread-safe, GIL-free CPython API
+    // (stable since Python 3.13) built exactly for this purpose.
+    return Py_IsFinalizing() != 0;
+#else
+    // Older Python versions don't expose a public GIL-free finalization
+    // check. PyGILState_Check() is itself GIL-free/thread-safe: it reports
+    // whether the *current* thread already has a registered Python thread
+    // state without creating one. If it doesn't, be conservative and treat
+    // this as "finalizing" rather than risk PyGILState_Ensure() registering
+    // a brand-new thread state for the first time on a thread CPython
+    // doesn't know about while shutdown may already be underway.
+    if (!PyGILState_Check()) {
+        return true;
+    }
     try {
-        if (Py_IsInitialized() == 0) {
-            return true;  // Python is already shut down
-        }
-
         py::gil_scoped_acquire gil;
         py::object sys_module = py::module_::import("sys");
-        if (!sys_module.is_none()) {
-            // Check if the attribute exists before accessing it (for Python
-            // version compatibility)
-            if (py::hasattr(sys_module, "_is_finalizing")) {
-                py::object finalizing_func = sys_module.attr("_is_finalizing");
-                if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
-                    return true;  // Python is finalizing
-                }
+        if (!sys_module.is_none() && py::hasattr(sys_module, "_is_finalizing")) {
+            py::object finalizing_func = sys_module.attr("_is_finalizing");
+            if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
+                return true;
             }
         }
         return false;
     } catch (...) {
         std::cerr << "Error occurred while checking Python finalization state." << std::endl;
-        // Be conservative - don't assume shutdown on any exception
-        // Only return true if we're absolutely certain Python is shutting down
         return false;
     }
+#endif
 }
 
 // TODO: Add more nuanced exception classes
@@ -6296,13 +6315,18 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         std::cerr << "Logger bridge initialization failed: " << e.what() << std::endl;
     }
 
-    try {
-        // Try loading the ODBC driver when the module is imported
-        LOG("Module initialization: Loading ODBC driver");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    } catch (const std::exception& e) {
-        // Log the error but don't throw - let the error happen when functions
-        // are called
-        LOG("Module initialization: Failed to load ODBC driver - %s", e.what());
-    }
+    // Force DriverLoader's Meyer's-singleton to construct now, at import time,
+    // instead of on first lazy loadDriver() call from a connection path. This
+    // keeps its position in C++'s reverse-order static destruction at
+    // interpreter shutdown stable and matching prior releases.
+    //
+    // Deliberately do NOT call loadDriver() here: doing so would resolve and
+    // std::call_once-freeze the driver using whatever native provider is
+    // selected at import time (always the default, since Python's
+    // set_odbc_provider() push - see Connection.__init__ - cannot run until
+    // after `import ddbc_bindings` completes). That silently locks in the
+    // wrong driver whenever a caller selects a non-default provider. Loading
+    // stays lazy, on first real connection attempt, by which point the
+    // provider push has already happened.
+    DriverLoader::getInstance();
 }
