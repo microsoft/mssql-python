@@ -1100,19 +1100,21 @@ std::string GetOdbcLibsBaseDir() {
         // populated; there is no bundled fallback anymore, so fail hard rather
         // than resolve to a directory that has no usable driver.
         //
-        // "Complete" means the ODBC driver itself and, on Windows, the
-        // co-located `mssql-auth.dll` that LoadDriverOrThrowException loads
-        // unconditionally. Verifying both here keeps this resolver's notion of a
-        // usable base dir consistent with what the loader below actually needs.
+        // "Complete" means the ODBC driver itself and, for the classic
+        // msodbcsql18 provider on Windows, the co-located `mssql-auth.dll` that
+        // LoadDriverOrThrowException preloads. The Rust provider (mssql-odbc)
+        // loads that library lazily from System32 at interactive-auth time, so
+        // it is NOT required co-located here. Verifying this keeps the resolver's
+        // notion of a usable base dir consistent with what the loader needs.
         std::error_code ec;
         fs::path externalDriver(GetDriverPathCpp(parentDir.string()));
         bool externalComplete = fs::exists(externalDriver, ec);
 #ifdef _WIN32
-        // mssql-auth.dll is required for Windows interactive Entra ID auth on
-        // both providers (the Rust driver loads it lazily from the system
-        // search path at auth time, but the wheel is still expected to ship it
-        // co-located here so LoadDriverOrThrowException's preload succeeds).
-        if (externalComplete) {
+        // Only the classic msodbcsql18 provider ships and preloads a co-located
+        // mssql-auth.dll. Requiring it for the Rust provider would wrongly reject
+        // an otherwise complete mssql-odbc package, which resolves that library
+        // lazily from System32 instead.
+        if (externalComplete && providerId == kProviderMsodbcsql18) {
             fs::path externalAuthDll = externalDriver.parent_path() / "mssql-auth.dll";
             externalComplete = fs::exists(externalAuthDll, ec);
         }
@@ -1232,19 +1234,19 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     throw std::runtime_error("Unsupported architecture");
 #endif
 
-    // Rust provider (mssql-odbc): ships as `mssql-odbc.{so,dylib,dll}` (no `lib`
+    // Rust provider (mssql-odbc): ships as `mssqlodbc.{so,dylib,dll}` (no `lib`
     // prefix on Linux/macOS) under an mssql-python-defined libs/ layout.
     // mssql-python owns the provider wheel, so this layout is authoritative and
     // finalized alongside that wheel build.
     if (GetSelectedProviderId() == kProviderMssqlOdbc) {
 #ifdef __linux__
-        return (basePath / "libs" / "linux" / arch / "lib" / "mssql-odbc.so").string();
+        return (basePath / "libs" / "linux" / arch / "lib" / "mssqlodbc.so").string();
 #elif defined(__APPLE__)
-        return (basePath / "libs" / "macos" / arch / "lib" / "mssql-odbc.dylib").string();
+        return (basePath / "libs" / "macos" / arch / "lib" / "mssqlodbc.dylib").string();
 #elif defined(_WIN32)
         {
             std::string winArch = (arch == "x86_64") ? "x64" : arch;
-            return (basePath / "libs" / "windows" / winArch / "mssql-odbc.dll").string();
+            return (basePath / "libs" / "windows" / winArch / "mssqlodbc.dll").string();
         }
 #else
         throw std::runtime_error("Unsupported platform");
@@ -1319,37 +1321,41 @@ DriverHandle LoadDriverOrThrowException() {
         driverPath.string().c_str());
 
 #ifdef _WIN32
-    // On Windows, optionally load mssql-auth.dll if it exists
-    std::string archDir = (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64"
-                          : (archStr == "arm64")                                         ? "arm64"
-                                                                                         : "x86";
+    // Only the classic msodbcsql18 provider preloads its co-located
+    // mssql-auth.dll here. The Rust provider (mssql-odbc) loads that library
+    // lazily from System32 at interactive-auth time, so preloading a co-located
+    // copy would both be unnecessary and defeat its System32-only lookup.
+    if (GetSelectedProviderId() == kProviderMsodbcsql18) {
+        std::string archDir = (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64"
+                              : (archStr == "arm64")                                         ? "arm64"
+                                                                                             : "x86";
 
-    fs::path dllDir = fs::path(moduleDir) / "libs" / "windows" / archDir;
-    fs::path authDllPath = dllDir / "mssql-auth.dll";
-    if (fs::exists(authDllPath)) {
-        // Use fs::path::c_str() which returns wchar_t* on Windows with proper encoding
-        HMODULE hAuth = LoadLibraryW(authDllPath.c_str());
-        if (hAuth) {
-            LOG("LoadDriverOrThrowException: mssql-auth.dll loaded "
-                "successfully from '%s'",
-                authDllPath.string().c_str());
+        fs::path dllDir = fs::path(moduleDir) / "libs" / "windows" / archDir;
+        fs::path authDllPath = dllDir / "mssql-auth.dll";
+        if (fs::exists(authDllPath)) {
+            // Use fs::path::c_str() which returns wchar_t* on Windows with proper encoding
+            HMODULE hAuth = LoadLibraryW(authDllPath.c_str());
+            if (hAuth) {
+                LOG("LoadDriverOrThrowException: mssql-auth.dll loaded "
+                    "successfully from '%s'",
+                    authDllPath.string().c_str());
+            } else {
+                LOG("LoadDriverOrThrowException: Failed to load mssql-auth.dll "
+                    "from '%s' - %s",
+                    authDllPath.string().c_str(), GetLastErrorMessage().c_str());
+                ThrowStdException("Failed to load mssql-auth.dll. Please ensure it "
+                                  "is present in the expected directory.");
+            }
         } else {
-            LOG("LoadDriverOrThrowException: Failed to load mssql-auth.dll "
-                "from '%s' - %s",
-                authDllPath.string().c_str(), GetLastErrorMessage().c_str());
-            ThrowStdException("Failed to load mssql-auth.dll. Please ensure it "
-                              "is present in the expected directory.");
+            LOG("LoadDriverOrThrowException: mssql-auth.dll not found at '%s' - "
+                "Entra ID authentication will not be available",
+                authDllPath.string().c_str());
+            // GetOdbcLibsBaseDir's completeness check should already have rejected
+            // a classic-provider directory missing it, so reaching here means the
+            // check and this load-time lookup have drifted out of sync.
+            ThrowStdException("mssql-auth.dll not found. If you are using Entra "
+                              "ID, please ensure it is present.");
         }
-    } else {
-        LOG("LoadDriverOrThrowException: mssql-auth.dll not found at '%s' - "
-            "Entra ID authentication will not be available",
-            authDllPath.string().c_str());
-        // Required for Windows interactive Entra ID auth on both providers;
-        // GetOdbcLibsBaseDir's completeness check should already have rejected
-        // a driver directory missing it, so reaching here means the check and
-        // this load-time lookup have drifted out of sync.
-        ThrowStdException("mssql-auth.dll not found. If you are using Entra "
-                          "ID, please ensure it is present.");
     }
 #endif
 

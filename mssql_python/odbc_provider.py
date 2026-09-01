@@ -7,7 +7,7 @@ Two providers are supported: ``msodbcsql18`` (the Microsoft ODBC Driver 18,
 shipped by ``mssql_python_odbc``) and ``mssql-odbc`` (the Rust driver, shipped
 by ``mssql_python_rust_odbc``). Selection is process-wide and resolved exactly
 once, before the native driver loads, from — in precedence order — the
-``MSSQL_PYTHON_ODBC_PROVIDER`` environment variable, the ``mssql_python.odbc_provider``
+``MSSQL_PYTHON_NATIVE_PROVIDER`` environment variable, the ``mssql_python.native_provider``
 module property, then the release default. An unknown value fails closed rather
 than falling back.
 """
@@ -20,7 +20,7 @@ from typing import Dict, Optional, Tuple
 
 from mssql_python.logging import logger
 
-ODBC_PROVIDER_ENV_VAR = "MSSQL_PYTHON_ODBC_PROVIDER"
+NATIVE_PROVIDER_ENV_VAR = "MSSQL_PYTHON_NATIVE_PROVIDER"
 
 # Customer-facing provider identifiers.
 PROVIDER_MSODBCSQL18 = "msodbcsql18"
@@ -71,7 +71,7 @@ class ProviderManager:
     @classmethod
     def _compute(cls) -> Tuple[str, str]:
         """Apply precedence env var -> module property -> default (lock-free)."""
-        env_value = os.environ.get(ODBC_PROVIDER_ENV_VAR)
+        env_value = os.environ.get(NATIVE_PROVIDER_ENV_VAR)
         if env_value and env_value.strip():
             return _normalize(env_value), "environment"
         if cls._property_value is not None:
@@ -197,7 +197,7 @@ class ProviderManager:
         message = (
             f"ODBC provider is already loaded as '{cls._resolved}'; ignoring the "
             f"change. Select a provider before the first connection, or set the "
-            f"{ODBC_PROVIDER_ENV_VAR} environment variable."
+            f"{NATIVE_PROVIDER_ENV_VAR} environment variable."
         )
         logger.warning(message)
         warnings.warn(message, RuntimeWarning, stacklevel=3)

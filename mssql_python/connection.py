@@ -375,13 +375,6 @@ class Connection:
             raise ValueError("native_uuid must be a boolean value or None")
         self._native_uuid = native_uuid
 
-        # Resolve and freeze the ODBC provider before the native driver loads,
-        # then hand the selection to the native loader so it imports the matching
-        # provider package. Done after the argument validation above so a call
-        # that is about to raise doesn't freeze the selection as a side effect.
-        _provider = ProviderManager.ensure_available()
-        ddbc_bindings._set_odbc_provider(_provider)
-
         self.connection_str, parsed_params = self._construct_connection_string(
             connection_str, **kwargs
         )
@@ -737,6 +730,16 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
+
+        # Resolve and freeze the ODBC provider, then hand the selection to the
+        # native loader so it imports the matching provider package. Done here —
+        # after every Python-side validation and token acquisition has succeeded
+        # and immediately before the native driver loads — so a call that fails
+        # earlier never freezes the selection as a side effect; a later, corrected
+        # connection can then still choose a different provider without a process
+        # restart.
+        _provider = ProviderManager.ensure_available()
+        ddbc_bindings._set_odbc_provider(_provider)
 
         try:
             self._conn = ddbc_bindings.Connection(

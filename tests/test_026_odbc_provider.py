@@ -3,7 +3,7 @@ Tests for ODBC provider selection (opt-in/opt-out).
 
 Covers the ``ProviderManager`` engine (precedence, normalization, fail-closed
 validation, resolve-once freezing, post-freeze warning) and the public surface
-(``mssql_python.odbc_provider`` property and ``get_odbc_provider_info()``).
+(``mssql_python.native_provider`` property and ``get_native_provider_info()``).
 """
 
 import importlib
@@ -13,7 +13,7 @@ import pytest
 
 import mssql_python
 from mssql_python.odbc_provider import (
-    ODBC_PROVIDER_ENV_VAR,
+    NATIVE_PROVIDER_ENV_VAR,
     PROVIDER_MSODBCSQL18,
     PROVIDER_MSSQL_ODBC,
     ProviderManager,
@@ -23,7 +23,7 @@ from mssql_python.odbc_provider import (
 @pytest.fixture(autouse=True)
 def _reset_provider(monkeypatch):
     """Clear provider state and the env var before and after each test."""
-    monkeypatch.delenv(ODBC_PROVIDER_ENV_VAR, raising=False)
+    monkeypatch.delenv(NATIVE_PROVIDER_ENV_VAR, raising=False)
     ProviderManager._reset_for_testing()
     yield
     ProviderManager._reset_for_testing()
@@ -35,12 +35,12 @@ def test_default_is_msodbcsql18():
 
 
 def test_env_var_selects_provider(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
     assert ProviderManager.resolve() == PROVIDER_MSSQL_ODBC
 
 
 def test_env_var_is_normalized(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "  MsSql-Odbc  ")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "  MsSql-Odbc  ")
     assert ProviderManager.resolve() == PROVIDER_MSSQL_ODBC
 
 
@@ -50,13 +50,13 @@ def test_property_used_when_env_unset():
 
 
 def test_env_var_takes_precedence_over_property(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSODBCSQL18)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSODBCSQL18)
     ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
     assert ProviderManager.resolve() == PROVIDER_MSODBCSQL18
 
 
 def test_empty_env_var_falls_through_to_property(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "   ")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "   ")
     ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
     assert ProviderManager.resolve() == PROVIDER_MSSQL_ODBC
 
@@ -67,7 +67,7 @@ def test_invalid_property_fails_closed():
 
 
 def test_invalid_env_var_fails_closed(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "classic")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "classic")
     with pytest.raises(ValueError):
         ProviderManager.resolve()
 
@@ -105,7 +105,7 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     assert info["source"] == "default"
     assert info["frozen"] is False
 
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
     ProviderManager.resolve()
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSSQL_ODBC
@@ -118,7 +118,7 @@ def test_effective_and_get_info_do_not_raise_for_invalid_env_var(monkeypatch):
     # A bad selection must not break read-only diagnostics (or the public
     # getter, which shares effective()) - only resolve()/ensure_available()
     # fail closed, at connection time, where the error is actionable.
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "bogus-value")
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, "bogus-value")
     assert ProviderManager.effective() == PROVIDER_MSODBCSQL18
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSODBCSQL18
@@ -129,13 +129,13 @@ def test_effective_and_get_info_do_not_raise_for_invalid_env_var(monkeypatch):
 
 
 def test_public_module_property_get_set():
-    assert mssql_python.odbc_provider == PROVIDER_MSODBCSQL18
-    mssql_python.odbc_provider = PROVIDER_MSSQL_ODBC
-    assert mssql_python.odbc_provider == PROVIDER_MSSQL_ODBC
+    assert mssql_python.native_provider == PROVIDER_MSODBCSQL18
+    mssql_python.native_provider = PROVIDER_MSSQL_ODBC
+    assert mssql_python.native_provider == PROVIDER_MSSQL_ODBC
 
 
-def test_public_get_odbc_provider_info():
-    info = mssql_python.get_odbc_provider_info()
+def test_public_get_native_provider_info():
+    info = mssql_python.get_native_provider_info()
     assert info["id"] == PROVIDER_MSODBCSQL18
     assert info["frozen"] is False
 
@@ -146,7 +146,7 @@ def test_ensure_available_default_ok():
 
 
 def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
 
     # Force the provider package to appear absent so the test is deterministic
     # regardless of what is installed in the environment.
@@ -174,7 +174,7 @@ def test_ensure_available_reraises_nested_import_error(monkeypatch):
     # A transitive dependency missing (or any other broken-package import
     # error) inside an *installed* provider package must not be masked as
     # "package is not installed" - it should propagate as-is.
-    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
     real_import = importlib.import_module
 
     def fake_import(name, *args, **kwargs):
@@ -207,3 +207,25 @@ def test_pooling_enable_does_not_freeze_provider():
     finally:
         PoolingManager.disable()
         PoolingManager._reset_for_testing()
+
+
+def test_rejected_connection_does_not_freeze_provider():
+    """Regression: a connect() that fails Python-side validation (before the
+    native driver loads) must not freeze provider selection, so a later,
+    corrected connection can still pick a different provider without restarting
+    the process. The provider is resolved only immediately before the native
+    Connection is constructed, after all argument/connection-string validation.
+    """
+    from mssql_python.connection import Connection
+    from mssql_python.exceptions import InterfaceError
+
+    assert not ProviderManager.is_frozen()
+    # An embedded NUL is rejected in _construct_connection_string, before the
+    # native driver ever loads.
+    with pytest.raises(InterfaceError):
+        Connection("Server=test\x00;Database=db")
+    assert not ProviderManager.is_frozen()
+
+    # The selection is still changeable after the rejected attempt.
+    ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
+    assert ProviderManager.effective() == PROVIDER_MSSQL_ODBC
