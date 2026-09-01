@@ -995,7 +995,7 @@ jobs:
         docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak || true
       fi
     displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -1052,7 +1052,7 @@ jobs:
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
       fi
     displayName: 'Run performance benchmarks in $(distroName) container'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
