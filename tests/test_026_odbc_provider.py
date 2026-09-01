@@ -121,18 +121,12 @@ print(ddbc_bindings.GetDriverPathCpp("provider-root"))
     arch = "arm64" if machine in {"aarch64", "arm64"} else "x86_64"
     if sys.platform == "linux":
         libc = "glibc" if platform.libc_ver()[0] == "glibc" else "musl"
-        expected = Path(
-            "provider-root", "libs", "linux", libc, arch, "lib", "mssqlodbc.so"
-        )
+        expected = Path("provider-root", "libs", "linux", libc, arch, "lib", "mssqlodbc.so")
     elif sys.platform == "darwin":
-        expected = Path(
-            "provider-root", "libs", "macos", arch, "lib", "mssqlodbc.dylib"
-        )
+        expected = Path("provider-root", "libs", "macos", arch, "lib", "mssqlodbc.dylib")
     elif sys.platform == "win32":
         win_arch = "x64" if arch == "x86_64" else arch
-        expected = Path(
-            "provider-root", "libs", "windows", win_arch, "mssqlodbc.dll"
-        )
+        expected = Path("provider-root", "libs", "windows", win_arch, "mssqlodbc.dll")
     else:
         pytest.skip(f"unsupported test platform: {sys.platform}")
         return
