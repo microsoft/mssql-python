@@ -30,7 +30,7 @@ threadsafety: int  # 1
 # Module Settings - Properties that can be get/set at module level
 lowercase: bool  # Controls column name case behavior
 native_uuid: bool  # Controls UUID type handling
-odbc_provider: str  # Selects the ODBC provider ('msodbcsql18' or 'mssql-odbc')
+odbc_provider: Optional[str]  # Selects the ODBC provider ('msodbcsql18' or 'mssql-odbc')
 
 # Settings Class
 class Settings:

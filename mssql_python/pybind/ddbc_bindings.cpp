@@ -14,6 +14,7 @@
 #include "utf_utils.h"
 
 #include <algorithm>  // std::min
+#include <cctype>
 #include <cstdint>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
@@ -1001,7 +1002,6 @@ std::string GetDriverPathCpp(const std::string& moduleDir);
 // not read the environment itself; if the push has not happened yet, it falls
 // back to the hardcoded classic default.
 // -----------------------------------------------------------------------------
-#include <cctype>
 
 namespace {
 constexpr const char* kProviderMsodbcsql18 = "msodbcsql18";
@@ -1024,8 +1024,19 @@ std::string NormalizeProviderId(const std::string& id) {
 }  // namespace
 
 void SetSelectedProvider(const std::string& id) {
+    std::string normalized = NormalizeProviderId(id);
+    if (normalized != kProviderMsodbcsql18 && normalized != kProviderMssqlOdbc) {
+        // ProviderManager (Python) already rejects an unknown id before this is
+        // ever called; this is defence-in-depth against a caller that bypasses
+        // it and talks to this native entry point directly - silently coercing
+        // an unrecognized id to the classic default would load a driver the
+        // caller didn't ask for.
+        ThrowStdException("Unknown ODBC provider '" + id +
+                          "'. Valid providers are: " + kProviderMsodbcsql18 + ", " +
+                          kProviderMssqlOdbc + ".");
+    }
     std::lock_guard<std::mutex> lock(g_providerMutex);
-    g_selectedProvider = NormalizeProviderId(id);
+    g_selectedProvider = normalized;
 }
 
 // Effective provider id: the value pushed from Python, else the classic default.

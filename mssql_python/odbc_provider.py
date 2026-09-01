@@ -109,11 +109,21 @@ class ProviderManager:
 
     @classmethod
     def effective(cls) -> str:
-        """Return the provider that would be used, without freezing it."""
+        """Return the provider that would be used, without freezing it.
+
+        Reports the release default for an invalid selection (e.g. a mistyped
+        env var) rather than raising - this backs the public getter and
+        diagnostics, which must stay safe to read at any time. The hard
+        failure for a bad selection surfaces at :meth:`resolve`/
+        :meth:`ensure_available` instead.
+        """
         with cls._lock:
             if cls._resolved is not None:
                 return cls._resolved
-            provider, _ = cls._compute()
+            try:
+                provider, _ = cls._compute()
+            except ValueError:
+                return _DEFAULT_PROVIDER
             return provider
 
     @classmethod
@@ -156,14 +166,31 @@ class ProviderManager:
 
     @classmethod
     def get_info(cls) -> Dict[str, object]:
-        """Report the selected provider for diagnostics."""
-        provider = cls._resolved if cls._resolved is not None else cls.effective()
-        return {
+        """Report the selected provider for diagnostics.
+
+        Never raises: an invalid selection is reported via the ``error`` key
+        (with ``id`` falling back to the default) instead of propagating, so
+        this stays safe to call at any time, including before a provider is
+        chosen or resolvable.
+        """
+        with cls._lock:
+            if cls._resolved is not None:
+                provider, source, error = cls._resolved, cls._source, None
+            else:
+                try:
+                    provider, source = cls._compute()
+                    error = None
+                except ValueError as exc:
+                    provider, source, error = _DEFAULT_PROVIDER, None, str(exc)
+        info: Dict[str, object] = {
             "id": provider,
             "package": _PACKAGE_BY_PROVIDER[provider],
-            "source": cls._source,
+            "source": source,
             "frozen": cls._resolved is not None,
         }
+        if error is not None:
+            info["error"] = error
+        return info
 
     @classmethod
     def _warn_frozen(cls) -> None:

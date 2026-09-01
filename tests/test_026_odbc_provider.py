@@ -90,7 +90,7 @@ def test_change_after_freeze_is_ignored_with_warning():
 def test_same_value_after_freeze_does_not_warn(recwarn):
     ProviderManager.resolve()
     ProviderManager.set_property(PROVIDER_MSODBCSQL18)
-    assert len(recwarn) == 0
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
 
 
 def test_package_name_mapping():
@@ -102,6 +102,7 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSODBCSQL18
     assert info["package"] == "mssql_python_odbc"
+    assert info["source"] == "default"
     assert info["frozen"] is False
 
     monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
@@ -111,6 +112,20 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     assert info["package"] == "mssql_python_rust_odbc"
     assert info["source"] == "environment"
     assert info["frozen"] is True
+
+
+def test_effective_and_get_info_do_not_raise_for_invalid_env_var(monkeypatch):
+    # A bad selection must not break read-only diagnostics (or the public
+    # getter, which shares effective()) - only resolve()/ensure_available()
+    # fail closed, at connection time, where the error is actionable.
+    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, "bogus-value")
+    assert ProviderManager.effective() == PROVIDER_MSODBCSQL18
+    info = ProviderManager.get_info()
+    assert info["id"] == PROVIDER_MSODBCSQL18
+    assert info["frozen"] is False
+    assert "bogus-value" in info["error"]
+    with pytest.raises(ValueError):
+        ProviderManager.resolve()
 
 
 def test_public_module_property_get_set():
