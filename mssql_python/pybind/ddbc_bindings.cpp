@@ -14,7 +14,6 @@
 #include "utf_utils.h"
 
 #include <algorithm>  // std::min
-#include <cctype>     // std::isspace, std::tolower
 #include <cstdint>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
@@ -979,10 +978,11 @@ std::string GetDriverPathCpp(const std::string& moduleDir);
 // ("msodbcsql18", shipped by mssql_python_odbc) and the Rust driver
 // ("mssql-odbc", shipped by mssql_python_rust_odbc). Python is the sole
 // resolver (env var -> module property -> default) and pushes the chosen id
-// here via _set_native_provider() before the driver loads. The native side does
+// here via set_odbc_provider() before the driver loads. The native side does
 // not read the environment itself; if the push has not happened yet, it falls
 // back to the hardcoded classic default.
 // -----------------------------------------------------------------------------
+#include <cctype>
 
 namespace {
 constexpr const char* kProviderMsodbcsql18 = "msodbcsql18";
@@ -992,37 +992,26 @@ std::mutex g_providerMutex;
 std::string g_selectedProvider;  // pushed from Python before load; "" = unset
 
 std::string NormalizeProviderId(const std::string& id) {
-    // Mirror Python's _normalize: trim surrounding whitespace and lowercase,
-    // leaving interior characters intact so the two resolvers agree.
-    size_t start = 0;
-    size_t end = id.size();
-    while (start < end && std::isspace(static_cast<unsigned char>(id[start]))) {
-        ++start;
-    }
-    while (end > start && std::isspace(static_cast<unsigned char>(id[end - 1]))) {
-        --end;
-    }
-    std::string out = id.substr(start, end - start);
-    for (char& c : out) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string out;
+    out.reserve(id.size());
+    for (char c : id) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            continue;
+        }
+        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     }
     return out;
 }
 }  // namespace
 
 void SetSelectedProvider(const std::string& id) {
-    const std::string normalized = NormalizeProviderId(id);
-    if (normalized != kProviderMsodbcsql18 && normalized != kProviderMssqlOdbc) {
-        ThrowStdException("Unknown native provider '" + id +
-                          "'. Valid providers are: msodbcsql18, mssql-odbc.");
-    }
     std::lock_guard<std::mutex> lock(g_providerMutex);
-    g_selectedProvider = normalized;
+    g_selectedProvider = NormalizeProviderId(id);
 }
 
 // Effective provider id: the value pushed from Python, else the classic default.
 // Python is the authoritative resolver (env var -> module property -> default)
-// and pushes the result via _set_native_provider() before the driver loads.
+// and pushes the result via set_odbc_provider() before the driver loads.
 std::string GetSelectedProviderId() {
     std::lock_guard<std::mutex> lock(g_providerMutex);
     if (g_selectedProvider == kProviderMssqlOdbc) {
@@ -1193,10 +1182,27 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     throw std::runtime_error("Unsupported architecture");
 #endif
 
+    // Rust provider (mssql-odbc): ships as `mssql-odbc.{so,dylib,dll}` (no `lib`
+    // prefix on Linux/macOS) under an mssql-python-defined libs/ layout.
+    // mssql-python owns the provider wheel, so this layout is authoritative and
+    // finalized alongside that wheel build.
+    if (GetSelectedProviderId() == kProviderMssqlOdbc) {
 #ifdef __linux__
-    // Detect the Linux distro/libc flavour up front. Both providers key their
-    // libs/ path on it so glibc and musl artifacts for the same arch do not
-    // collide.
+        return (basePath / "libs" / "linux" / arch / "lib" / "mssql-odbc.so").string();
+#elif defined(__APPLE__)
+        return (basePath / "libs" / "macos" / arch / "lib" / "mssql-odbc.dylib").string();
+#elif defined(_WIN32)
+        {
+            std::string winArch = (arch == "x86_64") ? "x64" : arch;
+            return (basePath / "libs" / "windows" / winArch / "mssql-odbc.dll").string();
+        }
+#else
+        throw std::runtime_error("Unsupported platform");
+#endif
+    }
+
+// Detect platform and set path
+#ifdef __linux__
     if (fs::exists("/etc/alpine-release")) {
         platform = "alpine";
     } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
@@ -1206,30 +1212,7 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     } else {
         platform = "debian_ubuntu";  // Default to debian_ubuntu for other distros
     }
-#endif
 
-    // Rust provider (id `mssql-odbc`): its driver library ships as
-    // `mssqlodbc.{so,dylib,dll}` (no hyphen, and no `lib` prefix on Linux/macOS)
-    // under an mssql-python-defined libs/ layout. mssql-python owns the provider
-    // wheel, so this layout is authoritative and finalized alongside that build.
-    if (GetSelectedProviderId() == kProviderMssqlOdbc) {
-#ifdef __linux__
-        return (basePath / "libs" / "linux" / platform / arch / "lib" / "mssqlodbc.so")
-            .string();
-#elif defined(__APPLE__)
-        return (basePath / "libs" / "macos" / arch / "lib" / "mssqlodbc.dylib").string();
-#elif defined(_WIN32)
-        {
-            std::string winArch = (arch == "x86_64") ? "x64" : arch;
-            return (basePath / "libs" / "windows" / winArch / "mssqlodbc.dll").string();
-        }
-#else
-        throw std::runtime_error("Unsupported platform");
-#endif
-    }
-
-// Detect platform and set path
-#ifdef __linux__
     // The msodbcsql version embedded in the driver filename is injected at build
     // time from mssql_python_odbc.__version__ (the single source of truth for the
     // driver version) via the MSODBCSQL_VERSION_* macros defined in
@@ -1311,10 +1294,12 @@ DriverHandle LoadDriverOrThrowException() {
         LOG("LoadDriverOrThrowException: mssql-auth.dll not found at '%s' - "
             "Entra ID authentication will not be available",
             authDllPath.string().c_str());
-        // mssql-auth.dll is required by both providers for Windows interactive
-        // Entra authentication, so its absence is always fatal here.
-        ThrowStdException("mssql-auth.dll not found. If you are using Entra "
-                          "ID, please ensure it is present.");
+        // mssql-auth.dll ships with the classic driver; the Rust provider does
+        // not require it, so its absence is only fatal for msodbcsql18.
+        if (GetSelectedProviderId() != kProviderMssqlOdbc) {
+            ThrowStdException("mssql-auth.dll not found. If you are using Entra "
+                              "ID, please ensure it is present.");
+        }
     }
 #endif
 
@@ -6120,7 +6105,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
     m.def("GetDriverPathCpp", &GetDriverPathCpp, "Get the path to the ODBC driver");
-    m.def("_set_native_provider", &SetSelectedProvider,
+    m.def("set_odbc_provider", &SetSelectedProvider,
           "Select the ODBC provider ('msodbcsql18' or 'mssql-odbc') before the driver loads");
 
     // Define parameter info class
@@ -6311,18 +6296,13 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         std::cerr << "Logger bridge initialization failed: " << e.what() << std::endl;
     }
 
-    // The ODBC driver is intentionally NOT loaded at import time. loadDriver()
-    // is guarded by std::call_once, so an eager load here would freeze the
-    // classic default before Python can push the selected provider via
-    // _set_native_provider(). The driver is loaded lazily at first use (e.g. the
-    // Connection constructor), which always runs after that push.
-    //
-    // We still force DriverLoader's singleton to be constructed here (without
-    // loading the driver) so its function-local static is always the first one
-    // created by this extension, matching its pre-lazy-load construction order.
-    // C++ destroys function-local statics in reverse order of construction, so
-    // this keeps DriverLoader's destructor running last at interpreter shutdown,
-    // instead of wherever the first real connection happens to land it.
-    DriverLoader::getInstance();
-    LOG("Module initialization: deferring ODBC driver load to first use");
+    try {
+        // Try loading the ODBC driver when the module is imported
+        LOG("Module initialization: Loading ODBC driver");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
+    } catch (const std::exception& e) {
+        // Log the error but don't throw - let the error happen when functions
+        // are called
+        LOG("Module initialization: Failed to load ODBC driver - %s", e.what());
+    }
 }

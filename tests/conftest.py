@@ -12,8 +12,6 @@ Functions:
 import pytest
 import os
 import re
-import sys
-import faulthandler
 import platform
 from mssql_python import connect
 from mssql_python.connection_string_parser import sanitize_connection_string
@@ -112,19 +110,8 @@ def is_azure_sql_connection(conn_str):
 
 
 def pytest_configure(config):
-    # TEMPORARY DIAGNOSTIC (AB#47445): keep faulthandler active so a fatal
-    # signal during interpreter shutdown (the SIGSEGV/0xC0000409 seen in CI
-    # AFTER the session ends) prints a traceback of all threads into the log.
-    # Written to the real stderr fd so it survives pytest's output capture.
-    faulthandler.enable(file=sys.__stderr__, all_threads=True)
-
-
-@pytest.hookimpl(trylast=True)
-def pytest_unconfigure(config):
-    # pytest's built-in faulthandler plugin disables faulthandler at session
-    # teardown; re-enable it here (trylast, so we run after that plugin) so the
-    # handler is still installed when the interpreter proceeds to Py_Finalize.
-    faulthandler.enable(file=sys.__stderr__, all_threads=True)
+    # Add any necessary configuration here
+    pass
 
 
 @pytest.fixture(scope="session")
