@@ -238,7 +238,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on LocalDB'
-    condition: eq(variables['sqlVersion'], 'LocalDB')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'LocalDB'))
     env:
       DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -246,7 +246,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
-    condition: eq(variables['sqlVersion'], 'SQL2022')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -254,7 +254,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2025'
-    condition: eq(variables['sqlVersion'], 'SQL2025')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -963,7 +963,7 @@ jobs:
         "
       fi
     displayName: 'Run pytest with coverage in $(distroName) container'
-    condition: or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], '')))
+    condition: and(succeeded(), or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], ''))))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
