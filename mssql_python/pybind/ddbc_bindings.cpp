@@ -1092,10 +1092,11 @@ std::string GetOdbcLibsBaseDir() {
         fs::path externalDriver(GetDriverPathCpp(parentDir.string()));
         bool externalComplete = fs::exists(externalDriver, ec);
 #ifdef _WIN32
-        // mssql-auth.dll ships only with the classic driver; requiring it here
-        // for the Rust provider would make the "provider doesn't need it" branch
-        // in LoadDriverOrThrowException below unreachable.
-        if (externalComplete && providerId == kProviderMsodbcsql18) {
+        // mssql-auth.dll is required for Windows interactive Entra ID auth on
+        // both providers (the Rust driver loads it lazily from the system
+        // search path at auth time, but the wheel is still expected to ship it
+        // co-located here so LoadDriverOrThrowException's preload succeeds).
+        if (externalComplete) {
             fs::path externalAuthDll = externalDriver.parent_path() / "mssql-auth.dll";
             externalComplete = fs::exists(externalAuthDll, ec);
         }
@@ -1327,12 +1328,12 @@ DriverHandle LoadDriverOrThrowException() {
         LOG("LoadDriverOrThrowException: mssql-auth.dll not found at '%s' - "
             "Entra ID authentication will not be available",
             authDllPath.string().c_str());
-        // mssql-auth.dll ships with the classic driver; the Rust provider does
-        // not require it, so its absence is only fatal for msodbcsql18.
-        if (GetSelectedProviderId() != kProviderMssqlOdbc) {
-            ThrowStdException("mssql-auth.dll not found. If you are using Entra "
-                              "ID, please ensure it is present.");
-        }
+        // Required for Windows interactive Entra ID auth on both providers;
+        // GetOdbcLibsBaseDir's completeness check should already have rejected
+        // a driver directory missing it, so reaching here means the check and
+        // this load-time lookup have drifted out of sync.
+        ThrowStdException("mssql-auth.dll not found. If you are using Entra "
+                          "ID, please ensure it is present.");
     }
 #endif
 
