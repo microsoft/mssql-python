@@ -102,3 +102,45 @@ if [ "$have_linux_payload" = "1" ] && { [ "$msodbc_seen" = "0" ] || [ "$odbcinst
   exit 1
 fi
 [ "$msodbc_seen" -gt 0 ] && echo "LINUX_RPATH_CLIMB_OK" || true
+
+# ---------------------------------------------------------------------------
+# macOS OpenSSL reachability -- the dyld twin of the Linux $ORIGIN climb.
+# ---------------------------------------------------------------------------
+# The bundled ODBC driver dlopen's OpenSSL (bare libssl/libcrypto) for TLS (Encrypt=yes)
+# and only bakes a Homebrew search dir; it carries no rpath, and macOS dyld does NOT
+# consult rpath for a bare-leaf dlopen -- so the Linux RUNPATH climb has no on-binary
+# macOS equivalent. Instead, ship activation hooks that prepend THIS env's lib dir to
+# dyld's FALLBACK search, so the driver resolves the conda-declared openssl in
+# $CONDA_PREFIX/lib on a Homebrew-free Mac. Fallback (not DYLD_LIBRARY_PATH) so a Homebrew
+# box is unchanged. macOS packages only -- a non-Darwin build never creates these.
+if [ "$(uname)" = "Darwin" ]; then
+  actd="$PREFIX/etc/conda/activate.d"
+  deactd="$PREFIX/etc/conda/deactivate.d"
+  mkdir -p "$actd" "$deactd"
+  cat > "$actd/mssql-python-openssl.sh" <<'EOF'
+#!/bin/sh
+# Make the conda-provided OpenSSL reachable to the bundled ODBC driver's dlopen.
+# Save the prior value (including "was unset") so deactivate restores it exactly.
+if [ -n "${DYLD_FALLBACK_LIBRARY_PATH+x}" ]; then
+  export _MSSQL_PYTHON_DYLD_FB_SET=1
+  export _MSSQL_PYTHON_DYLD_FB_PREV="$DYLD_FALLBACK_LIBRARY_PATH"
+  export DYLD_FALLBACK_LIBRARY_PATH="$CONDA_PREFIX/lib:$DYLD_FALLBACK_LIBRARY_PATH"
+else
+  export _MSSQL_PYTHON_DYLD_FB_SET=0
+  # dyld's built-in fallback (used only when the var is unset) is /usr/local/lib:/usr/lib;
+  # re-assert it so setting the var here doesn't shrink the default search.
+  export DYLD_FALLBACK_LIBRARY_PATH="$CONDA_PREFIX/lib:/usr/local/lib:/usr/lib"
+fi
+EOF
+  cat > "$deactd/mssql-python-openssl.sh" <<'EOF'
+#!/bin/sh
+if [ "${_MSSQL_PYTHON_DYLD_FB_SET:-0}" = "1" ]; then
+  export DYLD_FALLBACK_LIBRARY_PATH="$_MSSQL_PYTHON_DYLD_FB_PREV"
+else
+  unset DYLD_FALLBACK_LIBRARY_PATH
+fi
+unset _MSSQL_PYTHON_DYLD_FB_SET
+unset _MSSQL_PYTHON_DYLD_FB_PREV
+EOF
+  echo "MACOS_OPENSSL_ACTIVATE_HOOK_OK ($actd/mssql-python-openssl.sh)"
+fi
