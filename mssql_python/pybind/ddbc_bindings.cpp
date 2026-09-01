@@ -1081,7 +1081,10 @@ std::string GetOdbcLibsBaseDir() {
         fs::path externalDriver(GetDriverPathCpp(parentDir.string()));
         bool externalComplete = fs::exists(externalDriver, ec);
 #ifdef _WIN32
-        if (externalComplete) {
+        // mssql-auth.dll ships only with the classic driver; requiring it here
+        // for the Rust provider would make the "provider doesn't need it" branch
+        // in LoadDriverOrThrowException below unreachable.
+        if (externalComplete && providerId == kProviderMsodbcsql18) {
             fs::path externalAuthDll = externalDriver.parent_path() / "mssql-auth.dll";
             externalComplete = fs::exists(externalAuthDll, ec);
         }

@@ -124,23 +124,30 @@ class ProviderManager:
 
     @classmethod
     def ensure_available(cls) -> str:
-        """Resolve and freeze the provider, verifying its package is installed.
+        """Verify the selected provider's package is installed, then freeze it.
 
         Called before the native driver loads. Fails closed with an actionable
-        error if the selected provider's package is missing, rather than
-        silently loading a different provider.
+        error if the package is missing. The selection is only frozen (via
+        :meth:`resolve`) once the package has been confirmed importable, so a
+        failed check here does not permanently lock in a provider that never
+        actually loaded - a later call can still select a different, installed
+        provider instead of requiring a process restart.
         """
-        provider = cls.resolve()
+        provider = cls.effective()
         package = _PACKAGE_BY_PROVIDER[provider]
         try:
             importlib.import_module(package)
-        except ImportError as exc:
+        except ModuleNotFoundError as exc:
+            if exc.name != package:
+                # A transitive dependency of an installed package is missing,
+                # or the package is broken - don't mask it as "not installed".
+                raise
             dist = _DIST_BY_PROVIDER[provider]
             raise ImportError(
                 f"The '{provider}' ODBC provider is selected but its package "
                 f"'{package}' is not installed. Install it with: pip install {dist}"
             ) from exc
-        return provider
+        return cls.resolve()
 
     @classmethod
     def is_frozen(cls) -> bool:

@@ -139,7 +139,7 @@ def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
 
     def fake_import(name, *args, **kwargs):
         if name == "mssql_python_rust_odbc":
-            raise ModuleNotFoundError(f"No module named '{name}'")
+            raise ModuleNotFoundError(f"No module named '{name}'", name=name)
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(
@@ -150,3 +150,45 @@ def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
     message = str(excinfo.value)
     assert PROVIDER_MSSQL_ODBC in message
     assert "mssql-python-rust-odbc" in message
+    # The failed check must not freeze the selection - a later, installed
+    # provider can still be chosen instead of requiring a process restart.
+    assert not ProviderManager.is_frozen()
+
+
+def test_ensure_available_reraises_nested_import_error(monkeypatch):
+    # A transitive dependency missing (or any other broken-package import
+    # error) inside an *installed* provider package must not be masked as
+    # "package is not installed" - it should propagate as-is.
+    monkeypatch.setenv(ODBC_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mssql_python_rust_odbc":
+            raise ModuleNotFoundError(
+                "No module named 'some_transitive_dependency'", name="some_transitive_dependency"
+            )
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        sys.modules[ProviderManager.__module__].importlib, "import_module", fake_import
+    )
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        ProviderManager.ensure_available()
+    assert excinfo.value.name == "some_transitive_dependency"
+
+
+def test_pooling_enable_does_not_freeze_provider():
+    """Regression: enabling pooling before selecting a provider must not lock
+    in the default - ``enable_pooling()`` configures the pool manager only and
+    never loads the native driver, so it has no reason to resolve the provider.
+    """
+    from mssql_python.pooling import PoolingManager
+
+    try:
+        PoolingManager.enable()
+        assert not ProviderManager.is_frozen()
+        ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
+        assert ProviderManager.resolve() == PROVIDER_MSSQL_ODBC
+    finally:
+        PoolingManager.disable()
+        PoolingManager._reset_for_testing()
