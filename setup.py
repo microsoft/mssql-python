@@ -46,14 +46,15 @@ def _read_odbc_version() -> str:
         )
 
 
-def _read_rust_odbc_version():
-    """Return the ``mssql-python-rust-odbc`` version, or ``None`` if unresolvable.
+def _read_rust_odbc_version() -> str:
+    """Return the ``mssql-python-rust-odbc`` version -- the single source of truth
+    for the rust-odbc dependency pin.
 
-    Mirrors ``_read_odbc_version`` (checkout ``__init__.py`` first, then installed
-    metadata) but -- unlike the mandatory classic ODBC pin -- failure here must
-    not break the main package build: no stable ``mssql-odbc-native`` release
-    exists yet (see ``setup_rust_odbc.py``), so the ``rust-odbc`` extra below is
-    best-effort and simply omitted when the version can't be determined.
+    Mirrors ``_read_odbc_version`` exactly (checkout ``__init__.py`` first, then
+    installed metadata, ``SystemExit`` if neither resolves). No stable
+    ``mssql-odbc-native`` release exists yet, so this currently pins whatever
+    dev version is checked in (see ``eng/versions/mssql-odbc-native.version``);
+    bump it the same way as the classic pin once a stable release exists.
     """
     init_file = PROJECT_ROOT / "mssql_python_rust_odbc" / "__init__.py"
     if init_file.is_file():
@@ -67,7 +68,10 @@ def _read_rust_odbc_version():
     try:
         return version("mssql-python-rust-odbc")
     except PackageNotFoundError:
-        return None
+        raise SystemExit(
+            "Could not determine the mssql-python-rust-odbc version: neither "
+            f"{init_file} exists nor is the mssql-python-rust-odbc package installed."
+        )
 
 
 # Custom distribution to force platform-specific wheel
@@ -227,17 +231,9 @@ package_data = {
     ],
 }
 
-# Opt-in: the mssql-odbc (Rust) provider. Not a hard dependency yet --
-# mssql-odbc-native has no stable release -- so this extra is added only when
-# a version can be resolved (see _read_rust_odbc_version). Select the provider
-# at runtime via mssql_python.native_provider = "mssql-odbc" (or the
-# MSSQL_PYTHON_NATIVE_PROVIDER env var).
 extras_require = {
     "pyarrow": ["pyarrow>=14.0.0"],
 }
-_rust_odbc_version = _read_rust_odbc_version()
-if _rust_odbc_version:
-    extras_require["rust-odbc"] = [f"mssql-python-rust-odbc=={_rust_odbc_version}"]
 
 setup(
     name="mssql-python",
@@ -260,6 +256,12 @@ setup(
         # mssql_python_odbc.__version__ (single source of truth) so it can never
         # drift from the published mssql-python-odbc package.
         f"mssql-python-odbc=={_read_odbc_version()}",
+        # mssql-odbc (Rust) provider binaries (standalone package). Same pin
+        # pattern as above, derived from mssql_python_rust_odbc.__version__.
+        # Installed by default but not loaded unless selected at runtime via
+        # mssql_python.native_provider = "mssql-odbc" (or the
+        # MSSQL_PYTHON_NATIVE_PROVIDER env var) -- see mssql_python/odbc_provider.py.
+        f"mssql-python-rust-odbc=={_read_rust_odbc_version()}",
     ],
     extras_require=extras_require,
     classifiers=[
