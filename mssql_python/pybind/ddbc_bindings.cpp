@@ -851,6 +851,13 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
         // Special handling for Numeric type -
         // https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/retrieve-numeric-data-sql-numeric-struct-kb222831?view=sql-server-ver16#sql_c_numeric-overview
         if (paramInfo.paramCType == SQL_C_NUMERIC) {
+            // The APD record number is the 1-based parameter position, matching the
+            // SQLBindParameter call above. It was previously hardcoded to 1, so a
+            // SQL_C_NUMERIC parameter in any position other than the first had its
+            // precision/scale/data pointer written onto record 1 instead of its own.
+            // The driver then read the numeric struct with the wrong descriptor and
+            // raised "Numeric value out of range" (GH-740).
+            const SQLSMALLINT descRecNum = static_cast<SQLSMALLINT>(paramIndex + 1);
             SQLHDESC hDesc = nullptr;
             rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_APP_PARAM_DESC, &hDesc, 0, NULL);
             if (!SQL_SUCCEEDED(rc)) {
@@ -859,7 +866,8 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                     paramIndex, rc);
                 return rc;
             }
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_TYPE, (SQLPOINTER)SQL_C_NUMERIC, 0);
+            rc = SQLSetDescField_ptr(hDesc, descRecNum, SQL_DESC_TYPE,
+                                     (SQLPOINTER)SQL_C_NUMERIC, 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_TYPE) failed for "
                     "param[%d] - SQLRETURN=%d",
@@ -868,7 +876,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
             }
             SQL_NUMERIC_STRUCT* numericPtr = reinterpret_cast<SQL_NUMERIC_STRUCT*>(dataPtr);
             rc = SQLSetDescField_ptr(
-                hDesc, 1, SQL_DESC_PRECISION,
+                hDesc, descRecNum, SQL_DESC_PRECISION,
                 reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(numericPtr->precision)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_PRECISION) "
@@ -878,7 +886,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
             }
 
             rc = SQLSetDescField_ptr(
-                hDesc, 1, SQL_DESC_SCALE,
+                hDesc, descRecNum, SQL_DESC_SCALE,
                 reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(numericPtr->scale)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_SCALE) failed "
@@ -887,7 +895,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 return rc;
             }
 
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_DATA_PTR,
+            rc = SQLSetDescField_ptr(hDesc, descRecNum, SQL_DESC_DATA_PTR,
                                      reinterpret_cast<SQLPOINTER>(numericPtr), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_DATA_PTR) failed "

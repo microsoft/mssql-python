@@ -4,9 +4,10 @@ Tests for MONEY and SMALLMONEY type handling.
 Validates that Python Decimal values are correctly bound and round-tripped
 through MONEY, SMALLMONEY, and DECIMAL columns with proper precision handling.
 
-Key implementation detail: MONEY-range Decimals use string binding (SQL_VARCHAR)
-because SQL_NUMERIC binding fails with ODBC "Numeric value out of range" error.
-String binding preserves full precision and SQL Server handles conversion.
+Key implementation detail: every finite Decimal binds as SQL_NUMERIC using its own
+precision and scale, regardless of value. Binding no longer depends on whether the
+value falls in the MONEY/SMALLMONEY range, so an in-range value compared against a
+smaller numeric column returns no match instead of a varchar->numeric overflow (GH-740).
 """
 
 import pytest
@@ -637,6 +638,122 @@ def test_both_null(cursor, db_connection):
         row = cursor.fetchone()
         assert row[0] is None
         assert row[1] is None
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+# =============================================================================
+# GH-740: in-range Decimal must bind as SQL_NUMERIC, not VARCHAR
+# =============================================================================
+
+
+def test_gh740_in_range_decimal_numeric_comparison_no_overflow(cursor, db_connection):
+    """A money-range Decimal compared against a smaller numeric column must not raise.
+
+    Before the fix the value was bound as VARCHAR, so SQL Server did a
+    varchar->numeric conversion that overflowed instead of simply not matching.
+    """
+    table_name = "#pytest_gh740_cmp"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v numeric(5,2))")  # max 999.99
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", [Decimal("12.34")])
+        db_connection.commit()
+
+        # Both probes sit inside the MONEY range but exceed numeric(5,2); they must
+        # return no rows rather than overflow.
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE v = ?", [Decimal("12345.6789")])
+        assert cursor.fetchone()[0] == 0
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE v = ?", [Decimal("300000.00")])
+        assert cursor.fetchone()[0] == 0
+        # The matching value still matches.
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE v = ?", [Decimal("12.34")])
+        assert cursor.fetchone()[0] == 1
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+def test_gh740_numeric_param_not_in_first_position(cursor, db_connection):
+    """A SQL_NUMERIC parameter in any position (not just the first) must bind correctly.
+
+    Guards the descriptor-record fix: the APD record number was hardcoded to 1, so a
+    numeric param after a NULL (or any earlier param) was written onto the wrong record
+    and the driver raised "Numeric value out of range".
+    """
+    table_name = "#pytest_gh740_pos"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (a int, b numeric(6,4))")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?, ?)", [None, Decimal("67.8900")])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT a, b FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] is None
+        assert row[1] == Decimal("67.8900")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+def test_gh740_multiple_numerics_with_null_between(cursor, db_connection):
+    """Multiple SQL_NUMERIC params with differing scales and a NULL between them."""
+    table_name = "#pytest_gh740_multi"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (a numeric(10,4), b int, c numeric(8,2))")
+        cursor.execute(
+            f"INSERT INTO {table_name} VALUES (?, ?, ?)",
+            [Decimal("1.2300"), None, Decimal("999999.99")],
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT a, b, c FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == Decimal("1.2300")
+        assert row[1] is None
+        assert row[2] == Decimal("999999.99")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+def test_gh740_money_boundary_still_round_trips(cursor, db_connection):
+    """MONEY/SMALLMONEY boundary values still insert exactly after the binding change."""
+    for coltype, value in [
+        ("MONEY", Decimal("922337203685477.5807")),
+        ("MONEY", Decimal("-922337203685477.5808")),
+        ("SMALLMONEY", Decimal("214748.3647")),
+        ("SMALLMONEY", Decimal("-214748.3648")),
+    ]:
+        table_name = "#pytest_gh740_bound"
+        try:
+            drop_table_if_exists(cursor, table_name)
+            cursor.execute(f"CREATE TABLE {table_name} (v {coltype})")
+            cursor.execute(f"INSERT INTO {table_name} VALUES (?)", [value])
+            db_connection.commit()
+            cursor.execute(f"SELECT v FROM {table_name}")
+            assert cursor.fetchone()[0] == value
+        finally:
+            drop_table_if_exists(cursor, table_name)
+            db_connection.commit()
+
+
+def test_gh740_same_statement_changing_precision(cursor, db_connection):
+    """Re-executing the same statement with Decimals of different precision/scale works."""
+    table_name = "#pytest_gh740_reexec"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v numeric(20,6))")
+        for value in [Decimal("1.5"), Decimal("123456.789012"), Decimal("0.000001")]:
+            cursor.execute(f"INSERT INTO {table_name} VALUES (?)", [value])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT v FROM {table_name} ORDER BY v")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == [Decimal("0.000001"), Decimal("1.500000"), Decimal("123456.789012")]
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
