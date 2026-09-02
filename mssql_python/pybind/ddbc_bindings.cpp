@@ -1045,7 +1045,14 @@ void SetSelectedProvider(const std::string& id) {
         // to switch providers after load is the ordering hole this guards
         // against - re-pushing the same id must stay a silent no-op.
         std::lock_guard<std::mutex> lock(g_providerMutex);
-        if (normalized != g_selectedProvider) {
+        // A caller can construct ddbc_bindings.Connection directly, bypassing
+        // Python's provider push. In that case the loader uses the classic
+        // default while g_selectedProvider remains unset. Compare against that
+        // effective loaded provider rather than treating the later explicit
+        // push of the same default as an attempted provider change.
+        const std::string& loadedProvider =
+            g_selectedProvider.empty() ? kProviderMsodbcsql18 : g_selectedProvider;
+        if (normalized != loadedProvider) {
             ThrowStdException("Cannot change the ODBC provider after the driver has "
                               "already loaded in this process.");
         }

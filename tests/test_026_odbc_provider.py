@@ -134,6 +134,39 @@ print(ddbc_bindings.GetDriverPathCpp("provider-root"))
     assert Path(proc.stdout.strip()) == expected
 
 
+def test_direct_native_default_load_accepts_later_explicit_default():
+    # A direct native connection bypasses ProviderManager and therefore loads
+    # the classic default without first pushing it into native selection state.
+    # The later explicit push made by the public connect() path must recognize
+    # that the already-loaded driver is the same provider. Use a child process
+    # because native driver state cannot be reset after loading.
+    script = """
+from mssql_python import ddbc_bindings
+
+try:
+    ddbc_bindings.Connection(
+        "Server=127.0.0.1,1;Encrypt=no;TrustServerCertificate=yes;Connection Timeout=1",
+        False,
+        {},
+        "",
+        None,
+    )
+except RuntimeError:
+    pass
+
+ddbc_bindings._set_odbc_provider("msodbcsql18")
+print("provider accepted")
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "provider accepted"
+
+
 def test_get_info_before_and_after_resolve(monkeypatch):
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSODBCSQL18
