@@ -12,7 +12,7 @@ pr: none
 
 # Parameters for DUMMY release pipeline
 parameters:
-  # Which package to test-release. Both are produced by the same build pipeline
+  # Which package to test-release. All three are produced by the same build pipeline
   # (definition 2199); this switches the consolidated artifact and messaging.
   - name: releasePackage
     displayName: '[TEST] Package to Release'
@@ -20,6 +20,7 @@ parameters:
     values:
       - 'mssql-python'
       - 'mssql-python-odbc'
+      - 'mssql-python-rust-odbc'
     default: 'mssql-python'
 
   - name: publishSymbols
@@ -43,12 +44,15 @@ variables:
   - group: 'Symbols Publishing'  # Contains SymbolServer, SymbolTokenUri variables
 
   # Select which consolidated artifact to download based on the target package.
-  # Both are produced by the same build pipeline (definition 2199):
-  #   mssql-python       -> drop_Consolidate_ConsolidateArtifacts
-  #   mssql-python-odbc  -> drop_ConsolidateOdbc_ConsolidateArtifacts
+  # All three are produced by the same build pipeline (definition 2199):
+  #   mssql-python            -> drop_Consolidate_ConsolidateArtifacts
+  #   mssql-python-odbc       -> drop_ConsolidateOdbc_ConsolidateArtifacts
+  #   mssql-python-rust-odbc  -> drop_ConsolidateRustOdbc_ConsolidateArtifacts
   - name: consolidatedArtifactName
     ${{ if eq(parameters.releasePackage, 'mssql-python-odbc') }}:
       value: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+    ${{ elseif eq(parameters.releasePackage, 'mssql-python-rust-odbc') }}:
+      value: 'drop_ConsolidateRustOdbc_ConsolidateArtifacts'
     ${{ else }}:
       value: 'drop_Consolidate_ConsolidateArtifacts'
 
