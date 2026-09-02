@@ -4,10 +4,12 @@ Tests for MONEY and SMALLMONEY type handling.
 Validates that Python Decimal values are correctly bound and round-tripped
 through MONEY, SMALLMONEY, and DECIMAL columns with proper precision handling.
 
-Key implementation detail: every finite Decimal binds as SQL_NUMERIC using its own
-precision and scale, regardless of value. Binding no longer depends on whether the
-value falls in the MONEY/SMALLMONEY range, so an in-range value compared against a
-smaller numeric column returns no match instead of a varchar->numeric overflow (GH-740).
+Key implementation detail: on the execute() path every finite Decimal binds as
+SQL_NUMERIC using its own precision and scale, regardless of value. Binding no longer
+depends on whether the value falls in the MONEY/SMALLMONEY range, so an in-range value
+compared against a smaller numeric column returns no match instead of a varchar->numeric
+overflow (GH-740). executemany still string-binds Decimals (SQL_VARCHAR) to preserve
+scale-38 precision (GH-503), so that path is unchanged here.
 """
 
 import pytest
