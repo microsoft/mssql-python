@@ -282,7 +282,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on LocalDB'
-    condition: eq(variables['sqlVersion'], 'LocalDB')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'LocalDB'))
     env:
       DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -290,7 +290,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
-    condition: eq(variables['sqlVersion'], 'SQL2022')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -298,7 +298,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2025'
-    condition: eq(variables['sqlVersion'], 'SQL2025')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -337,7 +337,7 @@ jobs:
         exit 1
       }
     displayName: 'Download and restore AdventureWorks2022 database'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -352,7 +352,7 @@ jobs:
       artifact: 'perf-baseline-$(sqlVersion)'
       path: $(Build.SourcesDirectory)
     displayName: 'Download baseline from main'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Rename downloaded baseline so the script finds it (artifact may be in a subfolder)
@@ -365,7 +365,7 @@ jobs:
         Write-Host "No baseline file downloaded (first run or artifact missing)"
       }
     displayName: 'Prepare baseline file'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Run performance benchmarks on SQL Server 2022
@@ -457,7 +457,7 @@ jobs:
       Write-Host "`nRunning performance benchmarks..."
       python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
     displayName: 'Run performance benchmarks on SQL Server 2022/2025'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -719,7 +719,7 @@ jobs:
       rm -f /tmp/AdventureWorks2022.bak
       docker exec sqlserver rm -f /tmp/AdventureWorks2022.bak || true
     displayName: 'Download and restore AdventureWorks2022 database on macOS'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -736,7 +736,7 @@ jobs:
       artifact: 'perf-baseline-macOS-$(sqlVersion)'
       path: $(Build.SourcesDirectory)
     displayName: 'Download macOS baseline from main'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   - script: |
@@ -748,7 +748,7 @@ jobs:
         echo "No baseline file downloaded (first run or artifact missing)"
       fi
     displayName: 'Prepare macOS baseline file'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Run performance benchmarks on macOS
@@ -762,7 +762,7 @@ jobs:
       echo "Running performance benchmarks..."
       python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
     displayName: 'Run performance benchmarks on macOS $(sqlVersion)'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     timeoutInMinutes: 20
     continueOnError: true
     env:
@@ -1011,7 +1011,7 @@ jobs:
         "
       fi
     displayName: 'Run pytest with coverage in $(distroName) container'
-    condition: or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], '')))
+    condition: and(succeeded(), or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], ''))))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
       DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
@@ -1043,7 +1043,7 @@ jobs:
         docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak || true
       fi
     displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -1102,7 +1102,7 @@ jobs:
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
       fi
     displayName: 'Run performance benchmarks in $(distroName) container'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
