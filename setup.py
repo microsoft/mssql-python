@@ -46,6 +46,30 @@ def _read_odbc_version() -> str:
         )
 
 
+def _read_rust_odbc_version():
+    """Return the ``mssql-python-rust-odbc`` version, or ``None`` if unresolvable.
+
+    Mirrors ``_read_odbc_version`` (checkout ``__init__.py`` first, then installed
+    metadata) but -- unlike the mandatory classic ODBC pin -- failure here must
+    not break the main package build: no stable ``mssql-odbc-native`` release
+    exists yet (see ``setup_rust_odbc.py``), so the ``rust-odbc`` extra below is
+    best-effort and simply omitted when the version can't be determined.
+    """
+    init_file = PROJECT_ROOT / "mssql_python_rust_odbc" / "__init__.py"
+    if init_file.is_file():
+        text = init_file.read_text(encoding="utf-8")
+        match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if match:
+            return match.group(1)
+
+    from importlib.metadata import version, PackageNotFoundError
+
+    try:
+        return version("mssql-python-rust-odbc")
+    except PackageNotFoundError:
+        return None
+
+
 # Custom distribution to force platform-specific wheel
 class BinaryDistribution(Distribution):
     def has_ext_modules(self):
@@ -160,12 +184,20 @@ class CustomBdistWheel(bdist_wheel):
 # ---------------------------------------------------------------------------
 
 # Find all packages in the current directory.
-# Exclude mssql_python_odbc: it is shipped exclusively by the standalone
-# mssql-python-odbc distribution (see setup_odbc.py) and pulled in via
-# install_requires. Shipping it here too would make two distributions own the
-# same import directory (install-order file overwrites; uninstall of one can
-# remove files the other needs).
-packages = find_packages(exclude=["mssql_python_odbc", "mssql_python_odbc.*"])
+# Exclude mssql_python_odbc and mssql_python_rust_odbc: each is shipped
+# exclusively by its own standalone distribution (see setup_odbc.py /
+# setup_rust_odbc.py) and pulled in via install_requires/extras_require.
+# Shipping either here too would make two distributions own the same import
+# directory (install-order file overwrites; uninstall of one can remove files
+# the other needs).
+packages = find_packages(
+    exclude=[
+        "mssql_python_odbc",
+        "mssql_python_odbc.*",
+        "mssql_python_rust_odbc",
+        "mssql_python_rust_odbc.*",
+    ]
+)
 
 # Get platform info using consolidated function
 arch, platform_tag = get_platform_info()
@@ -195,6 +227,18 @@ package_data = {
     ],
 }
 
+# Opt-in: the mssql-odbc (Rust) provider. Not a hard dependency yet --
+# mssql-odbc-native has no stable release -- so this extra is added only when
+# a version can be resolved (see _read_rust_odbc_version). Select the provider
+# at runtime via mssql_python.native_provider = "mssql-odbc" (or the
+# MSSQL_PYTHON_NATIVE_PROVIDER env var).
+extras_require = {
+    "pyarrow": ["pyarrow>=14.0.0"],
+}
+_rust_odbc_version = _read_rust_odbc_version()
+if _rust_odbc_version:
+    extras_require["rust-odbc"] = [f"mssql-python-rust-odbc=={_rust_odbc_version}"]
+
 setup(
     name="mssql-python",
     version="1.14.0",
@@ -217,9 +261,7 @@ setup(
         # drift from the published mssql-python-odbc package.
         f"mssql-python-odbc=={_read_odbc_version()}",
     ],
-    extras_require={
-        "pyarrow": ["pyarrow>=14.0.0"],
-    },
+    extras_require=extras_require,
     classifiers=[
         "Operating System :: Microsoft :: Windows",
         "Operating System :: MacOS",

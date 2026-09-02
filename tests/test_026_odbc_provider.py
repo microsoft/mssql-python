@@ -134,6 +134,58 @@ print(ddbc_bindings.GetDriverPathCpp("provider-root"))
     assert Path(proc.stdout.strip()) == expected
 
 
+def test_rust_provider_driver_loads_real_binary():
+    # Smoke test: the packaged mssql-odbc binary for this host is a genuine,
+    # loadable ODBC driver -- not just a path-string match. No live SQL Server
+    # is needed: LoadDriverOrThrowException() resolves every required ODBC
+    # function pointer by name before any network I/O happens, so even a
+    # connection attempt against an unreachable server proves the load and
+    # symbol resolution succeeded, as long as the failure is a connect-time
+    # error rather than one of its "driver not found"/"failed to load" errors.
+    try:
+        importlib.import_module("mssql_python_rust_odbc")
+    except ImportError:
+        pytest.skip("mssql-python-rust-odbc not installed; build via setup_rust_odbc.py")
+
+    if sys.platform == "darwin":
+        pytest.skip("mssql-odbc has no macOS build yet")
+
+    script = """
+from mssql_python import ddbc_bindings
+
+ddbc_bindings._set_odbc_provider("mssql-odbc")
+try:
+    ddbc_bindings.Connection(
+        "Driver=x;Server=127.0.0.1,1;Database=x;UID=x;PWD=x;Encrypt=no;",
+        False,
+        {},
+        "",
+        None,
+    )
+    print("CONNECTED")
+except RuntimeError as e:
+    print(f"ERROR: {e}")
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    output = proc.stdout.strip()
+    load_failure_markers = (
+        "driver not found",
+        "failed to load the driver",
+        "failed to load required function pointers",
+        "failed to load library",
+    )
+    assert not any(marker in output.lower() for marker in load_failure_markers), (
+        f"expected a connect-time failure (proving the driver loaded), got: "
+        f"{output}\n{proc.stderr}"
+    )
+
+
 def test_direct_native_default_load_accepts_later_explicit_default():
     # A direct native connection bypasses ProviderManager and therefore loads
     # the classic default without first pushing it into native selection state.
