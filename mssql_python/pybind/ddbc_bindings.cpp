@@ -30,11 +30,20 @@
 // Constrained DLL search flags (Windows 8+ / Win7 + KB2533623). Defined
 // defensively in case the build's SDK headers gate them behind an older
 // _WIN32_WINNT than this project targets.
+//
+// Note: LOAD_LIBRARY_SEARCH_DEFAULT_DIRS is deliberately NOT used. It also
+// includes LOAD_LIBRARY_SEARCH_USER_DIRS -- directories any in-process module
+// registered via AddDllDirectory/SetDllDirectory -- which is outside the
+// trusted set we want. We combine APPLICATION_DIR + SYSTEM32 + DLL_LOAD_DIR
+// explicitly instead.
 #ifndef LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
 #define LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR 0x00000100
 #endif
-#ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
-#define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
+#ifndef LOAD_LIBRARY_SEARCH_APPLICATION_DIR
+#define LOAD_LIBRARY_SEARCH_APPLICATION_DIR 0x00000200
+#endif
+#ifndef LOAD_LIBRARY_SEARCH_SYSTEM32
+#define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800
 #endif
 #endif  // _WIN32
 
@@ -1061,13 +1070,15 @@ DriverHandle LoadDriverLibrary(const std::string& driverPath) {
     fs::path pathObj(driverPath);
     // Resolve the vendored driver's dependencies with a constrained search
     // path. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR adds the driver's own folder for
-    // its dependency lookups, and LOAD_LIBRARY_SEARCH_DEFAULT_DIRS restricts the
-    // rest of the search to System32 and the application directory -- excluding
-    // the current working directory and %PATH%, which the legacy LoadLibraryW
-    // search order would otherwise include.
+    // its dependency lookups; APPLICATION_DIR and SYSTEM32 add the host
+    // application directory and System32. This excludes the current working
+    // directory, %PATH%, and process-wide user DLL directories (registered via
+    // AddDllDirectory/SetDllDirectory) -- all of which the legacy LoadLibraryW
+    // order, or the broader LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, would include.
     HMODULE handle = LoadLibraryExW(
         pathObj.c_str(), nullptr,
-        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+        LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 |
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
     if (!handle) {
         LOG("LoadDriverLibrary: LoadLibraryExW failed for path='%s' - %s", driverPath.c_str(),
             GetLastErrorMessage().c_str());
@@ -1221,7 +1232,8 @@ DriverHandle LoadDriverOrThrowException() {
         // Use fs::path::c_str() which returns wchar_t* on Windows with proper encoding
         HMODULE hAuth = LoadLibraryExW(
             authDllPath.c_str(), nullptr,
-            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+            LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 |
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
         if (hAuth) {
             LOG("LoadDriverOrThrowException: mssql-auth.dll loaded "
                 "successfully from '%s'",
