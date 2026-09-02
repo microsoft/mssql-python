@@ -6,6 +6,7 @@ This module contains type objects and constructors for the mssql_python package.
 
 import datetime
 import time
+from typing import Union
 
 
 # Type Objects
@@ -120,7 +121,7 @@ def TimestampFromTicks(ticks: int) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(ticks)
 
 
-def Binary(value) -> bytes:
+def Binary(value: Union[str, bytes, bytearray, memoryview]) -> bytes:
     """
     Converts a string or bytes-like object to bytes for binary database columns.
 
