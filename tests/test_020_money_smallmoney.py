@@ -678,23 +678,29 @@ def test_gh740_in_range_decimal_numeric_comparison_no_overflow(cursor, db_connec
 
 
 def test_gh740_numeric_param_not_in_first_position(cursor, db_connection):
-    """A SQL_NUMERIC parameter in any position (not just the first) must bind correctly.
+    """A numeric param at position 2+ must not corrupt the parameter bound before it.
 
     Guards the descriptor-record fix: the APD record number was hardcoded to 1, so a
-    numeric param after a NULL (or any earlier param) was written onto the wrong record
-    and the driver raised "Numeric value out of range".
+    numeric param at any later position wrote its type/precision/scale/data-ptr onto
+    record 1, clobbering the FIRST parameter's binding as collateral. Putting a non-null
+    value first pins that collateral corruption - the first value must round-trip intact,
+    not just the numeric's own value. A NULL first would mask it (record 1 held no data).
     """
     table_name = "#pytest_gh740_pos"
     try:
         drop_table_if_exists(cursor, table_name)
-        cursor.execute(f"CREATE TABLE {table_name} (a int, b numeric(6,4))")
-        cursor.execute(f"INSERT INTO {table_name} VALUES (?, ?)", [None, Decimal("67.8900")])
+        cursor.execute(f"CREATE TABLE {table_name} (a int, b varchar(10), c numeric(6,4))")
+        cursor.execute(
+            f"INSERT INTO {table_name} VALUES (?, ?, ?)",
+            [12345, "keep", Decimal("67.8900")],
+        )
         db_connection.commit()
 
-        cursor.execute(f"SELECT a, b FROM {table_name}")
+        cursor.execute(f"SELECT a, b, c FROM {table_name}")
         row = cursor.fetchone()
-        assert row[0] is None
-        assert row[1] == Decimal("67.8900")
+        assert row[0] == 12345  # first param intact despite the later numeric
+        assert row[1] == "keep"
+        assert row[2] == Decimal("67.8900")
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
