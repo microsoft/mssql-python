@@ -153,15 +153,20 @@ void LoggerBridge::log(int level, const char* file, int line, const char* format
         return;
     }
 
-    // Refuse to log once Python is shutting down (or once we can't cheaply
-    // and safely confirm it isn't). LOG() may be reached from a destructor
-    // running on a thread CPython doesn't already know about (e.g. the last
-    // shared_ptr<SqlHandle>/Connection reference being dropped by a
+    // Refuse to log once Python is shutting down. LOG() may be reached from a
+    // destructor running on a thread CPython doesn't already know about (e.g.
+    // the last shared_ptr<SqlHandle>/Connection reference being dropped by a
     // background thread). Acquiring the GIL from such a thread while the
     // interpreter is finalizing can crash with "Fatal Python error:
     // gilstate_tss_set: failed to set current tstate (TSS)" once the
     // thread-state TSS key has been torn down. Skipping a log line is
     // harmless; crashing the process is not.
+    //
+    // Use a GIL-free finalization check so a normal, not-yet-shutting-down call
+    // that happens to arrive without the GIL held still logs (via the
+    // gil_scoped_acquire below) instead of being dropped. Py_IsFinalizing() is
+    // public since 3.13; _Py_IsFinalizing() is the exported CPython 3.7+ call it
+    // wraps, and is what pybind11 itself uses for the same purpose.
     if (Py_IsInitialized() == 0) {
         return;
     }
@@ -170,7 +175,7 @@ void LoggerBridge::log(int level, const char* file, int line, const char* format
         return;
     }
 #else
-    if (!PyGILState_Check()) {
+    if (_Py_IsFinalizing()) {
         return;
     }
 #endif

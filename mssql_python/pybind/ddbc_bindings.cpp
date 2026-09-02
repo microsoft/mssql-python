@@ -940,30 +940,14 @@ static bool is_python_finalizing() {
     // (stable since Python 3.13) built exactly for this purpose.
     return Py_IsFinalizing() != 0;
 #else
-    // Older Python versions don't expose a public GIL-free finalization
-    // check. PyGILState_Check() is itself GIL-free/thread-safe: it reports
-    // whether the *current* thread already has a registered Python thread
-    // state without creating one. If it doesn't, be conservative and treat
-    // this as "finalizing" rather than risk PyGILState_Ensure() registering
-    // a brand-new thread state for the first time on a thread CPython
-    // doesn't know about while shutdown may already be underway.
-    if (!PyGILState_Check()) {
-        return true;
-    }
-    try {
-        py::gil_scoped_acquire gil;
-        py::object sys_module = py::module_::import("sys");
-        if (!sys_module.is_none() && py::hasattr(sys_module, "_is_finalizing")) {
-            py::object finalizing_func = sys_module.attr("_is_finalizing");
-            if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
-                return true;
-            }
-        }
-        return false;
-    } catch (...) {
-        std::cerr << "Error occurred while checking Python finalization state." << std::endl;
-        return false;
-    }
+    // Older Python versions don't expose the public Py_IsFinalizing(), but the
+    // exported CPython 3.7+ call it wraps, _Py_IsFinalizing(), is equally
+    // GIL-free and thread-safe (pybind11 itself uses it for this purpose). Use
+    // it so the check is accurate: a foreign/GIL-free thread dropping the last
+    // handle reference during NORMAL operation reports "not finalizing" and the
+    // handle is actually freed, instead of a PyGILState_Check() proxy that would
+    // treat every GIL-free caller as shutdown and silently leak the handle.
+    return _Py_IsFinalizing() != 0;
 #endif
 }
 
