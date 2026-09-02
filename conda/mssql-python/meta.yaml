@@ -48,7 +48,12 @@ requirements:
     # ODBC Driver 18 payload deps (the driver ships inside this package, so its
     # security-serviced deps are declared here). OpenSSL for TLS is dlopen'd, so
     # overlinking can't see it; pinned <4 (Driver 18 supports the OpenSSL 1.1/3.0 ABI
-    # only). macOS uses Homebrew OpenSSL, Windows SChannel.
+    # only). Linux ONLY -- on macOS the driver dlopens OpenSSL from a FIXED list of
+    # system paths (/opt/homebrew, /opt/local, /usr/lib) by unversioned name, with no
+    # @loader_path/rpath/bare-leaf hook, so a conda-env copy is unreachable: declaring
+    # openssl [osx], DYLD_FALLBACK, RTLD_GLOBAL preload, and payload co-location were ALL
+    # proven ineffective (validated on real Apple Silicon, 2026-09). macOS Encrypt=yes
+    # therefore needs SYSTEM OpenSSL (brew/port), same as the PyPI wheel; Windows = SChannel.
     - openssl >=3,<4          # [linux]
     # libmsodbcsql NEEDs libkrb5 / libgssapi_krb5 on Linux (macOS framework, Windows SSPI).
     - krb5                    # [linux]
@@ -82,6 +87,12 @@ about:
     Azure SQL, and Azure Synapse. This conda package is self-contained: the
     proprietary Microsoft ODBC Driver 18 payload ships inside it (the same model as
     the v1.11.0 wheel), so no separate driver package is required.
+
+    macOS note: encrypted connections (Encrypt=yes, the default) require system OpenSSL
+    -- install it with `brew install openssl` (Homebrew) or via MacPorts. The bundled
+    ODBC driver loads OpenSSL from standard system locations, not from the conda env, so
+    without it an encrypted connect fails with "OpenSSL library could not be loaded".
+    Windows (SChannel) and Linux are fully self-contained.
 
 extra:
   recipe-maintainers:
