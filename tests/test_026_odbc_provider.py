@@ -145,7 +145,7 @@ from mssql_python import ddbc_bindings
 
 try:
     ddbc_bindings.Connection(
-        "Server=127.0.0.1,1;Encrypt=no;TrustServerCertificate=yes;Connection Timeout=1",
+        "",
         False,
         {},
         "",
