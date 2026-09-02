@@ -299,6 +299,10 @@ stages:
             inputs:
               targetType: 'filePath'
               filePath: '$(Build.SourcesDirectory)\eng\scripts\install-mssql-py-core.ps1'
+              # Pass the TARGET arch so a cross-compiled arm64 wheel vendors the
+              # win_arm64 core, not the x64 host's. The installer skips its import
+              # self-check for cross-arch; arm64 bulk copy is exercised on native agents.
+              arguments: '-TargetArch $(targetArch)'
           
           # =========================
           # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
