@@ -8,16 +8,25 @@ set "SP=%PREFIX%\Lib\site-packages"
 if not exist "%SP%" mkdir "%SP%"
 set "PKG_UNDERSCORE=%PKG_NAME:-=_%"
 
-REM Native leg: pip installs the matching wheel. Cross win-arm64 leg: the arm64 host
-REM Python can't run on the x64 agent, so extract the cp%CONDA_PY% wheel (a zip) with tar.
+REM Target arch comes from the conda TARGET platform (win-64 / win-arm64), NOT from
+REM whether the host Python can execute -- a native win-arm64 host runs its own Python yet
+REM still needs the win_arm64 payload. conda-build sets target_platform; CONDA_SUBDIR is
+REM the same value. This is the single source for both the code-wheel and ODBC driver arch.
+set "ODBC_ARCH=win_amd64"
+set "TGT_PLATFORM=%target_platform%"
+if not defined TGT_PLATFORM set "TGT_PLATFORM=%CONDA_SUBDIR%"
+if /i "%TGT_PLATFORM%"=="win-arm64" set "ODBC_ARCH=win_arm64"
+
+REM Native leg: the host Python runs, so pip installs the matching wheel. Cross leg: the
+REM target Python can't run on this agent (e.g. win_arm64 built on x64), so extract the
+REM cp%CONDA_PY% wheel (a zip) with tar. This is orthogonal to the target arch above.
 "%PYTHON%" -c "import sys" >nul 2>&1
 if errorlevel 1 (
-  echo Host Python "%PYTHON%" not executable here ^(non-emulated cross-build^); extracting cp%CONDA_PY% win_arm64 code wheel without Python.
-  set "ODBC_ARCH=win_arm64"
+  echo Host Python "%PYTHON%" not executable here ^(non-emulated cross-build^); extracting cp%CONDA_PY% !ODBC_ARCH! code wheel without Python.
   set "CODE_WHL="
-  for %%W in ("%WHEELS_DIR%\!PKG_UNDERSCORE!-%PKG_VERSION%-cp%CONDA_PY%-*-win_arm64.whl") do if exist "%%~fW" set "CODE_WHL=%%~fW"
+  for %%W in ("%WHEELS_DIR%\!PKG_UNDERSCORE!-%PKG_VERSION%-cp%CONDA_PY%-*-!ODBC_ARCH!.whl") do if exist "%%~fW" set "CODE_WHL=%%~fW"
   if not defined CODE_WHL (
-    echo ERROR: no %PKG_NAME%==%PKG_VERSION% cp%CONDA_PY% win_arm64 wheel in "%WHEELS_DIR%"
+    echo ERROR: no %PKG_NAME%==%PKG_VERSION% cp%CONDA_PY% !ODBC_ARCH! wheel in "%WHEELS_DIR%"
     exit /b 1
   )
   echo Extracting "!CODE_WHL!" into "%SP%"
@@ -30,14 +39,16 @@ if errorlevel 1 (
     echo ERROR: extracted "!CODE_WHL!" has no mssql_python\ddbc_bindings.cp%CONDA_PY% pyd ^(wrong-Python binding^).
     exit /b 1
   )
-  REM The win-arm64 wheel bundles the x64 mssql_py_core (no arm64 build exists yet); an
-  REM x64 .pyd can't load on arm64 and fails the PE-arch assert, so strip it. Bulk copy
-  REM then raises a clean "not available" error (lazy import); the rest of the DBAPI works.
-  echo Removing x64 mssql_py_core from the win-arm64 package; bulk copy is unavailable on win-arm64 until an arm64 build ships.
-  if exist "%SP%\mssql_py_core" rmdir /s /q "%SP%\mssql_py_core"
-  if exist "%SP%\mssql_py_core.libs" rmdir /s /q "%SP%\mssql_py_core.libs"
+  REM The consumed win-arm64 wheel still bundles the x64 mssql_py_core (until the arm64-
+  REM core wheel build ships); an x64 .pyd can't load on arm64 and fails the PE-arch assert,
+  REM so strip it for arm64 targets. Bulk copy then raises a clean "not available" error
+  REM (lazy import); the rest of the DBAPI works.
+  if /i "!ODBC_ARCH!"=="win_arm64" (
+    echo Removing x64 mssql_py_core from the win-arm64 package; bulk copy is unavailable on win-arm64 until an arm64 build ships.
+    if exist "%SP%\mssql_py_core" rmdir /s /q "%SP%\mssql_py_core"
+    if exist "%SP%\mssql_py_core.libs" rmdir /s /q "%SP%\mssql_py_core.libs"
+  )
 ) else (
-  set "ODBC_ARCH=win_amd64"
   "%PYTHON%" -m pip install --no-deps --no-index --find-links "%WHEELS_DIR%" %PKG_NAME%==%PKG_VERSION% -vv
   if errorlevel 1 exit /b 1
 )
@@ -45,9 +56,9 @@ if errorlevel 1 (
 REM Extract the arch-specific odbc wheel into the SAME site-packages so
 REM mssql_python_odbc\libs\ sits beside mssql_python\ and the loader finds the driver.
 REM The py3-none tag only means "no Python bytecode" -- the vendored driver DLLs ARE
-REM arch-specific, so match the EXACT target arch (%ODBC_ARCH%, set with the code-wheel
-REM cross/native determination above) rather than py3-none-win_* which also matches the
-REM other arch's wheel and could vendor an x64 driver into a win-arm64 package. The exact
+REM arch-specific, so match the EXACT target arch (%ODBC_ARCH%, derived from the conda
+REM target platform above) rather than py3-none-win_* which also matches the other arch's
+REM wheel and could vendor an x64 driver into a win-arm64 package. The exact
 REM tag is unique per version+arch, so no ambiguous multi-match is possible.
 set "ODBC_WHL="
 for %%W in ("%WHEELS_DIR%\mssql_python_odbc-%MSSQL_ODBC_VERSION%-py3-none-%ODBC_ARCH%.whl") do if exist "%%~fW" set "ODBC_WHL=%%~fW"
