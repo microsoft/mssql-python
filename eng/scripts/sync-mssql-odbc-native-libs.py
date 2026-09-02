@@ -14,13 +14,14 @@ GetDriverPathCpp() (mssql_python/pybind/ddbc_bindings.cpp) resolves for the
 truth for setup_rust_odbc.py (mirroring mssql_python_odbc/libs/) and must be
 `git add`ed after running this script.
 
-The mssql-odbc-native package (built by mssql-rs's odbc-native-stages.yml) has
-no macOS lane yet, and ships THREE Linux glibc variants; only two are used
-here:
+The mssql-odbc-native package (built by mssql-rs's odbc-native-stages.yml)
+ships THREE Linux glibc variants (only two are used here) and two macOS
+architecture slices:
   - glibc228_*  (built on manylinux_2_28 / AlmaLinux 8) -> libs/linux/glibc/
   - musl_*      (Alpine)                                -> libs/linux/musl/
   - linux_*     (newer host glibc, for mssql-rs's own distro-container tests)
                 is NOT manylinux-portable and is intentionally skipped.
+  - macos_*     (per-architecture, no lipo fusion)       -> libs/macos/
 
 Usage:
     python eng/scripts/sync-mssql-odbc-native-libs.py [--feed-url URL] [--version VERSION]
@@ -51,6 +52,8 @@ _TAG_TO_DEST = {
     "musl_arm64": ("mssqlodbc.so", "linux/musl/arm64/lib"),
     "windows_x64": ("mssqlodbc.dll", "windows/x64"),
     "windows_arm64": ("mssqlodbc.dll", "windows/arm64"),
+    "macos_x64": ("mssqlodbc.dylib", "macos/x86_64/lib"),
+    "macos_arm64": ("mssqlodbc.dylib", "macos/arm64/lib"),
 }
 
 

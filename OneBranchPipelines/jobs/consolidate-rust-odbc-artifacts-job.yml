@@ -1,15 +1,15 @@
 # Consolidate Rust ODBC Artifacts Job Template
 # Downloads the per-platform `mssql-python-rust-odbc` wheels from the
 # RustOdbc_BuildAll stage and consolidates them into a single dist/ folder for
-# the release pipeline to publish. Expected: 6 wheels (2 Windows + 4 Linux;
-# mssql-odbc has no macOS build lane yet).
+# the release pipeline to publish. Expected: 7 wheels (2 Windows + 1 macOS
+# universal2 + 4 Linux).
 parameters:
   - name: oneBranchType
     type: string
     default: 'Official'
   - name: expectedWheelCount
     type: number
-    default: 6
+    default: 7
 
 jobs:
   - job: ConsolidateArtifacts

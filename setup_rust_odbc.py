@@ -19,10 +19,6 @@ source of truth, populated by
 platform's ``libs/`` subtree (see ``_target_libs_globs``); a single build host
 can produce every platform's wheel via ``RUST_ODBC_TARGET_PLATFORM_TAG`` /
 ``RUST_ODBC_TARGET_ARCH`` (see ``get_platform_info``).
-
-mssql-odbc has no macOS build lane yet (see mssql-rs's
-``odbc-native-stages.yml``), so building a macOS wheel here fails clearly
-instead of silently shipping an empty one.
 """
 
 import os
@@ -117,11 +113,7 @@ def get_platform_info():
             return "x64", "win_amd64"
 
     elif sys.platform.startswith("darwin"):
-        raise OSError(
-            "mssql-odbc has no macOS build lane yet (see mssql-rs's "
-            "odbc-native-stages.yml) -- there are no binaries to package for a "
-            "macOS wheel."
-        )
+        return "universal2", "macosx_15_0_universal2"
 
     elif sys.platform.startswith("linux"):
         import platform
@@ -167,6 +159,9 @@ def _target_libs_globs(platform_tag: str, arch: str) -> list:
     if tag.startswith("win"):
         # arch is already the libs dir name on Windows: x64 / arm64.
         _subtree(f"libs/windows/{arch}")
+    elif tag.startswith("macos"):
+        # The universal2 wheel serves both slices (arm64 + x86_64).
+        _subtree("libs/macos")
     elif "musllinux" in tag:
         libs_arch = "arm64" if arch in ("aarch64", "arm64") else "x86_64"
         _subtree(f"libs/linux/musl/{libs_arch}")
@@ -244,6 +239,7 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: Microsoft :: Windows",
         "Operating System :: POSIX :: Linux",
+        "Operating System :: MacOS",
     ],
     zip_safe=False,
     distclass=BinaryDistribution,

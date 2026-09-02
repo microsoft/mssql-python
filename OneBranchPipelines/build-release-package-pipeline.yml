@@ -377,7 +377,7 @@ extends:
     # =========================
     # mssql-python: 9 Windows + 5 macOS + 4 Linux + 1 Consolidate = 19 stages
     # mssql-python-odbc: 1 ODBC_BuildAll (single host, all 7 wheels) + 1 ConsolidateOdbc = 2 stages
-    # mssql-python-rust-odbc: 1 RustOdbc_BuildAll (single host, all 6 wheels) + 1 ConsolidateRustOdbc = 2 stages
+    # mssql-python-rust-odbc: 1 RustOdbc_BuildAll (single host, all 7 wheels) + 1 ConsolidateRustOdbc = 2 stages
     # Total: 23 stages, always built together. The mssql-python build stages depend on
     # ConsolidateOdbc so they install the external ODBC wheel before pytest.
     # mssql-python-rust-odbc is not installed before pytest: it is an optional,
@@ -574,8 +574,8 @@ extends:
       # =========================================================================
       # RUST ODBC PACKAGE BUILD STAGE (mssql-python-rust-odbc) — SINGLE HOST
       # =========================================================================
-      # ONE Windows stage (RustOdbc_BuildAll) produces ALL 6 data-only wheels
-      # (2 Windows + 4 Linux; no macOS lane yet) — no native compile, no pytest.
+      # ONE Windows stage (RustOdbc_BuildAll) produces ALL 7 data-only wheels
+      # (2 Windows + 1 macOS universal2 + 4 Linux) — no native compile, no pytest.
       # Mirrors ODBC_BuildAll/ConsolidateOdbc above; the package is pure driver
       # data (py3-none-<platform>), so a single host cross-produces every
       # platform's wheel from the committed mssql_python_rust_odbc/libs tree via
@@ -594,7 +594,7 @@ extends:
       # =========================================================================
       # CONSOLIDATE RUST ODBC STAGE
       # =========================================================================
-      # Collects the 6 mssql-python-rust-odbc wheels into a single dist/ folder and
+      # Collects the 7 mssql-python-rust-odbc wheels into a single dist/ folder and
       # publishes them as `drop_ConsolidateRustOdbc_ConsolidateArtifacts`. The
       # release pipeline selects this artifact when its `releasePackage`
       # parameter targets mssql-python-rust-odbc.
@@ -606,4 +606,4 @@ extends:
           - template: /OneBranchPipelines/jobs/consolidate-rust-odbc-artifacts-job.yml@self
             parameters:
               oneBranchType: '${{ variables.effectiveOneBranchType }}'
-              expectedWheelCount: 6
+              expectedWheelCount: 7
