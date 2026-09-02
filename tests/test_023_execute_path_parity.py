@@ -513,9 +513,16 @@ def test_time_param_binds_wide(cursor):
 
 
 def test_money_range_decimal_binds_wide(cursor):
-    """Decimals inside the MONEY range are formatted to text and bound with the text
-    C type, the third consumer of the platform-dependent constant."""
+    """On the native path a money-range Decimal now binds as NUMERIC (GH-740), not text.
+
+    This asserts the declared base type via sql_variant, not just a value round-trip,
+    so a wrong-but-convertible C type cannot pass silently. Note the native path here
+    intentionally diverges from ``_map_sql_type`` (which still text-binds money-range
+    Decimals to protect executemany's string binding); see
+    ``test_map_sql_type_money_range_binds_as_text``.
+    """
     value = decimal.Decimal("214748.3647")
+    assert _param_basetype(cursor, value) == "numeric"
     cursor.execute("SELECT CAST(? AS MONEY)", [value])
     assert cursor.fetchone()[0] == value
 
@@ -730,7 +737,13 @@ def test_map_sql_type_aware_datetime(cursor):
 )
 def test_map_sql_type_money_range_binds_as_text(cursor, value):
     """MONEY / SMALLMONEY range Decimals are formatted to text and the slot is
-    replaced with that formatted string."""
+    replaced with that formatted string.
+
+    This is the Python reference path (legacy execute via setinputsizes, and
+    executemany). It intentionally diverges from the native path, which binds these
+    as NUMERIC after GH-740; the text binding is retained here because executemany
+    string-binds Decimals and relies on the server to coerce mixed-scale batches.
+    """
     params = [value]
     sql_type, c_type, column_size, decimal_digits, is_dae = cursor._map_sql_type(value, params, 0)
     assert (sql_type, c_type, decimal_digits, is_dae) == (
