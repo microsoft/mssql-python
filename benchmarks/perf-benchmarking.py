@@ -1,8 +1,9 @@
 """
 Performance Benchmarking: mssql-python vs pyodbc
 
-Runs scenarios (fetch queries + insertmanyvalues), compares mssql-python against pyodbc,
-and optionally against a baseline JSON from the main branch.
+Runs scenarios (fetch queries + insertmanyvalues, with and without setinputsizes),
+compares mssql-python against pyodbc, and optionally against a baseline JSON from
+the main branch.
 
 Usage:
     python benchmarks/perf-benchmarking.py                          # 2-col: PR vs pyodbc
@@ -38,7 +39,7 @@ from typing import List, Optional
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pyodbc
-from mssql_python import connect
+from mssql_python import SQL_INTEGER, SQL_VARCHAR, connect
 
 # Configuration
 CONN_STR = os.getenv("DB_CONNECTION_STRING")
@@ -74,7 +75,6 @@ def _init_conn_strings():
         # connection string.  Strip it so both drivers can share one env var.
         parts = [p for p in CONN_STR.split(";") if not p.strip().lower().startswith("driver=")]
         CONN_STR = ";".join(parts)
-
 
 
 class BenchmarkResult:
@@ -185,7 +185,13 @@ def _generate_rows(total: int) -> list:
     return [(i, f"value_{i}") for i in range(total)]
 
 
-def _run_insertmany(conn_factory, conn_str, name: str, iterations: int) -> BenchmarkResult:
+def _run_insertmany(
+    conn_factory,
+    conn_str,
+    name: str,
+    iterations: int,
+    input_sizes: Optional[List[tuple]] = None,
+) -> BenchmarkResult:
     result = BenchmarkResult(name)
     batch_sql = _build_batch_sql(INSERTMANY_BATCH_SIZE)
     all_rows = _generate_rows(INSERTMANY_ROWS)
@@ -211,6 +217,8 @@ def _run_insertmany(conn_factory, conn_str, name: str, iterations: int) -> Bench
 
             start = time.perf_counter()
             for flat_params in batches:
+                if input_sizes:
+                    cursor.setinputsizes(input_sizes)
                 cursor.execute(batch_sql, flat_params)
             elapsed = time.perf_counter() - start
 
@@ -238,6 +246,28 @@ def run_insertmany_mssql(iterations: int) -> BenchmarkResult:
     return _run_insertmany(
         lambda cs: connect(cs), CONN_STR,
         "Insertmanyvalues (100K rows)", iterations,
+    )
+
+
+def run_setinputsizes_pyodbc(iterations: int) -> BenchmarkResult:
+    input_sizes = [(pyodbc.SQL_INTEGER, 0, 0), (pyodbc.SQL_VARCHAR, 100, 0)]
+    return _run_insertmany(
+        lambda cs: pyodbc.connect(cs),
+        CONN_STR_PYODBC,
+        "Setinputsizes (100K rows)",
+        iterations,
+        input_sizes * INSERTMANY_BATCH_SIZE,
+    )
+
+
+def run_setinputsizes_mssql(iterations: int) -> BenchmarkResult:
+    input_sizes = [(SQL_INTEGER, 0, 0), (SQL_VARCHAR, 100, 0)]
+    return _run_insertmany(
+        lambda cs: connect(cs),
+        CONN_STR,
+        "Setinputsizes (100K rows)",
+        iterations,
+        input_sizes * INSERTMANY_BATCH_SIZE,
     )
 
 
@@ -573,6 +603,24 @@ def main():
         print("FAILED")
 
     all_results.append((insert_name, ms_insert, py_insert))
+
+    setinputsizes_name = "Setinputsizes (100K rows)"
+    print(f"\nRunning: {setinputsizes_name}")
+    print(f"  pyodbc...       ", end="", flush=True)
+    py_setinputsizes = run_setinputsizes_pyodbc(NUM_ITERATIONS)
+    if py_setinputsizes.times:
+        print(f"OK ({py_setinputsizes.median:.4f}s)")
+    else:
+        print("FAILED")
+
+    print(f"  mssql-python... ", end="", flush=True)
+    ms_setinputsizes = run_setinputsizes_mssql(NUM_ITERATIONS)
+    if ms_setinputsizes.times:
+        print(f"OK ({ms_setinputsizes.median:.4f}s)")
+    else:
+        print("FAILED")
+
+    all_results.append((setinputsizes_name, ms_setinputsizes, py_setinputsizes))
 
     # Output
     print_results(all_results, baseline)
