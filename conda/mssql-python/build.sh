@@ -31,10 +31,13 @@ else
   done
   [ -n "$code_whl" ] || { echo "ERROR: no ${PKG_NAME}==${PKG_VERSION} cp${CONDA_PY} wheel in '$WHEELS_DIR'" >&2; exit 1; }
   odbc_whl=""
-  for w in "$WHEELS_DIR"/mssql_python_odbc-"$odbc_ver"-py3-none-*.whl; do
+  # This cross branch only runs on macOS; the odbc payload is a single universal2 wheel
+  # (both arches in one), so match macosx explicitly rather than py3-none-* which would
+  # also match a Linux odbc wheel if one were ever staged in the same dir.
+  for w in "$WHEELS_DIR"/mssql_python_odbc-"$odbc_ver"-py3-none-macosx*.whl; do
     [ -e "$w" ] && { odbc_whl="$w"; break; }
   done
-  [ -n "$odbc_whl" ] || { echo "ERROR: no mssql_python_odbc==$odbc_ver py3-none wheel in '$WHEELS_DIR'" >&2; exit 1; }
+  [ -n "$odbc_whl" ] || { echo "ERROR: no mssql_python_odbc==$odbc_ver py3-none-macosx wheel in '$WHEELS_DIR'" >&2; exit 1; }
   echo "Extracting '$code_whl' -> '$SP_DIR'"
   unzip -oq "$code_whl" -d "$SP_DIR"
   # osx-arm64 cross can't run the arm64 Python, so statically prove the extracted
