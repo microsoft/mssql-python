@@ -193,6 +193,9 @@ inline bool PyLongGreaterThan(PyObject* value, long long threshold) {
 inline PyObject* FormatDecimalParam(PyObject* params, Py_ssize_t index, PyObject* value) {
     py::object formatted = steal(PyObject_CallMethod(value, "__format__", "s", "f"));
     if (!formatted) throw py::error_already_set();
+    if (!PyUnicode_Check(formatted.ptr())) {
+        throw py::type_error("Decimal.__format__() must return a str");
+    }
     if (PyList_SetItem(params, index, formatted.release().ptr()) != 0) {
         throw py::error_already_set();
     }

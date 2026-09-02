@@ -313,6 +313,23 @@ def test_time_isoformat_must_return_string(cursor, sql_type):
         cursor.setinputsizes(None)
 
 
+@pytest.mark.parametrize("sql_type", [None, ddbc_sql_const.SQL_DECIMAL.value])
+def test_decimal_format_must_return_string(cursor, sql_type):
+    """Native Decimal formatting rejects a broken subclass contract on either path."""
+
+    class BadDecimal(decimal.Decimal):
+        def __format__(self, format_spec):
+            return 42
+
+    if sql_type is not None:
+        cursor.setinputsizes([(sql_type, 18, 2)])
+    try:
+        with pytest.raises(TypeError, match=r"__format__\(\) must return a str"):
+            cursor.execute("SELECT ?", [BadDecimal("1.25")])
+    finally:
+        cursor.setinputsizes(None)
+
+
 def test_setinputsizes_binary_dae(cursor):
     """Declared binary sizes over 8000 stream through the native DAE path."""
     value = b"\xab" * 10000
