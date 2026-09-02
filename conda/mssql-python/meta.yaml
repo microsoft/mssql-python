@@ -46,12 +46,10 @@ requirements:
     # conda does NOT inherit the wheel's install_requires, so pin azure-identity here.
     - azure-identity >=1.12.0
     # ODBC Driver 18 payload deps (the driver ships inside this package, so its
-    # security-serviced deps are declared here). OpenSSL for TLS is dlopen'd (bare
-    # soname) on BOTH Linux and macOS, so overlinking can't see it; pinned <4 (Driver 18
-    # supports the OpenSSL 1.1/3.0 ABI only). Reachability lever differs: Linux uses the
-    # $ORIGIN RUNPATH climb; macOS uses the activate.d DYLD_FALLBACK path (build.sh) since
-    # dyld ignores rpath for a bare-leaf dlopen. Windows uses SChannel (no OpenSSL).
-    - openssl >=3,<4          # [linux or osx]
+    # security-serviced deps are declared here). OpenSSL for TLS is dlopen'd, so
+    # overlinking can't see it; pinned <4 (Driver 18 supports the OpenSSL 1.1/3.0 ABI
+    # only). macOS uses Homebrew OpenSSL, Windows SChannel.
+    - openssl >=3,<4          # [linux]
     # libmsodbcsql NEEDs libkrb5 / libgssapi_krb5 on Linux (macOS framework, Windows SSPI).
     - krb5                    # [linux]
     # libodbcinst.so.2 NEEDs libltdl.so.7 (not bundled); libtool provides it and the
