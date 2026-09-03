@@ -47,8 +47,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   module property (and `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable, which
   takes precedence) lets a caller select which native ODBC provider is loaded:
   the default `"msodbcsql18"` (Microsoft ODBC Driver 18, unchanged behavior) or
-  the opt-in `"mssql-odbc"` (a Rust-based driver, shipped separately as
-  `mssql-python-rust-odbc`). The selection must be made before the first
+  the opt-in `"mssql-odbc"` (a Rust-based driver, shipped inside the
+  `mssql-python-rs` package alongside the Rust TDS core). The selection must be made before the first
   connection; it resolves and freezes then, and a later change is ignored with
   a `RuntimeWarning`; a conflicting property assignment also warns when the
   environment variable takes precedence. Call `mssql_python.get_native_provider_info()`

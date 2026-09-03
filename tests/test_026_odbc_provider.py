@@ -114,7 +114,7 @@ def test_same_value_after_freeze_does_not_warn(recwarn):
 
 def test_package_name_mapping():
     assert ProviderManager.package_name(PROVIDER_MSODBCSQL18) == "mssql_python_odbc"
-    assert ProviderManager.package_name(PROVIDER_MSSQL_ODBC) == "mssql_python_rust_odbc"
+    assert ProviderManager.package_name(PROVIDER_MSSQL_ODBC) == "mssql_py_core"
 
 
 def _assert_classic_driver_filename(path):
@@ -209,7 +209,7 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     real_import = importlib.import_module
 
     def fake_import(name, *args, **kwargs):
-        if name == "mssql_python_rust_odbc":
+        if name == "mssql_py_core":
             return SimpleNamespace(__version__="test-version", __file__=__file__)
         return real_import(name, *args, **kwargs)
 
@@ -218,7 +218,7 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     )
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSSQL_ODBC
-    assert info["package"] == "mssql_python_rust_odbc"
+    assert info["package"] == "mssql_py_core"
     assert info["version"] == "test-version"
     assert Path(info["driver_path"]).name.startswith("mssqlodbc")
     assert info["source"] == "environment"
@@ -232,7 +232,7 @@ def test_get_info_rust_path_does_not_select_or_freeze_native_provider(monkeypatc
     real_import = importlib.import_module
 
     def fake_import(name, *args, **kwargs):
-        if name == "mssql_python_rust_odbc":
+        if name == "mssql_py_core":
             return SimpleNamespace(__version__="test-version", __file__=__file__)
         return real_import(name, *args, **kwargs)
 
@@ -285,7 +285,7 @@ def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
     real_import = importlib.import_module
 
     def fake_import(name, *args, **kwargs):
-        if name == "mssql_python_rust_odbc":
+        if name == "mssql_py_core":
             raise ModuleNotFoundError(f"No module named '{name}'", name=name)
         return real_import(name, *args, **kwargs)
 
@@ -296,7 +296,7 @@ def test_ensure_available_fails_closed_for_missing_provider(monkeypatch):
         ProviderManager.ensure_available()
     message = str(excinfo.value)
     assert PROVIDER_MSSQL_ODBC in message
-    assert "mssql-python-rust-odbc" in message
+    assert "mssql-python-rs" in message
     # The failed check must not freeze the selection - a later, installed
     # provider can still be chosen instead of requiring a process restart.
     assert not ProviderManager.is_frozen()
@@ -310,7 +310,7 @@ def test_ensure_available_reraises_nested_import_error(monkeypatch):
     real_import = importlib.import_module
 
     def fake_import(name, *args, **kwargs):
-        if name == "mssql_python_rust_odbc":
+        if name == "mssql_py_core":
             raise ModuleNotFoundError(
                 "No module named 'some_transitive_dependency'", name="some_transitive_dependency"
             )

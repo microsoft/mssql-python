@@ -5,7 +5,7 @@ Selects which ODBC provider (native driver package) mssql-python loads.
 
 Two providers are supported: ``msodbcsql18`` (the Microsoft ODBC Driver 18,
 shipped by ``mssql_python_odbc``) and ``mssql-odbc`` (the Rust driver, shipped
-by ``mssql_python_rust_odbc``). Selection is process-wide and resolved exactly
+inside ``mssql_py_core`` / the ``mssql-python-rs`` wheel). Selection is process-wide and resolved exactly
 once, before the native driver loads, from — in precedence order — the
 ``MSSQL_PYTHON_NATIVE_PROVIDER`` environment variable, the ``mssql_python.native_provider``
 module property, then the release default. An unknown value fails closed rather
@@ -32,13 +32,13 @@ _DEFAULT_PROVIDER = PROVIDER_MSODBCSQL18
 # Provider -> import package that ships its native binaries.
 _PACKAGE_BY_PROVIDER: Dict[str, str] = {
     PROVIDER_MSODBCSQL18: "mssql_python_odbc",
-    PROVIDER_MSSQL_ODBC: "mssql_python_rust_odbc",
+    PROVIDER_MSSQL_ODBC: "mssql_py_core",
 }
 
 # Provider -> the pip distribution that installs its package (for error hints).
 _DIST_BY_PROVIDER: Dict[str, str] = {
     PROVIDER_MSODBCSQL18: "mssql-python-odbc",
-    PROVIDER_MSSQL_ODBC: "mssql-python-rust-odbc",
+    PROVIDER_MSSQL_ODBC: "mssql-python-rs",
 }
 
 

@@ -1003,7 +1003,8 @@ std::string GetDriverPathForProviderCpp(const std::string& moduleDir,
 //
 // Two providers are supported: the classic Microsoft ODBC Driver 18
 // ("msodbcsql18", shipped by mssql_python_odbc) and the Rust driver
-// ("mssql-odbc", shipped by mssql_python_rust_odbc). Python is the sole
+// ("mssql-odbc", shipped inside mssql_py_core / the mssql-python-rs wheel).
+// Python is the sole
 // resolver (env var -> module property -> default) and pushes the chosen id
 // here via _set_odbc_provider() before the driver loads. The native side does
 // not read the environment itself; if the push has not happened yet, it falls
@@ -1081,11 +1082,11 @@ std::string GetSelectedProviderId() {
 }
 
 std::string ProviderPackageForId(const std::string& id) {
-    return (id == kProviderMssqlOdbc) ? "mssql_python_rust_odbc" : "mssql_python_odbc";
+    return (id == kProviderMssqlOdbc) ? "mssql_py_core" : "mssql_python_odbc";
 }
 
 std::string ProviderDistForId(const std::string& id) {
-    return (id == kProviderMssqlOdbc) ? "mssql-python-rust-odbc" : "mssql-python-odbc";
+    return (id == kProviderMssqlOdbc) ? "mssql-python-rs" : "mssql-python-odbc";
 }
 
 std::string GetOdbcLibsBaseDir() {
