@@ -313,16 +313,16 @@ def test_time_isoformat_must_return_string(cursor, sql_type):
         cursor.setinputsizes(None)
 
 
-@pytest.mark.parametrize("sql_type", [None, ddbc_sql_const.SQL_DECIMAL.value])
-def test_decimal_format_must_return_string(cursor, sql_type):
-    """Native Decimal formatting rejects a broken subclass contract on either path."""
+def test_decimal_format_must_return_string(cursor):
+    """The setinputsizes DECIMAL override string-binds a Decimal via __format__, so a
+    broken subclass contract is rejected instead of silently mis-bound. The automatic
+    path binds Decimals as SQL_NUMERIC and never formats them (GH-740)."""
 
     class BadDecimal(decimal.Decimal):
         def __format__(self, format_spec):
             return 42
 
-    if sql_type is not None:
-        cursor.setinputsizes([(sql_type, 18, 2)])
+    cursor.setinputsizes([(ddbc_sql_const.SQL_DECIMAL.value, 18, 2)])
     try:
         with pytest.raises(TypeError, match=r"__format__\(\) must return a str"):
             cursor.execute("SELECT ?", [BadDecimal("1.25")])
@@ -350,6 +350,32 @@ def test_setinputsizes_numeric_precision_and_scale_are_clamped(cursor):
         assert cursor.fetchone()[0] == value
     finally:
         cursor.setinputsizes(None)
+
+
+def test_setinputsizes_shorter_than_params_money_decimal_binds_numeric(cursor):
+    """GH-740 on the legacy path: an uncovered money-range Decimal must bind as
+    NUMERIC, not VARCHAR.
+
+    With setinputsizes shorter than the parameter list, the uncovered Decimal falls
+    through to _map_sql_type. Before the fix it took the MONEY-range VARCHAR shortcut,
+    so a comparison against a smaller numeric column made SQL Server convert
+    varchar->numeric and overflow. It must now return no match without raising, like
+    the native path.
+    """
+    cursor.execute("DROP TABLE IF EXISTS #pytest_si_gh740")
+    cursor.execute("CREATE TABLE #pytest_si_gh740 (k int, v numeric(5,2))")
+    cursor.execute("INSERT INTO #pytest_si_gh740 VALUES (1, 12.34)")
+    cursor.setinputsizes([(ddbc_sql_const.SQL_INTEGER.value, 0, 0)])  # sizes param 0 only
+    try:
+        with pytest.warns(Warning):  # count mismatch is warned, then execution proceeds
+            cursor.execute(
+                "SELECT COUNT(*) FROM #pytest_si_gh740 WHERE k = ? AND v = ?",
+                [1, decimal.Decimal("12345.6789")],
+            )
+        assert cursor.fetchone()[0] == 0
+    finally:
+        cursor.setinputsizes(None)
+        cursor.execute("DROP TABLE IF EXISTS #pytest_si_gh740")
 
 
 # ---------------------------------------------------------------------------
@@ -573,9 +599,16 @@ def test_time_param_binds_wide(cursor):
 
 
 def test_money_range_decimal_binds_wide(cursor):
-    """Decimals inside the MONEY range are formatted to text and bound with the text
-    C type, the third consumer of the platform-dependent constant."""
+    """On the native path a money-range Decimal now binds as NUMERIC (GH-740), not text.
+
+    This asserts the declared base type via sql_variant, not just a value round-trip,
+    so a wrong-but-convertible C type cannot pass silently. Note the native path here
+    intentionally diverges from ``_map_sql_type`` (which still text-binds money-range
+    Decimals to protect executemany's string binding); see
+    ``test_map_sql_type_money_range_binds_as_text``.
+    """
     value = decimal.Decimal("214748.3647")
+    assert _param_basetype(cursor, value) == "numeric"
     cursor.execute("SELECT CAST(? AS MONEY)", [value])
     assert cursor.fetchone()[0] == value
 
@@ -790,7 +823,13 @@ def test_map_sql_type_aware_datetime(cursor):
 )
 def test_map_sql_type_money_range_binds_as_text(cursor, value):
     """MONEY / SMALLMONEY range Decimals are formatted to text and the slot is
-    replaced with that formatted string."""
+    replaced with that formatted string.
+
+    This is the Python reference path (legacy execute via setinputsizes, and
+    executemany). It intentionally diverges from the native path, which binds these
+    as NUMERIC after GH-740; the text binding is retained here because executemany
+    string-binds Decimals and relies on the server to coerce mixed-scale batches.
+    """
     params = [value]
     sql_type, c_type, column_size, decimal_digits, is_dae = cursor._map_sql_type(value, params, 0)
     assert (sql_type, c_type, decimal_digits, is_dae) == (
