@@ -69,6 +69,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-740:** A Python `Decimal` whose value falls in the SQL Server MONEY /
+  SMALLMONEY range is now bound as `SQL_NUMERIC` with its own precision and scale
+  on both `execute()` paths (native detection, and the legacy path reached when
+  `setinputsizes()` covers fewer positions than parameters). Previously it was
+  bound as a formatted `VARCHAR` based on the value alone, so comparing it against
+  a smaller `numeric`/`decimal` column (`WHERE v = ?`) made SQL Server convert
+  `varchar`→`numeric` and raise an arithmetic overflow instead of simply not
+  matching. Also fixes a latent binder bug the shortcut was masking: the numeric
+  APD descriptor record number was hardcoded to `1`, so a numeric parameter in any
+  position other than the first corrupted the parameter bound at position 1.
+  **Behavioral change on the wire:** money-range Decimals now arrive as `numeric`
+  rather than `varchar` — a bare `SELECT ?` returns `Decimal` instead of `str`,
+  `sql_variant` stores them as `numeric`, and because `numeric` outranks
+  `money`/`varchar` in data-type precedence, `WHERE money_or_varchar_col = ?` can
+  add a `CONVERT_IMPLICIT` on the column side that turns an index seek into a scan.
+  `executemany` intentionally keeps its batch `VARCHAR` string binding (GH-503);
+  the remaining money-range case there is tracked in #745.
 - **GH-725:** The `timeout` parameter of `connect()` / `Connection(...)` now
   correctly sets the **login (connection-attempt) timeout**
   (`SQL_ATTR_LOGIN_TIMEOUT`), matching pyodbc and its own docstring. Previously
