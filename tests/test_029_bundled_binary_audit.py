@@ -11,6 +11,7 @@ import importlib.util
 import io
 import json
 import struct
+import sys
 import tarfile
 from pathlib import Path
 
@@ -30,6 +31,9 @@ if not _MODULE_PATH.is_file():
 
 
 def _load_module():
+    # audit_bundled_binaries.py imports its sibling _conda_pkg; put eng/scripts on sys.path so
+    # the by-path load here resolves it (a direct `python <script>` run gets this for free).
+    sys.path.insert(0, str(_MODULE_PATH.parent))
     spec = importlib.util.spec_from_file_location("audit_bundled_binaries_under_test", _MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -273,6 +277,21 @@ def test_audit_fails_openssl_not_range_pinned(tmp_path):
     depends = ["python", "azure-identity", "krb5", "libtool", "openssl"]
     errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
     assert any("range-pinned" in e for e in errors)
+
+
+def test_audit_fails_openssl_loose_upper_bound(tmp_path):
+    # '<40' merely CONTAINS the substring '<4' but admits openssl 4..39 -> must FAIL
+    # (the substring heuristic this replaced would have false-passed here).
+    depends = ["python", "azure-identity", "krb5", "libtool", "openssl >=3,<40"]
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    assert any("range-pinned" in e for e in errors)
+
+
+def test_audit_passes_openssl_alpha_upper_bound(tmp_path):
+    # conda's canonical exclusive upper bound is '<4.0a0'; the proper parse must accept it.
+    depends = ["python", "azure-identity", "krb5", "libtool", "openssl >=3,<4.0a0"]
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    assert not any("range-pinned" in e for e in errors)
 
 
 def test_audit_fails_driver_missing_from_one_subdir(tmp_path):

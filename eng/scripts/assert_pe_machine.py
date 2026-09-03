@@ -10,8 +10,8 @@ package and nothing would catch it before publish.
 This is the Windows twin of eng/scripts/audit_bundled_binaries.py (which audits the
 Linux ELF payload): it reads the PE COFF Machine field straight out of every
 .pyd/.dll in the built .conda payload and asserts it matches the package's subdir
-(win-arm64 -> ARM64, win-64 -> AMD64). A Windows package with NO native binary FAILS
-(the binding's ddbc_bindings*.pyd + the vendored ODBC driver DLLs must be present).
+(win-arm64 -> ARM64, win-64 -> AMD64). A Windows package missing EITHER the binding
+(ddbc_bindings*.pyd) OR the core ODBC driver (msodbcsql18*.dll) FAILS.
 
 Exit 0 = every checked package's PE binaries match; non-zero = a mismatch/violation.
 """
@@ -20,13 +20,11 @@ from __future__ import annotations
 
 import argparse
 import glob
-import io
-import json
 import os
 import struct
 import sys
-import tarfile
-import zipfile
+
+from _conda_pkg import iter_payload_members as _iter_payload_members, read_index
 
 # IMAGE_FILE_MACHINE_* (winnt.h): the PE COFF Machine field -> a short name.
 _MACHINES = {
@@ -46,19 +44,6 @@ _SUBDIR_MACHINE = {
 _NATIVE_SUFFIXES = (".pyd", ".dll")
 
 
-def _zstd_decompress(raw: bytes) -> bytes:
-    """Decompress a zstandard blob, preferring the 3.14+ stdlib backend."""
-    try:  # Python 3.14+
-        from compression import zstd  # type: ignore
-
-        return zstd.decompress(raw)
-    except Exception:
-        pass
-    import zstandard  # third-party fallback
-
-    return zstandard.ZstdDecompressor().decompress(raw)
-
-
 def pe_machine(data: bytes):
     """Return the PE COFF Machine value (int) for a Windows binary, or None.
 
@@ -73,57 +58,9 @@ def pe_machine(data: bytes):
     return struct.unpack_from("<H", data, e_lfanew + 4)[0]
 
 
-def _iter_payload_members(path: str):
-    """Yield ``(member_name, data_bytes)`` for files in a .conda / .tar.bz2 payload."""
-    if path.endswith(".conda"):
-        with zipfile.ZipFile(path) as zf:
-            pkg_name = next(
-                (n for n in zf.namelist() if n.startswith("pkg-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if pkg_name is None:
-                return
-            blob = _zstd_decompress(zf.read(pkg_name))
-        with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
-            for m in tf.getmembers():
-                if not m.isfile():
-                    continue
-                f = tf.extractfile(m)
-                if f is not None:
-                    yield m.name, f.read()
-    elif path.endswith(".tar.bz2"):
-        with tarfile.open(path, "r:bz2") as tf:
-            for m in tf.getmembers():
-                if not m.isfile():
-                    continue
-                f = tf.extractfile(m)
-                if f is not None:
-                    yield m.name, f.read()
-
-
 def read_subdir(path: str) -> str:
     """Return the package's ``info/index.json`` ``subdir`` (RAISES on malformed package)."""
-    if path.endswith(".conda"):
-        with zipfile.ZipFile(path) as zf:
-            info_name = next(
-                (n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if info_name is None:
-                raise ValueError("no info-*.tar.zst member (malformed .conda)")
-            blob = _zstd_decompress(zf.read(info_name))
-        with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
-            member = tf.extractfile("info/index.json")
-            if member is None:
-                raise ValueError("info/index.json missing")
-            return str(json.load(member).get("subdir", ""))
-    if path.endswith(".tar.bz2"):
-        with tarfile.open(path, "r:bz2") as tf:
-            member = tf.extractfile("info/index.json")
-            if member is None:
-                raise ValueError("info/index.json missing")
-            return str(json.load(member).get("subdir", ""))
-    raise ValueError("unrecognized conda package extension")
+    return str(read_index(path).get("subdir", ""))
 
 
 def audit_package(path: str) -> list[str]:
@@ -150,7 +87,15 @@ def audit_package(path: str) -> list[str]:
         low = name.replace("\\", "/").lower()
         if "/mssql_python/" in low and "ddbc_bindings" in low and low.endswith(".pyd"):
             binding_seen += 1
-        if "/mssql_python_odbc/libs/windows/" in low and low.endswith(".dll"):
+        # The presence gate requires the CORE driver (msodbcsql18*.dll) specifically, not
+        # just any vendored .dll: a package shipping only support DLLs (e.g. mssql-auth or a
+        # VC++ runtime) with the core driver missing would otherwise pass -- and on win-arm64
+        # (runtime import skipped) this is the only check standing between it and publish.
+        if (
+            "/mssql_python_odbc/libs/windows/" in low
+            and os.path.basename(low).startswith("msodbcsql18")
+            and low.endswith(".dll")
+        ):
             driver_dll_seen += 1
         machine = pe_machine(data)
         if machine is None:
@@ -180,8 +125,9 @@ def audit_package(path: str) -> list[str]:
             )
         if driver_dll_seen == 0:
             errors.append(
-                f"{base_name}: no vendored ODBC driver DLL "
-                f"(mssql_python_odbc/libs/windows/**/*.dll) found in a '{subdir}' package."
+                f"{base_name}: no vendored core ODBC driver DLL "
+                f"(mssql_python_odbc/libs/windows/**/msodbcsql18*.dll) found in a "
+                f"'{subdir}' package."
             )
     return errors
 

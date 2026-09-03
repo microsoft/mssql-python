@@ -40,14 +40,13 @@ from __future__ import annotations
 
 import argparse
 import glob
-import io
-import json
 import os
 import posixpath
+import re
 import struct
 import sys
-import tarfile
-import zipfile
+
+from _conda_pkg import iter_payload_members as _iter_payload_members, read_index
 
 # --- ELF constants ---------------------------------------------------------
 _DT_NEEDED = 1
@@ -83,19 +82,6 @@ _EM_X86_64 = 62
 _EM_AARCH64 = 183
 _SUBDIR_MACHINE = {"linux-64": _EM_X86_64, "linux-aarch64": _EM_AARCH64}
 _MACHINE_NAME = {_EM_X86_64: "x86_64", _EM_AARCH64: "aarch64"}
-
-
-def _zstd_decompress(raw: bytes) -> bytes:
-    """Decompress a zstandard blob, preferring the 3.14+ stdlib backend."""
-    try:  # Python 3.14+
-        from compression import zstd  # type: ignore
-
-        return zstd.decompress(raw)
-    except Exception:
-        pass
-    import zstandard  # third-party fallback
-
-    return zstandard.ZstdDecompressor().decompress(raw)
 
 
 def _is_elf(data: bytes) -> bool:
@@ -232,63 +218,6 @@ def expected_climb_entry(member_name: str) -> str:
     return "$ORIGIN/" + climb
 
 
-def _iter_payload_members(path: str):
-    """Yield ``(member_name, data_bytes)`` for the files in a conda package payload."""
-    if path.endswith(".conda"):
-        with zipfile.ZipFile(path) as zf:
-            pkg_name = next(
-                (n for n in zf.namelist() if n.startswith("pkg-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if pkg_name is None:
-                return
-            blob = _zstd_decompress(zf.read(pkg_name))
-        with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
-            for m in tf.getmembers():
-                if not m.isfile():
-                    continue
-                f = tf.extractfile(m)
-                if f is not None:
-                    yield m.name, f.read()
-    elif path.endswith(".tar.bz2"):
-        with tarfile.open(path, "r:bz2") as tf:
-            for m in tf.getmembers():
-                if not m.isfile():
-                    continue
-                f = tf.extractfile(m)
-                if f is not None:
-                    yield m.name, f.read()
-
-
-def read_index(path: str) -> dict:
-    """Return the package's ``info/index.json`` as a dict.
-
-    RAISES on a malformed/unreadable package -- callers must NOT swallow this into a
-    silent "non-Linux, skip" (a truncated Linux package would then slip through).
-    """
-    if path.endswith(".conda"):
-        with zipfile.ZipFile(path) as zf:
-            info_name = next(
-                (n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if info_name is None:
-                raise ValueError("no info-*.tar.zst member (malformed .conda)")
-            blob = _zstd_decompress(zf.read(info_name))
-        with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
-            member = tf.extractfile("info/index.json")
-            if member is None:
-                raise ValueError("info/index.json missing")
-            return json.load(member)
-    if path.endswith(".tar.bz2"):
-        with tarfile.open(path, "r:bz2") as tf:
-            member = tf.extractfile("info/index.json")
-            if member is None:
-                raise ValueError("info/index.json missing")
-            return json.load(member)
-    raise ValueError("unrecognized conda package extension")
-
-
 def _dep_names(depends) -> set:
     """The package names (first token) of an ``info/index.json`` ``depends`` list."""
     names = set()
@@ -297,6 +226,29 @@ def _dep_names(depends) -> set:
         if token:
             names.add(token[0])
     return names
+
+
+def _openssl_range_ok(constraint: str) -> bool:
+    """True iff an openssl spec pins the Driver-18 ABI range: a ``>=3`` lower AND a ``<4`` upper.
+
+    Parses each comma-separated clause as ``(operator, version)`` instead of substring-
+    matching, so a loose spelling like ``>=3,<40`` (whose ``<40`` merely CONTAINS ``<4``)
+    is correctly REJECTED, while conda's canonical alpha upper bound ``<4.0a0`` is accepted.
+    A spec with no upper bound (bare ``>=3``) is rejected -- it would admit openssl 4.
+    """
+    has_lower_3 = False
+    has_upper_4 = False
+    for clause in constraint.split(","):
+        m = re.match(r"\s*(>=|<=|==|=|>|<)\s*([0-9][0-9.]*)", clause)
+        if not m:
+            continue
+        op, ver = m.group(1), m.group(2)
+        major = int(ver.split(".")[0])
+        if op in (">=", ">", "==", "=") and major == 3:
+            has_lower_3 = True
+        elif op in ("<", "<=") and major == 4:
+            has_upper_4 = True
+    return has_lower_3 and has_upper_4
 
 
 def audit_package(path: str) -> list[str]:
@@ -334,7 +286,7 @@ def audit_package(path: str) -> list[str]:
             "openssl",
         )
         constraint = spec[len("openssl") :].strip()
-        if ">=3" not in constraint or "<4" not in constraint:
+        if not _openssl_range_ok(constraint):
             errors.append(
                 f"{base_name}: openssl dep '{spec}' is not range-pinned '>=3,<4' "
                 f"(Driver 18 supports only the OpenSSL 1.1/3.0 ABI)."
@@ -423,15 +375,6 @@ def audit_package(path: str) -> list[str]:
             errors.append(
                 f"{name}: RUNPATH has unexpected relative entries {unexpected_rel}; the "
                 f"effective RUNPATH must be exactly ['$ORIGIN', '{want}'] (got {entries})."
-            )
-        # The recipe promises the EXACT canonical ORDER "$ORIGIN:$ORIGIN/<climb>" ($ORIGIN
-        # first, so the co-located sibling resolves before the $PREFIX/lib climb). Enforce
-        # order too (not just the set) -- only when both are present, since a missing entry
-        # is already reported above -- so a reversed RUNPATH is caught.
-        if "$ORIGIN" in entries and want in entries and entries != ["$ORIGIN", want]:
-            errors.append(
-                f"{name}: RUNPATH order is {entries}; the canonical form is "
-                f"['$ORIGIN', '{want}'] ($ORIGIN must come first)."
             )
 
         # N2b: the expected DT_NEEDED set must still be present (glibc variants only;

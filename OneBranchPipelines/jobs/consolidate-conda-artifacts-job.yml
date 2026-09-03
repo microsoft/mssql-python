@@ -104,7 +104,7 @@ jobs:
             n=$(find "$d" -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)
             printf '  %-14s %s\n' "$sub" "$n"
           done
-          echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 25)"
+          echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 28)"
 
           # BEST-EFFORT: warn only, never exit non-zero — a conda hiccup on any leg
           # must not fail this build or block the wheel release. The release pipeline's

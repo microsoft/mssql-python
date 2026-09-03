@@ -82,6 +82,23 @@ def test_tls_completed_true_for_clean_connect():
     assert probe.tls_completed(None) is True
 
 
+def test_tls_completed_false_for_pre_tls_error_carrying_18456():
+    # Regression for the dropped 18456+'login' arm: a PRE-TLS network timeout whose text
+    # coincidentally contains both 'login' and '18456' must NOT be read as a completed
+    # handshake (it would false-pass this fail-closed gate).
+    probe = _load_probe()
+    msg = "[Microsoft][ODBC Driver 18 for SQL Server]Login timeout expired. Error 18456."
+    assert probe.tls_completed(RuntimeError(msg)) is False
+
+
+def test_tls_completed_true_for_sqlstate_28000_localized():
+    # A localized 'login failed' whose English text is translated still carries the
+    # locale-independent SQLSTATE 28000 (post-handshake) -> PASS via the 28000 arm.
+    probe = _load_probe()
+    msg = "[Microsoft][ODBC Driver 18 for SQL Server]SQLSTATE 28000: connexion refusee."
+    assert probe.tls_completed(RuntimeError(msg)) is True
+
+
 def test_force_tls_appends_when_absent():
     probe = _load_probe()
     out = probe.force_tls("Server=dbserver;Database=x")

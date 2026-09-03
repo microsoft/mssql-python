@@ -49,6 +49,16 @@ parameters:
     displayName: 'Enable minimal-base ldd reachability gate (needs a minimal Linux base)'
     type: boolean
     default: false
+  # Make the live Encrypt=yes TLS gate MANDATORY on the Linux leg (CONDA_TLS_PROBE_REQUIRED=1):
+  # a missing/malformed CONDA_TLS_PROBE_CONN then FAILS the leg instead of skipping. Enable
+  # ONLY together with a real `condaTlsProbeConn` secret on a minimal base with no system
+  # OpenSSL -- otherwise the gate is inconclusive (a system libssl masks the bug) or fails for
+  # lack of a connection string. Default off so the plumbing exists without blocking a build
+  # before the secret/infra is wired.
+  - name: enableMandatoryTlsGate
+    displayName: 'Make the Encrypt=yes TLS gate mandatory (needs condaTlsProbeConn + minimal base)'
+    type: boolean
+    default: false
 
 variables:
   - name: effectiveOneBranchType
@@ -258,11 +268,13 @@ extends:
               # SECRET variable -- NOT a queue-time parameter, which ADO leaves UNMASKED in
               # the run UI/logs. Define `condaTlsProbeConn` as a secret in a variable group /
               # Key Vault linked to this pipeline; unset = the probe SKIPs loudly. The ldd
-              # reachability gate runs (fail-closed) only when explicitly enabled on a
-              # minimal base.
+              # reachability gate and the MANDATORY-TLS gate (CONDA_TLS_PROBE_REQUIRED) run
+              # (fail-closed) only when explicitly enabled on a minimal base.
               CONDA_TLS_PROBE_CONN: $(condaTlsProbeConn)
               ${{ if parameters.enableMinimalReachabilityGate }}:
                 CONDA_ASSERT_PREFIX_REACHABLE: '1'
+              ${{ if parameters.enableMandatoryTlsGate }}:
+                CONDA_TLS_PROBE_REQUIRED: '1'
             steps:
               - checkout: self
                 fetchDepth: 1

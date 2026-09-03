@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import struct
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -26,6 +27,9 @@ if not _MODULE_PATH.is_file():
 
 
 def _load_module():
+    # assert_pe_machine.py imports its sibling _conda_pkg; put eng/scripts on sys.path so the
+    # by-path load here resolves it (a direct `python <script>` run gets this for free).
+    sys.path.insert(0, str(_MODULE_PATH.parent))
     spec = importlib.util.spec_from_file_location("assert_pe_machine_under_test", _MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -186,6 +190,25 @@ def test_win_missing_binding_fails(tmp_path):
     )
     errors = ape.audit_package(p)
     assert any("native binding" in e for e in errors)
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_win_support_dll_only_fails(tmp_path):
+    # Binding + a SUPPORT dll (mssql-auth) present, but the CORE driver msodbcsql18*.dll is
+    # missing -> the presence gate must still fail (a support-only package is not shippable),
+    # and on win-arm64 this is the sole check.
+    p = _make_conda(
+        tmp_path,
+        "win-arm64",
+        {
+            "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
+            "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/mssql-auth.dll": _fake_pe(
+                _ARM64
+            ),
+        },
+    )
+    errors = ape.audit_package(p)
+    assert any("driver DLL" in e for e in errors)
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")

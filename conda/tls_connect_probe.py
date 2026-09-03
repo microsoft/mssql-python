@@ -72,11 +72,12 @@ def tls_completed(exc):
     msg = str(exc).lower()
     if any(marker in msg for marker in _TLS_COMPLETED_MARKERS):
         return True
-    # SQL Server login-failed error 18456 is post-handshake proof, but the BARE number can
-    # appear in an unrelated pre-TLS error (a port, an IP octet, an id). Only accept it when
-    # it co-occurs with a login context (SQLSTATE 28000 or the word 'login'), so a network/
-    # timeout error that merely contains '18456' cannot pass as TLS-completed.
-    if "18456" in msg and ("login" in msg or "28000" in msg):
+    # SQLSTATE 28000 (invalid authorization spec) is a locale-independent, post-handshake
+    # proof of a REJECTED login -- useful when the server's "login failed" text is localized
+    # and misses the English marker above. We deliberately do NOT also accept a bare native
+    # error number (e.g. '18456'): a pre-TLS 'Login timeout expired ... 18456' would contain
+    # both '18456' and 'login' and FALSE-PASS this fail-closed gate.
+    if "28000" in msg:
         return True
     return False
 

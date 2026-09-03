@@ -349,7 +349,10 @@ for py in $pyvers; do
     ldd_all=""
     for lib in "$drv" "$inst"; do
       echo "--- ldd $(basename "$lib") ---"
-      if ! out="$("$conda" run -n "$envName" ldd "$lib" 2>&1)"; then
+      # Clear any inherited LD_LIBRARY_PATH so resolution proves the RUNPATH $ORIGIN climb
+      # ALONE reaches $CONDA_PREFIX/lib -- an ambient LD_LIBRARY_PATH could otherwise satisfy
+      # the sonames and MASK a broken RUNPATH.
+      if ! out="$("$conda" run -n "$envName" env -u LD_LIBRARY_PATH ldd "$lib" 2>&1)"; then
         echo "$out"
         echo "ERROR: [py $py] ldd failed on $(basename "$lib"); cannot verify reachability." >&2
         exit 1
@@ -374,7 +377,7 @@ $out"
         [ -n "$line" ] || continue
         resolved="$(printf '%s' "$line" | sed -nE 's/.*=> +([^ ]+).*/\1/p')"
         case "$resolved" in
-          "$env_prefix"/*) n_prefix=$((n_prefix + 1)); echo "OK       $line" ;;
+          "$env_prefix"/lib/*) n_prefix=$((n_prefix + 1)); echo "OK       $line" ;;
           "") n_bad=$((n_bad + 1)); echo "NOTFOUND $line" >&2 ;;
           *) n_bad=$((n_bad + 1)); echo "SYSTEM   $line" >&2 ;;
         esac
