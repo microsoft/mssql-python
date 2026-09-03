@@ -83,9 +83,9 @@ from .odbc_provider import ProviderManager
 def get_native_provider_info() -> dict:
     """Return the selected native provider for diagnostics.
 
-    Reports the provider ``id``, the ``package`` that ships its native binaries,
-    the selection ``source`` (once resolved), and whether the choice is
-    ``frozen`` (loaded and no longer changeable).
+    Reports the provider ``id``, package ``version``, resolved ``driver_path``,
+    the ``package`` that ships its native binaries, selection ``source``, and
+    whether the choice is ``frozen`` (loaded and no longer changeable).
     """
     return ProviderManager.get_info()
 

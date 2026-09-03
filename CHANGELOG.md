@@ -50,8 +50,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   the opt-in `"mssql-odbc"` (a Rust-based driver, shipped separately as
   `mssql-python-rust-odbc`). The selection must be made before the first
   connection; it resolves and freezes then, and a later change is ignored with
-  a `RuntimeWarning`. Call `mssql_python.get_native_provider_info()` for
-  diagnostics (selected id, package, source, and whether it's frozen). This PR
+  a `RuntimeWarning`; a conflicting property assignment also warns when the
+  environment variable takes precedence. Call `mssql_python.get_native_provider_info()`
+  for diagnostics (selected id, package, version, driver path, source, and
+  whether it's frozen). This PR
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed

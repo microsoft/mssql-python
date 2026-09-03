@@ -974,6 +974,8 @@ std::string GetLastErrorMessage();
 // (`GetDriverPathCpp` is defined further below; forward-declared here so we can
 // verify the external package actually ships this platform's driver binary.)
 std::string GetDriverPathCpp(const std::string& moduleDir);
+std::string GetDriverPathForProviderCpp(const std::string& moduleDir,
+                                        const std::string& providerId);
 
 // -----------------------------------------------------------------------------
 // ODBC provider selection
@@ -1203,7 +1205,8 @@ std::string GetLastErrorMessage() {
  * dependencies during critical initialization, ensuring compatibility across
  * all supported platforms.
  */
-std::string GetDriverPathCpp(const std::string& moduleDir) {
+std::string GetDriverPathForProviderCpp(const std::string& moduleDir,
+                                        const std::string& providerId) {
 #if !defined(MSODBCSQL_VERSION_MAJOR) || !defined(MSODBCSQL_VERSION_MAJOR_MINOR)
 #error \
     "MSODBCSQL_VERSION_MAJOR / MSODBCSQL_VERSION_MAJOR_MINOR must be defined at build time. " \
@@ -1212,6 +1215,11 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
 #endif
     namespace fs = std::filesystem;
     fs::path basePath(moduleDir);
+    const std::string normalizedProvider = NormalizeProviderId(providerId);
+    if (normalizedProvider != kProviderMsodbcsql18 &&
+        normalizedProvider != kProviderMssqlOdbc) {
+        throw std::invalid_argument("Unknown ODBC provider '" + providerId + "'.");
+    }
 
     std::string platform;
     std::string arch;
@@ -1229,7 +1237,7 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
     // prefix on Linux/macOS) under an mssql-python-defined libs/ layout.
     // mssql-python owns the provider wheel, so this layout is authoritative and
     // finalized alongside that wheel build.
-    if (GetSelectedProviderId() == kProviderMssqlOdbc) {
+    if (normalizedProvider == kProviderMssqlOdbc) {
 #ifdef __linux__
     #if defined(__GLIBC__)
         constexpr const char* libc = "glibc";
@@ -1292,6 +1300,10 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
 #else
     throw std::runtime_error("Unsupported platform");
 #endif
+}
+
+std::string GetDriverPathCpp(const std::string& moduleDir) {
+    return GetDriverPathForProviderCpp(moduleDir, GetSelectedProviderId());
 }
 
 DriverHandle LoadDriverOrThrowException() {
@@ -6162,6 +6174,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
     m.def("GetDriverPathCpp", &GetDriverPathCpp, "Get the path to the ODBC driver");
+    m.def("_get_odbc_driver_path", &GetDriverPathForProviderCpp,
+          "Get the ODBC driver path for an explicit provider without selecting it");
     m.def("_set_odbc_provider", &SetSelectedProvider,
           "Select the ODBC provider ('msodbcsql18' or 'mssql-odbc') before the driver loads");
 

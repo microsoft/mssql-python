@@ -93,6 +93,15 @@ class ProviderManager:
                     cls._warn_frozen()
                 return
             cls._property_value = canonical
+            env_value = os.environ.get(NATIVE_PROVIDER_ENV_VAR)
+            if canonical is not None and env_value and env_value.strip():
+                try:
+                    env_provider = _normalize(env_value)
+                except ValueError:
+                    # Preserve the existing fail-closed error at connection time.
+                    return
+                if canonical != env_provider:
+                    cls._warn_env_override(canonical, env_provider)
 
     @classmethod
     def resolve(cls) -> str:
@@ -182,15 +191,45 @@ class ProviderManager:
                     error = None
                 except ValueError as exc:
                     provider, source, error = _DEFAULT_PROVIDER, None, str(exc)
+            frozen = cls._resolved is not None
+
+        version = None
+        driver_path = None
+        package = _PACKAGE_BY_PROVIDER[provider]
+        try:
+            provider_module = importlib.import_module(package)
+            version = getattr(provider_module, "__version__", None)
+            module_file = getattr(provider_module, "__file__", None)
+            if module_file:
+                from mssql_python import ddbc_bindings
+
+                driver_path = ddbc_bindings._get_odbc_driver_path(
+                    os.path.dirname(os.path.abspath(module_file)), provider
+                )
+        except Exception:  # pylint: disable=broad-exception-caught
+            # Diagnostics must remain safe even for a broken provider package.
+            pass
+
         info: Dict[str, object] = {
             "id": provider,
-            "package": _PACKAGE_BY_PROVIDER[provider],
+            "package": package,
+            "version": version,
+            "driver_path": driver_path,
             "source": source,
-            "frozen": cls._resolved is not None,
+            "frozen": frozen,
         }
         if error is not None:
             info["error"] = error
         return info
+
+    @classmethod
+    def _warn_env_override(cls, requested: str, effective: str) -> None:
+        message = (
+            f"ODBC provider property was set to '{requested}', but "
+            f"{NATIVE_PROVIDER_ENV_VAR} selects '{effective}' and takes precedence."
+        )
+        logger.warning(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
 
     @classmethod
     def _warn_frozen(cls) -> None:

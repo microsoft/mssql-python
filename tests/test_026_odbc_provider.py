@@ -10,6 +10,7 @@ import importlib
 import platform
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -54,8 +55,23 @@ def test_property_used_when_env_unset():
 
 def test_env_var_takes_precedence_over_property(monkeypatch):
     monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSODBCSQL18)
-    ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
+    with pytest.warns(RuntimeWarning, match="takes precedence"):
+        ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
     assert ProviderManager.resolve() == PROVIDER_MSODBCSQL18
+
+
+def test_matching_env_var_and_property_do_not_warn(monkeypatch, recwarn):
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
+def test_overridden_property_becomes_effective_if_env_is_removed(monkeypatch):
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSODBCSQL18)
+    with pytest.warns(RuntimeWarning, match="takes precedence"):
+        ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
+    monkeypatch.delenv(NATIVE_PROVIDER_ENV_VAR)
+    assert ProviderManager.resolve() == PROVIDER_MSSQL_ODBC
 
 
 def test_empty_env_var_falls_through_to_property(monkeypatch):
@@ -171,16 +187,51 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSODBCSQL18
     assert info["package"] == "mssql_python_odbc"
+    assert info["version"] == "18.6.2.1"
+    assert Path(info["driver_path"]).name.startswith("msodbcsql18")
     assert info["source"] == "default"
     assert info["frozen"] is False
 
     monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
     ProviderManager.resolve()
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mssql_python_rust_odbc":
+            return SimpleNamespace(__version__="test-version", __file__=__file__)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        sys.modules[ProviderManager.__module__].importlib, "import_module", fake_import
+    )
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSSQL_ODBC
     assert info["package"] == "mssql_python_rust_odbc"
+    assert info["version"] == "test-version"
+    assert Path(info["driver_path"]).name.startswith("mssqlodbc")
     assert info["source"] == "environment"
     assert info["frozen"] is True
+
+
+def test_get_info_rust_path_does_not_select_or_freeze_native_provider(monkeypatch):
+    from mssql_python import ddbc_bindings
+
+    monkeypatch.setenv(NATIVE_PROVIDER_ENV_VAR, PROVIDER_MSSQL_ODBC)
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mssql_python_rust_odbc":
+            return SimpleNamespace(__version__="test-version", __file__=__file__)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        sys.modules[ProviderManager.__module__].importlib, "import_module", fake_import
+    )
+    info = ProviderManager.get_info()
+    assert info["id"] == PROVIDER_MSSQL_ODBC
+    assert Path(info["driver_path"]).name.startswith("mssqlodbc")
+    assert not ProviderManager.is_frozen()
+    assert Path(ddbc_bindings.GetDriverPathCpp("provider-root")).name.startswith("msodbcsql18")
 
 
 def test_effective_and_get_info_do_not_raise_for_invalid_env_var(monkeypatch):
