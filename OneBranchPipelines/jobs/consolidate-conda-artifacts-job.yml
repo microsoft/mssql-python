@@ -13,16 +13,19 @@
 # package (which vendors the ODBC payload) is emitted per-Python by each build leg;
 # there is NO separate companion package:
 #   win-64        : 5 py x mssql-python                                       = 5
+#   win-arm64     : 3 py x mssql-python  (py3.12-3.14, cross-built on x64)    = 3
 #   osx-64        : 5 py x mssql-python  (Intel Mac, cross-built via Rosetta) = 5
 #   osx-arm64     : 5 py x mssql-python  (Apple Silicon, native)              = 5
 #   linux-64      : 5 py x mssql-python  (glibc x86_64 host, native)          = 5
 #   linux-aarch64 : 5 py x mssql-python  (x86_64 host + QEMU, best-effort)    = 5
 #   ------------------------------------------------------------------------------
-#   TOTAL (PyPI parity minus win-arm64 + musllinux)                          = 25
-# win-arm64 (no import-validation host on x64) and musllinux (no conda musl subdir)
-# are intentionally NOT conda-built. This job is BEST-EFFORT and never hard-fails on
-# a short set; the release pipeline's conda-release-step enforces the hard gate
-# (required subdirs present + complete Python matrix) before anything is published.
+#   TOTAL (PyPI parity minus musllinux)                                      = 28
+# win-arm64 is cross-built for py3.12-3.14 only (py3.10/3.11 have no win-arm64 deps
+# on Anaconda defaults); its runtime import is skipped on the x64 host, so its arch
+# is enforced by the PE-machine assert (assert_pe_machine.py). musllinux (no conda
+# musl subdir) is intentionally NOT conda-built. This job is BEST-EFFORT and never
+# hard-fails on a short set; the release pipeline's conda-release-step enforces the
+# hard gate (required subdirs present + complete Python matrix) before publish.
 parameters:
   - name: oneBranchType
     type: string

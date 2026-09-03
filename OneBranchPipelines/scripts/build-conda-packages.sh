@@ -139,6 +139,10 @@ echo "Using conda: $conda"
 # rides along so the RUNPATH audit reads .conda metadata from this same env.
 condaBuildEnv="conda_builder"
 echo "=== creating dedicated conda-build env ($condaBuildEnv: conda-build<26) ==="
+# Idempotent: a reused agent/workdir may already have this env, and a pre-existing
+# env makes `conda create` fail under `set -e`. Remove it first (best-effort, like
+# the verify envs below) so a rerun recreates cleanly.
+"$conda" env remove -y -n "$condaBuildEnv" 2>/dev/null || true
 "$conda" create -y -n "$condaBuildEnv" -c conda-forge --override-channels "conda-build<26" zstandard
 
 # ---------------------------------------------------------------------------

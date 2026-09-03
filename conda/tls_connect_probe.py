@@ -105,7 +105,7 @@ def describe(exc):
     low = msg.lower()
     for marker in _OPENSSL_UNREACHABLE_MARKERS:
         if marker in low:
-            return "OpenSSL backend unreachable -> " + msg[:300]
+            return "TLS handshake did not complete -> " + msg[:300]
     return msg[:300]
 
 
@@ -114,16 +114,24 @@ def _split_top_level(conn):
 
     An ODBC value wrapped in ``{...}`` may itself contain ``;`` (MS-ODBCSTR), so a
     naive ``split(';')`` would shred braced values. Track brace depth and break only
-    at depth 0.
+    at depth 0. Inside a braced value ``}}`` is an escaped literal ``}`` (MS-ODBCSTR),
+    NOT a close -- consume both and keep the depth so the value is not split early.
     """
     segments = []
     buf = ""
     depth = 0
-    for ch in conn.strip():
+    s = conn.strip()
+    i = 0
+    while i < len(s):
+        ch = s[i]
         if ch == "{":
             depth += 1
             buf += ch
         elif ch == "}":
+            if depth > 0 and i + 1 < len(s) and s[i + 1] == "}":
+                buf += "}}"  # escaped literal '}' inside a braced value; not a close
+                i += 2
+                continue
             depth = max(0, depth - 1)
             buf += ch
         elif ch == ";" and depth == 0:
@@ -131,6 +139,7 @@ def _split_top_level(conn):
             buf = ""
         else:
             buf += ch
+        i += 1
     segments.append(buf)
     return segments
 
@@ -279,7 +288,7 @@ def main():
     if tls_completed(outcome):
         print("TLS_OK (OpenSSL backend reachable; " + describe(outcome) + ")")
         return
-    sys.exit("TLS/OPENSSL BACKEND UNREACHABLE: " + describe(outcome))
+    sys.exit("TLS HANDSHAKE DID NOT COMPLETE: " + describe(outcome))
 
 
 if __name__ == "__main__":
