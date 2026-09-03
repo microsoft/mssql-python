@@ -20,9 +20,9 @@ FAIL-CLOSED contract:
   These are the only PASS outcomes (see ``_TLS_COMPLETED_MARKERS``).
 * Every other outcome fails closed (non-zero exit). In particular an OpenSSL that
   could not be loaded surfaces BEFORE login as an ``SSL Provider`` /
-  ``libssl``/``libcrypto`` / ``cannot open shared object`` error -- classified
-  here as ``OPENSSL BACKEND UNREACHABLE`` (see ``_OPENSSL_UNREACHABLE_MARKERS``),
-  which is exactly the conda RUNPATH bug this gate is meant to catch.
+  ``libssl``/``libcrypto`` / ``cannot open shared object`` error -- it is not in
+  ``_TLS_COMPLETED_MARKERS`` so it fails closed, which is exactly the conda RUNPATH
+  bug this gate is meant to catch.
 
 IMPORTANT -- masking caveat: this gate is only CONCLUSIVE on a minimal base with
 NO system OpenSSL on the default loader path. On a full agent (or any host with a
@@ -59,22 +59,6 @@ _TLS_COMPLETED_MARKERS = (
     "password did not match",
 )
 
-# Markers that mean the crypto backend could NOT be loaded / the handshake never
-# ran. Listed for a crisp FAIL message -- classification is allowlist-based, so an
-# unrecognized outcome fails closed even if it matches nothing here.
-_OPENSSL_UNREACHABLE_MARKERS = (
-    "libssl",
-    "libcrypto",
-    "cannot open shared object",  # linux dlopen failure of the crypto backend
-    "image not found",  # macOS dlopen failure
-    "openssl",
-    "ssl provider",  # an SSL Provider error before login = crypto/handshake fail
-    "ssl routines",
-    "encryption not supported",
-    "unable to load",
-    "cannot load",
-)
-
 
 def tls_completed(exc):
     """FAIL-CLOSED classifier: True only when the TLS handshake provably completed.
@@ -101,12 +85,7 @@ def describe(exc):
     """Short, human-readable reason string for the gate's stdout / exit line."""
     if exc is None:
         return "clean connect (TLS handshake completed)"
-    msg = str(exc)
-    low = msg.lower()
-    for marker in _OPENSSL_UNREACHABLE_MARKERS:
-        if marker in low:
-            return "TLS handshake did not complete -> " + msg[:300]
-    return msg[:300]
+    return str(exc)[:300]
 
 
 def _split_top_level(conn):

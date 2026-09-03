@@ -150,7 +150,6 @@ extends:
                 parameters:
                   pythonVersion: '${{ parameters.pythonVersions }}'
                   condaSubdir: 'win-64'
-                  targetArch: 'x64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*win_amd64.whl'
               # win-arm64 conda build: CROSS-built on THIS x64 agent via CONDA_SUBDIR, in the
@@ -169,7 +168,6 @@ extends:
                   pythonVersion: '3.12,3.13,3.14'
                   condaSubdir: 'win-arm64'
                   condaTargetSubdir: 'win-arm64'
-                  targetArch: 'x64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*win_arm64.whl'
                   outputDir: '$(Agent.TempDirectory)/conda-bld-winarm64'

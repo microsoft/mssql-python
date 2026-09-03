@@ -61,24 +61,6 @@ _DRIVER_LOADED_MARKERS = (
     "certificate",
 )
 
-# Negative signals: the native driver did NOT load / link / resolve. Listed only
-# to produce a clearer FAIL message -- classification is allowlist-based, so an
-# unrecognized exception still fails closed even if it matches nothing here.
-_DRIVER_LOAD_FAILURE_MARKERS = (
-    "failed to load the driver",
-    "failed to load library",
-    "failed to load required function pointers",
-    "odbc driver not found",
-    "mssql-auth.dll",
-    "mssql-python-odbc",
-    "cannot open shared object",  # linux dlopen failure
-    "image not found",  # macOS dlopen failure
-    "no such file or directory",  # driver binary absent
-    "can't open lib",  # unixODBC could not open the driver
-    "unsupported architecture",
-    "unsupported platform",
-)
-
 
 def driver_loaded(exc):
     """FAIL-CLOSED classifier for the connect outcome.
@@ -99,12 +81,7 @@ def describe(exc):
     """Short, human-readable reason string for the probe's stdout / exit line."""
     if exc is None:
         return "clean connect"
-    msg = str(exc)
-    low = msg.lower()
-    for marker in _DRIVER_LOAD_FAILURE_MARKERS:
-        if marker in low:
-            return "driver load failure -> " + msg[:300]
-    return msg[:300]
+    return str(exc)[:300]
 
 
 def main():

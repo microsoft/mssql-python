@@ -40,11 +40,6 @@ parameters:
   - name: condaTargetSubdir
     type: string
     default: ''
-  # Target architecture of the wheel build; the step is skipped unless 'x64'
-  # (or a native arch) so cross-compiled legs don't attempt a conda build.
-  - name: targetArch
-    type: string
-    default: 'x64'
   # Directory holding the freshly built mssql-python wheel (setup.py bdist_wheel).
   - name: mssqlWheelDir
     type: string
@@ -147,5 +142,4 @@ steps:
         Write-Host "  staged $subdir/$($p.Name)"
       }
     displayName: 'Conda build + validate (${{ parameters.condaSubdir }} py${{ parameters.pythonVersion }})'
-    condition: ne('${{ parameters.targetArch }}', 'arm64')
     continueOnError: ${{ parameters.continueOnError }}
