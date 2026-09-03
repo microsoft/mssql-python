@@ -9,6 +9,9 @@ agents hide). This audit is immune to that masking: it reads the ELF bytes strai
 out of each built ``.conda`` payload -- via the ``PT_DYNAMIC`` program header the
 *loader itself* uses -- and asserts, statically and exactly:
 
+  * each driver/manager ELF's ``e_machine`` MATCHES the package's conda subdir
+    (``linux-64`` == x86_64, ``linux-aarch64`` == aarch64), so a wrong-arch or
+    mislabeled ``.so`` is caught statically (the Linux twin of ``assert_pe_machine.py``);
   * ``libmsodbcsql*`` and ``libodbcinst.so.2`` carry the EXACT relative ``$ORIGIN``
     climb that lands on the package-root ``lib`` (== ``$PREFIX/lib``), computed from
     each binary's own location -- not a substring, not "any ``..``". A too-short,
@@ -72,6 +75,15 @@ _REQUIRED_DEPS = ("krb5", "libtool", "openssl")
 _DRIVER_NEEDED = ("libkrb5", "libgssapi_krb5", "libodbcinst")
 _ODBCINST_NEEDED = ("libltdl",)
 
+# ELF e_machine architecture ids (ELF header offset 0x12). The conda subdir is the
+# authority: every vendored driver/manager ELF must match it, so an x86_64 .so
+# mislabeled under a linux-aarch64 package is caught statically (the emulated aarch64
+# leg's runtime probe is best-effort and would not). Linux twin of assert_pe_machine.py.
+_EM_X86_64 = 62
+_EM_AARCH64 = 183
+_SUBDIR_MACHINE = {"linux-64": _EM_X86_64, "linux-aarch64": _EM_AARCH64}
+_MACHINE_NAME = {_EM_X86_64: "x86_64", _EM_AARCH64: "aarch64"}
+
 
 def _zstd_decompress(raw: bytes) -> bytes:
     """Decompress a zstandard blob, preferring the 3.14+ stdlib backend."""
@@ -88,6 +100,17 @@ def _zstd_decompress(raw: bytes) -> bytes:
 
 def _is_elf(data: bytes) -> bool:
     return len(data) >= 64 and data[:4] == b"\x7fELF"
+
+
+def elf_machine(data: bytes):
+    """Return the ELF ``e_machine`` architecture id (header offset 0x12), or None.
+
+    Endianness comes from ``e_ident[5]`` (the shipped drivers are ELF64-LE).
+    """
+    if not _is_elf(data):
+        return None
+    en = "<" if data[5] == 1 else ">"
+    return struct.unpack_from(en + "H", data, 0x12)[0]
 
 
 def elf_dynamic(data: bytes) -> dict:
@@ -289,6 +312,9 @@ def audit_package(path: str) -> list[str]:
         print(f"  SKIP (no Linux ELF payload): {base_name} [subdir={subdir or '?'}]")
         return []
 
+    # The conda subdir is the arch authority; every vendored ELF must match it.
+    expected_machine = _SUBDIR_MACHINE.get(subdir)
+
     errors: list[str] = []
 
     # N2a: the run deps that SERVICE the driver's krb5/openssl/libltdl must be declared.
@@ -341,6 +367,18 @@ def audit_package(path: str) -> list[str]:
         if not _is_elf(data):
             errors.append(f"{name}: expected an ELF binary but the header is not ELF.")
             continue
+
+        # Architecture gate: the ELF machine MUST match the package's conda subdir, so
+        # an x86_64 driver mislabeled under a linux-aarch64 package (which the emulated
+        # leg's best-effort runtime probe would not catch) fails here.
+        if expected_machine is not None:
+            mach = elf_machine(data)
+            if mach != expected_machine:
+                errors.append(
+                    f"{name}: ELF machine {mach} ({_MACHINE_NAME.get(mach, 'unknown')}) does "
+                    f"not match the '{subdir}' package arch {expected_machine} "
+                    f"({_MACHINE_NAME[expected_machine]}) -- wrong-arch/mislabeled driver."
+                )
 
         dyn = elf_dynamic(data)
         entries = _entries(effective_runpath(dyn))
@@ -480,9 +518,9 @@ def main(argv: list | None = None) -> int:
         print("\nOK: no Linux packages present; nothing to audit (win/osx have no ELF payload).")
     else:
         print(
-            f"\nOK: all {linux_checked} Linux package(s) carry the EXACT $ORIGIN climb, keep "
-            f"their krb5/gssapi/libltdl NEEDEDs, declare krb5/libtool/openssl, and vendor no "
-            f"crypto (conda services them)."
+            f"\nOK: all {linux_checked} Linux package(s) match their subdir arch, carry the "
+            f"EXACT $ORIGIN climb, keep their krb5/gssapi/libltdl NEEDEDs, declare "
+            f"krb5/libtool/openssl, and vendor no crypto (conda services them)."
         )
     return 0
 

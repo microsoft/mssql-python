@@ -39,12 +39,13 @@ def _load_module():
 audit = _load_module()
 
 
-def _make_elf64(runpath=None, rpath=None, needed=()):
+def _make_elf64(runpath=None, rpath=None, needed=(), machine=62):
     """Build a minimal, self-consistent ELF64-LE with real program headers.
 
     Emits a PT_LOAD (vaddr == file offset, covering the whole file) + a PT_DYNAMIC,
     so the audit's loader-style PT_DYNAMIC + PT_LOAD vaddr mapping resolves the
     strings. ``runpath``/``rpath`` are optional; ``needed`` is a list of sonames.
+    ``machine`` is the ELF e_machine (62 x86-64 / 183 aarch64).
     """
     ehdr_size = 64
     phdr_size = 56
@@ -95,7 +96,7 @@ def _make_elf64(runpath=None, rpath=None, needed=()):
     ehdr = e_ident + struct.pack(
         "<HHIQQQIHHHHHH",
         3,  # e_type ET_DYN
-        62,  # e_machine x86-64
+        machine,  # e_machine (62 x86-64 / 183 aarch64)
         1,  # e_version
         0,  # e_entry
         phoff,  # e_phoff
@@ -130,6 +131,7 @@ def _make_pkg(
     depends=None,
     driver_needed=None,
     inst_needed=None,
+    machine=62,
 ):
     """Write a minimal .tar.bz2 conda package with two ELF driver binaries."""
     p = tmp_path / "mssql-python-1.13.0-py312_0.tar.bz2"
@@ -158,6 +160,7 @@ def _make_pkg(
                 runpath=runpath,
                 rpath=rpath,
                 needed=_DRIVER_NEEDED if driver_needed is None else driver_needed,
+                machine=machine,
             ),
         )
         add(
@@ -166,6 +169,7 @@ def _make_pkg(
                 runpath=runpath,
                 rpath=rpath,
                 needed=_INST_NEEDED if inst_needed is None else inst_needed,
+                machine=machine,
             ),
         )
         if vendored:
@@ -391,3 +395,24 @@ def test_audit_fails_malformed_package(tmp_path):
 
 def test_audit_skips_non_linux(tmp_path):
     assert audit.audit_package(_make_pkg(tmp_path, subdir="win-64")) == []
+
+
+# --- arch gate (e_machine vs conda subdir) ---------------------------------
+
+
+def test_audit_fails_wrong_arch(tmp_path):
+    # x86-64 ELFs (e_machine=62) mislabeled inside a linux-aarch64 package must FAIL the
+    # arch gate -- the emulated aarch64 leg's best-effort runtime probe would not catch it.
+    errors = audit.audit_package(_make_pkg(tmp_path, subdir="linux-aarch64"))
+    assert any("does not match" in e and "aarch64" in e for e in errors)
+
+
+def test_audit_passes_matching_arch_aarch64(tmp_path):
+    # aarch64 ELFs (e_machine=183) in a linux-aarch64 package satisfy the arch gate.
+    assert audit.audit_package(_make_pkg(tmp_path, subdir="linux-aarch64", machine=183)) == []
+
+
+def test_elf_machine_reads_arch():
+    assert audit.elf_machine(_make_elf64()) == 62
+    assert audit.elf_machine(_make_elf64(machine=183)) == 183
+    assert audit.elf_machine(b"not an elf") is None
