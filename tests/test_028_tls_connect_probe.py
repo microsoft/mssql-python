@@ -187,6 +187,17 @@ def test_split_top_level_respects_braces():
     ]
 
 
+def test_split_top_level_handles_escaped_braces():
+    """MS-ODBCSTR: '}}' inside a braced value is a literal '}', not a close -- so a value
+    containing '}}' and an internal ';' must NOT be split (matches the shipped parser)."""
+    probe = _load_probe()
+    assert probe._split_top_level("Server=x;Pwd={p}}w;d};Encrypt=no") == [
+        "Server=x",
+        "Pwd={p}}w;d}",
+        "Encrypt=no",
+    ]
+
+
 def test_redact_masks_values_and_flags_bare_segments():
     """The debug line must never leak a value and must surface a no-value segment."""
     probe = _load_probe()

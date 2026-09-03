@@ -109,7 +109,7 @@ def main():
     if driver_loaded(outcome):
         print("DRIVER_LOADED (" + describe(outcome) + ")")
         return
-    sys.exit("DRIVER DID NOT LOAD / wrong arch / missing companion: " + describe(outcome))
+    sys.exit("DRIVER DID NOT LOAD / wrong arch: " + describe(outcome))
 
 
 if __name__ == "__main__":

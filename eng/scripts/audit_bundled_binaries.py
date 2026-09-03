@@ -464,7 +464,10 @@ def audit_package(path: str) -> list[str]:
         )
     # Per-subdir presence: EVERY discovered driver lib dir must ship BOTH a driver and
     # libodbcinst.so.2. A package-global count would let a driver missing from ONE
-    # distro subdir (alpine/debian_ubuntu/rhel/suse) slip past.
+    # distro subdir (alpine/debian_ubuntu/rhel/suse) slip past. NOTE: this checks every
+    # DISCOVERED distro/arch dir but does NOT assert a required distro SET -- the
+    # repackaged wheel is the source of truth for which distro payloads exist, so a
+    # wholesale-missing distro is a wheel-build concern, not enforced here.
     if not lib_dirs:
         errors.append(
             f"{base_name}: no mssql_python_odbc/libs/linux/*/*/lib directory found in a "

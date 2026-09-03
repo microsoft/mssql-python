@@ -141,10 +141,17 @@ def audit_package(path: str) -> list[str]:
 
     errors: list[str] = []
     native_seen = 0
+    binding_seen = 0
+    driver_dll_seen = 0
     for name, data in _iter_payload_members(path):
         if not name.lower().endswith(_NATIVE_SUFFIXES):
             continue
         native_seen += 1
+        low = name.replace("\\", "/").lower()
+        if "/mssql_python/" in low and "ddbc_bindings" in low and low.endswith(".pyd"):
+            binding_seen += 1
+        if "/mssql_python_odbc/libs/windows/" in low and low.endswith(".dll"):
+            driver_dll_seen += 1
         machine = pe_machine(data)
         if machine is None:
             errors.append(f"{name}: not a valid PE binary (no MZ/PE header).")
@@ -157,11 +164,25 @@ def audit_package(path: str) -> list[str]:
         else:
             print(f"  {subdir}/{os.path.basename(name)}: PE machine={_MACHINES[expected]} OK")
 
+    # Presence: assert BOTH required binary categories independently, not just >=1 native
+    # file -- win-arm64 skips the runtime import, so this IS its presence gate. A package
+    # with the binding .pyd but missing driver DLLs (or vice versa) must fail here.
     if native_seen == 0:
         errors.append(
             f"{base_name}: no .pyd/.dll found in a '{subdir}' package -- the native binding "
             f"(ddbc_bindings*.pyd) + the vendored ODBC driver DLLs must be present."
         )
+    else:
+        if binding_seen == 0:
+            errors.append(
+                f"{base_name}: no native binding (mssql_python/ddbc_bindings*.pyd) found in a "
+                f"'{subdir}' package."
+            )
+        if driver_dll_seen == 0:
+            errors.append(
+                f"{base_name}: no vendored ODBC driver DLL "
+                f"(mssql_python_odbc/libs/windows/**/*.dll) found in a '{subdir}' package."
+            )
     return errors
 
 

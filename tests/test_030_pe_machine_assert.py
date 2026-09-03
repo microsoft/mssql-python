@@ -161,6 +161,34 @@ def test_win_package_without_native_fails(tmp_path):
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_win_missing_driver_dll_fails(tmp_path):
+    # Correct-arch binding present, but the vendored ODBC driver DLLs are missing.
+    p = _make_conda(
+        tmp_path,
+        "win-arm64",
+        {"Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64)},
+    )
+    errors = ape.audit_package(p)
+    assert any("driver DLL" in e for e in errors)
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_win_missing_binding_fails(tmp_path):
+    # Correct-arch driver DLL present, but the native binding .pyd is missing.
+    p = _make_conda(
+        tmp_path,
+        "win-arm64",
+        {
+            "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(
+                _ARM64
+            )
+        },
+    )
+    errors = ape.audit_package(p)
+    assert any("native binding" in e for e in errors)
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
 def test_non_windows_package_skipped(tmp_path):
     # A linux-64 package has no PE payload -> skipped clean (not failed).
     p = _make_conda(
