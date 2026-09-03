@@ -56,6 +56,9 @@ from .db_connection import connect, Connection
 # Token provider protocol (structural type for the token_provider= parameter)
 from .connection import TokenProvider
 
+# Retry policy for transient failures at connect() time (the retry_policy= parameter)
+from .retry import RetryPolicy
+
 # Connection String Handling
 from .connection_string_parser import _ConnectionStringParser
 from .connection_string_builder import _ConnectionStringBuilder
@@ -328,6 +331,8 @@ __all__ = [
     "TokenProvider",
     "Cursor",
     "Row",
+    # Retry policy
+    "RetryPolicy",
     # Settings
     "Settings",
     "get_settings",

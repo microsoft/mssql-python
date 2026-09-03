@@ -43,6 +43,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   This is a non-breaking step toward decoupling driver-binary updates from
   mssql-python releases; a future major version will make the dependency
   explicit and drop the bundled binaries.
+- **GH-682:** New optional `RetryPolicy` class and `retry_policy=` parameter on
+  `connect()` / `Connection(...)` that retries a connection attempt failing with
+  a transient SQLSTATE (login and connection timeouts, a lost link, `40001`,
+  `40003`) using exponential or fixed backoff, optional jitter and a delay cap.
+  `max_attempts` counts total tries including the first; without a policy
+  `connect()` behaves exactly as before.
 
 ### Changed
 - Connection strings and string connection parameters that contain a NUL

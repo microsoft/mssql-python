@@ -27,6 +27,7 @@ from mssql_python.helpers import (
 from mssql_python.connection_string_parser import sanitize_connection_string
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
+from mssql_python import retry
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import (
     Warning,  # pylint: disable=redefined-builtin
@@ -128,6 +129,26 @@ def _raise_connection_error(e: RuntimeError) -> None:
         driver_error="Connection operation failed",
         ddbc_error=error_msg,
     ) from None
+
+
+def _sqlstate_from_runtime_error(e: RuntimeError) -> Optional[str]:
+    """Return the SQLSTATE carried by a RuntimeError from the C++ pybind layer.
+
+    Connection::checkError() throws "SQLSTATE:XXXXX:<odbc_message>". Only a code of exactly five
+    characters is returned; a message without the prefix, or with an empty or truncated code,
+    yields None so the caller treats the failure as not retriable.
+
+    Args:
+        e (RuntimeError): The exception raised by the native connection.
+
+    Returns:
+        Optional[str]: The SQLSTATE, or None.
+    """
+    match = _SQLSTATE_RE.match(str(e))
+    if match is None:
+        return None
+    sqlstate = match.group(1)
+    return sqlstate if len(sqlstate) == 5 else None
 
 
 def _validate_utf16_wchar_compatibility(
@@ -277,6 +298,7 @@ class Connection:
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
         token_provider: Optional["TokenProvider"] = None,
+        retry_policy: Optional[retry.RetryPolicy] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -343,6 +365,19 @@ class Connection:
                     Interactive credentials (e.g. ``InteractiveBrowserCredential``) block
                     ``connect()`` until the user completes sign-in; prefer non-interactive
                     credentials in server contexts.
+            retry_policy (RetryPolicy, optional): Policy for retrying the native connect when
+                it fails with a transient SQLSTATE (a login or connection timeout, a lost link
+                and similar; see ``mssql_python.retry.DEFAULT_RETRIABLE_SQLSTATES``). None
+                (default) makes a single attempt, exactly as before. The connection string is
+                parsed once, before the first attempt, and a token acquired on the Python side
+                (``token_provider=``, ``Authentication=ActiveDirectoryDefault`` or a raw
+                ``attrs_before`` token) is acquired once and reused by every attempt. For
+                managed identity, interactive and device code authentication the native layer
+                asks the deferred token factory for a token on each physical connect, so a
+                retried attempt may acquire a fresh one. The login timeout bounds each attempt
+                separately, so the total wall clock time is roughly the attempt timeouts plus
+                the delays. Each retry is logged at warning level through the driver logger,
+                which shows it once ``setup_logging()`` has been called.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
@@ -353,6 +388,7 @@ class Connection:
                 source, or lacking a valid ``.get_token`` method), or the credential returns
                 no valid token.
             OperationalError: If acquiring a token from ``token_provider`` fails.
+            TypeError: If ``retry_policy`` is neither None nor a ``RetryPolicy``.
             ValueError: If the connection string is invalid or connection fails.
 
         This method sets up the initial state for the connection object,
@@ -373,6 +409,16 @@ class Connection:
         if native_uuid is not None and not isinstance(native_uuid, bool):
             raise ValueError("native_uuid must be a boolean value or None")
         self._native_uuid = native_uuid
+
+        # Check the retry policy type up front, before the connection string is parsed or a
+        # token is acquired, so a wrong value fails fast with no network work. It is kept on
+        # the connection so cursor level retries can later pick it up as their default.
+        if retry_policy is not None and not isinstance(retry_policy, retry.RetryPolicy):
+            raise TypeError(
+                "retry_policy must be a RetryPolicy instance or None, "
+                f"got {type(retry_policy).__name__}"
+            )
+        self._retry_policy: Optional[retry.RetryPolicy] = retry_policy
 
         self.connection_str, parsed_params = self._construct_connection_string(
             connection_str, **kwargs
@@ -730,16 +776,42 @@ class Connection:
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
 
-        try:
-            self._conn = ddbc_bindings.Connection(
-                self.connection_str,
-                self._pooling,
-                self._attrs_before,
-                self._pool_key,
-                self._token_factory,
-            )
-        except RuntimeError as e:
-            _raise_connection_error(e)
+        # A retry policy wraps only the native connect. Everything above (connection string
+        # parsing, the attrs_before copy, any token acquired on the Python side) has already
+        # happened once, so every attempt reuses the same inputs. A deferred token factory is
+        # still invoked by the native layer on each physical connect, so those paths may acquire
+        # a fresh token per attempt. Without a policy this is a single attempt, exactly the
+        # behaviour before retry_policy existed.
+        max_attempts = retry_policy.max_attempts if retry_policy is not None else 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self._conn = ddbc_bindings.Connection(
+                    self.connection_str,
+                    self._pooling,
+                    self._attrs_before,
+                    self._pool_key,
+                    self._token_factory,
+                )
+                break
+            except RuntimeError as e:
+                sqlstate = _sqlstate_from_runtime_error(e)
+                if (
+                    retry_policy is not None
+                    and attempt < max_attempts
+                    and retry_policy.is_retriable(sqlstate)
+                ):
+                    delay = retry_policy.compute_delay(attempt)
+                    logger.warning(
+                        "Connection attempt %d of %d failed with SQLSTATE %s; "
+                        "retry in %.2f seconds",
+                        attempt,
+                        max_attempts,
+                        sqlstate,
+                        delay,
+                    )
+                    retry._sleep(delay)  # pylint: disable=protected-access
+                    continue
+                _raise_connection_error(e)
         self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
