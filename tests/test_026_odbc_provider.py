@@ -195,6 +195,34 @@ print("provider accepted")
     assert proc.stdout.strip() == "provider accepted"
 
 
+def test_direct_native_load_attempt_rejects_later_provider_change():
+    # Loading success and failure are both cached process-wide, so selection
+    # must become immutable as soon as loading starts rather than only after it
+    # succeeds. Otherwise a concurrent/late setter can make native selection
+    # report a provider different from the one whose load result was cached.
+    script = """
+from mssql_python import ddbc_bindings
+
+try:
+    ddbc_bindings.Connection("", False, {}, "", None)
+except RuntimeError:
+    pass
+
+try:
+    ddbc_bindings._set_odbc_provider("mssql-odbc")
+except RuntimeError as exc:
+    print(exc)
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Cannot change the ODBC provider" in proc.stdout
+
+
 def test_get_info_before_and_after_resolve(monkeypatch):
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSODBCSQL18

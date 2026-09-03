@@ -1025,6 +1025,7 @@ constexpr const char* kProviderMssqlOdbc = "mssql-odbc";
 
 std::mutex g_providerMutex;
 std::string g_selectedProvider;  // pushed from Python before load; "" = unset
+bool g_providerSelectionLocked = false;
 
 std::string NormalizeProviderId(const std::string& id) {
     // Mirror Python's ProviderManager._normalize(): trim surrounding whitespace
@@ -1055,26 +1056,20 @@ void SetSelectedProvider(const std::string& id) {
                           "'. Valid providers are: " + kProviderMsodbcsql18 + ", " +
                           kProviderMssqlOdbc + ".");
     }
-    if (DriverLoader::getInstance().isDriverLoaded()) {
-        // Every connection re-pushes ProviderManager's (already-frozen) choice,
-        // so this runs far more than once per process; only an actual attempt
-        // to switch providers after load is the ordering hole this guards
-        // against - re-pushing the same id must stay a silent no-op.
-        std::lock_guard<std::mutex> lock(g_providerMutex);
-        // A caller can construct ddbc_bindings.Connection directly, bypassing
-        // Python's provider push. In that case the loader uses the classic
-        // default while g_selectedProvider remains unset. Compare against that
-        // effective loaded provider rather than treating the later explicit
-        // push of the same default as an attempted provider change.
-        const std::string& loadedProvider =
+    std::lock_guard<std::mutex> lock(g_providerMutex);
+    if (g_providerSelectionLocked) {
+        // Every connection re-pushes ProviderManager's already-frozen choice,
+        // so the same id remains a silent no-op. A direct native connection can
+        // bypass the Python push; in that case an empty selection means the
+        // classic default was locked when loading started.
+        const std::string& lockedProvider =
             g_selectedProvider.empty() ? kProviderMsodbcsql18 : g_selectedProvider;
-        if (normalized != loadedProvider) {
-            ThrowStdException("Cannot change the ODBC provider after the driver has "
-                              "already loaded in this process.");
+        if (normalized != lockedProvider) {
+            ThrowStdException("Cannot change the ODBC provider after driver loading has "
+                              "started in this process.");
         }
         return;
     }
-    std::lock_guard<std::mutex> lock(g_providerMutex);
     g_selectedProvider = normalized;
 }
 
@@ -1515,6 +1510,15 @@ void DriverLoader::loadDriver() {
     // below, in a normal context that pybind11 can translate into a Python
     // exception. The stored error persists, so every subsequent call re-raises the
     // same actionable message instead of silently proceeding without a driver.
+    // Serialize the transition from selectable to locked with
+    // SetSelectedProvider(). Whichever operation acquires g_providerMutex first
+    // wins: either the new selection is visible to this load, or a later attempt
+    // to change it is rejected. Lock before call_once because a failed load is
+    // cached too and cannot be retried with another provider in this process.
+    {
+        std::lock_guard<std::mutex> lock(g_providerMutex);
+        g_providerSelectionLocked = true;
+    }
     std::call_once(m_onceFlag, [this]() {
         try {
             LoadDriverOrThrowException();
