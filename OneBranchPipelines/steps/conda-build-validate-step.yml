@@ -1,0 +1,145 @@
+# Conda Build + Validate Step Template
+# ============================================================================
+# Repackages the prebuilt, ESRP-signed wheels produced by THIS build leg into
+# conda packages, then validates them on the SAME native agent (which already
+# has the matching wheel, the external mssql-python-odbc wheel, and a live
+# SQL Server for pytest). Include this AFTER the wheel is built on a build leg.
+#
+# WHY THIS RUNS PER-PLATFORM (not on a single host like ODBC_BuildAll):
+#   `ODBC_BuildAll` cross-produces every wheel on one host because setup_odbc.py
+#   only RE-TAGS a data zip. conda-build is different: it provisions a real host
+#   environment for the target subdir and `pip install`s the matching wheel
+#   (see conda/*/bld.bat|build.sh). A linux-64 / osx-* host env cannot be created
+#   on a Windows agent, so — exactly like the wheels and like the conda-forge
+#   pyodbc-feedstock — each conda package must be built on its matching platform.
+#
+# SCOPE / LIMITATIONS (first cut, intentionally conservative):
+#   * Native legs are import-validated. A CROSS leg (condaTargetSubdir set, e.g.
+#     win-arm64 on x64) cannot execute the target Python, so its runtime import
+#     auto-skips -- but the recipe still enforces a BLOCKING --dry-run dependency
+#     solve and (win-arm64) a PE machine-type assert, so it is validated, not trusted.
+#   * musllinux has NO conda target (conda linux-* is glibc), so this step is
+#     never included on the musllinux legs.
+#
+# This step ONLY builds + validates + stages conda packages as an artifact. It
+# does NOT publish anything — publishing (anaconda upload / ESRP) happens in the
+# release pipeline, exactly like the wheels.
+parameters:
+  # Python version this leg builds, X.Y (e.g. '3.13'). One conda build per leg.
+  - name: pythonVersion
+    type: string
+  # conda subdir to stamp on the packages (win-64, osx-64, osx-arm64,
+  # linux-64, linux-aarch64). Must match the platform of THIS agent.
+  - name: condaSubdir
+    type: string
+  # Optional target subdir to CROSS-build via CONDA_SUBDIR on this (x64) agent, e.g.
+  # 'win-arm64'. Empty = build the host's native subdir. On a cross leg the arm64 Python
+  # cannot execute here, so the runtime import auto-skips; the deps still solve (from
+  # Anaconda `defaults` + the microsoft noarch azure-identity/msal) and the package is
+  # built + staged. Pair with continueOnError=true.
+  - name: condaTargetSubdir
+    type: string
+    default: ''
+  # Directory holding the freshly built mssql-python wheel (setup.py bdist_wheel).
+  - name: mssqlWheelDir
+    type: string
+    default: '$(Build.SourcesDirectory)/dist'
+  # Directory holding the downloaded external mssql-python-odbc wheel(s)
+  # (populated by the leg's `installOdbcWheel` download step).
+  - name: odbcWheelDir
+    type: string
+    default: '$(Pipeline.Workspace)/odbc_wheels'
+  # Filename filter selecting THIS platform's mssql-python-odbc wheel from the
+  # consolidated odbc drop (which contains ALL 7 platforms). MUST match the leg's
+  # OS/arch, otherwise conda-build's `pip install` on this host fails with
+  # DistributionNotFound (a macOS/linux wheel is not installable on win-64, etc.).
+  - name: odbcWheelFilter
+    type: string
+    default: 'mssql_python_odbc-*win_amd64.whl'
+  # Repo conda/ recipe root (contains mssql-python/ and mssql-python-odbc/).
+  - name: recipeRoot
+    type: string
+    default: '$(Build.SourcesDirectory)/conda'
+  # Space-free working dir for the conda croot + Miniforge + built packages.
+  - name: outputDir
+    type: string
+    default: '$(Agent.TempDirectory)/conda-bld'
+  # The shared build+validate script (installs Miniforge/conda-build, builds the
+  # self-contained mssql-python package, indexes a local channel, solves + imports).
+  - name: scriptPath
+    type: string
+    default: '$(Build.SourcesDirectory)/OneBranchPipelines/scripts/build-conda-packages.ps1'
+  # BLOCKING by default: if conda cannot build/validate the packages, FAIL the leg
+  # instead of letting a green build hide a broken conda package. Callers running an
+  # intentionally best-effort emulated leg (e.g. linux-aarch64 under QEMU) may override
+  # this to true.
+  - name: continueOnError
+    type: boolean
+    default: false
+
+steps:
+  - powershell: |
+      $ErrorActionPreference = 'Stop'
+
+      $mssqlWheelDir = "${{ parameters.mssqlWheelDir }}"
+      $odbcWheelDir  = "${{ parameters.odbcWheelDir }}"
+
+      # Gather both packages' wheels into ONE find-links dir the recipes install from.
+      $links = Join-Path "${{ parameters.outputDir }}" 'wheels'
+      New-Item -ItemType Directory -Force -Path $links | Out-Null
+
+      $mssqlWheels = @(Get-ChildItem -Path $mssqlWheelDir -Filter 'mssql_python-*.whl' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike 'mssql_python_odbc-*' })
+      if ($mssqlWheels.Count -eq 0) { Write-Error "No mssql_python-*.whl found in $mssqlWheelDir"; exit 1 }
+
+      $odbcWheel = Get-ChildItem -Path $odbcWheelDir -Recurse -Filter '${{ parameters.odbcWheelFilter }}' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+      if (-not $odbcWheel) { Write-Error "No wheel matching '${{ parameters.odbcWheelFilter }}' found in $odbcWheelDir"; exit 1 }
+
+      # Copy EVERY mssql-python wheel (a standalone conda build passes all Python versions
+      # at once; a per-Python wheel leg simply has one) plus this platform's odbc wheel.
+      $mssqlWheels | ForEach-Object { Copy-Item $_.FullName -Destination $links -Force }
+      Copy-Item $odbcWheel.FullName -Destination $links -Force
+      Write-Host "find-links wheels:"
+      Get-ChildItem $links | ForEach-Object { Write-Host "  - $($_.Name)" }
+
+      # Derive the versions from the wheel filenames (single source of truth: the
+      # ESRP-signed wheels themselves) so the conda package version can NEVER drift
+      # from the wheel. Filenames: mssql_python-<ver>-cp3X-...whl and
+      # mssql_python_odbc-<ver>-py3-none-...whl.
+      if ($mssqlWheels[0].Name -notmatch '^mssql_python-([^-]+)-') { Write-Error "Cannot parse version from $($mssqlWheels[0].Name)"; exit 1 }
+      $mssqlVer = $Matches[1]
+      if ($odbcWheel.Name -notmatch '^mssql_python_odbc-([^-]+)-') { Write-Error "Cannot parse version from $($odbcWheel.Name)"; exit 1 }
+      $odbcVer = $Matches[1]
+      Write-Host "Derived versions -> mssql-python=$mssqlVer  mssql-python-odbc=$odbcVer"
+
+      # Build + validate the self-contained mssql-python conda package for THIS leg's
+      # single Python version (it vendors the ODBC payload from the odbc wheel above).
+      & "${{ parameters.scriptPath }}" `
+        -WheelsDir $links `
+        -RecipeRoot "${{ parameters.recipeRoot }}" `
+        -OutputDir "${{ parameters.outputDir }}" `
+        -MssqlPythonVersion $mssqlVer `
+        -OdbcVersion $odbcVer `
+        -PythonVersions "${{ parameters.pythonVersion }}" `
+        -CondaSubdir "${{ parameters.condaTargetSubdir }}"
+      if ($LASTEXITCODE -ne 0) { Write-Error "conda build+validate failed (exit $LASTEXITCODE)"; exit 1 }
+
+      # Stage the built conda packages onto the leg's artifact so the consolidate
+      # stage can collect them (mirrors how the wheels ride the same artifact).
+      $condaOut = Join-Path "$(ob_outputDirectory)" 'conda'
+      New-Item -ItemType Directory -Force -Path $condaOut | Out-Null
+      $built = Get-ChildItem -Path (Join-Path "${{ parameters.outputDir }}" 'bld') -Recurse -Include *.conda, *.tar.bz2 |
+        Where-Object { $_.Name -like 'mssql-python*' }
+      if (-not $built) { Write-Error "No conda packages were produced under $($links)"; exit 1 }
+      foreach ($p in $built) {
+        # Preserve the conda subdir folder layout (e.g. win-64/) so the channel
+        # is valid when consolidated and indexed downstream.
+        $subdir = Split-Path -Leaf (Split-Path -Parent $p.FullName)
+        $dest = Join-Path $condaOut $subdir
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Copy-Item $p.FullName -Destination $dest -Force
+        Write-Host "  staged $subdir/$($p.Name)"
+      }
+    displayName: 'Conda build + validate (${{ parameters.condaSubdir }} py${{ parameters.pythonVersion }})'
+    continueOnError: ${{ parameters.continueOnError }}
