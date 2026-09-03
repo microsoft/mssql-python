@@ -765,3 +765,50 @@ def test_gh740_same_statement_changing_precision(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
+
+
+def test_gh740_smallest_scale_38_exact_roundtrip(cursor, db_connection):
+    """numeric(38,38) round-trip of Decimal("1E-38") must be exact, not a silent 0.
+
+    Asserts via as_tuple() rather than == or a tolerance: a mantissa bug in the
+    numeric binding that dropped the value to 0 would still satisfy a loose
+    approx-style check, so pin the exact digits and exponent.
+    """
+    table_name = "#pytest_gh740_tiny"
+    value = Decimal("1E-38")
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v numeric(38,38))")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", [value])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT v FROM {table_name}")
+        got = cursor.fetchone()[0]
+        assert got != Decimal(0)
+        assert got.as_tuple() == value.as_tuple()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+def test_gh740_signed_zero_normalizes(cursor, db_connection):
+    """Signed-zero Decimals bind as NUMERIC and come back as unsigned zero.
+
+    NUMERIC has no negative zero, so Decimal("-0")/"-0.00" normalize to positive
+    zero on the round-trip. This documents the behavior the bind-type switch makes
+    explicit (the old VARCHAR path also normalized server-side).
+    """
+    table_name = "#pytest_gh740_negzero"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v numeric(10,2))")
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", [Decimal("-0.00")])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT v FROM {table_name}")
+        got = cursor.fetchone()[0]
+        assert got == Decimal("0.00")
+        assert got.as_tuple().sign == 0  # normalized to unsigned zero
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
