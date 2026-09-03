@@ -5,7 +5,6 @@
 
 from importlib import import_module
 
-
 RUST_CORE_MODULE = "mssql_python_rs"
 LEGACY_RUST_CORE_MODULE = "mssql_py_core"
 RUST_CORE_DISTRIBUTION = "mssql-python-rs"

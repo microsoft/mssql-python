@@ -50,7 +50,9 @@ def _read_mssql_python_rs_version() -> str:
     """Return the pinned ``mssql-python-rs`` dependency version."""
     version_file = PROJECT_ROOT / "eng" / "versions" / "mssql-python-rs.version"
     if not version_file.is_file():
-        raise SystemExit(f"Could not determine the mssql-python-rs version: {version_file} missing.")
+        raise SystemExit(
+            f"Could not determine the mssql-python-rs version: {version_file} missing."
+        )
 
     version = version_file.read_text(encoding="utf-8").strip()
     if not version:
