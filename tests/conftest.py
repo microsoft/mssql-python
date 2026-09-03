@@ -7,6 +7,7 @@ Functions:
 - db_connection: Fixture to create and yield a database connection.
 - cursor: Fixture to create and yield a cursor from the database connection.
 - is_azure_sql_connection: Helper function to detect Azure SQL Database connections.
+- supports_vector: Fixture reporting whether the server provides the vector type.
 """
 
 import pytest
@@ -140,3 +141,28 @@ def cursor(db_connection):
     cursor = db_connection.cursor()
     yield cursor
     cursor.close()
+
+
+@pytest.fixture(scope="session")
+def supports_vector(conn_str):
+    """Whether the target server provides the vector type (SQL Server 2025+).
+
+    Probed by asking the server to build one rather than by parsing a version
+    banner, so backends that gained the type on their own schedule (Azure SQL,
+    Fabric) are classified by what they actually support.
+    """
+    if not conn_str:
+        return False
+    try:
+        conn = connect(conn_str)
+    except Exception:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT CAST('[1]' AS VECTOR(1))")
+        cur.fetchone()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()

@@ -43,6 +43,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   This is a non-breaking step toward decoupling driver-binary updates from
   mssql-python releases; a future major version will make the dependency
   explicit and drop the bundled binaries.
+- **Vector type support (PR #747):** the SQL Server 2025 `vector` type is
+  usable from mssql-python. Vectors are written by passing a JSON array
+  string and converting it server side with `CAST(? AS VECTOR(n))`, and are
+  returned as a JSON array string that `json.loads` parses into a list.
+  `VECTOR_DISTANCE` works against bound parameters, including inside
+  `ORDER BY` for similarity search, and `executemany()` and `NULL` values
+  are supported. Available on SQL Server 2025 and any other backend that
+  provides the type; earlier versions such as SQL Server 2022 reject it with
+  an ordinary error and the connection remains usable. `float32` is the only
+  base type currently accepted by the server, with dimensions from 1 to
+  1998, and stored values are subject to `float32` precision. Native binding
+  is not implemented yet, so values are exchanged as strings and
+  `cursor.description` reports the column as a string type.
 
 ### Changed
 - Connection strings and string connection parameters that contain a NUL
