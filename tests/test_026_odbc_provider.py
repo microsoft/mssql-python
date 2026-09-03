@@ -117,6 +117,18 @@ def test_package_name_mapping():
     assert ProviderManager.package_name(PROVIDER_MSSQL_ODBC) == "mssql_python_rust_odbc"
 
 
+def _assert_classic_driver_filename(path):
+    filename = Path(path).name
+    if sys.platform == "linux":
+        assert filename.startswith("libmsodbcsql-")
+    elif sys.platform == "darwin":
+        assert filename.startswith("libmsodbcsql.")
+    elif sys.platform == "win32":
+        assert filename.startswith("msodbcsql")
+    else:
+        pytest.skip(f"unsupported test platform: {sys.platform}")
+
+
 def test_rust_provider_driver_path_matches_packaging_layout():
     # Run in a child process because the native provider selection is
     # intentionally process-wide and cannot be reset after it is pushed.
@@ -188,7 +200,7 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     assert info["id"] == PROVIDER_MSODBCSQL18
     assert info["package"] == "mssql_python_odbc"
     assert info["version"] == "18.6.2.1"
-    assert Path(info["driver_path"]).name.startswith("msodbcsql18")
+    _assert_classic_driver_filename(info["driver_path"])
     assert info["source"] == "default"
     assert info["frozen"] is False
 
@@ -231,7 +243,7 @@ def test_get_info_rust_path_does_not_select_or_freeze_native_provider(monkeypatc
     assert info["id"] == PROVIDER_MSSQL_ODBC
     assert Path(info["driver_path"]).name.startswith("mssqlodbc")
     assert not ProviderManager.is_frozen()
-    assert Path(ddbc_bindings.GetDriverPathCpp("provider-root")).name.startswith("msodbcsql18")
+    _assert_classic_driver_filename(ddbc_bindings.GetDriverPathCpp("provider-root"))
 
 
 def test_effective_and_get_info_do_not_raise_for_invalid_env_var(monkeypatch):
