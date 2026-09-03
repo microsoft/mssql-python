@@ -45,12 +45,14 @@ parameters:
   - name: condaLabel
     type: string
     default: 'main'
-  # Comma-separated subdirs a complete release MUST contain (PyPI parity minus
-  # win-arm64 and musllinux). Guards against publishing an incomplete set even if
-  # this step is run standalone. Keep in sync with conda-release-step.yml.
+  # Comma-separated subdirs a complete release MUST contain (full PyPI parity minus
+  # musllinux, which has no conda subdir). win-arm64 IS included -- the build enforces
+  # its --dry-run solve + PE-arch assert, so a missing/broken win-arm64 blocks the
+  # release. Guards against publishing an incomplete set even if this step is run
+  # standalone. Keep in sync with conda-release-step.yml.
   - name: requiredSubdirs
     type: string
-    default: 'win-64,osx-64,osx-arm64,linux-64,linux-aarch64'
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
   # Comma-separated superset of subdirs allowed to appear; anything else fails.
   - name: allowedSubdirs
     type: string
@@ -73,7 +75,7 @@ steps:
       script: |
         $id = ${{ parameters.buildDefinitionId }}
         if ($id -eq 0) {
-          Write-Error "condaBuildDefinitionId is 0 (placeholder). Set both the release pipeline's resource 'source:' name and condaBuildDefinitionId to the registered standalone conda-build pipeline."
+          Write-Error "buildDefinitionId is 0 (placeholder). Set both the release pipeline's resource 'source:' name and condaBuildDefinitionId (passed to this template as buildDefinitionId) to the registered standalone conda-build pipeline."
           exit 1
         }
         Write-Host "conda-build definition id = $id"

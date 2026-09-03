@@ -98,7 +98,7 @@ steps:
       script: |
         $id = ${{ parameters.buildDefinitionId }}
         if ($id -eq 0) {
-          Write-Error "condaBuildDefinitionId is 0 (placeholder). Register the standalone conda-build pipeline in ADO, then set BOTH the release pipeline's resource 'source:' name AND condaBuildDefinitionId to it."
+          Write-Error "buildDefinitionId is 0 (placeholder). Register the standalone conda-build pipeline in ADO, then set BOTH the release pipeline's resource 'source:' name AND condaBuildDefinitionId (passed to this template as buildDefinitionId) to it."
           exit 1
         }
         Write-Host "conda-build definition id = $id"
