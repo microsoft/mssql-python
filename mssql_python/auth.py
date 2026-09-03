@@ -183,7 +183,7 @@ class AADAuth:
 
     @staticmethod
     def get_raw_token(auth_type: str, credential_kwargs: Optional[Dict[str, str]] = None) -> str:
-        """Acquire a raw JWT for the mssql-py-core connection (bulk copy).
+        """Acquire a raw JWT for the mssql-python-rs connection (bulk copy).
 
         Uses the cached credential instance so the Azure Identity SDK's
         built-in token cache can serve a valid token without a round-trip
@@ -395,7 +395,7 @@ def _parse_tenant_id(sts_url: str) -> Optional[str]:
 class ServicePrincipalAuth:
     """Builds an ``entra_id_token_factory`` callable for ActiveDirectoryServicePrincipal.
 
-    The bulkcopy path through mssql-py-core uses callback-based token
+    The bulkcopy path through mssql-python-rs uses callback-based token
     acquisition (FedAuth workflow ``0x02``) because tenant_id is only known
     from the STS URL that the server returns during the TDS handshake.
     """
@@ -481,7 +481,7 @@ class ServicePrincipalAuth:
                         # timeouts, azure-identity's defaults can let an
                         # unreachable / slow STS endpoint block the calling
                         # thread for tens of seconds. The factory runs on a
-                        # mssql-py-core blocking-pool worker (tokio
+                        # mssql-python-rs blocking-pool worker (tokio
                         # spawn_blocking), so a stuck callback ties that
                         # worker up for the duration. SP is non-interactive
                         # and token issuance is typically <1s; 10s/15s is

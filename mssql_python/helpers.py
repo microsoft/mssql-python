@@ -255,7 +255,7 @@ def connstr_to_pycore_params(params: dict) -> dict:
     """Translate parsed ODBC connection-string params for py-core's bulk copy path.
 
     When ``cursor.bulkcopy()`` is called, mssql-python opens a *separate*
-    connection through mssql-py-core.
+    connection through mssql-python-rs.
     py-core's ``connection.rs`` expects a Python dict with snake_case keys —
     different from the ODBC-style keys that ``_ConnectionStringParser._parse``
     returns.

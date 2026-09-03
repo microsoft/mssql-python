@@ -877,7 +877,7 @@ class TestManagedIdentity:
         mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
 
         with (
-            patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}),
+            patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}),
             patch("mssql_python.auth.AADAuth.get_raw_token", side_effect=fake_get_raw_token),
         ):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
@@ -2449,7 +2449,7 @@ class TestServicePrincipalAuth:
 
     def test_factory_passes_transport_with_explicit_timeouts(self):
         # Without explicit timeouts, azure-identity defaults can block the
-        # mssql-py-core blocking-pool worker for tens of seconds on a slow
+        # mssql-python-rs blocking-pool worker for tens of seconds on a slow
         # AAD endpoint. The factory must pass a bounded RequestsTransport.
         from azure.core.pipeline.transport import RequestsTransport
 

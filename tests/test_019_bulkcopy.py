@@ -7,17 +7,14 @@ import time
 
 import pytest
 
-# Skip the entire module when mssql_py_core can't be loaded (e.g. it's not
+# Skip the entire module when the Rust core can't be loaded (e.g. it's not
 # installed, or its native extension fails to load in some build containers).
-# exc_type=ImportError is required because pytest 9.1 changed importorskip's
-# default to only skip on ModuleNotFoundError, so a module that is found but
-# fails to import its native extension would otherwise be raised as a collection
-# error instead of being skipped. The skip reason is left to pytest so it
-# reports the actual underlying import error.
-mssql_py_core = pytest.importorskip(
-    "mssql_py_core",
-    exc_type=ImportError,
-)
+try:
+    from mssql_python._rust import import_rust_core
+
+    import_rust_core()
+except ImportError as exc:
+    pytest.skip(str(exc), allow_module_level=True)
 
 
 def test_connection_and_cursor(cursor):
@@ -125,7 +122,7 @@ def test_bulkcopy_without_database_parameter(conn_str):
         assert current_db is not None, "Should be connected to a database"
 
         # Skip on Azure SQL Database (EngineEdition 5): bulkcopy internally
-        # opens a second connection via mssql_py_core using the stored
+        # opens a second connection via the Rust core using the stored
         # connection string.  Without a DATABASE keyword that second
         # connection cannot resolve the target table on Azure SQL.
         cursor.execute("SELECT CAST(SERVERPROPERTY('EngineEdition') AS INT)")
@@ -575,7 +572,7 @@ def test_bulkcopy_udt_geometry(cursor):
         cursor.connection.commit()
 
         # Bulk copy the UDT bytes into the geometry column. Requires the GH-667
-        # fix in the bundled mssql_py_core (both the varbinary(max) wire mapping
+        # fix in the Rust core (both the varbinary(max) wire mapping
         # and the bytes->UDT value-coercion). Pre-fix this failed with
         # "Unsupported TDS type for bulk copy: 0xF0" / a bad varbinary(-1) type /
         # a "target SQL type is Udt" coercion error.

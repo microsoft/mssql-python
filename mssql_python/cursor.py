@@ -3235,7 +3235,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     # ── Mapping from ODBC connection-string keywords (lowercase, as _parse returns)
     def _build_pycore_context(self) -> dict:
-        """Build the connection context dict expected by mssql_py_core.
+        """Build the connection context dict expected by mssql_python_rs.
 
         Parses the underlying ODBC connection string, validates the SERVER
         parameter, and (when Azure AD auth is in use) either registers a
@@ -3307,7 +3307,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 type(self.connection._token_provider).__name__,
             )
         elif self.connection._auth_type:
-            # Fresh token acquisition for mssql-py-core connection
+            # Fresh token acquisition for mssql-python-rs connection
             from mssql_python.auth import AADAuth, ServicePrincipalAuth
             from mssql_python.constants import _AuthInternal
 
@@ -3387,15 +3387,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     @staticmethod
     def _bulkcopy_core_and_validate(table_name, batch_size, timeout):
         """Import the native core and validate the args shared by ``bulkcopy``
-        and ``bulkcopy_arrow``. Returns the imported ``mssql_py_core`` module."""
+        and ``bulkcopy_arrow``. Returns the imported Rust core module."""
+        from mssql_python._rust import import_rust_core
+
         try:
-            import mssql_py_core
+            rust_core = import_rust_core()
         except ImportError as exc:
-            logger.error("bulkcopy: Failed to import mssql_py_core module")
-            raise ImportError(
-                "Bulk copy requires the mssql_py_core library which is not available. "
-                "This is an unexpected error. "
-            ) from exc
+            logger.error("bulkcopy: Failed to import mssql_python_rs module")
+            raise exc
 
         if not table_name or not isinstance(table_name, str):
             logger.error("bulkcopy: Invalid table_name parameter")
@@ -3413,7 +3412,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if timeout < 0:
             raise ValueError(f"timeout must be non-negative, got {timeout}")
 
-        return mssql_py_core
+        return rust_core
 
     @staticmethod
     def _bulkcopy_teardown(pycore_context, pycore_cursor, pycore_connection):
@@ -3507,7 +3506,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 - elapsed_time: Time taken for the operation
 
         Raises:
-            ImportError: If mssql_py_core library is not installed
+            ImportError: If the mssql-python-rs library is not installed
             TypeError: If data is None, not iterable, is a string/bytes, or is an
                 Arrow source (use :meth:`bulkcopy_arrow` for those)
             ValueError: If table_name is empty or parameters are invalid
@@ -3526,7 +3525,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "cursor.bulkcopy_arrow() instead."
             )
 
-        mssql_py_core = self._bulkcopy_core_and_validate(table_name, batch_size, timeout)
+        rust_core = self._bulkcopy_core_and_validate(table_name, batch_size, timeout)
 
         # Validate that data is iterable (but not a string or bytes, which are technically iterable)
         if data is None:
@@ -3547,7 +3546,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         pycore_cursor = None
         try:
             # Only pass logger to Rust if logging is enabled (performance optimization)
-            pycore_connection = mssql_py_core.PyCoreConnection(
+            pycore_connection = rust_core.PyCoreConnection(
                 pycore_context, python_logger=logger if is_logging_enabled else None
             )
             pycore_cursor = pycore_connection.cursor()
@@ -3555,7 +3554,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Enforce the bulkcopy type contract: only tuple and Row accepted.
             # Created to support the fetchone/fetchmany/fetchall -> bulkcopy
             # pipeline where Row objects need conversion to native tuples.
-            # Rust (mssql_py_core) requires PyTuple via cast::<PyTuple>() and
+            # Rust core requires PyTuple via cast::<PyTuple>() and
             # rejects all other types including list. Row objects are converted
             # using direct _values access (4x faster than __iter__ protocol).
             # Uses itertools.chain for C-level iteration (avoids Python
@@ -3672,7 +3671,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             and ``rows_per_second``.
 
         Raises:
-            ImportError: If the mssql_py_core library is not installed.
+            ImportError: If the mssql-python-rs library is not installed.
             TypeError: If ``source`` is None, a str, or bytes.
             ValueError: If ``table_name`` is empty or parameters are invalid.
             RuntimeError: If the connection string is not available.
@@ -3686,7 +3685,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         is_logging_enabled = logger.is_debug_enabled
 
-        mssql_py_core = self._bulkcopy_core_and_validate(table_name, batch_size, timeout)
+        rust_core = self._bulkcopy_core_and_validate(table_name, batch_size, timeout)
 
         if source is None or isinstance(source, (str, bytes)):
             got = "None" if source is None else type(source).__name__
@@ -3701,7 +3700,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         pycore_connection = None
         pycore_cursor = None
         try:
-            pycore_connection = mssql_py_core.PyCoreConnection(
+            pycore_connection = rust_core.PyCoreConnection(
                 pycore_context, python_logger=logger if is_logging_enabled else None
             )
             pycore_cursor = pycore_connection.cursor()

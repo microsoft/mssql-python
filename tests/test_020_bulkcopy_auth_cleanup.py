@@ -5,7 +5,7 @@
 
 When cursor.bulkcopy() acquires an Azure AD token, it must strip stale
 authentication/user_name/password keys from the pycore_context dict before
-passing it to mssql_py_core.  The Rust validator rejects access_token
+passing it to mssql_python_rs.  The Rust validator rejects access_token
 combined with those fields (ODBC parity).
 """
 
@@ -71,7 +71,7 @@ class TestBulkcopyAuthCleanup:
         mock_pycore_module.PyCoreConnection = capture_context
 
         with (
-            patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}),
+            patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}),
             patch("mssql_python.auth.AADAuth.get_raw_token", return_value=SAMPLE_TOKEN),
         ):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
@@ -109,7 +109,7 @@ class TestBulkcopyAuthCleanup:
         mock_pycore_module = MagicMock()
         mock_pycore_module.PyCoreConnection = capture_context
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
         assert "access_token" not in captured_context
@@ -159,7 +159,7 @@ class TestBulkcopyTokenProvider:
         mock_pycore_module = MagicMock()
         mock_pycore_module.PyCoreConnection = capture_context
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
         # The credential was consulted for a fresh token.
@@ -186,7 +186,7 @@ class TestBulkcopyTokenProvider:
 
         mock_pycore_module = MagicMock()
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}):
             with pytest.raises(OperationalError) as exc_info:
                 cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
@@ -219,7 +219,7 @@ class TestBulkcopyTokenProvider:
         mock_pycore_module = MagicMock()
         mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}):
             cursor.bulkcopy("dbo.t", [(1, "a")], timeout=10)
             cursor.bulkcopy("dbo.t", [(2, "b")], timeout=10)
             cursor.bulkcopy("dbo.t", [(3, "c")], timeout=10)
@@ -255,7 +255,7 @@ class TestBulkcopyTokenProvider:
         mock_pycore_module = MagicMock()
         mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}):
             with pytest.raises(OperationalError):
                 cursor.bulkcopy("dbo.t", [(1, "a")], timeout=10)
             # Cursor still works after the transient failure.
@@ -285,7 +285,7 @@ class TestBulkcopyTokenProvider:
 
         mock_pycore_module = MagicMock()
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}):
             with pytest.raises(InterfaceError) as exc_info:
                 cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
@@ -312,7 +312,7 @@ def _capture_bulkcopy_context(cursor):
     mock_pycore_module = MagicMock()
     mock_pycore_module.PyCoreConnection = capture_context
 
-    with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+    with patch.dict("sys.modules", {"mssql_python_rs": mock_pycore_module}):
         cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
     return captured_context
