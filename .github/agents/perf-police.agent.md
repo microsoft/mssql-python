@@ -28,6 +28,12 @@ conversion). So:
 - Re-measure micro-deltas in a **release** build (`-DNDEBUG`). pybind11 enables a
   GIL-held assertion when `NDEBUG` is unset, which fakes a ~3 ns/decref penalty
   that vanishes in release. A perf delta seen only in debug is not a perf delta.
+- A normalized "vs pyodbc" or "vs main" score is only trustworthy when the pyodbc
+  denominator is stable between the two runs being compared. If main and the PR ran
+  on different machines and pyodbc's own time moved more than ~10% between them, the
+  normalized delta is measuring pyodbc's runner, not the change. Fall back to
+  same-runner raw medians and say so. Do not report a normalized regression as a real
+  regression without confirming pyodbc held still.
 
 ## The zone model — where does this code run?
 
@@ -46,6 +52,13 @@ forbidden in Z4." A `py::cast` in a surface function is nothing. The same call
 inside a per-cell loop is the measured tax (1,355 ms/batch vs 62 ms/batch raw
 CPython on the 1.2M-row reference fetch). Review the diff against its zone, not
 in the abstract.
+
+Before you assign a zone, state the call frequency of the hunk in words, with a line
+reference: once per query, once per batch, or once per row/cell. "This runs once per
+parameter per execute (param_detect.hpp 215), so O(params) per call, Z3" is a zone
+claim. Naming a zone without citing where the frequency comes from is a guess, and A1
+does not fire on a guess. If you cannot locate the loop that sets the frequency, say
+the zone is unverified rather than asserting one.
 
 ## The patterns — what good looks like
 
@@ -134,6 +147,12 @@ legacy path (`_map_sql_type`, `SQLExecuteLegacy_wrap`) exists only for
   (`_map_sql_type` directly, or a black-box round-trip via `SQL_VARIANT_PROPERTY`),
   not against hand-specified `setinputsizes` types, which bypass `_map_sql_type`
   entirely and prove nothing about detection.
+- Before flagging any native-vs-legacy divergence as a bug, run the same input through
+  both paths and confirm they actually differ. The legacy path is the reference: if it
+  hits the identical failure (same overflow, same cast, same throw), there is no
+  regression and there is nothing to report. Do not infer a divergence from reading one
+  side; a "the native branch is missing a guard the old code had" claim requires showing
+  the old code did something different on that input.
 
 ## Review procedure
 
@@ -149,6 +168,10 @@ legacy path (`_map_sql_type`, `SQLExecuteLegacy_wrap`) exists only for
 6. If C++ changed, confirm the author rebuilt and ran the relevant tests against a
    live SQL Server (the suite needs `DB_CONNECTION_STRING`); a perf claim needs a
    before/after on a named workload in a release build.
+7. Work only inside the checkout you were given. Do not switch branches, do not touch
+   the user's primary checkout, and keep any scratch files in the workspace, not /tmp.
+   Read each changed file once and cite line ranges on later references instead of
+   re-reading it; a bindings PR is large and re-reads are the main cost sink.
 
 ## Reporting
 
@@ -164,3 +187,7 @@ legacy path (`_map_sql_type`, `SQLExecuteLegacy_wrap`) exists only for
   safe (dead / unreachable / duplicated-and-temporary).
 - Prefer a short, specific report over an exhaustive one. If the PR is clean
   against the methodology, say so plainly and stop.
+- Separate a confirmed finding from a suspicion. If you did not run the input through
+  both paths, or could not locate the frequency-setting loop, label it "unverified" and
+  say what you would need to confirm it. A false "correctness gap" costs the author more
+  than a missed nit.
