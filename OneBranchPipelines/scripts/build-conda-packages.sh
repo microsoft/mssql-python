@@ -11,7 +11,8 @@
 # binfmt for linux-aarch64, and as a CROSS-build for osx-arm64 on the Intel macOS
 # agent (there is no reverse Rosetta, so the arm64 Python is never executed --
 # conda/*/build.sh extract the universal2 wheel without Python and the section-7
-# runtime import is skipped; the pipeline's static arm64-slice audit stands in).
+# runtime import is skipped -- osx-arm64 arch is NOT independently verified here
+# (trusted from the universal2 wheel tag, like the PyPI wheel; no Mach-O arch check)).
 #
 # Args:
 #   $1 WheelsDir           find-links dir holding the mssql-python + mssql-python-odbc wheels
@@ -27,7 +28,9 @@
 #                          target's Python -- true natively, under Rosetta 2 (osx-64
 #                          on Apple Silicon) and under QEMU binfmt (linux-aarch64 on
 #                          x86_64). For osx-arm64 on the Intel agent it is NOT, so
-#                          that leg auto-skips the import (static arch audit stands in).
+#                          that leg auto-skips the import. NOTE: osx-arm64 arch is not
+#                          independently verified here -- trusted from the universal2
+#                          wheel tag; there is no Mach-O arch check in this pipeline.
 set -euo pipefail
 
 WheelsDir="${1:?WheelsDir required}"
@@ -294,14 +297,16 @@ for py in $pyvers; do
   "$conda" run -n "$envName" python -c "import sys" >/dev/null 2>&1 || target_runnable=0
   if [ "$target_runnable" = "0" ]; then
     # The ONLY leg allowed to skip the runtime proof is the osx-arm64 cross-build on
-    # an Intel agent (no reverse Rosetta): the arm64 Python genuinely cannot run here,
-    # and the pipeline's static arm64-slice audit (lipo/otool/file on the arm64 Mach-O
-    # payload) stands in -- the same assurance as the shipping PyPI universal2 arm64
-    # slice. Every OTHER target (linux-64/osx-64 native, linux-aarch64 under QEMU
-    # binfmt) MUST run its own import; a leg that cannot is a real failure, never a
-    # silent pass -- otherwise a broken linux-aarch64 package ships unvalidated.
+    # an Intel agent (no reverse Rosetta): the arm64 Python genuinely cannot run here.
+    # CAVEAT: osx-arm64 arch is NOT independently verified in this pipeline. Unlike
+    # Windows (assert_pe_machine.py PE check) and Linux (audit_bundled_binaries.py ELF
+    # e_machine check), there is NO Mach-O arch audit, so the arm64 slice is trusted
+    # from the universal2 wheel tag -- exactly like the shipping PyPI universal2 wheel.
+    # Every OTHER target (linux-64/osx-64 native, linux-aarch64 under QEMU binfmt) MUST
+    # run its own import; a leg that cannot is a real failure, never a silent pass --
+    # otherwise a broken linux-aarch64 package ships unvalidated.
     if [ "${CONDA_SUBDIR:-}" = "osx-arm64" ] && [ "$(uname -s)" = "Darwin" ]; then
-      echo "=== [py $py] osx-arm64 cross on Intel: target Python not executable; skipping runtime import (static arm64-slice audit covers this leg). ==="
+      echo "=== [py $py] osx-arm64 cross on Intel: target Python not executable; skipping runtime import (osx-arm64 arch NOT independently verified -- trusted from the universal2 wheel tag). ==="
       continue
     fi
     echo "ERROR: [py $py] target Python for CONDA_SUBDIR=${CONDA_SUBDIR:-native} is not executable on $(uname -s)/$(uname -m), and this is NOT the osx-arm64 cross-build. Refusing to silently skip validation (linux-aarch64 requires QEMU binfmt to be registered on this leg)." >&2

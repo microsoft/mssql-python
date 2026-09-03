@@ -222,7 +222,8 @@ extends:
                   artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
                   targetPath: '$(Pipeline.Workspace)/odbc_wheels'
               # osx-arm64: CROSS-built on the Intel agent (BEST-EFFORT -- the runtime import
-              # auto-skips; the static arm64-slice audit stands in).
+              # auto-skips). NOTE: osx-arm64 arch is NOT independently verified here (no
+              # Mach-O arch check); it is trusted from the universal2 wheel tag, like PyPI.
               - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
                 parameters:
                   condaSubdir: 'osx-arm64'
