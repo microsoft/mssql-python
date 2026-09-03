@@ -40,14 +40,6 @@ parameters:
     displayName: 'Python versions (comma-separated)'
     type: string
     default: '3.10,3.11,3.12,3.13,3.14'
-  # H1: the Encrypt=yes probe connection string. OpenSSL is dlopen'd lazily (not in
-  # DT_NEEDED), so ONLY a live TLS handshake proves libssl/libcrypto resolve from
-  # $PREFIX/lib -- no static audit can. Supply a reachable server (from a secret var)
-  # to activate conda/tls_connect_probe.py on the Linux leg; empty = the probe SKIPs.
-  - name: condaTlsProbeConn
-    displayName: 'TLS probe: a full SQL Server connection string; NOT a yes/no toggle; empty = skip'
-    type: string
-    default: ''
   # H1: enable the minimal-base ldd reachability gate (CONDA_ASSERT_PREFIX_REACHABLE).
   # It fails CLOSED if the driver binds a system (or absent) krb5/gssapi/libltdl, so it
   # is only valid on a leg with NO system copies of those libs -- set true ONLY when
@@ -261,10 +253,14 @@ extends:
               vmImage: 'ubuntu-latest'
             variables:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-              # H1: activate the runtime gates in build-conda-packages.sh. The TLS probe
-              # runs when a connection string is supplied; the ldd reachability gate runs
-              # (fail-closed) only when explicitly enabled on a minimal base.
-              CONDA_TLS_PROBE_CONN: ${{ parameters.condaTlsProbeConn }}
+              # H1: activate the runtime gates in build-conda-packages.sh. The TLS probe's
+              # Encrypt=yes connection string carries a password, so it is sourced from a
+              # SECRET variable -- NOT a queue-time parameter, which ADO leaves UNMASKED in
+              # the run UI/logs. Define `condaTlsProbeConn` as a secret in a variable group /
+              # Key Vault linked to this pipeline; unset = the probe SKIPs loudly. The ldd
+              # reachability gate runs (fail-closed) only when explicitly enabled on a
+              # minimal base.
+              CONDA_TLS_PROBE_CONN: $(condaTlsProbeConn)
               ${{ if parameters.enableMinimalReachabilityGate }}:
                 CONDA_ASSERT_PREFIX_REACHABLE: '1'
             steps:
