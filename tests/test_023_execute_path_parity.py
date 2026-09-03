@@ -292,6 +292,32 @@ def test_setinputsizes_shorter_than_params_detects_the_rest(cursor):
         cursor.setinputsizes(None)
 
 
+def test_setinputsizes_shorter_than_params_money_decimal_binds_numeric(cursor):
+    """GH-740 on the legacy path: an uncovered money-range Decimal must bind as
+    NUMERIC, not VARCHAR.
+
+    With setinputsizes shorter than the parameter list, the uncovered Decimal falls
+    through to _map_sql_type. Before the fix it took the MONEY-range VARCHAR shortcut,
+    so a comparison against a smaller numeric column made SQL Server convert
+    varchar->numeric and overflow. It must now return no match without raising, like
+    the native path.
+    """
+    cursor.execute("DROP TABLE IF EXISTS #pytest_si_gh740")
+    cursor.execute("CREATE TABLE #pytest_si_gh740 (k int, v numeric(5,2))")
+    cursor.execute("INSERT INTO #pytest_si_gh740 VALUES (1, 12.34)")
+    cursor.setinputsizes([(ddbc_sql_const.SQL_INTEGER.value, 0, 0)])  # sizes param 0 only
+    try:
+        with pytest.warns(Warning):  # count mismatch is warned, then execution proceeds
+            cursor.execute(
+                "SELECT COUNT(*) FROM #pytest_si_gh740 WHERE k = ? AND v = ?",
+                [1, decimal.Decimal("12345.6789")],
+            )
+        assert cursor.fetchone()[0] == 0
+    finally:
+        cursor.setinputsizes(None)
+        cursor.execute("DROP TABLE IF EXISTS #pytest_si_gh740")
+
+
 # ---------------------------------------------------------------------------
 # Edge case tests (issues caught in rubber-duck review)
 # ---------------------------------------------------------------------------

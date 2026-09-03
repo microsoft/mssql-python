@@ -650,6 +650,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         i: int,
         min_val: Optional[Any] = None,
         max_val: Optional[Any] = None,
+        decimal_as_numeric: bool = False,
     ) -> Tuple[int, int, int, int, bool]:
         """
         Map a Python data type to the corresponding SQL type,
@@ -658,6 +659,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             - param: The parameter to map.
             - parameters_list: The list of parameters to bind.
             - i: The index of the parameter in the list.
+            - decimal_as_numeric: When True, bind a Decimal as SQL_NUMERIC regardless of
+              value, skipping the MONEY/SMALLMONEY-range VARCHAR shortcut. The execute()
+              path sets this so a money-range Decimal compared against a numeric column
+              does not overflow (GH-740). executemany() leaves it False because it
+              string-binds Decimals for the whole batch (GH-503).
         Returns:
             - A tuple containing the SQL type, C type, column size, and decimal digits.
         """
@@ -793,8 +799,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     f"The maximum precision supported by SQL Server is 38, but got {precision}."
                 )
 
-            # Detect MONEY / SMALLMONEY range
-            if SMALLMONEY_MIN <= param <= SMALLMONEY_MAX:
+            # Detect MONEY / SMALLMONEY range. Skipped on the execute() path
+            # (decimal_as_numeric=True), where a money-range Decimal must bind as
+            # SQL_NUMERIC so a comparison against a smaller numeric column returns no
+            # match instead of overflowing (GH-740). executemany keeps the VARCHAR
+            # shortcut because it string-binds Decimals for the batch (GH-503).
+            if not decimal_as_numeric and SMALLMONEY_MIN <= param <= SMALLMONEY_MAX:
                 logger.debug("_map_sql_type: DECIMAL -> SMALLMONEY - index=%d", i)
                 # smallmoney
                 parameters_list[i] = format(param, "f")
@@ -805,7 +815,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     0,
                     False,
                 )
-            if MONEY_MIN <= param <= MONEY_MAX:
+            if not decimal_as_numeric and MONEY_MIN <= param <= MONEY_MAX:
                 logger.debug("_map_sql_type: DECIMAL -> MONEY - index=%d", i)
                 # money
                 parameters_list[i] = format(param, "f")
@@ -1247,6 +1257,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         i: int,
         min_val: Optional[Any] = None,
         max_val: Optional[Any] = None,
+        decimal_as_numeric: bool = False,
     ) -> Tuple[int, int, int, int, bool]:
         """
         Maps parameter types for the given parameter.
@@ -1313,7 +1324,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         else:
             # Fall back to automatic type inference
             sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
-                parameter, parameters_list, i, min_val=min_val, max_val=max_val
+                parameter,
+                parameters_list,
+                i,
+                min_val=min_val,
+                max_val=max_val,
+                decimal_as_numeric=decimal_as_numeric,
             )
 
         # If TIME values are being bound via text C-types, normalize them to a
@@ -1827,7 +1843,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             if parameters:
                 param_info = ddbc_bindings.ParamInfo
                 for i, param in enumerate(parameters):
-                    paraminfo = self._create_parameter_types_list(param, param_info, parameters, i)
+                    # decimal_as_numeric=True so an uncovered money-range Decimal here
+                    # (setinputsizes shorter than the parameter list) binds as SQL_NUMERIC
+                    # like the native path, not VARCHAR (GH-740). executemany keeps the
+                    # VARCHAR shortcut for its batch string binding (GH-503).
+                    paraminfo = self._create_parameter_types_list(
+                        param, param_info, parameters, i, decimal_as_numeric=True
+                    )
                     parameters_type.append(paraminfo)
 
             if logger.isEnabledFor(logging.DEBUG):
