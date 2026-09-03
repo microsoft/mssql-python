@@ -7,6 +7,7 @@ validation, resolve-once freezing, post-freeze warning) and the public surface
 """
 
 import importlib
+import os
 import platform
 import subprocess
 import sys
@@ -389,3 +390,84 @@ def test_rejected_connection_does_not_freeze_provider():
     # The selection is still changeable after the rejected attempt.
     ProviderManager.set_property(PROVIDER_MSSQL_ODBC)
     assert ProviderManager.effective() == PROVIDER_MSSQL_ODBC
+
+
+# ---------------------------------------------------------------------------
+# Integration smoke tests: opt into the Rust mssql-odbc provider and connect.
+#
+# Provider selection is process-wide and frozen once, so each selection method
+# runs in its own subprocess. They require a live SQL Server
+# (DB_CONNECTION_STRING) and the packaged mssql-odbc driver, and skip otherwise.
+# Success is asserted on the SMOKE_OK stdout marker, not the exit code: the Rust
+# driver is still maturing and can panic during process teardown after the query
+# has already succeeded.
+# ---------------------------------------------------------------------------
+
+_DB_CONNECTION_STRING = os.getenv("DB_CONNECTION_STRING")
+
+
+def _mssql_odbc_driver_packaged():
+    """True when the mssql-odbc (Rust) driver ships in the importable core."""
+    try:
+        import mssql_py_core
+    except ImportError:
+        return False
+    libs = Path(mssql_py_core.__file__).resolve().parent / "libs"
+    return libs.is_dir() and any(libs.rglob("mssqlodbc.*"))
+
+
+requires_rust_provider_and_db = pytest.mark.skipif(
+    not (_DB_CONNECTION_STRING and _mssql_odbc_driver_packaged()),
+    reason="needs DB_CONNECTION_STRING and the packaged mssql-odbc driver",
+)
+
+
+_SMOKE_SCRIPT = """
+import os
+import mssql_python
+
+{select}
+
+info = mssql_python.get_native_provider_info()
+assert info["id"] == "mssql-odbc", info
+assert info["package"] == "mssql_py_core", info
+assert "mssqlodbc" in os.path.basename(info["driver_path"]).lower(), info
+
+conn = mssql_python.connect(os.environ["DB_CONNECTION_STRING"])
+cursor = conn.cursor()
+cursor.execute("SELECT 1")
+assert cursor.fetchone()[0] == 1
+cursor.close()
+conn.close()
+print("SMOKE_OK")
+"""
+
+
+def _run_provider_smoke(select_stmt, extra_env):
+    env = dict(os.environ)
+    env["DB_CONNECTION_STRING"] = _DB_CONNECTION_STRING
+    env.pop(NATIVE_PROVIDER_ENV_VAR, None)  # start from a clean selection
+    env.update(extra_env)
+    proc = subprocess.run(
+        [sys.executable, "-c", _SMOKE_SCRIPT.format(select=select_stmt)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    # Assert on the marker, not the exit code: the WIP Rust driver may panic at
+    # teardown after the query succeeds, which can dirty the process exit code.
+    assert (
+        "SMOKE_OK" in proc.stdout
+    ), f"provider smoke failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+
+
+@requires_rust_provider_and_db
+def test_smoke_mssql_odbc_via_env_var():
+    """MSSQL_PYTHON_NATIVE_PROVIDER selects the Rust driver and connects."""
+    _run_provider_smoke("pass", {NATIVE_PROVIDER_ENV_VAR: PROVIDER_MSSQL_ODBC})
+
+
+@requires_rust_provider_and_db
+def test_smoke_mssql_odbc_via_module_property():
+    """mssql_python.native_provider selects the Rust driver and connects."""
+    _run_provider_smoke(f"mssql_python.native_provider = {PROVIDER_MSSQL_ODBC!r}", {})
