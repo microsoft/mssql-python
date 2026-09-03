@@ -65,6 +65,10 @@ Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL, SUSE (x64 only) & mu
 > **Note:**
 > SUSE Linux ARM64 is not supported. Please use x64 architecture for SUSE deployments.
 
+### Support for the SQL Server 2025 Vector Type
+
+Vector columns can be read and written on SQL Server 2025 and other backends that provide the `vector` type. Values are passed as JSON array strings and converted server side with `CAST`, and they are returned the same way, so `cursor.description` reports a string column. `float32` is the supported base type, with dimensions from 1 to 1998. For more information, refer [Data Type Conversion Wiki](https://github.com/microsoft/mssql-python/wiki/Data-Type-Conversion).
+
 ### Support for Microsoft Entra ID Authentication
  
 The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports a variety of authentication methods, including username and password, Microsoft Entra managed identity (system-assigned and user-assigned), Integrated Windows Authentication in a federated, domain-joined environment, interactive authentication via browser, device code flow for environments without browser access, and the default authentication method based on environment and configuration. This flexibility allows developers to choose the most suitable authentication approach for their deployment scenario.
