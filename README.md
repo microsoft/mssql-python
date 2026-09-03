@@ -65,10 +65,6 @@ Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL, SUSE (x64 only) & mu
 > **Note:**
 > SUSE Linux ARM64 is not supported. Please use x64 architecture for SUSE deployments.
 
-### Support for the SQL Server 2025 Vector Type
-
-Vector columns can be read and written on SQL Server 2025 and other backends that provide the `vector` type. Values are passed as JSON array strings and converted server side with `CAST`, and they are returned the same way, so `cursor.description` reports a string column. `float32` is the supported base type, with dimensions from 1 to 1998. For more information, refer [Data Type Conversion Wiki](https://github.com/microsoft/mssql-python/wiki/Data-Type-Conversion).
-
 ### Support for Microsoft Entra ID Authentication
  
 The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports a variety of authentication methods, including username and password, Microsoft Entra managed identity (system-assigned and user-assigned), Integrated Windows Authentication in a federated, domain-joined environment, interactive authentication via browser, device code flow for environments without browser access, and the default authentication method based on environment and configuration. This flexibility allows developers to choose the most suitable authentication approach for their deployment scenario.
@@ -150,48 +146,6 @@ for row in rows:
 connection.close()
  
 ```
-
-### Working with the SQL Server 2025 `vector` type
-
-Vector columns can be read and written today by passing the value as a JSON array
-string and letting the server convert it with `CAST`. The driver does not yet bind
-the vector type natively, so values are sent and returned as `str`, and
-`cursor.description` reports the column as a string type.
-
-```python
-cursor = connection.cursor()
-cursor.execute("CREATE TABLE items (id INT, embedding VECTOR(3))")
-
-# Write: pass a JSON array string and CAST it server-side
-cursor.execute(
-    "INSERT INTO items VALUES (?, CAST(? AS VECTOR(3)))",
-    (1, "[1.0, 2.0, 3.0]"),
-)
-
-# Read: the column comes back as a JSON array string
-cursor.execute("SELECT embedding FROM items")
-raw = cursor.fetchone()[0]        # '[1.0000000e+000,2.0000000e+000,3.0000000e+000]'
-
-import json
-embedding = json.loads(raw)       # [1.0, 2.0, 3.0]
-
-# Vector functions work as normal
-cursor.execute(
-    "SELECT VECTOR_DISTANCE('cosine', CAST(? AS VECTOR(3)), embedding) FROM items",
-    ("[1.0, 2.0, 3.0]",),
-)
-```
-
-Notes:
-
-- Requires SQL Server 2025 or another backend that provides the `vector` type. On
-  earlier versions such as SQL Server 2022 the server rejects the type with a normal
-  error and the connection stays usable.
-- `float32` is the only vector base type currently accepted, with dimensions from 1
-  to 1998.
-- Values are returned in scientific notation. `json.loads` parses them, but a
-  round trip is subject to `float32` precision, so `3.14159265` reads back as
-  `3.1415927`.
  
 ## Still have questions?
  
