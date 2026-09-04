@@ -104,8 +104,16 @@ jobs:
       Write-Host "Creating database and user for stress tests..."
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE StressTestDB"
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
-      "CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'" | sqlcmd -S "(localdb)\MSSQLLocalDB" -b -x
-      if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+      $startInfo.FileName = (Get-Command sqlcmd.exe).Source
+      $startInfo.Arguments = '-S "(localdb)\MSSQLLocalDB" -b -x'
+      $startInfo.UseShellExecute = $false
+      $startInfo.RedirectStandardInput = $true
+      $process = [System.Diagnostics.Process]::Start($startInfo)
+      $process.StandardInput.WriteLine("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'")
+      $process.StandardInput.Close()
+      $process.WaitForExit()
+      if ($process.ExitCode -ne 0) { throw "Failed to create the testuser login" }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
       Write-Host "Database setup completed"
