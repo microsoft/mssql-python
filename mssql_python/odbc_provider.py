@@ -30,6 +30,7 @@ PROVIDER_MSSQL_ODBC = "mssql-odbc"
 _DEFAULT_PROVIDER = PROVIDER_MSODBCSQL18
 
 # Provider -> import package that ships its native binaries.
+# Keep in sync with ddbc_bindings.cpp's ProviderPackageForId / ProviderDistForId.
 _PACKAGE_BY_PROVIDER: Dict[str, str] = {
     PROVIDER_MSODBCSQL18: "mssql_python_odbc",
     PROVIDER_MSSQL_ODBC: "mssql_py_core",

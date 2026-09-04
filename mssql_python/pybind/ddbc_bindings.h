@@ -4,7 +4,6 @@
 #pragma once
 
 // pybind11.h must be the first include
-#include <atomic>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -251,14 +250,12 @@ class DriverLoader {
   public:
     static DriverLoader& getInstance();
     void loadDriver();
-    bool isDriverLoaded() const;
 
   private:
     DriverLoader();
     DriverLoader(const DriverLoader&) = delete;
     DriverLoader& operator=(const DriverLoader&) = delete;
 
-    std::atomic<bool> m_driverLoaded;
     std::once_flag m_onceFlag;
     // Captures a failure raised inside the std::call_once callable so loadDriver()
     // can rethrow it from a normal context. This is required on musl libc

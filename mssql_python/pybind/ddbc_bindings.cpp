@@ -1084,6 +1084,7 @@ std::string GetSelectedProviderId() {
     return kProviderMsodbcsql18;
 }
 
+// Keep in sync with odbc_provider.py's _PACKAGE_BY_PROVIDER / _DIST_BY_PROVIDER.
 std::string ProviderPackageForId(const std::string& id) {
     return (id == kProviderMssqlOdbc) ? "mssql_py_core" : "mssql_python_odbc";
 }
@@ -1492,7 +1493,7 @@ DriverHandle LoadDriverOrThrowException() {
 }
 
 // DriverLoader definition
-DriverLoader::DriverLoader() : m_driverLoaded(false) {}
+DriverLoader::DriverLoader() {}
 
 DriverLoader& DriverLoader::getInstance() {
     static DriverLoader instance;
@@ -1522,7 +1523,6 @@ void DriverLoader::loadDriver() {
     std::call_once(m_onceFlag, [this]() {
         try {
             LoadDriverOrThrowException();
-            m_driverLoaded = true;
         } catch (...) {
             m_loadError = std::current_exception();
         }
@@ -1530,10 +1530,6 @@ void DriverLoader::loadDriver() {
     if (m_loadError) {
         std::rethrow_exception(m_loadError);
     }
-}
-
-bool DriverLoader::isDriverLoaded() const {
-    return m_driverLoaded.load();
 }
 
 // SqlHandle definition
