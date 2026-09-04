@@ -29,10 +29,16 @@ if not _MODULE_PATH.is_file():
 def _load_module():
     # assert_pe_machine.py imports its sibling _conda_pkg; put eng/scripts on sys.path so the
     # by-path load here resolves it (a direct `python <script>` run gets this for free).
-    sys.path.insert(0, str(_MODULE_PATH.parent))
-    spec = importlib.util.spec_from_file_location("assert_pe_machine_under_test", _MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    inserted = str(_MODULE_PATH.parent)
+    sys.path.insert(0, inserted)
+    try:
+        spec = importlib.util.spec_from_file_location("assert_pe_machine_under_test", _MODULE_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        # Don't leak eng/scripts onto sys.path for the rest of the session.
+        if inserted in sys.path:
+            sys.path.remove(inserted)
     return module
 
 

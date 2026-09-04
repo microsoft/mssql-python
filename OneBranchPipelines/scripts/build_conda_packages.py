@@ -378,14 +378,17 @@ def _is_emulated_cross(target_subdir: str) -> bool:
 
 
 def _import_probe(mod_name: str, ok_label: str) -> str:
-    """A `python -c` body that imports mod_name and FAIL-CLOSED asserts it resolved from under
+    """A `python -c` body that imports mod_name and FAIL-CLOSED asserts it loaded from under
     sys.prefix (the conda env's own site-packages). os.chdir closes CWD shadowing; this also
     catches a stray PYTHONPATH/.pth that could still load the repo source -- proving the
-    INSTALLED package, not the checkout -- then prints ok_label + the version."""
+    INSTALLED package, not the checkout. Uses abspath (NOT realpath) so conda's softlink install
+    mode -- where the site-packages entry symlinks into the pkgs/ cache OUTSIDE the prefix -- is
+    not false-failed: the import PATH stays under the prefix regardless of hard/soft link; only
+    the symlink TARGET would not. Then prints ok_label + the version."""
     return (
         f"import os,sys,{mod_name} as m;"
-        "f=os.path.normcase(os.path.realpath(m.__file__));"
-        "pref=os.path.normcase(os.path.realpath(sys.prefix));"
+        "f=os.path.normcase(os.path.abspath(m.__file__));"
+        "pref=os.path.normcase(os.path.abspath(sys.prefix));"
         f"assert f.startswith(pref+os.sep),{mod_name!r}+' loaded from '+m.__file__+"
         "', not under the conda env '+sys.prefix+' (stray PYTHONPATH/.pth?)';"
         f"print({ok_label!r},m.__version__)"
