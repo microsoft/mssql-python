@@ -99,6 +99,21 @@ def test_tls_completed_true_for_sqlstate_28000_localized():
     assert probe.tls_completed(RuntimeError(msg)) is True
 
 
+def test_tls_completed_bare_28000_in_host_or_port_is_not_a_pass():
+    # A pre-TLS network error whose text merely contains '28000' in a host/port must NOT
+    # classify as completed -- the substring hazard, same class as the dropped 18456 arm.
+    probe = _load_probe()
+    assert probe.tls_completed(RuntimeError("TCP: cannot reach sql28000.internal:1433")) is False
+    assert probe.tls_completed(RuntimeError("connection refused on port 28000")) is False
+
+
+def test_tls_completed_sqlstate_28000_only_in_context_passes():
+    # SQLSTATE 28000 counts ONLY in real SQLSTATE context (bracketed or after the label).
+    probe = _load_probe()
+    assert probe.tls_completed(RuntimeError("[28000] some localized login rejection")) is True
+    assert probe.tls_completed(RuntimeError("driver error, SQLSTATE 28000, rejected")) is True
+
+
 def test_force_tls_appends_when_absent():
     probe = _load_probe()
     out = probe.force_tls("Server=dbserver;Database=x")
@@ -241,14 +256,17 @@ def test_force_tls_braced_password_with_inner_brace():
 
 
 def test_redact_masks_values_and_flags_bare_segments():
-    """The debug line must never leak a value and must surface a no-value segment."""
+    """The debug line must never leak a value and must FLAG (masked) a no-value segment."""
     probe = _load_probe()
     red = probe._redact("Server=dbserver;Pwd=REDACTME;Encrypt=yes")
     assert "REDACTME" not in red
     assert "Pwd=***" in red
     assert "Server=***" in red
-    # a segment with no '=' (the shape that trips the parser) is surfaced verbatim.
-    assert "<<NO-VALUE:" in probe._redact("Server=dbserver;bogus;Encrypt=yes")
+    # A segment with no '=' is flagged but its CONTENT is masked (it could be a secret
+    # fragment from a mis-split braced value), so the raw token never reaches the log.
+    red2 = probe._redact("Server=dbserver;s3cr3tfragment;Encrypt=yes")
+    assert "<<NO-VALUE>>" in red2
+    assert "s3cr3tfragment" not in red2
 
 
 # --- misconfiguration guard: a bare 'yes' is NOT a connection string --------------

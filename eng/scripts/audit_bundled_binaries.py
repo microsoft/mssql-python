@@ -42,7 +42,6 @@ import argparse
 import glob
 import os
 import posixpath
-import re
 import struct
 import sys
 
@@ -69,10 +68,11 @@ _MUST_NOT_VENDOR = ("libkrb5", "libgssapi", "libssl", "libcrypto", "libltdl")
 # as load-bearing as the climb itself.
 _REQUIRED_DEPS = ("krb5", "libtool", "openssl")
 
-# Expected DT_NEEDED soname substrings, so a driver that silently STOPPED needing
-# krb5 (making the declared dep moot) is caught too.
-_DRIVER_NEEDED = ("libkrb5", "libgssapi_krb5", "libodbcinst")
-_ODBCINST_NEEDED = ("libltdl",)
+# Expected DT_NEEDED soname PREFIXES (incl. the '.so' so 'libkrb5support.so' does NOT satisfy
+# 'libkrb5.so'), so a driver that silently STOPPED needing krb5 (making the declared dep moot)
+# is caught too.
+_DRIVER_NEEDED = ("libkrb5.so", "libgssapi_krb5.so", "libodbcinst.so")
+_ODBCINST_NEEDED = ("libltdl.so",)
 
 # ELF e_machine architecture ids (ELF header offset 0x12). The conda subdir is the
 # authority: every vendored driver/manager ELF must match it, so an x86_64 .so
@@ -228,33 +228,33 @@ def _dep_names(depends) -> set:
     return names
 
 
-def _openssl_range_ok(constraint: str) -> bool:
-    """True iff an openssl spec pins the Driver-18 ABI range: a ``>=3`` lower AND an EXCLUSIVE
-    upper that admits NO openssl 4.x.
+_OPENSSL_LOWER_OK = frozenset({">=3", ">=3.0", ">=3.0.0"})
+_OPENSSL_UPPER_OK = frozenset({"<4", "<4.0", "<4.0.0", "<4.0a0", "<4.0.0a0"})
 
-    Parses each comma-separated clause as ``(operator, version)``. The upper bound is valid
-    ONLY as an exclusive ``<`` whose numeric release is ``4`` with trailing zeros -- ``<4``,
-    ``<4.0``, ``<4.0.0`` or a ``4.0`` pre-release like ``<4.0a0`` (conda's canonical bound).
-    ``<=4``, ``<4.1`` and ``<4.0.1`` each admit some 4.x build and are REJECTED, as is a spec
-    with no upper bound (bare ``>=3``) and a loose ``<40`` (whose ``<40`` is not ``<4``).
+
+def _openssl_range_ok(constraint: str) -> bool:
+    """True iff an openssl spec pins EXACTLY the Driver-18 ABI range: a ``>=3`` lower AND a
+    ``<4`` upper that admits no openssl 4.x, matched against an ALLOWLIST of canonical bound
+    spellings. Anything else -- a conda OR-group (``>=3|>=1``), a garbage/unrecognized clause,
+    ``<=4``, ``<4.1``, or a spec missing a lower/upper -- FAILS CLOSED. This is a security-
+    adjacent pin, so a false-negative is safe (a maintainer widens the allowlist) but a
+    false-positive is not.
     """
-    has_lower_3 = False
-    has_upper_4 = False
+    if not constraint or "|" in constraint:
+        return False
+    has_lower = False
+    has_upper = False
     for clause in constraint.split(","):
-        m = re.match(r"\s*(>=|<=|==|=|>|<)\s*([0-9][0-9.]*)", clause)
-        if not m:
+        c = clause.replace(" ", "")
+        if not c:
             continue
-        op, ver = m.group(1), m.group(2)
-        parts = [int(p) for p in ver.split(".") if p != ""]
-        if not parts:
-            continue
-        if op in (">=", ">", "==", "=") and parts[0] == 3:
-            has_lower_3 = True
-        # Exclusive '<' only, at numeric release 4.0(.0...) -- a '4.0' pre-release such as
-        # '<4.0a0' captures as '4.0' here, so it qualifies; '<=4', '<4.1', '<4.0.1' do not.
-        elif op == "<" and parts[0] == 4 and all(p == 0 for p in parts[1:]):
-            has_upper_4 = True
-    return has_lower_3 and has_upper_4
+        if c in _OPENSSL_LOWER_OK:
+            has_lower = True
+        elif c in _OPENSSL_UPPER_OK:
+            has_upper = True
+        else:
+            return False
+    return has_lower and has_upper
 
 
 def audit_package(path: str) -> list[str]:
@@ -351,8 +351,19 @@ def audit_package(path: str) -> list[str]:
             )
 
         dyn = elf_dynamic(data)
-        entries = _entries(effective_runpath(dyn))
+        raw_runpath = effective_runpath(dyn)
+        entries = _entries(raw_runpath)
         needed = dyn["needed"]
+        # An EMPTY RUNPATH entry (leading/trailing/double ':') is resolved by the loader
+        # against the CURRENT directory -- an untrusted-cwd search. _entries() drops empties
+        # for the membership checks below, so flag it HERE, else '$ORIGIN:' would pass the
+        # exact-{$ORIGIN, climb} check.
+        if raw_runpath is not None and "" in raw_runpath.split(":"):
+            errors.append(
+                f"{name}: effective RUNPATH '{raw_runpath}' contains an EMPTY entry "
+                f"(current-directory search); it must be exactly '$ORIGIN:<climb>'. "
+                f"NEEDED={needed}"
+            )
         # musl/alpine variants (NEEDED libc.musl*) link differently -- their libodbcinst
         # statically resolves libltdl, so the glibc DT_NEEDED requirements below do not
         # apply. There is no musl conda subdir (conda Linux is glibc-only); these variants
