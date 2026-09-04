@@ -60,10 +60,10 @@ parameters:
   - name: condaTargetSubdir
     type: string
     default: ''
-  # The shared bash build+validate script.
+  # The shared cross-platform build+validate orchestrator.
   - name: scriptPath
     type: string
-    default: '$(Build.SourcesDirectory)/OneBranchPipelines/scripts/build-conda-packages.sh'
+    default: '$(Build.SourcesDirectory)/OneBranchPipelines/scripts/build_conda_packages.py'
   # BLOCKING by default: if conda cannot build/validate the packages, FAIL the leg
   # instead of letting a green build hide a broken conda package. Callers running an
   # intentionally best-effort emulated leg (e.g. linux-aarch64 under QEMU) may override
@@ -76,84 +76,21 @@ steps:
   - bash: |
       set -euo pipefail
 
-      # Caller value-inputs are surfaced via the step-level env: block below (NOT interpolated
-      # into this script's text) and validated before use, matching the repo's secret-handling
-      # convention. PYTHON_VERSIONS: empty (auto-detect) or comma-separated X.Y;
-      # CONDA_TARGET_SUBDIR: empty (native) or a known conda subdir.
-      if [ -n "${PYTHON_VERSIONS:-}" ] && ! printf '%s' "$PYTHON_VERSIONS" | grep -Eq '^[0-9]+\.[0-9]+(,[0-9]+\.[0-9]+)*$'; then
-        echo "ERROR: pythonVersions '$PYTHON_VERSIONS' must be empty or comma-separated X.Y (e.g. 3.10,3.11)." >&2; exit 1
-      fi
-      case "${CONDA_TARGET_SUBDIR:-}" in
-        "" | osx-64 | osx-arm64 | linux-64 | linux-aarch64 | win-64 | win-arm64) ;;
-        *) echo "ERROR: condaTargetSubdir '$CONDA_TARGET_SUBDIR' is not a known conda subdir." >&2; exit 1 ;;
-      esac
-
-      MSSQL_WHEEL_DIR="${{ parameters.mssqlWheelDir }}"
-      ODBC_WHEEL_DIR="${{ parameters.odbcWheelDir }}"
-      # Append the target subdir so each leg on a SHARED agent (macOS osx-arm64 +
-      # osx-64) gets its OWN bld tree -- no cross-subdir bleed-through at staging.
-      OUT="${{ parameters.outputDir }}/${{ parameters.condaSubdir }}"
-      LINKS="$OUT/wheels"
-      rm -rf "$LINKS"; mkdir -p "$LINKS"
-
-      # Gather this platform's mssql-python wheel(s) into ONE find-links dir,
-      # excluding the odbc package (its filename also starts with mssql_python).
-      shopt -s nullglob
-      mssql_found=0
-      for w in "$MSSQL_WHEEL_DIR"/${{ parameters.mssqlWheelGlob }}; do
-        case "$(basename "$w")" in mssql_python_odbc-*) continue ;; esac
-        cp -f "$w" "$LINKS/"; mssql_found=1
-      done
-      [ "$mssql_found" = "1" ] || { echo "ERROR: no mssql-python wheel in $MSSQL_WHEEL_DIR" >&2; exit 1; }
-
-      # Gather THIS platform's odbc wheel (must match the leg's OS/arch).
-      odbc_whl="$(find "$ODBC_WHEEL_DIR" -name '${{ parameters.odbcWheelFilter }}' 2>/dev/null | head -1)"
-      [ -n "$odbc_whl" ] || { echo "ERROR: no wheel matching '${{ parameters.odbcWheelFilter }}' in $ODBC_WHEEL_DIR" >&2; exit 1; }
-      cp -f "$odbc_whl" "$LINKS/"
-      echo "find-links wheels:"; ls -1 "$LINKS"
-
-      # Derive versions from the wheel filenames (single source of truth: the
-      # ESRP-signed wheels), so the conda package version can NEVER drift.
-      mssql_whl="$(ls "$LINKS"/mssql_python-*.whl | grep -v mssql_python_odbc | head -1)"
-      MSSQL_VER="$(basename "$mssql_whl" | sed -nE 's/^mssql_python-([^-]+)-.*/\1/p')"
-      ODBC_VER="$(basename "$odbc_whl" | sed -nE 's/^mssql_python_odbc-([^-]+)-.*/\1/p')"
-      [ -n "$MSSQL_VER" ] && [ -n "$ODBC_VER" ] || { echo "ERROR: could not derive versions from wheel filenames" >&2; exit 1; }
-      echo "Derived versions -> mssql-python=$MSSQL_VER  mssql-python-odbc=$ODBC_VER"
-
-      # Build + validate the conda packages for this leg's Python version(s).
-      chmod +x "${{ parameters.scriptPath }}"
-      bash "${{ parameters.scriptPath }}" \
-        "$LINKS" \
-        "${{ parameters.recipeRoot }}" \
-        "$OUT" \
-        "$MSSQL_VER" \
-        "$ODBC_VER" \
-        "${PYTHON_VERSIONS:-}" \
-        "${CONDA_TARGET_SUBDIR:-}"
-
-      # Stage this leg's conda packages onto the artifact for the consolidate stage,
-      # preserving the conda subdir layout. Stage ONLY packages whose conda-build
-      # output subdir matches THIS leg's target (metadata-matched, not a blind tree
-      # sweep) so a shared agent (macOS osx-arm64 + osx-64) can never bleed one leg's
-      # packages into the other's artifact. conda-build writes each package into a
-      # bld/<subdir>/ folder that equals its info/index.json subdir, so the folder
-      # name IS the authoritative subdir.
-      TARGET_SUBDIR="${CONDA_TARGET_SUBDIR:-}"
-      [ -n "$TARGET_SUBDIR" ] || TARGET_SUBDIR="${{ parameters.condaSubdir }}"
-      CONDA_OUT="$(ob_outputDirectory)/conda"
-      mkdir -p "$CONDA_OUT/$TARGET_SUBDIR"
-      staged=0
-      while IFS= read -r p; do
-        subdir="$(basename "$(dirname "$p")")"
-        if [ "$subdir" != "$TARGET_SUBDIR" ]; then
-          echo "  skip (subdir '$subdir' != target '$TARGET_SUBDIR'): $(basename "$p")"
-          continue
-        fi
-        cp -f "$p" "$CONDA_OUT/$TARGET_SUBDIR/"
-        echo "  staged $TARGET_SUBDIR/$(basename "$p")"
-        staged=1
-      done < <(find "$OUT/bld" -type f \( -name 'mssql-python*.conda' -o -name 'mssql-python*.tar.bz2' \))
-      [ "$staged" = "1" ] || { echo "ERROR: no conda packages matching target subdir '$TARGET_SUBDIR' were produced in $OUT/bld" >&2; exit 1; }
+      # One orchestrator (build_conda_packages.py) does gather + build + audit + verify + stage
+      # for EVERY leg (Windows/macOS/Linux) -- the two build scripts collapsed into one. The two
+      # caller value-inputs are surfaced via the step-level env: block below (NOT interpolated
+      # into the command), so they can't inject; the orchestrator validates their format itself.
+      python3 "${{ parameters.scriptPath }}" \
+        --mssql-wheel-dir "${{ parameters.mssqlWheelDir }}" \
+        --mssql-wheel-glob "${{ parameters.mssqlWheelGlob }}" \
+        --odbc-wheel-dir "${{ parameters.odbcWheelDir }}" \
+        --odbc-wheel-filter "${{ parameters.odbcWheelFilter }}" \
+        --recipe-root "${{ parameters.recipeRoot }}" \
+        --output-dir "${{ parameters.outputDir }}" \
+        --stage-dir "$(ob_outputDirectory)/conda" \
+        --conda-subdir "${{ parameters.condaSubdir }}" \
+        --conda-target-subdir "${CONDA_TARGET_SUBDIR:-}" \
+        --python-versions "${PYTHON_VERSIONS:-}"
     env:
       # Surface the caller's value inputs as env vars (validated in-script above) rather than
       # interpolating them into the script text -- repo secret-handling convention.

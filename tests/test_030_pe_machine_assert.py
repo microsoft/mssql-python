@@ -134,9 +134,30 @@ def test_win_arm64_arm64_binaries_pass(tmp_path):
             "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(
                 _ARM64
             ),
+            "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/mssql-auth.dll": _fake_pe(
+                _ARM64
+            ),
         },
     )
     assert ape.audit_package(p) == []
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_win_missing_auth_dll_fails(tmp_path):
+    # Binding + core driver present, but mssql-auth.dll missing -> the loader THROWS at connect,
+    # so the presence gate (win-arm64's only check) must fail.
+    p = _make_conda(
+        tmp_path,
+        "win-arm64",
+        {
+            "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
+            "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(
+                _ARM64
+            ),
+        },
+    )
+    errors = ape.audit_package(p)
+    assert any("mssql-auth" in e for e in errors)
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
@@ -194,9 +215,8 @@ def test_win_missing_binding_fails(tmp_path):
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
 def test_win_support_dll_only_fails(tmp_path):
-    # Binding + a SUPPORT dll (mssql-auth) present, but the CORE driver msodbcsql18*.dll is
-    # missing -> the presence gate must still fail (a support-only package is not shippable),
-    # and on win-arm64 this is the sole check.
+    # Binding + mssql-auth present, but the CORE driver msodbcsql18*.dll is missing -> the
+    # presence gate must still fail on the core driver (win-arm64's sole check).
     p = _make_conda(
         tmp_path,
         "win-arm64",

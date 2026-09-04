@@ -324,10 +324,11 @@ def audit_package(path: str) -> list[str]:
         if "/libs/linux/" in norm and member_dir.endswith("/lib"):
             lib_dirs.add(member_dir)
 
-        # Flag any crypto/krb5/ltdl library vendored into the Linux payload.
-        if "/libs/linux/" in norm and any(
-            base.startswith(p) and ".so" in base for p in _MUST_NOT_VENDOR
-        ):
+        # Flag any crypto/krb5/ltdl library vendored ANYWHERE in the package payload (not only
+        # under /libs/linux/): conda services these via DECLARED deps in $PREFIX/lib, so the
+        # mssql-python package must never SHIP one -- a copy in a .libs/ dir or a stray
+        # $PREFIX/lib .so is reachable by the audited RUNPATH climb and breaks the invariant.
+        if any(base.startswith(p) and ".so" in base for p in _MUST_NOT_VENDOR):
             vendored.append(name)
             continue
 
