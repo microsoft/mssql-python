@@ -85,7 +85,18 @@ jobs:
   # Create database and user for LocalDB
   - powershell: |
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+      $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      try {
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+      }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
     displayName: 'Setup database and user for LocalDB'
@@ -112,7 +123,28 @@ jobs:
         Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQLSetup","/u" -Wait
         
         Write-Host "Running SQL Server setup..."
-        Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/Q","/ACTION=Install","/FEATURES=SQLEngine","/INSTANCENAME=MSSQLSERVER","/SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`"","/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`"","/TCPENABLED=1","/SECURITYMODE=SQL","/SAPWD=$(DB_PASSWORD)","/IACCEPTSQLSERVERLICENSETERMS" -Wait
+        $configPath = Join-Path $env:TEMP "sql2022-setup.ini"
+        $configLines = @(
+          '[OPTIONS]'
+          'QUIET="True"'
+          'ACTION="Install"'
+          'FEATURES=SQLEngine'
+          'INSTANCENAME=MSSQLSERVER'
+          'SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"'
+          'SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
+          'TCPENABLED="1"'
+          'SECURITYMODE="SQL"'
+          "SAPWD=`"$env:DB_PASSWORD`""
+          'IACCEPTSQLSERVERLICENSETERMS="True"'
+        )
+        Set-Content -Path $configPath -Value $configLines -Encoding ASCII
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+        try {
+          Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/ConfigurationFile=$configPath" -Wait
+        } finally {
+          Remove-Item $configPath -Force -ErrorAction SilentlyContinue
+        }
       } else {
         Write-Error "Failed to download SQL Server setup file"
         exit 1
@@ -126,6 +158,7 @@ jobs:
 
   # Create database for SQL Server 2022
   - powershell: |
+      $env:SQLCMDPASSWORD = $env:DB_PASSWORD
       # Wait for SQL Server to start
       $maxAttempts = 30
       $attempt = 0
@@ -134,7 +167,7 @@ jobs:
       Write-Host "Waiting for SQL Server 2022 to start..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
         try {
-          sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SELECT 1" -C
+          sqlcmd -S "localhost" -U "sa" -Q "SELECT 1" -C
           $connected = $true
           Write-Host "SQL Server is ready!"
         } catch {
@@ -150,10 +183,21 @@ jobs:
       }
       
       # Create database and user
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE TestDB" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      sqlcmd -S "localhost" -U "sa" -Q "CREATE DATABASE TestDB" -C
+      $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      try {
+        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+      }
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
     displayName: 'Setup database and user for SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
@@ -178,7 +222,28 @@ jobs:
         Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQL2025Setup","/u" -Wait
         
         Write-Host "Running SQL Server setup..."
-        Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/Q","/ACTION=Install","/FEATURES=SQLEngine","/INSTANCENAME=MSSQLSERVER","/SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`"","/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`"","/TCPENABLED=1","/SECURITYMODE=SQL","/SAPWD=$(DB_PASSWORD)","/IACCEPTSQLSERVERLICENSETERMS" -Wait
+        $configPath = Join-Path $env:TEMP "sql2025-setup.ini"
+        $configLines = @(
+          '[OPTIONS]'
+          'QUIET="True"'
+          'ACTION="Install"'
+          'FEATURES=SQLEngine'
+          'INSTANCENAME=MSSQLSERVER'
+          'SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"'
+          'SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
+          'TCPENABLED="1"'
+          'SECURITYMODE="SQL"'
+          "SAPWD=`"$env:DB_PASSWORD`""
+          'IACCEPTSQLSERVERLICENSETERMS="True"'
+        )
+        Set-Content -Path $configPath -Value $configLines -Encoding ASCII
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+        try {
+          Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/ConfigurationFile=$configPath" -Wait
+        } finally {
+          Remove-Item $configPath -Force -ErrorAction SilentlyContinue
+        }
       } else {
         Write-Error "Failed to download SQL Server setup file"
         exit 1
@@ -192,6 +257,7 @@ jobs:
 
   # Create database for SQL Server 2025
   - powershell: |
+      $env:SQLCMDPASSWORD = $env:DB_PASSWORD
       # Wait for SQL Server to start
       $maxAttempts = 30
       $attempt = 0
@@ -200,7 +266,7 @@ jobs:
       Write-Host "Waiting for SQL Server 2025 to start..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
         try {
-          sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SELECT 1" -C
+          sqlcmd -S "localhost" -U "sa" -Q "SELECT 1" -C
           $connected = $true
           Write-Host "SQL Server is ready!"
         } catch {
@@ -216,10 +282,21 @@ jobs:
       }
       
       # Create database and user
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE TestDB" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      sqlcmd -S "localhost" -U "sa" -Q "CREATE DATABASE TestDB" -C
+      $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      try {
+        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+      }
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
     displayName: 'Setup database and user for SQL Server 2025'
     condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
@@ -260,14 +337,15 @@ jobs:
 
   # Download and restore AdventureWorks2022 database for benchmarking
   - powershell: |
+      $env:SQLCMDPASSWORD = $env:DB_PASSWORD
       Write-Host "Downloading AdventureWorks2022.bak..."
       $ProgressPreference = 'SilentlyContinue'
       Invoke-WebRequest -Uri "https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak" -OutFile "$env:TEMP\AdventureWorks2022.bak"
       
       Write-Host "Restoring AdventureWorks2022 database..."
       # Get the default data and log paths
-      $dataPath = sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultDataPath') AS DataPath" -h -1 -C | Out-String
-      $logPath = sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultLogPath') AS LogPath" -h -1 -C | Out-String
+      $dataPath = sqlcmd -S "localhost" -U "sa" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultDataPath') AS DataPath" -h -1 -C | Out-String
+      $logPath = sqlcmd -S "localhost" -U "sa" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultLogPath') AS LogPath" -h -1 -C | Out-String
       
       $dataPath = $dataPath.Trim()
       $logPath = $logPath.Trim()
@@ -276,7 +354,7 @@ jobs:
       Write-Host "Log path: $logPath"
       
       # Restore the database
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -C -Q @"
+      sqlcmd -S "localhost" -U "sa" -C -Q @"
         RESTORE DATABASE AdventureWorks2022
         FROM DISK = '$env:TEMP\AdventureWorks2022.bak'
         WITH 
@@ -544,15 +622,15 @@ jobs:
         docker run \
           --name sqlserver \
           -e ACCEPT_EULA=Y \
-          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+          -e MSSQL_SA_PASSWORD \
           -p 1433:1433 \
           -d "$(sqlServerImage)"
 
         echo "[sql] Waiting for SQL Server to accept connections..."
         for i in {1..30}; do
-          if docker exec sqlserver \
+          if docker exec -e SQLCMDPASSWORD sqlserver \
             /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost -U SA -P "$DB_PASSWORD" \
+            -S localhost -U SA \
             -C -Q "SELECT 1"; then
             echo "[sql] SQL Server is ready."
             return 0
@@ -562,9 +640,9 @@ jobs:
 
         # One last probe: the loop sleeps after its final attempt, so SQL can
         # become reachable in that window and would otherwise be missed.
-        if docker exec sqlserver \
+        if docker exec -e SQLCMDPASSWORD sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost -U SA -P "$DB_PASSWORD" \
+          -S localhost -U SA \
           -C -Q "SELECT 1"; then
           echo "[sql] SQL Server is ready."
           return 0
@@ -600,6 +678,8 @@ jobs:
     displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -659,8 +739,8 @@ jobs:
       docker cp /tmp/AdventureWorks2022.bak sqlserver:/tmp/AdventureWorks2022.bak
 
       echo "Restoring AdventureWorks2022 database..."
-      docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost -U SA -P "$DB_PASSWORD" -C \
+      docker exec -e SQLCMDPASSWORD sqlserver /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -C \
         -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
 
       if [ $? -eq 0 ]; then
@@ -676,6 +756,7 @@ jobs:
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   # Download macOS baseline from latest main run (for PR comparison)
   - task: DownloadPipelineArtifact@2
@@ -778,7 +859,7 @@ jobs:
       # Start SQL Server container
       docker run -d --name sqlserver-$(distroName) \
         -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -e MSSQL_SA_PASSWORD \
         -p 1433:1433 \
         $(sqlServerImage)
       
@@ -786,11 +867,10 @@ jobs:
       echo "Waiting for SQL Server to start..."
       sql_ready=false
       for i in {1..60}; do
-        if docker exec sqlserver-$(distroName) \
+        if docker exec -e SQLCMDPASSWORD sqlserver-$(distroName) \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
           sql_ready=true
@@ -801,11 +881,10 @@ jobs:
       done
       if [ "$sql_ready" != true ]; then
         # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-$(distroName) \
+        if docker exec -e SQLCMDPASSWORD sqlserver-$(distroName) \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
         else
@@ -817,16 +896,17 @@ jobs:
       fi
       
       # Create test database
-      docker exec sqlserver-$(distroName) \
+      docker exec -e SQLCMDPASSWORD sqlserver-$(distroName) \
         /opt/mssql-tools18/bin/sqlcmd \
         -S localhost \
         -U SA \
-        -P "$(DB_PASSWORD)" \
         -C -Q "CREATE DATABASE TestDB"
     displayName: 'Start SQL Server container for $(distroName)'
     condition: eq(variables['useAzureSQL'], 'false')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the container
@@ -940,7 +1020,7 @@ jobs:
         echo "Testing against Azure SQL Database"
         
         docker exec \
-          -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
+          -e DB_CONNECTION_STRING \
           test-container-$(distroName) bash -c "
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName) with Azure SQL'
@@ -951,10 +1031,11 @@ jobs:
         # Local SQL Server testing
         SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
         echo "SQL Server IP: $SQLSERVER_IP"
+        export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
         
         docker exec \
-          -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-          -e DB_PASSWORD="$(DB_PASSWORD)" \
+          -e DB_CONNECTION_STRING \
+          -e DB_PASSWORD \
           test-container-$(distroName) bash -c "
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName)'
@@ -966,6 +1047,7 @@ jobs:
     condition: and(succeeded(), or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], ''))))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
 
   - script: |
       # Download and restore AdventureWorks2022 database for benchmarking on Ubuntu only
@@ -977,10 +1059,9 @@ jobs:
         docker cp /tmp/AdventureWorks2022.bak sqlserver-$(distroName):/tmp/AdventureWorks2022.bak
         
         echo "Restoring AdventureWorks2022 database..."
-        docker exec sqlserver-$(distroName) /opt/mssql-tools18/bin/sqlcmd \
+        docker exec -e SQLCMDPASSWORD sqlserver-$(distroName) /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C \
           -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
         
@@ -999,15 +1080,17 @@ jobs:
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Run performance benchmarks on Ubuntu with SQL Server 2022 only
       if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
         SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
         echo "Running performance benchmarks on Ubuntu with SQL Server IP: $SQLSERVER_IP"
+        export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
         
         docker exec \
-          -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+          -e DB_CONNECTION_STRING \
           test-container-$(distroName) bash -c "
           source /opt/venv/bin/activate
           
@@ -1125,7 +1208,7 @@ jobs:
       docker run -d --name sqlserver-$(distroName)-$(archName) \
         --platform linux/amd64 \
         -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -e MSSQL_SA_PASSWORD \
         -p 1433:1433 \
         mcr.microsoft.com/mssql/server:2022-latest
       
@@ -1133,11 +1216,10 @@ jobs:
       echo "Waiting for SQL Server to start..."
       sql_ready=false
       for i in {1..60}; do
-        if docker exec sqlserver-$(distroName)-$(archName) \
+        if docker exec -e SQLCMDPASSWORD sqlserver-$(distroName)-$(archName) \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
           sql_ready=true
@@ -1148,11 +1230,10 @@ jobs:
       done
       if [ "$sql_ready" != true ]; then
         # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-$(distroName)-$(archName) \
+        if docker exec -e SQLCMDPASSWORD sqlserver-$(distroName)-$(archName) \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
         else
@@ -1164,15 +1245,16 @@ jobs:
       fi
       
       # Create test database
-      docker exec sqlserver-$(distroName)-$(archName) \
+      docker exec -e SQLCMDPASSWORD sqlserver-$(distroName)-$(archName) \
         /opt/mssql-tools18/bin/sqlcmd \
         -S localhost \
         -U SA \
-        -P "$(DB_PASSWORD)" \
         -C -Q "CREATE DATABASE TestDB"
     displayName: 'Start SQL Server container for $(distroName) ARM64'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the ARM64 container
@@ -1315,10 +1397,11 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(archName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-$(distroName)-$(archName) bash -c "
         source /opt/venv/bin/activate
         echo 'Build successful, running tests now on $(distroName) ARM64'
@@ -1373,7 +1456,7 @@ jobs:
       # Start SQL Server container
       docker run -d --name sqlserver-rhel9 \
         -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -e MSSQL_SA_PASSWORD \
         -p 1433:1433 \
         mcr.microsoft.com/mssql/server:2022-latest
       
@@ -1381,11 +1464,10 @@ jobs:
       echo "Waiting for SQL Server to start..."
       sql_ready=false
       for i in {1..60}; do
-        if docker exec sqlserver-rhel9 \
+        if docker exec -e SQLCMDPASSWORD sqlserver-rhel9 \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
           sql_ready=true
@@ -1396,11 +1478,10 @@ jobs:
       done
       if [ "$sql_ready" != true ]; then
         # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-rhel9 \
+        if docker exec -e SQLCMDPASSWORD sqlserver-rhel9 \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
         else
@@ -1412,15 +1493,16 @@ jobs:
       fi
       
       # Create test database
-      docker exec sqlserver-rhel9 \
+      docker exec -e SQLCMDPASSWORD sqlserver-rhel9 \
         /opt/mssql-tools18/bin/sqlcmd \
         -S localhost \
         -U SA \
-        -P "$(DB_PASSWORD)" \
         -C -Q "CREATE DATABASE TestDB"
     displayName: 'Start SQL Server container for RHEL 9'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the RHEL 9 container
@@ -1552,10 +1634,11 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-rhel9 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-rhel9 bash -c "
         source myvenv/bin/activate
         echo 'Build successful, running tests now on RHEL 9'
@@ -1618,7 +1701,7 @@ jobs:
       docker run -d --name sqlserver-rhel9-arm64 \
         --platform linux/amd64 \
         -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -e MSSQL_SA_PASSWORD \
         -p 1433:1433 \
         mcr.microsoft.com/mssql/server:2022-latest
       
@@ -1626,11 +1709,10 @@ jobs:
       echo "Waiting for SQL Server to start..."
       sql_ready=false
       for i in {1..60}; do
-        if docker exec sqlserver-rhel9-arm64 \
+        if docker exec -e SQLCMDPASSWORD sqlserver-rhel9-arm64 \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
           sql_ready=true
@@ -1641,11 +1723,10 @@ jobs:
       done
       if [ "$sql_ready" != true ]; then
         # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-rhel9-arm64 \
+        if docker exec -e SQLCMDPASSWORD sqlserver-rhel9-arm64 \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
         else
@@ -1657,15 +1738,16 @@ jobs:
       fi
       
       # Create test database
-      docker exec sqlserver-rhel9-arm64 \
+      docker exec -e SQLCMDPASSWORD sqlserver-rhel9-arm64 \
         /opt/mssql-tools18/bin/sqlcmd \
         -S localhost \
         -U SA \
-        -P "$(DB_PASSWORD)" \
         -C -Q "CREATE DATABASE TestDB"
     displayName: 'Start SQL Server container for RHEL 9 ARM64'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the RHEL 9 ARM64 container
@@ -1801,10 +1883,11 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-rhel9-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-rhel9-arm64 bash -c "
         source myvenv/bin/activate
         echo 'Build successful, running tests now on RHEL 9 ARM64'
@@ -1867,7 +1950,7 @@ jobs:
       docker run -d --name sqlserver-alpine \
         --platform linux/amd64 \
         -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -e MSSQL_SA_PASSWORD \
         -p 1433:1433 \
         mcr.microsoft.com/mssql/server:2022-latest
       
@@ -1875,11 +1958,10 @@ jobs:
       echo "Waiting for SQL Server to start..."
       sql_ready=false
       for i in {1..60}; do
-        if docker exec sqlserver-alpine \
+        if docker exec -e SQLCMDPASSWORD sqlserver-alpine \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
           sql_ready=true
@@ -1890,11 +1972,10 @@ jobs:
       done
       if [ "$sql_ready" != true ]; then
         # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-alpine \
+        if docker exec -e SQLCMDPASSWORD sqlserver-alpine \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
         else
@@ -1906,15 +1987,16 @@ jobs:
       fi
       
       # Create test database
-      docker exec sqlserver-alpine \
+      docker exec -e SQLCMDPASSWORD sqlserver-alpine \
         /opt/mssql-tools18/bin/sqlcmd \
         -S localhost \
         -U SA \
-        -P "$(DB_PASSWORD)" \
         -C -Q "CREATE DATABASE TestDB"
     displayName: 'Start SQL Server container for Alpine x86_64'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the Alpine x86_64 container
@@ -2059,10 +2141,11 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-alpine --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-alpine bash -c "
         echo 'Build successful, running tests now on Alpine x86_64'
         echo 'Architecture:' \$(uname -m)
@@ -2141,7 +2224,7 @@ jobs:
       docker run -d --name sqlserver-alpine-arm64 \
         --platform linux/amd64 \
         -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -e MSSQL_SA_PASSWORD \
         -p 1433:1433 \
         mcr.microsoft.com/mssql/server:2022-latest
       
@@ -2149,11 +2232,10 @@ jobs:
       echo "Waiting for SQL Server to start..."
       sql_ready=false
       for i in {1..60}; do
-        if docker exec sqlserver-alpine-arm64 \
+        if docker exec -e SQLCMDPASSWORD sqlserver-alpine-arm64 \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
           sql_ready=true
@@ -2164,11 +2246,10 @@ jobs:
       done
       if [ "$sql_ready" != true ]; then
         # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-alpine-arm64 \
+        if docker exec -e SQLCMDPASSWORD sqlserver-alpine-arm64 \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
         else
@@ -2180,15 +2261,16 @@ jobs:
       fi
       
       # Create test database
-      docker exec sqlserver-alpine-arm64 \
+      docker exec -e SQLCMDPASSWORD sqlserver-alpine-arm64 \
         /opt/mssql-tools18/bin/sqlcmd \
         -S localhost \
         -U SA \
-        -P "$(DB_PASSWORD)" \
         -C -Q "CREATE DATABASE TestDB"
     displayName: 'Start SQL Server container for Alpine ARM64'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the Alpine ARM64 container
@@ -2334,10 +2416,11 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-alpine-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-alpine-arm64 bash -c "
         echo 'Build successful, running tests now on Alpine ARM64'
         echo 'Architecture:' \$(uname -m)
@@ -2583,7 +2666,7 @@ jobs:
 # 
 #   - script: |
 #       docker exec \
-#         -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
+#         -e DB_CONNECTION_STRING \
 #         test-container-ubuntu-azuresql bash -c "
 #         source /opt/venv/bin/activate
 #         echo 'Running tests on Ubuntu against Azure SQL Database'
@@ -2629,18 +2712,17 @@ jobs:
       docker run \
         --name sqlserver \
         -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -e MSSQL_SA_PASSWORD \
         -p 1433:1433 \
         -d mcr.microsoft.com/mssql/server:2022-latest
 
       # Wait until SQL Server is ready
       sql_ready=false
       for i in {1..30}; do
-        if docker exec sqlserver \
+        if docker exec -e SQLCMDPASSWORD sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1"; then
           sql_ready=true
           break
@@ -2649,11 +2731,10 @@ jobs:
       done
       if [ "$sql_ready" != true ]; then
         # the loop sleeps after its final attempt, so probe once more
-        if ! docker exec sqlserver \
+        if ! docker exec -e SQLCMDPASSWORD sqlserver \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C -Q "SELECT 1"; then
           echo "SQL Server did not become ready after 30 attempts"
           echo "---- docker logs sqlserver (last 200 lines) ----"
@@ -2664,6 +2745,8 @@ jobs:
     displayName: 'Start SQL Server container'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install Python dependencies

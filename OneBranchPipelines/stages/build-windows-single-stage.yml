@@ -169,7 +169,18 @@ stages:
           
           - powershell: |
               sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
-              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+              $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+              $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
+              $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+              [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+              $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+              icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+              try {
+                sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
+                if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+              } finally {
+                Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+              }
               sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
               sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
             displayName: 'Setup database and user'

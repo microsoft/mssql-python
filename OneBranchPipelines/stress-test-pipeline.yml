@@ -103,7 +103,18 @@ jobs:
   - powershell: |
       Write-Host "Creating database and user for stress tests..."
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE StressTestDB"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$env:DB_PASSWORD'"
+      $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      try {
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+      }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
       Write-Host "Database setup completed"
@@ -113,7 +124,7 @@ jobs:
 
   # Run multi-threaded stress tests in an isolated subprocess.
   - powershell: |
-      $env:DB_CONNECTION_STRING = 'Server=(localdb)\MSSQLLocalDB;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      $env:DB_CONNECTION_STRING = "Server=(localdb)\MSSQLLocalDB;Database=StressTestDB;Uid=testuser;Pwd=$env:DB_PASSWORD;TrustServerCertificate=yes"
       Write-Host "Starting stress tests..."
 
       $xmlFile = "stress-test-results.xml"
@@ -154,17 +165,21 @@ jobs:
       Write-Host "Test failures detected or XML not found"
       exit 1
     displayName: 'Run Multi-Threaded Stress Tests'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
     continueOnError: true
 
 
   # Run original stress tests
   - powershell: |
-      $env:DB_CONNECTION_STRING = 'Server=(localdb)\MSSQLLocalDB;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      $env:DB_CONNECTION_STRING = "Server=(localdb)\MSSQLLocalDB;Database=StressTestDB;Uid=testuser;Pwd=$env:DB_PASSWORD;TrustServerCertificate=yes"
       python -m pytest tests/test_011_singlethreaded_stress.py -v -m "stress" --junitxml=perf-stress-test-results.xml --timeout=1800 --capture=tee-sys
       $exitCode = $LASTEXITCODE
       Write-Host "Pytest exit code: $exitCode"
       exit $exitCode
     displayName: 'Run Single-Threaded Stress Tests'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
     continueOnError: true
 
   # Publish test results
@@ -257,20 +272,20 @@ jobs:
 
   # Start SQL Server container for stress tests
   - script: |
-      set -euxo pipefail
+      set -euo pipefail
       
       echo "Starting SQL Server 2022 container for stress tests..."
       docker run -d --name sqlserver-stress \
         --platform linux/amd64 \
         -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -e MSSQL_SA_PASSWORD \
         -p 1433:1433 \
         mcr.microsoft.com/mssql/server:2022-latest
       
       echo "Waiting for SQL Server to be ready..."
       for i in {1..30}; do
-        if docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+        if docker exec -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost -U SA -C -Q "SELECT 1" >/dev/null 2>&1; then
           echo "SQL Server is ready!"
           break
         fi
@@ -279,19 +294,22 @@ jobs:
       done
       
       echo "Creating database and user for stress tests..."
-      docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "CREATE DATABASE StressTestDB"
-      docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
-      docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost -U SA -P "$(DB_PASSWORD)" -C -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
-      docker exec sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost -U SA -P "$(DB_PASSWORD)" -C -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+      docker exec -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -C -Q "CREATE DATABASE StressTestDB"
+      SQL_PASSWORD=${DB_PASSWORD//\'/\'\'}
+      printf "CREATE LOGIN testuser WITH PASSWORD = '%s'\n" "$SQL_PASSWORD" | \
+        docker exec -i -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -C -b -x
+      docker exec -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -C -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+      docker exec -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost -U SA -C -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
       
       echo "Database setup completed"
     displayName: 'Start SQL Server container and setup database'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   # Run multi-threaded stress tests in an isolated subprocess.
   - script: |
