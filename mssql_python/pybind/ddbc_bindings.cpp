@@ -1846,230 +1846,6 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
     return ret;
 }
 
-// LEGACY — slated for removal in a future optimization round.
-//
-// Executes the provided query using a ParamInfo list that Python already built,
-// rather than detecting parameter types in C++. Retained only for setinputsizes()
-// callers, whose explicit type overrides the native path does not yet honour.
-// Every parameter crosses the pybind11 boundary as a ParamInfo object here, which
-// is the cost SQLExecute_wrap exists to avoid. Once setinputsizes is handled
-// natively this function and its DDBCSQLExecuteLegacy binding both go away.
-//
-// If the query is parametrized, it prepares the statement and binds the
-// parameters. Otherwise, it executes the query directly. 'usePrepare' can be used
-// to disable the prepare step for queries already prepared in a previous call.
-SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
-                          const py::list& params, std::vector<ParamInfo>& paramInfos,
-                          py::list& isStmtPrepared, const bool usePrepare,
-                          const py::dict& encodingSettings) {
-    LOG("SQLExecute: Executing %s query - statement_handle=%p, "
-        "param_count=%zu, query_length=%zu chars",
-        (params.size() > 0 ? "parameterized" : "direct"), (void*)statementHandle->get(),
-        params.size(), query.length());
-    if (!SQLPrepare_ptr) {
-        LOG("SQLExecute: Function pointer not initialized, loading driver");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-    assert(SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr && SQLExecDirect_ptr);
-
-    if (params.size() != paramInfos.size()) {
-        // TODO: This should be a special internal exception, that python wont
-        // relay to users as is
-        ThrowStdException("Number of parameters and paramInfos do not match");
-    }
-
-    RETCODE rc;
-    SQLHANDLE hStmt = statementHandle->get();
-    if (!statementHandle || !statementHandle->get()) {
-        LOG("SQLExecute: Statement handle is null or invalid");
-    }
-
-    // Configure forward-only cursor
-    if (SQLSetStmtAttr_ptr && hStmt) {
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY, 0);
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY, (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
-    }
-
-    SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
-    if (params.size() == 0) {
-        // Execute statement directly if the statement is not parametrized. This
-        // is the fastest way to submit a SQL statement for one-time execution
-        // according to DDBC documentation -
-        // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
-        {
-            // Release the GIL during the blocking ODBC call
-            py::gil_scoped_release release;
-            rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
-        }
-        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-            LOG("SQLExecute: Direct execution failed (non-parameterized query) "
-                "- SQLRETURN=%d",
-                rc);
-        }
-        return rc;
-    } else {
-        // isStmtPrepared is a list instead of a bool coz bools in Python are
-        // immutable. Hence, we can't pass around bools by reference & modify
-        // them. Therefore, isStmtPrepared must be a list with exactly one bool
-        // element
-        assert(isStmtPrepared.size() == 1);
-        if (usePrepare) {
-            {
-                // Release the GIL during the blocking SQLPrepare network call.
-                py::gil_scoped_release release;
-                rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
-            }
-            if (!SQL_SUCCEEDED(rc)) {
-                LOG("SQLExecute: SQLPrepare failed - SQLRETURN=%d, "
-                    "statement_handle=%p",
-                    rc, (void*)hStmt);
-                return rc;
-            }
-            // GH-610: Clear per-handle describe cache (new prepare = new param types)
-            statementHandle->clearDescribeCache();
-            isStmtPrepared[0] = py::cast(true);
-        } else {
-            // Make sure the statement has been prepared earlier if we're not
-            // preparing now
-            bool isStmtPreparedAsBool = isStmtPrepared[0].cast<bool>();
-            if (!isStmtPreparedAsBool) {
-                // TODO: Print the query
-                ThrowStdException("Cannot execute unprepared statement");
-            }
-        }
-
-        // This vector manages the heap memory allocated for parameter buffers.
-        // It must be in scope until SQLExecute is done.
-        // Extract char encoding from encodingSettings dictionary
-        std::string charEncoding = "utf-8";  // default
-        if (encodingSettings.contains("encoding")) {
-            charEncoding = encodingSettings["encoding"].cast<std::string>();
-        }
-
-        std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
-        if (!SQL_SUCCEEDED(rc)) {
-            return rc;
-        }
-        {
-            // Release the GIL during the blocking SQLExecute network call.
-            py::gil_scoped_release release;
-            rc = SQLExecute_ptr(hStmt);
-        }
-        if (rc == SQL_NEED_DATA) {
-            LOG("SQLExecute: SQL_NEED_DATA received - Starting DAE "
-                "(Data-At-Execution) loop for large parameter streaming");
-            SQLPOINTER paramToken = nullptr;
-            // For DAE, release the GIL only around individual ODBC calls;
-            // Python type inspection of the parameter happens between calls
-            // and requires the GIL.
-            auto paramData = [&](SQLPOINTER* tok) {
-                py::gil_scoped_release release;
-                return SQLParamData_ptr(hStmt, tok);
-            };
-            auto putData = [&](SQLPOINTER data, SQLLEN len) {
-                py::gil_scoped_release release;
-                return SQLPutData_ptr(hStmt, data, len);
-            };
-            while ((rc = paramData(&paramToken)) == SQL_NEED_DATA) {
-                // Finding the paramInfo that matches the returned token
-                const ParamInfo* matchedInfo = nullptr;
-                for (auto& info : paramInfos) {
-                    if (reinterpret_cast<SQLPOINTER>(const_cast<ParamInfo*>(&info)) == paramToken) {
-                        matchedInfo = &info;
-                        break;
-                    }
-                }
-                if (!matchedInfo) {
-                    ThrowStdException("Unrecognized paramToken returned by SQLParamData");
-                }
-                PyObject* pyObj = matchedInfo->dataPtr.ptr();
-                if (!pyObj || pyObj == Py_None) {
-                    putData(nullptr, 0);
-                    continue;
-                }
-                if (PyUnicode_Check(pyObj)) {
-                    if (matchedInfo->paramCType == SQL_C_WCHAR) {
-                        std::u16string utf16 =
-                            borrow<py::str>(pyObj).cast<std::u16string>();
-                        rc = stream_dae_chunks(
-                            reinterpretU16stringAsSqlWChar(utf16),
-                            utf16.size() * sizeof(SQLWCHAR),
-                            putData);
-                        if (!SQL_SUCCEEDED(rc)) {
-                            LOG("SQLExecute: SQLPutData failed for SQL_C_WCHAR DAE streaming");
-                            return rc;
-                        }
-                    } else if (matchedInfo->paramCType == SQL_C_CHAR) {
-                        // Encode the string using the specified encoding
-                        std::string encodedStr;
-                        try {
-                            py::object encoded = borrow(pyObj)
-                                                     .attr("encode")(charEncoding, "strict");
-                            encodedStr = encoded.cast<std::string>();
-                            LOG("SQLExecute: DAE SQL_C_CHAR - Encoded with '%s', %zu bytes",
-                                charEncoding.c_str(), encodedStr.size());
-                        } catch (const py::error_already_set& e) {
-                            LOG_ERROR("SQLExecute: DAE SQL_C_CHAR - Failed to encode with '%s': %s",
-                                      charEncoding.c_str(), e.what());
-                            throw;
-                        }
-
-                        rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
-                        if (!SQL_SUCCEEDED(rc)) {
-                            LOG("SQLExecute: SQLPutData failed for SQL_C_CHAR DAE streaming");
-                            return rc;
-                        }
-                    } else {
-                        ThrowStdException("Unsupported C type for str in DAE");
-                    }
-                } else if (PyBytes_Check(pyObj) || PyByteArray_Check(pyObj)) {
-                    const char* dataPtr = nullptr;
-                    size_t totalBytes = 0;
-                    std::string bytesStorage;  // lifetime must span the loop
-                    if (PyBytes_Check(pyObj)) {
-                        bytesStorage = borrow<py::bytes>(pyObj);
-                        dataPtr = bytesStorage.data();
-                        totalBytes = bytesStorage.size();
-                    } else {
-                        // bytearray is mutable — copy to stable buffer before streaming
-                        bytesStorage.assign(PyByteArray_AS_STRING(pyObj),
-                                            static_cast<size_t>(PyByteArray_GET_SIZE(pyObj)));
-                        dataPtr = bytesStorage.data();
-                        totalBytes = bytesStorage.size();
-                    }
-
-                    rc = stream_dae_chunks(dataPtr, totalBytes, putData);
-                    if (!SQL_SUCCEEDED(rc)) {
-                        LOG("SQLExecute: SQLPutData failed for binary/bytes DAE streaming");
-                        return rc;
-                    }
-                } else {
-                    ThrowStdException("DAE only supported for str or bytes");
-                }
-            }
-            if (!SQL_SUCCEEDED(rc)) {
-                LOG("SQLExecute: SQLParamData final call %s - SQLRETURN=%d",
-                    (rc == SQL_NO_DATA ? "completed with no data" : "failed"), rc);
-                return rc;
-            }
-            LOG("SQLExecute: DAE streaming completed successfully, SQLExecute "
-                "resumed");
-        }
-        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-            LOG("SQLExecute: Statement execution failed - SQLRETURN=%d, "
-                "statement_handle=%p",
-                rc, (void*)hStmt);
-            return rc;
-        }
-
-        // Unbind parameter buffers before they go out of scope.
-        // Not called on error paths — diagnostics must remain readable.
-        SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-        return rc;
-    }
-}
-
 // ---------------------------------------------------------------------------
 // SQLExecute_wrap — single C++ pipeline: DetectParamTypes → BindParameters → SQLExecute
 // No ParamInfo objects cross the pybind11 boundary.
@@ -2081,6 +1857,7 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
 SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                               const std::u16string& query,
                               py::list params,
+                              const py::object& input_sizes,
                               py::list is_stmt_prepared,
                               bool use_prepare,
                               const py::dict& encoding_settings) {
@@ -2122,7 +1899,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     // Run DetectParamTypes BEFORE SQLPrepare so that type-detection errors
     // (unsupported type, NaN Decimal, precision overflow) don't leave the
     // cursor in a half-prepared state.
-    std::vector<ParamInfo> paramInfos = DetectParamTypes(params.ptr());
+    std::vector<ParamInfo> paramInfos = DetectParamTypes(params.ptr(), input_sizes.ptr());
 
     RETCODE rc;
     bool already_prepared = is_stmt_prepared[0].cast<bool>();
@@ -6134,17 +5911,11 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         manager.closePools();
     }, "Disable global connection pooling and close all pools");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
-    // LEGACY — to be removed once setinputsizes overrides are handled natively.
-    m.def("DDBCSQLExecuteLegacy", &SQLExecuteLegacy_wrap,
-          "Legacy path (slated for removal): accepts pre-built ParamInfo from Python, "
-          "used only when setinputsizes overrides are present",
-          py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),
-          py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
-    // Standard path — what cursor.execute() uses unless setinputsizes is active.
     m.def("DDBCSQLExecute", &SQLExecute_wrap,
-          "Standard path: DetectParamTypes + BindParameters + SQLExecute all in C++",
+          "DetectParamTypes + BindParameters + SQLExecute all in C++",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"),
-          py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
+          py::arg("inputSizes"), py::arg("isStmtPrepared"), py::arg("usePrepare"),
+          py::arg("encodingSettings"));
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",
           py::arg("statementHandle"), py::arg("query"), py::arg("columnwise_params"),
           py::arg("paramInfos"), py::arg("paramSetSize"), py::arg("encodingSettings"));
