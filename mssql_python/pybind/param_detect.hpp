@@ -194,8 +194,9 @@ inline bool StartsWithAscii(unsigned int kind, const void* data, Py_ssize_t leng
 //    storage engine's range exactly (TINYINT: 0-255, SMALLINT: -32768..32767, etc.)
 // 4. String handling inspects UCS kind directly for O(1) ASCII detection rather than
 //    scanning content — critical for bulk insert scenarios with thousands of params.
-// 5. MONEY/SMALLMONEY uses exact Decimal comparison (PyObject_RichCompareBool) to avoid
-//    double-precision boundary errors (e.g., 214748.3647 would round incorrectly as double).
+// 5. Every finite Decimal binds as SQL_NUMERIC with its own precision/scale; the value's
+//    magnitude does not change the bind type, so a comparison against a smaller numeric
+//    column returns no match instead of a server-side varchar->numeric overflow (GH-740).
 // ---------------------------------------------------------------------------
 //
 // ORDERING MATTERS:
@@ -511,45 +512,11 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params) {
                     std::to_string(precision) + ".");
             }
 
-            // Check SMALLMONEY first, then widen to MONEY, so common small values keep the narrowest
-            // exact range while still accepting larger fixed-point values supported by SQL Server.
-            // MONEY/SMALLMONEY: SQL Server stores these as fixed-point integers internally.
-            // We bind as formatted VARCHAR (e.g., "214748.3647") because SQL_C_NUMERIC can't
-            // represent the exact money range without precision loss on certain ODBC drivers.
-            // Use exact Decimal comparison (not double) to avoid boundary misclassification.
-            bool in_money_range = false;
-            int cmp_ge = PyObject_RichCompareBool(obj, PyTypeCache::smallmoney_min, Py_GE);
-            int cmp_le = PyObject_RichCompareBool(obj, PyTypeCache::smallmoney_max, Py_LE);
-            if (cmp_ge == -1 || cmp_le == -1) throw py::error_already_set();
-            if (cmp_ge == 1 && cmp_le == 1) {
-                in_money_range = true;
-            } else {
-                cmp_ge = PyObject_RichCompareBool(obj, PyTypeCache::money_min, Py_GE);
-                cmp_le = PyObject_RichCompareBool(obj, PyTypeCache::money_max, Py_LE);
-                if (cmp_ge == -1 || cmp_le == -1) throw py::error_already_set();
-                if (cmp_ge == 1 && cmp_le == 1) {
-                    in_money_range = true;
-                }
-            }
-
-            if (in_money_range) {
-                py::object formatted = steal(PyObject_CallMethod(obj, "__format__", "s", "f"));
-                if (!formatted) throw py::error_already_set();
-                info.paramSQLType = SQL_VARCHAR;
-                info.paramCType = PARAM_C_TYPE_TEXT;
-                info.columnSize = PyUnicode_GET_LENGTH(formatted.ptr());
-                info.decimalDigits = 0;
-                PyObject* raw = formatted.release().ptr();
-                if (PyList_SetItem(params, i, raw) != 0) {
-                    // PyList_SetItem steals (decrefs) the item even on failure,
-                    // so raw is already freed — do NOT Py_DECREF here.
-                    throw py::error_already_set();
-                }
-                continue;
-            }
-
-            // Build SQL_NUMERIC_STRUCT from the Decimal object. Store as a pybind11-castable
-            // object in the param list so BindParameters can extract it as NumericData.
+            // Bind every finite Decimal as SQL_NUMERIC using its own precision and scale,
+            // regardless of value. The previous MONEY/SMALLMONEY VARCHAR shortcut chose the
+            // bind type from the value alone, ignoring the target column, so an in-range value
+            // compared against a smaller numeric column triggered a server-side varchar->numeric
+            // overflow instead of simply not matching (GH-740).
             info.paramSQLType = SQL_NUMERIC;
             info.paramCType = SQL_C_NUMERIC;
             NumericData nd = build_numeric_data(as_tuple_ptr.ptr(), digits_obj.ptr(), exponent);
