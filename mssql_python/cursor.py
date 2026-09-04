@@ -2398,6 +2398,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         Used by executemany so money-range Decimals can bind as SQL_NUMERIC with a
         single batch-wide type (GH-745) without shrinking any row's digits.
+
+        Non-finite Decimals (NaN/Infinity) raise ValueError rather than being
+        skipped. Callers must enforce SQL Server's precision limit (<= 38).
         """
         max_scale = 0
         max_int_digits = 0
@@ -2405,10 +2408,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         for value in column:
             if not isinstance(value, decimal.Decimal):
                 continue
-            try:
-                precision, scale = self._decimal_sql_precision_scale(value)
-            except ValueError:
-                continue
+            # Propagate non-finite errors; do not silently skip them.
+            precision, scale = self._decimal_sql_precision_scale(value)
             found = True
             max_scale = max(max_scale, scale)
             max_int_digits = max(max_int_digits, precision - scale)
@@ -2688,7 +2689,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # against a smaller numeric column does not overflow. executemany still
                 # string-binds via SQL_C_CHAR below; setinputsizes DECIMAL stays on the
                 # GH-503 string path above.
-                decimal_as_numeric = isinstance(sample_value, decimal.Decimal)
+                # Only force NUMERIC when every non-NULL value in the column is Decimal;
+                # a heterogeneous column keeps the prior sample-driven path.
+                non_null_values = [v for v in column if v is not None]
+                decimal_as_numeric = bool(non_null_values) and all(
+                    isinstance(v, decimal.Decimal) for v in non_null_values
+                )
 
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
@@ -2718,15 +2724,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
                     # One NUMERIC(precision, scale) must fit every Decimal in the
                     # batch (GH-745). Sample-only precision/scale is not enough.
+                    # columnSize is NUMERIC precision for SQLBindParameter, not a
+                    # string buffer length — do not widen it with max_decimal_len.
                     batch_precision, batch_scale = self._batch_decimal_precision_scale(column)
+                    if batch_precision > 38:
+                        raise ValueError(
+                            "Precision of the numeric value is too high. "
+                            "The maximum precision supported by SQL Server is 38, "
+                            f"but got {batch_precision}."
+                        )
                     if batch_precision > paraminfo.columnSize:
                         paraminfo.columnSize = batch_precision
                     if batch_scale > paraminfo.decimalDigits:
                         paraminfo.decimalDigits = batch_scale
-                    # Ensure columnSize also accommodates the longest string form
-                    # (mixed-sign batches, GH-557).
-                    if max_decimal_len > paraminfo.columnSize:
-                        paraminfo.columnSize = max_decimal_len
 
                 # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
                 # The sample value's formatted string may be shorter than another
