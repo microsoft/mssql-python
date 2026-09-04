@@ -26,6 +26,7 @@ on:
       - 'tests/test_029_bundled_binary_audit.py'
       - 'tests/test_030_pe_machine_assert.py'
       - 'tests/test_032_conda_resolve_check.py'
+      - 'tests/test_034_conda_verify_cwd.py'
       - '.github/workflows/conda-audit.yml'
 
 permissions:
@@ -53,6 +54,7 @@ jobs:
                            tests/test_029_bundled_binary_audit.py \
                            tests/test_030_pe_machine_assert.py \
                            tests/test_032_conda_resolve_check.py \
+                           tests/test_034_conda_verify_cwd.py \
                            tests/test_027_conda_release_metadata.py -q
 
       - name: Fetch the shipped linux wheels from PyPI

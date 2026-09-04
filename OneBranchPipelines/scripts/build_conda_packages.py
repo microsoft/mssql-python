@@ -377,7 +377,22 @@ def _is_emulated_cross(target_subdir: str) -> bool:
     return False
 
 
-def verify(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env):
+def verify(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env, workdir):
+    """Run the whole verify phase from a NEUTRAL cwd (the per-leg build dir) so a
+    `python -c "import mssql_python"` binds the conda-INSTALLED package, not the repo source
+    tree that shadows it when the agent's cwd is the checkout root (for `python -c`, sys.path[0]
+    is '' = the cwd). This is the Python equivalent of the `cd` the two deleted shell scripts did
+    before their verify imports; os.chdir (not a per-call cwd=) so EVERY current and future verify
+    subprocess -- including _reachability_gate's -- inherits it, closing the shadow class."""
+    old_cwd = os.getcwd()
+    os.chdir(workdir)
+    try:
+        _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env)
+    finally:
+        os.chdir(old_cwd)
+
+
+def _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env):
     emulated = _is_emulated_cross(target_subdir)
     is_win = sys.platform == "win32"
     for py in pyvers:
@@ -722,7 +737,9 @@ def main(argv=None) -> int:
     build_packages(conda, builder, args.recipe_root, pyvers, bld, args.conda_target_subdir, env)
     audit_packages(conda, builder, args.recipe_root, bld, args.conda_target_subdir, env)
     chan = make_verify_channel(output_dir, bld)
-    verify(conda, chan, args.recipe_root, pyvers, mssql_ver, args.conda_target_subdir, env)
+    verify(
+        conda, chan, args.recipe_root, pyvers, mssql_ver, args.conda_target_subdir, env, output_dir
+    )
     stage(bld, args.stage_dir, target)
 
     _log("CONDA_BUILD_OK")
