@@ -76,6 +76,18 @@ steps:
   - bash: |
       set -euo pipefail
 
+      # Caller value-inputs are surfaced via the step-level env: block below (NOT interpolated
+      # into this script's text) and validated before use, matching the repo's secret-handling
+      # convention. PYTHON_VERSIONS: empty (auto-detect) or comma-separated X.Y;
+      # CONDA_TARGET_SUBDIR: empty (native) or a known conda subdir.
+      if [ -n "${PYTHON_VERSIONS:-}" ] && ! printf '%s' "$PYTHON_VERSIONS" | grep -Eq '^[0-9]+\.[0-9]+(,[0-9]+\.[0-9]+)*$'; then
+        echo "ERROR: pythonVersions '$PYTHON_VERSIONS' must be empty or comma-separated X.Y (e.g. 3.10,3.11)." >&2; exit 1
+      fi
+      case "${CONDA_TARGET_SUBDIR:-}" in
+        "" | osx-64 | osx-arm64 | linux-64 | linux-aarch64 | win-64 | win-arm64) ;;
+        *) echo "ERROR: condaTargetSubdir '$CONDA_TARGET_SUBDIR' is not a known conda subdir." >&2; exit 1 ;;
+      esac
+
       MSSQL_WHEEL_DIR="${{ parameters.mssqlWheelDir }}"
       ODBC_WHEEL_DIR="${{ parameters.odbcWheelDir }}"
       # Append the target subdir so each leg on a SHARED agent (macOS osx-arm64 +
@@ -116,8 +128,8 @@ steps:
         "$OUT" \
         "$MSSQL_VER" \
         "$ODBC_VER" \
-        "${{ parameters.pythonVersions }}" \
-        "${{ parameters.condaTargetSubdir }}"
+        "${PYTHON_VERSIONS:-}" \
+        "${CONDA_TARGET_SUBDIR:-}"
 
       # Stage this leg's conda packages onto the artifact for the consolidate stage,
       # preserving the conda subdir layout. Stage ONLY packages whose conda-build
@@ -126,7 +138,7 @@ steps:
       # packages into the other's artifact. conda-build writes each package into a
       # bld/<subdir>/ folder that equals its info/index.json subdir, so the folder
       # name IS the authoritative subdir.
-      TARGET_SUBDIR="${{ parameters.condaTargetSubdir }}"
+      TARGET_SUBDIR="${CONDA_TARGET_SUBDIR:-}"
       [ -n "$TARGET_SUBDIR" ] || TARGET_SUBDIR="${{ parameters.condaSubdir }}"
       CONDA_OUT="$(ob_outputDirectory)/conda"
       mkdir -p "$CONDA_OUT/$TARGET_SUBDIR"
@@ -142,5 +154,10 @@ steps:
         staged=1
       done < <(find "$OUT/bld" -type f \( -name 'mssql-python*.conda' -o -name 'mssql-python*.tar.bz2' \))
       [ "$staged" = "1" ] || { echo "ERROR: no conda packages matching target subdir '$TARGET_SUBDIR' were produced in $OUT/bld" >&2; exit 1; }
+    env:
+      # Surface the caller's value inputs as env vars (validated in-script above) rather than
+      # interpolating them into the script text -- repo secret-handling convention.
+      PYTHON_VERSIONS: ${{ parameters.pythonVersions }}
+      CONDA_TARGET_SUBDIR: ${{ parameters.condaTargetSubdir }}
     displayName: 'Conda build + validate (${{ parameters.condaSubdir }})'
     continueOnError: ${{ parameters.continueOnError }}
