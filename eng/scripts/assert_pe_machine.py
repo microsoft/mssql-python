@@ -85,6 +85,7 @@ def audit_package(path: str) -> list[str]:
     native_seen = 0
     binding_seen = 0
     driver_dll_seen = 0
+    auth_dll_seen = 0
     for name, data in members:
         if not name.lower().endswith(_NATIVE_SUFFIXES):
             continue
@@ -92,16 +93,17 @@ def audit_package(path: str) -> list[str]:
         low = name.replace("\\", "/").lower()
         if "/mssql_python/" in low and "ddbc_bindings" in low and low.endswith(".pyd"):
             binding_seen += 1
-        # The presence gate requires the CORE driver (msodbcsql18*.dll) specifically, not
-        # just any vendored .dll: a package shipping only support DLLs (e.g. mssql-auth or a
-        # VC++ runtime) with the core driver missing would otherwise pass -- and on win-arm64
-        # (runtime import skipped) this is the only check standing between it and publish.
-        if (
-            "/mssql_python_odbc/libs/windows/" in low
-            and os.path.basename(low).startswith("msodbcsql18")
-            and low.endswith(".dll")
-        ):
-            driver_dll_seen += 1
+        # The presence gate requires BOTH the CORE driver (msodbcsql18*.dll) AND its auth
+        # companion (mssql-auth*.dll) specifically -- not just any vendored .dll. The loader
+        # (ddbc_bindings.cpp) THROWS at connect if mssql-auth.dll is absent, so a package
+        # missing it would pass CI (win-arm64 skips the runtime import) yet fail on EVERY
+        # connect; a VC++ runtime or other support DLL satisfies neither category.
+        if "/mssql_python_odbc/libs/windows/" in low and low.endswith(".dll"):
+            base_low = os.path.basename(low)
+            if base_low.startswith("msodbcsql18"):
+                driver_dll_seen += 1
+            elif base_low.startswith("mssql-auth"):
+                auth_dll_seen += 1
         machine = pe_machine(data)
         if machine is None:
             errors.append(f"{name}: not a valid PE binary (no MZ/PE header).")
@@ -133,6 +135,12 @@ def audit_package(path: str) -> list[str]:
                 f"{base_name}: no vendored core ODBC driver DLL "
                 f"(mssql_python_odbc/libs/windows/**/msodbcsql18*.dll) found in a "
                 f"'{subdir}' package."
+            )
+        if auth_dll_seen == 0:
+            errors.append(
+                f"{base_name}: no vendored mssql-auth DLL "
+                f"(mssql_python_odbc/libs/windows/**/mssql-auth*.dll) found in a '{subdir}' "
+                f"package -- the ODBC driver loader THROWS at connect if it is absent."
             )
     return errors
 

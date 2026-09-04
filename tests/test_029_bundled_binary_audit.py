@@ -386,6 +386,40 @@ def test_audit_fails_odbcinst_lost_libltdl(tmp_path):
     assert any("libltdl" in e and "no longer NEED" in e for e in errors)
 
 
+def test_audit_fails_vendored_crypto_outside_libs_linux(tmp_path):
+    # A crypto lib vendored OUTSIDE /libs/linux/ (e.g. an auditwheel .libs/ copy or a stray
+    # $PREFIX/lib .so) is still reachable by the audited RUNPATH climb, so the whole-payload
+    # invariant must flag it -- not only the /libs/linux/ tree.
+    p = tmp_path / "mssql-python-1.13.0-py312_0.tar.bz2"
+    with tarfile.open(p, "w:bz2") as tf:
+
+        def add(name, data):
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+
+        add(
+            "info/index.json",
+            json.dumps(
+                {
+                    "name": "mssql-python",
+                    "version": "1.13.0",
+                    "build": "py312_0",
+                    "subdir": "linux-64",
+                    "depends": _GOOD_DEPENDS,
+                }
+            ).encode(),
+        )
+        add(
+            f"{_LIBDIR}/libmsodbcsql-18.6.so.2.1",
+            _make_elf64(runpath=_GOOD_RUNPATH, needed=_DRIVER_NEEDED),
+        )
+        add(f"{_LIBDIR}/libodbcinst.so.2", _make_elf64(runpath=_GOOD_RUNPATH, needed=_INST_NEEDED))
+        add("lib/python3.12/site-packages/mssql_python/.libs/libssl.so.3", b"\x7fELF fake")
+    errors = audit.audit_package(str(p))
+    assert any("vendor" in e.lower() and "libssl" in e for e in errors)
+
+
 def test_audit_allows_musl_variant_without_libltdl(tmp_path):
     # The alpine/musl libodbcinst NEEDs libc.musl* and statically links ltdl, so the
     # glibc libltdl DT_NEEDED requirement must NOT fail it. Package has a complete glibc

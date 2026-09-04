@@ -152,9 +152,11 @@ extends:
               # internally (so a broken/wrong-arch package is never staged), AND win-arm64 is in
               # the release gate's requiredSubdirs -- so a MISSING win-arm64 blocks the RELEASE.
               # Net: a win-arm64 failure isolates to win-arm64 (win-64 still ships) yet still
-              # blocks the publish via the gate. Scoped to 3.12-3.14: neither defaults nor
-              # conda-forge has a win-arm64 python for 3.10/3.11. Its own bld tree + subdir-scoped
-              # verify env keep it from colliding with win-64 on this shared agent.
+              # blocks the publish via the gate. DELIBERATELY a FIXED set (3.12-3.14), INDEPENDENT
+              # of the pythonVersions parameter: neither defaults nor conda-forge ships a
+              # win-arm64 python for 3.10/3.11, so following the param would queue an unbuildable
+              # 3.10/3.11 arm leg. Its own bld tree + subdir-scoped verify env keep it from
+              # colliding with win-64 on this shared agent.
               - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
                 parameters:
                   pythonVersion: '3.12,3.13,3.14'
