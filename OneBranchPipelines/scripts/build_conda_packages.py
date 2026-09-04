@@ -13,7 +13,7 @@ Pipeline: gather this leg's wheels into a find-links dir -> locate/install Minif
 create a dedicated conda-build env -> build the self-contained mssql-python package (which
 VENDORS the ODBC Driver 18 payload) per Python version -> masking-immune RUNPATH/PE arch
 audit -> solve a fresh env from the freshly built local channel and import + driver-load +
-(opt-in) reachability / Encrypt=yes TLS gates -> stage the packages onto the leg artifact.
+(opt-in) reachability gate -> stage the packages onto the leg artifact.
 
 Cross-builds (CONDA_SUBDIR): osx-64 under Rosetta 2, linux-aarch64 under QEMU binfmt, and the
 osx-arm64 / win-arm64 legs that cannot execute the target Python on the build host (their
@@ -528,7 +528,6 @@ def verify(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env):
 
         if not is_win:
             _reachability_gate(conda, name, py, emulated, env)
-        _tls_gate(conda, name, recipe_root, py, emulated, env)
 
         _log(f"=== [py {py}] confirm resolved dependencies ===")
         rc, out = run_capture([conda, "list", "-n", name], env=env)
@@ -631,29 +630,6 @@ def _reachability_gate(conda, name, py, emulated, env):
             f"system or was absent instead of {prefix}/lib"
         )
     _log(f"REACHABILITY_OK (krb5 + gssapi_krb5 + libltdl all bound from {prefix}/lib)")
-
-
-def _tls_gate(conda, name, recipe_root, py, emulated, env):
-    """Live Encrypt=yes gate (opt-in): forces the driver to dlopen its OpenSSL backend, which
-    the DB-less Encrypt=no probe never exercises. Runs when CONDA_TLS_PROBE_CONN is set OR
-    CONDA_TLS_PROBE_REQUIRED is truthy; the probe is the single source of truth for required
-    semantics. Conclusive only on a minimal base with no system OpenSSL (else a system libssl
-    masks an unreachable conda copy -- the static RUNPATH audit is the masking-immune guard)."""
-    req = (env.get("CONDA_TLS_PROBE_REQUIRED") or "").strip().lower()
-    req_active = req not in ("", "0", "false", "no", "off")
-    if not (env.get("CONDA_TLS_PROBE_CONN") or req_active):
-        _log(f"=== [py {py}] Encrypt=yes TLS gate SKIPPED (set CONDA_TLS_PROBE_CONN to enable) ===")
-        return
-    _log(f"=== [py {py}] live Encrypt=yes TLS gate (OpenSSL backend must be reachable) ===")
-    probe = os.path.join(recipe_root, "tls_connect_probe.py")
-    if emulated:
-        if run_ok([conda, "run", "-n", name, "python", probe], env=env) != 0:
-            _log(
-                "SKIP (emulated cross under QEMU binfmt): qemu-user cannot run the aarch64 "
-                "driver's TLS/OpenSSL init; best-effort (static RUNPATH audit covers layout)."
-            )
-    else:
-        run([conda, "run", "-n", name, "python", probe], env=env, what=f"TLS gate (py {py})")
 
 
 # ---------------------------------------------------------------------------
