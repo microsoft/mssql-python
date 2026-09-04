@@ -131,9 +131,22 @@ Assert-LastExit "conda --version"
 # builds + validates (it never runs `anaconda upload`). Publishing installs its
 # own anaconda-client in conda-publish-step.yml. Keeping it out of the build env
 # also drops the anaconda-auth conda plugin, which the crash report fingered.
-Write-Host "=== installing conda-build (<26) ==="
-& $conda install -y -n base "conda-build<26"
-Assert-LastExit "conda install conda-build<26"
+Write-Host "=== creating dedicated conda-build env (conda_builder: conda-build<26) ==="
+# Use a DEDICATED env instead of `install -n base`: a pre-installed conda whose base is
+# pinned to a python that no conda-build<26 supports (e.g. 3.14) makes a base install
+# UNSOLVABLE -- a fresh env lets conda pick a python conda-build<26 supports, independent
+# of the base pin (the .sh port does the same). zstandard is folded in here so the RUNPATH
+# audit (step 6b) reads the .conda payload from this same env, with no pip install into base.
+$condaBuildEnv = 'conda_builder'
+# Pre-remove so a reused / self-hosted agent (or a system conda on PATH) reruns cleanly.
+# `conda env remove` on an ABSENT env writes to stderr, which the script-wide
+# ErrorActionPreference='Stop' escalates to a terminating error -- switch to 'Continue' for
+# just this best-effort step (the bash port's `|| true`), then restore 'Stop'.
+$ErrorActionPreference = 'Continue'
+& $conda env remove -y -n $condaBuildEnv 2>$null
+$ErrorActionPreference = 'Stop'
+& $conda create -y -n $condaBuildEnv -c conda-forge --override-channels "conda-build<26" zstandard
+Assert-LastExit "conda create $condaBuildEnv (conda-build<26 + zstandard)"
 
 # ---------------------------------------------------------------------------
 # 3. Determine which Python versions to build (win_amd64 mssql_python wheels)
@@ -189,10 +202,10 @@ foreach ($py in $pyvers) {
         # The win-arm64 host env's python 3.12/3.13 only exists on Anaconda `defaults`
         # (conda-forge ships win-arm64 python 3.14 only), so add defaults ahead of
         # conda-forge for the host-env solve.
-        & $conda build $bindRecipe --python $py --no-test --no-anaconda-upload --output-folder $bld -c defaults -c conda-forge
+        & $conda run -n $condaBuildEnv conda-build $bindRecipe --python $py --no-test --no-anaconda-upload --output-folder $bld -c defaults -c conda-forge
     }
     else {
-        & $conda build $bindRecipe --python $py --no-test --no-anaconda-upload --output-folder $bld
+        & $conda run -n $condaBuildEnv conda-build $bindRecipe --python $py --no-test --no-anaconda-upload --output-folder $bld
     }
     Assert-LastExit "conda build mssql-python (py $py)"
 }
@@ -226,8 +239,9 @@ if (-not (Test-Path $auditScript)) {
     exit 1
 }
 Write-Host "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binaries.py) ==="
-& $conda run -n base python -m pip install --quiet --disable-pip-version-check zstandard
-& $conda run -n base python $auditScript --root $bld
+# zstandard already lives in $condaBuildEnv (installed with conda-build above), so the
+# audit reads the .conda payload from that env -- no separate pip install into base.
+& $conda run -n $condaBuildEnv python $auditScript --root $bld
 Assert-LastExit "RUNPATH self-containment audit"
 
 # ---------------------------------------------------------------------------
@@ -245,7 +259,7 @@ if ($CondaSubdir -eq 'win-arm64') {
         exit 1
     }
     Write-Host "=== win-arm64 PE machine-type assert (vendored .pyd/.dll must be ARM64) ==="
-    & $conda run -n base python $peCheck --root $bld --subdir win-arm64
+    & $conda run -n $condaBuildEnv python $peCheck --root $bld --subdir win-arm64
     Assert-LastExit "win-arm64 PE machine-type assert"
 }
 

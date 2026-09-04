@@ -40,7 +40,7 @@ def iter_payload_members(path: str):
                 None,
             )
             if pkg_name is None:
-                return
+                raise ValueError(f"{path}: no pkg-*.tar.zst payload found in .conda archive")
             blob = zstd_decompress(zf.read(pkg_name))
         with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
             for m in tf.getmembers():

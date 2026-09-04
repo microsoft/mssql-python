@@ -215,6 +215,31 @@ def test_split_top_level_handles_escaped_braces():
     ]
 
 
+def test_split_top_level_inner_brace_is_literal():
+    """A braced value is SINGLE-LEVEL (matches _parse_braced_value): an inner '{' is a literal
+    char, so '{a{b}' ends at the first '}' and ';Encrypt=no' is a separate segment -- not
+    absorbed into Pwd (which would make force_tls emit a duplicate Encrypt)."""
+    probe = _load_probe()
+    assert probe._split_top_level("Pwd={a{b};Encrypt=no") == ["Pwd={a{b}", "Encrypt=no"]
+
+
+def test_split_top_level_mid_value_brace_is_literal():
+    """A '{' that is NOT the first char of a value is literal (the value is not braced), so
+    'Server=a{b' is a simple value and ';' still splits -- matching the production parser."""
+    probe = _load_probe()
+    assert probe._split_top_level("Server=a{b;Encrypt=no") == ["Server=a{b", "Encrypt=no"]
+
+
+def test_force_tls_braced_password_with_inner_brace():
+    """End-to-end for the inner-'{' case: the user's Encrypt=no is dropped and Encrypt=yes
+    appended exactly ONCE -- no duplicate 'encrypt' that mssql_python.connect would reject."""
+    probe = _load_probe()
+    out = probe.force_tls("Pwd={a{b};Encrypt=no").lower()
+    assert "encrypt=yes" in out
+    assert "encrypt=no" not in out
+    assert out.count("encrypt=") == 1
+
+
 def test_redact_masks_values_and_flags_bare_segments():
     """The debug line must never leak a value and must surface a no-value segment."""
     probe = _load_probe()

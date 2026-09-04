@@ -90,37 +90,53 @@ def describe(exc):
 
 
 def _split_top_level(conn):
-    """Split an ODBC connection string on TOP-LEVEL ``;`` only.
+    """Split an ODBC connection string on TOP-LEVEL ``;`` only, matching the production
+    parser's grammar (mssql_python/connection_string_parser.py, ``_parse_braced_value``).
 
-    An ODBC value wrapped in ``{...}`` may itself contain ``;`` (MS-ODBCSTR), so a
-    naive ``split(';')`` would shred braced values. Track brace depth and break only
-    at depth 0. Inside a braced value ``}}`` is an escaped literal ``}`` (MS-ODBCSTR),
-    NOT a close -- consume both and keep the depth so the value is not split early.
+    A value is BRACED only when ``{`` is the first non-space char right after its ``=``;
+    inside a braced value everything is literal until a single closing ``}`` (with ``}}`` an
+    escaped literal ``}``), and an inner ``{`` is NOT a nested open -- braced values are
+    single-level. A ``;`` inside a braced value is part of the value, not a separator; a
+    ``{`` anywhere other than a value's start is a literal character.
+
+    (Reimplemented rather than importing the production parser: that module pulls in
+    ``mssql_python`` -> the native ``ddbc_bindings`` extension, which this standalone probe
+    must stay importable / unit-testable without.)
     """
     segments = []
-    buf = ""
-    depth = 0
     s = conn.strip()
+    n = len(s)
     i = 0
-    while i < len(s):
+    seg_start = 0
+    seen_eq = False  # have we passed the '=' that starts this segment's value?
+    while i < n:
         ch = s[i]
-        if ch == "{":
-            depth += 1
-            buf += ch
-        elif ch == "}":
-            if depth > 0 and i + 1 < len(s) and s[i + 1] == "}":
-                buf += "}}"  # escaped literal '}' inside a braced value; not a close
-                i += 2
-                continue
-            depth = max(0, depth - 1)
-            buf += ch
-        elif ch == ";" and depth == 0:
-            segments.append(buf)
-            buf = ""
-        else:
-            buf += ch
+        if ch == ";":
+            segments.append(s[seg_start:i])
+            i += 1
+            seg_start = i
+            seen_eq = False
+            continue
+        if ch == "=" and not seen_eq:
+            seen_eq = True
+            i += 1
+            # A braced value begins ONLY if '{' is the first non-space char after '='.
+            j = i
+            while j < n and s[j] in " \t":
+                j += 1
+            if j < n and s[j] == "{":
+                i = j + 1  # past the opening '{'
+                while i < n:
+                    if s[i] == "}":
+                        if i + 1 < n and s[i + 1] == "}":
+                            i += 2  # escaped literal '}' -- stay in the braced value
+                            continue
+                        i += 1  # single '}' closes the braced value
+                        break
+                    i += 1  # any other char (incl. an inner '{') is literal
+            continue
         i += 1
-    segments.append(buf)
+    segments.append(s[seg_start:])
     return segments
 
 

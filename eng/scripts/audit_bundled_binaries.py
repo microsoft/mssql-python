@@ -229,12 +229,14 @@ def _dep_names(depends) -> set:
 
 
 def _openssl_range_ok(constraint: str) -> bool:
-    """True iff an openssl spec pins the Driver-18 ABI range: a ``>=3`` lower AND a ``<4`` upper.
+    """True iff an openssl spec pins the Driver-18 ABI range: a ``>=3`` lower AND an EXCLUSIVE
+    upper that admits NO openssl 4.x.
 
-    Parses each comma-separated clause as ``(operator, version)`` instead of substring-
-    matching, so a loose spelling like ``>=3,<40`` (whose ``<40`` merely CONTAINS ``<4``)
-    is correctly REJECTED, while conda's canonical alpha upper bound ``<4.0a0`` is accepted.
-    A spec with no upper bound (bare ``>=3``) is rejected -- it would admit openssl 4.
+    Parses each comma-separated clause as ``(operator, version)``. The upper bound is valid
+    ONLY as an exclusive ``<`` whose numeric release is ``4`` with trailing zeros -- ``<4``,
+    ``<4.0``, ``<4.0.0`` or a ``4.0`` pre-release like ``<4.0a0`` (conda's canonical bound).
+    ``<=4``, ``<4.1`` and ``<4.0.1`` each admit some 4.x build and are REJECTED, as is a spec
+    with no upper bound (bare ``>=3``) and a loose ``<40`` (whose ``<40`` is not ``<4``).
     """
     has_lower_3 = False
     has_upper_4 = False
@@ -243,10 +245,14 @@ def _openssl_range_ok(constraint: str) -> bool:
         if not m:
             continue
         op, ver = m.group(1), m.group(2)
-        major = int(ver.split(".")[0])
-        if op in (">=", ">", "==", "=") and major == 3:
+        parts = [int(p) for p in ver.split(".") if p != ""]
+        if not parts:
+            continue
+        if op in (">=", ">", "==", "=") and parts[0] == 3:
             has_lower_3 = True
-        elif op in ("<", "<=") and major == 4:
+        # Exclusive '<' only, at numeric release 4.0(.0...) -- a '4.0' pre-release such as
+        # '<4.0a0' captures as '4.0' here, so it qualifies; '<=4', '<4.1', '<4.0.1' do not.
+        elif op == "<" and parts[0] == 4 and all(p == 0 for p in parts[1:]):
             has_upper_4 = True
     return has_lower_3 and has_upper_4
 
@@ -264,8 +270,16 @@ def audit_package(path: str) -> list[str]:
         print(f"  SKIP (no Linux ELF payload): {base_name} [subdir={subdir or '?'}]")
         return []
 
-    # The conda subdir is the arch authority; every vendored ELF must match it.
+    # The conda subdir is the arch authority; every vendored ELF must match it. A linux
+    # subdir with no e_machine mapping (e.g. a future linux-ppc64le) FAILS CLOSED rather than
+    # silently skipping the architecture gate this audit exists to enforce.
     expected_machine = _SUBDIR_MACHINE.get(subdir)
+    if expected_machine is None:
+        return [
+            f"{base_name}: unrecognized Linux subdir '{subdir}' has no known ELF machine "
+            f"mapping -- add it to _SUBDIR_MACHINE so the arch gate can enforce it "
+            f"(refusing to skip the architecture check)."
+        ]
 
     errors: list[str] = []
 
@@ -297,7 +311,12 @@ def audit_package(path: str) -> list[str]:
     dirs_with_inst: set = set()
     vendored: list[str] = []
 
-    for name, data in _iter_payload_members(path):
+    try:
+        members = list(_iter_payload_members(path))
+    except ValueError as exc:  # malformed payload (e.g. .conda missing pkg-*.tar.zst)
+        return [f"{base_name}: unreadable/malformed package payload ({exc})."]
+
+    for name, data in members:
         base = posixpath.basename(name)
         norm = "/" + name
         member_dir = posixpath.dirname(name)
@@ -323,14 +342,13 @@ def audit_package(path: str) -> list[str]:
         # Architecture gate: the ELF machine MUST match the package's conda subdir, so
         # an x86_64 driver mislabeled under a linux-aarch64 package (which the emulated
         # leg's best-effort runtime probe would not catch) fails here.
-        if expected_machine is not None:
-            mach = elf_machine(data)
-            if mach != expected_machine:
-                errors.append(
-                    f"{name}: ELF machine {mach} ({_MACHINE_NAME.get(mach, 'unknown')}) does "
-                    f"not match the '{subdir}' package arch {expected_machine} "
-                    f"({_MACHINE_NAME[expected_machine]}) -- wrong-arch/mislabeled driver."
-                )
+        mach = elf_machine(data)
+        if mach != expected_machine:
+            errors.append(
+                f"{name}: ELF machine {mach} ({_MACHINE_NAME.get(mach, 'unknown')}) does "
+                f"not match the '{subdir}' package arch {expected_machine} "
+                f"({_MACHINE_NAME[expected_machine]}) -- wrong-arch/mislabeled driver."
+            )
 
         dyn = elf_dynamic(data)
         entries = _entries(effective_runpath(dyn))
