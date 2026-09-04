@@ -377,6 +377,21 @@ def _is_emulated_cross(target_subdir: str) -> bool:
     return False
 
 
+def _import_probe(mod_name: str, ok_label: str) -> str:
+    """A `python -c` body that imports mod_name and FAIL-CLOSED asserts it resolved from under
+    sys.prefix (the conda env's own site-packages). os.chdir closes CWD shadowing; this also
+    catches a stray PYTHONPATH/.pth that could still load the repo source -- proving the
+    INSTALLED package, not the checkout -- then prints ok_label + the version."""
+    return (
+        f"import os,sys,{mod_name} as m;"
+        "f=os.path.normcase(os.path.realpath(m.__file__));"
+        "pref=os.path.normcase(os.path.realpath(sys.prefix));"
+        f"assert f.startswith(pref+os.sep),{mod_name!r}+' loaded from '+m.__file__+"
+        "', not under the conda env '+sys.prefix+' (stray PYTHONPATH/.pth?)';"
+        f"print({ok_label!r},m.__version__)"
+    )
+
+
 def verify(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env, workdir):
     """Run the whole verify phase from a NEUTRAL cwd (the per-leg build dir) so a
     `python -c "import mssql_python"` binds the conda-INSTALLED package, not the repo source
@@ -506,7 +521,7 @@ def _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env
                 name,
                 "python",
                 "-c",
-                "import mssql_python; print('BINDING_OK', mssql_python.__version__)",
+                _import_probe("mssql_python", "BINDING_OK"),
             ],
             env=env,
             what=f"import mssql_python (py {py})",
@@ -519,7 +534,7 @@ def _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env
                 name,
                 "python",
                 "-c",
-                "import mssql_python_odbc; print('ODBC_PAYLOAD_OK', mssql_python_odbc.__version__)",
+                _import_probe("mssql_python_odbc", "ODBC_PAYLOAD_OK"),
             ],
             env=env,
             what=f"import mssql_python_odbc (py {py})",
@@ -694,6 +709,10 @@ def main(argv=None) -> int:
         r"\d+\.\d+(,\d+\.\d+)*", args.python_versions.replace(" ", "")
     ):
         _die(f"--python-versions '{args.python_versions}' must be comma-separated X.Y")
+
+    # verify() os.chdir's to the per-leg build dir, so a RELATIVE --recipe-root would resolve the
+    # driver_load_probe against the wrong dir. CI passes an absolute path; abspath makes it robust.
+    args.recipe_root = os.path.abspath(args.recipe_root)
 
     # The subdir used for CONDA_SUBDIR cross-targeting + staging (target overrides the native).
     target = args.conda_target_subdir or args.conda_subdir
