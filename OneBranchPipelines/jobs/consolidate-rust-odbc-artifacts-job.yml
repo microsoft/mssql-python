@@ -1,0 +1,75 @@
+# Consolidate Rust ODBC Artifacts Job Template
+# Downloads the per-platform `mssql-python-rust-odbc` wheels from the
+# RustOdbc_BuildAll stage and consolidates them into a single dist/ folder for
+# the release pipeline to publish. Expected: 7 wheels (2 Windows + 1 macOS
+# universal2 + 4 Linux).
+parameters:
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+  - name: expectedWheelCount
+    type: number
+    default: 7
+
+jobs:
+  - job: ConsolidateArtifacts
+    displayName: 'Consolidate All Rust ODBC Platform Artifacts'
+    condition: succeeded()
+
+    pool:
+      type: linux
+      isCustom: true
+      name: Azure Pipelines
+      vmImage: 'ubuntu-latest'
+
+    variables:
+      # Consolidation only moves files; no binaries to scan.
+      - name: ob_sdl_binskim_enabled
+        value: false
+      - name: ob_outputDirectory
+        value: '$(Build.ArtifactStagingDirectory)'
+
+    steps:
+      - checkout: self
+        fetchDepth: 1
+
+      # Download only the mssql-python-rust-odbc platform-stage artifacts
+      # (drop_RustOdbc_*) from the current build. itemPattern scopes this
+      # download so only the 6 rust-odbc wheels are consolidated here.
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download All Rust ODBC Platform Artifacts'
+        inputs:
+          buildType: 'current'
+          itemPattern: 'drop_RustOdbc_*/**'
+          targetPath: '$(Pipeline.Workspace)/all-artifacts'
+
+      - bash: |
+          set -e
+          mkdir -p $(ob_outputDirectory)/dist
+
+          echo "Finding all .whl files..."
+          find $(Pipeline.Workspace)/all-artifacts -name "*.whl" -exec ls -lh {} \;
+
+          echo "Copying all wheels to consolidated dist/..."
+          find $(Pipeline.Workspace)/all-artifacts -name "*.whl" -exec cp -v {} $(ob_outputDirectory)/dist/ \;
+
+          echo "Consolidated wheels:"
+          ls -lh $(ob_outputDirectory)/dist/
+          WHEEL_COUNT=$(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)
+          echo "Total wheel count: $WHEEL_COUNT (expected ${{ parameters.expectedWheelCount }})"
+          if [ "$WHEEL_COUNT" -ne "${{ parameters.expectedWheelCount }}" ]; then
+            echo "ERROR: expected ${{ parameters.expectedWheelCount }} wheels but found $WHEEL_COUNT" >&2
+            exit 1
+          fi
+          echo "SUCCESS: all ${{ parameters.expectedWheelCount }} rust-odbc wheels consolidated."
+        displayName: 'Consolidate rust-odbc wheels'
+
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Consolidated Rust ODBC Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          # Distinct name so it does not collide with the mssql-python or
+          # mssql-python-odbc consolidate artifacts in the same build run.
+          # Matches the OneBranch auto-name for a stage named `ConsolidateRustOdbc`.
+          artifact: 'drop_ConsolidateRustOdbc_ConsolidateArtifacts'
+          publishLocation: 'pipeline'

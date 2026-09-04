@@ -29,6 +29,11 @@ mssql_python.egg-info/
 # The release pipeline still overwrites them per-platform for the full matrix.
 mssql_python_odbc.egg-info/
 
+# Rust ODBC provider package (mssql-python-rust-odbc).
+# The driver binaries under mssql_python_rust_odbc/libs/ are the committed
+# source of truth, synced via eng/scripts/sync-mssql-odbc-native-libs.py.
+mssql_python_rust_odbc.egg-info/
+
 # Python bytecode
 __pycache__/
 *.py[cod]
@@ -41,6 +46,8 @@ build/
 
 # C extensions
 *.so
+# ...except the committed Rust ODBC provider driver binaries (see note above).
+!mssql_python_rust_odbc/libs/**/*.so
 *.pyd
 *.pdb
 

@@ -1,0 +1,6 @@
+A. The native libraries in this libs/ tree (mssqlodbc.so / mssqlodbc.dylib / mssqlodbc.dll)
+====================================================================================================
+These binaries are the mssql-odbc ODBC driver, built from source in microsoft/mssql-rs and
+distributed under the MIT License.
+
+For the license text, refer to: mssql_python_rust_odbc/licenses/MSSQL_ODBC_LICENSE.txt
