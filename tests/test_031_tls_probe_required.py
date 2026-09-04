@@ -85,24 +85,6 @@ def test_required_accepts_on_rejects_off(monkeypatch):
     assert tcp._required() is False
 
 
-def test_tls_completed_clean_and_login_phrases():
-    assert tcp.tls_completed(None) is True
-    assert tcp.tls_completed(Exception("Login failed for user 'sa'.")) is True
-    assert tcp.tls_completed(Exception("Cannot open database 'x' requested by the login.")) is True
-
-
-def test_tls_completed_bare_18456_is_not_a_pass():
-    # A pre-TLS network error whose text merely contains 18456 (a port/IP/id) must NOT
-    # classify as a completed handshake -- the exact false-positive this guards.
-    assert tcp.tls_completed(Exception("TCP timeout connecting to 10.18.45.6:18456")) is False
-
-
-def test_tls_completed_18456_with_login_context_passes():
-    assert tcp.tls_completed(Exception("Login failed (error 18456, SQLSTATE 28000)")) is True
-    assert tcp.tls_completed(Exception("SQLSTATE 28000: 18456")) is True
-
-
-def test_tls_completed_openssl_error_fails_closed():
-    assert (
-        tcp.tls_completed(Exception("SSL Provider: cannot open shared object libssl.so.3")) is False
-    )
+# NOTE: the tls_completed() classifier (clean/login/28000/openssl outcomes) is exercised in
+# test_028_tls_connect_probe.py; this module stays focused on the REQUIRED-mode gating so the
+# two files don't duplicate that coverage.
