@@ -294,12 +294,16 @@ extends:
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*manylinux_2_28_x86_64.whl'
                   pythonVersions: '${{ parameters.pythonVersions }}'
-              # linux-aarch64: CROSS-target via QEMU binfmt. MANDATORY (blocking): a
-              # leg that cannot run its own aarch64 import is a real failure, not a
-              # silent pass -- otherwise a broken aarch64 conda package would ship
-              # unvalidated. Install the aarch64 glibc loader/libs (libc6-arm64-cross)
-              # so the emulated aarch64 Python can find /lib/ld-linux-aarch64.so.1, and
-              # register QEMU binfmt for host execution; both must succeed.
+              # linux-aarch64: CROSS-target via QEMU binfmt. continueOnError=true (best-effort)
+              # so a QEMU emulation flake can NEVER nuke the native linux-64 publish that SHARES
+              # this job -- PublishPipelineArtifact below is `condition: succeeded()`, so a failed
+              # aarch64 leg would otherwise DISCARD the already-validated linux-64 packages.
+              # Blast-radius isolation, matching win-arm64/osx-arm64. Enforcement does NOT weaken:
+              # the leg still runs a BLOCKING internal solve + aarch64 import + static RUNPATH
+              # audit (a broken package is never staged), and linux-aarch64 is in the release
+              # gate's requiredSubdirs, so a MISSING aarch64 package still blocks the RELEASE.
+              # Install the aarch64 glibc loader/libs (libc6-arm64-cross) so the emulated aarch64
+              # Python can find /lib/ld-linux-aarch64.so.1, and register QEMU binfmt for host exec.
               - bash: |
                   set -euo pipefail
                   sudo apt-get update
@@ -315,6 +319,7 @@ extends:
                 parameters:
                   condaSubdir: 'linux-aarch64'
                   condaTargetSubdir: 'linux-aarch64'
+                  continueOnError: true
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*manylinux_2_28_aarch64.whl'
                   pythonVersions: '${{ parameters.pythonVersions }}'
