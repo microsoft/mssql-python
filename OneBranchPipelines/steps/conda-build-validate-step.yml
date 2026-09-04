@@ -87,6 +87,10 @@ steps:
       # for EVERY leg -- the two build scripts collapsed into one. The caller value-inputs come
       # via the step env: block (NOT interpolated into the command); the orchestrator validates
       # them itself. Run under the agent's bootstrap `python` (the orchestrator installs Miniforge).
+      # --conda-target-subdir / --python-versions use the `--flag=value` form ON PURPOSE: Windows
+      # PowerShell 5.1 DROPS an empty "" argument to a native command, so on a native leg (win-64,
+      # empty target-subdir) the space form `--conda-target-subdir ""` would vanish and argparse
+      # would fail with "expected one argument". The `=value` form stays one token even when empty.
       python "${{ parameters.scriptPath }}" `
         --mssql-wheel-dir "${{ parameters.mssqlWheelDir }}" `
         --odbc-wheel-dir "${{ parameters.odbcWheelDir }}" `
@@ -95,8 +99,8 @@ steps:
         --output-dir "${{ parameters.outputDir }}" `
         --stage-dir "$(ob_outputDirectory)/conda" `
         --conda-subdir "${{ parameters.condaSubdir }}" `
-        --conda-target-subdir "$env:CONDA_TARGET_SUBDIR" `
-        --python-versions "$env:PYTHON_VERSION"
+        --conda-target-subdir="$env:CONDA_TARGET_SUBDIR" `
+        --python-versions="$env:PYTHON_VERSION"
       if ($LASTEXITCODE -ne 0) { Write-Error "conda build+validate failed (exit $LASTEXITCODE)"; exit 1 }
     env:
       # Surface the caller's value inputs as env vars (validated in-script above) rather than
