@@ -76,9 +76,9 @@ jobs:
           targetPath: '$(Pipeline.Workspace)/all-artifacts'
 
       - bash: |
-          set -e
+          set -euo pipefail
           echo "Collecting conda packages (preserving <subdir>/ layout)..."
-          mkdir -p $(ob_outputDirectory)/conda
+          mkdir -p "$(ob_outputDirectory)/conda"
 
           # Copy every mssql-python* conda package into conda/<subdir>/. Each build
           # leg wrote the self-contained mssql-python package under a conda/<subdir>/
@@ -89,16 +89,16 @@ jobs:
             mkdir -p "$(ob_outputDirectory)/conda/$subdir"
             cp -v "$p" "$(ob_outputDirectory)/conda/$subdir/"
             found=1
-          done < <(find $(Pipeline.Workspace)/all-artifacts -type f \( -name 'mssql-python*.conda' -o -name 'mssql-python*.tar.bz2' \))
+          done < <(find "$(Pipeline.Workspace)/all-artifacts" -type f \( -name 'mssql-python*.conda' -o -name 'mssql-python*.tar.bz2' \))
 
           echo ""
           echo "Consolidated conda tree:"
-          find $(ob_outputDirectory)/conda -type f | sort
+          find "$(ob_outputDirectory)/conda" -type f | sort
 
-          PKG_COUNT=$(find $(ob_outputDirectory)/conda -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)
+          PKG_COUNT=$(find "$(ob_outputDirectory)/conda" -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)
           echo ""
           echo "Per-subdir conda package counts:"
-          for d in $(ob_outputDirectory)/conda/*/; do
+          for d in "$(ob_outputDirectory)"/conda/*/; do
             [ -d "$d" ] || continue
             sub=$(basename "$d")
             n=$(find "$d" -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)

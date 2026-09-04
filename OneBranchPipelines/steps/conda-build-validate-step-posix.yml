@@ -41,7 +41,7 @@ parameters:
     type: string
     default: '$(Build.SourcesDirectory)/conda'
   # Space-free working dir for the conda croot + Miniforge + built packages. The
-  # step APPENDS the target subdir to this (see OUT below) so two legs sharing one
+  # step APPENDS this leg's condaSubdir to this (see OUT below) so two legs sharing one
   # agent (macOS builds osx-arm64 AND osx-64 on the same Intel agent) never share a
   # bld tree -- otherwise the blocking osx-64 leg's staging `find` would also sweep
   # up the best-effort osx-arm64 packages (cross-subdir bleed-through).
