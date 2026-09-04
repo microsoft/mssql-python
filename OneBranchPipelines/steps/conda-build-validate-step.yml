@@ -25,11 +25,13 @@
 # does NOT publish anything — publishing (anaconda upload / ESRP) happens in the
 # release pipeline, exactly like the wheels.
 parameters:
-  # Python version this leg builds, X.Y (e.g. '3.13'). One conda build per leg.
+  # Python version(s) to build, comma-separated X.Y (e.g. '3.13' or '3.12,3.13,3.14'); passed
+  # straight to the orchestrator's --python-versions. win-64 follows the pythonVersions
+  # parameter; win-arm64 uses a fixed 3.12-3.14 set (the singular name is kept for callers).
   - name: pythonVersion
     type: string
-  # conda subdir to stamp on the packages (win-64, osx-64, osx-arm64,
-  # linux-64, linux-aarch64). Must match the platform of THIS agent.
+  # Conda subdir for this leg's package metadata + staging: 'win-64' (native) or 'win-arm64'
+  # (CROSS-built on this x64 agent via condaTargetSubdir). Need NOT match the host arch.
   - name: condaSubdir
     type: string
   # Optional target subdir to CROSS-build via CONDA_SUBDIR on this (x64) agent, e.g.
