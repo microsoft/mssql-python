@@ -104,17 +104,17 @@ jobs:
       Write-Host "Creating database and user for stress tests..."
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE StressTestDB"
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
-      $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-      $startInfo.FileName = (Get-Command sqlcmd.exe).Source
-      $startInfo.Arguments = '-S "(localdb)\MSSQLLocalDB" -b -x -f 65001'
-      $startInfo.UseShellExecute = $false
-      $startInfo.RedirectStandardInput = $true
-      $process = [System.Diagnostics.Process]::Start($startInfo)
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
       $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
-      $process.StandardInput.BaseStream.Write($sqlBytes, 0, $sqlBytes.Length)
-      $process.StandardInput.BaseStream.Close()
-      $process.WaitForExit()
-      if ($process.ExitCode -ne 0) { throw "Failed to create the testuser login" }
+      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      try {
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+      }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
       Write-Host "Database setup completed"

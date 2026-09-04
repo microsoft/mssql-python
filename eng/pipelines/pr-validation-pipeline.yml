@@ -86,17 +86,17 @@ jobs:
   - powershell: |
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
-      $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-      $startInfo.FileName = (Get-Command sqlcmd.exe).Source
-      $startInfo.Arguments = '-S "(localdb)\MSSQLLocalDB" -b -x -f 65001'
-      $startInfo.UseShellExecute = $false
-      $startInfo.RedirectStandardInput = $true
-      $process = [System.Diagnostics.Process]::Start($startInfo)
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
       $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
-      $process.StandardInput.BaseStream.Write($sqlBytes, 0, $sqlBytes.Length)
-      $process.StandardInput.BaseStream.Close()
-      $process.WaitForExit()
-      if ($process.ExitCode -ne 0) { throw "Failed to create the testuser login" }
+      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      try {
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+      }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
     displayName: 'Setup database and user for LocalDB'
@@ -139,7 +139,7 @@ jobs:
         )
         Set-Content -Path $configPath -Value $configLines -Encoding ASCII
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        icacls $configPath /inheritance:r /grant:r "${identity}:(R)" "SYSTEM:(R)" | Out-Null
+        icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
         try {
           Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/ConfigurationFile=$configPath" -Wait
         } finally {
@@ -185,17 +185,17 @@ jobs:
       # Create database and user
       sqlcmd -S "localhost" -U "sa" -Q "CREATE DATABASE TestDB" -C
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
-      $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-      $startInfo.FileName = (Get-Command sqlcmd.exe).Source
-      $startInfo.Arguments = '-S localhost -U sa -C -b -x -f 65001'
-      $startInfo.UseShellExecute = $false
-      $startInfo.RedirectStandardInput = $true
-      $process = [System.Diagnostics.Process]::Start($startInfo)
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
       $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
-      $process.StandardInput.BaseStream.Write($sqlBytes, 0, $sqlBytes.Length)
-      $process.StandardInput.BaseStream.Close()
-      $process.WaitForExit()
-      if ($process.ExitCode -ne 0) { throw "Failed to create the testuser login" }
+      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      try {
+        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+      }
       sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
     displayName: 'Setup database and user for SQL Server 2022'
@@ -238,7 +238,7 @@ jobs:
         )
         Set-Content -Path $configPath -Value $configLines -Encoding ASCII
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        icacls $configPath /inheritance:r /grant:r "${identity}:(R)" "SYSTEM:(R)" | Out-Null
+        icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
         try {
           Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/ConfigurationFile=$configPath" -Wait
         } finally {
@@ -284,17 +284,17 @@ jobs:
       # Create database and user
       sqlcmd -S "localhost" -U "sa" -Q "CREATE DATABASE TestDB" -C
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
-      $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-      $startInfo.FileName = (Get-Command sqlcmd.exe).Source
-      $startInfo.Arguments = '-S localhost -U sa -C -b -x -f 65001'
-      $startInfo.UseShellExecute = $false
-      $startInfo.RedirectStandardInput = $true
-      $process = [System.Diagnostics.Process]::Start($startInfo)
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
       $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
-      $process.StandardInput.BaseStream.Write($sqlBytes, 0, $sqlBytes.Length)
-      $process.StandardInput.BaseStream.Close()
-      $process.WaitForExit()
-      if ($process.ExitCode -ne 0) { throw "Failed to create the testuser login" }
+      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      try {
+        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+      }
       sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
     displayName: 'Setup database and user for SQL Server 2025'
