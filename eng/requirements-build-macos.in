@@ -1,0 +1,5 @@
+# Dependencies installed before macOS release wheels are produced.
+-r ../requirements.txt
+cmake
+pip
+wheel
