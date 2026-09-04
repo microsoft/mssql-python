@@ -81,6 +81,19 @@ steps:
   - powershell: |
       $ErrorActionPreference = 'Stop'
 
+      # Caller value-inputs are surfaced via the step-level env: block below (NOT interpolated
+      # into this script's text) and validated before use, matching the repo's secret-handling
+      # convention. PYTHON_VERSION: empty (auto-detect) or a single X.Y; CONDA_TARGET_SUBDIR:
+      # empty (native) or a known conda subdir.
+      $pyVer = "$env:PYTHON_VERSION"
+      if ($pyVer -and $pyVer -notmatch '^\d+\.\d+$') {
+          Write-Error "pythonVersion '$pyVer' must be empty or a single X.Y (e.g. 3.13)."; exit 1
+      }
+      $tgtSubdir = "$env:CONDA_TARGET_SUBDIR"
+      if ($tgtSubdir -and $tgtSubdir -notin @('osx-64', 'osx-arm64', 'linux-64', 'linux-aarch64', 'win-64', 'win-arm64')) {
+          Write-Error "condaTargetSubdir '$tgtSubdir' is not a known conda subdir."; exit 1
+      }
+
       $mssqlWheelDir = "${{ parameters.mssqlWheelDir }}"
       $odbcWheelDir  = "${{ parameters.odbcWheelDir }}"
 
@@ -121,8 +134,8 @@ steps:
         -OutputDir "${{ parameters.outputDir }}" `
         -MssqlPythonVersion $mssqlVer `
         -OdbcVersion $odbcVer `
-        -PythonVersions "${{ parameters.pythonVersion }}" `
-        -CondaSubdir "${{ parameters.condaTargetSubdir }}"
+        -PythonVersions $pyVer `
+        -CondaSubdir $tgtSubdir
       if ($LASTEXITCODE -ne 0) { Write-Error "conda build+validate failed (exit $LASTEXITCODE)"; exit 1 }
 
       # Stage the built conda packages onto the leg's artifact so the consolidate
@@ -141,5 +154,10 @@ steps:
         Copy-Item $p.FullName -Destination $dest -Force
         Write-Host "  staged $subdir/$($p.Name)"
       }
+    env:
+      # Surface the caller's value inputs as env vars (validated in-script above) rather than
+      # interpolating them into the script text -- repo secret-handling convention.
+      PYTHON_VERSION: ${{ parameters.pythonVersion }}
+      CONDA_TARGET_SUBDIR: ${{ parameters.condaTargetSubdir }}
     displayName: 'Conda build + validate (${{ parameters.condaSubdir }} py${{ parameters.pythonVersion }})'
     continueOnError: ${{ parameters.continueOnError }}
