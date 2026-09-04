@@ -106,12 +106,13 @@ jobs:
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
       $startInfo = New-Object System.Diagnostics.ProcessStartInfo
       $startInfo.FileName = (Get-Command sqlcmd.exe).Source
-      $startInfo.Arguments = '-S "(localdb)\MSSQLLocalDB" -b -x'
+      $startInfo.Arguments = '-S "(localdb)\MSSQLLocalDB" -b -x -f 65001'
       $startInfo.UseShellExecute = $false
       $startInfo.RedirectStandardInput = $true
       $process = [System.Diagnostics.Process]::Start($startInfo)
-      $process.StandardInput.WriteLine("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'")
-      $process.StandardInput.Close()
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      $process.StandardInput.BaseStream.Write($sqlBytes, 0, $sqlBytes.Length)
+      $process.StandardInput.BaseStream.Close()
       $process.WaitForExit()
       if ($process.ExitCode -ne 0) { throw "Failed to create the testuser login" }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
