@@ -21,7 +21,14 @@ deterministic, platform-independent way to fail if the hardening is reverted.
 import re
 from pathlib import Path
 
-_LOADER_SRC = Path(__file__).resolve().parents[1] / "mssql_python" / "pybind" / "ddbc_bindings.cpp"
+import pytest
+
+_PYBIND_DIR = Path(__file__).resolve().parents[1] / "mssql_python" / "pybind"
+_LOADER_SRC = _PYBIND_DIR / "ddbc_bindings.cpp"
+pytestmark = pytest.mark.skipif(
+    not _PYBIND_DIR.is_dir(),
+    reason="requires a source checkout; isolated wheel tests omit the source tree",
+)
 
 
 def _code_without_comments(text):
