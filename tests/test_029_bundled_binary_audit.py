@@ -244,6 +244,13 @@ def test_audit_fails_on_absolute_rpath(tmp_path):
     assert any("ABSOLUTE" in e for e in errors)
 
 
+def test_audit_fails_empty_runpath_entry(tmp_path):
+    # A trailing ':' (empty entry = current-directory search) must FAIL, even though the
+    # NON-empty entries are exactly {$ORIGIN, climb} that _entries() would otherwise accept.
+    errors = audit.audit_package(_make_pkg(tmp_path, runpath=_GOOD_RUNPATH + ":"))
+    assert any("EMPTY entry" in e for e in errors)
+
+
 def test_audit_fails_missing_bare_origin(tmp_path):
     # Climb entry present but bare $ORIGIN dropped -> the driver can no longer resolve
     # its co-located sibling libodbcinst.so.2 even though $PREFIX/lib is reachable.
@@ -310,6 +317,15 @@ def test_audit_passes_openssl_exclusive_4_variants(tmp_path):
         assert not any("range-pinned" in e for e in errors), spec
 
 
+def test_audit_fails_openssl_or_group_or_garbage_clause(tmp_path):
+    # A conda OR-group ('>=3|>=1'), a garbage clause, or a prefix-parse spelling ('<4garbage')
+    # must all FAIL CLOSED -- the allowlist admits only canonical bound spellings.
+    for spec in ("openssl >=3|>=1,<4", "openssl >=3,foo,<4", "openssl >=3,<4garbage"):
+        depends = ["python", "azure-identity", "krb5", "libtool", spec]
+        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+        assert any("range-pinned" in e for e in errors), spec
+
+
 def test_audit_fails_driver_missing_from_one_subdir(tmp_path):
     # debian_ubuntu is complete, but rhel ships only libodbcinst (driver dropped). A
     # package-global count would pass since debian_ubuntu supplies a driver; per-subdir
@@ -351,6 +367,18 @@ def test_audit_fails_driver_lost_needed(tmp_path):
         _make_pkg(tmp_path, driver_needed=["libkrb5.so.3", "libodbcinst.so.2"])
     )
     assert any("libgssapi_krb5" in e and "no longer NEED" in e for e in errors)
+
+
+def test_audit_fails_needed_substring_impostor(tmp_path):
+    # libkrb5support.so.0 must NOT satisfy the required libkrb5.so DT_NEEDED -- the bare
+    # substring 'libkrb5' would have (the '.so' anchor closes that hole).
+    errors = audit.audit_package(
+        _make_pkg(
+            tmp_path,
+            driver_needed=["libkrb5support.so.0", "libgssapi_krb5.so.2", "libodbcinst.so.2"],
+        )
+    )
+    assert any("libkrb5.so" in e and "no longer NEED" in e for e in errors)
 
 
 def test_audit_fails_odbcinst_lost_libltdl(tmp_path):

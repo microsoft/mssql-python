@@ -307,10 +307,12 @@ foreach ($py in $pyvers) {
         # --strict-channel-priority (the graph legitimately splits across microsoft+defaults).
         & $conda create --dry-run -n $envName -c $localChannel -c microsoft -c defaults --override-channels "python=$py" mssql-python
         Assert-LastExit "win-arm64 --dry-run solve (py $py)"
-        # Real env is BEST-EFFORT: only a real arm64 host can create+run it. The pipeline
-        # cross-builds on x64 (arm64 Python cannot execute); there the PE-machine assert
-        # (step 6c) + the static arm64-slice audit enforce arch/correctness, so a real-create
-        # failure here is not fatal -- we skip the runtime import.
+        # Real env is BEST-EFFORT: only a real arm64 host can create+run it (the arm64 Python
+        # cannot execute on this x64 agent). This masks ANY real-create failure, not just the
+        # can't-exec case -- but the package's validity is already proven by BLOCKING gates that
+        # ran first: it BUILT (step 5), its full dep graph SOLVED (the --dry-run above), and its
+        # arch is enforced by the PE-machine assert (step 6c) + the static RUNPATH/PE audit. So a
+        # failure here can only be infra (download/link/disk), never an unshippable package.
         & $conda create -y -n $envName -c $localChannel -c microsoft -c defaults --override-channels "python=$py" mssql-python 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "=== [py $py] win-arm64: SOLVES (dry-run OK); real env not creatable on this x64 host -- arch enforced by the PE assert + static audit, skipping runtime import. ==="

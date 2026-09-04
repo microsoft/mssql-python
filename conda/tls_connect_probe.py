@@ -47,6 +47,7 @@ OpenSSL backend unreachable / handshake did not complete (blocks publish).
 """
 
 import os
+import re
 import sys
 
 # Outcomes that can ONLY occur AFTER a mandatory (Encrypt=yes) TLS handshake has
@@ -74,10 +75,11 @@ def tls_completed(exc):
         return True
     # SQLSTATE 28000 (invalid authorization spec) is a locale-independent, post-handshake
     # proof of a REJECTED login -- useful when the server's "login failed" text is localized
-    # and misses the English marker above. We deliberately do NOT also accept a bare native
-    # error number (e.g. '18456'): a pre-TLS 'Login timeout expired ... 18456' would contain
-    # both '18456' and 'login' and FALSE-PASS this fail-closed gate.
-    if "28000" in msg:
+    # and misses the English marker above. Match it ONLY in SQLSTATE context (bracketed/quoted,
+    # or right after the 'sqlstate' label), NOT as a bare substring: a pre-TLS error naming a
+    # port/host like ':28000' or 'sql28000.internal' must not FALSE-PASS this fail-closed gate
+    # (the same substring hazard as the dropped bare-'18456' arm).
+    if re.search(r"(sqlstate\W{0,4}28000|['\[]28000)", msg):
         return True
     return False
 
@@ -173,9 +175,9 @@ def force_tls(conn):
 def _redact(conn):
     """Render the connection string's STRUCTURE with every value masked.
 
-    Safe to log: shows the keys (and their order) so a malformed string is
-    diagnosable, but never a secret value. A segment with no ``=`` -- the exact shape
-    that trips the parser -- is surfaced verbatim so the failure explains itself.
+    Safe to log: shows the keys (and their order) so a malformed string is diagnosable, but
+    never a secret value. A segment with no ``=`` is FLAGGED but its content is masked -- a
+    mis-split braced password could land there, and the raw token must never reach a log.
     """
     shown = []
     for seg in _split_top_level(conn):
@@ -185,7 +187,7 @@ def _redact(conn):
         if "=" in token:
             shown.append(token.split("=", 1)[0].strip() + "=***")
         else:
-            shown.append("<<NO-VALUE:" + token + ">>")
+            shown.append("<<NO-VALUE>>")
     return ";".join(shown)
 
 
