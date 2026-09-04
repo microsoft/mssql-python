@@ -313,9 +313,13 @@ foreach ($py in $pyvers) {
         # ran first: it BUILT (step 5), its full dep graph SOLVED (the --dry-run above), and its
         # arch is enforced by the PE-machine assert (step 6c) + the static RUNPATH/PE audit. So a
         # failure here can only be infra (download/link/disk), never an unshippable package.
-        & $conda create -y -n $envName -c $localChannel -c microsoft -c defaults --override-channels "python=$py" mssql-python 2>$null
+        # Capture (2>&1) rather than swallow (2>$null): the arm64-can't-exec failure is EXPECTED
+        # here, but if the real-create fails for another reason (network/link/disk) its output
+        # must land in the log -- not vanish -- so an infra failure stays diagnosable.
+        $createOut = & $conda create -y -n $envName -c $localChannel -c microsoft -c defaults --override-channels "python=$py" mssql-python 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Host "=== [py $py] win-arm64: SOLVES (dry-run OK); real env not creatable on this x64 host -- arch enforced by the PE assert + static audit, skipping runtime import. ==="
+            Write-Host ($createOut | Out-String)
             continue
         }
     }
@@ -332,13 +336,16 @@ foreach ($py in $pyvers) {
     # Can the freshly built package's Python EXECUTE on this host? On the win-arm64
     # cross leg it cannot (arm64 on x64), so skip the runtime import -- exactly like
     # the osx-arm64 cross-build. Any OTHER non-runnable target is a real failure.
-    & $conda run -n $envName python -c "import sys" 2>$null
+    # Capture (2>&1) so the exec error is visible: EXPECTED on the win-arm64 cross leg, but a
+    # real failure on a NATIVE leg must show WHY in the log before we exit 1.
+    $runOut = & $conda run -n $envName python -c "import sys" 2>&1
     if ($LASTEXITCODE -ne 0) {
         if ($crossBestEffort) {
             Write-Host "=== [py $py] win-arm64 cross on x64: target Python not executable; deps SOLVED (blocking) but skipping runtime import (static arm64-slice audit stands in). ==="
+            Write-Host ($runOut | Out-String)
             continue
         }
-        Write-Error "target Python for CONDA_SUBDIR=$CondaSubdir is not executable on this host, and this is NOT the win-arm64 cross-build. Refusing to silently skip validation."
+        Write-Error "target Python for CONDA_SUBDIR=$CondaSubdir is not executable on this host, and this is NOT the win-arm64 cross-build. Refusing to silently skip validation. Output: $($runOut | Out-String)"
         exit 1
     }
 
