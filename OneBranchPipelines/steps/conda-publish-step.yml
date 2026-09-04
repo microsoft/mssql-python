@@ -119,6 +119,11 @@ steps:
       # never passed on the command line and never appears in the logs. Supplied by
       # the caller from the 'Anaconda Publishing' variable group.
       ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
+      # channel/label surfaced as env vars (NOT ${{ }}-interpolated into the script text): ${{ }}
+      # is COMPILE-TIME, so a value containing a quote would break the inline PowerShell before any
+      # guard could run. Reading them at RUNTIME via $env: is injection-proof (operator-only inputs).
+      CONDA_CHANNEL: ${{ parameters.condaChannel }}
+      CONDA_LABEL: ${{ parameters.condaLabel }}
     inputs:
       targetType: 'inline'
       script: |
@@ -126,7 +131,7 @@ steps:
 
         # Refuse to publish without an explicit target channel (protects the dummy
         # pipeline, whose default channel is empty, from ever hitting production).
-        if ([string]::IsNullOrWhiteSpace("${{ parameters.condaChannel }}")) {
+        if ([string]::IsNullOrWhiteSpace($env:CONDA_CHANNEL)) {
           Write-Error "condaChannel is empty. Supply the target Anaconda.org channel/org (production = 'microsoft')."
           exit 1
         }
@@ -201,7 +206,7 @@ steps:
         # promote to the public label. A mid-upload failure leaves a partial set on the
         # staging label ONLY -- the public label is never partially updated. The staging
         # label includes the build id so concurrent/retried runs never collide.
-        $stagingLabel = "${{ parameters.condaLabel }}_staging_$(Build.BuildId)"
+        $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
 
         function Invoke-Anaconda($argsList) {
           for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -221,13 +226,13 @@ steps:
           if ($parts.Count -lt 3) { Write-Error "Cannot parse conda spec from '$($file.Name)'."; exit 1 }
           $version = $parts[$parts.Count - 2]
           $name = ($parts[0..($parts.Count - 3)]) -join '-'
-          return "${{ parameters.condaChannel }}/$name/$version/$($file.Name)"
+          return "$($env:CONDA_CHANNEL)/$name/$version/$($file.Name)"
         }
 
         Write-Host "==== Stage: upload $($binding.Count) package(s) to label '$stagingLabel' ===="
         foreach ($p in ($binding | Sort-Object FullName)) {
           Write-Host "Uploading $($p.Directory.Name)/$($p.Name) -> $stagingLabel ..."
-          if (-not (Invoke-Anaconda @('upload', '--user', "${{ parameters.condaChannel }}", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)"))) {
+          if (-not (Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)"))) {
             Write-Error "Failed to stage $($p.Name) after 3 attempts. The public label was NOT touched."
             exit 1
           }
@@ -259,10 +264,10 @@ steps:
           }
         }
 
-        Write-Host "==== Promote (idempotent): move the verified set from '$stagingLabel' to '${{ parameters.condaLabel }}' ===="
+        Write-Host "==== Promote (idempotent): move the verified set from '$stagingLabel' to '$($env:CONDA_LABEL)' ===="
         foreach ($p in ($binding | Sort-Object FullName)) {
           $spec = Get-Spec $p
-          if (Invoke-Anaconda @('move', '--from-label', $stagingLabel, '--to-label', "${{ parameters.condaLabel }}", $spec)) {
+          if (Invoke-Anaconda @('move', '--from-label', $stagingLabel, '--to-label', "$env:CONDA_LABEL", $spec)) {
             Write-Host "Promoted $($p.Name)."
             continue
           }
@@ -274,13 +279,13 @@ steps:
           # public label, so an unanchored match would report a package that only reached staging
           # as 'already promoted', masking a failed move. '_' is a word char, so \b<label>\b
           # matches ONLY the standalone public label, never '<label>_staging_...'.
-          if ($show -match ('\b' + [regex]::Escape("${{ parameters.condaLabel }}") + '\b')) {
-            Write-Host "Already on '${{ parameters.condaLabel }}' (idempotent rerun): $($p.Name)."
+          if ($show -match ('\b' + [regex]::Escape("$env:CONDA_LABEL") + '\b')) {
+            Write-Host "Already on '$($env:CONDA_LABEL)' (idempotent rerun): $($p.Name)."
             continue
           }
-          Write-Error "Failed to promote '$spec' to '${{ parameters.condaLabel }}' and it is not already there. Re-run to finish promotion."
+          Write-Error "Failed to promote '$spec' to '$($env:CONDA_LABEL)' and it is not already there. Re-run to finish promotion."
           exit 1
         }
 
         Write-Host ""
-        Write-Host "Published $($binding.Count) mssql-python conda package(s) to anaconda.org/${{ parameters.condaChannel }} (label ${{ parameters.condaLabel }}) via staging label '$stagingLabel'."
+        Write-Host "Published $($binding.Count) mssql-python conda package(s) to anaconda.org/$($env:CONDA_CHANNEL) (label $($env:CONDA_LABEL)) via staging label '$stagingLabel'."
