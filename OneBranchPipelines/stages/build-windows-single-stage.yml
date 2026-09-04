@@ -169,7 +169,9 @@ stages:
           
           - powershell: |
               sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
-              "CREATE LOGIN testuser WITH PASSWORD = '$env:DB_PASSWORD'" | sqlcmd -S "(localdb)\MSSQLLocalDB"
+              $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+              "CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'" | sqlcmd -S "(localdb)\MSSQLLocalDB" -b -x
+              if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
               sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
               sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
             displayName: 'Setup database and user'

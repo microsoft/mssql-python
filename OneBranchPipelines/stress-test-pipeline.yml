@@ -103,7 +103,9 @@ jobs:
   - powershell: |
       Write-Host "Creating database and user for stress tests..."
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE StressTestDB"
-      "CREATE LOGIN testuser WITH PASSWORD = '$env:DB_PASSWORD'" | sqlcmd -S "(localdb)\MSSQLLocalDB"
+      $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+      "CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'" | sqlcmd -S "(localdb)\MSSQLLocalDB" -b -x
+      if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
       Write-Host "Database setup completed"
@@ -285,8 +287,9 @@ jobs:
       echo "Creating database and user for stress tests..."
       docker exec -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
         -S localhost -U SA -C -Q "CREATE DATABASE StressTestDB"
-      printf "CREATE LOGIN testuser WITH PASSWORD = '%s'\n" "$DB_PASSWORD" | \
-        docker exec -i -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -C
+      SQL_PASSWORD=${DB_PASSWORD//\'/\'\'}
+      printf "CREATE LOGIN testuser WITH PASSWORD = '%s'\n" "$SQL_PASSWORD" | \
+        docker exec -i -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -C -b -x
       docker exec -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
         -S localhost -U SA -C -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       docker exec -e SQLCMDPASSWORD sqlserver-stress /opt/mssql-tools18/bin/sqlcmd \
