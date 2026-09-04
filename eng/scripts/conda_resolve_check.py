@@ -92,7 +92,7 @@ def python_tag_from_index(index: dict) -> str:
 
 
 def channels_for(subdir: str) -> list[str]:
-    """Upstream channel args, mirroring build-conda-packages.{sh,ps1}.
+    """Upstream channel args, mirroring build_conda_packages.py.
 
     win-arm64 deps (cryptography / vc14_runtime / pyodbc + python) live on Anaconda
     ``defaults``, NOT conda-forge, and legitimately split across microsoft+defaults, so it

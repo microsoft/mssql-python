@@ -201,8 +201,8 @@ def _is_probe_connection_string(raw):
     return "=" in raw
 
 
-# Recognized boolean spellings for CONDA_TLS_PROBE_REQUIRED (kept in sync with the shell
-# truthiness in build-conda-packages.sh so the two never disagree).
+# Recognized boolean spellings for CONDA_TLS_PROBE_REQUIRED (kept in sync with the
+# truthiness in build_conda_packages.py so the two never disagree).
 _REQUIRED_TRUTHY = ("1", "true", "yes", "on")
 _REQUIRED_FALSY = ("", "0", "false", "no", "off")
 

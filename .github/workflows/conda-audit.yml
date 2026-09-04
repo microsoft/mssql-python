@@ -21,7 +21,7 @@ on:
       - 'eng/scripts/audit_bundled_binaries.py'
       - 'eng/scripts/assert_pe_machine.py'
       - 'eng/scripts/conda_resolve_check.py'
-      - 'OneBranchPipelines/scripts/build-conda-packages.sh'
+      - 'OneBranchPipelines/scripts/build_conda_packages.py'
       - 'tests/test_027_conda_release_metadata.py'
       - 'tests/test_029_bundled_binary_audit.py'
       - 'tests/test_030_pe_machine_assert.py'
@@ -68,22 +68,22 @@ jobs:
       - name: Build + audit a linux-64 conda package
         run: |
           set -euo pipefail
-          mssql_whl="$(ls wheels/mssql_python-*.whl | grep -v mssql_python_odbc | head -1)"
-          odbc_whl="$(ls wheels/mssql_python_odbc-*.whl | head -1)"
-          MSSQL_VER="$(basename "$mssql_whl" | sed -nE 's/^mssql_python-([^-]+)-.*/\1/p')"
-          ODBC_VER="$(basename "$odbc_whl" | sed -nE 's/^mssql_python_odbc-([^-]+)-.*/\1/p')"
-          echo "mssql-python=$MSSQL_VER  mssql-python-odbc=$ODBC_VER"
-          bash OneBranchPipelines/scripts/build-conda-packages.sh \
-            "$PWD/wheels" \
-            "$PWD/conda" \
-            "$RUNNER_TEMP/conda-bld" \
-            "$MSSQL_VER" \
-            "$ODBC_VER" \
-            "3.11" \
-            "linux-64"
+          # One orchestrator runs the same gather + build + masking-immune audit + verify the
+          # OneBranch conda leg runs; it derives both wheel versions from the filenames. The
+          # find-links dir holds BOTH wheels, so mssql-wheel-dir and odbc-wheel-dir are the same.
+          python OneBranchPipelines/scripts/build_conda_packages.py \
+            --mssql-wheel-dir "$PWD/wheels" \
+            --odbc-wheel-dir "$PWD/wheels" \
+            --odbc-wheel-filter "mssql_python_odbc-*.whl" \
+            --recipe-root "$PWD/conda" \
+            --output-dir "$RUNNER_TEMP/conda-bld" \
+            --stage-dir "$RUNNER_TEMP/conda-stage" \
+            --conda-subdir "linux-64" \
+            --python-versions "3.11"
 
       - name: Explicit standalone audit of the built package
         run: |
           set -euo pipefail
           python -m pip install --quiet zstandard
-          python eng/scripts/audit_bundled_binaries.py --root "$RUNNER_TEMP/conda-bld/bld"
+          # The orchestrator keys its work dir on the leg subdir (outputDir/<subdir>/bld).
+          python eng/scripts/audit_bundled_binaries.py --root "$RUNNER_TEMP/conda-bld/linux-64/bld"
