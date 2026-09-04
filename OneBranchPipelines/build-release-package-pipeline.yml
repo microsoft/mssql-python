@@ -390,8 +390,8 @@ extends:
       # 1. Installs Python (UsePythonVersion or NuGet for 3.14)
       # 2. Downloads ARM64 python.lib if cross-compiling
       # 3. Builds .pyd native extension
-      # 4. Runs pytest (x64 only, ARM64 can't execute on x64 host)
-      # 5. Builds wheel
+      # 4. Builds wheel
+      # 5. Installs and tests the wheel outside the checkout (x64 only)
       # 6. Publishes artifacts (wheels + PYD + PDB)
       # 7. ESRP malware scanning
       - ${{ each config in parameters.windowsConfigs }}:
@@ -423,8 +423,8 @@ extends:
       # 2. Installs CMake and pybind11
       # 3. Builds universal2 .so (ARCHFLAGS="-arch x86_64 -arch arm64")
       # 4. Starts SQL Server Docker container (via Colima)
-      # 5. Runs pytest
-      # 6. Builds wheel
+      # 5. Builds and retags the universal2 wheel
+      # 6. Installs and tests the wheel outside the checkout
       # 7. Publishes artifacts (wheels + .so)
       # 8. ESRP malware scanning
       - ${{ each config in parameters.macosConfigs }}:
