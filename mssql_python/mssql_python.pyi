@@ -7,6 +7,7 @@ Type stubs for mssql_python package - based on actual public API
 from typing import (
     Any,
     Dict,
+    FrozenSet,
     List,
     Mapping,
     Optional,
@@ -273,6 +274,40 @@ class _ArrowReader:
         use_internal_transaction: bool = False,
     ) -> Dict[str, Any]: ...
 
+# Retry Policy for transient failures at connect() time
+class RetryPolicy:
+    """
+    Describes how connect() retries a connection attempt that fails with a transient error.
+
+    Pass an instance as the retry_policy= argument of connect() or Connection().
+    max_attempts is the total number of tries including the first; 1 means never retry.
+    """
+
+    @property
+    def max_attempts(self) -> int: ...
+    @property
+    def backoff(self) -> str: ...
+    @property
+    def base_delay(self) -> float: ...
+    @property
+    def max_delay(self) -> float: ...
+    @property
+    def jitter(self) -> bool: ...
+    @property
+    def retriable_sqlstates(self) -> FrozenSet[str]: ...
+    def __init__(
+        self,
+        max_attempts: int = 3,
+        backoff: str = "exponential",
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
+        jitter: bool = True,
+        retriable_sqlstates: Optional[Iterable[str]] = None,
+    ) -> None: ...
+    def is_retriable(self, sqlstate: Optional[str]) -> bool: ...
+    def compute_delay(self, attempt: int) -> float: ...
+    def __repr__(self) -> str: ...
+
 # DB-API 2.0 Connection Object
 # https://www.python.org/dev/peps/pep-0249/#connection-objects
 class Connection:
@@ -312,6 +347,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
+        retry_policy: Optional[RetryPolicy] = None,
         **kwargs: Any,
     ) -> None: ...
 
@@ -357,6 +393,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
+    retry_policy: Optional[RetryPolicy] = None,
     **kwargs: Any,
 ) -> Connection: ...
 
