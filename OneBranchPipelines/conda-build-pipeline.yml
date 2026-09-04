@@ -315,6 +315,11 @@ extends:
                   # rather than silently emulating nothing.
                   test -e /proc/sys/fs/binfmt_misc/qemu-aarch64 || { echo "ERROR: aarch64 binfmt handler not registered after apt install" >&2; exit 1; }
                 displayName: 'Install libc6-arm64-cross + register QEMU binfmt (aarch64)'
+                # continueOnError so a transient apt/binfmt flake fails ONLY the best-effort
+                # aarch64 leg (which is itself continueOnError), never the shared Linux job -- a
+                # blocking setup step here would discard the already-validated linux-64 packages
+                # via the condition:succeeded() publish, contradicting the isolation documented above.
+                continueOnError: true
               - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
                 parameters:
                   condaSubdir: 'linux-aarch64'
