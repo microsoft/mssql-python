@@ -8,8 +8,9 @@ Key implementation detail: on the execute() path every finite Decimal binds as
 SQL_NUMERIC using its own precision and scale, regardless of value. Binding no longer
 depends on whether the value falls in the MONEY/SMALLMONEY range, so an in-range value
 compared against a smaller numeric column returns no match instead of a varchar->numeric
-overflow (GH-740). executemany still string-binds Decimals (SQL_VARCHAR) to preserve
-scale-38 precision (GH-503), so that path is unchanged here.
+overflow (GH-740). executemany auto-detect likewise binds Decimals as SQL_NUMERIC with
+a batch-wide precision/scale and SQL_C_CHAR string values (GH-745); setinputsizes
+DECIMAL/NUMERIC still string-binds for fixed precision (GH-503).
 """
 
 import pytest
@@ -809,6 +810,66 @@ def test_gh740_signed_zero_normalizes(cursor, db_connection):
         got = cursor.fetchone()[0]
         assert got == Decimal("0.00")
         assert got.as_tuple().sign == 0  # normalized to unsigned zero
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+# =============================================================================
+# GH-745: executemany money-range Decimal must bind as SQL_NUMERIC, not VARCHAR
+# =============================================================================
+
+
+def test_gh745_executemany_in_range_decimal_numeric_comparison_no_overflow(cursor, db_connection):
+    """executemany must not overflow money-range Decimals against a smaller numeric.
+
+    Before the fix, executemany still used the MONEY-range VARCHAR shortcut, so
+    SQL Server did a varchar->numeric conversion that overflowed instead of simply
+    not matching (the execute() path was fixed in GH-740 / #742).
+    """
+    table_name = "#pytest_gh745_cmp"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v numeric(5,2))")  # max 999.99
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", [Decimal("12.34")])
+        db_connection.commit()
+
+        # Comparison via executemany is an unnatural shape, but it is the path that
+        # still carried the VARCHAR shortcut. UPDATE ... WHERE keeps the binding.
+        cursor.executemany(
+            f"UPDATE {table_name} SET v = v WHERE v = ?",
+            [(Decimal("12345.6789"),), (Decimal("300000.00"),)],
+        )
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 1
+
+        cursor.executemany(
+            f"UPDATE {table_name} SET v = v WHERE v = ?",
+            [(Decimal("12.34"),)],
+        )
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE v = ?", [Decimal("12.34")])
+        assert cursor.fetchone()[0] == 1
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+def test_gh745_executemany_mixed_sign_money_range_batch(cursor, db_connection):
+    """Mixed-sign money-range Decimals still insert through executemany (GH-557)."""
+    table_name = "#pytest_gh745_sign"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v DECIMAL(28, 14))")
+        data = [
+            (Decimal("1.0"),),
+            (Decimal("-0.1"),),
+            (Decimal("100.5"),),
+            (Decimal("-999.99"),),
+        ]
+        cursor.executemany(f"INSERT INTO {table_name} VALUES (?)", data)
+        db_connection.commit()
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 4
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
