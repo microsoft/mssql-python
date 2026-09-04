@@ -76,11 +76,16 @@ def audit_package(path: str) -> list[str]:
         print(f"  SKIP (no Windows PE payload): {base_name} [subdir={subdir or '?'}]")
         return []
 
+    try:
+        members = list(_iter_payload_members(path))
+    except ValueError as exc:  # malformed payload (e.g. .conda missing pkg-*.tar.zst)
+        return [f"{base_name}: unreadable/malformed package payload ({exc})."]
+
     errors: list[str] = []
     native_seen = 0
     binding_seen = 0
     driver_dll_seen = 0
-    for name, data in _iter_payload_members(path):
+    for name, data in members:
         if not name.lower().endswith(_NATIVE_SUFFIXES):
             continue
         native_seen += 1

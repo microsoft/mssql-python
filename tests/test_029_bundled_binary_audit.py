@@ -294,6 +294,22 @@ def test_audit_passes_openssl_alpha_upper_bound(tmp_path):
     assert not any("range-pinned" in e for e in errors)
 
 
+def test_audit_fails_openssl_upper_admits_4x(tmp_path):
+    # '<=4', '<4.1', '<4.0.1' each admit some openssl 4.x -> must FAIL (looser than the pin).
+    for spec in ("openssl >=3,<=4", "openssl >=3,<4.1", "openssl >=3,<4.0.1"):
+        depends = ["python", "azure-identity", "krb5", "libtool", spec]
+        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+        assert any("range-pinned" in e for e in errors), spec
+
+
+def test_audit_passes_openssl_exclusive_4_variants(tmp_path):
+    # '<4', '<4.0', '<4.0.0' all exclude every openssl 4.x and are accepted.
+    for spec in ("openssl >=3,<4", "openssl >=3,<4.0", "openssl >=3,<4.0.0"):
+        depends = ["python", "azure-identity", "krb5", "libtool", spec]
+        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+        assert not any("range-pinned" in e for e in errors), spec
+
+
 def test_audit_fails_driver_missing_from_one_subdir(tmp_path):
     # debian_ubuntu is complete, but rhel ships only libodbcinst (driver dropped). A
     # package-global count would pass since debian_ubuntu supplies a driver; per-subdir
@@ -435,3 +451,10 @@ def test_elf_machine_reads_arch():
     assert audit.elf_machine(_make_elf64()) == 62
     assert audit.elf_machine(_make_elf64(machine=183)) == 183
     assert audit.elf_machine(b"not an elf") is None
+
+
+def test_audit_fails_unknown_linux_subdir(tmp_path):
+    # A linux subdir with no e_machine mapping (e.g. a future linux-ppc64le) must FAIL CLOSED,
+    # not silently skip the architecture gate this audit exists to enforce.
+    errors = audit.audit_package(_make_pkg(tmp_path, subdir="linux-ppc64le"))
+    assert any("unrecognized Linux subdir" in e for e in errors)

@@ -220,3 +220,27 @@ def test_non_windows_package_skipped(tmp_path):
         {"lib/python3.12/site-packages/mssql_python/_core.so": b"\x7fELF fake"},
     )
     assert ape.audit_package(p) == []
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_win_conda_missing_pkg_payload_fails(tmp_path):
+    # A .conda with info/index.json but NO pkg-*.tar.zst payload must FAIL (not silently pass
+    # with zero members): iter_payload_members raises, and audit_package -> a violation.
+    name = "mssql-python-1.13.0-py312_0"
+    index = {
+        "name": "mssql-python",
+        "version": "1.13.0",
+        "build": "py312_0",
+        "subdir": "win-arm64",
+    }
+    info_buf = io.BytesIO()
+    with tarfile.open(fileobj=info_buf, mode="w") as tf:
+        idx = json.dumps(index).encode()
+        ti = tarfile.TarInfo("info/index.json")
+        ti.size = len(idx)
+        tf.addfile(ti, io.BytesIO(idx))
+    conda_path = tmp_path / f"{name}.conda"
+    with zipfile.ZipFile(conda_path, "w") as zf:
+        zf.writestr(f"info-{name}.tar.zst", _zstd_compress(info_buf.getvalue()))
+    errors = ape.audit_package(str(conda_path))
+    assert any("pkg-" in e for e in errors)
