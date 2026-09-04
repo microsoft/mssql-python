@@ -270,7 +270,11 @@ steps:
           # by a prior (interrupted) run. Treat 'already on the target label' as done;
           # anything else is a real failure that must be re-run.
           $show = (& anaconda show $spec 2>&1 | Out-String)
-          if ($show -match [regex]::Escape("${{ parameters.condaLabel }}")) {
+          # Anchor on WORD BOUNDARIES: the staging label '<label>_staging_<id>' CONTAINS the
+          # public label, so an unanchored match would report a package that only reached staging
+          # as 'already promoted', masking a failed move. '_' is a word char, so \b<label>\b
+          # matches ONLY the standalone public label, never '<label>_staging_...'.
+          if ($show -match ('\b' + [regex]::Escape("${{ parameters.condaLabel }}") + '\b')) {
             Write-Host "Already on '${{ parameters.condaLabel }}' (idempotent rerun): $($p.Name)."
             continue
           }
