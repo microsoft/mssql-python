@@ -9,6 +9,7 @@ import sys
 import threading
 import types
 import weakref
+from typing import Optional
 
 # Import settings from helpers module
 from .helpers import Settings, get_settings, _settings, _settings_lock
@@ -77,6 +78,20 @@ from .constants import ConstantsDDBC, GetInfoConstants, get_info_constants
 
 # Pooling
 from .pooling import PoolingManager
+
+# ODBC provider selection
+from .odbc_provider import ProviderManager
+
+
+def get_native_provider_info() -> dict:
+    """Return the selected native provider for diagnostics.
+
+    Reports the provider ``id``, package ``version``, resolved ``driver_path``,
+    the ``package`` that ships its native binaries, selection ``source``, and
+    whether the choice is ``frozen`` (loaded and no longer changeable).
+    """
+    return ProviderManager.get_info()
+
 
 # Global registry for tracking active connections (using weak references)
 _active_connections = weakref.WeakSet()
@@ -515,6 +530,9 @@ __all__ = [
     # Module properties
     "lowercase",
     "native_uuid",
+    "native_provider",
+    # Native provider diagnostics
+    "get_native_provider_info",
 ]
 
 
@@ -587,6 +605,21 @@ class _MSSQLModule(types.ModuleType):
             raise ValueError("native_uuid must be a boolean value")
         with _settings_lock:
             _settings.native_uuid = value
+
+    @property
+    def native_provider(self) -> str:
+        """Get the native ODBC provider that will be (or was) loaded.
+
+        Honored only when set before the first connection; a later change is
+        ignored with a warning. The ``MSSQL_PYTHON_NATIVE_PROVIDER`` environment
+        variable takes precedence over this property.
+        """
+        return ProviderManager.effective()
+
+    @native_provider.setter
+    def native_provider(self, value: Optional[str]) -> None:
+        """Set the native ODBC provider selection (or None to clear)."""
+        ProviderManager.set_property(value)
 
 
 # Replace the current module with our custom module class

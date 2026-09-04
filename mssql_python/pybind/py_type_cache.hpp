@@ -1,4 +1,4 @@
-// py_type_cache.hpp — One-time cache of Python type objects and MONEY boundary constants.
+// py_type_cache.hpp — One-time cache of Python type objects.
 //
 // Called on first execute(). Uses raw CPython API (not pybind11) because
 // these cached PyObject* are compared via PyObject_IsInstance in the
@@ -24,10 +24,6 @@ inline PyObject* date_class = nullptr;
 inline PyObject* time_class = nullptr;
 inline PyObject* decimal_class = nullptr;
 inline PyObject* uuid_class = nullptr;
-inline PyObject* money_min = nullptr;
-inline PyObject* money_max = nullptr;
-inline PyObject* smallmoney_min = nullptr;
-inline PyObject* smallmoney_max = nullptr;
 inline bool cache_initialized = false;
 
 // Import a module and extract an attribute. Returns a new reference.
@@ -69,24 +65,12 @@ inline void initialize() {
     py::object dec_cls  = steal(import_attr("decimal", "Decimal"));
     py::object uuid_cls = steal(import_attr("uuid", "UUID"));
 
-    // Pre-compute MONEY/SMALLMONEY boundary Decimals for exact comparison
-    // in DetectParamTypes (avoids double-precision boundary errors).
-    py::object sm_min = steal(PyObject_CallFunction(dec_cls.ptr(), "s", "-214748.3648"));
-    py::object sm_max = steal(PyObject_CallFunction(dec_cls.ptr(), "s", "214748.3647"));
-    py::object m_min  = steal(PyObject_CallFunction(dec_cls.ptr(), "s", "-922337203685477.5808"));
-    py::object m_max  = steal(PyObject_CallFunction(dec_cls.ptr(), "s", "922337203685477.5807"));
-    if (!sm_min || !sm_max || !m_min || !m_max) throw py::error_already_set();
-
     // Commit to globals — all acquisitions succeeded.
     datetime_class = dt_cls.release().ptr();
     date_class     = date_cls.release().ptr();
     time_class     = time_cls.release().ptr();
     decimal_class  = dec_cls.release().ptr();
     uuid_class     = uuid_cls.release().ptr();
-    smallmoney_min = sm_min.release().ptr();
-    smallmoney_max = sm_max.release().ptr();
-    money_min      = m_min.release().ptr();
-    money_max      = m_max.release().ptr();
     cache_initialized = true;
 }
 

@@ -29,6 +29,7 @@ from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python import retry
 from mssql_python.pooling import PoolingManager
+from mssql_python.odbc_provider import ProviderManager
 from mssql_python.exceptions import (
     Warning,  # pylint: disable=redefined-builtin
     Error,
@@ -775,6 +776,16 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
+
+        # Resolve and freeze the ODBC provider, then hand the selection to the
+        # native loader so it imports the matching provider package. Done here —
+        # after every Python-side validation and token acquisition has succeeded
+        # and immediately before the native driver loads — so a call that fails
+        # earlier never freezes the selection as a side effect; a later, corrected
+        # connection can then still choose a different provider without a process
+        # restart.
+        _provider = ProviderManager.ensure_available()
+        ddbc_bindings._set_odbc_provider(_provider)
 
         # A retry policy wraps only the native connect. Everything above (connection string
         # parsing, the attrs_before copy, any token acquired on the Python side) has already
