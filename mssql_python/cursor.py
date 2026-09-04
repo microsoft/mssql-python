@@ -3415,8 +3415,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except ImportError as exc:
             logger.error("bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
-                "Bulk copy requires the mssql_py_core library which is not available. "
-                "This is an unexpected error. "
+                "Bulk copy requires the mssql_py_core native library, which is not "
+                "available in this installation (it is not shipped on every platform -- "
+                "e.g. Windows on ARM64)."
             ) from exc
 
         if not table_name or not isinstance(table_name, str):

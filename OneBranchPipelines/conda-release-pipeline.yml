@@ -1,0 +1,224 @@
+# =========================================================================================
+# OneBranch STANDALONE Conda Release Pipeline (mssql-python)
+# =========================================================================================
+# Decoupled from the wheel/PyPI release. Downloads the consolidated conda packages produced
+# by the STANDALONE conda-build pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) -- NOT the wheel pipeline (def 2199), which no
+# longer produces any conda artifact -- enforces the release-readiness gate (conda-release-
+# step: required subdirs + full Python matrix + one version), and -- when publishToConda=true -- publishes the SELF-CONTAINED
+# mssql-python conda package to Anaconda.org via anaconda-client (conda-publish-step; ESRP
+# has no Conda ContentType). There is a single self-contained package (it vendors the ODBC
+# Driver 18 payload); no companion. When publishToConda=false (the default), the same gate
+# runs and a DRY-RUN step prints the exact `anaconda upload` plan WITHOUT uploading -- so a
+# validate-only run of THIS pipeline replaces the old separate dummy pipeline.
+#
+# TEMPLATE by mode: publishToConda=false (dry run / dummy) extends the NonOfficial template
+# (no Production Service-Tree classification required, so a validate-only run passes the
+# inventory-compliance gate); publishToConda=true (real release) extends the Official template
+# (deliberate, gated production publish -- the definition must be classified Production to
+# actually upload). Manual trigger only. The OneBranch YAML needs an actual ADO run to fully validate.
+# =========================================================================================
+name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaRelease
+
+trigger: none
+pr: none
+
+parameters:
+  - name: publishToConda
+    displayName: 'Publish Conda Packages to Anaconda.org (PRODUCTION)'
+    type: boolean
+    default: false  # Safety: default to a validate-only dry run.
+  - name: condaChannel
+    displayName: 'Anaconda.org channel/org to publish to'
+    type: string
+    default: 'microsoft'
+  - name: condaLabel
+    displayName: 'Anaconda.org channel label'
+    type: string
+    default: 'main'
+  # Infra setup: ADO definition id of the STANDALONE conda-build pipeline
+  # (conda-build-pipeline.yml), whose ConsolidateConda stage produces
+  # drop_ConsolidateConda_ConsolidateArtifacts. This is NOT the wheel pipeline
+  # (def 2199). Set it once the conda-build pipeline is registered in ADO; 0 is a
+  # placeholder that must be overridden before a real run.
+  - name: condaBuildDefinitionId
+    displayName: 'Conda-build pipeline ADO definition id'
+    type: number
+    default: 0
+  # The exact mssql-python version being released. When set, the readiness gate
+  # asserts EVERY conda package matches it (not just internal one-version
+  # consistency). Leave empty only for a consistency-only dry run.
+  - name: mssqlPythonVersion
+    displayName: 'Expected mssql-python release version (e.g. 1.13.0)'
+    type: string
+    default: ''
+
+variables:
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
+  # ANACONDA_API_TOKEN lives in this org-scoped group; included ONLY when publishing so a
+  # validate-only run never requires the group to exist.
+  - ${{ if eq(parameters.publishToConda, true) }}:
+      - group: 'Anaconda Publishing'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'OneBranch.Pipelines/GovernedTemplates'
+      ref: 'refs/heads/main'
+  # The build pipeline whose consolidated conda artifact this pipeline validates + publishes.
+  pipelines:
+    - pipeline: buildPipeline
+      # Infra setup: the STANDALONE conda-build pipeline (backed by
+      # conda-build-pipeline.yml), whose ConsolidateConda stage publishes
+      # drop_ConsolidateConda_ConsolidateArtifacts. Update to its exact ADO
+      # definition name once registered. NOT the wheel pipeline
+      # (Build-Release-Package-Pipeline / def 2199), which no longer builds conda.
+      source: 'Conda-Build-Pipeline'
+      trigger: none
+
+extends:
+  # NonOfficial for a validate-only dry run (publishToConda=false): no Production Service-Tree
+  # classification is required, so the inventory-compliance gate passes. Official for a real
+  # publish (publishToConda=true): the governed production path.
+  ${{ if eq(parameters.publishToConda, true) }}:
+    template: 'v2/OneBranch.Official.CrossPlat.yml@templates'
+  ${{ else }}:
+    template: 'v2/OneBranch.NonOfficial.CrossPlat.yml@templates'
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Version: '2022'
+    globalSdl:
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)/.gdn/.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)/.gdn/.gdnsuppress
+        suppressionSet: default
+      credscan:
+        enabled: true
+      policheck:
+        enabled: true
+        break: true
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
+      publishLogs:
+        enabled: true
+      # Official-only heavy gates (binskim break + TSA). The NonOfficial dry run skips them,
+      # matching the old dummy pipeline's minimal SDL.
+      ${{ if eq(parameters.publishToConda, true) }}:
+        binskim:
+          enabled: true
+          break: true
+        tsa:
+          enabled: true
+          configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
+
+    stages:
+      - stage: CondaRelease
+        displayName: 'Validate & Publish Conda Release'
+        jobs:
+          # Gate: prove the consolidated conda set is complete (required subdirs +
+          # full Python matrix + one version) before anything is published.
+          - job: ValidateConda
+            displayName: 'Validate consolidated conda packages'
+            pool:
+              type: windows
+              isCustom: true
+              name: Python-1ES-pool
+              demands:
+              - imageOverride -equals PYTHON-1ES-MMS2022
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+            steps:
+              # Publishing must PIN the exact version. With the provenance gate removed, an
+              # unpinned publish (empty version = "accept any single consistent version") could
+              # ship a stale/unintended artifact. Require a non-empty version when publishing.
+              - ${{ if eq(parameters.publishToConda, true) }}:
+                - task: PowerShell@2
+                  displayName: 'Guard: expected mssql-python version is required to publish'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      if ([string]::IsNullOrWhiteSpace('${{ parameters.mssqlPythonVersion }}')) {
+                        Write-Error "publishToConda=true but mssqlPythonVersion is empty. A production publish must pin the exact version (the release-readiness gate then asserts EVERY package matches it). Re-run with mssqlPythonVersion set."
+                        exit 1
+                      }
+                      Write-Host "Publish version pin: ${{ parameters.mssqlPythonVersion }}"
+              - template: /OneBranchPipelines/steps/conda-release-step.yml@self
+                parameters:
+                  buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
+                  mssqlPythonVersion: '${{ parameters.mssqlPythonVersion }}'
+
+              # Dry run (publishToConda=false): enumerate every package and print the exact
+              # `anaconda upload` plan WITHOUT uploading, so a validate-only run shows precisely
+              # what a real publish WOULD do. Reuses the conda tree the gate already downloaded
+              # into $(Build.SourcesDirectory)/conda-artifacts. This replaces the old dummy pipeline.
+              - ${{ if eq(parameters.publishToConda, false) }}:
+                - task: PowerShell@2
+                  displayName: 'Dry-run publish plan (validate-only): enumerate packages + print the anaconda upload plan (NO upload)'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      $ErrorActionPreference = 'Stop'
+
+                      $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+                      if (-not (Test-Path $root)) {
+                        Write-Error "Consolidated conda tree not found at $root. Did the readiness gate download it?"
+                        exit 1
+                      }
+
+                      $pkgs = @(Get-ChildItem -Path $root -Recurse -Include *.conda, *.tar.bz2)
+                      if ($pkgs.Count -eq 0) { Write-Error "No conda packages found under $root."; exit 1 }
+
+                      # mssql-python bindings only (the self-contained model ships no companion).
+                      function Get-Binding($items) { @($items | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
+                      $bySubdir = $pkgs | Group-Object { $_.Directory.Name } | Sort-Object Name
+
+                      Write-Host "====================================="
+                      Write-Host "[DRY-RUN CONDA RELEASE] discovered $($pkgs.Count) package(s) across $($bySubdir.Count) subdir(s):"
+                      foreach ($g in $bySubdir) {
+                        Write-Host ("  {0,-14} {1} mssql-python package(s)" -f $g.Name, (Get-Binding $g.Group).Count)
+                      }
+
+                      # A self-contained release ships ONLY mssql-python; flag (don't fail) a stray companion.
+                      $stray = @($pkgs | Where-Object { $_.Name -like 'mssql-python-odbc-*' })
+                      if ($stray.Count -gt 0) {
+                        Write-Host "##vso[task.logissue type=warning]$($stray.Count) stray mssql-python-odbc package(s) present; the self-contained model ships only mssql-python."
+                      }
+
+                      Write-Host "`nanaconda upload PLAN (DRY-RUN - NOT executed):"
+                      Write-Host "  target channel/org : ${{ parameters.condaChannel }}"
+                      Write-Host "  target label       : ${{ parameters.condaLabel }}"
+                      foreach ($p in ($pkgs | Sort-Object FullName)) {
+                        $subdir = Split-Path -Leaf (Split-Path -Parent $p.FullName)
+                        Write-Host "  WOULD RUN: anaconda upload --user ${{ parameters.condaChannel }} --label ${{ parameters.condaLabel }} --skip-existing  $subdir/$($p.Name)"
+                      }
+
+                      Write-Host "`n====================================="
+                      Write-Host "DRY-RUN COMPLETE: no 'anaconda upload' was executed (publishToConda=false)."
+                      Write-Host "For a real (gated, staged-then-promoted) publish, re-run with publishToConda=true."
+                      Write-Host "====================================="
+
+          # PRODUCTION publish (releaseJob) -- runs ONLY when publishToConda=true and
+          # ONLY after the ValidateConda gate succeeds, so an incomplete set is never
+          # uploaded. anaconda-client reads ANACONDA_API_TOKEN from the env (never the
+          # command line), so the token never appears in the logs.
+          - ${{ if eq(parameters.publishToConda, true) }}:
+            - job: PublishConda
+              displayName: 'Publish conda packages to Anaconda.org'
+              dependsOn: ValidateConda
+              templateContext:
+                type: releaseJob
+                isProduction: true
+              pool:
+                type: windows
+              variables:
+                ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+              steps:
+                - template: /OneBranchPipelines/steps/conda-publish-step.yml@self
+                  parameters:
+                    buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
+                    condaChannel: '${{ parameters.condaChannel }}'
+                    condaLabel: '${{ parameters.condaLabel }}'

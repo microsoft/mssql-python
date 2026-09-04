@@ -57,6 +57,11 @@ tdnf distro-sync && tdnf install -y libtool-ltdl krb5-libs glibc-iconv
 pip install mssql-python
 ```
 
+**Conda:** mssql-python is also published as a self-contained conda package — the ODBC Driver 18 payload and its native dependencies (`krb5`, `openssl`, `libltdl`) are resolved by conda, so none of the system `apt`/`dnf`/`apk`/`zypper` steps above are required. Both channels are needed: `mssql-python` comes from the `microsoft` channel and its dependencies resolve from `conda-forge`.
+```bash
+conda install -c microsoft -c conda-forge mssql-python
+```
+
 ## Key Features
 ### Supported Platforms
  

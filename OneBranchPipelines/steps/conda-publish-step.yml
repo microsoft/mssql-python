@@ -1,0 +1,282 @@
+# Conda Publish Step Template
+# ============================================================================
+# Publishes the consolidated conda packages produced by the STANDALONE conda-build
+# pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) to an Anaconda.org channel using
+# anaconda-client (`anaconda upload`).
+#
+# Reference pattern: azure-sdk-for-python's conda publish
+# (eng/pipelines/templates/stages/archetype-conda-release.yml), which runs
+# `anaconda upload --user Microsoft --skip-existing` inside a 1ES releaseJob and
+# authenticates via the ANACONDA_API_TOKEN env var. ESRP has NO Conda ContentType,
+# so anaconda-client is the sanctioned publish path.
+#
+# Two adaptations vs. azure-sdk:
+#   1. Our packages are NON-noarch (native binding + driver), so they live under
+#      per-platform subdirs (win-64 / osx-arm64 / linux-64), NOT a single noarch
+#      folder. We recurse every subdir.
+#   2. The self-contained mssql-python package vendors the ODBC payload, so there is
+#      no separate companion to order; we still refuse to publish an incomplete or
+#      mislabeled set.
+#
+# The caller MUST:
+#   - run this ONLY after the conda-release-step.yml readiness gate has passed, and
+#   - supply ANACONDA_API_TOKEN (variable group 'Anaconda Publishing') to the job.
+# This template never puts the token on the command line (anaconda-client reads it
+# from the env), so it never appears in the logs.
+parameters:
+  # Infra setup: ADO definition id of the STANDALONE conda-build pipeline
+  # (conda-build-pipeline.yml) that produced the consolidated conda artifact -- NOT
+  # the wheel pipeline (def 2199). The release pipeline passes the real id; 0 is a
+  # placeholder that must be overridden.
+  - name: buildDefinitionId
+    type: number
+    default: 0
+  # Consolidated conda artifact name (see consolidate-conda-artifacts-job.yml).
+  - name: condaArtifactName
+    type: string
+    default: 'drop_ConsolidateConda_ConsolidateArtifacts'
+  # Target Anaconda.org channel/org (e.g. 'microsoft'). Empty is rejected so a
+  # test pipeline can never accidentally push to the production channel.
+  - name: condaChannel
+    type: string
+    default: ''
+  # Channel label to publish under (production packages go to 'main').
+  - name: condaLabel
+    type: string
+    default: 'main'
+  # Comma-separated subdirs a complete release MUST contain (full PyPI parity minus
+  # musllinux, which has no conda subdir). win-arm64 IS included -- the build enforces
+  # its --dry-run solve + PE-arch assert, so a missing/broken win-arm64 blocks the
+  # release. Guards against publishing an incomplete set even if this step is run
+  # standalone. Keep in sync with conda-release-step.yml.
+  - name: requiredSubdirs
+    type: string
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Comma-separated superset of subdirs allowed to appear; anything else fails.
+  - name: allowedSubdirs
+    type: string
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Python used to install/run anaconda-client in the release job.
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
+  - name: labelPrefix
+    type: string
+    default: ''
+
+steps:
+  # Infra guard: refuse to run against the placeholder definition id (see release step).
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Guard: conda-build definition id is configured'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $id = ${{ parameters.buildDefinitionId }}
+        if ($id -eq 0) {
+          Write-Error "buildDefinitionId is 0 (placeholder). Set both the release pipeline's resource 'source:' name and condaBuildDefinitionId (passed to this template as buildDefinitionId) to the registered standalone conda-build pipeline."
+          exit 1
+        }
+        Write-Host "conda-build definition id = $id"
+
+  - task: DownloadPipelineArtifact@2
+    displayName: '${{ parameters.labelPrefix }}Download consolidated conda packages (publish)'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: ${{ parameters.buildDefinitionId }}
+      buildVersionToDownload: 'specific'
+      buildId: $(resources.pipeline.buildPipeline.runID)
+      artifactName: '${{ parameters.condaArtifactName }}'
+      targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
+
+  - task: UsePythonVersion@0
+    displayName: '${{ parameters.labelPrefix }}Use Python ${{ parameters.pythonVersion }}'
+    inputs:
+      versionSpec: '${{ parameters.pythonVersion }}'
+      addToPath: true
+
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Install anaconda-client'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        python -m pip install --upgrade pip
+        # Pin anaconda-client: this PRODUCTION job holds ANACONDA_API_TOKEN, so the
+        # publish tool must be a fixed, reviewed version -- never float 'latest' from
+        # public PyPI into a credentialed release. Infra hardening: move this to an
+        # internal feed and hash-pin (--require-hashes).
+        python -m pip install "anaconda-client==1.12.3"
+        # anaconda-client installs the `anaconda` console script onto PATH.
+        anaconda --version
+
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Publish conda packages to anaconda.org/${{ parameters.condaChannel }}'
+    env:
+      # anaconda-client reads ANACONDA_API_TOKEN automatically, so the token is
+      # never passed on the command line and never appears in the logs. Supplied by
+      # the caller from the 'Anaconda Publishing' variable group.
+      ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+
+        # Refuse to publish without an explicit target channel (protects the dummy
+        # pipeline, whose default channel is empty, from ever hitting production).
+        if ([string]::IsNullOrWhiteSpace("${{ parameters.condaChannel }}")) {
+          Write-Error "condaChannel is empty. Supply the target Anaconda.org channel/org (production = 'microsoft')."
+          exit 1
+        }
+
+        if ([string]::IsNullOrWhiteSpace($env:ANACONDA_API_TOKEN)) {
+          Write-Error "ANACONDA_API_TOKEN is not set. Add the 'Anaconda Publishing' variable group to the job."
+          exit 1
+        }
+
+        $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+        if (-not (Test-Path $root)) {
+          Write-Error "Consolidated conda tree not found at $root. Did ConsolidateConda run in the selected build?"
+          exit 1
+        }
+
+        $required = '${{ parameters.requiredSubdirs }}'.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        $allowed  = '${{ parameters.allowedSubdirs }}'.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
+        $pkgs = @(Get-ChildItem -Path $root -Recurse -Include *.conda, *.tar.bz2)
+        if ($pkgs.Count -eq 0) { Write-Error "No conda packages found under $root. Refusing to publish an empty set."; exit 1 }
+
+        $bySubdir = $pkgs | Group-Object { $_.Directory.Name }
+        function Get-Binding($grp) { @($grp | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
+
+        Write-Host "Discovered $($pkgs.Count) conda package(s) across $($bySubdir.Count) subdir(s):"
+        foreach ($g in ($bySubdir | Sort-Object Name)) {
+          Write-Host ("  {0,-14} mssql-python={1}" -f $g.Name, (Get-Binding $g.Group).Count)
+        }
+
+        $failed = $false
+
+        # No mis-stamped subdir.
+        foreach ($g in $bySubdir) {
+          if ($allowed -notcontains $g.Name) {
+            Write-Host "##vso[task.logissue type=error]Unexpected conda subdir '$($g.Name)' (not in allowedSubdirs). Refusing to publish."
+            $failed = $true
+          }
+        }
+
+        # Every required subdir present with at least one mssql-python package.
+        $foundSubdirs = @($bySubdir | ForEach-Object { $_.Name })
+        foreach ($req in $required) {
+          if ($foundSubdirs -notcontains $req) {
+            Write-Host "##vso[task.logissue type=error]Required conda subdir '$req' is MISSING. Refusing to publish an incomplete set."
+            $failed = $true
+            continue
+          }
+          if ((Get-Binding ($bySubdir | Where-Object { $_.Name -eq $req }).Group).Count -eq 0) {
+            Write-Host "##vso[task.logissue type=error]Subdir '$req' has no mssql-python package."
+            $failed = $true
+          }
+        }
+
+        # The self-contained mssql-python vendors the ODBC payload, so a stray
+        # mssql-python-odbc package (the old separate companion) must never ship.
+        $stray = @($pkgs | Where-Object { $_.Name -like 'mssql-python-odbc-*' })
+        if ($stray.Count -gt 0) {
+          Write-Host "##vso[task.logissue type=error]Found $($stray.Count) stray mssql-python-odbc package(s); the self-contained model ships only mssql-python. Refusing to publish."
+          $failed = $true
+        }
+
+        $binding = Get-Binding $pkgs
+        if ($binding.Count -eq 0) {
+          Write-Host "##vso[task.logissue type=error]No mssql-python packages found. Refusing to publish an empty set."
+          $failed = $true
+        }
+
+        if ($failed) { Write-Error "Conda publish pre-check FAILED. Refusing to publish an incomplete/mislabeled set."; exit 1 }
+
+        # Staged-then-promoted publish: upload the FULL set to a BUILD-UNIQUE staging
+        # label first; only after every package lands AND its bytes are verified do we
+        # promote to the public label. A mid-upload failure leaves a partial set on the
+        # staging label ONLY -- the public label is never partially updated. The staging
+        # label includes the build id so concurrent/retried runs never collide.
+        $stagingLabel = "${{ parameters.condaLabel }}_staging_$(Build.BuildId)"
+
+        function Invoke-Anaconda($argsList) {
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            & anaconda @argsList
+            if ($LASTEXITCODE -eq 0) { return $true }
+            Write-Host "attempt $attempt failed; retrying in 5s ..."
+            Start-Sleep -Seconds 5
+          }
+          return $false
+        }
+
+        function Get-Spec($file) {
+          # <user>/<name>/<version>/<basename> from <name>-<version>-<build>.<ext>.
+          # The package name may contain '-', so peel the trailing version + build.
+          $stem = $file.Name -replace '\.(conda|tar\.bz2)$', ''
+          $parts = $stem.Split('-')
+          if ($parts.Count -lt 3) { Write-Error "Cannot parse conda spec from '$($file.Name)'."; exit 1 }
+          $version = $parts[$parts.Count - 2]
+          $name = ($parts[0..($parts.Count - 3)]) -join '-'
+          return "${{ parameters.condaChannel }}/$name/$version/$($file.Name)"
+        }
+
+        Write-Host "==== Stage: upload $($binding.Count) package(s) to label '$stagingLabel' ===="
+        foreach ($p in ($binding | Sort-Object FullName)) {
+          Write-Host "Uploading $($p.Directory.Name)/$($p.Name) -> $stagingLabel ..."
+          if (-not (Invoke-Anaconda @('upload', '--user', "${{ parameters.condaChannel }}", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)"))) {
+            Write-Error "Failed to stage $($p.Name) after 3 attempts. The public label was NOT touched."
+            exit 1
+          }
+        }
+
+        Write-Host "==== Verify: SHA-256 + staging membership for every package before promoting ===="
+        foreach ($p in ($binding | Sort-Object FullName)) {
+          $spec = Get-Spec $p
+          $localSha = (Get-FileHash -Algorithm SHA256 -Path $p.FullName).Hash.ToLower()
+          $show = (& anaconda show $spec 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Staged package '$spec' is not resolvable on anaconda.org; refusing to promote a partial set."
+            exit 1
+          }
+          # anaconda show reports the uploaded file's checksum. When a sha256 is present,
+          # require an EXACT match to the local artifact (true byte integrity, unlike
+          # --skip-existing's name-only check).
+          $m = [regex]::Match($show, '(?i)sha256[^0-9a-f]*([0-9a-f]{64})')
+          if ($m.Success) {
+            $remoteSha = $m.Groups[1].Value.ToLower()
+            if ($remoteSha -ne $localSha) {
+              Write-Error "SHA-256 mismatch for '$spec': local $localSha != remote $remoteSha. Refusing to promote a corrupted/wrong artifact."
+              exit 1
+            }
+            Write-Host "SHA-256 OK $($p.Name) ($localSha)"
+          }
+          else {
+            Write-Host "NOTE: anaconda show exposed no sha256 for '$spec'; verified membership + local sha256 $localSha."
+          }
+        }
+
+        Write-Host "==== Promote (idempotent): move the verified set from '$stagingLabel' to '${{ parameters.condaLabel }}' ===="
+        foreach ($p in ($binding | Sort-Object FullName)) {
+          $spec = Get-Spec $p
+          if (Invoke-Anaconda @('move', '--from-label', $stagingLabel, '--to-label', "${{ parameters.condaLabel }}", $spec)) {
+            Write-Host "Promoted $($p.Name)."
+            continue
+          }
+          # Idempotent rerun: a move can fail because THIS package was already promoted
+          # by a prior (interrupted) run. Treat 'already on the target label' as done;
+          # anything else is a real failure that must be re-run.
+          $show = (& anaconda show $spec 2>&1 | Out-String)
+          if ($show -match [regex]::Escape("${{ parameters.condaLabel }}")) {
+            Write-Host "Already on '${{ parameters.condaLabel }}' (idempotent rerun): $($p.Name)."
+            continue
+          }
+          Write-Error "Failed to promote '$spec' to '${{ parameters.condaLabel }}' and it is not already there. Re-run to finish promotion."
+          exit 1
+        }
+
+        Write-Host ""
+        Write-Host "Published $($binding.Count) mssql-python conda package(s) to anaconda.org/${{ parameters.condaChannel }} (label ${{ parameters.condaLabel }}) via staging label '$stagingLabel'."

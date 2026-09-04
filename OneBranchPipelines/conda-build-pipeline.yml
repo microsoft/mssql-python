@@ -1,0 +1,337 @@
+# =========================================================================================
+# OneBranch STANDALONE Conda Build Pipeline (mssql-python)
+# =========================================================================================
+# Builds the SELF-CONTAINED mssql-python conda package (which vendors the ODBC Driver 18
+# payload -- there is NO separate companion package) for every conda subdir, WITHOUT
+# rebuilding the wheels. It consumes the wheels already produced by the wheel build
+# pipeline (definition 2199): the mssql-python wheels (drop_Consolidate_ConsolidateArtifacts)
+# and the mssql-python-odbc wheels (drop_ConsolidateOdbc_ConsolidateArtifacts), then
+# repackages + validates them into conda packages on the matching platform agent.
+#
+# WHY PER-OS (not one job for all OSs): unlike the odbc wheels (a pure data re-tag),
+# conda-build provisions a REAL per-subdir host env and `pip install`s the matching wheel
+# (see conda/mssql-python/build.sh|bld.bat). A win-64 / osx-* / linux-* host env cannot be
+# created on a foreign OS, so each conda package must be built on its matching platform --
+# exactly like the wheels and the conda-forge feedstocks. The subdirs that CAN be
+# cross-targeted on one agent are done via CONDA_SUBDIR (osx-64 under Rosetta 2 on the
+# Intel mac agent; linux-aarch64 under QEMU on the x86_64 linux agent).
+#
+# This pipeline ONLY builds + validates + consolidates the conda packages as an artifact
+# (drop_ConsolidateConda_ConsolidateArtifacts). Publishing is the companion
+# conda-release-pipeline.yml. Validated locally that the recipe builds + imports; the
+# per-OS legs + SDL settings need an actual ADO run to confirm.
+# =========================================================================================
+name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaBuild
+
+trigger: none
+pr: none
+
+parameters:
+  - name: oneBranchType
+    displayName: 'OneBranch Template Type'
+    type: string
+    values:
+      - 'Official'
+      - 'NonOfficial'
+    default: 'NonOfficial'
+  # Python versions to build conda packages for (Windows loops these; the POSIX legs
+  # auto-detect the same set from the downloaded wheels).
+  - name: pythonVersions
+    displayName: 'Python versions (comma-separated)'
+    type: string
+    default: '3.10,3.11,3.12,3.13,3.14'
+  # H1: enable the minimal-base ldd reachability gate (CONDA_ASSERT_PREFIX_REACHABLE).
+  # It fails CLOSED if the driver binds a system (or absent) krb5/gssapi/libltdl, so it
+  # is only valid on a leg with NO system copies of those libs -- set true ONLY when
+  # the Linux agent/container is a curated minimal base, else it will (correctly) fail
+  # on a full agent's system libs.
+  - name: enableMinimalReachabilityGate
+    displayName: 'Enable minimal-base ldd reachability gate (needs a minimal Linux base)'
+    type: boolean
+    default: false
+
+variables:
+  - name: effectiveOneBranchType
+    ${{ if eq(variables['Build.Reason'], 'Schedule') }}:
+      value: 'Official'
+    ${{ else }}:
+      value: '${{ parameters.oneBranchType }}'
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'OneBranch.Pipelines/GovernedTemplates'
+      ref: 'refs/heads/main'
+  # The wheel build pipeline whose consolidated wheel artifacts this pipeline repackages.
+  pipelines:
+    - pipeline: buildPipeline
+      source: 'Build-Release-Package-Pipeline'
+      trigger: none
+
+extends:
+  template: 'v2/OneBranch.${{ variables.effectiveOneBranchType }}.CrossPlat.yml@templates'
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Version: '2022'
+    # Minimal SDL: this pipeline compiles NOTHING (it repackages prebuilt, already-scanned
+    # wheels), so the heavy binary analyzers add no coverage. Keep the credential / inclusive
+    # -language / baseline guardrails and publish logs.
+    globalSdl:
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)/.gdn/.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)/.gdn/.gdnsuppress
+        suppressionSet: default
+      credscan:
+        enabled: true
+      policheck:
+        enabled: true
+        break: true
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
+      publishLogs:
+        enabled: true
+
+    stages:
+      # =========================
+      # CONDA win-64 (native, per-Python)
+      # =========================
+      - stage: CondaWin64
+        displayName: 'Conda win-64'
+        jobs:
+          - job: BuildConda
+            displayName: 'Build + validate win-64 conda'
+            timeoutInMinutes: 120
+            pool:
+              type: windows
+              isCustom: true
+              name: Python-1ES-pool
+              demands:
+              - imageOverride -equals PYTHON-1ES-MMS2022
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+            steps:
+              - checkout: self
+                fetchDepth: 1
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download mssql-python wheels'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)
+                  artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+                  targetPath: '$(Build.SourcesDirectory)'
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download mssql-python-odbc wheels'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)
+                  artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                  targetPath: '$(Pipeline.Workspace)/odbc_wheels'
+              # win-64 conda build (all Python versions in one pass via the ps1 loop).
+              - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
+                parameters:
+                  pythonVersion: '${{ parameters.pythonVersions }}'
+                  condaSubdir: 'win-64'
+                  odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
+                  odbcWheelFilter: 'mssql_python_odbc-*win_amd64.whl'
+              # win-arm64 conda build: CROSS-built on THIS x64 agent via CONDA_SUBDIR, in the
+              # SAME job as win-64. continueOnError=true so a win-arm64 hiccup (e.g. an Anaconda
+              # `defaults` outage that breaks its solve) can NEVER nuke the native win-64 publish
+              # that shares this job -- BLAST-RADIUS isolation. Enforcement does NOT weaken: the
+              # leg still runs a BLOCKING `conda create --dry-run` solve + a PE machine-type assert
+              # internally (so a broken/wrong-arch package is never staged), AND win-arm64 is in
+              # the release gate's requiredSubdirs -- so a MISSING win-arm64 blocks the RELEASE.
+              # Net: a win-arm64 failure isolates to win-arm64 (win-64 still ships) yet still
+              # blocks the publish via the gate. Scoped to 3.12-3.14: neither defaults nor
+              # conda-forge has a win-arm64 python for 3.10/3.11. Its own bld tree + subdir-scoped
+              # verify env keep it from colliding with win-64 on this shared agent.
+              - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
+                parameters:
+                  pythonVersion: '3.12,3.13,3.14'
+                  condaSubdir: 'win-arm64'
+                  condaTargetSubdir: 'win-arm64'
+                  odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
+                  odbcWheelFilter: 'mssql_python_odbc-*win_arm64.whl'
+                  outputDir: '$(Agent.TempDirectory)/conda-bld-winarm64'
+                  continueOnError: true
+              - task: PublishPipelineArtifact@1
+                displayName: 'Publish win-64 conda artifact'
+                inputs:
+                  targetPath: '$(ob_outputDirectory)'
+                  artifact: 'drop_CondaWin64_BuildConda'
+                  publishLocation: 'pipeline'
+
+      # =========================
+      # CONDA osx-arm64 + osx-64 (Intel mac agent: arm64 cross, x86_64 native)
+      # =========================
+      - stage: CondaMacOS
+        displayName: 'Conda macOS (osx-arm64 + osx-64)'
+        jobs:
+          - job: BuildConda
+            displayName: 'Build + validate macOS conda'
+            timeoutInMinutes: 120
+            # macOS pools declare as type:linux (Azure Pipelines quirk).
+            pool:
+              type: linux
+              isCustom: true
+              name: Azure Pipelines
+              vmImage: 'macos-latest'
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+            steps:
+              - checkout: self
+                fetchDepth: 1
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download mssql-python wheels'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)
+                  artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+                  targetPath: '$(Build.SourcesDirectory)'
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download mssql-python-odbc wheels'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)
+                  artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                  targetPath: '$(Pipeline.Workspace)/odbc_wheels'
+              # osx-arm64: CROSS-built on the Intel agent (BEST-EFFORT -- the runtime import
+              # auto-skips). NOTE: osx-arm64 arch is NOT independently verified here (no
+              # Mach-O arch check); it is trusted from the universal2 wheel tag, like PyPI.
+              - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
+                parameters:
+                  condaSubdir: 'osx-arm64'
+                  condaTargetSubdir: 'osx-arm64'
+                  continueOnError: true
+                  odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
+                  odbcWheelFilter: 'mssql_python_odbc-*macosx*universal2.whl'
+                  pythonVersions: '${{ parameters.pythonVersions }}'
+              # osx-64: NATIVE on the Intel agent (BLOCKING -- real import + driver-load proof).
+              - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
+                parameters:
+                  condaSubdir: 'osx-64'
+                  condaTargetSubdir: 'osx-64'
+                  odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
+                  odbcWheelFilter: 'mssql_python_odbc-*macosx*universal2.whl'
+                  pythonVersions: '${{ parameters.pythonVersions }}'
+              - task: PublishPipelineArtifact@1
+                displayName: 'Publish macOS conda artifact'
+                inputs:
+                  targetPath: '$(ob_outputDirectory)'
+                  artifact: 'drop_CondaMacOS_BuildConda'
+                  publishLocation: 'pipeline'
+
+      # =========================
+      # CONDA linux-64 + linux-aarch64 (x86_64 agent: native + QEMU cross)
+      # =========================
+      - stage: CondaLinux
+        displayName: 'Conda Linux (linux-64 + linux-aarch64)'
+        jobs:
+          - job: BuildConda
+            displayName: 'Build + validate Linux conda'
+            timeoutInMinutes: 120
+            pool:
+              type: linux
+              isCustom: true
+              name: Azure Pipelines
+              vmImage: 'ubuntu-latest'
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+              # The live Encrypt=yes TLS gate is NOT run in the build pipeline: it needs a
+              # reachable SQL Server + a secret connection string (release/integration infra),
+              # and the masking-immune static RUNPATH audit (audit_bundled_binaries.py) already
+              # guards the OpenSSL layout here. It moves to the release pipeline, where the
+              # secret is always present so the gate is unconditional -- no queue-time toggle.
+              # The minimal-base ldd reachability gate stays opt-in because it is only VALID on
+              # a curated minimal base (it fails closed on a full agent's system krb5/libltdl).
+              ${{ if parameters.enableMinimalReachabilityGate }}:
+                CONDA_ASSERT_PREFIX_REACHABLE: '1'
+            steps:
+              - checkout: self
+                fetchDepth: 1
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download mssql-python wheels'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)
+                  artifactName: 'drop_Consolidate_ConsolidateArtifacts'
+                  targetPath: '$(Build.SourcesDirectory)'
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download mssql-python-odbc wheels'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)
+                  artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                  targetPath: '$(Pipeline.Workspace)/odbc_wheels'
+              # linux-64: NATIVE glibc x86_64 host.
+              - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
+                parameters:
+                  condaSubdir: 'linux-64'
+                  odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
+                  odbcWheelFilter: 'mssql_python_odbc-*manylinux_2_28_x86_64.whl'
+                  pythonVersions: '${{ parameters.pythonVersions }}'
+              # linux-aarch64: CROSS-target via QEMU binfmt. MANDATORY (blocking): a
+              # leg that cannot run its own aarch64 import is a real failure, not a
+              # silent pass -- otherwise a broken aarch64 conda package would ship
+              # unvalidated. Install the aarch64 glibc loader/libs (libc6-arm64-cross)
+              # so the emulated aarch64 Python can find /lib/ld-linux-aarch64.so.1, and
+              # register QEMU binfmt for host execution; both must succeed.
+              - bash: |
+                  set -euo pipefail
+                  sudo apt-get update
+                  sudo apt-get install -y qemu-user-static binfmt-support libc6-arm64-cross
+                  docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+                displayName: 'Install libc6-arm64-cross + register QEMU binfmt (aarch64)'
+              - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
+                parameters:
+                  condaSubdir: 'linux-aarch64'
+                  condaTargetSubdir: 'linux-aarch64'
+                  odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
+                  odbcWheelFilter: 'mssql_python_odbc-*manylinux_2_28_aarch64.whl'
+                  pythonVersions: '${{ parameters.pythonVersions }}'
+              - task: PublishPipelineArtifact@1
+                displayName: 'Publish Linux conda artifact'
+                inputs:
+                  targetPath: '$(ob_outputDirectory)'
+                  artifact: 'drop_CondaLinux_BuildConda'
+                  publishLocation: 'pipeline'
+
+      # =========================
+      # CONSOLIDATE all conda packages into one artifact
+      # =========================
+      - stage: ConsolidateConda
+        displayName: 'Consolidate All Conda Packages'
+        dependsOn:
+          - CondaWin64
+          - CondaMacOS
+          - CondaLinux
+        jobs:
+          - template: /OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml@self
+            parameters:
+              # This standalone pipeline's conda legs publish drop_Conda* artifacts.
+              downloadItemPattern: |
+                drop_CondaWin64_*/**
+                drop_CondaMacOS_*/**
+                drop_CondaLinux_*/**
