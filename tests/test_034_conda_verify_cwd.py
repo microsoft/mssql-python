@@ -82,7 +82,7 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
     import_calls = [
         (cmd, cwd)
         for cmd, cwd in calls
-        if "-c" in cmd and any("import mssql_python" in str(a) for a in cmd)
+        if "-c" in cmd and any("mssql_python" in str(a) for a in cmd)
     ]
     assert import_calls, "verify() never issued an `import mssql_python` probe"
     for cmd, cwd in import_calls:
@@ -90,3 +90,38 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
             f"import probe ran from {cwd!r}, not the neutral workdir {str(workdir)!r} -- the "
             f"repo source tree would shadow the conda-installed package"
         )
+
+
+def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
+    """The wrapper's ``finally`` must restore the original cwd even when the verify phase raises
+    (a failed subprocess -> _die, or any exception) -- otherwise a failing leg would strand the
+    process in the build dir and corrupt the later stage() step's relative paths. The happy-path
+    test proves the chdir; this proves the restore survives the failure path."""
+    mod = _load_orchestrator()
+
+    def _raising_run(cmd, *args, **kwargs):
+        raise RuntimeError("boom: subprocess failed")
+
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        types.SimpleNamespace(run=_raising_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
+    )
+
+    workdir = tmp_path / "conda-bld" / "linux-64"
+    workdir.mkdir(parents=True)
+    start_cwd = os.getcwd()
+
+    with pytest.raises(RuntimeError):
+        mod.verify(
+            "conda",
+            str(tmp_path / "chan"),
+            str(tmp_path / "recipe"),
+            ["3.11"],
+            "1.2.3",
+            "",
+            {},
+            str(workdir),
+        )
+
+    assert os.getcwd() == start_cwd, "verify() did not restore cwd after a failing phase"
