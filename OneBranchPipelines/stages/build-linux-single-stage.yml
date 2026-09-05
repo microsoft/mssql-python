@@ -279,7 +279,7 @@ stages:
                     echo "Using: $(python --version)";
                     
                     # Step 2: Install build dependencies
-                    python -m pip install -q -U pip setuptools wheel pybind11;
+                    python -m pip install -q --require-hashes -r /workspace/eng/requirements-build-linux.txt;
                     
                     # Step 3: Build native extension (.so)
                     echo "Building native extension...";
@@ -316,13 +316,11 @@ stages:
                     
                     # Step 7: Setup test environment
                     echo "Setting up test environment...";
-                    $PY -m pip install -q pytest;
                     cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
                     # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
                     cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
-                    cp /workspace/requirements.txt $TEST_DIR/ || true;
-                    $PY -m pip install -q -r $TEST_DIR/requirements.txt || true;
+                    $PY -m pip install -q --require-hashes -r /workspace/eng/requirements-test-linux.txt;
                     
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
@@ -349,7 +347,7 @@ stages:
                     echo "Using: $(python --version)";
                     
                     # Step 2: Install build dependencies
-                    python -m pip install -q -U pip setuptools wheel pybind11;
+                    python -m pip install -q --require-hashes -r /workspace/eng/requirements-build-linux.txt;
                     
                     # Step 3: Build native extension (.so)
                     echo "Building native extension...";
@@ -386,13 +384,11 @@ stages:
                     
                     # Step 7: Setup test environment
                     echo "Setting up test environment...";
-                    $PY -m pip install -q pytest;
                     cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
                     # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
                     cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
-                    cp /workspace/requirements.txt $TEST_DIR/ || true;
-                    $PY -m pip install -q -r $TEST_DIR/requirements.txt || true;
+                    $PY -m pip install -q --require-hashes -r /workspace/eng/requirements-test-linux.txt;
                     
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then

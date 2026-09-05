@@ -103,15 +103,11 @@ stages:
           # PYTHON DEPENDENCIES
           # =========================
           # Install build dependencies:
-          # - requirements.txt: runtime dependencies (if any)
-          # - cmake: CMake Python wrapper
-          # - pybind11: C++/Python binding library (headers needed for compilation)
+          # - requirements-build-macos.txt: tested, hash-locked build and test dependencies
           - script: |
               python --version
               python -m pip --version
-              python -m pip install --upgrade pip
-              python -m pip install -r requirements.txt
-              python -m pip install cmake pybind11
+              python -m pip install --require-hashes -r eng/requirements-build-macos.txt
             displayName: 'Install dependencies'
           
           # =========================
@@ -242,7 +238,6 @@ stages:
           # Wheel filename: mssql_python-X.Y.Z-cp3XX-cp3XX-macosx_XX_X_universal2.whl
           # bdist_wheel = build binary wheel distribution (contains pre-compiled .so)
           - script: |
-              python -m pip install --upgrade pip wheel setuptools
               python setup.py bdist_wheel
             displayName: 'Build wheel package'
           

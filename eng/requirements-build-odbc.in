@@ -1,0 +1,6 @@
+# Dependencies used to build and validate mssql-python-odbc release wheels.
+build
+pip
+setuptools
+twine
+wheel

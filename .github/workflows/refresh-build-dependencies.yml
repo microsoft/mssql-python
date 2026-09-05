@@ -1,0 +1,249 @@
+name: Refresh release build dependencies
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/refresh-build-dependencies.yml
+      - eng/requirements-build-*.in
+      - eng/requirements-build-*.txt
+      - eng/requirements-test-linux.in
+      - eng/requirements-test-linux.txt
+      - requirements.txt
+      - OneBranchPipelines/stages/build-*-single-stage.yml
+      - OneBranchPipelines/stages/build-odbc-all-stage.yml
+  schedule:
+    - cron: "0 8 * * 1"
+      timezone: America/Los_Angeles
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-release-build-dependencies
+  cancel-in-progress: false
+
+jobs:
+  validate-configuration:
+    name: Validate refresh configuration
+    runs-on: ubuntu-latest
+    env:
+      BUILD_DEPENDENCY_WORK_ITEM: ${{ vars.BUILD_DEPENDENCY_WORK_ITEM }}
+    steps:
+      - name: Validate tracking work item
+        run: |
+          if [[ ! "$BUILD_DEPENDENCY_WORK_ITEM" =~ ^[0-9]+$ ]]; then
+            echo "::error::Set BUILD_DEPENDENCY_WORK_ITEM to the ADO work item ID used by automated dependency refresh PRs."
+            exit 1
+          fi
+
+  compile-linux:
+    name: Compile Linux locks
+    needs: validate-configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
+        with:
+          version: "0.12.6"
+          enable-cache: false
+      - name: Compile Linux dependency locks
+        run: |
+          uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file eng/requirements-build-linux.txt eng/requirements-build-linux.in
+          uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file eng/requirements-test-linux.txt eng/requirements-test-linux.in
+      - name: Verify committed Linux locks are current
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch -- eng/requirements-build-linux.txt eng/requirements-test-linux.txt >/dev/null
+          git diff --exit-code -- eng/requirements-build-linux.txt eng/requirements-test-linux.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-lock-linux
+          path: |
+            eng/requirements-build-linux.txt
+            eng/requirements-test-linux.txt
+          if-no-files-found: error
+
+  compile-platform:
+    name: Compile ${{ matrix.name }} lock
+    needs: validate-configuration
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            os: macos-latest
+            input: eng/requirements-build-macos.in
+            output: eng/requirements-build-macos.txt
+          - name: windows
+            os: windows-latest
+            input: eng/requirements-build-windows.in
+            output: eng/requirements-build-windows.txt
+          - name: odbc
+            os: windows-latest
+            input: eng/requirements-build-odbc.in
+            output: eng/requirements-build-odbc.txt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
+        with:
+          version: "0.12.6"
+          enable-cache: false
+      - name: Compile ${{ matrix.name }} dependency lock
+        # Python 3.10 is the oldest supported release, so every lock remains
+        # installable throughout the release pipeline's Python 3.10-3.14 matrix.
+        run: uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file "${{ matrix.output }}" "${{ matrix.input }}"
+      - name: Verify committed ${{ matrix.name }} lock is current
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch -- "${{ matrix.output }}" >/dev/null
+          git diff --exit-code -- "${{ matrix.output }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-lock-${{ matrix.name }}
+          path: ${{ matrix.output }}
+          if-no-files-found: error
+
+  validate-locks:
+    name: Validate ${{ matrix.name }} compatibility
+    needs:
+      - compile-linux
+      - compile-platform
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux build
+            artifact: linux
+            lock: requirements-build-linux.txt
+            versions: "3.10 3.11 3.12 3.13 3.14"
+            platforms: "x86_64-manylinux_2_28 aarch64-manylinux_2_28 x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+          - name: Linux test
+            artifact: linux
+            lock: requirements-test-linux.txt
+            versions: "3.10 3.11 3.12 3.13 3.14"
+            platforms: "x86_64-manylinux_2_28 aarch64-manylinux_2_28 x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+          - name: macOS
+            artifact: macos
+            lock: requirements-build-macos.txt
+            versions: "3.10 3.11 3.12 3.13 3.14"
+            platforms: "x86_64-apple-darwin aarch64-apple-darwin"
+          # Windows ARM64 stages install build tools into the x64 host
+          # interpreter before cross-compiling the target extension.
+          - name: Windows build host
+            artifact: windows
+            lock: requirements-build-windows.txt
+            versions: "3.10 3.11 3.12 3.13 3.14"
+            platforms: "x86_64-pc-windows-msvc"
+          - name: ODBC
+            artifact: odbc
+            lock: requirements-build-odbc.txt
+            versions: "3.12"
+            platforms: "x86_64-pc-windows-msvc"
+    steps:
+      - uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
+        with:
+          version: "0.12.6"
+          enable-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: build-lock-${{ matrix.artifact }}
+          path: generated-lock
+      - name: Verify wheels for the release matrix
+        env:
+          LOCK_FILE: generated-lock/${{ matrix.lock }}
+          PLATFORMS: ${{ matrix.platforms }}
+          PYTHON_VERSIONS: ${{ matrix.versions }}
+        run: |
+          set -euo pipefail
+          for platform in $PLATFORMS; do
+            for version in $PYTHON_VERSIONS; do
+              echo "Validating $LOCK_FILE for Python $version on $platform"
+              uv pip install \
+                --dry-run \
+                --no-cache \
+                --target "$RUNNER_TEMP/lock-validation" \
+                --python-version "$version" \
+                --python-platform "$platform" \
+                --only-binary :all: \
+                --require-hashes \
+                --default-index https://pypi.org/simple \
+                -r "$LOCK_FILE"
+            done
+          done
+
+  open-pull-request:
+    name: Open dependency refresh pull request
+    needs: validate-locks
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BUILD_DEPENDENCY_WORK_ITEM: ${{ vars.BUILD_DEPENDENCY_WORK_ITEM }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: build-lock-*
+          path: generated-locks
+          merge-multiple: true
+      - name: Commit lockfile updates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="automation/refresh-build-dependencies"
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$branch" | cut -f1)"
+
+          git switch --force-create "$branch"
+          cp generated-locks/*.txt eng/
+
+          if git diff --quiet -- eng/requirements-build-*.txt eng/requirements-test-linux.txt; then
+            echo "Release build dependencies are already current."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add eng/requirements-build-*.txt eng/requirements-test-linux.txt
+          git commit -m "CHORE: refresh release build dependencies"
+
+          if [ -n "$remote_sha" ]; then
+            git push --force-with-lease="refs/heads/$branch:$remote_sha" origin "HEAD:refs/heads/$branch"
+          else
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+
+          if [ "$(gh pr list --head "$branch" --base main --state open --json number --jq length)" = "0" ]; then
+            cat > "$RUNNER_TEMP/dependency-refresh-pr.md" <<EOF
+          ### Work Item / Issue Reference
+
+          > AB#${BUILD_DEPENDENCY_WORK_ITEM}
+
+          -------------------------------------------------------------------
+          ### Summary
+
+          Refreshes the platform-specific, SHA-256-locked dependencies used to build and test release wheels. The weekly workflow resolves the latest stable versions compatible with Python 3.10+ from PyPI on Linux, macOS, and Windows.
+          EOF
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "CHORE: refresh release build dependencies" \
+              --body-file "$RUNNER_TEMP/dependency-refresh-pr.md"
+          fi

@@ -1,0 +1,4 @@
+# Complete environment used by the Linux release-wheel test pass.
+-r requirements-build-linux.in
+-c requirements-build-linux.txt
+-r ../requirements.txt

@@ -1,0 +1,8 @@
+# Dependencies installed before Windows release wheels are produced.
+pip
+psutil
+pybind11
+pyodbc
+pytest
+setuptools
+wheel

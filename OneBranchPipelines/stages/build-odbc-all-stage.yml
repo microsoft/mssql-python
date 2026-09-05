@@ -98,8 +98,7 @@ stages:
 
           - powershell: |
               $ErrorActionPreference = "Stop"
-              python -m pip install --upgrade pip
-              python -m pip install setuptools wheel build twine
+              python -m pip install --require-hashes -r eng/requirements-build-odbc.txt
             displayName: 'Install build tooling'
 
           # Build every target wheel by driving setup_odbc.py's ODBC_TARGET_* overrides.
