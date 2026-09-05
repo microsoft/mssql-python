@@ -28,6 +28,7 @@ from mssql_python.connection_string_parser import sanitize_connection_string
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
+from mssql_python.odbc_provider import ProviderManager
 from mssql_python.exceptions import (
     Warning,  # pylint: disable=redefined-builtin
     Error,
@@ -729,6 +730,16 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
+
+        # Resolve and freeze the ODBC provider, then hand the selection to the
+        # native loader so it imports the matching provider package. Done here —
+        # after every Python-side validation and token acquisition has succeeded
+        # and immediately before the native driver loads — so a call that fails
+        # earlier never freezes the selection as a side effect; a later, corrected
+        # connection can then still choose a different provider without a process
+        # restart.
+        _provider = ProviderManager.ensure_available()
+        ddbc_bindings._set_odbc_provider(_provider)
 
         try:
             self._conn = ddbc_bindings.Connection(

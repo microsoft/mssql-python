@@ -43,6 +43,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   This is a non-breaking step toward decoupling driver-binary updates from
   mssql-python releases; a future major version will make the dependency
   explicit and drop the bundled binaries.
+- **Opt-in/opt-out native provider selection:** a new `mssql_python.native_provider`
+  module property (and `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable, which
+  takes precedence) lets a caller select which native ODBC provider is loaded:
+  the default `"msodbcsql18"` (Microsoft ODBC Driver 18, unchanged behavior) or
+  the opt-in `"mssql-odbc"` (a Rust-based driver, shipped inside the
+  `mssql-python-rs` package alongside the Rust TDS core). The selection must be made before the first
+  connection; it resolves and freezes then, and a later change is ignored with
+  a `RuntimeWarning`; a conflicting property assignment also warns when the
+  environment variable takes precedence. Call `mssql_python.get_native_provider_info()`
+  for diagnostics (selected id, package, version, driver path, source, and
+  whether it's frozen). This PR
+  does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
 - Connection strings and string connection parameters that contain a NUL
