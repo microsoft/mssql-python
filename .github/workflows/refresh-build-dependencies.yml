@@ -8,6 +8,7 @@ on:
       - eng/requirements-build-*.txt
       - eng/requirements-test-linux.in
       - eng/requirements-test-linux.txt
+      - requirements.txt
       - OneBranchPipelines/stages/build-*-single-stage.yml
       - OneBranchPipelines/stages/build-odbc-all-stage.yml
   schedule:
@@ -53,6 +54,12 @@ jobs:
         run: |
           uv pip compile --upgrade --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file eng/requirements-build-linux.txt eng/requirements-build-linux.in
           uv pip compile --upgrade --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file eng/requirements-test-linux.txt eng/requirements-test-linux.in
+      - name: Verify committed Linux locks are current
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch -- eng/requirements-build-linux.txt eng/requirements-test-linux.txt >/dev/null
+          git diff --exit-code -- eng/requirements-build-linux.txt eng/requirements-test-linux.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-lock-linux
@@ -94,6 +101,13 @@ jobs:
         # Python 3.10 is the oldest supported release, so every lock remains
         # installable throughout the release pipeline's Python 3.10-3.14 matrix.
         run: uv pip compile --upgrade --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file "${{ matrix.output }}" "${{ matrix.input }}"
+      - name: Verify committed lock is current
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch -- "${{ matrix.output }}" >/dev/null
+          git diff --exit-code -- "${{ matrix.output }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-lock-${{ matrix.name }}
