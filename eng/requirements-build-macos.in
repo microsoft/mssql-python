@@ -1,5 +1,7 @@
 # Dependencies installed before macOS release wheels are produced.
 -r ../requirements.txt
 cmake
+# cryptography 49+ no longer publishes a Python 3.10-compatible x86_64 macOS wheel.
+cryptography<49
 pip
 wheel
