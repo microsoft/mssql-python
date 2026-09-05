@@ -325,11 +325,12 @@ def test_refresh_workflow_pins_external_actions_to_commit_shas():
 def test_refresh_workflow_compiles_hash_locked_python_310_inputs():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     compile_commands = [line.strip() for line in workflow.splitlines() if "uv pip compile" in line]
+    conditional_upgrade = "${{ github.event_name != 'pull_request' && '--upgrade' || '' }}"
 
     assert len(compile_commands) == 3
     for command in compile_commands:
         for option in (
-            "--upgrade",
+            conditional_upgrade,
             "--generate-hashes",
             "--no-emit-index-url",
             "--no-header",
@@ -339,6 +340,7 @@ def test_refresh_workflow_compiles_hash_locked_python_310_inputs():
         ):
             assert option in command
 
+    assert "uv pip compile --upgrade" not in workflow
     assert "eng/requirements-build-linux.txt eng/requirements-build-linux.in" in compile_commands[0]
     assert "eng/requirements-test-linux.txt eng/requirements-test-linux.in" in compile_commands[1]
     assert '"${{ matrix.output }}" "${{ matrix.input }}"' in compile_commands[2]
