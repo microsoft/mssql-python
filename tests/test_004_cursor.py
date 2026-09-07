@@ -2538,14 +2538,11 @@ def test_map_sql_type_uses_odbc3_temporal_types():
 
 def test_setinputsizes_canonicalizes_odbc2_temporal_types():
     """Legacy temporal hints are converted before reaching SQLBindParameter."""
-    from unittest.mock import MagicMock
-
     from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 
-    cursor = MagicMock(spec=mssql_python.Cursor)
-    setinputsizes = mssql_python.Cursor.setinputsizes.__get__(cursor)
+    cursor = object.__new__(mssql_python.Cursor)
 
-    setinputsizes(
+    cursor.setinputsizes(
         [
             (ddbc_sql_const.SQL_DATE.value, 10, 0),
             ddbc_sql_const.SQL_TIME.value,
@@ -2554,9 +2551,24 @@ def test_setinputsizes_canonicalizes_odbc2_temporal_types():
     )
 
     assert cursor._inputsizes == [
-        (ddbc_sql_const.SQL_TYPE_DATE.value, 10, 0),
-        (ddbc_sql_const.SQL_TYPE_TIME.value, 0, 0),
-        (ddbc_sql_const.SQL_TYPE_TIMESTAMP.value, 26, 6),
+        (
+            ddbc_sql_const.SQL_TYPE_DATE.value,
+            ddbc_sql_const.SQL_C_TYPE_DATE.value,
+            10,
+            0,
+        ),
+        (
+            ddbc_sql_const.SQL_TYPE_TIME.value,
+            ddbc_sql_const.SQL_C_TYPE_TIME.value,
+            0,
+            0,
+        ),
+        (
+            ddbc_sql_const.SQL_TYPE_TIMESTAMP.value,
+            ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+            26,
+            6,
+        ),
     ]
 
 
