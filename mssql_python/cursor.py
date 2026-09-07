@@ -362,7 +362,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         self._connection: "Connection" = connection  # Store as private attribute
         self._timeout: int = timeout
-        self._inputsizes: Optional[List[Union[int, Tuple[Any, ...]]]] = None
+        self._inputsizes: Optional[List[Tuple[int, int, int, int]]] = None
         # self.connection.autocommit = False
         self._initialize_cursor()
         self.description: Optional[
@@ -1192,7 +1192,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                             f"Must be a non-negative integer."
                         )
 
-                    self._inputsizes.append((sql_type, column_size, decimal_digits))
+                    self._inputsizes.append(
+                        (
+                            sql_type,
+                            self._get_c_type_for_sql_type(sql_type),
+                            column_size,
+                            decimal_digits,
+                        )
+                    )
                 else:
                     # Handle single value (just sql_type)
                     sql_type = size_info
@@ -1203,7 +1210,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                             f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant."
                         )
 
-                    self._inputsizes.append((sql_type, 0, 0))
+                    self._inputsizes.append(
+                        (sql_type, self._get_c_type_for_sql_type(sql_type), 0, 0)
+                    )
 
     def _reset_inputsizes(self) -> None:
         """Reset input sizes after execution"""
@@ -1262,12 +1271,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         Maps parameter types for the given parameter.
 
-        Python-side type detection. The standard execute() path no longer calls this —
-        DetectParamTypes does the same job in C++ without crossing the pybind11
-        boundary per parameter. Two callers remain: the legacy execute() branch used
-        when setinputsizes overrides are active, and executemany(). The former goes
-        away once setinputsizes is handled natively; the latter needs its own
-        native columnwise detection before this can be deleted outright.
+        Python-side type detection for executemany(). The standard execute() path
+        uses DetectParamTypes in C++ instead. This helper goes away once executemany
+        has native columnwise detection.
 
         Args:
             parameter: parameter to bind.
@@ -1276,61 +1282,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         paraminfo = param_info()
 
-        # Check if we have explicit type information from setinputsizes
-        if self._inputsizes and i < len(self._inputsizes):
-            # Use explicit type information
-            sql_type, column_size, decimal_digits = self._inputsizes[i]
-
-            # Default is_dae to False for explicit types, but set to True for large strings/binary
-            is_dae = False
-
-            if parameter is None:
-                # For NULL parameters, always use SQL_C_DEFAULT regardless of SQL type
-                c_type = ddbc_sql_const.SQL_C_DEFAULT.value
-            else:
-                # For non-NULL parameters, determine the appropriate C type based on SQL type
-                c_type = self._get_c_type_for_sql_type(sql_type)
-
-                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503).
-                # The generic mapping returns SQL_C_NUMERIC which requires NumericData
-                # structs, but setinputsizes declares fixed precision/scale that may
-                # differ from per-value precision, causing misinterpretation. String
-                # binding lets ODBC convert using the declared columnSize/decimalDigits.
-                if sql_type in (
-                    ddbc_sql_const.SQL_DECIMAL.value,
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                ):
-                    c_type = ddbc_sql_const.SQL_C_CHAR.value
-                    if isinstance(parameter, decimal.Decimal):
-                        parameters_list[i] = format(parameter, "f")
-                        parameter = parameters_list[i]
-
-                # Check if this should be a DAE (data at execution) parameter
-                # For string types with large column sizes
-                if isinstance(parameter, str) and column_size > MAX_INLINE_CHAR:
-                    is_dae = True
-                # For binary types with large column sizes
-                elif isinstance(parameter, (bytes, bytearray)) and column_size > 8000:
-                    is_dae = True
-
-            # Sanitize precision/scale for numeric types
-            if sql_type in (
-                ddbc_sql_const.SQL_DECIMAL.value,
-                ddbc_sql_const.SQL_NUMERIC.value,
-            ):
-                column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
-                decimal_digits = min(max(0, decimal_digits), column_size)
-
-        else:
-            # Fall back to automatic type inference
-            sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
-                parameter,
-                parameters_list,
-                i,
-                min_val=min_val,
-                max_val=max_val,
-                decimal_as_numeric=decimal_as_numeric,
-            )
+        sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
+            parameter,
+            parameters_list,
+            i,
+            min_val=min_val,
+            max_val=max_val,
+            decimal_as_numeric=decimal_as_numeric,
+        )
 
         # If TIME values are being bound via text C-types, normalize them to a
         # textual representation expected by SQL_C_CHAR/SQL_C_WCHAR binding.
@@ -1814,70 +1773,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        # Standard path: when no inputsizes override, type detection + bind + execute
-        # all happen in C++ via DDBCSQLExecute. ParamInfo never crosses the pybind11
-        # boundary. This is the path ~99% of calls take.
-        use_standard_execute = parameters and not (
-            self._inputsizes and any(s is not None for s in self._inputsizes)
-        )
-
-        if use_standard_execute:
+        if parameters:
             ret = ddbc_bindings.DDBCSQLExecute(
                 self.hstmt,
                 operation,
                 parameters,
+                self._inputsizes,
                 self.is_stmt_prepared,
                 effective_use_prepare,
                 encoding_settings,
             )
         else:
-            # LEGACY PATH — slated for removal in a future optimization round.
-            #
-            # Kept only for setinputsizes() callers, where the user's explicit type
-            # overrides have to be honoured instead of C++ detecting types itself.
-            # Type detection happens in Python here, so every parameter round-trips
-            # through pybind11 as a ParamInfo object, which is what makes it slow.
-            # Once setinputsizes overrides are handled natively, this branch and
-            # DDBCSQLExecuteLegacy both go away.
-            parameters_type = []
-            if parameters:
-                param_info = ddbc_bindings.ParamInfo
-                for i, param in enumerate(parameters):
-                    # decimal_as_numeric=True so an uncovered money-range Decimal here
-                    # (setinputsizes shorter than the parameter list) binds as SQL_NUMERIC
-                    # like the native path, not VARCHAR (GH-740). executemany keeps the
-                    # VARCHAR shortcut for its batch string binding (GH-503).
-                    paraminfo = self._create_parameter_types_list(
-                        param, param_info, parameters, i, decimal_as_numeric=True
-                    )
-                    parameters_type.append(paraminfo)
-
-            if logger.isEnabledFor(logging.DEBUG):
-                for i, param in enumerate(parameters):
-                    logger.debug(
-                        """Parameter number: %s, Parameter: %s,
-                        Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                        i + 1,
-                        param,
-                        str(type(param)),
-                        parameters_type[i].paramSQLType,
-                        parameters_type[i].paramCType,
-                        parameters_type[i].columnSize,
-                        parameters_type[i].decimalDigits,
-                        parameters_type[i].inputOutputType,
-                    )
-
-            # Legacy binding: accepts the pre-built ParamInfo list from Python.
-            # Goes away with the branch above.
-            ret = ddbc_bindings.DDBCSQLExecuteLegacy(
-                self.hstmt,
-                operation,
-                parameters,
-                parameters_type,
-                self.is_stmt_prepared,
-                effective_use_prepare,
-                encoding_settings,
-            )
+            ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
         # Check return code
         try:
 
@@ -2564,13 +2471,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             if self._inputsizes and col_index < len(self._inputsizes):
                 # Use explicitly set input sizes
-                sql_type, column_size, decimal_digits = self._inputsizes[col_index]
+                sql_type, c_type, column_size, decimal_digits = self._inputsizes[col_index]
 
                 # Default is_dae to False
                 is_dae = False
-
-                # Determine appropriate C type based on SQL type
-                c_type = self._get_c_type_for_sql_type(sql_type)
 
                 # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
                 if sql_type in (
