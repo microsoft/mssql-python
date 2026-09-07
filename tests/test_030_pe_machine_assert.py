@@ -49,13 +49,20 @@ _AMD64 = 0x8664
 
 
 def _fake_pe(machine: int) -> bytes:
-    """A minimal but structurally valid PE: MZ -> e_lfanew -> 'PE\\0\\0' -> Machine."""
-    buf = bytearray(b"\x00" * 0x100)
+    """A minimal PE32+ with one complete section table entry and in-range raw byte."""
+    buf = bytearray(b"\x00" * 0x200)
     buf[0:2] = b"MZ"
     e_lfanew = 0x80
     struct.pack_into("<I", buf, 0x3C, e_lfanew)
     buf[e_lfanew : e_lfanew + 4] = b"PE\x00\x00"
     struct.pack_into("<H", buf, e_lfanew + 4, machine)
+    struct.pack_into("<H", buf, e_lfanew + 6, 1)  # NumberOfSections
+    optional_size = 0xF0
+    struct.pack_into("<H", buf, e_lfanew + 20, optional_size)
+    struct.pack_into("<H", buf, e_lfanew + 24, 0x20B)  # PE32+
+    section_offset = e_lfanew + 24 + optional_size
+    struct.pack_into("<II", buf, section_offset + 16, 1, 0x1F0)
+    buf[0x1F0] = 1
     return bytes(buf)
 
 
@@ -72,6 +79,22 @@ def test_pe_machine_rejects_non_pe():
     bad[0:2] = b"MZ"
     struct.pack_into("<I", bad, 0x3C, 0x80)  # e_lfanew points at zeros (no 'PE\0\0')
     assert ape.pe_machine(bytes(bad)) is None
+
+
+def test_pe_machine_rejects_header_only_pe():
+    header_only = bytearray(b"\x00" * 0x100)
+    header_only[0:2] = b"MZ"
+    struct.pack_into("<I", header_only, 0x3C, 0x80)
+    header_only[0x80:0x84] = b"PE\x00\x00"
+    struct.pack_into("<H", header_only, 0x84, _ARM64)
+    assert ape.pe_machine(bytes(header_only)) is None
+
+
+def test_pe_machine_rejects_out_of_range_section_data():
+    invalid = bytearray(_fake_pe(_ARM64))
+    section_offset = 0x80 + 24 + 0xF0
+    struct.pack_into("<II", invalid, section_offset + 16, 32, len(invalid) - 1)
+    assert ape.pe_machine(bytes(invalid)) is None
 
 
 def _zstd_available():
@@ -146,6 +169,28 @@ def test_win_arm64_arm64_binaries_pass(tmp_path):
         },
     )
     assert ape.audit_package(p) == []
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_win_arm64_driver_dlls_in_x64_directory_fail_presence_gate(tmp_path):
+    # Correct ARM64 machine fields do not help when the loader searches windows/arm64,
+    # while both required DLLs were misplaced under windows/x64.
+    p = _make_conda(
+        tmp_path,
+        "win-arm64",
+        {
+            "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
+            "Lib/site-packages/mssql_python_odbc/libs/windows/x64/msodbcsql18.dll": _fake_pe(
+                _ARM64
+            ),
+            "Lib/site-packages/mssql_python_odbc/libs/windows/x64/mssql-auth.dll": _fake_pe(_ARM64),
+        },
+    )
+
+    errors = ape.audit_package(p)
+
+    assert any("windows/arm64/msodbcsql18" in error for error in errors)
+    assert any("windows/arm64/mssql-auth" in error for error in errors)
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")

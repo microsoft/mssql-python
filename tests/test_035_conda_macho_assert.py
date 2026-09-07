@@ -50,11 +50,10 @@ _ARM64 = 0x0100000C
 
 
 def _fake_macho_thin(cputype: int) -> bytes:
-    """A minimal 64-bit little-endian thin Mach-O: MH_MAGIC_64 then the cputype word."""
-    buf = bytearray(b"\x00" * 0x40)
-    struct.pack_into("<I", buf, 0, 0xFEEDFACF)  # MH_MAGIC_64 (little-endian on disk)
-    struct.pack_into("<I", buf, 4, cputype)
-    return bytes(buf)
+    """A minimal 64-bit little-endian Mach-O with one complete LC_UUID command."""
+    header = struct.pack("<IIIIIIII", 0xFEEDFACF, cputype, 0, 2, 1, 24, 0, 0)
+    load_command = struct.pack("<II", 0x1B, 24) + b"\x00" * 16
+    return header + load_command
 
 
 def _fake_macho_fat(cputypes) -> bytes:
@@ -84,6 +83,11 @@ def test_macho_arches_fat_universal2():
 def test_macho_arches_rejects_non_macho():
     assert mac.macho_arches(b"not a mach-o binary at all") is None
     assert mac.macho_arches(b"\xcf\xfa") is None  # too short
+
+
+def test_macho_arches_rejects_header_only_thin_binary():
+    header_only = struct.pack("<IIIIIIII", 0xFEEDFACF, _ARM64, 0, 2, 1, 24, 0, 0)
+    assert mac.macho_arches(header_only) is None
 
 
 def test_macho_arches_rejects_truncated_fat_table():
@@ -232,6 +236,17 @@ def test_osx_arm64_missing_driver_fails(tmp_path):
         payload[f"{_DRIVER_ROOT}/x86_64/lib/{library}"] = _fake_macho_thin(_X86_64)
     p = _make_conda(tmp_path, "osx-arm64", payload)
     errors = mac.audit_package(p)
+    assert any("no vendored ODBC driver for 'arm64'" in error for error in errors)
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_osx_arm64_driver_outside_runtime_lib_directory_fails(tmp_path):
+    payload = _realistic_payload(_fake_macho_fat([_X86_64, _ARM64]))
+    driver = payload.pop(f"{_DRIVER_ROOT}/arm64/lib/libmsodbcsql.18.dylib")
+    payload[f"{_DRIVER_ROOT}/arm64/libmsodbcsql.18.dylib"] = driver
+
+    errors = mac.audit_package(_make_conda(tmp_path, "osx-arm64", payload))
+
     assert any("no vendored ODBC driver for 'arm64'" in error for error in errors)
 
 

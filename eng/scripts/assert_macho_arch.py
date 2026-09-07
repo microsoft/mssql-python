@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert the vendored macOS Mach-O binaries in a built conda package carry the package's arch.
+"""Assert macOS Mach-O binaries in a built conda package match their intended architectures.
 
 The macOS conda packages are repackaged from a UNIVERSAL2 wheel, so a package's architecture
 is otherwise trusted purely from the wheel filename -- and osx-arm64 is CROSS-built on an
@@ -15,8 +15,8 @@ deliberately bundles separate macos/arm64 and macos/x86_64 driver trees, so each
 against its directory arch and the package target's tree must contain libmsodbcsql. FAT/universal
 binaries are validated like ``lipo -archs``, including complete tables and valid slice ranges.
 
-Exit 0 = every checked package's Mach-O binaries carry the expected arch slice; non-zero = a
-mismatch/violation.
+Exit 0 = every checked package satisfies the binding/driver architecture contract; non-zero =
+a mismatch/violation.
 """
 
 from __future__ import annotations
@@ -75,6 +75,20 @@ def _thin_arch(data: bytes):
     else:
         return None
     if len(data) < header_size:
+        return None
+    ncmds, sizeofcmds = struct.unpack_from(f"{endian}II", data, 16)
+    commands_end = header_size + sizeofcmds
+    if ncmds == 0 or sizeofcmds < ncmds * 8 or commands_end > len(data):
+        return None
+    command_offset = header_size
+    for _ in range(ncmds):
+        if command_offset + 8 > commands_end:
+            return None
+        command_size = struct.unpack_from(f"{endian}I", data, command_offset + 4)[0]
+        if command_size < 8 or command_offset + command_size > commands_end:
+            return None
+        command_offset += command_size
+    if command_offset != commands_end:
         return None
     cputype = struct.unpack_from(f"{endian}I", data, 4)[0]
     return _CPU_ARCHES.get(cputype, hex(cputype))
@@ -157,12 +171,18 @@ def audit_package(path: str) -> list[str]:
             required_arch = expected
         elif "/mssql_python_odbc/libs/macos/" in low and low.endswith(".dylib"):
             relative = low.split("/mssql_python_odbc/libs/macos/", 1)[1]
-            driver_dir = relative.split("/", 1)[0]
+            parts = relative.split("/")
+            driver_dir = parts[0]
             required_arch = _DRIVER_DIR_ARCH.get(driver_dir)
             if required_arch is None:
                 errors.append(f"{name}: unrecognized macOS driver architecture directory.")
                 continue
-            if base_low.startswith("libmsodbcsql") and required_arch == expected:
+            is_runtime_location = len(parts) == 3 and parts[1] == "lib"
+            if (
+                base_low.startswith("libmsodbcsql")
+                and required_arch == expected
+                and is_runtime_location
+            ):
                 target_driver_seen += 1
         else:
             continue
@@ -189,7 +209,7 @@ def audit_package(path: str) -> list[str]:
     if target_driver_seen == 0:
         errors.append(
             f"{base_name}: no vendored ODBC driver for '{expected}' "
-            f"(mssql_python_odbc/libs/macos/{expected}/**/libmsodbcsql*.dylib) found in a "
+            f"(mssql_python_odbc/libs/macos/{expected}/lib/libmsodbcsql*.dylib) found in a "
             f"'{subdir}' package."
         )
     return errors
@@ -242,7 +262,7 @@ def main(argv: list | None = None) -> int:
             print(f"  - {e}", file=sys.stderr)
         return 1
 
-    print(f"\nOK: all {checked} checked package(s) carry the expected Mach-O arch slice.")
+    print(f"\nOK: all {checked} checked package(s) satisfy the Mach-O architecture contract.")
     return 0
 
 

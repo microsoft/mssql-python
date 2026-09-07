@@ -1,4 +1,4 @@
-"""Regression test for build_conda_packages.py ``verify()`` -- the whole point of the PR.
+"""Regression tests for build_conda_packages.py orchestration invariants.
 
 ``verify()`` must run its ``python -c "import mssql_python"`` subprocesses from a NEUTRAL
 working directory. For ``python -c``, ``sys.path[0]`` is ``''`` (the process cwd), so when the
@@ -9,9 +9,9 @@ validate. The fix is a ``verify()`` wrapper that ``os.chdir``s to the per-leg bu
 Python equivalent of the ``cd`` the two deleted shell scripts did before their imports), so
 every verify subprocess inherits the neutral cwd.
 
-The orchestrator otherwise has no tests, which is how the source-shadowing regression slipped
-in; this asserts the invariant so the whole class stays closed. It loads the orchestrator as a
-standalone module (no compiled extension needed) and runs under ``--noconftest``.
+The tests also enforce exact-one ODBC wheel selection and blocking win-arm64 environment
+creation. They load the orchestrator as a standalone module (no compiled extension needed)
+and run under ``--noconftest``.
 """
 
 import importlib.util
@@ -159,3 +159,54 @@ def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeyp
     assert any("--dry-run" in command for command in calls)
     assert any(command[1:3] == ["create", "-y"] for command in calls)
     assert not any(command[1:3] == ["run", "-n"] for command in calls)
+
+
+def _wheel_inputs(tmp_path, odbc_names):
+    mssql_dir = tmp_path / "mssql"
+    odbc_dir = tmp_path / "odbc"
+    links = tmp_path / "links"
+    mssql_dir.mkdir()
+    odbc_dir.mkdir()
+    (mssql_dir / "mssql_python-1.2.3-cp313-cp313-win_amd64.whl").write_bytes(b"mssql")
+    for name in odbc_names:
+        (odbc_dir / name).write_bytes(b"odbc")
+    return mssql_dir, odbc_dir, links
+
+
+def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path):
+    mod = _load_orchestrator()
+    mssql_dir, odbc_dir, links = _wheel_inputs(
+        tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
+    )
+
+    versions = mod.gather_wheels(
+        str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
+    )
+
+    assert versions == ("1.2.3", "18.6.2")
+    assert sorted(path.name for path in links.iterdir()) == [
+        "mssql_python-1.2.3-cp313-cp313-win_amd64.whl",
+        "mssql_python_odbc-18.6.2-py3-none-win_amd64.whl",
+    ]
+
+
+def test_gather_wheels_rejects_no_odbc_match(tmp_path):
+    mod = _load_orchestrator()
+    mssql_dir, odbc_dir, links = _wheel_inputs(tmp_path, [])
+
+    with pytest.raises(SystemExit):
+        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+
+
+def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
+    mod = _load_orchestrator()
+    mssql_dir, odbc_dir, links = _wheel_inputs(
+        tmp_path,
+        [
+            "mssql_python_odbc-18.6.2-py3-none-win_amd64.whl",
+            "mssql_python_odbc-18.6.3-py3-none-win_amd64.whl",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))

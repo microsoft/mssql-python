@@ -1,11 +1,11 @@
 # Conda Build + Validate Step Template (POSIX / bash)
 # ============================================================================
-# Bash twin of conda-build-validate-step.yml for the macOS (osx-arm64) and Linux
-# (linux-64) build legs. Repackages THIS leg's mssql-python wheel(s) + the
+# Bash twin of conda-build-validate-step.yml for the macOS and Linux build legs.
+# Repackages THIS leg's mssql-python wheel(s) + the
 # external mssql-python-odbc wheel into conda packages and validates solve+import
-# on the SAME native agent. conda-build provisions a real per-subdir host env, so
-# this only runs on the matching native platform (no cross-build, no musl target,
-# no aarch64 here — the aarch64 host is x86_64 + QEMU).
+# where the target Python can execute. Native osx-64/linux-64 run directly;
+# osx-arm64 skips target execution on the Intel host, and linux-aarch64 uses QEMU.
+# musllinux has no conda target.
 #
 # This step ONLY builds + validates + stages conda packages as an artifact. It
 # does NOT publish anything (publishing happens in the release pipeline), and it is

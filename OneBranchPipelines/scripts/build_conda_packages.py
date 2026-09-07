@@ -353,18 +353,14 @@ def audit_packages(conda, builder, recipe_root, bld, target_subdir, env):
             env=env,
             what="win-arm64 PE machine-type assert",
         )
-    # osx legs: the universal2 wheel's arch is trusted UNLESS the Mach-O slice assert reads the
-    # cputype out of every vendored .dylib/.so. osx-arm64 is cross-built on the Intel agent (its
-    # arm64 slice can't execute there, so the runtime import is skipped) -- this is its ONLY arch
-    # check; osx-64 gets it too as a cheap symmetric guard against a mislabeled/thin binary.
+    # osx legs: verify the universal binding contains the target slice and each thin vendored
+    # driver dylib matches its architecture-specific directory. osx-arm64 is cross-built on the
+    # Intel agent, so this static pass replaces the runtime import as its architecture check.
     if target_subdir in ("osx-64", "osx-arm64"):
         macho = os.path.join(eng, "assert_macho_arch.py")
         if not os.path.isfile(macho):
             _die(f"Mach-O arch assert script not found at {macho}")
-        _log(
-            f"=== {target_subdir} Mach-O arch-slice assert (vendored .dylib/.so must carry "
-            f"the {target_subdir} slice) ==="
-        )
+        _log(f"=== {target_subdir} Mach-O assert (binding target slice + driver-tree arches) ===")
         run(
             [
                 conda,
