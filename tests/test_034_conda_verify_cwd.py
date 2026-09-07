@@ -43,6 +43,60 @@ def _load_orchestrator():
     return mod
 
 
+@pytest.mark.parametrize(
+    ("target_subdir", "host", "expected"),
+    [
+        ("linux-aarch64", "x86_64", True),
+        ("linux-aarch64", "arm64", False),
+        ("win-arm64", "x86_64", False),
+        ("osx-arm64", "x86_64", False),
+        ("", "x86_64", False),
+    ],
+)
+def test_is_emulated_cross_only_classifies_linux_qemu(
+    target_subdir, host, expected, monkeypatch, capsys
+):
+    mod = _load_orchestrator()
+    monkeypatch.setattr(mod.platform, "machine", lambda: host)
+
+    assert mod._is_emulated_cross(target_subdir) is expected
+    assert ("QEMU" in capsys.readouterr().out) is expected
+
+
+@pytest.mark.parametrize("target_subdir", ["win-arm64", "osx-arm64"])
+def test_non_qemu_cross_driver_probe_failure_is_blocking(target_subdir, tmp_path, monkeypatch):
+    mod = _load_orchestrator()
+    probe_calls = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        command = list(cmd)
+        is_probe = any(str(arg).endswith("driver_load_probe.py") for arg in command)
+        if is_probe:
+            probe_calls.append(command)
+        return types.SimpleNamespace(returncode=17 if is_probe else 0, stdout="")
+
+    monkeypatch.setattr(mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod._verify_impl(
+            "conda",
+            str(tmp_path / "chan"),
+            str(tmp_path),
+            ["3.13"],
+            "1.2.3",
+            target_subdir,
+            {},
+        )
+
+    assert exc_info.value.code == 1
+    assert len(probe_calls) == 1
+
+
 def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
     """Capture the cwd at every subprocess call and assert the ``import mssql_python`` probes
     ran from the passed workdir (not the inherited checkout-root cwd), and that the original
