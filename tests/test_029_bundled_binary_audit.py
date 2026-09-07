@@ -7,6 +7,7 @@ craft minimal ELF64 blobs (with real program headers) + ``.tar.bz2`` conda packa
 (no zstd backend needed) and exercise the pure logic.
 """
 
+import builtins
 import importlib.util
 import io
 import json
@@ -575,3 +576,18 @@ def test_iter_payload_members_fails_closed_on_unknown_extension(tmp_path):
     bogus.write_bytes(b"not a conda package")
     with pytest.raises(ValueError, match="unrecognized"):
         list(conda_pkg.iter_payload_members(str(bogus)))
+
+
+def test_zstd_decompress_explains_missing_backend(monkeypatch):
+    conda_pkg = sys.modules.get("_conda_pkg")
+    assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
+    real_import = builtins.__import__
+
+    def missing_zstd(name, *args, **kwargs):
+        if name in ("compression", "zstandard"):
+            raise ModuleNotFoundError(f"No module named '{name}'", name=name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_zstd)
+    with pytest.raises(RuntimeError, match="pip install zstandard"):
+        conda_pkg.zstd_decompress(b"not reached")

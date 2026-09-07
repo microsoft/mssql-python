@@ -11,14 +11,14 @@ the caller reads the exit code directly -- so the PowerShell ErrorActionPreferen
 
 Pipeline: gather this leg's wheels into a find-links dir -> locate/install Miniforge ->
 create a dedicated conda-build env -> build the self-contained mssql-python package (which
-VENDORS the ODBC Driver 18 payload) per Python version -> masking-immune RUNPATH/PE arch
+VENDORS the ODBC Driver 18 payload) per Python version -> masking-immune platform binary
 audit -> solve a fresh env from the freshly built local channel and import + driver-load +
 (opt-in) reachability gate -> stage the packages onto the leg artifact.
 
-Cross-builds (CONDA_SUBDIR): osx-64 under Rosetta 2, linux-aarch64 under QEMU binfmt, and the
-osx-arm64 / win-arm64 legs that cannot execute the target Python on the build host (their
-arch is enforced statically by assert_pe_machine.py (Windows), assert_macho_arch.py (macOS),
-or audit_bundled_binaries.py (Linux), and the runtime import auto-skips).
+Cross-builds (CONDA_SUBDIR): linux-aarch64 executes under QEMU binfmt; osx-arm64 and
+win-arm64 cannot execute the target Python on their x64 build hosts, so static platform
+audits enforce architecture and the runtime import auto-skips. osx-64 runs natively on
+the Intel macOS agent.
 """
 
 from __future__ import annotations
@@ -132,9 +132,9 @@ def find_or_install_conda(output_dir: str) -> str:
     if on_path:
         return on_path
 
-    # Reuse an existing Miniforge from a prior run (macOS builds osx-64 AND osx-arm64 on the
-    # same agent, sharing output_dir; each run is a fresh shell so `which conda` is empty even
-    # though miniforge/ already exists -- reinstalling into it would fail).
+    # Reuse Miniforge from a prior run of THIS leg (for example, a retry on a reused agent).
+    # Each condaSubdir has its own output_dir/miniforge; avoid reinstalling into an already
+    # populated target directory, which would fail.
     forge = os.path.join(output_dir, "miniforge")
     reuse = _conda_exe(forge)
     if os.path.exists(reuse):
@@ -397,10 +397,8 @@ def make_verify_channel(output_dir: str, bld: str) -> str:
 
 
 def _is_emulated_cross(target_subdir: str) -> bool:
-    if not target_subdir:
-        return False
-    host = platform.machine()
-    if target_subdir.endswith(("aarch64", "arm64")) and host not in ("aarch64", "arm64"):
+    host = platform.machine().lower()
+    if target_subdir == "linux-aarch64" and host not in ("aarch64", "arm64"):
         _log(
             f"NOTE: emulated CROSS leg (CONDA_SUBDIR={target_subdir} on {host}); runtime driver "
             f"probes are best-effort under QEMU binfmt, build/audit/import remain blocking."

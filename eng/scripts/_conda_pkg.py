@@ -22,13 +22,16 @@ def zstd_decompress(raw: bytes) -> bytes:
     """Decompress a zstandard blob, preferring the 3.14+ stdlib backend."""
     try:  # Python 3.14+
         from compression import zstd  # type: ignore
-
-        return zstd.decompress(raw)
-    except Exception:
-        pass
-    import zstandard  # third-party fallback
-
-    return zstandard.ZstdDecompressor().decompress(raw)
+    except ImportError:
+        try:
+            import zstandard  # third-party fallback
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Missing 'zstandard' dependency: reading .conda (.tar.zst) payloads requires "
+                "Python 3.14+ with compression.zstd or 'pip install zstandard'."
+            ) from exc
+        return zstandard.ZstdDecompressor().decompress(raw)
+    return zstd.decompress(raw)
 
 
 def iter_payload_members(path: str):

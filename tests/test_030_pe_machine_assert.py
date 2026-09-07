@@ -122,6 +122,13 @@ def _zstd_compress(raw: bytes) -> bytes:
         return zstandard.ZstdCompressor().compress(raw)
 
 
+def test_zstd_backend_is_available_for_conda_audit_tests():
+    assert _zstd_available(), (
+        "reading synthetic .conda packages requires Python 3.14+ compression.zstd or the "
+        "declared zstandard test dependency"
+    )
+
+
 def _make_conda(tmp_path, subdir, payload):
     """Build a minimal .conda (info-*.tar.zst + pkg-*.tar.zst) with the given payload files."""
     name = "mssql-python-1.13.0-py312_0"
