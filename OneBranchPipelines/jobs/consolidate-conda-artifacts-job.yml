@@ -4,10 +4,10 @@
 # them into a single conda/ tree for the release pipeline to publish.
 #
 # BEST-EFFORT (build pipeline): conda is a downstream repackage of the ESRP-signed
-# wheels and must NEVER block the primary wheel deliverable, so a missing/short set
-# only WARNS here. The HARD count gate lives in the release pipeline (which refuses
-# to publish an incomplete conda set), symmetric with how the wheel/odbc drops are
-# best-effort collected in the build and gated at release time.
+# wheels and must NEVER block the primary wheel deliverable. An empty set WARNS here;
+# a partial set is reported by its package/subdir counts but does not fail consolidation.
+# The HARD count gate lives in the release pipeline (which refuses to publish an
+# incomplete conda set), symmetric with how wheel/odbc drops are best-effort collected.
 #
 # Expected packages (validated conda subdirs). The self-contained mssql-python
 # package (which vendors the ODBC payload) is emitted per-Python by each build leg;
@@ -106,10 +106,10 @@ jobs:
           done
           echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 28)"
 
-          # BEST-EFFORT: warn only, never exit non-zero — a conda hiccup on any leg
-          # must not fail this build or block the wheel release. The release pipeline's
-          # conda-release-step enforces the hard gate (required subdirs + full Python
-          # matrix) before anything is published.
+          # BEST-EFFORT: never exit non-zero — an empty set emits a warning; a partial set
+          # remains visible in the counts above. A conda hiccup must not block the wheel
+          # release. The release pipeline's conda-release-step enforces the hard gate
+          # (required subdirs + full Python matrix) before anything is published.
           if [ "$found" != "1" ]; then
             echo "##vso[task.logissue type=warning]No conda packages found in the build-leg artifacts."
           else

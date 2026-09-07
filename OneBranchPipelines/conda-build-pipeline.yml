@@ -137,7 +137,7 @@ extends:
                   buildId: $(resources.pipeline.buildPipeline.runID)
                   artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
                   targetPath: '$(Pipeline.Workspace)/odbc_wheels'
-              # win-64 conda build (all Python versions in one pass via the ps1 loop).
+              # win-64 conda build (the shared Python orchestrator loops all requested versions).
               - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
                 parameters:
                   pythonVersion: '${{ parameters.pythonVersions }}'
