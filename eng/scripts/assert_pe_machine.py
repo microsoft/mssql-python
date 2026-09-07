@@ -40,6 +40,10 @@ _SUBDIR_MACHINE = {
     "win-64": 0x8664,
     "win-arm64": 0xAA64,
 }
+_SUBDIR_DRIVER_DIR = {
+    "win-64": "x64",
+    "win-arm64": "arm64",
+}
 
 _NATIVE_SUFFIXES = (".pyd", ".dll")
 
@@ -53,9 +57,24 @@ def pe_machine(data: bytes):
     if len(data) < 0x40 or data[:2] != b"MZ":
         return None
     e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
-    if e_lfanew + 6 > len(data) or data[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
+    coff_offset = e_lfanew + 4
+    if coff_offset + 20 > len(data) or data[e_lfanew:coff_offset] != b"PE\x00\x00":
         return None
-    return struct.unpack_from("<H", data, e_lfanew + 4)[0]
+    machine, section_count = struct.unpack_from("<HH", data, coff_offset)
+    optional_size = struct.unpack_from("<H", data, coff_offset + 16)[0]
+    optional_offset = coff_offset + 20
+    section_table = optional_offset + optional_size
+    if section_count == 0 or optional_size < 2 or section_table + section_count * 40 > len(data):
+        return None
+    optional_magic = struct.unpack_from("<H", data, optional_offset)[0]
+    if optional_magic not in (0x10B, 0x20B):  # PE32 / PE32+
+        return None
+    for index in range(section_count):
+        section_offset = section_table + index * 40
+        raw_size, raw_offset = struct.unpack_from("<II", data, section_offset + 16)
+        if raw_size and (raw_offset > len(data) or raw_size > len(data) - raw_offset):
+            return None
+    return machine
 
 
 def read_subdir(path: str) -> str:
@@ -75,6 +94,7 @@ def audit_package(path: str) -> list[str]:
     if expected is None:
         print(f"  SKIP (no Windows PE payload): {base_name} [subdir={subdir or '?'}]")
         return []
+    expected_driver_dir = _SUBDIR_DRIVER_DIR[subdir]
 
     try:
         members = list(_iter_payload_members(path))
@@ -100,9 +120,10 @@ def audit_package(path: str) -> list[str]:
         # connect; a VC++ runtime or other support DLL satisfies neither category.
         if "/mssql_python_odbc/libs/windows/" in low and low.endswith(".dll"):
             base_low = os.path.basename(low)
-            if base_low.startswith("msodbcsql18"):
+            runtime_suffix = f"/mssql_python_odbc/libs/windows/{expected_driver_dir}/{base_low}"
+            if base_low.startswith("msodbcsql18") and low.endswith(runtime_suffix):
                 driver_dll_seen += 1
-            elif base_low.startswith("mssql-auth"):
+            elif base_low.startswith("mssql-auth") and low.endswith(runtime_suffix):
                 auth_dll_seen += 1
         machine = pe_machine(data)
         if machine is None:
@@ -133,14 +154,16 @@ def audit_package(path: str) -> list[str]:
         if driver_dll_seen == 0:
             errors.append(
                 f"{base_name}: no vendored core ODBC driver DLL "
-                f"(mssql_python_odbc/libs/windows/**/msodbcsql18*.dll) found in a "
+                f"(mssql_python_odbc/libs/windows/{expected_driver_dir}/msodbcsql18*.dll) "
+                f"found in a "
                 f"'{subdir}' package."
             )
         if auth_dll_seen == 0:
             errors.append(
                 f"{base_name}: no vendored mssql-auth DLL "
-                f"(mssql_python_odbc/libs/windows/**/mssql-auth*.dll) found in a '{subdir}' "
-                f"package -- the ODBC driver loader THROWS at connect if it is absent."
+                f"(mssql_python_odbc/libs/windows/{expected_driver_dir}/mssql-auth*.dll) found "
+                f"in a '{subdir}' package -- the ODBC driver loader THROWS at connect if it "
+                f"is absent."
             )
     return errors
 

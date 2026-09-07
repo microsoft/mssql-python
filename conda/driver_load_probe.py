@@ -28,7 +28,11 @@ runs separately whenever a server is wired.
 Exit code 0 = driver loaded; non-zero = driver did not load (blocks publish).
 """
 
+import os
 import sys
+
+_NATIVE_PROVIDER_ENV_VAR = "MSSQL_PYTHON_NATIVE_PROVIDER"
+_REQUIRED_NATIVE_PROVIDER = "msodbcsql18"
 
 # Positive signals: the native ODBC driver LOADED and reached the network / TLS
 # / auth stage (or connected). These are the ONLY outcomes that count as PASS.
@@ -58,7 +62,7 @@ _DRIVER_LOADED_MARKERS = (
     # TLS handshake reached -> both the driver and its crypto backend loaded.
     "ssl provider",
     "ssl security error",
-    "certificate",
+    "certificate verify failed",
 )
 
 
@@ -85,6 +89,11 @@ def describe(exc):
 
 
 def main():
+    # This probe validates the bundled Microsoft ODBC Driver 18 payload. Override any ambient
+    # customer/provider selection before importing mssql_python so an inherited mssql-odbc
+    # setting cannot redirect the proof to a different native provider.
+    os.environ[_NATIVE_PROVIDER_ENV_VAR] = _REQUIRED_NATIVE_PROVIDER
+
     # Deferred so this module can be imported (and ``driver_loaded`` unit-tested)
     # WITHOUT triggering the native ``mssql_python`` import, which needs the
     # compiled extension + driver payload.

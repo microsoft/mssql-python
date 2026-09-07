@@ -14,8 +14,8 @@
 # there is NO separate companion package:
 #   win-64        : 5 py x mssql-python                                       = 5
 #   win-arm64     : 3 py x mssql-python  (py3.12-3.14, cross-built on x64)    = 3
-#   osx-64        : 5 py x mssql-python  (Intel Mac, cross-built via Rosetta) = 5
-#   osx-arm64     : 5 py x mssql-python  (Apple Silicon, native)              = 5
+#   osx-64        : 5 py x mssql-python  (Intel Mac, native)                  = 5
+#   osx-arm64     : 5 py x mssql-python  (Intel Mac, cross-built)             = 5
 #   linux-64      : 5 py x mssql-python  (glibc x86_64 host, native)          = 5
 #   linux-aarch64 : 5 py x mssql-python  (x86_64 host + QEMU, best-effort)    = 5
 #   ------------------------------------------------------------------------------

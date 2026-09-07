@@ -13,8 +13,8 @@
 # (see conda/mssql-python/build.sh|bld.bat). A win-64 / osx-* / linux-* host env cannot be
 # created on a foreign OS, so each conda package must be built on its matching platform --
 # exactly like the wheels and the conda-forge feedstocks. The subdirs that CAN be
-# cross-targeted on one agent are done via CONDA_SUBDIR (osx-64 under Rosetta 2 on the
-# Intel mac agent; linux-aarch64 under QEMU on the x86_64 linux agent).
+# cross-targeted on one agent are done via CONDA_SUBDIR (osx-arm64 is packaged on the
+# Intel mac agent and statically audited; linux-aarch64 runs under QEMU on x86_64 Linux).
 #
 # This pipeline ONLY builds + validates + consolidates the conda packages as an artifact
 # (drop_ConsolidateConda_ConsolidateArtifacts). Publishing is the companion
@@ -148,7 +148,7 @@ extends:
               # SAME job as win-64. continueOnError=true so a win-arm64 hiccup (e.g. an Anaconda
               # `defaults` outage that breaks its solve) can NEVER nuke the native win-64 publish
               # that shares this job -- BLAST-RADIUS isolation. Enforcement does NOT weaken: the
-              # leg still runs a BLOCKING `conda create --dry-run` solve + a PE machine-type assert
+              # leg still runs a BLOCKING dry-run solve + real environment creation + PE assert
               # internally (so a broken/wrong-arch package is never staged), AND win-arm64 is in
               # the release gate's requiredSubdirs -- so a MISSING win-arm64 blocks the RELEASE.
               # Net: a win-arm64 failure isolates to win-arm64 (win-64 still ships) yet still

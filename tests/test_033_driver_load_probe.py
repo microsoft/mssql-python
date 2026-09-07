@@ -14,7 +14,9 @@ deferred into ``main()``, so the classifier can be loaded and exercised with a
 stubbed connector without the compiled extension or a live SQL Server.
 """
 
+import builtins
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -71,6 +73,7 @@ _LOAD_FAILURE_MESSAGES = [
     "dlopen(...): image not found",
     "libcrypto.so.3: cannot open shared object file: No such file or directory",
     "Unsupported architecture",
+    "Failed to load certificate helper library",
     # Fail-closed default: an unexpected / unrelated error is NOT proof of load.
     "some totally unexpected internal error",
 ]
@@ -127,6 +130,30 @@ def test_main_passes_on_simulated_network_failure(monkeypatch):
     probe = _run_main_with_stub(monkeypatch, connect)
     # A genuine connection-stage failure must NOT raise SystemExit (exit 0).
     probe.main()
+
+
+def test_main_overrides_inherited_alternative_provider(monkeypatch):
+    monkeypatch.setenv("MSSQL_PYTHON_NATIVE_PROVIDER", "mssql-odbc")
+    real_import = builtins.__import__
+    imported = {"mssql_python": False}
+
+    def checked_import(name, *args, **kwargs):
+        if name == "mssql_python":
+            imported["mssql_python"] = True
+            assert os.environ["MSSQL_PYTHON_NATIVE_PROVIDER"] == "msodbcsql18"
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", checked_import)
+
+    def connect(_conn_str):
+        assert os.environ["MSSQL_PYTHON_NATIVE_PROVIDER"] == "msodbcsql18"
+        raise RuntimeError(
+            "[Microsoft][ODBC Driver 18 for SQL Server]TCP Provider: connection refused"
+        )
+
+    probe = _run_main_with_stub(monkeypatch, connect)
+    probe.main()
+    assert imported["mssql_python"] is True
 
 
 def test_main_passes_on_clean_connect(monkeypatch):
