@@ -28,6 +28,8 @@ out of each built ``.conda`` payload -- via the ``PT_DYNAMIC`` program header th
     caught too;
   * no ``krb5``/``openssl``/``libltdl`` is VENDORED inside the payload (they are
     serviced by conda, never bundled).
+    * the complete supported driver inventory is present: alpine/debian_ubuntu/rhel/suse
+        for x86_64 and alpine/debian_ubuntu/rhel for arm64 (no SUSE ARM64 driver is shipped).
 
 Non-Linux packages (``win-*`` / ``osx-*``) have no such ELF payload and are skipped.
 An unreadable/malformed package FAILS (it is never silently treated as non-Linux).
@@ -82,6 +84,19 @@ _EM_X86_64 = 62
 _EM_AARCH64 = 183
 _SUBDIR_MACHINE = {"linux-64": _EM_X86_64, "linux-aarch64": _EM_AARCH64}
 _MACHINE_NAME = {_EM_X86_64: "x86_64", _EM_AARCH64: "aarch64"}
+_REQUIRED_DRIVER_TREES = {
+    "linux-64": {
+        ("alpine", "x86_64"),
+        ("debian_ubuntu", "x86_64"),
+        ("rhel", "x86_64"),
+        ("suse", "x86_64"),
+    },
+    "linux-aarch64": {
+        ("alpine", "arm64"),
+        ("debian_ubuntu", "arm64"),
+        ("rhel", "arm64"),
+    },
+}
 
 
 def _is_elf(data: bytes) -> bool:
@@ -307,6 +322,7 @@ def audit_package(path: str) -> list[str]:
             )
 
     lib_dirs: set = set()
+    driver_trees: set = set()
     dirs_with_driver: set = set()
     dirs_with_inst: set = set()
     vendored: list[str] = []
@@ -323,6 +339,10 @@ def audit_package(path: str) -> list[str]:
         # Track every driver lib dir (mssql_python_odbc/libs/linux/<distro>/<arch>/lib).
         if "/libs/linux/" in norm and member_dir.endswith("/lib"):
             lib_dirs.add(member_dir)
+            relative = norm.split("/libs/linux/", 1)[1]
+            parts = relative.split("/")
+            if len(parts) >= 3:
+                driver_trees.add((parts[0], parts[1]))
 
         # Flag any crypto/krb5/ltdl library vendored ANYWHERE in the package payload (not only
         # under /libs/linux/): conda services these via DECLARED deps in $PREFIX/lib, so the
@@ -435,12 +455,16 @@ def audit_package(path: str) -> list[str]:
             f"bundled: {sorted(vendored)} (krb5/openssl/libltdl are serviced by conda, "
             f"never shipped inside the payload)."
         )
-    # Per-subdir presence: EVERY discovered driver lib dir must ship BOTH a driver and
-    # libodbcinst.so.2. A package-global count would let a driver missing from ONE
-    # distro subdir (alpine/debian_ubuntu/rhel/suse) slip past. NOTE: this checks every
-    # DISCOVERED distro/arch dir but does NOT assert a required distro SET -- the
-    # repackaged wheel is the source of truth for which distro payloads exist, so a
-    # wholesale-missing distro is a wheel-build concern, not enforced here.
+    # Require the supported distro inventory for this architecture, then require EVERY
+    # discovered driver lib dir to ship BOTH a driver and libodbcinst.so.2. The x86_64
+    # ODBC wheel supports alpine/debian_ubuntu/rhel/suse; the arm64 wheel supports
+    # alpine/debian_ubuntu/rhel (Microsoft does not ship a SUSE ARM64 driver tree).
+    missing_trees = _REQUIRED_DRIVER_TREES[subdir] - driver_trees
+    if missing_trees:
+        errors.append(
+            f"{base_name}: missing required Linux driver trees for '{subdir}': "
+            f"{sorted(f'{distro}/{arch}' for distro, arch in missing_trees)}."
+        )
     if not lib_dirs:
         errors.append(
             f"{base_name}: no mssql_python_odbc/libs/linux/*/*/lib directory found in a "

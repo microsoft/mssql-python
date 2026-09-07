@@ -125,3 +125,37 @@ def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
         )
 
     assert os.getcwd() == start_cwd, "verify() did not restore cwd after a failing phase"
+
+
+def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeypatch):
+    """A successful solve does not prove package extraction/linking succeeds."""
+    mod = _load_orchestrator()
+    calls = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        command = list(cmd)
+        calls.append(command)
+        is_real_create = command[1:3] == ["create", "-y"]
+        return types.SimpleNamespace(returncode=17 if is_real_create else 0, stdout="")
+
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod._verify_impl(
+            "conda",
+            str(tmp_path / "chan"),
+            str(tmp_path / "recipe"),
+            ["3.11"],
+            "1.2.3",
+            "win-arm64",
+            {},
+        )
+
+    assert exc_info.value.code == 1
+    assert any("--dry-run" in command for command in calls)
+    assert any(command[1:3] == ["create", "-y"] for command in calls)
+    assert not any(command[1:3] == ["run", "-n"] for command in calls)

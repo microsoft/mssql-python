@@ -9,10 +9,11 @@ osx-arm64 package and nothing would catch it before publish.
 
 This is the macOS twin of eng/scripts/assert_pe_machine.py (Windows PE COFF machine) and
 eng/scripts/audit_bundled_binaries.py (Linux ELF RUNPATH): it reads the Mach-O cputype(s)
-straight out of every .dylib/.so in the built .conda payload -- enumerating every slice of a
-FAT/universal binary, like ``lipo -archs`` -- and asserts the package's arch slice is PRESENT
-(osx-arm64 -> arm64, osx-64 -> x86_64). A package missing EITHER the binding (ddbc_bindings*.so)
-OR the vendored ODBC driver (libmsodbcsql*.dylib) FAILS.
+straight out of the binding and vendored driver files in the built .conda payload. The binding
+must contain the package's arch slice (osx-arm64 -> arm64, osx-64 -> x86_64). The ODBC wheel
+deliberately bundles separate macos/arm64 and macos/x86_64 driver trees, so each tree is checked
+against its directory arch and the package target's tree must contain libmsodbcsql. FAT/universal
+binaries are validated like ``lipo -archs``, including complete tables and valid slice ranges.
 
 Exit 0 = every checked package's Mach-O binaries carry the expected arch slice; non-zero = a
 mismatch/violation.
@@ -45,6 +46,11 @@ _SUBDIR_ARCH = {
     "osx-arm64": "arm64",
 }
 
+_DRIVER_DIR_ARCH = {
+    "arm64": "arm64",
+    "x86_64": "x86_64",
+}
+
 _NATIVE_SUFFIXES = (".dylib", ".so")
 
 # Mach-O / fat magics (mach-o/loader.h, mach-o/fat.h). The fat header is ALWAYS big-endian on
@@ -55,32 +61,63 @@ _FAT_MAGIC = 0xCAFEBABE  # universal (fat_arch entries, 20 bytes each)
 _FAT_MAGIC_64 = 0xCAFEBABF  # universal64 (fat_arch_64 entries, 32 bytes each)
 
 
+def _thin_arch(data: bytes):
+    if len(data) < 8:
+        return None
+    be = struct.unpack_from(">I", data, 0)[0]
+    le = struct.unpack_from("<I", data, 0)[0]
+    if le in (_MH_MAGIC, _MH_MAGIC_64):
+        endian = "<"
+        header_size = 32 if le == _MH_MAGIC_64 else 28
+    elif be in (_MH_MAGIC, _MH_MAGIC_64):
+        endian = ">"
+        header_size = 32 if be == _MH_MAGIC_64 else 28
+    else:
+        return None
+    if len(data) < header_size:
+        return None
+    cputype = struct.unpack_from(f"{endian}I", data, 4)[0]
+    return _CPU_ARCHES.get(cputype, hex(cputype))
+
+
 def macho_arches(data: bytes):
     """Return the SET of lipo-style arch names in a Mach-O binary (thin OR fat/universal), or
     None if the bytes are not Mach-O. Reads only headers -- no dependency on macOS tooling."""
     if len(data) < 8:
         return None
     be = struct.unpack_from(">I", data, 0)[0]  # fat magic is big-endian on disk
-    le = struct.unpack_from("<I", data, 0)[0]
     if be in (_FAT_MAGIC, _FAT_MAGIC_64):
         nfat = struct.unpack_from(">I", data, 4)[0]
         entry = 20 if be == _FAT_MAGIC else 32  # fat_arch vs fat_arch_64
+        table_end = 8 + nfat * entry
+        if nfat == 0 or table_end > len(data):
+            return None
         arches = set()
-        off = 8
-        for _ in range(nfat):
-            if off + 4 > len(data):
-                break
-            cputype = struct.unpack_from(">I", data, off)[0]  # cputype is fat_arch's first word
-            arches.add(_CPU_ARCHES.get(cputype, hex(cputype)))
-            off += entry
-        return arches or None
-    if le in (_MH_MAGIC, _MH_MAGIC_64):  # little-endian thin (Intel / Apple Silicon)
-        cputype = struct.unpack_from("<I", data, 4)[0]
-    elif be in (_MH_MAGIC, _MH_MAGIC_64):  # big-endian thin (legacy)
-        cputype = struct.unpack_from(">I", data, 4)[0]
-    else:
-        return None
-    return {_CPU_ARCHES.get(cputype, hex(cputype))}
+        for index in range(nfat):
+            entry_offset = 8 + index * entry
+            if be == _FAT_MAGIC:
+                cputype, _, slice_offset, slice_size, _ = struct.unpack_from(
+                    ">IIIII", data, entry_offset
+                )
+            else:
+                cputype, _, slice_offset, slice_size, _, _ = struct.unpack_from(
+                    ">IIQQII", data, entry_offset
+                )
+            if (
+                slice_size == 0
+                or slice_offset < table_end
+                or slice_offset > len(data)
+                or slice_size > len(data) - slice_offset
+            ):
+                return None
+            declared_arch = _CPU_ARCHES.get(cputype, hex(cputype))
+            embedded_arch = _thin_arch(data[slice_offset : slice_offset + slice_size])
+            if embedded_arch != declared_arch:
+                return None
+            arches.add(declared_arch)
+        return arches
+    thin_arch = _thin_arch(data)
+    return {thin_arch} if thin_arch is not None else None
 
 
 def read_subdir(path: str) -> str:
@@ -107,51 +144,54 @@ def audit_package(path: str) -> list[str]:
         return [f"{base_name}: unreadable/malformed package payload ({exc})."]
 
     errors: list[str] = []
-    native_seen = 0
     binding_seen = 0
-    driver_seen = 0
+    target_driver_seen = 0
     for name, data in members:
         low = name.replace("\\", "/").lower()
         if not low.endswith(_NATIVE_SUFFIXES):
             continue
-        native_seen += 1
         base_low = os.path.basename(low)
-        if "/mssql_python/" in low and "ddbc_bindings" in base_low and low.endswith(".so"):
+        required_arch = None
+        if "/mssql_python/" in low and base_low.startswith("ddbc_bindings") and low.endswith(".so"):
             binding_seen += 1
-        is_driver = base_low.startswith("libmsodbcsql") and low.endswith(".dylib")
-        if "/mssql_python_odbc/libs/" in low and is_driver:
-            driver_seen += 1
+            required_arch = expected
+        elif "/mssql_python_odbc/libs/macos/" in low and low.endswith(".dylib"):
+            relative = low.split("/mssql_python_odbc/libs/macos/", 1)[1]
+            driver_dir = relative.split("/", 1)[0]
+            required_arch = _DRIVER_DIR_ARCH.get(driver_dir)
+            if required_arch is None:
+                errors.append(f"{name}: unrecognized macOS driver architecture directory.")
+                continue
+            if base_low.startswith("libmsodbcsql") and required_arch == expected:
+                target_driver_seen += 1
+        else:
+            continue
         arches = macho_arches(data)
         if arches is None:
-            errors.append(f"{name}: not a valid Mach-O binary (no MH/FAT magic).")
+            errors.append(f"{name}: not a valid, complete Mach-O binary.")
             continue
-        if expected not in arches:
+        if required_arch not in arches:
             errors.append(
                 f"{name}: Mach-O arches {sorted(arches)} do NOT include the required "
-                f"'{expected}' slice for subdir '{subdir}'."
+                f"'{required_arch}' slice."
             )
         else:
-            print(f"  {subdir}/{base_low}: arches={sorted(arches)} (has {expected}) OK")
+            print(f"  {subdir}/{base_low}: arches={sorted(arches)} (has {required_arch}) OK")
 
     # Presence gate (mirror the PE assert): osx-arm64 skips the runtime import, so this static
     # pass IS its arch+presence check. A package with the binding but no driver (or vice versa)
     # must fail here.
-    if native_seen == 0:
+    if binding_seen == 0:
         errors.append(
-            f"{base_name}: no .dylib/.so found in a '{subdir}' package -- the native binding "
-            f"(ddbc_bindings*.so) + the vendored ODBC driver (libmsodbcsql*.dylib) must be present."
+            f"{base_name}: no native binding (mssql_python/ddbc_bindings*.so) found in a "
+            f"'{subdir}' package."
         )
-    else:
-        if binding_seen == 0:
-            errors.append(
-                f"{base_name}: no native binding (mssql_python/ddbc_bindings*.so) found in a "
-                f"'{subdir}' package."
-            )
-        if driver_seen == 0:
-            errors.append(
-                f"{base_name}: no vendored ODBC driver "
-                f"(mssql_python_odbc/libs/**/libmsodbcsql*.dylib) found in a '{subdir}' package."
-            )
+    if target_driver_seen == 0:
+        errors.append(
+            f"{base_name}: no vendored ODBC driver for '{expected}' "
+            f"(mssql_python_odbc/libs/macos/{expected}/**/libmsodbcsql*.dylib) found in a "
+            f"'{subdir}' package."
+        )
     return errors
 
 
