@@ -17,8 +17,8 @@ audit -> solve a fresh env from the freshly built local channel and import + dri
 
 Cross-builds (CONDA_SUBDIR): osx-64 under Rosetta 2, linux-aarch64 under QEMU binfmt, and the
 osx-arm64 / win-arm64 legs that cannot execute the target Python on the build host (their
-arch is enforced statically by assert_pe_machine.py (Windows) / audit_bundled_binaries.py
-(Linux) / the universal2 wheel tag (osx-arm64), and the runtime import auto-skips).
+arch is enforced statically by assert_pe_machine.py (Windows), assert_macho_arch.py (macOS),
+or audit_bundled_binaries.py (Linux), and the runtime import auto-skips).
 """
 
 from __future__ import annotations
@@ -481,7 +481,7 @@ def _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env
                 env=env,
                 what=f"win-arm64 --dry-run solve (py {py})",
             )
-            rc, out = run_capture(
+            run(
                 [
                     conda,
                     "create",
@@ -499,18 +499,8 @@ def _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env
                     f"mssql-python={mssql_ver}",
                 ],
                 env=env,
+                what=f"win-arm64 conda create verify env (py {py})",
             )
-            if rc != 0:
-                # Best-effort: only a real arm64 host can create+run it. The dry-run already
-                # proved solvability and the PE assert + static audit enforce arch, so a
-                # create failure here can only be infra -- PRINT it (not swallow) and skip.
-                _log(
-                    f"=== [py {py}] win-arm64: SOLVES (dry-run OK); real env not creatable on "
-                    f"this x64 host -- arch enforced by the PE assert + static audit, skipping "
-                    f"runtime import. ==="
-                )
-                _log(out)
-                continue
         else:
             run(
                 [
@@ -541,7 +531,7 @@ def _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env
                 _log(
                     f"=== [py {py}] {target_subdir} cross: target Python not executable on this "
                     f"host; deps SOLVED (blocking), skipping runtime import (arch enforced by "
-                    f"the PE/static audit; osx-arm64 trusted from the universal2 wheel tag). ==="
+                    f"the platform's static binary audit). ==="
                 )
                 _log(out)
                 continue

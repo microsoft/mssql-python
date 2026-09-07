@@ -133,6 +133,10 @@ _GOOD_RUNPATH = "$ORIGIN:" + _CLIMB_ENTRY
 _DRIVER_NEEDED = ["libkrb5.so.3", "libgssapi_krb5.so.2", "libodbcinst.so.2"]
 _INST_NEEDED = ["libltdl.so.7"]
 _GOOD_DEPENDS = ["python", "azure-identity", "krb5", "libtool", "openssl >=3,<4"]
+_DISTROS_BY_SUBDIR = {
+    "linux-64": ("alpine", "debian_ubuntu", "rhel", "suse"),
+    "linux-aarch64": ("alpine", "debian_ubuntu", "rhel"),
+}
 
 
 def _make_pkg(
@@ -145,8 +149,9 @@ def _make_pkg(
     driver_needed=None,
     inst_needed=None,
     machine=62,
+    distros=None,
 ):
-    """Write a minimal .tar.bz2 conda package with two ELF driver binaries."""
+    """Write a minimal package with complete per-distro driver trees by default."""
     p = tmp_path / "mssql-python-1.13.0-py312_0.tar.bz2"
     with tarfile.open(p, "w:bz2") as tf:
 
@@ -167,26 +172,32 @@ def _make_pkg(
                 }
             ).encode(),
         )
-        add(
-            f"{_LIBDIR}/libmsodbcsql-18.6.so.2.1",
-            _make_elf64(
-                runpath=runpath,
-                rpath=rpath,
-                needed=_DRIVER_NEEDED if driver_needed is None else driver_needed,
-                machine=machine,
-            ),
-        )
-        add(
-            f"{_LIBDIR}/libodbcinst.so.2",
-            _make_elf64(
-                runpath=runpath,
-                rpath=rpath,
-                needed=_INST_NEEDED if inst_needed is None else inst_needed,
-                machine=machine,
-            ),
-        )
-        if vendored:
-            add(f"{_LIBDIR}/{vendored}", b"\x7fELF fake-vendored")
+        arch = "arm64" if subdir == "linux-aarch64" else "x86_64"
+        selected_distros = distros or _DISTROS_BY_SUBDIR.get(subdir, ("debian_ubuntu",))
+        for distro in selected_distros:
+            libdir = (
+                f"lib/python3.12/site-packages/mssql_python_odbc/libs/linux/" f"{distro}/{arch}/lib"
+            )
+            add(
+                f"{libdir}/libmsodbcsql-18.6.so.2.1",
+                _make_elf64(
+                    runpath=runpath,
+                    rpath=rpath,
+                    needed=_DRIVER_NEEDED if driver_needed is None else driver_needed,
+                    machine=machine,
+                ),
+            )
+            add(
+                f"{libdir}/libodbcinst.so.2",
+                _make_elf64(
+                    runpath=runpath,
+                    rpath=rpath,
+                    needed=_INST_NEEDED if inst_needed is None else inst_needed,
+                    machine=machine,
+                ),
+            )
+            if vendored:
+                add(f"{libdir}/{vendored}", b"\x7fELF fake-vendored")
     return str(p)
 
 
@@ -220,6 +231,15 @@ def test_expected_climb_entry_is_exact():
 
 def test_audit_passes_with_exact_climb(tmp_path):
     assert audit.audit_package(_make_pkg(tmp_path)) == []
+
+
+def test_audit_fails_when_entire_required_distro_tree_is_missing(tmp_path):
+    package = _make_pkg(tmp_path, distros=("debian_ubuntu", "rhel", "suse"))
+    errors = audit.audit_package(package)
+    assert any(
+        "missing required Linux driver trees" in error and "alpine/x86_64" in error
+        for error in errors
+    )
 
 
 # --- N1: wrong climb variants must all FAIL --------------------------------
@@ -476,6 +496,18 @@ def test_audit_allows_musl_variant_without_libltdl(tmp_path):
             f"{alpine_lib}/libodbcinst.so.2",
             _make_elf64(_GOOD_RUNPATH, needed=["libc.musl-x86_64.so.1"]),
         )
+        for distro in ("rhel", "suse"):
+            libdir = (
+                "lib/python3.12/site-packages/mssql_python_odbc/libs/linux/" f"{distro}/x86_64/lib"
+            )
+            add(
+                f"{libdir}/libmsodbcsql-18.6.so.2.1",
+                _make_elf64(_GOOD_RUNPATH, needed=_DRIVER_NEEDED),
+            )
+            add(
+                f"{libdir}/libodbcinst.so.2",
+                _make_elf64(_GOOD_RUNPATH, needed=_INST_NEEDED),
+            )
     assert audit.audit_package(str(p)) == []
 
 
