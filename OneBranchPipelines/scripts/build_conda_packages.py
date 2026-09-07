@@ -94,6 +94,14 @@ def gather_wheels(mssql_dir: str, mssql_glob: str, odbc_dir: str, odbc_filter: s
     odbc_matches = sorted(glob.glob(os.path.join(odbc_dir, "**", odbc_filter), recursive=True))
     if not odbc_matches:
         _die(f"no wheel matching '{odbc_filter}' in {odbc_dir}")
+    if len(odbc_matches) != 1:
+        # An arch-ambiguous filter (e.g. one that matches BOTH x86_64 and arm64 odbc wheels)
+        # would silently pick [0] and could vendor the WRONG-arch driver into this leg. Demand
+        # an exact single match so the filter is tightened to this leg's arch instead.
+        _die(
+            f"odbc-wheel-filter '{odbc_filter}' matched {len(odbc_matches)} wheels in {odbc_dir} "
+            f"(expected exactly 1): {[os.path.basename(m) for m in odbc_matches]}"
+        )
     odbc = odbc_matches[0]
     shutil.copy2(odbc, links)
 
@@ -344,6 +352,34 @@ def audit_packages(conda, builder, recipe_root, bld, target_subdir, env):
             [conda, "run", "-n", builder, "python", pe, "--root", bld, "--subdir", "win-arm64"],
             env=env,
             what="win-arm64 PE machine-type assert",
+        )
+    # osx legs: the universal2 wheel's arch is trusted UNLESS the Mach-O slice assert reads the
+    # cputype out of every vendored .dylib/.so. osx-arm64 is cross-built on the Intel agent (its
+    # arm64 slice can't execute there, so the runtime import is skipped) -- this is its ONLY arch
+    # check; osx-64 gets it too as a cheap symmetric guard against a mislabeled/thin binary.
+    if target_subdir in ("osx-64", "osx-arm64"):
+        macho = os.path.join(eng, "assert_macho_arch.py")
+        if not os.path.isfile(macho):
+            _die(f"Mach-O arch assert script not found at {macho}")
+        _log(
+            f"=== {target_subdir} Mach-O arch-slice assert (vendored .dylib/.so must carry "
+            f"the {target_subdir} slice) ==="
+        )
+        run(
+            [
+                conda,
+                "run",
+                "-n",
+                builder,
+                "python",
+                macho,
+                "--root",
+                bld,
+                "--subdir",
+                target_subdir,
+            ],
+            env=env,
+            what=f"{target_subdir} Mach-O arch-slice assert",
         )
 
 

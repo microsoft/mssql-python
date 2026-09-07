@@ -57,6 +57,10 @@ def iter_payload_members(path: str):
                 f = tf.extractfile(m)
                 if f is not None:
                     yield m.name, f.read()
+    else:
+        # Fail CLOSED like read_index -- a caller that gets an unexpected extension must NOT
+        # receive a silently-empty iterator (a truncated/renamed package would slip through).
+        raise ValueError(f"{path}: unrecognized conda package extension")
 
 
 def read_index(path: str) -> dict:

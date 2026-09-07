@@ -529,3 +529,17 @@ def test_audit_fails_unknown_linux_subdir(tmp_path):
     # not silently skip the architecture gate this audit exists to enforce.
     errors = audit.audit_package(_make_pkg(tmp_path, subdir="linux-ppc64le"))
     assert any("unrecognized Linux subdir" in e for e in errors)
+
+
+# --- shared payload reader fails closed (eng/scripts/_conda_pkg.py) ---------
+
+
+def test_iter_payload_members_fails_closed_on_unknown_extension(tmp_path):
+    # An unrecognized package extension must RAISE (like read_index), not silently yield
+    # nothing -- a truncated/renamed artifact would otherwise pass every audit as "empty".
+    conda_pkg = sys.modules.get("_conda_pkg")
+    assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
+    bogus = tmp_path / "notapackage.zip"
+    bogus.write_bytes(b"not a conda package")
+    with pytest.raises(ValueError, match="unrecognized"):
+        list(conda_pkg.iter_payload_members(str(bogus)))
