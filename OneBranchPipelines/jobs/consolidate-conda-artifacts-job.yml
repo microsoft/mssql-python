@@ -44,7 +44,8 @@ parameters:
 jobs:
   - job: ConsolidateArtifacts
     displayName: 'Consolidate All Conda Packages'
-    condition: succeeded()
+    # Preserve partial artifacts after failed dependencies; do not run after cancellation.
+    condition: succeededOrFailed()
 
     pool:
       type: linux
