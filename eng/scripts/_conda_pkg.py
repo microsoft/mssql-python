@@ -25,10 +25,11 @@ def zstd_decompress(raw: bytes) -> bytes:
     except ImportError:
         try:
             import zstandard  # third-party fallback
-        except ModuleNotFoundError as exc:
+        except ImportError as exc:
             raise RuntimeError(
-                "Missing 'zstandard' dependency: reading .conda (.tar.zst) payloads requires "
-                "Python 3.14+ with compression.zstd or 'pip install zstandard'."
+                "Unable to import 'zstandard': reading .conda (.tar.zst) payloads requires "
+                "Python 3.14+ with compression.zstd or a working 'zstandard' install "
+                "(pip install zstandard)."
             ) from exc
         return zstandard.ZstdDecompressor().decompress(raw)
     return zstd.decompress(raw)
