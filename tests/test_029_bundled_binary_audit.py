@@ -591,3 +591,37 @@ def test_zstd_decompress_explains_missing_backend(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", missing_zstd)
     with pytest.raises(RuntimeError, match="pip install zstandard"):
         conda_pkg.zstd_decompress(b"not reached")
+
+
+def test_zstd_decompress_explains_broken_fallback_import(monkeypatch):
+    conda_pkg = sys.modules.get("_conda_pkg")
+    assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
+    real_import = builtins.__import__
+
+    def broken_zstd(name, *args, **kwargs):
+        if name == "compression":
+            raise ModuleNotFoundError("No module named 'compression'", name=name)
+        if name == "zstandard":
+            raise ImportError("DLL load failed while importing backend")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken_zstd)
+    with pytest.raises(RuntimeError, match="working 'zstandard' install") as exc_info:
+        conda_pkg.zstd_decompress(b"not reached")
+    assert isinstance(exc_info.value.__cause__, ImportError)
+
+
+def test_zstd_decompress_preserves_decompression_errors(monkeypatch):
+    conda_pkg = sys.modules.get("_conda_pkg")
+    assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
+
+    class BrokenPayload:
+        @staticmethod
+        def decompress(_raw):
+            raise ValueError("invalid zstd frame")
+
+    fake_backend = type("FakeZstandard", (), {"ZstdDecompressor": BrokenPayload})
+    monkeypatch.setitem(sys.modules, "zstandard", fake_backend)
+
+    with pytest.raises(ValueError, match="invalid zstd frame"):
+        conda_pkg.zstd_decompress(b"invalid")
