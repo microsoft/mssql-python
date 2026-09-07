@@ -256,7 +256,6 @@ class DriverLoader {
     DriverLoader(const DriverLoader&) = delete;
     DriverLoader& operator=(const DriverLoader&) = delete;
 
-    bool m_driverLoaded;
     std::once_flag m_onceFlag;
     // Captures a failure raised inside the std::call_once callable so loadDriver()
     // can rethrow it from a normal context. This is required on musl libc
