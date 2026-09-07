@@ -29,6 +29,8 @@ _ORCH_PATH = (
     / "scripts"
     / "build_conda_packages.py"
 )
+_PIPELINE_PATH = _ORCH_PATH.parent.parent / "conda-build-pipeline.yml"
+_CONSOLIDATE_JOB_PATH = _ORCH_PATH.parent.parent / "jobs" / "consolidate-conda-artifacts-job.yml"
 
 pytestmark = pytest.mark.skipif(
     not _ORCH_PATH.exists(), reason=f"orchestrator not present ({_ORCH_PATH})"
@@ -41,6 +43,23 @@ def _load_orchestrator():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def test_best_effort_consolidation_runs_after_upstream_failure():
+    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
+    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
+        producer = pipeline.split(f"- stage: {stage_name}", 1)[1]
+        assert "dependsOn: []" in producer.split("jobs:", 1)[0]
+
+    stage = pipeline.split("- stage: ConsolidateConda", 1)[1]
+    dependencies = stage.split("jobs:", 1)[0]
+    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
+        assert f"- {stage_name}" in dependencies
+    assert "condition: succeededOrFailed()" in stage.split("jobs:", 1)[0]
+
+    job = _CONSOLIDATE_JOB_PATH.read_text(encoding="utf-8")
+    consolidate = job.split("- job: ConsolidateArtifacts", 1)[1]
+    assert "condition: succeededOrFailed()" in consolidate.split("pool:", 1)[0]
 
 
 @pytest.mark.parametrize(

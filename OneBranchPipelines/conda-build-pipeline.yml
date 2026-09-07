@@ -102,6 +102,8 @@ extends:
       # =========================
       - stage: CondaWin64
         displayName: 'Conda win-64'
+        # OS producer stages are independent so one platform failure cannot skip the others.
+        dependsOn: []
         jobs:
           - job: BuildConda
             displayName: 'Build + validate win-64 conda'
@@ -178,6 +180,7 @@ extends:
       # =========================
       - stage: CondaMacOS
         displayName: 'Conda macOS (osx-arm64 + osx-64)'
+        dependsOn: []
         jobs:
           - job: BuildConda
             displayName: 'Build + validate macOS conda'
@@ -244,6 +247,7 @@ extends:
       # =========================
       - stage: CondaLinux
         displayName: 'Conda Linux (linux-64 + linux-aarch64)'
+        dependsOn: []
         jobs:
           - job: BuildConda
             displayName: 'Build + validate Linux conda'
@@ -344,6 +348,8 @@ extends:
           - CondaWin64
           - CondaMacOS
           - CondaLinux
+        # Collect partial diagnostics after failed build stages, but honor pipeline cancellation.
+        condition: succeededOrFailed()
         jobs:
           - template: /OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml@self
             parameters:
