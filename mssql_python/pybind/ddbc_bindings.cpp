@@ -6008,6 +6008,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("columnSize", &ParamInfo::columnSize)
         .def_readwrite("decimalDigits", &ParamInfo::decimalDigits)
         .def_readwrite("strLenOrInd", &ParamInfo::strLenOrInd)
+        .def_readonly("utf16Len", &ParamInfo::utf16Len)
         .def_property(
             "dataPtr",
             [](const ParamInfo& info) -> py::object {
@@ -6073,6 +6074,29 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("statementHandle"), py::arg("query"), py::arg("params"),
           py::arg("inputSizes"), py::arg("isStmtPrepared"), py::arg("usePrepare"),
           py::arg("encodingSettings"));
+    // Test-only: run native parameter detection in isolation and return the resulting
+    // ParamInfo list, so the detection contract (e.g. utf16Len) can be asserted without
+    // a live SQL Server. Operates on a copy so the caller's list is not mutated.
+    m.def(
+        "DetectParamTypesForTesting",
+        [](py::list params, py::object inputSizes) -> py::list {
+            if (!inputSizes.is_none() && !py::isinstance<py::list>(inputSizes)) {
+                throw py::type_error("inputSizes must be None or a list");
+            }
+            py::list copy;
+            for (auto item : params) {
+                copy.append(item);
+            }
+            PyObject* sizes = inputSizes.is_none() ? Py_None : inputSizes.ptr();
+            std::vector<ParamInfo> infos = DetectParamTypes(copy.ptr(), sizes);
+            py::list result;
+            for (auto& info : infos) {
+                result.append(py::cast(std::move(info)));
+            }
+            return result;
+        },
+        "Test-only: run DetectParamTypes and return the ParamInfo list.",
+        py::arg("params"), py::arg("inputSizes") = py::none());
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",
           py::arg("statementHandle"), py::arg("query"), py::arg("columnwise_params"),
           py::arg("paramInfos"), py::arg("paramSetSize"), py::arg("encodingSettings"));
