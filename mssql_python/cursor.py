@@ -54,6 +54,11 @@ MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
 # encoding and must be rejected at detect time on both paths (see _map_sql_type).
 BIGINT_MIN: int = -(2**63)
 BIGINT_MAX: int = 2**63 - 1
+ODBC3_TEMPORAL_SQL_TYPES = {
+    ddbc_sql_const.SQL_DATE.value: ddbc_sql_const.SQL_TYPE_DATE.value,
+    ddbc_sql_const.SQL_TIME.value: ddbc_sql_const.SQL_TYPE_TIME.value,
+    ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_TYPE_TIMESTAMP.value,
+}
 
 
 def _normalize_time_param(value, c_type):
@@ -947,7 +952,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
             # Naive datetime -> TIMESTAMP
             return (
-                ddbc_sql_const.SQL_TIMESTAMP.value,
+                ddbc_sql_const.SQL_TYPE_TIMESTAMP.value,
                 ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
                 26,
                 6,
@@ -956,7 +961,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         if isinstance(param, datetime.date):
             return (
-                ddbc_sql_const.SQL_DATE.value,
+                ddbc_sql_const.SQL_TYPE_DATE.value,
                 ddbc_sql_const.SQL_C_TYPE_DATE.value,
                 10,
                 0,
@@ -1180,6 +1185,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                             f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant."
                         )
 
+                    sql_type = ODBC3_TEMPORAL_SQL_TYPES.get(sql_type, sql_type)
+
                     # Validate size and precision
                     if not isinstance(column_size, int) or column_size < 0:
                         raise ValueError(
@@ -1202,6 +1209,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         raise ValueError(
                             f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant."
                         )
+
+                    sql_type = ODBC3_TEMPORAL_SQL_TYPES.get(sql_type, sql_type)
 
                     self._inputsizes.append((sql_type, 0, 0))
 
