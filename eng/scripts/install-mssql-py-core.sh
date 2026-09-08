@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Downloads the mssql-py-core-wheels NuGet package from a public Azure Artifacts
-# feed and extracts the matching mssql_py_core binary into the repository root
-# so that 'import mssql_py_core' works when running from the source tree.
+# Downloads the mssql-python-rs-wheels NuGet package (or its legacy name) from a
+# public Azure Artifacts feed and extracts the matching mssql_py_core binary into
+# the repository root so that 'import mssql_py_core' works from the source tree.
 #
 # The extracted files are placed at <repo-root>/mssql_py_core/ which contains:
 #   - __init__.py
@@ -74,8 +74,11 @@ print(f'cp{v.major}{v.minor} {platform.system().lower()} {platform.machine().low
             ;;
     esac
 
-    WHEEL_PATTERN="mssql_py_core-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
-    echo "Wheel pattern: $WHEEL_PATTERN"
+    WHEEL_PATTERNS=(
+        "mssql_python_rs-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
+        "mssql_py_core-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
+    )
+    echo "Wheel patterns: ${WHEEL_PATTERNS[*]}"
 }
 
 download_nupkg() {
@@ -92,16 +95,26 @@ download_nupkg() {
         exit 1
     fi
 
-    local package_id="mssql-py-core-wheels"
     local version_lower
     version_lower=$(echo "$PACKAGE_VERSION" | tr '[:upper:]' '[:lower:]')
-
-    # e.g. https://pkgs.dev.azure.com/.../nuget/v3/flat2/mssql-py-core-wheels/0.1.0-dev.20260222.140833/mssql-py-core-wheels.0.1.0-dev.20260222.140833.nupkg
-    NUPKG_URL="${PACKAGE_BASE_URL}${package_id}/${version_lower}/${package_id}.${version_lower}.nupkg"
-    NUPKG_PATH="$output_dir/${package_id}.${version_lower}.nupkg"
-
-    echo "Downloading: $NUPKG_URL"
-    curl -sSL -o "$NUPKG_PATH" "$NUPKG_URL"
+    local package_id
+    NUPKG_PATH=""
+    for package_id in "mssql-python-rs-wheels" "mssql-py-core-wheels"; do
+        NUPKG_URL="${PACKAGE_BASE_URL}${package_id}/${version_lower}/${package_id}.${version_lower}.nupkg"
+        local candidate_path="$output_dir/${package_id}.${version_lower}.nupkg"
+        echo "Downloading: $NUPKG_URL"
+        if curl -fsSL -o "$candidate_path" "$NUPKG_URL"; then
+            NUPKG_PATH="$candidate_path"
+            echo "Using NuGet package: $package_id"
+            break
+        fi
+        rm -f "$candidate_path"
+        echo "Package not available: $package_id $PACKAGE_VERSION"
+    done
+    if [ -z "$NUPKG_PATH" ]; then
+        echo "ERROR: Package version $PACKAGE_VERSION was not found under the new or legacy package ID"
+        exit 1
+    fi
 
     local filesize
     filesize=$(wc -c < "$NUPKG_PATH")
@@ -131,11 +144,18 @@ find_matching_wheel() {
         exit 1
     fi
 
-    MATCHING_WHEEL=$(find "$wheels_dir" -name "$WHEEL_PATTERN" | head -1)
+    MATCHING_WHEEL=""
+    local wheel_pattern
+    for wheel_pattern in "${WHEEL_PATTERNS[@]}"; do
+        MATCHING_WHEEL=$(find "$wheels_dir" -name "$wheel_pattern" | head -1)
+        if [ -n "$MATCHING_WHEEL" ]; then
+            break
+        fi
+    done
     if [ -z "$MATCHING_WHEEL" ]; then
         echo "Available wheels:"
         ls "$wheels_dir"/*.whl 2>/dev/null || echo "  (none)"
-        echo "ERROR: No wheel found matching: $WHEEL_PATTERN"
+        echo "ERROR: No wheel found matching: ${WHEEL_PATTERNS[*]}"
         exit 1
     fi
 
@@ -196,7 +216,7 @@ extract_and_verify() {
 # --- main ---
 
 FEED_URL="${FEED_URL:-https://pkgs.dev.azure.com/sqlclientdrivers/public/_packaging/mssql-rs_Public/nuget/v3/index.json}"
-OUTPUT_DIR="${TMPDIR:-/tmp}/mssql-py-core-wheels"
+OUTPUT_DIR="${TMPDIR:-/tmp}/mssql-python-rs-wheels"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

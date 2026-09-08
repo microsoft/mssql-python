@@ -1,15 +1,15 @@
 <#
 .SYNOPSIS
-    Downloads the mssql-py-core-wheels NuGet package from a public Azure Artifacts
-    feed and extracts the matching mssql_py_core binary into the repository root
-    so that 'import mssql_py_core' works when running from the source tree.
+    Downloads the mssql-python-rs-wheels NuGet package (or its legacy name) from
+    a public Azure Artifacts feed and extracts the matching mssql_py_core binary
+    into the repository root so that 'import mssql_py_core' works from source.
 
 .PARAMETER FeedUrl
     The NuGet v3 feed URL. This is a public feed — no authentication required.
 
 .PARAMETER OutputDir
     Temporary directory for downloaded artifacts. Cleaned up after extraction.
-    Defaults to $env:TEMP\mssql-py-core-wheels.
+    Defaults to $env:TEMP\mssql-python-rs-wheels.
 
 .PARAMETER TargetArch
     Target CPU architecture ('x64' or 'arm64') for cross-compilation builds.
@@ -23,7 +23,7 @@
 
 param(
     [string]$FeedUrl = "https://pkgs.dev.azure.com/sqlclientdrivers/public/_packaging/mssql-rs_Public/nuget/v3/index.json",
-    [string]$OutputDir = "$env:TEMP\mssql-py-core-wheels",
+    [string]$OutputDir = "$env:TEMP\mssql-python-rs-wheels",
     [string]$TargetArch = ""
 )
 
@@ -80,8 +80,11 @@ function Get-PlatformInfo {
         default { throw "Unsupported platform: $script:Platform" }
     }
 
-    $script:WheelPattern = "mssql_py_core-*-$script:PyVersion-$script:PyVersion-$script:WheelPlatform.whl"
-    Write-Host "Wheel pattern: $script:WheelPattern"
+    $script:WheelPatterns = @(
+        "mssql_python_rs-*-$script:PyVersion-$script:PyVersion-$script:WheelPlatform.whl"
+        "mssql_py_core-*-$script:PyVersion-$script:PyVersion-$script:WheelPlatform.whl"
+    )
+    Write-Host "Wheel patterns: $($script:WheelPatterns -join ', ')"
 }
 
 function Get-NupkgFromFeed {
@@ -97,14 +100,28 @@ function Get-NupkgFromFeed {
     $packageBaseUrl = ($feedIndex.resources | Where-Object { $_.'@type' -like 'PackageBaseAddress*' }).'@id'
     if (-not $packageBaseUrl) { throw "Could not resolve PackageBaseAddress from feed" }
 
-    $packageId = "mssql-py-core-wheels"
     $versionLower = $script:PackageVersion.ToLower()
-    # e.g. https://pkgs.dev.azure.com/.../nuget/v3/flat2/mssql-py-core-wheels/0.1.0-dev.20260222.140833/mssql-py-core-wheels.0.1.0-dev.20260222.140833.nupkg
-    $nupkgUrl = "${packageBaseUrl}${packageId}/${versionLower}/${packageId}.${versionLower}.nupkg"
-    $script:NupkgPath = Join-Path $OutputDir "${packageId}.${versionLower}.nupkg"
+    $packageIds = @("mssql-python-rs-wheels", "mssql-py-core-wheels")
+    $script:NupkgPath = $null
+    foreach ($packageId in $packageIds) {
+        $nupkgUrl = "${packageBaseUrl}${packageId}/${versionLower}/${packageId}.${versionLower}.nupkg"
+        $candidatePath = Join-Path $OutputDir "${packageId}.${versionLower}.nupkg"
+        Write-Host "Downloading: $nupkgUrl"
+        try {
+            Invoke-WebRequest -Uri $nupkgUrl -OutFile $candidatePath
+            $script:NupkgPath = $candidatePath
+            Write-Host "Using NuGet package: $packageId"
+            break
+        }
+        catch {
+            Remove-Item $candidatePath -Force -ErrorAction SilentlyContinue
+            Write-Host "Package not available: $packageId $script:PackageVersion"
+        }
+    }
+    if (-not $script:NupkgPath) {
+        throw "Package version $script:PackageVersion was not found under: $($packageIds -join ', ')"
+    }
 
-    Write-Host "Downloading: $nupkgUrl"
-    Invoke-WebRequest -Uri $nupkgUrl -OutFile $script:NupkgPath
     $sizeMB = [math]::Round((Get-Item $script:NupkgPath).Length / 1MB, 2)
     Write-Host "Downloaded: $script:NupkgPath ($sizeMB MB)"
 }
@@ -124,11 +141,15 @@ function Find-MatchingWheel {
         throw "No 'wheels' directory found in NuGet package"
     }
 
-    $script:MatchingWheel = Get-ChildItem $wheelsDir -Filter $script:WheelPattern | Select-Object -First 1
+    $script:MatchingWheel = $null
+    foreach ($wheelPattern in $script:WheelPatterns) {
+        $script:MatchingWheel = Get-ChildItem $wheelsDir -Filter $wheelPattern | Select-Object -First 1
+        if ($script:MatchingWheel) { break }
+    }
     if (-not $script:MatchingWheel) {
         Write-Host "Available wheels:"
         Get-ChildItem $wheelsDir -Filter *.whl | ForEach-Object { Write-Host "  $_" }
-        throw "No wheel found matching: $script:WheelPattern"
+        throw "No wheel found matching: $($script:WheelPatterns -join ', ')"
     }
 
     Write-Host "Found: $($script:MatchingWheel.Name)"
