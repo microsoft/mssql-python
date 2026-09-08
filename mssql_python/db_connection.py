@@ -6,7 +6,7 @@ This module provides a way to create a new connection object to interact with th
 
 from typing import Any, Dict, Optional, Union
 
-from mssql_python.connection import Connection
+from mssql_python.connection import Connection, TokenProvider
 
 
 def connect(
@@ -15,6 +15,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
+    token_provider: Optional[TokenProvider] = None,
     **kwargs: Any,
 ) -> Connection:
     """
@@ -25,7 +26,12 @@ def connect(
         autocommit (bool): If True, causes a commit to be performed after each SQL statement.
         attrs_before (dict, optional): A dictionary of connection attributes to set before
                                       connecting.
-        timeout (int): The timeout for the connection attempt, in seconds.
+        timeout (int): Login (connection-attempt) timeout in seconds. 0 (default)
+            uses the driver default. This bounds the login/network handshake (via
+            SQL_ATTR_LOGIN_TIMEOUT), not query execution — it is distinct from the
+            ``Connection.timeout`` property, which is the per-statement query
+            timeout. If both ``timeout`` and ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
+            are supplied, the explicit ``attrs_before`` value takes precedence.
         native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
             uuid.UUID objects (True) or str (False) for this connection.
             - True: UNIQUEIDENTIFIER columns return uuid.UUID objects.
@@ -35,6 +41,34 @@ def connect(
             This per-connection override is useful for migration from pyodbc:
             connections that need string UUIDs can pass native_uuid=False, while the default (True)
             returns native uuid.UUID objects.
+        token_provider (object, optional): A token provider for Microsoft Entra ID
+            authentication. This must be any object with a ``.get_token(scope)`` method that
+            returns an object with a ``.token`` attribute containing a raw JWT string — for
+            example, any ``azure-identity`` credential class such as
+            ``DefaultAzureCredential``, ``AzureCliCredential``, ``ManagedIdentityCredential``,
+            ``CertificateCredential``, etc.
+
+            When provided, the driver calls ``token_provider.get_token()`` to acquire an
+            access token for SQL Server, bypassing the built-in credential map.
+            Cannot be combined with ``Authentication=`` in the connection string.
+
+            For environment-portable code, prefer ``Authentication=ActiveDirectoryDefault``
+            in the connection string — ``DefaultAzureCredential`` automatically picks the
+            right credential per environment (CLI on dev, Managed Identity in prod).
+            Use ``token_provider=`` only when you need explicit control over token
+            acquisition (e.g., excluding specific providers, using a credential not in
+            the built-in map, or passing custom options to the credential constructor).
+
+            Example::
+
+                from azure.identity import AzureCliCredential
+                conn = mssql_python.connect("Server=s;Database=d",
+                                            token_provider=AzureCliCredential())
+
+            Note: the token scope is fixed to the Azure **commercial** cloud
+            (``https://database.windows.net/.default``). Sovereign clouds (Azure US
+            Government, Azure China, Azure Germany) are **out of scope** — acquire the token
+            yourself and pass it via ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`` instead.
     Keyword Args:
         **kwargs: Additional key/value pairs for the connection string.
     Below attributes are not implemented in the internal driver:
@@ -58,6 +92,7 @@ def connect(
         attrs_before=attrs_before,
         timeout=timeout,
         native_uuid=native_uuid,
+        token_provider=token_provider,
         **kwargs,
     )
     return conn

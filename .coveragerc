@@ -20,6 +20,9 @@ exclude_lines =
     
     # Don't complain if non-runnable code isn't run
     if __name__ == .__main__.:
+
+    # Type-checking-only imports never execute at runtime
+    if TYPE_CHECKING:
     
     # Exclude all logging statements (zero overhead when disabled by design)
     logger\.debug

@@ -6,6 +6,7 @@ This module contains type objects and constructors for the mssql_python package.
 
 import datetime
 import time
+from typing import Union
 
 
 # Type Objects
@@ -120,15 +121,17 @@ def TimestampFromTicks(ticks: int) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(ticks)
 
 
-def Binary(value) -> bytes:
+def Binary(value: Union[str, bytes, bytearray, memoryview]) -> bytes:
     """
-    Converts a string or bytes to bytes for use with binary database columns.
+    Converts a string or bytes-like object to bytes for binary database columns.
 
-    This function follows the DB-API 2.0 specification.
-    It accepts only str and bytes/bytearray types to ensure type safety.
+    This function follows the DB-API 2.0 specification. It accepts str,
+    bytes, bytearray, and memoryview. memoryview is accepted so buffer-protocol
+    values (for example the memoryview Django hands a BinaryField) round-trip the
+    same way pyodbc handles them.
 
     Args:
-        value: A string (str) or bytes-like object (bytes, bytearray)
+        value: A string (str) or bytes-like object (bytes, bytearray, memoryview)
 
     Returns:
         bytes: The input converted to bytes
@@ -137,18 +140,21 @@ def Binary(value) -> bytes:
         TypeError: If the input type is not supported
 
     Examples:
-        Binary("hello")           # Returns b"hello"
-        Binary(b"hello")          # Returns b"hello"
-        Binary(bytearray(b"hi"))  # Returns b"hi"
+        Binary("hello")                # Returns b"hello"
+        Binary(b"hello")               # Returns b"hello"
+        Binary(bytearray(b"hi"))       # Returns b"hi"
+        Binary(memoryview(b"hi"))      # Returns b"hi"
     """
     if isinstance(value, bytes):
         return value
     if isinstance(value, bytearray):
         return bytes(value)
+    if isinstance(value, memoryview):
+        return value.tobytes()
     if isinstance(value, str):
         return value.encode("utf-8")
     # Raise TypeError for unsupported types to improve type safety
     raise TypeError(
         f"Cannot convert type {type(value).__name__} to bytes. "
-        f"Binary() only accepts str, bytes, or bytearray objects."
+        f"Binary() only accepts str, bytes, bytearray, or memoryview objects."
     )

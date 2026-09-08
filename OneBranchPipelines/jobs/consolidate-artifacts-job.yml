@@ -1,7 +1,7 @@
 # Consolidate Artifacts Job Template
 # Downloads artifacts from all platform build stages and consolidates into single dist/ folder
-# Works with individual stage artifacts (15 stages total: 7 Windows + 4 macOS + 4 Linux)
-# Each Linux stage builds 4 Python versions, resulting in 27 total wheels
+# Works with individual stage artifacts (18 stages total: 9 Windows + 5 macOS + 4 Linux)
+# Each Linux stage builds 5 Python versions (3.10-3.14), resulting in 34 total wheels
 parameters:
   - name: oneBranchType
     type: string
@@ -29,13 +29,20 @@ jobs:
       - checkout: self
         fetchDepth: 1
       
-      # Download ALL artifacts from current build
-      # Matrix jobs publish as: Windows_<JobId>, macOS_<JobId>, Linux_<JobId>
-      # This downloads all of them automatically (27 total artifacts)
+      # Download only the mssql-python platform-stage artifacts from the current build.
+      # The build definition now ALSO produces mssql-python-odbc artifacts (drop_ODBC_*)
+      # in the SAME run, so we scope this download with itemPattern to the mssql-python
+      # stages (drop_Win_*, drop_MacOS_*, drop_Linux_*). Without this, the odbc wheels
+      # would be swept into this package's dist/ and shipped to the mssql-python PyPI
+      # project. The odbc wheels are consolidated separately (ConsolidateOdbc stage).
       - task: DownloadPipelineArtifact@2
         displayName: 'Download All Platform Artifacts'
         inputs:
           buildType: 'current'
+          itemPattern: |
+            drop_Win_*/**
+            drop_MacOS_*/**
+            drop_Linux_*/**
           targetPath: '$(Pipeline.Workspace)/all-artifacts'
       
       # Consolidate all wheels into single dist/ directory
@@ -68,12 +75,17 @@ jobs:
           echo ""
           WHEEL_COUNT=$(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)
           echo "Total wheel count: $WHEEL_COUNT"
-          echo "Expected: 27 wheels (7 Windows + 4 macOS + 16 Linux)"
+          echo "Expected: 34 wheels (9 Windows + 5 macOS + 20 Linux)"
           
-          if [ "$WHEEL_COUNT" -ne 27 ]; then
-            echo "WARNING: Expected 27 wheels but found $WHEEL_COUNT"
+          # Hard-fail on a wheel-count mismatch (symmetric with the odbc consolidate job).
+          # A mismatch means a build stage silently produced a partial set (e.g. a missing
+          # Python version) or the build matrix changed without updating this count.
+          # Update the expected 34 whenever the Windows/macOS/Linux build matrix changes.
+          if [ "$WHEEL_COUNT" -ne 34 ]; then
+            echo "ERROR: Expected 34 wheels but found $WHEEL_COUNT" >&2
+            exit 1
           else
-            echo "SUCCESS: All 27 wheels consolidated!"
+            echo "SUCCESS: All 34 wheels consolidated!"
           fi
         displayName: 'Consolidate wheels from all platforms'
       

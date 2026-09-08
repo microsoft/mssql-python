@@ -146,15 +146,15 @@ git status
 > ⚠️ **AVOID:** `git add .` stages everything including binary files. Always stage specific files.
 
 **Files to typically EXCLUDE from commits:**
-- `mssql_python/libs/**/*.dylib` - macOS libraries
-- `mssql_python/libs/**/*.so` - Linux libraries  
+- `mssql_python_odbc/libs/**/*.dylib` - macOS libraries
+- `mssql_python_odbc/libs/**/*.so` - Linux libraries  
 - `mssql_python/*.so` or `*.pyd` - Built extensions
 - `*.dll` - Windows libraries
 - Virtual environments (`myvenv/`, `testenv/`, etc.)
 
 **To unstage accidentally added binary files:**
 ```bash
-git restore --staged mssql_python/libs/
+git restore --staged mssql_python_odbc/libs/
 git restore --staged "*.dylib" "*.so" "*.pyd"
 ```
 

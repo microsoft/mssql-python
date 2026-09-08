@@ -5,7 +5,7 @@ Verifies that the driver correctly handles paths containing non-ASCII
 characters on Windows (e.g., usernames like 'Thalén', folders like 'café').
 
 Bug Summary:
-- GetModuleDirectory() used ANSI APIs (PathRemoveFileSpecA) which corrupted UTF-8 paths
+- The module-directory resolver used ANSI APIs (PathRemoveFileSpecA) which corrupted UTF-8 paths
 - LoadDriverLibrary() used broken UTF-8→UTF-16 conversion: std::wstring(path.begin(), path.end())
 - LoadDriverOrThrowException() used same broken pattern for mssql-auth.dll
 
@@ -28,15 +28,15 @@ class TestPathHandlingCodePaths:
     Test that path handling code paths are exercised correctly.
 
     These tests run by DEFAULT and verify the fixed C++ functions
-    (GetModuleDirectory, LoadDriverLibrary) are working.
+    (GetOdbcLibsBaseDir, LoadDriverLibrary) are working.
     """
 
     def test_module_import_exercises_path_handling(self):
         """
-        Verify module import succeeds - this exercises GetModuleDirectory().
+        Verify module import succeeds - this exercises GetOdbcLibsBaseDir().
 
         When mssql_python imports, it calls:
-        1. GetModuleDirectory() - to find module location
+        1. GetOdbcLibsBaseDir() - to resolve the ODBC driver libs directory
         2. LoadDriverLibrary() - to load ODBC driver
         3. LoadLibraryW() for mssql-auth.dll on Windows
 
@@ -159,12 +159,33 @@ class TestWindowsSpecificPathHandling:
         # - mssql-auth.dll (if exists)
         assert mssql_python.ddbc_bindings is not None
 
-    def test_libs_directory_exists(self):
-        """Verify the libs/windows directory structure exists."""
+    @staticmethod
+    def _driver_libs_base_dir():
+        """Base directory containing the ODBC driver's ``libs/`` payload.
+
+        Phase 2 moved the bundled ODBC driver out of the mssql-python wheel into the
+        external mssql-python-odbc package, so the driver's ``libs/`` tree now lives
+        under ``mssql_python_odbc``. Fall back to ``mssql_python``'s own directory for
+        the pre-split single-wheel layout.
+        """
         from pathlib import Path
 
-        module_dir = Path(mssql_python.__file__).parent
-        libs_dir = module_dir / "libs" / "windows"
+        try:
+            import mssql_python_odbc
+
+            external = Path(mssql_python_odbc.__file__).parent
+            if (external / "libs").exists():
+                return external
+        except ImportError:
+            pass
+
+        import mssql_python
+
+        return Path(mssql_python.__file__).parent
+
+    def test_libs_directory_exists(self):
+        """Verify the ODBC driver libs/windows directory structure exists."""
+        libs_dir = self._driver_libs_base_dir() / "libs" / "windows"
 
         # Check that at least one architecture directory exists
         arch_dirs = ["x64", "x86", "arm64"]
@@ -172,11 +193,10 @@ class TestWindowsSpecificPathHandling:
         assert found_arch, f"No architecture directory found in {libs_dir}"
 
     def test_auth_dll_exists_if_libs_present(self):
-        """Verify mssql-auth.dll exists in the libs directory."""
-        from pathlib import Path
+        """Verify mssql-auth.dll exists in the ODBC driver libs directory."""
         import struct
 
-        module_dir = Path(mssql_python.__file__).parent
+        module_dir = self._driver_libs_base_dir()
 
         # Determine architecture
         arch = "x64" if struct.calcsize("P") * 8 == 64 else "x86"

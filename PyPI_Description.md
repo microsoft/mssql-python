@@ -35,15 +35,20 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.11.0
+## What's new in v1.14.0
+
+### Enhancements
+
+- **Faster Parameter Detection and Execution** - Parameter type detection and binding now run in a native C++ pipeline, substantially reducing per-parameter overhead and improving throughput for wide and batched `execute()` workloads (#549).
 
 ### Bug Fixes
 
-- **SSH-Tunnel / In-Process Forwarder Deadlock** - The driver now releases the GIL around blocking ODBC teardown calls (`SQLFreeHandle`/`SQLFreeStmt`) and `SQLDescribeParam`, preventing deadlocks when the connection is routed through an in-process Python TCP forwarder (#604).
-- **BINARY/VARBINARY NULL Parameters in Temp Tables** - Unknown NULL parameter types are now pre-resolved before binding, with actionable `setinputsizes` guidance, fixing errors when inserting NULL binary values into temp tables or table variables (#654).
-- **Context Manager Transaction Semantics** - The `Connection` context manager now commits on clean exit and rolls back on exception (with `autocommit=False`), matching the documented behavior (#639).
-- **macOS Apple Silicon Import Failure** - Bundled macOS ODBC dylibs are now configured for all shipped architectures, so `import mssql_python` works on Apple Silicon without requiring a separate `brew install unixodbc` (#661).
-- **Service Principal Bulk Copy Freeze** - Fixed a GIL-deadlock that froze `bulkcopy` when authenticating with a service principal (#666, via `mssql_py_core` 0.1.6).
+- **Bulk Copy Accepts `timeout=0`** - `bulkcopy()` now treats zero as no timeout, matching the BCP API contract, while continuing to reject negative, non-integer, and boolean values (#698).
+- **Arrow Reader Fetch Exceptions Are Preserved** - Defensive cursor cleanup no longer masks the original exception raised while fetching Arrow result batches (#718).
+- **Decimal Conversion Errors No Longer Expose Parameter Values** - `executemany()` Decimal conversion failures now report metadata only, preventing parameter rows and sensitive values from leaking through exception messages or chained tracebacks (#719).
+- **Arrow View Types Work in Bulk Copy** - Polars `string_view` columns exported through the Arrow C Data Interface now round-trip correctly through `bulkcopy_arrow()` (#717, via `mssql_py_core`).
+- **`connect(timeout=)` Sets the Login Timeout** - The constructor timeout now bounds connection attempts as documented instead of setting the per-statement query timeout; timeout validation is consistent across both APIs (#728).
+- **Windows Extension Loading Uses Interpreter Architecture** - The loader now selects the native binary using the Python interpreter architecture, fixing x64 Python on Windows ARM64 hosts and avoiding fallback warnings on stdout (#727).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

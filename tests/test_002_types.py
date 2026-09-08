@@ -122,37 +122,60 @@ def test_binary_string_encoding():
     assert result == b"Hello\nWorld\t!", "String with special characters should encode properly"
 
 
+def test_binary_memoryview():
+    """Binary() accepts memoryview (GH-739): Django BinaryField and DB-API buffers."""
+    result = Binary(memoryview(b"\x01\x02\x03"))
+    assert isinstance(result, bytes), "memoryview should be converted to bytes"
+    assert result == b"\x01\x02\x03", "memoryview content should be preserved"
+
+    # Empty memoryview
+    assert Binary(memoryview(b"")) == b""
+
+    # memoryview over a bytearray round-trips the same bytes
+    assert Binary(memoryview(bytearray(b"hello"))) == b"hello"
+
+
 def test_binary_unsupported_types_error():
     """Test Binary() TypeError for unsupported types (Lines 138-141)."""
     # Test integer type
     with pytest.raises(TypeError) as exc_info:
         Binary(123)
     assert "Cannot convert type int to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
+    assert "Binary() only accepts str, bytes, bytearray, or memoryview objects" in str(
+        exc_info.value
+    )
 
     # Test float type
     with pytest.raises(TypeError) as exc_info:
         Binary(3.14)
     assert "Cannot convert type float to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
+    assert "Binary() only accepts str, bytes, bytearray, or memoryview objects" in str(
+        exc_info.value
+    )
 
     # Test list type
     with pytest.raises(TypeError) as exc_info:
         Binary([1, 2, 3])
     assert "Cannot convert type list to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
+    assert "Binary() only accepts str, bytes, bytearray, or memoryview objects" in str(
+        exc_info.value
+    )
 
     # Test dict type
     with pytest.raises(TypeError) as exc_info:
         Binary({"key": "value"})
     assert "Cannot convert type dict to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
+    assert "Binary() only accepts str, bytes, bytearray, or memoryview objects" in str(
+        exc_info.value
+    )
 
     # Test None type
     with pytest.raises(TypeError) as exc_info:
         Binary(None)
     assert "Cannot convert type NoneType to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
+    assert "Binary() only accepts str, bytes, bytearray, or memoryview objects" in str(
+        exc_info.value
+    )
 
     # Test custom object type
     class CustomObject:
@@ -161,7 +184,9 @@ def test_binary_unsupported_types_error():
     with pytest.raises(TypeError) as exc_info:
         Binary(CustomObject())
     assert "Cannot convert type CustomObject to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
+    assert "Binary() only accepts str, bytes, bytearray, or memoryview objects" in str(
+        exc_info.value
+    )
 
 
 def test_binary_comprehensive_coverage():

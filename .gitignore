@@ -23,6 +23,12 @@ build/
 **/build/
 mssql_python.egg-info/
 
+# ODBC package (mssql-python-odbc).
+# The driver binaries under mssql_python_odbc/libs/ are the committed source of
+# truth for the standalone package (moved here from mssql_python/libs in Phase 2).
+# The release pipeline still overwrites them per-platform for the full matrix.
+mssql_python_odbc.egg-info/
+
 # Python bytecode
 __pycache__/
 *.py[cod]
