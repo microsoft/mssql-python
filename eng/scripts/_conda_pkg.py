@@ -16,6 +16,7 @@ import io
 import json
 import tarfile
 import zipfile
+from typing import Any, Iterator
 
 
 def zstd_decompress(raw: bytes) -> bytes:
@@ -35,7 +36,7 @@ def zstd_decompress(raw: bytes) -> bytes:
     return zstd.decompress(raw)
 
 
-def iter_payload_members(path: str):
+def iter_payload_members(path: str) -> Iterator[tuple[str, bytes]]:
     """Yield ``(member_name, data_bytes)`` for the files in a ``.conda`` / ``.tar.bz2`` payload."""
     if path.endswith(".conda"):
         with zipfile.ZipFile(path) as zf:
@@ -67,7 +68,7 @@ def iter_payload_members(path: str):
         raise ValueError(f"{path}: unrecognized conda package extension")
 
 
-def read_index(path: str) -> dict:
+def read_index(path: str) -> dict[str, Any]:
     """Return the package's ``info/index.json`` as a dict.
 
     RAISES on a malformed/unreadable package -- callers must NOT swallow this into a

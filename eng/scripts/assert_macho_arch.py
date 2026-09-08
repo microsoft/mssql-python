@@ -61,7 +61,7 @@ _FAT_MAGIC = 0xCAFEBABE  # universal (fat_arch entries, 20 bytes each)
 _FAT_MAGIC_64 = 0xCAFEBABF  # universal64 (fat_arch_64 entries, 32 bytes each)
 
 
-def _thin_arch(data: bytes):
+def _thin_arch(data: bytes) -> str | None:
     if len(data) < 8:
         return None
     be = struct.unpack_from(">I", data, 0)[0]
@@ -94,7 +94,7 @@ def _thin_arch(data: bytes):
     return _CPU_ARCHES.get(cputype, hex(cputype))
 
 
-def macho_arches(data: bytes):
+def macho_arches(data: bytes) -> set[str] | None:
     """Return the SET of lipo-style arch names in a Mach-O binary (thin OR fat/universal), or
     None if the bytes are not Mach-O. Reads only headers -- no dependency on macOS tooling."""
     if len(data) < 8:
@@ -222,7 +222,7 @@ def collect(root: str) -> list[str]:
     )
 
 
-def main(argv: list | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="Directory to scan recursively.")
     parser.add_argument(

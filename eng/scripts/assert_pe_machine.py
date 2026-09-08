@@ -48,7 +48,7 @@ _SUBDIR_DRIVER_DIR = {
 _NATIVE_SUFFIXES = (".pyd", ".dll")
 
 
-def pe_machine(data: bytes):
+def pe_machine(data: bytes) -> int | None:
     """Return the PE COFF Machine value (int) for a Windows binary, or None.
 
     DOS header 'MZ' -> e_lfanew at offset 0x3C -> 'PE\\0\\0' signature -> COFF header,
@@ -175,7 +175,7 @@ def collect(root: str) -> list[str]:
     )
 
 
-def main(argv: list | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="Directory to scan recursively.")
     parser.add_argument(

@@ -57,6 +57,10 @@ def test_best_effort_consolidation_runs_after_upstream_failure():
         assert f"- {stage_name}" in dependencies
     assert "condition: succeededOrFailed()" in stage.split("jobs:", 1)[0]
 
+    mac_stage = pipeline.split("- stage: CondaMacOS", 1)[1].split("- stage: CondaLinux", 1)[0]
+    mac_publish = mac_stage.split("displayName: 'Publish macOS conda artifact'", 1)[1]
+    assert "condition: succeededOrFailed()" in mac_publish.split("inputs:", 1)[0]
+
     job = _CONSOLIDATE_JOB_PATH.read_text(encoding="utf-8")
     consolidate = job.split("- job: ConsolidateArtifacts", 1)[1]
     assert "condition: succeededOrFailed()" in consolidate.split("pool:", 1)[0]

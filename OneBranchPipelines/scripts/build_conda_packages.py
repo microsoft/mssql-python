@@ -48,7 +48,13 @@ def _die(msg: str) -> NoReturn:
     sys.exit(1)
 
 
-def run(cmd: list, *, env: dict | None = None, cwd: str | None = None, what: str = "") -> None:
+def run(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    what: str = "",
+) -> None:
     """Run a command, streaming output; raise (exit 1) on a non-zero return -- the
     Assert-LastExit / `set -e` equivalent, but the caller just reads our exit code."""
     _log("+ " + " ".join(str(c) for c in cmd))
@@ -57,13 +63,13 @@ def run(cmd: list, *, env: dict | None = None, cwd: str | None = None, what: str
         _die(f"{what or ' '.join(str(c) for c in cmd)} (exit {rc})")
 
 
-def run_ok(cmd: list, *, env: dict | None = None, cwd: str | None = None) -> int:
+def run_ok(cmd: list[str], *, env: dict[str, str] | None = None, cwd: str | None = None) -> int:
     """Run best-effort: return the exit code instead of dying (the `|| true` equivalent)."""
     _log("+ " + " ".join(str(c) for c in cmd))
     return subprocess.run(cmd, env=env, cwd=cwd).returncode
 
 
-def run_capture(cmd: list, *, env: dict | None = None) -> tuple:
+def run_capture(cmd: list[str], *, env: dict[str, str] | None = None) -> tuple[int, str]:
     """Run and capture (rc, combined-output). Best-effort paths print the output themselves
     so a real failure is diagnosable rather than swallowed."""
     p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -73,7 +79,9 @@ def run_capture(cmd: list, *, env: dict | None = None) -> tuple:
 # ---------------------------------------------------------------------------
 # 0. Gather THIS leg's wheels into one find-links dir + derive the versions.
 # ---------------------------------------------------------------------------
-def gather_wheels(mssql_dir: str, mssql_glob: str, odbc_dir: str, odbc_filter: str, links: str):
+def gather_wheels(
+    mssql_dir: str, mssql_glob: str, odbc_dir: str, odbc_filter: str, links: str
+) -> tuple[str, str]:
     """Copy this platform's mssql-python wheel(s) (excluding the odbc package, whose filename
     also starts with mssql_python) + this platform's odbc wheel into ONE find-links dir. The
     dir is CLEARED first so a stale artifact from a reused workdir can never be validated."""
@@ -119,7 +127,7 @@ def gather_wheels(mssql_dir: str, mssql_glob: str, odbc_dir: str, odbc_filter: s
     return mssql_ver, odbc_ver
 
 
-def _wheel_version(name: str, dist: str):
+def _wheel_version(name: str, dist: str) -> str | None:
     m = re.match(rf"^{re.escape(dist)}-([^-]+)-", name)
     return m.group(1) if m else None
 
@@ -249,7 +257,7 @@ def create_builder_env(conda: str) -> str:
 # ---------------------------------------------------------------------------
 # 3. Which Python versions to build (auto-detect from the mssql-python wheels, or explicit).
 # ---------------------------------------------------------------------------
-def detect_pythons(links: str, python_versions: str) -> list:
+def detect_pythons(links: str, python_versions: str) -> list[str]:
     if python_versions.strip():
         pyvers = [v.strip() for v in python_versions.split(",") if v.strip()]
     else:
@@ -268,7 +276,7 @@ def detect_pythons(links: str, python_versions: str) -> list:
     return pyvers
 
 
-def build_env(mssql_ver: str, odbc_ver: str, links: str, target_subdir: str) -> dict:
+def build_env(mssql_ver: str, odbc_ver: str, links: str, target_subdir: str) -> dict[str, str]:
     """The environment consumed by the recipe (jinja + build.sh/bld.bat) and by conda-build."""
     env = dict(os.environ)
     env["WHEELS_DIR"] = links
@@ -296,7 +304,15 @@ def build_env(mssql_ver: str, odbc_ver: str, links: str, target_subdir: str) -> 
 # ---------------------------------------------------------------------------
 # 4. Build + audit.
 # ---------------------------------------------------------------------------
-def build_packages(conda, builder, recipe_root, pyvers, bld, target_subdir, env):
+def build_packages(
+    conda: str,
+    builder: str,
+    recipe_root: str,
+    pyvers: list[str],
+    bld: str,
+    target_subdir: str,
+    env: dict[str, str],
+) -> None:
     recipe = os.path.join(recipe_root, "mssql-python")
     for py in pyvers:
         _log(f"=== [py {py}] build mssql-python (self-contained: vendors the ODBC payload) ===")
@@ -330,7 +346,14 @@ def build_packages(conda, builder, recipe_root, pyvers, bld, target_subdir, env)
             fh.write('{"info":{"subdir":"noarch"},"packages":{},"packages.conda":{}}')
 
 
-def audit_packages(conda, builder, recipe_root, bld, target_subdir, env):
+def audit_packages(
+    conda: str,
+    builder: str,
+    recipe_root: str,
+    bld: str,
+    target_subdir: str,
+    env: dict[str, str],
+) -> None:
     eng = os.path.join(os.path.dirname(os.path.abspath(recipe_root)), "eng", "scripts")
     audit = os.path.join(eng, "audit_bundled_binaries.py")
     if not os.path.isfile(audit):
@@ -425,7 +448,16 @@ def _import_probe(mod_name: str, ok_label: str) -> str:
     )
 
 
-def verify(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env, workdir):
+def verify(
+    conda: str,
+    chan: str,
+    recipe_root: str,
+    pyvers: list[str],
+    mssql_ver: str,
+    target_subdir: str,
+    env: dict[str, str],
+    workdir: str,
+) -> None:
     """Run the whole verify phase from a NEUTRAL cwd (the per-leg build dir) so a
     `python -c "import mssql_python"` binds the conda-INSTALLED package, not the repo source
     tree that shadows it when the agent's cwd is the checkout root (for `python -c`, sys.path[0]
@@ -440,7 +472,15 @@ def verify(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env, work
         os.chdir(old_cwd)
 
 
-def _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env):
+def _verify_impl(
+    conda: str,
+    chan: str,
+    recipe_root: str,
+    pyvers: list[str],
+    mssql_ver: str,
+    target_subdir: str,
+    env: dict[str, str],
+) -> None:
     emulated = _is_emulated_cross(target_subdir)
     is_win = sys.platform == "win32"
     for py in pyvers:
@@ -589,7 +629,7 @@ def _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env
                 _log(line)
 
 
-def _reachability_gate(conda, name, py, emulated, env):
+def _reachability_gate(conda: str, name: str, py: str, emulated: bool, env: dict[str, str]) -> None:
     """Linux, opt-in (CONDA_ASSERT_PREFIX_REACHABLE=1): prove the vendored driver binds the
     env's OWN $CONDA_PREFIX/lib krb5/gssapi/libltdl via the $ORIGIN climb, not a system copy."""
     if env.get("CONDA_ASSERT_PREFIX_REACHABLE") != "1" or sys.platform != "linux":
@@ -688,7 +728,7 @@ def _reachability_gate(conda, name, py, emulated, env):
 # ---------------------------------------------------------------------------
 # 6. Stage this leg's packages onto the artifact (metadata-matched subdir).
 # ---------------------------------------------------------------------------
-def stage(bld: str, stage_dir: str, target_subdir: str):
+def stage(bld: str, stage_dir: str, target_subdir: str) -> None:
     """Stage ONLY packages whose conda-build output subdir matches THIS leg's target (the
     bld/<subdir>/ folder name IS the authoritative subdir), so a shared agent (osx-arm64 +
     osx-64) never bleeds one leg's packages into the other's artifact."""
@@ -710,7 +750,7 @@ def stage(bld: str, stage_dir: str, target_subdir: str):
         _die(f"no conda packages matching target subdir '{target_subdir}' were produced in {bld}")
 
 
-def main(argv=None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--mssql-wheel-dir", required=True)
     ap.add_argument("--mssql-wheel-glob", default="mssql_python-*.whl")

@@ -46,6 +46,7 @@ import os
 import posixpath
 import struct
 import sys
+from typing import Any, Iterable, TypedDict
 
 from _conda_pkg import iter_payload_members as _iter_payload_members, read_index
 
@@ -99,11 +100,17 @@ _REQUIRED_DRIVER_TREES = {
 }
 
 
+class _ElfDynamicInfo(TypedDict):
+    runpath: str | None
+    rpath: str | None
+    needed: list[str]
+
+
 def _is_elf(data: bytes) -> bool:
     return len(data) >= 64 and data[:4] == b"\x7fELF"
 
 
-def elf_machine(data: bytes):
+def elf_machine(data: bytes) -> int | None:
     """Return the ELF ``e_machine`` architecture id (header offset 0x12), or None.
 
     Endianness comes from ``e_ident[5]`` (the shipped drivers are ELF64-LE).
@@ -114,7 +121,7 @@ def elf_machine(data: bytes):
     return struct.unpack_from(en + "H", data, 0x12)[0]
 
 
-def elf_dynamic(data: bytes) -> dict:
+def elf_dynamic(data: bytes) -> _ElfDynamicInfo:
     """Return ``{'runpath': str|None, 'rpath': str|None, 'needed': [str]}``.
 
     Parses the ``PT_DYNAMIC`` program header -- the segment the LOADER actually uses
@@ -123,7 +130,7 @@ def elf_dynamic(data: bytes) -> dict:
     table that a stripped/rewritten binary might not carry. Handles ELF32/ELF64 and
     both endiannesses; the shipped drivers are ELF64-LE.
     """
-    out: dict = {"runpath": None, "rpath": None, "needed": []}
+    out: _ElfDynamicInfo = {"runpath": None, "rpath": None, "needed": []}
     if not _is_elf(data):
         return out
     is64 = data[4] == 2
@@ -163,7 +170,7 @@ def elf_dynamic(data: bytes) -> dict:
         return out
     dyn_off, dyn_size = dyn
 
-    def vaddr_to_off(vaddr: int):
+    def vaddr_to_off(vaddr: int) -> int | None:
         for v, o, sz in loads:
             if v <= vaddr < v + sz:
                 return vaddr - v + o
@@ -212,12 +219,12 @@ def elf_dynamic(data: bytes) -> dict:
     return out
 
 
-def effective_runpath(dyn: dict):
+def effective_runpath(dyn: _ElfDynamicInfo) -> str | None:
     """The loader ignores ``DT_RPATH`` when ``DT_RUNPATH`` is present."""
     return dyn["runpath"] if dyn["runpath"] is not None else dyn["rpath"]
 
 
-def _entries(runpath) -> list[str]:
+def _entries(runpath: str | None) -> list[str]:
     return [e for e in (runpath or "").split(":") if e]
 
 
@@ -233,7 +240,7 @@ def expected_climb_entry(member_name: str) -> str:
     return "$ORIGIN/" + climb
 
 
-def _dep_names(depends) -> set:
+def _dep_names(depends: Iterable[Any] | None) -> set[str]:
     """The package names (first token) of an ``info/index.json`` ``depends`` list."""
     names = set()
     for d in depends or []:
@@ -280,7 +287,10 @@ def audit_package(path: str) -> list[str]:
     except Exception as exc:  # H2: malformed/unreadable must FAIL, never skip.
         return [f"{base_name}: unreadable/malformed package metadata ({exc})."]
 
-    subdir = str(index.get("subdir", ""))
+    raw_subdir = index.get("subdir")
+    if not isinstance(raw_subdir, str) or not raw_subdir or raw_subdir != raw_subdir.strip():
+        return [f"{base_name}: info/index.json is missing or invalid 'subdir'."]
+    subdir = raw_subdir
     if not subdir.startswith("linux"):
         print(f"  SKIP (no Linux ELF payload): {base_name} [subdir={subdir or '?'}]")
         return []
@@ -365,8 +375,9 @@ def audit_package(path: str) -> list[str]:
         # leg's best-effort runtime probe would not catch) fails here.
         mach = elf_machine(data)
         if mach != expected_machine:
+            machine_name = _MACHINE_NAME.get(mach, "unknown") if mach is not None else "unknown"
             errors.append(
-                f"{name}: ELF machine {mach} ({_MACHINE_NAME.get(mach, 'unknown')}) does "
+                f"{name}: ELF machine {mach} ({machine_name}) does "
                 f"not match the '{subdir}' package arch {expected_machine} "
                 f"({_MACHINE_NAME[expected_machine]}) -- wrong-arch/mislabeled driver."
             )
@@ -478,7 +489,7 @@ def audit_package(path: str) -> list[str]:
     return errors
 
 
-def main(argv: list | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", help="Directory to scan recursively for *.conda / *.tar.bz2.")
     parser.add_argument("packages", nargs="*", help="Explicit package paths to audit.")
