@@ -2555,22 +2555,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 ):
                     column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
                     decimal_digits = min(max(0, decimal_digits), column_size)
-                    # Same SQL_C_CHAR stride vs precision split as auto-detect.
+                    # Provisional SQL_C_CHAR stride: size only from values that
+                    # are already Decimal. Do NOT convert non-Decimals here —
+                    # that bypasses the protected conversion loop below and can
+                    # leak MemoryError/RuntimeError (and value-bearing messages).
+                    # After conversion, bufferSize is widened from the produced
+                    # fixed-point text (same path that sanitizes failures).
                     max_encoded = 0
                     for row in seq_of_parameters:
                         value = row[col_index]
-                        if value is None:
-                            continue
-                        try:
-                            if isinstance(value, decimal.Decimal):
-                                encoded = format(value, "f")
-                            else:
-                                encoded = format(decimal.Decimal(str(value)), "f")
-                            max_encoded = max(max_encoded, len(encoded))
-                        except (decimal.DecimalException, ValueError, TypeError):
-                            # Conversion failures surface later in the Decimal
-                            # conversion loop; keep a safe precision-based floor.
-                            pass
+                        if isinstance(value, decimal.Decimal):
+                            max_encoded = max(max_encoded, len(format(value, "f")))
                     numeric_buffer_size = max(max_encoded, column_size + 3, 1)
 
                 # For binary data columns with mixed content, we need to find max size
@@ -2775,6 +2770,25 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         except Exception:  # pylint: disable=broad-exception-caught
                             raise ValueError(err_msg) from None
             processed_parameters.append(processed_row)
+
+        # Derive/widen SQL_C_CHAR bufferSize from text produced by the protected
+        # DECIMAL/NUMERIC conversion above. setinputsizes previously sized by
+        # converting independently (leaking raw MemoryError/RuntimeError); the
+        # auto-detect path already had a Decimal-only provisional size.
+        for col_index, ptype in enumerate(parameters_type):
+            if ptype.paramSQLType not in (
+                ddbc_sql_const.SQL_DECIMAL.value,
+                ddbc_sql_const.SQL_NUMERIC.value,
+            ):
+                continue
+            max_encoded = 0
+            for row in processed_parameters:
+                val = row[col_index]
+                if isinstance(val, str):
+                    max_encoded = max(max_encoded, len(val))
+            if max_encoded:
+                prior = getattr(ptype, "bufferSize", 0) or 0
+                ptype.bufferSize = max(prior, max_encoded, 1)
 
         # Now transpose the processed parameters
         columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)

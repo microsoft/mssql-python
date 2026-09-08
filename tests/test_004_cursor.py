@@ -10558,20 +10558,21 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
 
 
 def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
-    """A parameter whose str() raises must not leak the exception text (GH-503).
+    """A parameter whose str() raises RuntimeError must not leak the text (GH-503).
 
     Exception chaining (raise ... from e) can surface a value-bearing cause
     through __cause__ and formatted tracebacks. For a value whose str() raises,
     the chain must be suppressed so the metadata-only guarantee holds across
-    tracebacks and APM/log shippers, not just str(exc).
+    tracebacks and APM/log shippers, not just str(exc). The sizing pass must
+    not convert independently, or a raw RuntimeError escapes sanitization.
     """
     cursor = db_connection.cursor()
 
-    secret = "secret-987-65-4321"
+    secret = "synthetic-private-parameter"
 
     class ExplodingStr:
         def __str__(self):
-            raise ValueError(secret)
+            raise RuntimeError(secret)
 
     cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
     try:
@@ -17387,6 +17388,142 @@ def test_gh745_executemany_buffer_fits_mixed_sign_short_precision(monkeypatch):
     assert pt.bufferSize >= max(len(s) for s in encoded)
     assert pt.bufferSize > pt.columnSize
     assert captured["columnwise_params"][0] == encoded
+
+
+def test_setinputsizes_sql_decimal_memoryerror_no_leak_unit(monkeypatch):
+    """Huge scientific string must raise sanitized ValueError, not MemoryError."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    sensitive_value = "1e999999999999999999"
+    cur.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+    with pytest.raises(ValueError) as exc_info:
+        cur.executemany("INSERT INTO t VALUES (?)", [(sensitive_value,)])
+
+    message = str(exc_info.value)
+    assert "Failed to convert parameter" in message
+    assert "row 0" in message
+    assert "column 0" in message
+    assert exc_info.value.__cause__ is None
+    assert sensitive_value not in message
+    formatted = "".join(
+        traceback.format_exception(
+            type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+        )
+    )
+    assert sensitive_value not in formatted
+
+
+def test_setinputsizes_sql_decimal_runtimeerror_no_leak_unit(monkeypatch):
+    """str() raising RuntimeError must become sanitized ValueError (no marker leak)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    marker = "synthetic-private-parameter"
+
+    class ExplodingStr:
+        def __str__(self):
+            raise RuntimeError(marker)
+
+    cur.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+    with pytest.raises(ValueError) as exc_info:
+        cur.executemany("INSERT INTO t VALUES (?)", [(ExplodingStr(),)])
+
+    assert marker not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert "row 0" in str(exc_info.value)
+    assert "column 0" in str(exc_info.value)
+    formatted = "".join(
+        traceback.format_exception(
+            type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+        )
+    )
+    assert marker not in formatted
+
+
+def test_setinputsizes_sql_decimal_buffer_from_protected_conversion(monkeypatch):
+    """setinputsizes DECIMAL bufferSize comes from protected conversion text.
+
+    Provisional sizing must not convert non-Decimals (that leaked MemoryError /
+    RuntimeError). After the protected loop, bufferSize must still fit
+    Decimal("1E-38") and string inputs like "1E-38".
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    def _run(data):
+        cur = Cursor.__new__(Cursor)
+        cur._timeout = 0
+        cur.closed = False
+        cur.hstmt = MagicMock()
+        cur.messages = []
+        cur.is_stmt_prepared = [False]
+        cur._connection = MagicMock()
+        cur._connection._encoding = "utf-8"
+        cur._connection._conn = MagicMock()
+        captured = {}
+
+        def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+            captured["parameters_type"] = param_types
+            captured["columnwise_params"] = col_params
+            return 0
+
+        monkeypatch.setattr(cur, "_check_closed", lambda: None)
+        monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+        monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: len(data))
+        cur.setinputsizes([(mssql_python.SQL_DECIMAL, 38, 38)])
+        cur.executemany("INSERT INTO t VALUES (?)", data)
+        return captured
+
+    tiny = decimal.Decimal("1E-38")
+    encoded = format(tiny, "f")
+    assert len(encoded) == 40
+
+    for payload in ([(tiny,)], [("1E-38",)]):
+        captured = _run(payload)
+        pt = captured["parameters_type"][0]
+        assert pt.paramSQLType == _C.SQL_DECIMAL.value
+        assert pt.columnSize == 38
+        assert pt.decimalDigits == 38
+        assert pt.bufferSize >= len(encoded)
+        assert captured["columnwise_params"][0][0] == encoded
 
 
 def test_gh745_executemany_batch_precision_over_38_raises(monkeypatch):
