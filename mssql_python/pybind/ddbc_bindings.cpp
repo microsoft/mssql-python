@@ -6211,19 +6211,19 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Add profiling submodule (only in profiling builds; compiled out by default)
 #ifdef ENABLE_PROFILING
     auto profiling = m.def_submodule("profiling", "Performance profiling");
-    profiling.def("enable", []() { mssql_profiling::PerformanceCounter::instance().enable(); }, 
+    profiling.def("enable", []() { mssql_profiling::PerformanceCounter::instance().enable(); },
                   "Enable performance profiling");
-    profiling.def("disable", []() { mssql_profiling::PerformanceCounter::instance().disable(); }, 
+    profiling.def("disable", []() { mssql_profiling::PerformanceCounter::instance().disable(); },
                   "Disable performance profiling");
-    profiling.def("get_stats", []() { return mssql_profiling::PerformanceCounter::instance().get_stats(); }, 
+    profiling.def("get_stats", []() { return mssql_profiling::PerformanceCounter::instance().get_stats(); },
                   "Get profiling statistics");
     profiling.def("get_timeline", []() { return mssql_profiling::PerformanceCounter::instance().get_timeline(); },
                   "Get timeline events (list of {name, start_us, duration_us})");
-    profiling.def("reset", []() { mssql_profiling::PerformanceCounter::instance().reset(); }, 
+    profiling.def("reset", []() { mssql_profiling::PerformanceCounter::instance().reset(); },
                   "Reset profiling statistics and timeline");
-    profiling.def("reset_stats_only", []() { mssql_profiling::PerformanceCounter::instance().reset_stats_only(); }, 
+    profiling.def("reset_stats_only", []() { mssql_profiling::PerformanceCounter::instance().reset_stats_only(); },
                   "Reset profiling statistics but keep timeline");
-    profiling.def("is_enabled", []() { return mssql_profiling::PerformanceCounter::instance().is_enabled(); }, 
+    profiling.def("is_enabled", []() { return mssql_profiling::PerformanceCounter::instance().is_enabled(); },
                   "Check if profiling is enabled");
     profiling.def("enable_timeline", []() { mssql_profiling::PerformanceCounter::instance().enable_timeline(); },
                   "Enable timeline recording (resets epoch)");

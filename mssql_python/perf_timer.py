@@ -18,7 +18,6 @@ distinguish from C++ timers.
 """
 
 import time
-from contextlib import contextmanager
 
 _enabled = False
 _stats: dict[str, dict] = {}
@@ -89,15 +88,53 @@ def get_stats() -> dict:
     return out
 
 
-@contextmanager
+class _NullPhase:
+    """No-op context manager returned by perf_phase when profiling is disabled.
+
+    A single shared instance is reused so the disabled path costs only a function
+    call plus two slot method calls, avoiding the generator + _GeneratorContextManager
+    allocation of an @contextmanager that every instrumented call site would
+    otherwise pay even when profiling is off.
+    """
+
+    __slots__ = ()
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _Phase:
+    """Times one phase and records it on exit (used only when enabled).
+
+    Recording happens in __exit__, which always runs even if the wrapped block
+    raises, so an exception can't silently drop the sample and desync the Python
+    call counts from the C++ ones.
+    """
+
+    __slots__ = ("_name", "_t0")
+
+    def __init__(self, name: str):
+        self._name = name
+
+    def __enter__(self):
+        self._t0 = time.perf_counter_ns()
+        return None
+
+    def __exit__(self, *exc):
+        _record(self._name, time.perf_counter_ns() - self._t0, self._t0)
+        return False
+
+
+_NULL_PHASE = _NullPhase()
+
+
 def perf_phase(name: str):
     if not _enabled:
-        yield
-        return
-    t0 = time.perf_counter_ns()
-    yield
-    elapsed = time.perf_counter_ns() - t0
-    _record(name, elapsed, t0)
+        return _NULL_PHASE
+    return _Phase(name)
 
 
 def perf_start() -> int:

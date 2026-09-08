@@ -134,7 +134,9 @@ def execute_insert(conn, table, ctx, count: int = INSERT_COUNT) -> dict:
         )
     wall_ms = (time.perf_counter() - t0) * 1000
     cpp, py = ctx.collect()
-    conn.commit()
+    # Roll back so these rows don't persist in the shared table and inflate the
+    # row counts of later fetch scenarios. The insert work is already measured.
+    conn.rollback()
     cursor.close()
     return {
         "title": f"EXECUTE INSERT ({count}x)",
@@ -159,7 +161,9 @@ def executemany(conn, table, ctx, row_count: int = EXECUTEMANY_ROWS) -> dict:
     )
     wall_ms = (time.perf_counter() - t0) * 1000
     cpp, py = ctx.collect()
-    conn.commit()
+    # Roll back so these rows don't persist in the shared table and inflate the
+    # row counts of later fetch scenarios. The insert work is already measured.
+    conn.rollback()
     cursor.close()
     return {
         "title": f"EXECUTEMANY ({row_count} rows)",
@@ -263,7 +267,7 @@ def fetch_arrow(conn, table, ctx) -> dict:
     ctx.enable()
     t0 = time.perf_counter()
     try:
-        batch = cursor.fetch_arrow(size=ROW_COUNT)
+        batch = cursor.arrow_batch(batch_size=ROW_COUNT)
         wall_ms = (time.perf_counter() - t0) * 1000
         cpp, py = ctx.collect()
         row_count = batch.num_rows if batch else 0

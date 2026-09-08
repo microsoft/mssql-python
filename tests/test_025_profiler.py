@@ -341,3 +341,26 @@ def test_enable_timeline_clears_stale_events():
     tl = perf_timer.get_timeline()
     assert len(tl) == 1
     assert tl[0]["name"] == "py::epoch2::evt"
+
+
+def test_perf_phase_records_even_when_body_raises():
+    """__exit__ must record the sample even if the wrapped block raises, so the
+    Python call counts don't silently desync from the C++ ones."""
+    perf_timer.enable()
+    with pytest.raises(ValueError):
+        with perf_timer.perf_phase("py::raises::evt"):
+            raise ValueError("boom")
+    stats = perf_timer.get_stats()
+    assert "py::raises::evt" in stats
+    assert stats["py::raises::evt"]["calls"] == 1
+
+
+def test_perf_phase_disabled_returns_shared_noop():
+    """Disabled perf_phase returns the shared singleton (no per-call allocation)."""
+    assert perf_timer.is_enabled() is False
+    a = perf_timer.perf_phase("py::x")
+    b = perf_timer.perf_phase("py::y")
+    assert a is b  # same shared _NULL_PHASE instance
+    with a:
+        pass
+    assert perf_timer.get_stats() == {}

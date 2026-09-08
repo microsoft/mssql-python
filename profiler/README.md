@@ -12,8 +12,12 @@ opaque block. This tool instruments both layers with named timers, so you can
 see, for example, that a slow query spent its time in native parameter binding
 rather than in Python.
 
-This is a **development / internal tool.** It is not built into released wheels
-and is not meant for end users (yet).
+This is a **development / internal tool** and is not meant for end users (yet).
+The native (C++) instrumentation is compiled out of released wheels, so the
+shipped driver's native path carries no profiler code. The Python-layer markers
+(`perf_timer.py` and the `perf_phase(...)` calls in `cursor.py`) do ship, but
+they are phase-level and, when profiling is disabled, reduce to a shared no-op
+context manager whose end-to-end cost is within run-to-run noise.
 
 ## How the timers are named
 
@@ -24,9 +28,9 @@ Every timer has a prefix telling you which layer it belongs to:
 
 ## Step 1: build with profiling turned on
 
-Profiling is **off by default** and compiled out of normal builds (zero cost in
-the shipped driver). To get a profiling build, set one environment variable
-before building the C++ extension:
+Profiling is **off by default** and the native instrumentation is compiled out
+of normal builds (no native profiler code in the shipped driver). To get a
+profiling build, set one environment variable before building the C++ extension:
 
 ```bash
 # macOS / Linux

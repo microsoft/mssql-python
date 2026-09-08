@@ -205,7 +205,12 @@ class Profiler:
         print(f"# CUSTOM: {path.name}")
         print(f"{'#' * 100}")
 
-        ns = {"conn": self._conn, "cursor": cursor}
+        ns = {
+            "conn": self._conn,
+            "cursor": cursor,
+            "__name__": "__main__",
+            "__file__": str(path),
+        }
         code = compile(path.read_text(), str(path), "exec")
 
         self._ctx.enable(timeline=self._timeline)

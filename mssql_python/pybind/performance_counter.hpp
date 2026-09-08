@@ -64,7 +64,7 @@ private:
     // and only read under mutex_ in record(), so it needs no separate atomic.
     std::atomic<bool> enabled_{false};
     std::atomic<bool> timeline_enabled_{false};
-    std::chrono::time_point<std::chrono::high_resolution_clock> epoch_;
+    std::chrono::time_point<std::chrono::steady_clock> epoch_;
 
 public:
     static PerformanceCounter& instance() {
@@ -82,16 +82,16 @@ public:
         // timeline_ shares the current epoch; a second enable_timeline() without
         // an intervening reset() would otherwise mix offsets from two epochs.
         timeline_.clear();
-        epoch_ = std::chrono::high_resolution_clock::now();
+        epoch_ = std::chrono::steady_clock::now();
         timeline_enabled_ = true;
     }
     void disable_timeline() { timeline_enabled_ = false; }
     bool is_timeline_enabled() const { return timeline_enabled_; }
 
     void record(const std::string& name, int64_t duration_us,
-                std::chrono::time_point<std::chrono::high_resolution_clock> start) {
+                std::chrono::time_point<std::chrono::steady_clock> start) {
         if (!enabled_) return;
-        
+
         std::lock_guard<std::mutex> lock(mutex_);
         auto& stats = counters_[name];
         stats.total_time_us += duration_us;
@@ -108,7 +108,7 @@ public:
     py::dict get_stats() {
         std::lock_guard<std::mutex> lock(mutex_);
         py::dict result;
-        
+
         for (const auto& [name, stats] : counters_) {
             py::dict d;
             d["total_us"] = stats.total_time_us;
@@ -119,7 +119,7 @@ public:
             d["platform"] = PROFILING_PLATFORM;
             result[py::str(name)] = d;
         }
-        
+
         return result;
     }
 
@@ -152,7 +152,7 @@ public:
 class ScopedTimer {
 private:
     const char* name_;
-    std::chrono::time_point<std::chrono::high_resolution_clock> start_;
+    std::chrono::time_point<std::chrono::steady_clock> start_;
     // Capture the enabled state ONCE at construction. Using this captured flag
     // (instead of re-checking is_enabled() in the destructor) means a concurrent
     // enable()/disable() between construction and destruction can never make us
@@ -163,13 +163,13 @@ public:
     explicit ScopedTimer(const char* name)
         : name_(name), active_(PerformanceCounter::instance().is_enabled()) {
         if (active_) {
-            start_ = std::chrono::high_resolution_clock::now();
+            start_ = std::chrono::steady_clock::now();
         }
     }
-    
+
     ~ScopedTimer() {
         if (active_) {
-            auto end = std::chrono::high_resolution_clock::now();
+            auto end = std::chrono::steady_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
             PerformanceCounter::instance().record(name_, duration, start_);
         }
