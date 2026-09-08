@@ -664,10 +664,10 @@ DETECTION_CASES = [
     (b"", _c.SQL_VARBINARY, _c.SQL_C_BINARY, 1, 0, False),
     (b"abc", _c.SQL_VARBINARY, _c.SQL_C_BINARY, 3, 0, False),
     # date / datetime / time
-    (datetime.date(2024, 1, 1), _c.SQL_DATE, _c.SQL_C_TYPE_DATE, 10, 0, False),
+    (datetime.date(2024, 1, 1), _c.SQL_TYPE_DATE, _c.SQL_C_TYPE_DATE, 10, 0, False),
     (
         datetime.datetime(2024, 1, 1, 2, 3, 4),
-        _c.SQL_TIMESTAMP,
+        _c.SQL_TYPE_TIMESTAMP,
         _c.SQL_C_TYPE_TIMESTAMP,
         26,
         6,
