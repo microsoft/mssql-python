@@ -2818,9 +2818,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     uuid_str_indices=self._uuid_str_indices,
                     column_map_lower=column_map_lower,
                 )
-        except Exception as e:
+        except Exception:
             # On error, don't increment rownumber - rethrow the error
-            raise e
+            raise
 
     def fetchmany(self, size: Optional[int] = None) -> List[Row]:
         """
@@ -2891,9 +2891,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     )
                     for row_data in rows_data
                 ]
-        except Exception as e:
+        except Exception:
             # On error, don't increment rownumber - rethrow the error
-            raise e
+            raise
 
     def fetchall(self) -> List[Row]:
         """
@@ -2956,9 +2956,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     )
                     for row_data in rows_data
                 ]
-        except Exception as e:
+        except Exception:
             # On error, don't increment rownumber - rethrow the error
-            raise e
+            raise
 
     def arrow_batch(self, batch_size: int = 8192) -> "pyarrow.RecordBatch":
         """
