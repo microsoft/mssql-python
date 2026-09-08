@@ -14,6 +14,7 @@
 #include "utf_utils.h"
 
 #include <algorithm>  // std::min
+#include <cctype>
 #include <cstdint>
 #include <cstring>  // For std::memcpy
 #include <filesystem>
@@ -949,31 +950,34 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 
 // Helper function to check if Python is shutting down or finalizing
 // This centralizes the shutdown detection logic to avoid code duplication
+//
+// IMPORTANT: must not blindly acquire the GIL. The previous implementation
+// used py::gil_scoped_acquire + sys._is_finalizing(), which calls
+// PyGILState_Ensure() under the hood. When invoked from a thread CPython
+// doesn't already know about (e.g. a foreign/background thread dropping the
+// last shared_ptr<SqlHandle> reference) while the interpreter is finalizing,
+// PyGILState_Ensure() can fail to register thread-local state and crash with
+// "Fatal Python error: gilstate_tss_set: failed to set current tstate (TSS)"
+// - i.e. the very safety check meant to prevent a shutdown-time crash can
+// itself cause one.
 static bool is_python_finalizing() {
-    try {
-        if (Py_IsInitialized() == 0) {
-            return true;  // Python is already shut down
-        }
-
-        py::gil_scoped_acquire gil;
-        py::object sys_module = py::module_::import("sys");
-        if (!sys_module.is_none()) {
-            // Check if the attribute exists before accessing it (for Python
-            // version compatibility)
-            if (py::hasattr(sys_module, "_is_finalizing")) {
-                py::object finalizing_func = sys_module.attr("_is_finalizing");
-                if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
-                    return true;  // Python is finalizing
-                }
-            }
-        }
-        return false;
-    } catch (...) {
-        std::cerr << "Error occurred while checking Python finalization state." << std::endl;
-        // Be conservative - don't assume shutdown on any exception
-        // Only return true if we're absolutely certain Python is shutting down
-        return false;
+    if (Py_IsInitialized() == 0) {
+        return true;  // Python is already shut down
     }
+#if PY_VERSION_HEX >= 0x030D0000
+    // Py_IsFinalizing() is a public, thread-safe, GIL-free CPython API
+    // (stable since Python 3.13) built exactly for this purpose.
+    return Py_IsFinalizing() != 0;
+#else
+    // Older Python versions don't expose the public Py_IsFinalizing(), but the
+    // exported CPython 3.7+ call it wraps, _Py_IsFinalizing(), is equally
+    // GIL-free and thread-safe (pybind11 itself uses it for this purpose). Use
+    // it so the check is accurate: a foreign/GIL-free thread dropping the last
+    // handle reference during NORMAL operation reports "not finalizing" and the
+    // handle is actually freed, instead of a PyGILState_Check() proxy that would
+    // treat every GIL-free caller as shutdown and silently leak the handle.
+    return _Py_IsFinalizing() != 0;
+#endif
 }
 
 // TODO: Add more nuanced exception classes
@@ -999,6 +1003,95 @@ std::string GetLastErrorMessage();
 // (`GetDriverPathCpp` is defined further below; forward-declared here so we can
 // verify the external package actually ships this platform's driver binary.)
 std::string GetDriverPathCpp(const std::string& moduleDir);
+std::string GetDriverPathForProviderCpp(const std::string& moduleDir,
+                                        const std::string& providerId);
+
+// -----------------------------------------------------------------------------
+// ODBC provider selection
+//
+// Two providers are supported: the classic Microsoft ODBC Driver 18
+// ("msodbcsql18", shipped by mssql_python_odbc) and the Rust driver
+// ("mssql-odbc", shipped inside mssql_py_core / the mssql-python-rs wheel).
+// Python is the sole
+// resolver (env var -> module property -> default) and pushes the chosen id
+// here via _set_odbc_provider() before the driver loads. The native side does
+// not read the environment itself; if the push has not happened yet, it falls
+// back to the hardcoded classic default.
+// -----------------------------------------------------------------------------
+
+namespace {
+constexpr const char* kProviderMsodbcsql18 = "msodbcsql18";
+constexpr const char* kProviderMssqlOdbc = "mssql-odbc";
+
+std::mutex g_providerMutex;
+std::string g_selectedProvider;  // pushed from Python before load; "" = unset
+bool g_providerSelectionLocked = false;
+
+std::string NormalizeProviderId(const std::string& id) {
+    // Mirror Python's ProviderManager._normalize(): trim surrounding whitespace
+    // and lowercase, leaving interior characters intact so both sides agree.
+    size_t start = 0;
+    size_t end = id.size();
+    while (start < end && std::isspace(static_cast<unsigned char>(id[start]))) {
+        ++start;
+    }
+    while (end > start && std::isspace(static_cast<unsigned char>(id[end - 1]))) {
+        --end;
+    }
+    std::string out = id.substr(start, end - start);
+    for (char& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return out;
+}
+}  // namespace
+
+void SetSelectedProvider(const std::string& id) {
+    const std::string normalized = NormalizeProviderId(id);
+    if (normalized != kProviderMsodbcsql18 && normalized != kProviderMssqlOdbc) {
+        // ProviderManager (Python) already rejects an unknown id before this is
+        // ever called; this is defence-in-depth against a caller that bypasses
+        // it and talks to this native entry point directly.
+        ThrowStdException("Unknown ODBC provider '" + id +
+                          "'. Valid providers are: " + kProviderMsodbcsql18 + ", " +
+                          kProviderMssqlOdbc + ".");
+    }
+    std::lock_guard<std::mutex> lock(g_providerMutex);
+    if (g_providerSelectionLocked) {
+        // Every connection re-pushes ProviderManager's already-frozen choice,
+        // so the same id remains a silent no-op. A direct native connection can
+        // bypass the Python push; in that case an empty selection means the
+        // classic default was locked when loading started.
+        const std::string& lockedProvider =
+            g_selectedProvider.empty() ? kProviderMsodbcsql18 : g_selectedProvider;
+        if (normalized != lockedProvider) {
+            ThrowStdException("Cannot change the ODBC provider after driver loading has "
+                              "started in this process.");
+        }
+        return;
+    }
+    g_selectedProvider = normalized;
+}
+
+// Effective provider id: the value pushed from Python, else the classic default.
+// Python is the authoritative resolver (env var -> module property -> default)
+// and pushes the result via _set_odbc_provider() before the driver loads.
+std::string GetSelectedProviderId() {
+    std::lock_guard<std::mutex> lock(g_providerMutex);
+    if (g_selectedProvider == kProviderMssqlOdbc) {
+        return kProviderMssqlOdbc;
+    }
+    return kProviderMsodbcsql18;
+}
+
+// Keep in sync with odbc_provider.py's _PACKAGE_BY_PROVIDER / _DIST_BY_PROVIDER.
+std::string ProviderPackageForId(const std::string& id) {
+    return (id == kProviderMssqlOdbc) ? "mssql_py_core" : "mssql_python_odbc";
+}
+
+std::string ProviderDistForId(const std::string& id) {
+    return (id == kProviderMssqlOdbc) ? "mssql-python-rs" : "mssql-python-odbc";
+}
 
 std::string GetOdbcLibsBaseDir() {
     namespace fs = std::filesystem;
@@ -1009,8 +1102,11 @@ std::string GetOdbcLibsBaseDir() {
     // dependency and keeps a future GIL-released caller from turning this into a
     // hard crash.
     py::gil_scoped_acquire gil;
+    const std::string providerId = GetSelectedProviderId();
+    const std::string packageName = ProviderPackageForId(providerId);
+    const std::string distName = ProviderDistForId(providerId);
     try {
-        py::object module = py::module::import("mssql_python_odbc");
+        py::object module = py::module::import(packageName.c_str());
         py::object module_path = module.attr("__file__");
         std::string module_file = module_path.cast<std::string>();
 
@@ -1023,46 +1119,52 @@ std::string GetOdbcLibsBaseDir() {
         // populated; there is no bundled fallback anymore, so fail hard rather
         // than resolve to a directory that has no usable driver.
         //
-        // "Complete" means the ODBC driver itself and, on Windows, the
-        // co-located `mssql-auth.dll` that LoadDriverOrThrowException loads
-        // unconditionally. Verifying both here keeps this resolver's notion of a
-        // usable base dir consistent with what the loader below actually needs.
+        // "Complete" means the ODBC driver itself and, for the classic
+        // msodbcsql18 provider on Windows, the co-located `mssql-auth.dll` that
+        // LoadDriverOrThrowException preloads. The Rust provider (mssql-odbc)
+        // loads that library lazily from System32 at interactive-auth time, so
+        // it is NOT required co-located here. Verifying this keeps the resolver's
+        // notion of a usable base dir consistent with what the loader needs.
         std::error_code ec;
         fs::path externalDriver(GetDriverPathCpp(parentDir.string()));
         bool externalComplete = fs::exists(externalDriver, ec);
 #ifdef _WIN32
-        if (externalComplete) {
+        // Only the classic msodbcsql18 provider ships and preloads a co-located
+        // mssql-auth.dll. Requiring it for the Rust provider would wrongly reject
+        // an otherwise complete mssql-odbc package, which resolves that library
+        // lazily from System32 instead.
+        if (externalComplete && providerId == kProviderMsodbcsql18) {
             fs::path externalAuthDll = externalDriver.parent_path() / "mssql-auth.dll";
             externalComplete = fs::exists(externalAuthDll, ec);
         }
 #endif
         if (!externalComplete) {
-            LOG("GetOdbcLibsBaseDir: mssql_python_odbc present at '%s' but its ODBC driver "
+            LOG("GetOdbcLibsBaseDir: %s present at '%s' but its ODBC driver "
                 "binaries are missing or incomplete for this platform",
-                parentDir.string().c_str());
+                packageName.c_str(), parentDir.string().c_str());
             ThrowStdException(
-                "The 'mssql-python-odbc' package is installed but its ODBC driver binaries "
+                "The '" + distName + "' package is installed but its ODBC driver binaries "
                 "are missing or incomplete for this platform. Reinstall it with: "
-                "pip install --force-reinstall mssql-python-odbc");
+                "pip install --force-reinstall " + distName);
         }
-        LOG("GetOdbcLibsBaseDir: Using external mssql_python_odbc package - directory='%s'",
-            parentDir.string().c_str());
+        LOG("GetOdbcLibsBaseDir: Using external %s package - directory='%s'",
+            packageName.c_str(), parentDir.string().c_str());
         return parentDir.string();
     } catch (const py::error_already_set& e) {
         if (e.matches(PyExc_ModuleNotFoundError)) {
             // Phase 2: the standalone package is required. Turn the missing
             // dependency into a clear, actionable error instead of a fallback.
-            LOG("GetOdbcLibsBaseDir: required package mssql_python_odbc is not installed (%s)",
-                e.what());
+            LOG("GetOdbcLibsBaseDir: required package %s is not installed (%s)",
+                packageName.c_str(), e.what());
             ThrowStdException(
-                "The required 'mssql-python-odbc' package (which ships the ODBC driver "
-                "binaries) is not installed. Install it with: pip install mssql-python-odbc");
+                "The required '" + distName + "' package (which ships the ODBC driver "
+                "binaries) is not installed. Install it with: pip install " + distName);
         }
         // A different import-time error means the package is installed but
         // broken; surface it instead of silently masking the real problem.
-        LOG("GetOdbcLibsBaseDir: importing mssql_python_odbc failed unexpectedly (%s); "
+        LOG("GetOdbcLibsBaseDir: importing %s failed unexpectedly (%s); "
             "re-raising",
-            e.what());
+            packageName.c_str(), e.what());
         throw;
     }
 }
@@ -1139,7 +1241,8 @@ std::string GetLastErrorMessage() {
  * dependencies during critical initialization, ensuring compatibility across
  * all supported platforms.
  */
-std::string GetDriverPathCpp(const std::string& moduleDir) {
+std::string GetDriverPathForProviderCpp(const std::string& moduleDir,
+                                        const std::string& providerId) {
 #if !defined(MSODBCSQL_VERSION_MAJOR) || !defined(MSODBCSQL_VERSION_MAJOR_MINOR)
 #error \
     "MSODBCSQL_VERSION_MAJOR / MSODBCSQL_VERSION_MAJOR_MINOR must be defined at build time. " \
@@ -1148,6 +1251,11 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
 #endif
     namespace fs = std::filesystem;
     fs::path basePath(moduleDir);
+    const std::string normalizedProvider = NormalizeProviderId(providerId);
+    if (normalizedProvider != kProviderMsodbcsql18 &&
+        normalizedProvider != kProviderMssqlOdbc) {
+        throw std::invalid_argument("Unknown ODBC provider '" + providerId + "'.");
+    }
 
     std::string platform;
     std::string arch;
@@ -1160,6 +1268,31 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
 #else
     throw std::runtime_error("Unsupported architecture");
 #endif
+
+    // Rust provider (mssql-odbc): ships as `mssqlodbc.{so,dylib,dll}` (no `lib`
+    // prefix on Linux/macOS) under an mssql-python-defined libs/ layout.
+    // mssql-python owns the provider wheel, so this layout is authoritative and
+    // finalized alongside that wheel build.
+    if (normalizedProvider == kProviderMssqlOdbc) {
+#ifdef __linux__
+    #if defined(__GLIBC__)
+        constexpr const char* libc = "glibc";
+    #else
+        constexpr const char* libc = "musl";
+    #endif
+        return (basePath / "libs" / "linux" / libc / arch / "lib" / "mssqlodbc.so")
+            .string();
+#elif defined(__APPLE__)
+        return (basePath / "libs" / "macos" / arch / "lib" / "mssqlodbc.dylib").string();
+#elif defined(_WIN32)
+        {
+            std::string winArch = (arch == "x86_64") ? "x64" : arch;
+            return (basePath / "libs" / "windows" / winArch / "mssqlodbc.dll").string();
+        }
+#else
+        throw std::runtime_error("Unsupported platform");
+#endif
+    }
 
 // Detect platform and set path
 #ifdef __linux__
@@ -1205,6 +1338,10 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
 #endif
 }
 
+std::string GetDriverPathCpp(const std::string& moduleDir) {
+    return GetDriverPathForProviderCpp(moduleDir, GetSelectedProviderId());
+}
+
 DriverHandle LoadDriverOrThrowException() {
     namespace fs = std::filesystem;
 
@@ -1229,36 +1366,44 @@ DriverHandle LoadDriverOrThrowException() {
         driverPath.string().c_str());
 
 #ifdef _WIN32
-    // On Windows, optionally load mssql-auth.dll if it exists
-    std::string archDir = (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64"
-                          : (archStr == "arm64")                                         ? "arm64"
-                                                                                         : "x86";
+    // Only the classic msodbcsql18 provider preloads its co-located
+    // mssql-auth.dll here. The Rust provider (mssql-odbc) loads that library
+    // lazily from System32 at interactive-auth time, so preloading a co-located
+    // copy would both be unnecessary and defeat its System32-only lookup.
+    if (GetSelectedProviderId() == kProviderMsodbcsql18) {
+        std::string archDir = (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64"
+                              : (archStr == "arm64")                                         ? "arm64"
+                                                                                             : "x86";
 
-    fs::path dllDir = fs::path(moduleDir) / "libs" / "windows" / archDir;
-    fs::path authDllPath = dllDir / "mssql-auth.dll";
-    if (fs::exists(authDllPath)) {
-        // Use fs::path::c_str() which returns wchar_t* on Windows with proper encoding
-        HMODULE hAuth = LoadLibraryExW(
-            authDllPath.c_str(), nullptr,
-            LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 |
-                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
-        if (hAuth) {
-            LOG("LoadDriverOrThrowException: mssql-auth.dll loaded "
-                "successfully from '%s'",
-                authDllPath.string().c_str());
+        fs::path dllDir = fs::path(moduleDir) / "libs" / "windows" / archDir;
+        fs::path authDllPath = dllDir / "mssql-auth.dll";
+        if (fs::exists(authDllPath)) {
+            // Use fs::path::c_str() which returns wchar_t* on Windows with proper encoding
+            HMODULE hAuth = LoadLibraryExW(
+                authDllPath.c_str(), nullptr,
+                LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 |
+                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+            if (hAuth) {
+                LOG("LoadDriverOrThrowException: mssql-auth.dll loaded "
+                    "successfully from '%s'",
+                    authDllPath.string().c_str());
+            } else {
+                LOG("LoadDriverOrThrowException: Failed to load mssql-auth.dll "
+                    "from '%s' - %s",
+                    authDllPath.string().c_str(), GetLastErrorMessage().c_str());
+                ThrowStdException("Failed to load mssql-auth.dll. Please ensure it "
+                                  "is present in the expected directory.");
+            }
         } else {
-            LOG("LoadDriverOrThrowException: Failed to load mssql-auth.dll "
-                "from '%s' - %s",
-                authDllPath.string().c_str(), GetLastErrorMessage().c_str());
-            ThrowStdException("Failed to load mssql-auth.dll. Please ensure it "
-                              "is present in the expected directory.");
+            LOG("LoadDriverOrThrowException: mssql-auth.dll not found at '%s' - "
+                "Entra ID authentication will not be available",
+                authDllPath.string().c_str());
+            // GetOdbcLibsBaseDir's completeness check should already have rejected
+            // a classic-provider directory missing it, so reaching here means the
+            // check and this load-time lookup have drifted out of sync.
+            ThrowStdException("mssql-auth.dll not found. If you are using Entra "
+                              "ID, please ensure it is present.");
         }
-    } else {
-        LOG("LoadDriverOrThrowException: mssql-auth.dll not found at '%s' - "
-            "Entra ID authentication will not be available",
-            authDllPath.string().c_str());
-        ThrowStdException("mssql-auth.dll not found. If you are using Entra "
-                          "ID, please ensure it is present.");
     }
 #endif
 
@@ -1348,7 +1493,7 @@ DriverHandle LoadDriverOrThrowException() {
 }
 
 // DriverLoader definition
-DriverLoader::DriverLoader() : m_driverLoaded(false) {}
+DriverLoader::DriverLoader() {}
 
 DriverLoader& DriverLoader::getInstance() {
     static DriverLoader instance;
@@ -1366,10 +1511,18 @@ void DriverLoader::loadDriver() {
     // below, in a normal context that pybind11 can translate into a Python
     // exception. The stored error persists, so every subsequent call re-raises the
     // same actionable message instead of silently proceeding without a driver.
+    // Serialize the transition from selectable to locked with
+    // SetSelectedProvider(). Whichever operation acquires g_providerMutex first
+    // wins: either the new selection is visible to this load, or a later attempt
+    // to change it is rejected. Lock before call_once because a failed load is
+    // cached too and cannot be retried with another provider in this process.
+    {
+        std::lock_guard<std::mutex> lock(g_providerMutex);
+        g_providerSelectionLocked = true;
+    }
     std::call_once(m_onceFlag, [this]() {
         try {
             LoadDriverOrThrowException();
-            m_driverLoaded = true;
         } catch (...) {
             m_loadError = std::current_exception();
         }
@@ -1846,230 +1999,6 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
     return ret;
 }
 
-// LEGACY — slated for removal in a future optimization round.
-//
-// Executes the provided query using a ParamInfo list that Python already built,
-// rather than detecting parameter types in C++. Retained only for setinputsizes()
-// callers, whose explicit type overrides the native path does not yet honour.
-// Every parameter crosses the pybind11 boundary as a ParamInfo object here, which
-// is the cost SQLExecute_wrap exists to avoid. Once setinputsizes is handled
-// natively this function and its DDBCSQLExecuteLegacy binding both go away.
-//
-// If the query is parametrized, it prepares the statement and binds the
-// parameters. Otherwise, it executes the query directly. 'usePrepare' can be used
-// to disable the prepare step for queries already prepared in a previous call.
-SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
-                          const py::list& params, std::vector<ParamInfo>& paramInfos,
-                          py::list& isStmtPrepared, const bool usePrepare,
-                          const py::dict& encodingSettings) {
-    LOG("SQLExecute: Executing %s query - statement_handle=%p, "
-        "param_count=%zu, query_length=%zu chars",
-        (params.size() > 0 ? "parameterized" : "direct"), (void*)statementHandle->get(),
-        params.size(), query.length());
-    if (!SQLPrepare_ptr) {
-        LOG("SQLExecute: Function pointer not initialized, loading driver");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-    assert(SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr && SQLExecDirect_ptr);
-
-    if (params.size() != paramInfos.size()) {
-        // TODO: This should be a special internal exception, that python wont
-        // relay to users as is
-        ThrowStdException("Number of parameters and paramInfos do not match");
-    }
-
-    RETCODE rc;
-    SQLHANDLE hStmt = statementHandle->get();
-    if (!statementHandle || !statementHandle->get()) {
-        LOG("SQLExecute: Statement handle is null or invalid");
-    }
-
-    // Configure forward-only cursor
-    if (SQLSetStmtAttr_ptr && hStmt) {
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY, 0);
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY, (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
-    }
-
-    SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
-    if (params.size() == 0) {
-        // Execute statement directly if the statement is not parametrized. This
-        // is the fastest way to submit a SQL statement for one-time execution
-        // according to DDBC documentation -
-        // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
-        {
-            // Release the GIL during the blocking ODBC call
-            py::gil_scoped_release release;
-            rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
-        }
-        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-            LOG("SQLExecute: Direct execution failed (non-parameterized query) "
-                "- SQLRETURN=%d",
-                rc);
-        }
-        return rc;
-    } else {
-        // isStmtPrepared is a list instead of a bool coz bools in Python are
-        // immutable. Hence, we can't pass around bools by reference & modify
-        // them. Therefore, isStmtPrepared must be a list with exactly one bool
-        // element
-        assert(isStmtPrepared.size() == 1);
-        if (usePrepare) {
-            {
-                // Release the GIL during the blocking SQLPrepare network call.
-                py::gil_scoped_release release;
-                rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
-            }
-            if (!SQL_SUCCEEDED(rc)) {
-                LOG("SQLExecute: SQLPrepare failed - SQLRETURN=%d, "
-                    "statement_handle=%p",
-                    rc, (void*)hStmt);
-                return rc;
-            }
-            // GH-610: Clear per-handle describe cache (new prepare = new param types)
-            statementHandle->clearDescribeCache();
-            isStmtPrepared[0] = py::cast(true);
-        } else {
-            // Make sure the statement has been prepared earlier if we're not
-            // preparing now
-            bool isStmtPreparedAsBool = isStmtPrepared[0].cast<bool>();
-            if (!isStmtPreparedAsBool) {
-                // TODO: Print the query
-                ThrowStdException("Cannot execute unprepared statement");
-            }
-        }
-
-        // This vector manages the heap memory allocated for parameter buffers.
-        // It must be in scope until SQLExecute is done.
-        // Extract char encoding from encodingSettings dictionary
-        std::string charEncoding = "utf-8";  // default
-        if (encodingSettings.contains("encoding")) {
-            charEncoding = encodingSettings["encoding"].cast<std::string>();
-        }
-
-        std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
-        if (!SQL_SUCCEEDED(rc)) {
-            return rc;
-        }
-        {
-            // Release the GIL during the blocking SQLExecute network call.
-            py::gil_scoped_release release;
-            rc = SQLExecute_ptr(hStmt);
-        }
-        if (rc == SQL_NEED_DATA) {
-            LOG("SQLExecute: SQL_NEED_DATA received - Starting DAE "
-                "(Data-At-Execution) loop for large parameter streaming");
-            SQLPOINTER paramToken = nullptr;
-            // For DAE, release the GIL only around individual ODBC calls;
-            // Python type inspection of the parameter happens between calls
-            // and requires the GIL.
-            auto paramData = [&](SQLPOINTER* tok) {
-                py::gil_scoped_release release;
-                return SQLParamData_ptr(hStmt, tok);
-            };
-            auto putData = [&](SQLPOINTER data, SQLLEN len) {
-                py::gil_scoped_release release;
-                return SQLPutData_ptr(hStmt, data, len);
-            };
-            while ((rc = paramData(&paramToken)) == SQL_NEED_DATA) {
-                // Finding the paramInfo that matches the returned token
-                const ParamInfo* matchedInfo = nullptr;
-                for (auto& info : paramInfos) {
-                    if (reinterpret_cast<SQLPOINTER>(const_cast<ParamInfo*>(&info)) == paramToken) {
-                        matchedInfo = &info;
-                        break;
-                    }
-                }
-                if (!matchedInfo) {
-                    ThrowStdException("Unrecognized paramToken returned by SQLParamData");
-                }
-                PyObject* pyObj = matchedInfo->dataPtr.ptr();
-                if (!pyObj || pyObj == Py_None) {
-                    putData(nullptr, 0);
-                    continue;
-                }
-                if (PyUnicode_Check(pyObj)) {
-                    if (matchedInfo->paramCType == SQL_C_WCHAR) {
-                        std::u16string utf16 =
-                            borrow<py::str>(pyObj).cast<std::u16string>();
-                        rc = stream_dae_chunks(
-                            reinterpretU16stringAsSqlWChar(utf16),
-                            utf16.size() * sizeof(SQLWCHAR),
-                            putData);
-                        if (!SQL_SUCCEEDED(rc)) {
-                            LOG("SQLExecute: SQLPutData failed for SQL_C_WCHAR DAE streaming");
-                            return rc;
-                        }
-                    } else if (matchedInfo->paramCType == SQL_C_CHAR) {
-                        // Encode the string using the specified encoding
-                        std::string encodedStr;
-                        try {
-                            py::object encoded = borrow(pyObj)
-                                                     .attr("encode")(charEncoding, "strict");
-                            encodedStr = encoded.cast<std::string>();
-                            LOG("SQLExecute: DAE SQL_C_CHAR - Encoded with '%s', %zu bytes",
-                                charEncoding.c_str(), encodedStr.size());
-                        } catch (const py::error_already_set& e) {
-                            LOG_ERROR("SQLExecute: DAE SQL_C_CHAR - Failed to encode with '%s': %s",
-                                      charEncoding.c_str(), e.what());
-                            throw;
-                        }
-
-                        rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
-                        if (!SQL_SUCCEEDED(rc)) {
-                            LOG("SQLExecute: SQLPutData failed for SQL_C_CHAR DAE streaming");
-                            return rc;
-                        }
-                    } else {
-                        ThrowStdException("Unsupported C type for str in DAE");
-                    }
-                } else if (PyBytes_Check(pyObj) || PyByteArray_Check(pyObj)) {
-                    const char* dataPtr = nullptr;
-                    size_t totalBytes = 0;
-                    std::string bytesStorage;  // lifetime must span the loop
-                    if (PyBytes_Check(pyObj)) {
-                        bytesStorage = borrow<py::bytes>(pyObj);
-                        dataPtr = bytesStorage.data();
-                        totalBytes = bytesStorage.size();
-                    } else {
-                        // bytearray is mutable — copy to stable buffer before streaming
-                        bytesStorage.assign(PyByteArray_AS_STRING(pyObj),
-                                            static_cast<size_t>(PyByteArray_GET_SIZE(pyObj)));
-                        dataPtr = bytesStorage.data();
-                        totalBytes = bytesStorage.size();
-                    }
-
-                    rc = stream_dae_chunks(dataPtr, totalBytes, putData);
-                    if (!SQL_SUCCEEDED(rc)) {
-                        LOG("SQLExecute: SQLPutData failed for binary/bytes DAE streaming");
-                        return rc;
-                    }
-                } else {
-                    ThrowStdException("DAE only supported for str or bytes");
-                }
-            }
-            if (!SQL_SUCCEEDED(rc)) {
-                LOG("SQLExecute: SQLParamData final call %s - SQLRETURN=%d",
-                    (rc == SQL_NO_DATA ? "completed with no data" : "failed"), rc);
-                return rc;
-            }
-            LOG("SQLExecute: DAE streaming completed successfully, SQLExecute "
-                "resumed");
-        }
-        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-            LOG("SQLExecute: Statement execution failed - SQLRETURN=%d, "
-                "statement_handle=%p",
-                rc, (void*)hStmt);
-            return rc;
-        }
-
-        // Unbind parameter buffers before they go out of scope.
-        // Not called on error paths — diagnostics must remain readable.
-        SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-        return rc;
-    }
-}
-
 // ---------------------------------------------------------------------------
 // SQLExecute_wrap — single C++ pipeline: DetectParamTypes → BindParameters → SQLExecute
 // No ParamInfo objects cross the pybind11 boundary.
@@ -2081,6 +2010,7 @@ SQLRETURN SQLExecuteLegacy_wrap(const SqlHandlePtr statementHandle, const std::u
 SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                               const std::u16string& query,
                               py::list params,
+                              const py::object& input_sizes,
                               py::list is_stmt_prepared,
                               bool use_prepare,
                               const py::dict& encoding_settings) {
@@ -2122,7 +2052,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     // Run DetectParamTypes BEFORE SQLPrepare so that type-detection errors
     // (unsupported type, NaN Decimal, precision overflow) don't leave the
     // cursor in a half-prepared state.
-    std::vector<ParamInfo> paramInfos = DetectParamTypes(params.ptr());
+    std::vector<ParamInfo> paramInfos = DetectParamTypes(params.ptr(), input_sizes.ptr());
 
     RETCODE rc;
     bool already_prepared = is_stmt_prepared[0].cast<bool>();
@@ -6064,6 +5994,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
     m.def("GetDriverPathCpp", &GetDriverPathCpp, "Get the path to the ODBC driver");
+    m.def("_get_odbc_driver_path", &GetDriverPathForProviderCpp,
+          "Get the ODBC driver path for an explicit provider without selecting it");
+    m.def("_set_odbc_provider", &SetSelectedProvider,
+          "Select the ODBC provider ('msodbcsql18' or 'mssql-odbc') before the driver loads");
 
     // Define parameter info class
     py::class_<ParamInfo>(m, "ParamInfo")
@@ -6134,17 +6068,11 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         manager.closePools();
     }, "Disable global connection pooling and close all pools");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
-    // LEGACY — to be removed once setinputsizes overrides are handled natively.
-    m.def("DDBCSQLExecuteLegacy", &SQLExecuteLegacy_wrap,
-          "Legacy path (slated for removal): accepts pre-built ParamInfo from Python, "
-          "used only when setinputsizes overrides are present",
-          py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),
-          py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
-    // Standard path — what cursor.execute() uses unless setinputsizes is active.
     m.def("DDBCSQLExecute", &SQLExecute_wrap,
-          "Standard path: DetectParamTypes + BindParameters + SQLExecute all in C++",
+          "DetectParamTypes + BindParameters + SQLExecute all in C++",
           py::arg("statementHandle"), py::arg("query"), py::arg("params"),
-          py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
+          py::arg("inputSizes"), py::arg("isStmtPrepared"), py::arg("usePrepare"),
+          py::arg("encodingSettings"));
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",
           py::arg("statementHandle"), py::arg("query"), py::arg("columnwise_params"),
           py::arg("paramInfos"), py::arg("paramSetSize"), py::arg("encodingSettings"));
@@ -6253,13 +6181,18 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         std::cerr << "Logger bridge initialization failed: " << e.what() << std::endl;
     }
 
-    try {
-        // Try loading the ODBC driver when the module is imported
-        LOG("Module initialization: Loading ODBC driver");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    } catch (const std::exception& e) {
-        // Log the error but don't throw - let the error happen when functions
-        // are called
-        LOG("Module initialization: Failed to load ODBC driver - %s", e.what());
-    }
+    // Force DriverLoader's Meyer's-singleton to construct now, at import time,
+    // instead of on first lazy loadDriver() call from a connection path. This
+    // keeps its position in C++'s reverse-order static destruction at
+    // interpreter shutdown stable and matching prior releases.
+    //
+    // Deliberately do NOT call loadDriver() here: doing so would resolve and
+    // std::call_once-freeze the driver using whatever native provider is
+    // selected at import time (always the default, since Python's
+    // _set_odbc_provider() push - see Connection.__init__ - cannot run until
+    // after `import ddbc_bindings` completes). That silently locks in the
+    // wrong driver whenever a caller selects a non-default provider. Loading
+    // stays lazy, on first real connection attempt, by which point the
+    // provider push has already happened.
+    DriverLoader::getInstance();
 }

@@ -2522,6 +2522,58 @@ def test_map_sql_type_none_returns_sql_unknown_type():
     assert is_dae is False
 
 
+def test_map_sql_type_uses_odbc3_temporal_types():
+    """Python-side inference uses ODBC 3.x temporal SQL types."""
+    from unittest.mock import MagicMock
+
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+
+    cursor = MagicMock(spec=mssql_python.Cursor)
+    _map_sql_type = mssql_python.Cursor._map_sql_type.__get__(cursor)
+
+    date_type = _map_sql_type(date(2025, 1, 1), [date(2025, 1, 1)], 0)
+    datetime_type = _map_sql_type(datetime(2025, 1, 1), [datetime(2025, 1, 1)], 0)
+
+    assert date_type[0] == ddbc_sql_const.SQL_TYPE_DATE.value
+    assert datetime_type[0] == ddbc_sql_const.SQL_TYPE_TIMESTAMP.value
+
+
+def test_setinputsizes_canonicalizes_odbc2_temporal_types():
+    """Legacy temporal hints are converted before reaching SQLBindParameter."""
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+
+    cursor = object.__new__(mssql_python.Cursor)
+
+    cursor.setinputsizes(
+        [
+            (ddbc_sql_const.SQL_DATE.value, 10, 0),
+            ddbc_sql_const.SQL_TIME.value,
+            (ddbc_sql_const.SQL_TIMESTAMP.value, 26, 6),
+        ]
+    )
+
+    assert cursor._inputsizes == [
+        (
+            ddbc_sql_const.SQL_TYPE_DATE.value,
+            ddbc_sql_const.SQL_C_TYPE_DATE.value,
+            10,
+            0,
+        ),
+        (
+            ddbc_sql_const.SQL_TYPE_TIME.value,
+            ddbc_sql_const.SQL_C_TYPE_TIME.value,
+            0,
+            0,
+        ),
+        (
+            ddbc_sql_const.SQL_TYPE_TIMESTAMP.value,
+            ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+            26,
+            6,
+        ),
+    ]
+
+
 # ---------------------------------------------------------
 # GH-610: SQLDescribeParam cache coverage tests
 # ---------------------------------------------------------
