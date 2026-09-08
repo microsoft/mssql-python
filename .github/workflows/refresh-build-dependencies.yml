@@ -230,7 +230,8 @@ jobs:
             git push origin "HEAD:refs/heads/$branch"
           fi
 
-          if [ "$(gh pr list --head "$branch" --base main --state open --json number --jq length)" = "0" ]; then
+          pr_count="$(gh pr list --head "$branch" --base main --state open --json number --jq length)"
+          if [ "$pr_count" = "0" ]; then
             cat > "$RUNNER_TEMP/dependency-refresh-pr.md" <<EOF
           ### Work Item / Issue Reference
 

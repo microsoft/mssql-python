@@ -248,6 +248,22 @@ def test_release_pipelines_only_use_locked_requirements(pipeline_path, locks):
             assert '"$WHEEL"' in command or "--no-index --find-links" in command
 
 
+def test_linux_runtime_lock_is_installed_before_each_product_wheel():
+    pipeline = (ROOT / "OneBranchPipelines/stages/build-linux-single-stage.yml").read_text(
+        encoding="utf-8"
+    )
+    runtime_install = (
+        "$PY -m pip install -q --require-hashes "
+        "-r /workspace/eng/requirements-test-linux.txt;"
+    )
+    wheel_install = '$PY -m pip install -q "$WHEEL";'
+    runtime_positions = [match.start() for match in re.finditer(re.escape(runtime_install), pipeline)]
+    wheel_positions = [match.start() for match in re.finditer(re.escape(wheel_install), pipeline)]
+
+    assert len(runtime_positions) == len(wheel_positions) == 2
+    assert runtime_positions[0] < wheel_positions[0] < runtime_positions[1] < wheel_positions[1]
+
+
 def test_refresh_workflow_is_pr_safe_and_immutable(workflow):
     before_pr_job, pr_job = workflow.split("  open-pull-request:", maxsplit=1)
     trigger_paths = (
@@ -369,5 +385,11 @@ def test_refresh_workflow_opens_one_tracked_update_pr(workflow):
     assert 'branch="automation/refresh-build-dependencies"' in pr_job
     assert "git diff --quiet -- eng/requirements-build-*.txt" in pr_job
     assert '--force-with-lease="refs/heads/$branch:$remote_sha"' in pr_job
-    assert 'gh pr list --head "$branch" --base main --state open' in pr_job
+    pr_lookup = (
+        'pr_count="$(gh pr list --head "$branch" --base main '
+        '--state open --json number --jq length)"'
+    )
+    assert pr_lookup in pr_job
+    assert 'if [ "$pr_count" = "0" ]; then' in pr_job
+    assert 'if [ "$(gh pr list' not in pr_job
     assert "gh pr create \\" in pr_job

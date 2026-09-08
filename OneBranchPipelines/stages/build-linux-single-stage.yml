@@ -307,6 +307,9 @@ stages:
                       echo "ERROR: No wheel found for ${PYBIN}";
                       exit 1;
                     fi;
+                    # Install the reviewed runtime/test closure first so installing
+                    # mssql-python cannot resolve Azure Identity dependencies from PyPI.
+                    $PY -m pip install -q --require-hashes -r /workspace/eng/requirements-test-linux.txt;
                     echo "Installing: $WHEEL";
                     $PY -m pip install -q "$WHEEL";
                     
@@ -320,7 +323,6 @@ stages:
                     # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
                     cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
-                    $PY -m pip install -q --require-hashes -r /workspace/eng/requirements-test-linux.txt;
                     
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
@@ -375,6 +377,9 @@ stages:
                       echo "ERROR: No wheel found for ${PYBIN}";
                       exit 1;
                     fi;
+                    # Install the reviewed runtime/test closure first so installing
+                    # mssql-python cannot resolve Azure Identity dependencies from PyPI.
+                    $PY -m pip install -q --require-hashes -r /workspace/eng/requirements-test-linux.txt;
                     echo "Installing: $WHEEL";
                     $PY -m pip install -q "$WHEEL";
                     
@@ -388,7 +393,6 @@ stages:
                     # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
                     cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
-                    $PY -m pip install -q --require-hashes -r /workspace/eng/requirements-test-linux.txt;
                     
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
