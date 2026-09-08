@@ -286,6 +286,25 @@ def test_context_collect_disables_profiling():
 
 
 @_needs_cpp
+def test_context_enable_timeline_arg_survives_collect():
+    """Turning timeline on via enable(timeline=True) — without set_timeline() —
+    must still make collect() preserve timeline events for collect_timeline().
+    Regression: collect() used to consult only _timeline_mode, so an enable-arg
+    request was silently dropped and the events were cleared."""
+    from profiler.core import _ProfilingContext
+
+    ctx = _ProfilingContext()
+    ctx.enable(timeline=True)  # request timeline via the arg, not set_timeline()
+    with perf_timer.perf_phase("py::tl::work"):
+        pass
+    ctx.collect()  # must keep timeline events (reset_stats_only, not reset)
+    _, py_tl = ctx.collect_timeline()
+    assert any(
+        ev["name"] == "py::tl::work" for ev in py_tl
+    ), f"timeline events were cleared on collect(): {py_tl}"
+
+
+@_needs_cpp
 def test_context_windows_do_not_leak_into_each_other():
     """Work done between two windows must not appear in the next window's stats."""
     from profiler.core import _ProfilingContext

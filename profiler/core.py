@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import os
 import platform
-import sys
 
 from profiler.reporter import print_stats, print_timeline
 from profiler.scenarios import SCENARIOS, setup_test_data
@@ -46,11 +45,16 @@ class _ProfilingContext:
         # between windows (teardown of the previous scenario, test-data setup, a
         # scenario's own pre-enable cursor.execute) is discarded and only the work
         # between this enable() and the matching collect() is ever counted.
+        # Persist the timeline decision so collect() (which preserves timeline
+        # events only when _timeline_mode is set) can never disagree with how
+        # timeline recording was turned on here.
+        if timeline:
+            self._timeline_mode = True
         self._cpp.reset()
         self._py.reset()
         self._cpp.enable()
         self._py.enable()
-        if timeline or self._timeline_mode:
+        if self._timeline_mode:
             self._cpp.enable_timeline()
             self._py.enable_timeline()
 
