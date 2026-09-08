@@ -63,17 +63,6 @@ class CountingTokenProvider:
         return SimpleNamespace(token="header.payload.signature", expires_on=None)
 
 
-class RecordingHandler(logging.Handler):
-    """Collects the formatted messages the driver logger emits."""
-
-    def __init__(self):
-        super().__init__()
-        self.messages = []
-
-    def emit(self, record):
-        self.messages.append((record.levelno, record.getMessage()))
-
-
 @pytest.fixture(autouse=True)
 def sleeps(monkeypatch):
     """Replace the retry module's sleep with a recorder so no test ever waits."""
@@ -91,22 +80,17 @@ def native(monkeypatch):
 
 
 @pytest.fixture
-def driver_log():
-    """Attach a recording handler to the driver logger for the duration of a test.
+def driver_log(caplog):
+    """Capture what the driver logger emits for the duration of a test.
 
-    The underlying stdlib logger sits at CRITICAL until setup_logging() is called, so its level
-    is lowered to WARNING here and restored afterwards; nothing else about logging is changed.
+    The driver logger does not propagate, so caplog's handler goes on it directly.
     """
-    stdlib_logger = logging.getLogger("mssql_python")
-    previous_level = stdlib_logger.level
-    stdlib_logger.setLevel(logging.WARNING)
-    handler = RecordingHandler()
-    mssql_python.logging.logger.addHandler(handler)
-    try:
-        yield handler
-    finally:
-        mssql_python.logging.logger.removeHandler(handler)
-        stdlib_logger.setLevel(previous_level)
+    with caplog.at_level(logging.WARNING, logger="mssql_python"):
+        mssql_python.logging.logger.addHandler(caplog.handler)
+        try:
+            yield caplog
+        finally:
+            mssql_python.logging.logger.removeHandler(caplog.handler)
 
 
 def test_no_policy_makes_a_single_attempt_and_raises_as_before(native, sleeps):
@@ -259,16 +243,31 @@ def test_fixed_delay_is_constant():
     assert [policy.compute_delay(n) for n in range(1, 5)] == [0.25, 0.25, 0.25, 0.25]
 
 
-def test_jitter_scales_the_delay_and_never_exceeds_the_cap(monkeypatch):
+def test_jitter_scales_the_delay_down_and_never_exceeds_the_cap(monkeypatch):
     policy = RetryPolicy(base_delay=1.0, max_delay=5.0, jitter=True)
     monkeypatch.setattr(mssql_python.retry, "_random", lambda: 0.0)
-    assert [policy.compute_delay(n) for n in (1, 2, 3)] == [0.5, 1.0, 2.0]
-    monkeypatch.setattr(mssql_python.retry, "_random", lambda: 1.0)
-    assert [policy.compute_delay(n) for n in (1, 2, 3, 4)] == [1.5, 3.0, 5.0, 5.0]
+    assert [policy.compute_delay(n) for n in (1, 2, 3)] == [0.0, 0.0, 0.0]
+    monkeypatch.setattr(mssql_python.retry, "_random", lambda: 0.5)
+    assert [policy.compute_delay(n) for n in (1, 2, 3, 4)] == [0.5, 1.0, 2.0, 2.5]
+
+
+def test_jitter_keeps_capped_delays_spread_out():
+    # Once backoff reaches max_delay every client is asking for the same number, so the jitter is
+    # the only thing keeping them apart. Scaling around the delay used to clamp roughly half of
+    # the draws to exactly max_delay.
+    policy = RetryPolicy(base_delay=1.0, max_delay=30.0, jitter=True)
+    delays = [policy.compute_delay(5000) for _ in range(2000)]
+    assert all(0.0 <= d < 30.0 for d in delays)
+    assert not any(d == 30.0 for d in delays)
+    # a uniform draw over [0, 30) should not pile up in any one tenth of the range
+    buckets = [0] * 10
+    for d in delays:
+        buckets[int(d / 3.0)] += 1
+    assert max(buckets) < len(delays) / 4
 
 
 def test_jittered_delays_are_used_when_retrying(native, sleeps, monkeypatch):
-    monkeypatch.setattr(mssql_python.retry, "_random", lambda: 0.0)
+    monkeypatch.setattr(mssql_python.retry, "_random", lambda: 0.5)
     native.failures = 2
     connect(CONN_STR, retry_policy=RetryPolicy(max_attempts=3))
     assert sleeps == [0.5, 1.0]
@@ -375,15 +374,17 @@ def test_retry_log_lines_name_the_attempt_and_omit_the_connection_string(
     native.failures = 3
     with pytest.raises(OperationalError):
         connect(CONN_STR, retry_policy=RetryPolicy(max_attempts=3, jitter=False))
-    warnings = [msg for level, msg in driver_log.messages if level == logging.WARNING]
-    errors = [msg for level, msg in driver_log.messages if level == logging.ERROR]
+    warnings = [r.getMessage() for r in driver_log.records if r.levelno == logging.WARNING]
+    errors = [r.getMessage() for r in driver_log.records if r.levelno == logging.ERROR]
     assert len(warnings) == 2
     assert "attempt 1 of 3" in warnings[0] and "08S01" in warnings[0]
     assert "attempt 2 of 3" in warnings[1] and "2.00 seconds" in warnings[1]
     # The final failure logs only the one error line _raise_connection_error has always written.
     assert len(errors) == 1
     assert "Connection attempt" not in errors[0]
-    retry_lines = [msg for _, msg in driver_log.messages if "Connection attempt" in msg]
+    retry_lines = [
+        r.getMessage() for r in driver_log.records if "Connection attempt" in r.getMessage()
+    ]
     assert len(retry_lines) == 2
     for message in retry_lines:
         assert "testserver" not in message
@@ -394,9 +395,9 @@ def test_no_policy_adds_no_extra_log_lines(native, driver_log):
     native.failures = 1
     with pytest.raises(OperationalError):
         connect(CONN_STR)
-    assert [msg for level, msg in driver_log.messages if level == logging.WARNING] == []
+    assert [r.getMessage() for r in driver_log.records if r.levelno == logging.WARNING] == []
     # Only the one error line _raise_connection_error has always written.
-    errors = [msg for level, msg in driver_log.messages if level == logging.ERROR]
+    errors = [r.getMessage() for r in driver_log.records if r.levelno == logging.ERROR]
     assert len(errors) == 1
     assert "Connection attempt" not in errors[0]
 

@@ -85,7 +85,8 @@ class RetryPolicy:
         base_delay (float): Delay in seconds before the second attempt.
         max_delay (float): Upper bound in seconds for any single delay, jitter included.
         jitter (bool): When True each delay is scaled by a factor drawn uniformly from
-            [0.5, 1.5) so that many clients do not reconnect in lockstep.
+            [0, 1), so many clients do not reconnect in lockstep. The delay can be shorter than
+            ``base_delay`` and can be zero.
         retriable_sqlstates (frozenset): The SQLSTATE codes that are retried, uppercased and
             each exactly five characters. Defaults to ``DEFAULT_RETRIABLE_SQLSTATES``; a custom
             set replaces the default entirely rather than extending it.
@@ -112,7 +113,8 @@ class RetryPolicy:
             backoff (str): "exponential" or "fixed".
             base_delay (float): Seconds to wait before the second attempt; zero or more.
             max_delay (float): Cap in seconds for every delay; at least ``base_delay``.
-            jitter (bool): Scale each delay by a random factor in [0.5, 1.5).
+            jitter (bool): Scale each delay down by a random factor in [0, 1), so the wait can
+                be anywhere between zero and the backoff delay.
             retriable_sqlstates (iterable of str, optional): SQLSTATE codes to retry. None
                 selects ``DEFAULT_RETRIABLE_SQLSTATES``. Codes are upper cased.
 
@@ -161,7 +163,7 @@ class RetryPolicy:
 
     @property
     def jitter(self) -> bool:
-        """Whether each delay is scaled by a random factor in [0.5, 1.5)."""
+        """Whether each delay is scaled down by a random factor in [0, 1)."""
         return self._jitter
 
     @property
@@ -191,7 +193,8 @@ class RetryPolicy:
                 delay before the second attempt is ``compute_delay(1)``.
 
         Returns:
-            float: Seconds to wait, never negative and never above ``max_delay``.
+            float: Seconds to wait, never negative and never above ``max_delay``. With jitter
+                on the value stays strictly below the uncapped delay, so zero is possible.
 
         Raises:
             ValueError: If ``attempt`` is less than 1.
@@ -208,7 +211,10 @@ class RetryPolicy:
                 doublings -= 1
         delay = min(delay, self.max_delay)
         if self.jitter:
-            delay = min(delay * (0.5 + _random()), self.max_delay)
+            # Full jitter: scale down by a factor in [0, 1) rather than around the delay. Scaling
+            # around it meant every draw at or above the midpoint clamped to max_delay, so once
+            # backoff reached the cap about half of all clients waited the identical amount.
+            delay *= _random()
         return delay
 
     def __repr__(self) -> str:
