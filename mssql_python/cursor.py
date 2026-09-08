@@ -2637,6 +2637,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
+        _conv_t0 = perf_start()
         processed_parameters = []
         for row_index, row in enumerate(seq_of_parameters):
             processed_row = list(row)
@@ -2687,6 +2688,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         except Exception:  # pylint: disable=broad-exception-caught
                             raise ValueError(err_msg) from None
             processed_parameters.append(processed_row)
+        perf_stop("py::executemany::param_conversion", _conv_t0)
 
         # Now transpose the processed parameters
         with perf_phase("py::executemany::param_processing"):

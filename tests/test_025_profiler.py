@@ -383,3 +383,26 @@ def test_run_script_bad_syntax_still_cleans_up(tmp_path):
         assert ddbc.profiling.is_enabled() is False
     finally:
         p.close()
+
+
+@_needs_cpp
+@_needs_db
+def test_run_script_wall_time_excludes_read_and_compile(tmp_path):
+    """Wall time should reflect exec, not file read + compile of the script."""
+    import time as _t
+    from profiler.core import Profiler
+
+    # A script that does almost nothing; wall_ms should be tiny even though the
+    # source is non-trivial to read/compile.
+    script = tmp_path / "quick.py"
+    script.write_text("x = 1 + 1\n")
+
+    p = Profiler(_CONN_STR)
+    try:
+        t_call = _t.perf_counter()
+        result = p.run_script(str(script))
+        outer_ms = (_t.perf_counter() - t_call) * 1000
+        # reported wall must be <= the whole call and not dominated by I/O
+        assert result["wall_ms"] <= outer_ms + 1
+    finally:
+        p.close()

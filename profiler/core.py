@@ -212,12 +212,14 @@ class Profiler:
             "__file__": str(path),
         }
 
-        t0 = time.perf_counter()
         try:
             # compile() is inside the guard so a SyntaxError in the user script
             # still closes the cursor via the finally below.
             code = compile(path.read_text(), str(path), "exec")
             self._ctx.enable(timeline=self._timeline)
+            # Start the wall-clock only after enable(), so file read and compile
+            # (which the profiling counters don't see) aren't charged to the script.
+            t0 = time.perf_counter()
             exec(code, ns)  # noqa: S102
             wall_ms = (time.perf_counter() - t0) * 1000
             cpp, py = self._ctx.collect()

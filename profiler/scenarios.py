@@ -279,15 +279,18 @@ def fetch_arrow(conn, table, ctx) -> dict:
             "py": py,
             "detail": f"Arrow rows: {row_count}",
         }
-    except Exception as e:
-        ctx.collect()  # drain counters
+    except ImportError as e:
+        # Only pyarrow-not-installed is an expected "skip"; let any real driver
+        # error propagate so a genuine Arrow regression can't be silently reported
+        # as a zero-time success.
+        ctx.disable()
         cursor.close()
         return {
             "title": "FETCH ARROW",
             "wall_ms": 0,
             "cpp": None,
             "py": None,
-            "detail": f"Skipped: {e}",
+            "detail": f"Skipped (pyarrow not available): {e}",
         }
 
 
