@@ -169,9 +169,19 @@ public:
 
     ~ScopedTimer() {
         if (active_) {
-            auto end = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
-            PerformanceCounter::instance().record(name_, duration, start_);
+            // A destructor is implicitly noexcept: if record() threw (its
+            // unordered_map insert / vector push_back can throw bad_alloc), the
+            // exception would call std::terminate and crash the driver — but only
+            // while profiling. Swallow any failure so profiling can never take the
+            // process down; a dropped sample is an acceptable cost under OOM.
+            try {
+                auto end = std::chrono::steady_clock::now();
+                auto duration =
+                    std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
+                PerformanceCounter::instance().record(name_, duration, start_);
+            } catch (...) {
+                // ignore: never let a profiling timer abort the process
+            }
         }
     }
 };

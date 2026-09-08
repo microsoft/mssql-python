@@ -58,7 +58,12 @@ def main():
                 p.run(*args.scenarios)
             else:
                 p.run()
-    except ValueError as e:
+    except (ValueError, RuntimeError, FileNotFoundError) as e:
+        # ValueError: bad scenario name / missing conn str.
+        # RuntimeError: native profiling not built (rebuild with ENABLE_PROFILING).
+        # FileNotFoundError: --script path doesn't exist.
+        # Surface any of these as a clean one-line error + non-zero exit instead
+        # of a traceback.
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
