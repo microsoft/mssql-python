@@ -102,14 +102,25 @@ download_nupkg() {
     for package_id in "mssql-python-rs-wheels" "mssql-py-core-wheels"; do
         NUPKG_URL="${PACKAGE_BASE_URL}${package_id}/${version_lower}/${package_id}.${version_lower}.nupkg"
         local candidate_path="$output_dir/${package_id}.${version_lower}.nupkg"
+        local http_status
         echo "Downloading: $NUPKG_URL"
-        if curl -fsSL -o "$candidate_path" "$NUPKG_URL"; then
+        if ! http_status=$(curl -sSL -o "$candidate_path" -w '%{http_code}' "$NUPKG_URL"); then
+            rm -f "$candidate_path"
+            echo "ERROR: Failed to download NuGet package: $package_id $PACKAGE_VERSION" >&2
+            exit 1
+        fi
+        if [ "$http_status" = "200" ]; then
             NUPKG_PATH="$candidate_path"
             echo "Using NuGet package: $package_id"
             break
         fi
         rm -f "$candidate_path"
-        echo "Package not available: $package_id $PACKAGE_VERSION"
+        if [ "$http_status" = "404" ]; then
+            echo "Package not available: $package_id $PACKAGE_VERSION"
+            continue
+        fi
+        echo "ERROR: Failed to download NuGet package: $package_id $PACKAGE_VERSION (HTTP $http_status)" >&2
+        exit 1
     done
     if [ -z "$NUPKG_PATH" ]; then
         echo "ERROR: Package version $PACKAGE_VERSION was not found under the new or legacy package ID"
@@ -147,7 +158,7 @@ find_matching_wheel() {
     MATCHING_WHEEL=""
     local wheel_pattern
     for wheel_pattern in "${WHEEL_PATTERNS[@]}"; do
-        MATCHING_WHEEL=$(find "$wheels_dir" -name "$wheel_pattern" | head -1)
+        MATCHING_WHEEL=$(find "$wheels_dir" -name "$wheel_pattern" -print -quit)
         if [ -n "$MATCHING_WHEEL" ]; then
             break
         fi

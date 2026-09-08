@@ -115,6 +115,10 @@ function Get-NupkgFromFeed {
         }
         catch {
             Remove-Item $candidatePath -Force -ErrorAction SilentlyContinue
+            $statusCode = $_.Exception.Response.StatusCode
+            if (-not $statusCode -or [int]$statusCode -ne 404) {
+                throw
+            }
             Write-Host "Package not available: $packageId $script:PackageVersion"
         }
     }
