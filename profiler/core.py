@@ -211,11 +211,13 @@ class Profiler:
             "__name__": "__main__",
             "__file__": str(path),
         }
-        code = compile(path.read_text(), str(path), "exec")
 
-        self._ctx.enable(timeline=self._timeline)
         t0 = time.perf_counter()
         try:
+            # compile() is inside the guard so a SyntaxError in the user script
+            # still closes the cursor via the finally below.
+            code = compile(path.read_text(), str(path), "exec")
+            self._ctx.enable(timeline=self._timeline)
             exec(code, ns)  # noqa: S102
             wall_ms = (time.perf_counter() - t0) * 1000
             cpp, py = self._ctx.collect()
@@ -223,8 +225,8 @@ class Profiler:
                 cpp_tl, py_tl = self._ctx.collect_timeline()
                 self._ctx.disable_timeline()
         finally:
-            # Always end the window and close the cursor, even if the script
-            # raised, so profiling state never leaks into a later run.
+            # Always end the window and close the cursor, even if compile()/exec()
+            # raised, so profiling state and the cursor never leak into a later run.
             self._ctx.disable()
             cursor.close()
 

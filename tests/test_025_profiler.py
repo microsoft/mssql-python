@@ -364,3 +364,22 @@ def test_perf_phase_disabled_returns_shared_noop():
     with a:
         pass
     assert perf_timer.get_stats() == {}
+
+
+@_needs_cpp
+@_needs_db
+def test_run_script_bad_syntax_still_cleans_up(tmp_path):
+    """A script that fails to COMPILE must still disable profiling (and not leak)."""
+    from profiler.core import Profiler
+
+    bad = tmp_path / "syntax.py"
+    bad.write_text("this is not valid python !!!\n")
+
+    p = Profiler(_CONN_STR)
+    try:
+        with pytest.raises(SyntaxError):
+            p.run_script(str(bad))
+        assert perf_timer.is_enabled() is False
+        assert ddbc.profiling.is_enabled() is False
+    finally:
+        p.close()
