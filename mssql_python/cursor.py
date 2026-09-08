@@ -2548,12 +2548,30 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         is_dae = True
 
                 # Sanitize precision/scale for numeric types
+                numeric_buffer_size = 0
                 if sql_type in (
                     ddbc_sql_const.SQL_DECIMAL.value,
                     ddbc_sql_const.SQL_NUMERIC.value,
                 ):
                     column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
                     decimal_digits = min(max(0, decimal_digits), column_size)
+                    # Same SQL_C_CHAR stride vs precision split as auto-detect.
+                    max_encoded = 0
+                    for row in seq_of_parameters:
+                        value = row[col_index]
+                        if value is None:
+                            continue
+                        try:
+                            if isinstance(value, decimal.Decimal):
+                                encoded = format(value, "f")
+                            else:
+                                encoded = format(decimal.Decimal(str(value)), "f")
+                            max_encoded = max(max_encoded, len(encoded))
+                        except (decimal.DecimalException, ValueError, TypeError):
+                            # Conversion failures surface later in the Decimal
+                            # conversion loop; keep a safe precision-based floor.
+                            pass
+                    numeric_buffer_size = max(max_encoded, column_size + 3, 1)
 
                 # For binary data columns with mixed content, we need to find max size
                 if sql_type in (
@@ -2584,6 +2602,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 paraminfo.columnSize = column_size
                 paraminfo.decimalDigits = decimal_digits
                 paraminfo.isDAE = is_dae
+                if numeric_buffer_size:
+                    paraminfo.bufferSize = numeric_buffer_size
 
                 # Ensure we never have SQL_C_DEFAULT (0) for C-type
                 if paraminfo.paramCType == 0:
@@ -2652,6 +2672,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         paraminfo.columnSize = batch_precision
                     if batch_scale > paraminfo.decimalDigits:
                         paraminfo.decimalDigits = batch_scale
+                    # SQL_C_CHAR array stride is separate from SQL precision.
+                    # Fixed-point strings need room for sign, '.', and a leading
+                    # zero (e.g. Decimal("1E-38") -> 40 chars with precision 38).
+                    # Size from the longest encoded value in the batch.
+                    paraminfo.bufferSize = max(max_decimal_len, 1)
 
                 # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
                 # The sample value's formatted string may be shorter than another

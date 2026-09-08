@@ -873,3 +873,26 @@ def test_gh745_executemany_mixed_sign_money_range_batch(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
+
+
+def test_gh745_executemany_tiny_scale38_roundtrip(cursor, db_connection):
+    """executemany must accept Decimal("1E-38") into numeric(38,38).
+
+    SQL precision stays 38; the SQL_C_CHAR array buffer must be wider than
+    precision because format(Decimal("1E-38"), "f") is 40 characters.
+    """
+    table_name = "#pytest_gh745_tiny"
+    value = Decimal("1E-38")
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v numeric(38,38))")
+        cursor.executemany(f"INSERT INTO {table_name} VALUES (?)", [(value,), (Decimal("-1E-38"),)])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT v FROM {table_name} ORDER BY v")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows[0].as_tuple() == Decimal("-1E-38").as_tuple()
+        assert rows[1].as_tuple() == value.as_tuple()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()

@@ -17289,6 +17289,8 @@ def test_gh745_executemany_money_range_binds_as_numeric(monkeypatch):
     assert pt[0].columnSize == 9
     assert pt[0].columnSize <= 38
     assert pt[0].decimalDigits >= 4
+    longest = max(len(v) for v in captured["columnwise_params"][0])
+    assert pt[0].bufferSize >= longest
     for val in captured["columnwise_params"][0]:
         assert isinstance(val, str)
 
@@ -17302,7 +17304,7 @@ def test_gh745_batch_decimal_rejects_non_finite():
 
 
 def test_gh745_executemany_near_max_precision_stays_within_38(monkeypatch):
-    """NUMERIC columnSize must stay <= 38 for near-max Decimals (no max_decimal_len)."""
+    """NUMERIC columnSize stays <= 38; CHAR bufferWidth fits Decimal("1E-38")."""
     from unittest.mock import MagicMock
     from mssql_python import ddbc_bindings
     from mssql_python.cursor import Cursor
@@ -17321,6 +17323,7 @@ def test_gh745_executemany_near_max_precision_stays_within_38(monkeypatch):
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
         captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
         return 0
 
     monkeypatch.setattr(cur, "_check_closed", lambda: None)
@@ -17329,13 +17332,61 @@ def test_gh745_executemany_near_max_precision_stays_within_38(monkeypatch):
     monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
     monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 1)
     # Decimal('1E-38') needs precision=38, scale=38. Formatted string length is > 38,
-    # so the old max_decimal_len override would wrongly push precision past 38.
-    data = [(decimal.Decimal("1E-38"),)]
+    # so columnSize must stay at precision while bufferSize covers the encoding.
+    tiny = decimal.Decimal("1E-38")
+    encoded = format(tiny, "f")
+    data = [(tiny,)]
     cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
     pt = captured["parameters_type"][0]
     assert pt.paramSQLType == _C.SQL_NUMERIC.value
     assert pt.columnSize == 38
     assert pt.decimalDigits == 38
+    assert len(encoded) == 40
+    assert pt.bufferSize >= len(encoded)
+    assert captured["columnwise_params"][0][0] == encoded
+
+
+def test_gh745_executemany_buffer_fits_mixed_sign_short_precision(monkeypatch):
+    """Mixed-sign Decimals must fit CHAR buffer even when precision is small.
+
+    e.g. [-12.34, 56.78] -> NUMERIC(4,2) but "-12.34" is 6 characters.
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [(decimal.Decimal("-12.34"),), (decimal.Decimal("56.78"),)]
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"][0]
+    encoded = [format(decimal.Decimal("-12.34"), "f"), format(decimal.Decimal("56.78"), "f")]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 4
+    assert pt.decimalDigits == 2
+    assert pt.bufferSize >= max(len(s) for s in encoded)
+    assert pt.bufferSize > pt.columnSize
+    assert captured["columnwise_params"][0] == encoded
 
 
 def test_gh745_executemany_batch_precision_over_38_raises(monkeypatch):

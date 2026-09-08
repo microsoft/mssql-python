@@ -69,7 +69,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
-- **GH-745:** `executemany` auto-detect binds money-range `Decimal` values as `SQL_NUMERIC` with a batch-wide precision/scale (still via `SQL_C_CHAR` string values), so a comparison against a smaller numeric column no longer overflows. The `setinputsizes` DECIMAL/NUMERIC string path is unchanged.
+- **GH-745:** `executemany` auto-detect binds money-range `Decimal`
+  values as `SQL_NUMERIC` with a batch-wide precision/scale (still via
+  `SQL_C_CHAR` string values), so a comparison against a smaller numeric
+  column no longer overflows. SQL precision/scale stay on `columnSize` /
+  `decimalDigits`; the CHAR array stride uses a separate `bufferSize`
+  sized from the longest fixed-point encoding (e.g. `Decimal("1E-38")`),
+  so near-max precision values are not rejected by the array buffer.
+  The `setinputsizes` DECIMAL/NUMERIC string path is unchanged aside from
+  the same buffer-width split.
 - **GH-740:** A Python `Decimal` whose value falls in the SQL Server MONEY /
   SMALLMONEY range is now bound as `SQL_NUMERIC` with its own precision and scale
   on both `execute()` paths (native detection, and the legacy path reached when
