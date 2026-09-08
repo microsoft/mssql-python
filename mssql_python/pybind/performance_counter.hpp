@@ -78,6 +78,10 @@ public:
 
     void enable_timeline() {
         std::lock_guard<std::mutex> lock(mutex_);
+        // Clear stale events when (re)setting the epoch so every event in
+        // timeline_ shares the current epoch; a second enable_timeline() without
+        // an intervening reset() would otherwise mix offsets from two epochs.
+        timeline_.clear();
         epoch_ = std::chrono::high_resolution_clock::now();
         timeline_enabled_ = true;
     }

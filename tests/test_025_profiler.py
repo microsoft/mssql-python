@@ -323,3 +323,21 @@ def test_run_script_disables_profiling_even_when_script_raises(tmp_path):
         assert ddbc.profiling.is_enabled() is False
     finally:
         p.close()
+
+
+def test_enable_timeline_clears_stale_events():
+    """A second enable_timeline() must not leave events from the previous epoch."""
+    perf_timer.enable()
+    perf_timer.enable_timeline()
+    with perf_timer.perf_phase("py::epoch1::evt"):
+        pass
+    assert len(perf_timer.get_timeline()) == 1
+    # Re-arm timeline without an explicit reset(): stale events must be dropped
+    # so all remaining events share the new epoch.
+    perf_timer.enable_timeline()
+    assert perf_timer.get_timeline() == []
+    with perf_timer.perf_phase("py::epoch2::evt"):
+        pass
+    tl = perf_timer.get_timeline()
+    assert len(tl) == 1
+    assert tl[0]["name"] == "py::epoch2::evt"

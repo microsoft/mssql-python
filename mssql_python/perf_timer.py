@@ -52,8 +52,13 @@ def reset_stats_only():
 
 def enable_timeline():
     global _timeline_enabled, _epoch_ns
-    _timeline_enabled = True
+    # Clear any previously recorded events when (re)setting the epoch, so every
+    # event in _timeline shares the current epoch. Otherwise a second
+    # enable_timeline() without an intervening reset() would leave stale events
+    # whose offsets were computed from an older epoch, corrupting the sort.
+    _timeline.clear()
     _epoch_ns = time.perf_counter_ns()
+    _timeline_enabled = True
 
 
 def disable_timeline():

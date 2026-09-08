@@ -109,11 +109,14 @@ if errorlevel 1 (
 )
 
 REM Optional performance profiling instrumentation (off by default).
-REM Enable with: set ENABLE_PROFILING=1  (before running build.bat)
+REM Enable with: set ENABLE_PROFILING=1  (or ON) before running build.bat.
+REM Only "1"/"ON" enable it — a stray "set ENABLE_PROFILING=0" must NOT produce a
+REM profiling build (matches build.sh and avoids accidentally shipping one).
 set PROFILING_FLAG=
-if defined ENABLE_PROFILING (
-    set PROFILING_FLAG=-DENABLE_PROFILING=ON
-    echo [MODE] Building WITH profiling instrumentation ^(ENABLE_PROFILING set^)
+if /I "%ENABLE_PROFILING%"=="1"  set "PROFILING_FLAG=-DENABLE_PROFILING=ON"
+if /I "%ENABLE_PROFILING%"=="ON" set "PROFILING_FLAG=-DENABLE_PROFILING=ON"
+if defined PROFILING_FLAG (
+    echo [MODE] Building WITH profiling instrumentation ^(ENABLE_PROFILING=%ENABLE_PROFILING%^)
 )
 
 REM Now invoke CMake with correct source path (options first, path last!)

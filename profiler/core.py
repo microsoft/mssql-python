@@ -26,6 +26,14 @@ class _ProfilingContext:
     def __init__(self):
         from mssql_python import ddbc_bindings, perf_timer
 
+        if not hasattr(ddbc_bindings, "profiling"):
+            raise RuntimeError(
+                "Native profiling is not available in this build. The C++ extension "
+                "was built without profiling instrumentation. Rebuild it with "
+                "ENABLE_PROFILING=1 (e.g. `ENABLE_PROFILING=1 bash "
+                "mssql_python/pybind/build.sh`, or `set ENABLE_PROFILING=1` then "
+                "`build.bat` on Windows) before running the profiler."
+            )
         self._cpp = ddbc_bindings.profiling
         self._py = perf_timer
         self._timeline_mode = False

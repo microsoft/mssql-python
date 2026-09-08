@@ -12,8 +12,8 @@ Programmatic:
     from profiler import Profiler
 
     p = Profiler(conn_str)
-    p.run("fetchall", "insertmanyvalues")
-    p.report()
+    results = p.run("fetchall", "insertmanyvalues")  # prints tables, returns results
+    p.close()
 """
 
 from profiler.core import Profiler
