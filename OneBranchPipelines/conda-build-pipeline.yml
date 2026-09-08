@@ -113,7 +113,7 @@ extends:
               isCustom: true
               name: Python-1ES-pool
               demands:
-              - imageOverride -equals PYTHON-1ES-MMS2022
+                - imageOverride -equals PYTHON-1ES-MMS2022
             variables:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
             steps:

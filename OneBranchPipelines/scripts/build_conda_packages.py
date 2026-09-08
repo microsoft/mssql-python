@@ -624,6 +624,8 @@ def _verify_impl(
 
         _log(f"=== [py {py}] confirm resolved dependencies ===")
         rc, out = run_capture([conda, "list", "-n", name], env=env)
+        if rc != 0:
+            _die(f"[py {py}] failed to list resolved dependencies. Output: {out}")
         for line in out.splitlines():
             if re.search(r"azure-identity|mssql-python|openssl|krb5", line):
                 _log(line)
@@ -644,7 +646,7 @@ def _reachability_gate(conda: str, name: str, py: str, emulated: bool, env: dict
     _log(
         f"=== [py {py}] minimal-base ldd reachability gate (driver MUST bind CONDA_PREFIX/lib) ==="
     )
-    rc, prefix = run_capture(
+    rc, prefix_out = run_capture(
         [
             conda,
             "run",
@@ -656,7 +658,14 @@ def _reachability_gate(conda: str, name: str, py: str, emulated: bool, env: dict
         ],
         env=env,
     )
-    prefix = prefix.strip().splitlines()[-1] if prefix.strip() else ""
+    if rc != 0:
+        _die(
+            f"[py {py}] failed to read CONDA_PREFIX/sys.prefix for reachability gate. "
+            f"Output: {prefix_out}"
+        )
+    prefix = prefix_out.strip().splitlines()[-1] if prefix_out.strip() else ""
+    if not prefix:
+        _die(f"[py {py}] reachability gate returned an empty CONDA_PREFIX/sys.prefix.")
     # Select the SAME driver variant the loader binds (GetDriverPathCpp probes /etc/*-release);
     # a blind glob would grab alphabetically-first 'alpine' (musl) and falsely fail on libltdl.
     sel = (
@@ -670,8 +679,10 @@ def _reachability_gate(conda: str, name: str, py: str, emulated: bool, env: dict
         "m=glob.glob(os.path.join(b,'..','mssql_python_odbc','libs','linux',d,a,'lib',"
         "'libmsodbcsql*'));print(m[0] if m else '')"
     )
-    rc, drv = run_capture([conda, "run", "-n", name, "python", "-c", sel], env=env)
-    drv = drv.strip().splitlines()[-1] if drv.strip() else ""
+    rc, drv_out = run_capture([conda, "run", "-n", name, "python", "-c", sel], env=env)
+    if rc != 0:
+        _die(f"[py {py}] failed to locate driver path in verify env. Output: {drv_out}")
+    drv = drv_out.strip().splitlines()[-1] if drv_out.strip() else ""
     if not drv:
         _die(f"[py {py}] no libmsodbcsql driver found in the verify env; cannot prove reachability")
     inst = os.path.join(os.path.dirname(drv), "libodbcinst.so.2")

@@ -66,6 +66,15 @@ def test_best_effort_consolidation_runs_after_upstream_failure():
     assert "condition: succeededOrFailed()" in consolidate.split("pool:", 1)[0]
 
 
+def test_windows_pool_demand_is_indented_under_demands_key():
+    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
+    windows_stage = pipeline.split("- stage: CondaWin64", 1)[1].split("- stage: CondaMacOS", 1)[0]
+    assert (
+        "              demands:\n"
+        "                - imageOverride -equals PYTHON-1ES-MMS2022\n" in windows_stage
+    )
+
+
 @pytest.mark.parametrize(
     ("target_subdir", "host", "expected"),
     [
@@ -118,6 +127,105 @@ def test_non_qemu_cross_driver_probe_failure_is_blocking(target_subdir, tmp_path
 
     assert exc_info.value.code == 1
     assert len(probe_calls) == 1
+
+
+def _run_reachability_helper_failure(monkeypatch, failing_marker):
+    mod = _load_orchestrator()
+
+    def _fake_run(cmd, *args, **kwargs):
+        command = " ".join(str(arg) for arg in cmd)
+        if failing_marker in command:
+            return types.SimpleNamespace(returncode=17, stdout="specific helper failure")
+        if "CONDA_PREFIX" in command:
+            return types.SimpleNamespace(returncode=0, stdout="/tmp/verify-prefix\n")
+        return types.SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mod._reachability_gate(
+            "conda",
+            "verify_linux_313",
+            "3.13",
+            False,
+            {"CONDA_ASSERT_PREFIX_REACHABLE": "1"},
+        )
+    assert exc_info.value.code == 1
+
+
+def test_reachability_gate_reports_prefix_helper_failure(monkeypatch, capsys):
+    _run_reachability_helper_failure(monkeypatch, "CONDA_PREFIX")
+    error = capsys.readouterr().err
+    assert "failed to read CONDA_PREFIX/sys.prefix" in error
+    assert "specific helper failure" in error
+
+
+def test_reachability_gate_reports_driver_locator_failure(monkeypatch, capsys):
+    _run_reachability_helper_failure(monkeypatch, "mssql_python_odbc")
+    error = capsys.readouterr().err
+    assert "failed to locate driver path" in error
+    assert "specific helper failure" in error
+
+
+def test_reachability_gate_rejects_empty_prefix_output(monkeypatch, capsys):
+    mod = _load_orchestrator()
+
+    def _fake_run(_cmd, *args, **kwargs):
+        return types.SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
+    )
+
+    with pytest.raises(SystemExit):
+        mod._reachability_gate(
+            "conda",
+            "verify_linux_313",
+            "3.13",
+            False,
+            {"CONDA_ASSERT_PREFIX_REACHABLE": "1"},
+        )
+    assert "empty CONDA_PREFIX/sys.prefix" in capsys.readouterr().err
+
+
+def test_verify_reports_conda_list_failure(monkeypatch, capsys, tmp_path):
+    mod = _load_orchestrator()
+
+    def _fake_run(cmd, *args, **kwargs):
+        command = list(cmd)
+        is_conda_list = command[1:2] == ["list"]
+        return types.SimpleNamespace(
+            returncode=17 if is_conda_list else 0,
+            stdout="specific conda list failure" if is_conda_list else "",
+        )
+
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
+    )
+
+    with pytest.raises(SystemExit):
+        mod._verify_impl(
+            "conda",
+            str(tmp_path / "channel"),
+            str(tmp_path),
+            ["3.13"],
+            "1.2.3",
+            "",
+            {},
+        )
+    error = capsys.readouterr().err
+    assert "failed to list resolved dependencies" in error
+    assert "specific conda list failure" in error
 
 
 def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
