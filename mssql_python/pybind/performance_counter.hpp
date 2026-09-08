@@ -10,6 +10,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <atomic>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -54,8 +55,12 @@ private:
     // if that ever becomes a real need, switch to thread_local accumulation
     // merged at get_stats(). Not worth the added complexity today.
     std::mutex mutex_;
-    bool enabled_ = false;
-    bool timeline_enabled_ = false;
+    // Config flags are atomic so enable()/disable()/enable_timeline() can be
+    // called from a different thread than the one running timers (timers execute
+    // with the GIL released). epoch_ is written under mutex_ in enable_timeline()
+    // and only read under mutex_ in record(), so it needs no separate atomic.
+    std::atomic<bool> enabled_{false};
+    std::atomic<bool> timeline_enabled_{false};
     std::chrono::time_point<std::chrono::high_resolution_clock> epoch_;
 
 public:
@@ -69,8 +74,9 @@ public:
     bool is_enabled() const { return enabled_; }
 
     void enable_timeline() {
-        timeline_enabled_ = true;
+        std::lock_guard<std::mutex> lock(mutex_);
         epoch_ = std::chrono::high_resolution_clock::now();
+        timeline_enabled_ = true;
     }
     void disable_timeline() { timeline_enabled_ = false; }
     bool is_timeline_enabled() const { return timeline_enabled_; }
@@ -140,16 +146,22 @@ class ScopedTimer {
 private:
     const char* name_;
     std::chrono::time_point<std::chrono::high_resolution_clock> start_;
-    
+    // Capture the enabled state ONCE at construction. Using this captured flag
+    // (instead of re-checking is_enabled() in the destructor) means a concurrent
+    // enable()/disable() between construction and destruction can never make us
+    // read an uninitialized start_ or record a half-open interval.
+    bool active_;
+
 public:
-    explicit ScopedTimer(const char* name) : name_(name) {
-        if (PerformanceCounter::instance().is_enabled()) {
+    explicit ScopedTimer(const char* name)
+        : name_(name), active_(PerformanceCounter::instance().is_enabled()) {
+        if (active_) {
             start_ = std::chrono::high_resolution_clock::now();
         }
     }
     
     ~ScopedTimer() {
-        if (PerformanceCounter::instance().is_enabled()) {
+        if (active_) {
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
             PerformanceCounter::instance().record(name_, duration, start_);
