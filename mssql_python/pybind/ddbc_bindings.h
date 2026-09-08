@@ -280,6 +280,26 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+struct ParameterBinding {
+    SQLSMALLINT direction;
+    SQLSMALLINT cType;
+    SQLSMALLINT sqlType;
+    SQLULEN columnSize;
+    SQLSMALLINT scale;
+    SQLPOINTER data;
+    SQLLEN length;
+    SQLLEN* indicator;
+};
+
+// Native-only ownership: cleanup is safe even on GIL-less connection teardown.
+// One generation per statement, never keyed by a recycled raw ODBC handle.
+struct ExecuteBindingCache {
+    std::vector<ParameterBinding> bindings;
+    std::vector<std::shared_ptr<void>> buffers;
+    std::string encoding;
+    bool reusable = false;
+};
+
 class SqlHandle {
   public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
@@ -303,13 +323,18 @@ class SqlHandle {
     //
     // SAFETY CONSTRAINTS:
     // - ONLY call this on SQL_HANDLE_STMT handles
-    // - ONLY call this when the parent DBC handle is about to be freed
+    // - ONLY call this after the parent SQLDisconnect has succeeded
     // - Calling on other handle types (ENV, DBC, DESC) will cause HANDLE LEAKS
     // - The ODBC spec only guarantees automatic freeing of STMT handles by DBC parents
     //
-    // Current usage: Connection::disconnect() marks all tracked STMT handles
-    // before freeing the DBC handle.
+    // Connection::disconnect() retains the tracked STMT owners through the
+    // disconnect, then marks them and releases their native binding storage.
     void markImplicitlyFreed();
+    SQLRETURN resetParameterBindings();
+    void releaseAfterFree();
+
+    std::unique_ptr<ExecuteBindingCache> executeBindings;
+    std::u16string preparedQuery;
 
     // GH-610: Per-handle SQLDescribeParam result cache.
     // Keyed by 0-based parameter index. Populated on first NULL param

@@ -314,7 +314,87 @@ ParamType* AllocateParamBuffer(std::vector<std::shared_ptr<void>>& paramBuffers,
                                CtorArgs&&... ctorArgs) {
     paramBuffers.emplace_back(new ParamType(std::forward<CtorArgs>(ctorArgs)...),
                               std::default_delete<ParamType>());
+    LOG("AllocateParamBuffer: New owned buffer");
     return static_cast<ParamType*>(paramBuffers.back().get());
+}
+
+struct ExecuteParamBuffers {
+    std::vector<std::shared_ptr<void>>& current;
+    const std::vector<std::shared_ptr<void>>* previous;
+};
+
+template <typename T>
+static bool UpdateParamBuffer(T& target, T&& value) {
+    target = std::move(value);
+    return true;
+}
+
+template <typename Char>
+static bool UpdateParamBuffer(std::basic_string<Char>& target, std::basic_string<Char>&& value) {
+    // Equal byte lengths keep both the address and ODBC BufferLength unchanged.
+    // Do not assign a string: even a capacity-preserving assignment may move it.
+    if (target.size() != value.size())
+        return false;
+    std::copy(value.begin(), value.end(), target.begin());
+    return true;
+}
+
+template <typename ParamType, typename... CtorArgs>
+ParamType* AllocateParamBuffer(ExecuteParamBuffers& buffers, CtorArgs&&... ctorArgs) {
+    ParamType value(std::forward<CtorArgs>(ctorArgs)...);
+    const size_t index = buffers.current.size();
+    if (buffers.previous && index < buffers.previous->size()) {
+        const auto& previous = (*buffers.previous)[index];
+        auto* target = static_cast<ParamType*>(previous.get());
+        if (UpdateParamBuffer(*target, std::move(value))) {
+            buffers.current.push_back(previous);
+            return target;
+        }
+    }
+    return AllocateParamBuffer<ParamType>(buffers.current, std::move(value));
+}
+
+static bool SameParameterShape(const ParameterBinding& binding, const ParamInfo& info) {
+    return binding.direction == info.inputOutputType && binding.cType == info.paramCType &&
+           binding.sqlType == info.paramSQLType && binding.columnSize == info.columnSize &&
+           binding.scale == info.decimalDigits;
+}
+
+static bool CanCacheParameters(const std::vector<ParamInfo>& infos) {
+    // Bound retained storage to SQL Server's scalar parameter limit. NULL/DAE and
+    // descriptor-based/complex types deliberately use the existing uncached path.
+    if (infos.empty() || infos.size() > 2100)
+        return false;
+    for (const auto& info : infos) {
+        if (info.isDAE || info.inputOutputType != SQL_PARAM_INPUT)
+            return false;
+        switch (info.paramCType) {
+            case SQL_C_CHAR:
+            case SQL_C_WCHAR:
+            case SQL_C_BINARY:
+                if (info.columnSize > MAX_INLINE_BINARY)
+                    return false;
+                break;
+            case SQL_C_BIT:
+            case SQL_C_STINYINT:
+            case SQL_C_TINYINT:
+            case SQL_C_SSHORT:
+            case SQL_C_SHORT:
+            case SQL_C_UTINYINT:
+            case SQL_C_USHORT:
+            case SQL_C_SBIGINT:
+            case SQL_C_SLONG:
+            case SQL_C_LONG:
+            case SQL_C_UBIGINT:
+            case SQL_C_ULONG:
+            case SQL_C_FLOAT:
+            case SQL_C_DOUBLE:
+                break;
+            default:
+                return false;
+        }
+    }
+    return true;
 }
 
 template <typename ParamType>
@@ -451,14 +531,35 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
 // each of them with appropriate arguments
 SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
                          std::vector<ParamInfo>& paramInfos,
-                         std::vector<std::shared_ptr<void>>& paramBuffers,
-                         const std::string& charEncoding = "utf-8") {
+                         std::vector<std::shared_ptr<void>>& ownedBuffers,
+                         const std::string& charEncoding = "utf-8", bool cacheForExecute = false) {
     LOG("BindParameters: Starting parameter binding for statement handle %p "
         "with %zu parameters",
         (void*)hStmt, params.size());
 
+    bool eligible = cacheForExecute && CanCacheParameters(paramInfos);
+    if (cacheForExecute && !eligible) {
+        SQLRETURN rc = handle.resetParameterBindings();
+        if (!SQL_SUCCEEDED(rc))
+            return rc;
+    }
     // GH-627: resolve unknown NULL param SQL types before binding any param.
     PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
+    auto* previous = handle.executeBindings.get();
+    bool reuse = eligible && previous && previous->reusable && previous->encoding == charEncoding &&
+                 previous->bindings.size() == paramInfos.size();
+    if (reuse) {
+        for (size_t i = 0; i < paramInfos.size(); ++i) {
+            if (!SameParameterShape(previous->bindings[i], paramInfos[i])) {
+                reuse = false;
+                break;
+            }
+        }
+    }
+    ExecuteParamBuffers paramBuffers{ownedBuffers, reuse ? &previous->buffers : nullptr};
+    ownedBuffers.reserve(params.size() * 2);
+    std::vector<ParameterBinding> bindings;
+    bindings.reserve(params.size());
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         ParamInfo& paramInfo = paramInfos[paramIndex];
@@ -857,7 +958,49 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 ThrowStdException(errorString.str());
             }
         }
+        bindings.push_back({paramInfo.inputOutputType, paramInfo.paramCType, paramInfo.paramSQLType,
+                            paramInfo.columnSize, paramInfo.decimalDigits, dataPtr, bufferLength,
+                            strLenOrIndPtr});
+        if (bufferLength > MAX_INLINE_BINARY)
+            eligible = false;
+    }
+
+    if (reuse) {
+        for (size_t i = 0; i < bindings.size(); ++i) {
+            const auto& old = previous->bindings[i];
+            const auto& current = bindings[i];
+            if (old.data != current.data || old.length != current.length ||
+                old.indicator != current.indicator) {
+                reuse = false;
+                break;
+            }
+        }
+    }
+    if (reuse) {
+        LOG("BindParameters: Reusing %zu bound parameters", bindings.size());
+        return SQL_SUCCESS;
+    }
+    if (cacheForExecute) {
+        // Reset only after conversion succeeded; old addresses remain owned until
+        // ODBC releases them. New buffers are handle-owned before the first bind,
+        // including partial-bind failures where diagnostics must not be erased.
+        SQLRETURN rc = handle.resetParameterBindings();
+        if (!SQL_SUCCEEDED(rc))
+            return rc;
+        auto cache = std::make_unique<ExecuteBindingCache>();
+        cache->bindings = bindings;
+        cache->buffers = ownedBuffers;
+        cache->encoding = charEncoding;
+        handle.executeBindings = std::move(cache);
+    }
+    for (int paramIndex = 0; paramIndex < bindings.size(); ++paramIndex) {
+        const ParamInfo& paramInfo = paramInfos[paramIndex];
+        const auto& binding = bindings[paramIndex];
+        void* dataPtr = binding.data;
+        SQLLEN bufferLength = binding.length;
+        SQLLEN* strLenOrIndPtr = binding.indicator;
         assert(SQLBindParameter_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr);
+        LOG("BindParameters: SQLBindParameter param[%d]", paramIndex);
         RETCODE rc = SQLBindParameter_ptr(
             hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1), /* 1-based indexing */
             static_cast<SQLUSMALLINT>(paramInfo.inputOutputType),
@@ -930,6 +1073,8 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
     LOG("BindParameters: Completed parameter binding for statement handle %p - "
         "%zu parameters bound successfully",
         (void*)hStmt, params.size());
+    if (cacheForExecute)
+        handle.executeBindings->reusable = eligible;
     return SQL_SUCCESS;
 }
 
@@ -1539,6 +1684,11 @@ SqlHandle::~SqlHandle() {
     if (_handle) {
         free();
     }
+    // If the driver refused to free the handle, it can still reference these
+    // addresses. Leak only this failed teardown's native storage, not dangling
+    // pointers into freed memory. Explicit free() failures retain ownership.
+    if (_handle && !_implicitly_freed)
+        executeBindings.release();
 }
 
 SQLHANDLE SqlHandle::get() const {
@@ -1563,6 +1713,27 @@ void SqlHandle::markImplicitlyFreed() {
         return;  // Refuse to mark - let normal free() handle it
     }
     _implicitly_freed = true;
+    if (executeBindings)
+        executeBindings->reusable = false;
+}
+
+SQLRETURN SqlHandle::resetParameterBindings() {
+    if (!executeBindings)
+        return SQL_SUCCESS;
+    executeBindings->reusable = false;
+    if (!_handle || _implicitly_freed)
+        return SQL_INVALID_HANDLE;
+    SQLRETURN rc = SQLFreeStmt_ptr(_handle, SQL_RESET_PARAMS);
+    if (SQL_SUCCEEDED(rc))
+        executeBindings.reset();
+    return rc;
+}
+
+void SqlHandle::releaseAfterFree() {
+    _handle = nullptr;
+    executeBindings.reset();
+    preparedQuery.clear();
+    describeCache.clear();
 }
 
 /*
@@ -1589,6 +1760,7 @@ void SqlHandle::free() {
         // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
         //    is appropriate since we're already in shutdown sequence
         if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
+            executeBindings.release();
             _handle = nullptr;  // Mark as freed to prevent double-free attempts
             return;
         }
@@ -1599,7 +1771,7 @@ void SqlHandle::free() {
         // This approach avoids calling ODBC functions on potentially-freed handles, which
         // would cause use-after-free errors.
         if (_implicitly_freed) {
-            _handle = nullptr;  // Just clear the pointer, don't call ODBC functions
+            releaseAfterFree();
             return;
         }
 
@@ -1612,13 +1784,18 @@ void SqlHandle::free() {
         // (issue #565). Only release the GIL if it is actually held AND the
         // interpreter is not finalizing - gil_scoped_release is unsafe during
         // shutdown even if PyGILState_Check() reports the GIL as held.
+        SQLRETURN rc;
         if (!pythonShuttingDown && PyGILState_Check()) {
             py::gil_scoped_release release;
-            SQLFreeHandle_ptr(_type, _handle);
+            rc = SQLFreeHandle_ptr(_type, _handle);
         } else {
-            SQLFreeHandle_ptr(_type, _handle);
+            rc = SQLFreeHandle_ptr(_type, _handle);
         }
-        _handle = nullptr;
+        if (SQL_SUCCEEDED(rc)) {
+            releaseAfterFree();
+        } else if (executeBindings) {
+            executeBindings->reusable = false;
+        }
     }
 }
 
@@ -1644,6 +1821,8 @@ void SqlHandle::close_cursor() {
         ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
     }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
+        if (executeBindings)
+            executeBindings->reusable = false;
         ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
     }
 }
@@ -1695,7 +1874,7 @@ void SqlHandle::cancel() {
     }
 }
 
-SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
+SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle, bool preserveBindings = false) {
     if (!statementHandle || !statementHandle->get()) {
         return SQL_INVALID_HANDLE;
     }
@@ -1711,17 +1890,30 @@ SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
     {
         py::gil_scoped_release release;
         rc = SQLFreeStmt_ptr(hStmt, SQL_CLOSE);
-        if (SQL_SUCCEEDED(rc)) {
-            rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+        if (SQL_SUCCEEDED(rc) && !(preserveBindings && statementHandle->executeBindings &&
+                                   statementHandle->executeBindings->reusable)) {
+            if (statementHandle->executeBindings) {
+                rc = statementHandle->resetParameterBindings();
+            } else {
+                rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+            }
         }
         if (SQL_SUCCEEDED(rc) && SQLSetStmtAttr_ptr) {
             rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0);
         }
     }
+    if (!SQL_SUCCEEDED(rc) && statementHandle->executeBindings) {
+        statementHandle->executeBindings->reusable = false;
+    }
     return rc;
 }
 
 SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataType) {
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     if (!SQLGetTypeInfo_ptr) {
         ThrowStdException("SQLGetTypeInfo function not loaded");
     }
@@ -1733,6 +1925,11 @@ SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataT
 
 SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
                              const py::object& schemaObj, const py::object& procedureObj) {
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     if (!SQLProcedures_ptr) {
         ThrowStdException("SQLProcedures function not loaded");
     }
@@ -1756,6 +1953,11 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pk
                               const py::object& pkSchemaObj, const py::object& pkTableObj,
                               const py::object& fkCatalogObj, const py::object& fkSchemaObj,
                               const py::object& fkTableObj) {
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     if (!SQLForeignKeys_ptr) {
         ThrowStdException("SQLForeignKeys function not loaded");
     }
@@ -1787,6 +1989,11 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pk
 
 SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
                               const py::object& schemaObj, const std::u16string& table) {
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     if (!SQLPrimaryKeys_ptr) {
         ThrowStdException("SQLPrimaryKeys function not loaded");
     }
@@ -1808,6 +2015,11 @@ SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, const py::object& ca
 SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
                              const py::object& schemaObj, const std::u16string& table,
                              SQLUSMALLINT unique, SQLUSMALLINT reserved) {
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     if (!SQLStatistics_ptr) {
         ThrowStdException("SQLStatistics function not loaded");
     }
@@ -1829,6 +2041,11 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& cat
 SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
                           const py::object& schemaObj, const py::object& tableObj,
                           const py::object& columnObj) {
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     if (!SQLColumns_ptr) {
         ThrowStdException("SQLColumns function not loaded");
     }
@@ -1855,6 +2072,10 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode) {
     LOG("SQLCheckError: Checking ODBC errors - handleType=%d, retcode=%d", handleType, retcode);
     ErrorInfo errorInfo;
+    if ((retcode == SQL_ERROR || retcode == SQL_INVALID_HANDLE) && handle &&
+        handle->executeBindings) {
+        handle->executeBindings->reusable = false;
+    }
     if (retcode == SQL_INVALID_HANDLE) {
         LOG("SQLCheckError: SQL_INVALID_HANDLE detected - handle is invalid");
         errorInfo.ddbcErrorMsg = "Invalid handle!";
@@ -1938,6 +2159,14 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
 
 // Wrap SQLExecDirect
 SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::u16string& Query) {
+    if (!StatementHandle || !StatementHandle->get() || StatementHandle->isImplicitlyFreed()) {
+        return SQL_INVALID_HANDLE;
+    }
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     LOG("SQLExecDirect: Executing query directly - statement_handle=%p, "
         "query_length=%zu chars",
         (void*)StatementHandle->get(), Query.length());
@@ -1973,6 +2202,11 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::u16string&
 SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& catalog,
                          const std::u16string& schema, const std::u16string& table,
                          const std::u16string& tableType) {
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     if (!SQLTables_ptr) {
         LOG("SQLTables: Function pointer not initialized, loading driver");
         DriverLoader::getInstance().loadDriver();
@@ -2014,14 +2248,31 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                               py::list is_stmt_prepared,
                               bool use_prepare,
                               const py::dict& encoding_settings) {
-    if (!statementHandle || !statementHandle->get()) {
+    if (!statementHandle || !statementHandle->get() || statementHandle->isImplicitlyFreed()) {
         return SQL_INVALID_HANDLE;
     }
 
+    struct ExecutionAttempt {
+        SqlHandle& handle;
+        bool succeeded = false;
+        ~ExecutionAttempt() {
+            if (!succeeded && handle.executeBindings)
+                handle.executeBindings->reusable = false;
+        }
+    } attempt{*statementHandle};
     SQLHANDLE hStmt = statementHandle->get();
+    if (statementHandle->executeBindings &&
+        (!statementHandle->executeBindings->reusable || statementHandle->preparedQuery != query)) {
+        SQLRETURN reset = statementHandle->resetParameterBindings();
+        if (!SQL_SUCCEEDED(reset))
+            return reset;
+    }
 
     // Configure forward-only / read-only cursor (matches slow path semantics).
     if (SQLSetStmtAttr_ptr) {
+        SQLRETURN attrRc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0);
+        if (!SQL_SUCCEEDED(attrRc))
+            return attrRc;
         SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CURSOR_TYPE,
                            (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY, 0);
         SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY,
@@ -2055,7 +2306,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     std::vector<ParamInfo> paramInfos = DetectParamTypes(params.ptr(), input_sizes.ptr());
 
     RETCODE rc;
-    bool already_prepared = is_stmt_prepared[0].cast<bool>();
+    bool already_prepared =
+        is_stmt_prepared[0].cast<bool>() && statementHandle->preparedQuery == query;
 
     // Honor use_prepare flag (matching slow path behavior):
     // - use_prepare=true: prepare now (or reuse if same SQL already prepared)
@@ -2063,6 +2315,10 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     // - use_prepare=false + not prepared: error (cannot execute unprepared)
     if (!already_prepared) {
         if (use_prepare) {
+            rc = statementHandle->resetParameterBindings();
+            if (!SQL_SUCCEEDED(rc))
+                return rc;
+            statementHandle->preparedQuery.clear();
             SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
             {
                 py::gil_scoped_release release;
@@ -2070,6 +2326,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             }
             if (!SQL_SUCCEEDED(rc)) return rc;
             statementHandle->clearDescribeCache();
+            statementHandle->preparedQuery = query;
             is_stmt_prepared[0] = py::bool_(true);
         } else {
             ThrowStdException("Cannot execute unprepared statement");
@@ -2077,7 +2334,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     }
 
     std::vector<std::shared_ptr<void>> paramBuffers;
-    rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
+    rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding,
+                        true);
     if (!SQL_SUCCEEDED(rc)) return rc;
 
     {
@@ -2171,10 +2429,15 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 
     if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
 
-    // Unbind parameter buffers before they go out of scope.
-    // Not called on error paths — diagnostics must remain readable.
+    // Unsupported shapes are not retained for reuse. On errors native ownership
+    // stays with the handle until reset/free, without destroying diagnostics.
     SQLRETURN exec_rc = rc;
-    SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    if (!statementHandle->executeBindings->reusable) {
+        rc = statementHandle->resetParameterBindings();
+        if (!SQL_SUCCEEDED(rc))
+            return rc;
+    }
+    attempt.succeeded = true;
     return exec_rc;
 }
 
@@ -2813,6 +3076,13 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                               const py::list& columnwise_params,
                               std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                               const py::dict& encodingSettings) {
+    if (!statementHandle || !statementHandle->get() || statementHandle->isImplicitlyFreed()) {
+        return SQL_INVALID_HANDLE;
+    }
+    SQLRETURN reset = statementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    statementHandle->preparedQuery.clear();
     LOG("SQLExecuteMany: Starting batch execution - param_count=%zu, "
         "param_set_size=%zu",
         columnwise_params.size(), paramSetSize);
@@ -2831,6 +3101,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
     }
     // GH-610: Clear per-handle describe cache (new prepare = new param types)
     statementHandle->clearDescribeCache();
+    statementHandle->preparedQuery = query;
     LOG("SQLExecuteMany: Query prepared successfully");
 
     bool hasDAE = false;
@@ -3039,6 +3310,11 @@ SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT ident
                                  const py::object& catalogObj, const py::object& schemaObj,
                                  const std::u16string& table, SQLSMALLINT scope,
                                  SQLSMALLINT nullable) {
+    SQLRETURN reset = StatementHandle->resetParameterBindings();
+    if (!SQL_SUCCEEDED(reset))
+        return reset;
+    StatementHandle->preparedQuery.clear();
+    StatementHandle->clearDescribeCache();
     if (!SQLSpecialColumns_ptr) {
         ThrowStdException("SQLSpecialColumns function not loaded");
     }
@@ -5930,8 +6206,12 @@ SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLFreeHandle_wrap: SQLFreeHandle failed with error code - %d", ret);
+        if (Handle->executeBindings) {
+            Handle->executeBindings->reusable = false;
+        }
         return ret;
     }
+    Handle->releaseAfterFree();
     return ret;
 }
 
@@ -6099,7 +6379,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           "Fetch an arrow batch of given length from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap,
-          "Close cursor and unbind params without freeing HSTMT");
+          "Close cursor, optionally retaining compatible execute bindings",
+          py::arg("statementHandle"), py::arg("preserve_bindings") = false);
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle", py::arg("handle"));
@@ -6115,6 +6396,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def(
         "DDBCSQLSetStmtAttr",
         [](SqlHandlePtr stmt, SQLINTEGER attr, py::object value) {
+            SQLRETURN reset = stmt->resetParameterBindings();
+            if (!SQL_SUCCEEDED(reset))
+                return reset;
             SQLPOINTER ptr_value;
             if (py::isinstance<py::int_>(value)) {
                 // For integer attributes like SQL_ATTR_QUERY_TIMEOUT

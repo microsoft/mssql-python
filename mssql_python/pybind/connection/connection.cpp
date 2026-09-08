@@ -113,14 +113,15 @@ void Connection::disconnect() {
             LOG("Disconnecting from database");
         }
 
-        // CRITICAL FIX: Mark all child statement handles as implicitly freed
-        // When we free the DBC handle below, the ODBC driver will automatically free
-        // all child STMT handles. We need to tell the SqlHandle objects about this
-        // so they don't try to free the handles again during their destruction.
-        
+        // SQLDisconnect frees child statements. Retain their owners until it
+        // succeeds, then mark them so later cursor cleanup cannot double-free.
+
         // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
         // This protects against concurrent allocStatementHandle() calls or GC finalizers
         size_t originalSize = 0, afterCompactSize = 0, badHandleCount = 0;
+        // Keep statement buffers alive through the parent's blocking disconnect.
+        // Do not mark children freed until SQLDisconnect actually succeeds.
+        std::vector<SqlHandlePtr> childHandles;
         {
             std::lock_guard<std::mutex> lock(_childHandlesMutex);
             
@@ -141,11 +142,9 @@ void Connection::disconnect() {
                         ++badHandleCount;
                         continue;  // Skip marking to prevent leak
                     }
-                    handle->markImplicitlyFreed();
+                    childHandles.push_back(std::move(handle));
                 }
             }
-            _childStatementHandles.clear();
-            _allocationsSinceCompaction = 0;
         }  // Release lock before potentially slow SQLDisconnect call
 
         // Log after releasing _childHandlesMutex (#671): LOG()/LOG_ERROR() acquire
@@ -180,6 +179,15 @@ void Connection::disconnect() {
             // Intentionally no LOG() here: LOG() acquires the GIL internally
             // via py::gil_scoped_acquire, which is unsafe during interpreter
             // shutdown or stack unwinding (can deadlock or call std::terminate).
+        }
+        if (SQL_SUCCEEDED(ret)) {
+            for (const auto& handle : childHandles) {
+                handle->markImplicitlyFreed();
+                handle->releaseAfterFree();
+            }
+            std::lock_guard<std::mutex> lock(_childHandlesMutex);
+            _childStatementHandles.clear();
+            _allocationsSinceCompaction = 0;
         }
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
