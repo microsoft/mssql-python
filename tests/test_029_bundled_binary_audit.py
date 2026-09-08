@@ -564,6 +564,15 @@ def test_audit_fails_unknown_linux_subdir(tmp_path):
     assert any("unrecognized Linux subdir" in e for e in errors)
 
 
+@pytest.mark.parametrize("index", [{}, {"subdir": ""}, {"subdir": None}, {"subdir": " linux-64"}])
+def test_audit_fails_missing_or_invalid_subdir(monkeypatch, index):
+    monkeypatch.setattr(audit, "read_index", lambda _path: index)
+
+    errors = audit.audit_package("invalid-metadata.conda")
+
+    assert any("missing or invalid 'subdir'" in error for error in errors)
+
+
 # --- shared payload reader fails closed (eng/scripts/_conda_pkg.py) ---------
 
 
@@ -614,6 +623,12 @@ def test_zstd_decompress_explains_broken_fallback_import(monkeypatch):
 def test_zstd_decompress_preserves_decompression_errors(monkeypatch):
     conda_pkg = sys.modules.get("_conda_pkg")
     assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
+    real_import = builtins.__import__
+
+    def fallback_only(name, *args, **kwargs):
+        if name == "compression":
+            raise ModuleNotFoundError("No module named 'compression'", name=name)
+        return real_import(name, *args, **kwargs)
 
     class BrokenPayload:
         @staticmethod
@@ -621,6 +636,7 @@ def test_zstd_decompress_preserves_decompression_errors(monkeypatch):
             raise ValueError("invalid zstd frame")
 
     fake_backend = type("FakeZstandard", (), {"ZstdDecompressor": BrokenPayload})
+    monkeypatch.setattr(builtins, "__import__", fallback_only)
     monkeypatch.setitem(sys.modules, "zstandard", fake_backend)
 
     with pytest.raises(ValueError, match="invalid zstd frame"):

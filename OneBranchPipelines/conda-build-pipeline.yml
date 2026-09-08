@@ -237,6 +237,8 @@ extends:
                   pythonVersions: '${{ parameters.pythonVersions }}'
               - task: PublishPipelineArtifact@1
                 displayName: 'Publish macOS conda artifact'
+                # Preserve a successfully staged osx-arm64 package if blocking osx-64 fails.
+                condition: succeededOrFailed()
                 inputs:
                   targetPath: '$(ob_outputDirectory)'
                   artifact: 'drop_CondaMacOS_BuildConda'
