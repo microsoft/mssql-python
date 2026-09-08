@@ -2,17 +2,13 @@
 Coverage for the two parameter paths, each tested on its own terms — no path is
 forced through a door real callers do not use.
 
-1. Native path (C++ DetectParamTypes + DDBCSQLExecute) — the default that ~99% of
-   calls take. Exercised end to end through plain ``cursor.execute(...)``.
+1. Native path (C++ DetectParamTypes + DDBCSQLExecute), with and without
+   ``setinputsizes`` overrides. Exercised end to end through ``cursor.execute(...)``.
 2. Python type detection (``_map_sql_type`` / ``_get_numeric_data``) — the reference
    the native path was ported from. Asserted directly as a pure function: value in,
    (SQL type, C type, column size, decimal digits, DAE) out. No DB round-trip, so
    the assertion cannot be masked by SQL Server coercing a wrong-but-convertible
    type back to the right value.
-3. Legacy execute path (DDBCSQLExecuteLegacy) — only reachable by a caller through
-   ``setinputsizes()``, so it is tested through exactly that API, using it for what
-   it is for: honouring user-supplied type overrides.
-
 Uses the project's `cursor` fixture from conftest.py so the tests work in any
 environment that runs the rest of the suite.
 """
@@ -39,12 +35,7 @@ def _standard_roundtrip(cursor, value):
 
 
 def _override_roundtrip(cursor, value, sql_type, column_size):
-    """Legacy execute path through its real entry point.
-
-    ``setinputsizes`` is the only public API that routes a call to
-    DDBCSQLExecuteLegacy. It also declares the parameter's type explicitly, so this
-    helper tests the user-override contract — not type *detection*, which is covered
-    directly against ``_map_sql_type`` elsewhere in this file."""
+    """Native execute with a caller-declared SQL type."""
     cursor.setinputsizes([(sql_type, column_size, 0)])
     try:
         cursor.execute("SELECT ?", [value])
@@ -246,16 +237,7 @@ def test_naive_time_roundtrips(cursor):
 
 
 # ---------------------------------------------------------------------------
-# Standard-vs-legacy parity for representative types
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Legacy execute path: user-supplied type overrides via setinputsizes
-#
-# These are the only tests that use setinputsizes, and they use it for its real
-# purpose. They keep DDBCSQLExecuteLegacy and the explicit-override branch of
-# _create_parameter_types_list covered end to end.
+# Native execute path: user-supplied type overrides via setinputsizes
 # ---------------------------------------------------------------------------
 
 
@@ -269,15 +251,28 @@ def test_naive_time_roundtrips(cursor):
     ],
 )
 def test_setinputsizes_override_roundtrips(cursor, value, sql_type, column_size):
-    """A user-declared type via setinputsizes round-trips through the legacy path."""
+    """A user-declared type round-trips through native execute."""
     assert _override_roundtrip(cursor, value, sql_type, column_size) == value
+
+
+@pytest.mark.parametrize(
+    "size",
+    [
+        ddbc_sql_const.SQL_INTEGER.value,
+        (ddbc_sql_const.SQL_INTEGER.value,),
+        (ddbc_sql_const.SQL_INTEGER.value, 0),
+    ],
+)
+def test_setinputsizes_short_forms_use_native_execute(cursor, size):
+    """Every documented shorthand is normalized for the native path."""
+    cursor.setinputsizes([size])
+    cursor.execute("SELECT ?", [42])
+    assert cursor.fetchone()[0] == 42
 
 
 def test_setinputsizes_shorter_than_params_detects_the_rest(cursor):
     """setinputsizes with fewer entries than parameters: covered indices use the
-    override, uncovered ones fall through to _map_sql_type inside
-    _create_parameter_types_list. This is the only end-to-end route to that
-    detection fallback on the legacy path, so it keeps that line covered.
+    override, uncovered ones fall through to DetectParamTypes.
 
     (A None entry cannot be used here — setinputsizes validates and rejects None.)
     """
@@ -290,6 +285,97 @@ def test_setinputsizes_shorter_than_params_detects_the_rest(cursor):
         assert row[1] == 42
     finally:
         cursor.setinputsizes(None)
+
+
+def test_setinputsizes_text_binding_normalizes_time(cursor):
+    """Text overrides preserve the DB-API time normalization contract."""
+    value = datetime.time(1, 2, 3, 4)
+    assert (
+        _override_roundtrip(cursor, value, ddbc_sql_const.SQL_VARCHAR.value, 32)
+        == "01:02:03.000004"
+    )
+
+
+@pytest.mark.parametrize("sql_type", [None, ddbc_sql_const.SQL_VARCHAR.value])
+def test_time_isoformat_must_return_string(cursor, sql_type):
+    """Native time normalization rejects a broken subclass contract on either path."""
+
+    class BadTime(datetime.time):
+        def isoformat(self, *args, **kwargs):
+            return 42
+
+    if sql_type is not None:
+        cursor.setinputsizes([(sql_type, 32, 0)])
+    try:
+        with pytest.raises(TypeError, match=r"isoformat\(\) must return a str"):
+            cursor.execute("SELECT ?", [BadTime(1, 2, 3)])
+    finally:
+        cursor.setinputsizes(None)
+
+
+def test_decimal_format_must_return_string(cursor):
+    """The setinputsizes DECIMAL override string-binds a Decimal via __format__, so a
+    broken subclass contract is rejected instead of silently mis-bound. The automatic
+    path binds Decimals as SQL_NUMERIC and never formats them (GH-740)."""
+
+    class BadDecimal(decimal.Decimal):
+        def __format__(self, format_spec):
+            return 42
+
+    cursor.setinputsizes([(ddbc_sql_const.SQL_DECIMAL.value, 18, 2)])
+    try:
+        with pytest.raises(TypeError, match=r"__format__\(\) must return a str"):
+            cursor.execute("SELECT ?", [BadDecimal("1.25")])
+    finally:
+        cursor.setinputsizes(None)
+
+
+def test_setinputsizes_binary_dae(cursor):
+    """Declared binary sizes over 8000 stream through the native DAE path."""
+    value = b"\xab" * 10000
+    cursor.setinputsizes([(ddbc_sql_const.SQL_LONGVARBINARY.value, len(value), 0)])
+    try:
+        cursor.execute("SELECT DATALENGTH(CAST(? AS VARBINARY(MAX)))", [value])
+        assert cursor.fetchone()[0] == len(value)
+    finally:
+        cursor.setinputsizes(None)
+
+
+def test_setinputsizes_numeric_precision_and_scale_are_clamped(cursor):
+    """Oversized numeric metadata is clamped before narrowing to ODBC types."""
+    value = decimal.Decimal("0.1")
+    cursor.setinputsizes([(ddbc_sql_const.SQL_DECIMAL.value, 10**100, 10**100)])
+    try:
+        cursor.execute("SELECT ?", [value])
+        assert cursor.fetchone()[0] == value
+    finally:
+        cursor.setinputsizes(None)
+
+
+def test_setinputsizes_shorter_than_params_money_decimal_binds_numeric(cursor):
+    """GH-740 on the legacy path: an uncovered money-range Decimal must bind as
+    NUMERIC, not VARCHAR.
+
+    With setinputsizes shorter than the parameter list, the uncovered Decimal falls
+    through to _map_sql_type. Before the fix it took the MONEY-range VARCHAR shortcut,
+    so a comparison against a smaller numeric column made SQL Server convert
+    varchar->numeric and overflow. It must now return no match without raising, like
+    the native path.
+    """
+    cursor.execute("DROP TABLE IF EXISTS #pytest_si_gh740")
+    cursor.execute("CREATE TABLE #pytest_si_gh740 (k int, v numeric(5,2))")
+    cursor.execute("INSERT INTO #pytest_si_gh740 VALUES (1, 12.34)")
+    cursor.setinputsizes([(ddbc_sql_const.SQL_INTEGER.value, 0, 0)])  # sizes param 0 only
+    try:
+        with pytest.warns(Warning):  # count mismatch is warned, then execution proceeds
+            cursor.execute(
+                "SELECT COUNT(*) FROM #pytest_si_gh740 WHERE k = ? AND v = ?",
+                [1, decimal.Decimal("12345.6789")],
+            )
+        assert cursor.fetchone()[0] == 0
+    finally:
+        cursor.setinputsizes(None)
+        cursor.execute("DROP TABLE IF EXISTS #pytest_si_gh740")
 
 
 # ---------------------------------------------------------------------------
@@ -513,9 +599,16 @@ def test_time_param_binds_wide(cursor):
 
 
 def test_money_range_decimal_binds_wide(cursor):
-    """Decimals inside the MONEY range are formatted to text and bound with the text
-    C type, the third consumer of the platform-dependent constant."""
+    """On the native path a money-range Decimal now binds as NUMERIC (GH-740), not text.
+
+    This asserts the declared base type via sql_variant, not just a value round-trip,
+    so a wrong-but-convertible C type cannot pass silently. Note the native path here
+    intentionally diverges from ``_map_sql_type`` (which still text-binds money-range
+    Decimals to protect executemany's string binding); see
+    ``test_map_sql_type_money_range_binds_as_text``.
+    """
     value = decimal.Decimal("214748.3647")
+    assert _param_basetype(cursor, value) == "numeric"
     cursor.execute("SELECT CAST(? AS MONEY)", [value])
     assert cursor.fetchone()[0] == value
 
@@ -571,10 +664,10 @@ DETECTION_CASES = [
     (b"", _c.SQL_VARBINARY, _c.SQL_C_BINARY, 1, 0, False),
     (b"abc", _c.SQL_VARBINARY, _c.SQL_C_BINARY, 3, 0, False),
     # date / datetime / time
-    (datetime.date(2024, 1, 1), _c.SQL_DATE, _c.SQL_C_TYPE_DATE, 10, 0, False),
+    (datetime.date(2024, 1, 1), _c.SQL_TYPE_DATE, _c.SQL_C_TYPE_DATE, 10, 0, False),
     (
         datetime.datetime(2024, 1, 1, 2, 3, 4),
-        _c.SQL_TIMESTAMP,
+        _c.SQL_TYPE_TIMESTAMP,
         _c.SQL_C_TYPE_TIMESTAMP,
         26,
         6,
@@ -730,7 +823,13 @@ def test_map_sql_type_aware_datetime(cursor):
 )
 def test_map_sql_type_money_range_binds_as_text(cursor, value):
     """MONEY / SMALLMONEY range Decimals are formatted to text and the slot is
-    replaced with that formatted string."""
+    replaced with that formatted string.
+
+    This is the Python reference path (legacy execute via setinputsizes, and
+    executemany). It intentionally diverges from the native path, which binds these
+    as NUMERIC after GH-740; the text binding is retained here because executemany
+    string-binds Decimals and relies on the server to coerce mixed-scale batches.
+    """
     params = [value]
     sql_type, c_type, column_size, decimal_digits, is_dae = cursor._map_sql_type(value, params, 0)
     assert (sql_type, c_type, decimal_digits, is_dae) == (
