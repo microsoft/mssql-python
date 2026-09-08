@@ -89,6 +89,21 @@ def test_perf_phase_aggregates_multiple_calls():
     assert entry["calls"] == 3
 
 
+def test_submicrosecond_samples_accumulate_without_truncation():
+    """Regression: each sample is accumulated in nanoseconds and converted to us
+    only at get_stats(). Five 300 ns samples must sum to 1.5 us, not truncate to
+    zero the way per-sample us rounding did."""
+    perf_timer.enable()
+    perf_timer.reset()
+    for _ in range(5):
+        perf_timer._record("py::test::subus", 300)  # 300 ns, well under 1 us
+    entry = perf_timer.get_stats()["py::test::subus"]
+    assert entry["calls"] == 5
+    assert entry["total_us"] == 1.5  # 5 * 300 ns = 1500 ns = 1.5 us
+    assert entry["min_us"] == 0.3  # a single sub-us sample survives as fractional us
+    assert entry["max_us"] == 0.3
+
+
 def test_perf_start_stop_pairs():
     perf_timer.enable()
     t0 = perf_timer.perf_start()
@@ -387,22 +402,24 @@ def test_run_script_bad_syntax_still_cleans_up(tmp_path):
 
 @_needs_cpp
 @_needs_db
-def test_run_script_wall_time_excludes_read_and_compile(tmp_path):
-    """Wall time should reflect exec, not file read + compile of the script."""
-    import time as _t
+def test_run_script_wall_time_reflects_exec_not_io(tmp_path):
+    """wall_ms should track the script's execution (a known sleep), which only
+    holds because the timer starts after read+compile. If read/compile were
+    inside the window the assertion would still pass, so we also bound it from
+    above to catch gross inflation."""
     from profiler.core import Profiler
 
-    # A script that does almost nothing; wall_ms should be tiny even though the
-    # source is non-trivial to read/compile.
-    script = tmp_path / "quick.py"
-    script.write_text("x = 1 + 1\n")
+    # Script sleeps a known amount; that sleep must show up in wall_ms.
+    script = tmp_path / "sleeper.py"
+    script.write_text("import time\ntime.sleep(0.20)\n")
 
     p = Profiler(_CONN_STR)
     try:
-        t_call = _t.perf_counter()
         result = p.run_script(str(script))
-        outer_ms = (_t.perf_counter() - t_call) * 1000
-        # reported wall must be <= the whole call and not dominated by I/O
-        assert result["wall_ms"] <= outer_ms + 1
+        # Lower bound: the 200 ms sleep must be measured (window covers exec).
+        assert result["wall_ms"] >= 180
+        # Upper bound: not grossly inflated beyond the sleep (a few hundred ms
+        # of slack for interpreter overhead, never seconds of I/O).
+        assert result["wall_ms"] < 1000
     finally:
         p.close()

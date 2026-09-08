@@ -4181,8 +4181,12 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             ret);
         return ret;
     }
-    // Pre-cache column metadata to avoid repeated dictionary lookups
-    PERF_TIMER("FetchBatchData::cache_column_metadata");
+    // Pre-cache column metadata to avoid repeated dictionary lookups.
+    // The vectors below are consumed later by construct_rows, so they are
+    // declared at function scope; only the population work is wrapped in the
+    // cache_column_metadata timer's block (an earlier version put the timer at
+    // function scope, so it stayed active through construct_rows and made
+    // metadata caching look like a dominant fetch cost).
     struct ColumnInfo {
         SQLSMALLINT dataType;
         SQLULEN columnSize;
@@ -4192,113 +4196,114 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     };
     const bool useWideChar = (charCtype == SQL_C_WCHAR);
     std::vector<ColumnInfo> columnInfos(numCols);
-    for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        const auto& columnMeta = columnNames[col].cast<py::dict>();
-        columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
-        columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
-        columnInfos[col].isLob =
-            std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
-        columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
-        HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
-
-        SQLSMALLINT dt = columnInfos[col].dataType;
-        bool isCharType = (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR);
-
-        if (isCharType && useWideChar) {
-            // When VARCHAR is bound as SQL_C_WCHAR, buffer size is in SQLWCHAR
-            // units (same as NVARCHAR). +1 for null terminator.
-            columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1;
-        } else {
-            // On Linux/macOS, the ODBC driver returns UTF-8 for SQL_C_CHAR where
-            // each character can be up to 4 bytes. Must match SQLBindColums buffer.
-#if defined(__APPLE__) || defined(__linux__)
-            if (isCharType) {
-                columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize * 4 +
-                                                   1;  // *4 for UTF-8, +1 for null terminator
-            } else {
-                columnInfos[col].fetchBufferSize =
-                    columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
-            }
-#else
-            columnInfos[col].fetchBufferSize =
-                columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
-#endif
-        }
-    }
-
-    // Performance: Build function pointer dispatch table (once per batch)
+    // Performance: Build function pointer dispatch table (once per batch).
     // This eliminates the switch statement from the hot loop - 10,000 rows × 10
-    // cols reduces from 100,000 switch evaluations to just 10 switch
-    // evaluations
+    // cols reduces from 100,000 switch evaluations to just 10 switch evaluations.
     std::vector<ColumnProcessor> columnProcessors(numCols);
     std::vector<ColumnInfoExt> columnInfosExt(numCols);
-
     // Compute effective char encoding once for the batch (same for all columns)
     const std::string effectiveCharEnc = GetEffectiveCharDecoding(charEncoding);
 
-    for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        // Populate extended column info for processors that need it
-        columnInfosExt[col].dataType = columnInfos[col].dataType;
-        columnInfosExt[col].columnSize = columnInfos[col].columnSize;
-        columnInfosExt[col].processedColumnSize = columnInfos[col].processedColumnSize;
-        columnInfosExt[col].fetchBufferSize = columnInfos[col].fetchBufferSize;
-        columnInfosExt[col].isLob = columnInfos[col].isLob;
-        columnInfosExt[col].charEncoding = effectiveCharEnc;
-        columnInfosExt[col].isUtf8 = (effectiveCharEnc == "utf-8");
-        // Set useWideChar for SQL_CHAR/VARCHAR columns when charCtype is SQL_C_WCHAR
-        SQLSMALLINT dt = columnInfos[col].dataType;
-        bool isCharType = (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR);
-        columnInfosExt[col].useWideChar = (isCharType && useWideChar);
+    {
+        PERF_TIMER("FetchBatchData::cache_column_metadata");
+        for (SQLUSMALLINT col = 0; col < numCols; col++) {
+            const auto& columnMeta = columnNames[col].cast<py::dict>();
+            columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+            columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+            columnInfos[col].isLob =
+                std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
+            columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
+            HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
 
-        // Map data type to processor function (switch executed once per column,
-        // not per cell)
-        SQLSMALLINT dataType = columnInfos[col].dataType;
-        switch (dataType) {
-            case SQL_INTEGER:
-                columnProcessors[col] = ColumnProcessors::ProcessInteger;
-                break;
-            case SQL_SMALLINT:
-                columnProcessors[col] = ColumnProcessors::ProcessSmallInt;
-                break;
-            case SQL_BIGINT:
-                columnProcessors[col] = ColumnProcessors::ProcessBigInt;
-                break;
-            case SQL_TINYINT:
-                columnProcessors[col] = ColumnProcessors::ProcessTinyInt;
-                break;
-            case SQL_BIT:
-                columnProcessors[col] = ColumnProcessors::ProcessBit;
-                break;
-            case SQL_REAL:
-                columnProcessors[col] = ColumnProcessors::ProcessReal;
-                break;
-            case SQL_DOUBLE:
-            case SQL_FLOAT:
-                columnProcessors[col] = ColumnProcessors::ProcessDouble;
-                break;
-            case SQL_CHAR:
-            case SQL_VARCHAR:
-            case SQL_LONGVARCHAR:
-                columnProcessors[col] = ColumnProcessors::ProcessChar;
-                break;
-            case SQL_WCHAR:
-            case SQL_WVARCHAR:
-            case SQL_WLONGVARCHAR:
-                columnProcessors[col] = ColumnProcessors::ProcessWChar;
-                break;
-            case SQL_SS_UDT:
-            case SQL_BINARY:
-            case SQL_VARBINARY:
-            case SQL_LONGVARBINARY:
-                columnProcessors[col] = ColumnProcessors::ProcessBinary;
-                break;
-            default:
-                // For complex types (Decimal, DateTime, Guid, etc.), set to
-                // nullptr and handle via fallback switch in the hot loop
-                columnProcessors[col] = nullptr;
-                break;
+            SQLSMALLINT dt = columnInfos[col].dataType;
+            bool isCharType = (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR);
+
+            if (isCharType && useWideChar) {
+                // When VARCHAR is bound as SQL_C_WCHAR, buffer size is in SQLWCHAR
+                // units (same as NVARCHAR). +1 for null terminator.
+                columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1;
+            } else {
+                // On Linux/macOS, the ODBC driver returns UTF-8 for SQL_C_CHAR where
+                // each character can be up to 4 bytes. Must match SQLBindColums buffer.
+#if defined(__APPLE__) || defined(__linux__)
+                if (isCharType) {
+                    columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize * 4 +
+                                                       1;  // *4 for UTF-8, +1 for null terminator
+                } else {
+                    columnInfos[col].fetchBufferSize =
+                        columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
+                }
+#else
+                columnInfos[col].fetchBufferSize =
+                    columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
+#endif
+            }
         }
-    }
+
+        for (SQLUSMALLINT col = 0; col < numCols; col++) {
+            // Populate extended column info for processors that need it
+            columnInfosExt[col].dataType = columnInfos[col].dataType;
+            columnInfosExt[col].columnSize = columnInfos[col].columnSize;
+            columnInfosExt[col].processedColumnSize = columnInfos[col].processedColumnSize;
+            columnInfosExt[col].fetchBufferSize = columnInfos[col].fetchBufferSize;
+            columnInfosExt[col].isLob = columnInfos[col].isLob;
+            columnInfosExt[col].charEncoding = effectiveCharEnc;
+            columnInfosExt[col].isUtf8 = (effectiveCharEnc == "utf-8");
+            // Set useWideChar for SQL_CHAR/VARCHAR columns when charCtype is SQL_C_WCHAR
+            SQLSMALLINT dt = columnInfos[col].dataType;
+            bool isCharType = (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR);
+            columnInfosExt[col].useWideChar = (isCharType && useWideChar);
+
+            // Map data type to processor function (switch executed once per column,
+            // not per cell)
+            SQLSMALLINT dataType = columnInfos[col].dataType;
+            switch (dataType) {
+                case SQL_INTEGER:
+                    columnProcessors[col] = ColumnProcessors::ProcessInteger;
+                    break;
+                case SQL_SMALLINT:
+                    columnProcessors[col] = ColumnProcessors::ProcessSmallInt;
+                    break;
+                case SQL_BIGINT:
+                    columnProcessors[col] = ColumnProcessors::ProcessBigInt;
+                    break;
+                case SQL_TINYINT:
+                    columnProcessors[col] = ColumnProcessors::ProcessTinyInt;
+                    break;
+                case SQL_BIT:
+                    columnProcessors[col] = ColumnProcessors::ProcessBit;
+                    break;
+                case SQL_REAL:
+                    columnProcessors[col] = ColumnProcessors::ProcessReal;
+                    break;
+                case SQL_DOUBLE:
+                case SQL_FLOAT:
+                    columnProcessors[col] = ColumnProcessors::ProcessDouble;
+                    break;
+                case SQL_CHAR:
+                case SQL_VARCHAR:
+                case SQL_LONGVARCHAR:
+                    columnProcessors[col] = ColumnProcessors::ProcessChar;
+                    break;
+                case SQL_WCHAR:
+                case SQL_WVARCHAR:
+                case SQL_WLONGVARCHAR:
+                    columnProcessors[col] = ColumnProcessors::ProcessWChar;
+                    break;
+                case SQL_SS_UDT:
+                case SQL_BINARY:
+                case SQL_VARBINARY:
+                case SQL_LONGVARBINARY:
+                    columnProcessors[col] = ColumnProcessors::ProcessBinary;
+                    break;
+                default:
+                    // For complex types (Decimal, DateTime, Guid, etc.), set to
+                    // nullptr and handle via fallback switch in the hot loop
+                    columnProcessors[col] = nullptr;
+                    break;
+            }
+        }
+    }  // end cache_column_metadata timer scope
 
     // Performance: Single-phase row creation pattern
     // Create each row, fill it completely, then append to results list

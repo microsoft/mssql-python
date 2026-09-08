@@ -79,11 +79,13 @@ def get_timeline() -> list[dict]:
 def get_stats() -> dict:
     out = {}
     for name, s in _stats.items():
+        # Divide accumulated ns to us only here (never per-sample) and keep
+        # fractional us so sub-microsecond phases do not truncate to zero.
         out[name] = {
             "calls": s["calls"],
-            "total_us": s["total_ns"] // 1000,
-            "min_us": s["min_ns"] // 1000,
-            "max_us": s["max_ns"] // 1000,
+            "total_us": s["total_ns"] / 1000.0,
+            "min_us": s["min_ns"] / 1000.0,
+            "max_us": s["max_ns"] / 1000.0,
         }
     return out
 

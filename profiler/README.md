@@ -91,7 +91,9 @@ ddbc_bindings.profiling.enable()
 py_stats  = perf_timer.get_stats()            # {name: {calls, total_us, min_us, max_us}}
 cpp_stats = ddbc_bindings.profiling.get_stats()
 
-perf_timer.reset()                            # clear when done
+perf_timer.disable()                          # stop recording when done
+ddbc_bindings.profiling.disable()
+perf_timer.reset()                            # and clear the counters
 ddbc_bindings.profiling.reset()
 ```
 

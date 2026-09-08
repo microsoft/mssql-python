@@ -33,10 +33,14 @@ namespace mssql_profiling {
 #endif
 
 struct PerfStats {
-    int64_t total_time_us = 0;
+    // Accumulate in NANOSECONDS. Converting each sample to whole microseconds
+    // before summing (as an earlier version did) truncated every sub-microsecond
+    // call to 0, so high-frequency timers under-reported. int64 nanoseconds holds
+    // ~292 years, so overflow is not a concern. get_stats() converts to us.
+    int64_t total_time_ns = 0;
     int64_t call_count = 0;
-    int64_t min_time_us = INT64_MAX;
-    int64_t max_time_us = 0;
+    int64_t min_time_ns = INT64_MAX;
+    int64_t max_time_ns = 0;
 };
 
 struct TimelineEvent {
@@ -88,20 +92,20 @@ public:
     void disable_timeline() { timeline_enabled_ = false; }
     bool is_timeline_enabled() const { return timeline_enabled_; }
 
-    void record(const std::string& name, int64_t duration_us,
+    void record(const std::string& name, int64_t duration_ns,
                 std::chrono::time_point<std::chrono::steady_clock> start) {
         if (!enabled_) return;
 
         std::lock_guard<std::mutex> lock(mutex_);
         auto& stats = counters_[name];
-        stats.total_time_us += duration_us;
+        stats.total_time_ns += duration_ns;
         stats.call_count++;
-        stats.min_time_us = std::min(stats.min_time_us, duration_us);
-        stats.max_time_us = std::max(stats.max_time_us, duration_us);
+        stats.min_time_ns = std::min(stats.min_time_ns, duration_ns);
+        stats.max_time_ns = std::max(stats.max_time_ns, duration_ns);
 
         if (timeline_enabled_) {
             auto offset = std::chrono::duration_cast<std::chrono::microseconds>(start - epoch_).count();
-            timeline_.push_back({name, offset, duration_us});
+            timeline_.push_back({name, offset, duration_ns / 1000});
         }
     }
 
@@ -111,11 +115,16 @@ public:
 
         for (const auto& [name, stats] : counters_) {
             py::dict d;
-            d["total_us"] = stats.total_time_us;
+            // Convert accumulated nanoseconds to microseconds only here (never
+            // per-sample), keeping sub-microsecond precision as fractional us so
+            // high-frequency timers do not truncate to zero.
+            d["total_us"] = stats.total_time_ns / 1000.0;
             d["calls"] = stats.call_count;
-            d["avg_us"] = stats.call_count > 0 ? stats.total_time_us / stats.call_count : 0;
-            d["min_us"] = stats.min_time_us == INT64_MAX ? 0 : stats.min_time_us;
-            d["max_us"] = stats.max_time_us;
+            d["avg_us"] = stats.call_count > 0
+                              ? static_cast<double>(stats.total_time_ns) / stats.call_count / 1000.0
+                              : 0.0;
+            d["min_us"] = stats.min_time_ns == INT64_MAX ? 0.0 : stats.min_time_ns / 1000.0;
+            d["max_us"] = stats.max_time_ns / 1000.0;
             d["platform"] = PROFILING_PLATFORM;
             result[py::str(name)] = d;
         }
@@ -176,9 +185,9 @@ public:
             // process down; a dropped sample is an acceptable cost under OOM.
             try {
                 auto end = std::chrono::steady_clock::now();
-                auto duration =
-                    std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
-                PerformanceCounter::instance().record(name_, duration, start_);
+                auto duration_ns =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(end - start_).count();
+                PerformanceCounter::instance().record(name_, duration_ns, start_);
             } catch (...) {
                 // ignore: never let a profiling timer abort the process
             }
