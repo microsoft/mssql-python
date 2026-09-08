@@ -253,11 +253,12 @@ def test_linux_runtime_lock_is_installed_before_each_product_wheel():
         encoding="utf-8"
     )
     runtime_install = (
-        "$PY -m pip install -q --require-hashes "
-        "-r /workspace/eng/requirements-test-linux.txt;"
+        "$PY -m pip install -q --require-hashes " "-r /workspace/eng/requirements-test-linux.txt;"
     )
     wheel_install = '$PY -m pip install -q "$WHEEL";'
-    runtime_positions = [match.start() for match in re.finditer(re.escape(runtime_install), pipeline)]
+    runtime_positions = [
+        match.start() for match in re.finditer(re.escape(runtime_install), pipeline)
+    ]
     wheel_positions = [match.start() for match in re.finditer(re.escape(wheel_install), pipeline)]
 
     assert len(runtime_positions) == len(wheel_positions) == 2
