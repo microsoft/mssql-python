@@ -303,3 +303,23 @@ def test_context_disable_turns_everything_off():
     ctx.disable()
     assert perf_timer.is_enabled() is False
     assert ddbc.profiling.is_enabled() is False
+
+
+@_needs_cpp
+@_needs_db
+def test_run_script_disables_profiling_even_when_script_raises(tmp_path):
+    """A user script that raises must not leave profiling enabled."""
+    from profiler.core import Profiler
+
+    bad = tmp_path / "boom.py"
+    bad.write_text("cursor.execute('SELECT 1')\nraise RuntimeError('boom')\n")
+
+    p = Profiler(_CONN_STR)
+    try:
+        with pytest.raises(RuntimeError):
+            p.run_script(str(bad))
+        # window must be closed despite the exception
+        assert perf_timer.is_enabled() is False
+        assert ddbc.profiling.is_enabled() is False
+    finally:
+        p.close()

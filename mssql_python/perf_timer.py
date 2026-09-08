@@ -102,7 +102,10 @@ def perf_start() -> int:
 
 
 def perf_stop(name: str, t0: int):
-    if not _enabled:
+    # t0 == 0 means perf_start() ran while disabled (or was never called); a
+    # falsy start has no valid interval, so record nothing rather than a bogus
+    # "now - 0" duration.
+    if not _enabled or not t0:
         return
     _record(name, time.perf_counter_ns() - t0, t0)
 

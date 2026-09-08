@@ -5,7 +5,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 #include <unordered_map>

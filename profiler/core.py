@@ -127,21 +127,27 @@ class Profiler:
             print(f"# {i}. {name.upper()}")
             print(f"{'#' * 100}")
 
-            # Build args based on what the scenario function needs
-            if name == "connect":
-                result = fn(self.conn_str, self._ctx)
-            elif name == "insertmanyvalues":
-                self._ensure_connection()
-                result = fn(self._conn, self._ctx)
-            elif name == "commit_rollback":
-                self._ensure_connection()
-                result = fn(self._conn, self._ctx)
-            elif needs_table:
-                self._ensure_test_data()
-                result = fn(self._conn, self._table, self._ctx)
-            else:
-                self._ensure_connection()
-                result = fn(self._conn, self._ctx)
+            # Build args based on what the scenario function needs. Wrap the call
+            # so a scenario that raises can never leave profiling enabled and bleed
+            # into the next scenario — one guard here covers all scenarios (and any
+            # future ones) instead of a try/finally in every scenario body.
+            try:
+                if name == "connect":
+                    result = fn(self.conn_str, self._ctx)
+                elif name == "insertmanyvalues":
+                    self._ensure_connection()
+                    result = fn(self._conn, self._ctx)
+                elif name == "commit_rollback":
+                    self._ensure_connection()
+                    result = fn(self._conn, self._ctx)
+                elif needs_table:
+                    self._ensure_test_data()
+                    result = fn(self._conn, self._table, self._ctx)
+                else:
+                    self._ensure_connection()
+                    result = fn(self._conn, self._ctx)
+            finally:
+                self._ctx.disable()
 
             # Collect timeline if enabled
             if self._timeline:
@@ -196,9 +202,18 @@ class Profiler:
 
         self._ctx.enable(timeline=self._timeline)
         t0 = time.perf_counter()
-        exec(code, ns)  # noqa: S102
-        wall_ms = (time.perf_counter() - t0) * 1000
-        cpp, py = self._ctx.collect()
+        try:
+            exec(code, ns)  # noqa: S102
+            wall_ms = (time.perf_counter() - t0) * 1000
+            cpp, py = self._ctx.collect()
+            if self._timeline:
+                cpp_tl, py_tl = self._ctx.collect_timeline()
+                self._ctx.disable_timeline()
+        finally:
+            # Always end the window and close the cursor, even if the script
+            # raised, so profiling state never leaks into a later run.
+            self._ctx.disable()
+            cursor.close()
 
         result = {
             "title": f"CUSTOM: {path.name}",
@@ -208,12 +223,8 @@ class Profiler:
         }
 
         if self._timeline:
-            cpp_tl, py_tl = self._ctx.collect_timeline()
-            self._ctx.disable_timeline()
             result["cpp_timeline"] = cpp_tl
             result["py_timeline"] = py_tl
-
-        cursor.close()
 
         print(f"\n  Wall clock: {wall_ms:.1f}ms")
         if self._timeline:
