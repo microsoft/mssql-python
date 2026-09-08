@@ -244,3 +244,62 @@ def test_cpp_reset_stats_only_keeps_timeline():
     ddbc.profiling.reset_stats_only()
     assert ddbc.profiling.get_stats() == {}
     assert ddbc.profiling.get_timeline() != []
+
+
+# ---------------------------------------------------------------------------
+# Profiler measurement-window isolation (profiler/core.py _ProfilingContext)
+# ---------------------------------------------------------------------------
+
+
+@_needs_cpp
+def test_context_collect_disables_profiling():
+    """collect() must end the window: after it, profiling is off in both layers."""
+    from profiler.core import _ProfilingContext
+
+    ctx = _ProfilingContext()
+    ctx.enable()
+    assert perf_timer.is_enabled() is True
+    assert ddbc.profiling.is_enabled() is True
+    with perf_timer.perf_phase("py::window::work"):
+        pass
+    cpp, py = ctx.collect()
+    # window recorded its work...
+    assert "py::window::work" in py
+    # ...and profiling is now OFF so nothing after this point is counted.
+    assert perf_timer.is_enabled() is False
+    assert ddbc.profiling.is_enabled() is False
+
+
+@_needs_cpp
+def test_context_windows_do_not_leak_into_each_other():
+    """Work done between two windows must not appear in the next window's stats."""
+    from profiler.core import _ProfilingContext
+
+    ctx = _ProfilingContext()
+
+    # Window 1: does real work.
+    ctx.enable()
+    with perf_timer.perf_phase("py::w1::work"):
+        pass
+    ctx.collect()
+
+    # Between windows (profiling is off now): this must NOT be recorded.
+    with perf_timer.perf_phase("py::between::leak"):
+        pass
+
+    # Window 2: enable() resets, and we collect immediately with no work.
+    ctx.enable()
+    cpp2, py2 = ctx.collect()
+    assert py2 == {}, f"window 2 leaked stats from between windows: {py2}"
+    assert "py::between::leak" not in py2
+
+
+@_needs_cpp
+def test_context_disable_turns_everything_off():
+    from profiler.core import _ProfilingContext
+
+    ctx = _ProfilingContext()
+    ctx.enable(timeline=True)
+    ctx.disable()
+    assert perf_timer.is_enabled() is False
+    assert ddbc.profiling.is_enabled() is False
