@@ -280,25 +280,11 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
-struct ParameterBinding {
-    SQLSMALLINT direction;
-    SQLSMALLINT cType;
-    SQLSMALLINT sqlType;
-    SQLULEN columnSize;
-    SQLSMALLINT scale;
-    SQLPOINTER data;
-    SQLLEN length;
-    SQLLEN* indicator;
-};
-
-// Native-only ownership: cleanup is safe even on GIL-less connection teardown.
-// One generation per statement, never keyed by a recycled raw ODBC handle.
-struct ExecuteBindingCache {
-    std::vector<ParameterBinding> bindings;
-    std::vector<std::shared_ptr<void>> buffers;
-    std::string encoding;
-    bool reusable = false;
-};
+// Handle-owned cache of native parameter bindings, defined in
+// param_bind_cache.hpp. SqlHandle only holds a unique_ptr to it and defines
+// every method that touches it out of line, so a forward declaration is enough
+// here and avoids pulling param_detect.hpp into this header (it includes back).
+struct ExecuteBindingCache;
 
 class SqlHandle {
   public:
