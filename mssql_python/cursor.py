@@ -2367,9 +2367,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # that to int raises TypeError before the NUMERIC ValueError path.
                 # Reject early with the same message used by _decimal_sql_precision_scale.
                 if not v.is_finite():
-                    raise ValueError(
-                        "Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC"
-                    )
+                    raise ValueError("Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC")
                 max_decimal_formatted_len = max(max_decimal_formatted_len, len(format(v, "f")))
             if not sample_value:
                 sample_value = v
