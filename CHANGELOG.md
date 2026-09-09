@@ -7,11 +7,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
-- Module-level `SQL_SS_TIME2` (-154), `SQL_SS_XML` (-152), and `SQL_SS_VARIANT`
-  (-150) type constants, exposing the SQL Server-specific ODBC type codes at the
-  package level for pyodbc parity (e.g. `mssql_python.SQL_SS_TIME2`). These were
-  already present in `ConstantsDDBC` but not re-exported, so consumers such as
-  Django's SQL Server backend had to fall back to a hard-coded literal.
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
 - New `token_provider=` parameter on `connect()` / `Connection` for Microsoft
