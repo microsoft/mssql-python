@@ -896,3 +896,42 @@ def test_gh745_executemany_tiny_scale38_roundtrip(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
+
+
+def test_gh745_executemany_mixed_decimal_string_precision(cursor, db_connection):
+    """Decimal + numeric-string batch must fit DECIMAL(38,14) (bewithgaurav).
+
+    Auto-detect used to derive NUMERIC(18,2) from the Decimal alone, then fail
+    the 17-digit string with DataError even though the destination fits both.
+    """
+    table_name = "#pytest_gh745_mixed_prec"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v DECIMAL(38, 14))")
+        data = [
+            (Decimal("1000000000000000.00"),),
+            ("20000000000000000",),
+        ]
+        cursor.executemany(f"INSERT INTO {table_name} VALUES (?)", data)
+        db_connection.commit()
+        cursor.execute(f"SELECT v FROM {table_name} ORDER BY v")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows[0] == Decimal("1000000000000000.00")
+        assert rows[1] == Decimal("20000000000000000")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [(Decimal("1.0"),), (Decimal("NaN"),)],
+        [(Decimal("NaN"),), (Decimal("1.0"),)],
+    ],
+    ids=["finite-then-nan", "nan-then-finite"],
+)
+def test_gh745_executemany_rejects_nan_both_orders(cursor, data):
+    """executemany raises ValueError for NaN in either row order (sumitmsft)."""
+    with pytest.raises(ValueError, match="non-finite"):
+        cursor.executemany("INSERT INTO #unused_nan_table VALUES (?)", data)

@@ -2363,6 +2363,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         max_decimal_formatted_len = 0
         for v in non_nulls:
             if isinstance(v, decimal.Decimal):
+                # Non-finite Decimals have a string exponent ('n'/'N'/'F'); comparing
+                # that to int raises TypeError before the NUMERIC ValueError path.
+                # Reject early with the same message used by _decimal_sql_precision_scale.
+                if not v.is_finite():
+                    raise ValueError(
+                        "Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC"
+                    )
                 max_decimal_formatted_len = max(max_decimal_formatted_len, len(format(v, "f")))
             if not sample_value:
                 sample_value = v
@@ -2378,7 +2385,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     # If length comparison fails, keep the current sample_value
                     pass
             elif isinstance(v, decimal.Decimal) and isinstance(sample_value, decimal.Decimal):
-                # For Decimal objects, prefer the one that requires higher precision or scale
+                # Both values are finite (checked above). Prefer higher precision/scale.
                 v_tuple = v.as_tuple()
                 sample_tuple = sample_value.as_tuple()
 
@@ -2771,10 +2778,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                             raise ValueError(err_msg) from None
             processed_parameters.append(processed_row)
 
-        # Derive/widen SQL_C_CHAR bufferSize from text produced by the protected
-        # DECIMAL/NUMERIC conversion above. setinputsizes previously sized by
-        # converting independently (leaking raw MemoryError/RuntimeError); the
-        # auto-detect path already had a Decimal-only provisional size.
+        # Derive/widen SQL_C_CHAR bufferSize and SQL NUMERIC precision/scale from
+        # text produced by the protected DECIMAL/NUMERIC conversion above.
+        # setinputsizes previously sized by converting independently (leaking raw
+        # MemoryError/RuntimeError); the auto-detect path already had a
+        # Decimal-only provisional size. Post-conversion strings are authoritative
+        # for precision too: a mixed Decimal+numeric-string batch can need a wider
+        # columnSize than Decimals alone (e.g. Decimal("1e15.00") + "2e16").
         for col_index, ptype in enumerate(parameters_type):
             if ptype.paramSQLType not in (
                 ddbc_sql_const.SQL_DECIMAL.value,
@@ -2782,13 +2792,39 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ):
                 continue
             max_encoded = 0
+            max_scale = 0
+            max_int_digits = 0
+            found_numeric_text = False
             for row in processed_parameters:
                 val = row[col_index]
-                if isinstance(val, str):
-                    max_encoded = max(max_encoded, len(val))
+                if not isinstance(val, str):
+                    continue
+                max_encoded = max(max_encoded, len(val))
+                try:
+                    as_decimal = decimal.Decimal(val)
+                except decimal.DecimalException:
+                    continue
+                if not as_decimal.is_finite():
+                    continue
+                precision, scale = self._decimal_sql_precision_scale(as_decimal)
+                found_numeric_text = True
+                max_scale = max(max_scale, scale)
+                max_int_digits = max(max_int_digits, precision - scale)
             if max_encoded:
                 prior = getattr(ptype, "bufferSize", 0) or 0
                 ptype.bufferSize = max(prior, max_encoded, 1)
+            if found_numeric_text:
+                batch_precision = max(max_int_digits + max_scale, 1)
+                if batch_precision > 38:
+                    raise ValueError(
+                        "Precision of the numeric value is too high. "
+                        "The maximum precision supported by SQL Server is 38, "
+                        f"but got {batch_precision}."
+                    )
+                if batch_precision > ptype.columnSize:
+                    ptype.columnSize = batch_precision
+                if max_scale > ptype.decimalDigits:
+                    ptype.decimalDigits = max_scale
 
         # Now transpose the processed parameters
         columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)

@@ -17557,6 +17557,103 @@ def test_gh745_executemany_batch_precision_over_38_raises(monkeypatch):
         cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
 
 
+def test_gh745_executemany_mixed_decimal_string_widens_precision(monkeypatch):
+    """Post-conversion numeric strings must widen NUMERIC columnSize (bewithgaurav).
+
+    Decimal("1000000000000000.00") alone is NUMERIC(18,2) (16 integer digits). A
+    sibling string "20000000000000000" needs 17 integer digits. After the protected
+    conversion, columnSize must cover both without using formatted-string length
+    as SQL precision.
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+
+    decimal_val = decimal.Decimal("1000000000000000.00")
+    string_val = "20000000000000000"
+    data = [(decimal_val,), (string_val,)]
+    cur.executemany("INSERT INTO t VALUES (?)", data)
+
+    pt = captured["parameters_type"][0]
+    encoded = [format(decimal_val, "f"), format(decimal.Decimal(string_val), "f")]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.paramCType == _C.SQL_C_CHAR.value
+    # 17 integer digits (from the string) + scale 2 (from the Decimal) => 19.
+    # Do not treat formatted-string length as precision; it only coincides here.
+    assert pt.columnSize == 19
+    assert pt.columnSize <= 38
+    assert pt.decimalDigits == 2
+    assert pt.bufferSize >= max(len(s) for s in encoded)
+    assert captured["columnwise_params"][0] == encoded
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [(decimal.Decimal("1.0"),), (decimal.Decimal("NaN"),)],
+        [(decimal.Decimal("NaN"),), (decimal.Decimal("1.0"),)],
+        [(decimal.Decimal("Infinity"),), (decimal.Decimal("1.0"),)],
+        [(decimal.Decimal("1.0"),), (decimal.Decimal("-Infinity"),)],
+    ],
+    ids=["finite-then-nan", "nan-then-finite", "inf-then-finite", "finite-then-neginf"],
+)
+def test_gh745_executemany_rejects_non_finite_both_orders(monkeypatch, data):
+    """executemany must raise ValueError for NaN/Inf, not TypeError (sumitmsft)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    with pytest.raises(ValueError, match="non-finite"):
+        cur.executemany("INSERT INTO t VALUES (?)", data)
+
+
+def test_gh745_compute_column_type_rejects_non_finite():
+    """_compute_column_type must reject NaN before exponent comparisons."""
+    cur = _make_bare_cursor()
+    with pytest.raises(ValueError, match="non-finite"):
+        cur._compute_column_type([decimal.Decimal("1.0"), decimal.Decimal("NaN")])
+
+
 def test_gh745_executemany_heterogeneous_column_skips_numeric_force(monkeypatch):
     """A Decimal sample plus a non-Decimal value must not force the NUMERIC path."""
     from unittest.mock import MagicMock
