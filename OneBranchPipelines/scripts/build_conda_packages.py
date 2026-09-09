@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import urllib.request
+from pathlib import Path
 from typing import NoReturn
 
 _MINIFORGE_VERSION = os.environ.get("MINIFORGE_VERSION", "26.3.2-3")
@@ -433,8 +434,13 @@ def make_verify_channel(output_dir: str, bld: str) -> str:
     if os.path.isdir(chan):
         shutil.rmtree(chan)
     shutil.copytree(bld, chan)
-    _log(f"verify channel (token-free alias of {bld}): {chan}")
-    return chan
+
+    # Prefer an explicit file:// URL for maximum conda compatibility (especially on Windows,
+    # where drive-letter paths can be parsed as URL schemes). as_uri() also percent-encodes
+    # characters such as spaces and '#', which string concatenation would leave ambiguous.
+    chan_url = Path(chan).resolve().as_uri()
+    _log(f"verify channel (token-free alias of {bld}): {chan_url}")
+    return chan_url
 
 
 def _is_emulated_cross(target_subdir: str) -> bool:

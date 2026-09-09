@@ -334,6 +334,23 @@ def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
     assert os.getcwd() == start_cwd, "verify() did not restore cwd after a failing phase"
 
 
+def test_make_verify_channel_returns_encoded_file_uri(tmp_path):
+    mod = _load_orchestrator()
+    output_dir = tmp_path / "output #1" / "linux-64"
+    output_dir.mkdir(parents=True)
+    bld = tmp_path / "bld"
+    bld.mkdir()
+    (bld / "repodata.json").write_text("{}", encoding="ascii")
+
+    channel = mod.make_verify_channel(str(output_dir), str(bld))
+    channel_path = output_dir.parent / "verifychan_linux_64"
+
+    assert channel == channel_path.resolve().as_uri()
+    assert "%20" in channel
+    assert "%23" in channel
+    assert (channel_path / "repodata.json").read_text(encoding="ascii") == "{}"
+
+
 def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeypatch):
     """A successful solve does not prove package extraction/linking succeeds."""
     mod = _load_orchestrator()
