@@ -69,7 +69,7 @@ def test_connect_delegates_directly_to_py_core(monkeypatch):
     py_core.PyAsyncConnection = FakePyAsyncConnection
     py_core.PyAsyncCursor = object
     monkeypatch.setattr(async_connection, "load_py_core", lambda: py_core)
-    context = {"server": "localhost"}
+    context = {"server": "test-server.example.invalid"}
     logger = object()
 
     connection = asyncio.run(
@@ -99,7 +99,7 @@ def test_connect_defaults_autocommit_to_false(monkeypatch):
     py_core.PyAsyncCursor = object
     monkeypatch.setattr(async_connection, "load_py_core", lambda: py_core)
 
-    connection = asyncio.run(AsyncConnection.connect({"server": "localhost"}))
+    connection = asyncio.run(AsyncConnection.connect({"server": "test-server.example.invalid"}))
 
     assert connection._native_connection is native_connection
     assert captured["autocommit"] is False
@@ -173,7 +173,7 @@ def test_async_context_manager_returns_wrapper_and_delegates_exit():
     ]
 
 
-def test_close_is_idempotent_and_closed_state_remains_true():
+def test_close_can_be_called_repeatedly_and_delegates_to_native():
     native_connection = FakeNativeConnection()
     connection = AsyncConnection(native_connection)
 
