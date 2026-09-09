@@ -66,15 +66,17 @@ def _make_rows(n: int) -> list[tuple]:
 
 
 def setup_test_data(conn: "Connection", row_count: int = ROW_COUNT) -> str:
-    cursor = conn.cursor()
-    cursor.execute(_CREATE_TABLE)
-    conn.commit()
-    cursor.executemany(
-        f"INSERT INTO {_TEST_TABLE} ({_INSERT_COLS}) VALUES ({_INSERT_PLACEHOLDERS})",
-        _make_rows(row_count),
-    )
-    conn.commit()
-    cursor.close()
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(_CREATE_TABLE)
+            conn.commit()
+            cursor.executemany(
+                f"INSERT INTO {_TEST_TABLE} ({_INSERT_COLS}) VALUES ({_INSERT_PLACEHOLDERS})",
+                _make_rows(row_count),
+            )
+            conn.commit()
+        finally:
+            conn.rollback()
     return _TEST_TABLE
 
 
@@ -86,12 +88,17 @@ def setup_test_data(conn: "Connection", row_count: int = ROW_COUNT) -> str:
 def connect(conn_str: str, ctx) -> dict:
     from mssql_python import connect as _connect
 
+    c = None
     ctx.enable()
-    t0 = time.perf_counter()
-    c = _connect(conn_str)
-    wall_ms = (time.perf_counter() - t0) * 1000
-    cpp, py = ctx.collect()
-    c.close()
+    try:
+        t0 = time.perf_counter()
+        c = _connect(conn_str)
+        wall_ms = (time.perf_counter() - t0) * 1000
+        cpp, py = ctx.collect()
+    finally:
+        ctx.disable()
+        if c is not None:
+            c.close()
     return {"title": "CONNECT", "wall_ms": wall_ms, "cpp": cpp, "py": py}
 
 
@@ -116,33 +123,31 @@ def execute_select(conn, table, ctx) -> dict:
 
 
 def execute_insert(conn, table, ctx, count: int = INSERT_COUNT) -> dict:
-    cursor = conn.cursor()
-    try:
-        ctx.enable()
-        t0 = time.perf_counter()
-        for i in range(count):
-            cursor.execute(
-                f"INSERT INTO {table} ({_INSERT_COLS}) VALUES ({_INSERT_PLACEHOLDERS})",
-                (
-                    i,
-                    i * 1000,
-                    1.5,
-                    f"insert_{i}",
-                    f"ins_{i}",
-                    "2025-01-01",
-                    "2025-01-01 12:00:00",
-                    "99.99",
-                    1,
-                ),
-            )
-        wall_ms = (time.perf_counter() - t0) * 1000
-        cpp, py = ctx.collect()
-    finally:
-        # Always undo the inserts and release the cursor, even if an execute
-        # raised, so a partial or open transaction can't leak into the row counts
-        # of later fetch scenarios. The insert work is already measured.
-        conn.rollback()
-        cursor.close()
+    with conn.cursor() as cursor:
+        try:
+            ctx.enable()
+            t0 = time.perf_counter()
+            for i in range(count):
+                cursor.execute(
+                    f"INSERT INTO {table} ({_INSERT_COLS}) VALUES ({_INSERT_PLACEHOLDERS})",
+                    (
+                        i,
+                        i * 1000,
+                        1.5,
+                        f"insert_{i}",
+                        f"ins_{i}",
+                        "2025-01-01",
+                        "2025-01-01 12:00:00",
+                        "99.99",
+                        1,
+                    ),
+                )
+            wall_ms = (time.perf_counter() - t0) * 1000
+            cpp, py = ctx.collect()
+        finally:
+            # Cleanup is outside the measurement; cursor exit runs even if rollback fails.
+            ctx.disable()
+            conn.rollback()
     return {
         "title": f"EXECUTE INSERT ({count}x)",
         "wall_ms": wall_ms,
@@ -153,26 +158,23 @@ def execute_insert(conn, table, ctx, count: int = INSERT_COUNT) -> dict:
 
 
 def executemany(conn, table, ctx, row_count: int = EXECUTEMANY_ROWS) -> dict:
-    cursor = conn.cursor()
     params = [
         (i, i * 1000, 1.5, f"batch_{i}", f"b_{i}", "2025-01-01", "2025-01-01 12:00:00", "99.99", 1)
         for i in range(row_count)
     ]
-    try:
-        ctx.enable()
-        t0 = time.perf_counter()
-        cursor.executemany(
-            f"INSERT INTO {table} ({_INSERT_COLS}) VALUES ({_INSERT_PLACEHOLDERS})",
-            params,
-        )
-        wall_ms = (time.perf_counter() - t0) * 1000
-        cpp, py = ctx.collect()
-    finally:
-        # Always undo the inserts and release the cursor, even if executemany
-        # raised, so a partial or open transaction can't leak into the row counts
-        # of later fetch scenarios. The insert work is already measured.
-        conn.rollback()
-        cursor.close()
+    with conn.cursor() as cursor:
+        try:
+            ctx.enable()
+            t0 = time.perf_counter()
+            cursor.executemany(
+                f"INSERT INTO {table} ({_INSERT_COLS}) VALUES ({_INSERT_PLACEHOLDERS})",
+                params,
+            )
+            wall_ms = (time.perf_counter() - t0) * 1000
+            cpp, py = ctx.collect()
+        finally:
+            ctx.disable()
+            conn.rollback()
     return {
         "title": f"EXECUTEMANY ({row_count} rows)",
         "wall_ms": wall_ms,
@@ -254,23 +256,21 @@ def fetchmany(conn, table, ctx, batch_size: int = FETCHMANY_SIZE) -> dict:
 
 def commit_rollback(conn, ctx, count: int = COMMIT_ROLLBACK_COUNT) -> dict:
     conn.autocommit = False
-    cursor = conn.cursor()
-    try:
-        ctx.enable()
-        t0 = time.perf_counter()
-        for _ in range(count):
-            cursor.execute("SELECT 1")
-            conn.commit()
-        for _ in range(count):
-            cursor.execute("SELECT 1")
+    with conn.cursor() as cursor:
+        try:
+            ctx.enable()
+            t0 = time.perf_counter()
+            for _ in range(count):
+                cursor.execute("SELECT 1")
+                conn.commit()
+            for _ in range(count):
+                cursor.execute("SELECT 1")
+                conn.rollback()
+            wall_ms = (time.perf_counter() - t0) * 1000
+            cpp, py = ctx.collect()
+        finally:
+            ctx.disable()
             conn.rollback()
-        wall_ms = (time.perf_counter() - t0) * 1000
-        cpp, py = ctx.collect()
-    finally:
-        # Close any transaction left open by a mid-loop failure and release the
-        # cursor, so neither leaks into the next scenario.
-        conn.rollback()
-        cursor.close()
     return {
         "title": f"COMMIT/ROLLBACK ({count} each)",
         "wall_ms": wall_ms,
@@ -321,30 +321,33 @@ def insertmanyvalues(
     num_batches = total_rows // rows_per_batch
     params_per_call = rows_per_batch * 2
 
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "IF OBJECT_ID('tempdb..#imv_bench', 'U') IS NOT NULL DROP TABLE #imv_bench;"
-            "CREATE TABLE #imv_bench (id INT, name VARCHAR(50))"
-        )
-        conn.commit()
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                "IF OBJECT_ID('tempdb..#imv_bench', 'U') IS NOT NULL DROP TABLE #imv_bench;"
+                "CREATE TABLE #imv_bench (id INT, name VARCHAR(50))"
+            )
+            conn.commit()
 
-        sql = "INSERT INTO #imv_bench (id, name) VALUES " + ",".join(["(?, ?)"] * rows_per_batch)
-        params = []
-        for i in range(rows_per_batch):
-            params.extend([i, f"user_{i:06d}"])
+            sql = "INSERT INTO #imv_bench (id, name) VALUES " + ",".join(
+                ["(?, ?)"] * rows_per_batch
+            )
+            params = []
+            for i in range(rows_per_batch):
+                params.extend([i, f"user_{i:06d}"])
 
-        ctx.enable()
-        t0 = time.perf_counter()
-        for _ in range(num_batches):
-            cursor.execute(sql, params)
-        conn.commit()
-        wall_ms = (time.perf_counter() - t0) * 1000
-        cpp, py = ctx.collect()
-        actual = num_batches * rows_per_batch
-        rps = actual / (wall_ms / 1000) if wall_ms > 0 else 0
-    finally:
-        cursor.close()
+            ctx.enable()
+            t0 = time.perf_counter()
+            for _ in range(num_batches):
+                cursor.execute(sql, params)
+            conn.commit()
+            wall_ms = (time.perf_counter() - t0) * 1000
+            cpp, py = ctx.collect()
+            actual = num_batches * rows_per_batch
+            rps = actual / (wall_ms / 1000) if wall_ms > 0 else 0
+        finally:
+            ctx.disable()
+            conn.rollback()
     return {
         "title": f"INSERTMANYVALUES ({actual:,} rows, {params_per_call} params/call)",
         "wall_ms": wall_ms,

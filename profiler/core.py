@@ -51,6 +51,7 @@ class _ProfilingContext:
         # timeline recording was turned on here.
         if timeline:
             self._timeline_mode = True
+        self.disable()
         self._cpp.reset()
         self._py.reset()
         # Set the timeline epoch BEFORE enabling profiling. Otherwise a timer that
@@ -64,12 +65,12 @@ class _ProfilingContext:
         self._py.enable()
 
     def collect(self) -> tuple[dict, dict]:
-        # End the measurement window: snapshot, then turn profiling OFF so nothing
+        # End the measurement window before taking snapshots so nothing
         # outside a window (commit/close, inter-scenario setup) gets recorded.
-        cpp = self._cpp.get_stats()
-        py = self._py.get_stats()
         self._cpp.disable()
         self._py.disable()
+        cpp = self._cpp.get_stats()
+        py = self._py.get_stats()
         if self._timeline_mode:
             # Keep timeline events for the subsequent collect_timeline(); clearing
             # only aggregate counters. Recording is already gated off by disable().

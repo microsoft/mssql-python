@@ -17,9 +17,12 @@ printed with the same reporter. Entries use a "py::" prefix to
 distinguish from C++ timers.
 """
 
+import threading
 import time
 
 _enabled = False
+_lock = threading.Lock()
+_window_start_ns = 0
 _stats: dict[str, dict] = {}
 _timeline: list[dict] = []
 _timeline_enabled = False
@@ -27,13 +30,16 @@ _epoch_ns: int = 0
 
 
 def enable():
-    global _enabled
-    _enabled = True
+    global _enabled, _window_start_ns
+    with _lock:
+        _window_start_ns = time.perf_counter_ns()
+        _enabled = True
 
 
 def disable():
     global _enabled
-    _enabled = False
+    with _lock:
+        _enabled = False
 
 
 def is_enabled() -> bool:
@@ -41,12 +47,18 @@ def is_enabled() -> bool:
 
 
 def reset():
-    _stats.clear()
-    _timeline.clear()
+    global _window_start_ns
+    with _lock:
+        _window_start_ns = time.perf_counter_ns()
+        _stats.clear()
+        _timeline.clear()
 
 
 def reset_stats_only():
-    _stats.clear()
+    global _window_start_ns
+    with _lock:
+        _window_start_ns = time.perf_counter_ns()
+        _stats.clear()
 
 
 def enable_timeline():
@@ -55,39 +67,42 @@ def enable_timeline():
     # event in _timeline shares the current epoch. Otherwise a second
     # enable_timeline() without an intervening reset() would leave stale events
     # whose offsets were computed from an older epoch, corrupting the sort.
-    _timeline.clear()
-    _epoch_ns = time.perf_counter_ns()
-    _timeline_enabled = True
+    with _lock:
+        _timeline.clear()
+        _epoch_ns = time.perf_counter_ns()
+        _timeline_enabled = True
 
 
 def disable_timeline():
     global _timeline_enabled
-    _timeline_enabled = False
+    with _lock:
+        _timeline_enabled = False
 
 
 def get_timeline() -> list[dict]:
-    return [
-        {
-            "name": ev["name"],
-            "start_us": ev["start_ns"] // 1000,
-            "duration_us": ev["duration_ns"] // 1000,
-        }
-        for ev in _timeline
-    ]
+    with _lock:
+        return [
+            {
+                "name": ev["name"],
+                "start_us": ev["start_ns"] // 1000,
+                "duration_us": ev["duration_ns"] // 1000,
+            }
+            for ev in _timeline
+        ]
 
 
 def get_stats() -> dict:
-    out = {}
-    for name, s in _stats.items():
-        # Divide accumulated ns to us only here (never per-sample) and keep
-        # fractional us so sub-microsecond phases do not truncate to zero.
-        out[name] = {
-            "calls": s["calls"],
-            "total_us": s["total_ns"] / 1000.0,
-            "min_us": s["min_ns"] / 1000.0,
-            "max_us": s["max_ns"] / 1000.0,
-        }
-    return out
+    with _lock:
+        out = {}
+        for name, s in _stats.items():
+            # Keep fractional microseconds when converting accumulated samples.
+            out[name] = {
+                "calls": s["calls"],
+                "total_us": s["total_ns"] / 1000.0,
+                "min_us": s["min_ns"] / 1000.0,
+                "max_us": s["max_ns"] / 1000.0,
+            }
+        return out
 
 
 class _NullPhase:
@@ -122,11 +137,11 @@ class _Phase:
         self._name = name
 
     def __enter__(self):
-        self._t0 = time.perf_counter_ns()
+        self._t0 = perf_start()
         return None
 
     def __exit__(self, *exc):
-        _record(self._name, time.perf_counter_ns() - self._t0, self._t0)
+        perf_stop(self._name, self._t0)
         return False
 
 
@@ -155,27 +170,32 @@ def perf_stop(name: str, t0: int):
 
 
 def _record(name: str, elapsed: int, start_ns: int = 0):
-    entry = _stats.get(name)
-    if entry is None:
-        _stats[name] = {
-            "calls": 1,
-            "total_ns": elapsed,
-            "min_ns": elapsed,
-            "max_ns": elapsed,
-        }
-    else:
-        entry["calls"] += 1
-        entry["total_ns"] += elapsed
-        if elapsed < entry["min_ns"]:
-            entry["min_ns"] = elapsed
-        if elapsed > entry["max_ns"]:
-            entry["max_ns"] = elapsed
-
-    if _timeline_enabled and start_ns:
-        _timeline.append(
-            {
-                "name": name,
-                "start_ns": start_ns - _epoch_ns,
-                "duration_ns": elapsed,
+    with _lock:
+        # Serialize boundary checks with resets and recording, not just each flag read.
+        if not _enabled or (start_ns and start_ns < _window_start_ns):
+            return
+        entry = _stats.get(name)
+        if entry is None:
+            _stats[name] = {
+                "calls": 1,
+                "total_ns": elapsed,
+                "min_ns": elapsed,
+                "max_ns": elapsed,
             }
-        )
+        else:
+            entry["calls"] += 1
+            entry["total_ns"] += elapsed
+            if elapsed < entry["min_ns"]:
+                entry["min_ns"] = elapsed
+            if elapsed > entry["max_ns"]:
+                entry["max_ns"] = elapsed
+
+        # A timeline restart must not discard otherwise valid aggregate samples.
+        if _timeline_enabled and start_ns and start_ns >= _epoch_ns:
+            _timeline.append(
+                {
+                    "name": name,
+                    "start_ns": start_ns - _epoch_ns,
+                    "duration_ns": elapsed,
+                }
+            )

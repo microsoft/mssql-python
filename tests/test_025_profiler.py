@@ -13,7 +13,10 @@ never leaks into the rest of the suite.
 """
 
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -165,6 +168,89 @@ def test_timeline_not_recorded_when_timeline_disabled():
     assert perf_timer.get_timeline() == []
 
 
+@pytest.mark.parametrize("manual", [False, True])
+@pytest.mark.parametrize("restart", [False, True])
+def test_timeline_epoch_change_keeps_stats_but_drops_old_span(monkeypatch, manual, restart):
+    ticks = iter(range(1_000_000, 20_000_000, 1_000_000))
+    monkeypatch.setattr(perf_timer.time, "perf_counter_ns", lambda: next(ticks))
+    perf_timer.enable()
+    if restart:
+        perf_timer.enable_timeline()
+    timer = perf_timer.perf_start() if manual else perf_timer.perf_phase("old")
+    if not manual:
+        timer.__enter__()
+    perf_timer.enable_timeline()
+    if manual:
+        perf_timer.perf_stop("old", timer)
+    else:
+        timer.__exit__(None, None, None)
+    assert perf_timer.get_stats()["old"]["calls"] == 1
+    assert perf_timer.get_timeline() == []
+    with perf_timer.perf_phase("new"):
+        pass
+    assert [ev["name"] for ev in perf_timer.get_timeline()] == ["new"]
+    assert perf_timer.get_timeline()[0]["start_us"] >= 0
+
+
+@pytest.mark.parametrize("boundary", ["disable", "enable", "reset", "reset_stats_only"])
+@pytest.mark.parametrize("manual", [False, True])
+def test_inflight_python_sample_cannot_cross_window(boundary, manual):
+    perf_timer.enable()
+    timer = perf_timer.perf_start() if manual else perf_timer.perf_phase("old")
+    if not manual:
+        timer.__enter__()
+    getattr(perf_timer, boundary)()
+    if manual:
+        perf_timer.perf_stop("old", timer)
+    else:
+        timer.__exit__(None, None, None)
+    assert perf_timer.get_stats() == {}
+    perf_timer.enable()
+    with perf_timer.perf_phase("new"):
+        pass
+    assert set(perf_timer.get_stats()) == {"new"}
+
+
+def test_phase_created_before_disable_does_not_start_after_disable():
+    perf_timer.enable()
+    phase = perf_timer.perf_phase("late")
+    perf_timer.disable()
+    with phase:
+        perf_timer.enable()
+    assert perf_timer.get_stats() == {}
+
+
+def test_zero_start_is_ignored_after_enabling():
+    start = perf_timer.perf_start()
+    perf_timer.enable()
+    perf_timer.perf_stop("invalid", start)
+    assert perf_timer.get_stats() == {}
+
+
+@pytest.mark.parametrize("boundary", ["enable_timeline", "reset"])
+def test_python_boundary_while_another_thread_is_in_phase(boundary):
+    started = threading.Event()
+    finish = threading.Event()
+    perf_timer.enable()
+    perf_timer.enable_timeline()
+
+    def worker():
+        with perf_timer.perf_phase("old"):
+            started.set()
+            assert finish.wait(5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(worker)
+        try:
+            assert started.wait(5)
+            getattr(perf_timer, boundary)()
+        finally:
+            finish.set()
+        future.result(timeout=5)
+    assert perf_timer.get_timeline() == []
+    assert bool(perf_timer.get_stats()) == (boundary == "enable_timeline")
+
+
 # ---------------------------------------------------------------------------
 # C++ layer: ddbc_bindings.profiling submodule
 # ---------------------------------------------------------------------------
@@ -174,6 +260,33 @@ _needs_cpp = pytest.mark.skipif(
     not CPP_PROFILING, reason="ddbc_bindings.profiling submodule not available"
 )
 _needs_db = pytest.mark.skipif(not _CONN_STR, reason="DB_CONNECTION_STRING not set")
+
+
+@_needs_db
+@pytest.mark.parametrize("phase", ["param_type_detection", "param_conversion"])
+def test_executemany_records_failed_parameter_phase(phase, monkeypatch):
+    import mssql_python
+
+    conn = mssql_python.connect(_CONN_STR)
+    try:
+        with conn.cursor() as cursor:
+            if phase == "param_type_detection":
+
+                def fail_detection(_column):
+                    raise ValueError("type detection failed")
+
+                monkeypatch.setattr(cursor, "_compute_column_type", fail_detection)
+                message = "type detection failed"
+            else:
+                cursor.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 4)])
+                message = "Failed to convert parameter to Decimal"
+            perf_timer.enable()
+            with pytest.raises(ValueError, match=message):
+                cursor.executemany("SELECT ?", [("invalid decimal",)])
+            assert perf_timer.get_stats()[f"py::executemany::{phase}"]["calls"] == 1
+    finally:
+        perf_timer.disable()
+        conn.close()
 
 
 @_needs_cpp
@@ -326,6 +439,133 @@ def test_context_windows_do_not_leak_into_each_other():
     cpp2, py2 = ctx.collect()
     assert py2 == {}, f"window 2 leaked stats from between windows: {py2}"
     assert "py::between::leak" not in py2
+
+
+@_needs_cpp
+def test_context_collect_stops_inflight_python_phase():
+    from profiler.core import _ProfilingContext
+
+    ctx = _ProfilingContext()
+    ctx.enable(timeline=True)
+    with perf_timer.perf_phase("old"):
+        ctx.collect()
+    assert perf_timer.get_stats() == {}
+    assert ctx.collect_timeline() == ([], [])
+
+
+@_needs_cpp
+def test_context_can_turn_timeline_off_between_windows():
+    from profiler.core import _ProfilingContext
+
+    ctx = _ProfilingContext()
+    ctx.enable(timeline=True)
+    ctx.collect()
+    ctx.set_timeline(False)
+    ctx.enable()
+    with perf_timer.perf_phase("stats_only"):
+        pass
+    _, stats = ctx.collect()
+    assert stats["stats_only"]["calls"] == 1
+    assert ctx.collect_timeline() == ([], [])
+
+
+@pytest.mark.parametrize(
+    "name,kwargs",
+    [
+        ("execute_insert", {"table": "#unused", "count": 1}),
+        ("executemany", {"table": "#unused", "row_count": 1}),
+        ("commit_rollback", {"count": 1}),
+        ("insertmanyvalues", {"rows_per_batch": 1, "total_rows": 1}),
+    ],
+)
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_scenario_failure_closes_cursor_even_if_rollback_fails(name, kwargs, rollback_fails):
+    from profiler import scenarios
+
+    conn = MagicMock()
+    cursor = conn.cursor.return_value
+    cursor.__enter__.return_value = cursor
+    error = RuntimeError("query failed")
+    cursor.execute.side_effect = error
+    cursor.executemany.side_effect = error
+    if rollback_fails:
+        conn.rollback.side_effect = RuntimeError("rollback failed")
+    ctx = MagicMock()
+    expected = "rollback failed" if rollback_fails else "query failed"
+    with pytest.raises(RuntimeError, match=expected):
+        getattr(scenarios, name)(conn, ctx=ctx, **kwargs)
+    conn.rollback.assert_called_once()
+    cursor.__exit__.assert_called_once()
+    ctx.disable.assert_called_once()
+
+
+def test_setup_failure_releases_cursor_and_transaction():
+    from profiler.scenarios import setup_test_data
+
+    conn = MagicMock()
+    cursor = conn.cursor.return_value
+    cursor.__enter__.return_value = cursor
+    cursor.executemany.side_effect = RuntimeError("setup failed")
+    with pytest.raises(RuntimeError, match="setup failed"):
+        setup_test_data(conn, row_count=1)
+    conn.rollback.assert_called_once()
+    cursor.__exit__.assert_called_once()
+
+
+def test_connect_scenario_closes_connection_if_collection_fails(monkeypatch):
+    from profiler.scenarios import connect
+
+    conn = MagicMock()
+    monkeypatch.setattr("mssql_python.connect", lambda _: conn)
+    ctx = MagicMock()
+    ctx.collect.side_effect = RuntimeError("collection failed")
+    with pytest.raises(RuntimeError, match="collection failed"):
+        connect("Server=localhost", ctx)
+    conn.close.assert_called_once()
+    ctx.disable.assert_called_once()
+
+
+def test_connect_scenario_disables_profiling_if_connection_fails(monkeypatch):
+    from profiler.scenarios import connect
+
+    def fail_connect(_):
+        raise RuntimeError("connection failed")
+
+    monkeypatch.setattr("mssql_python.connect", fail_connect)
+    ctx = MagicMock()
+    with pytest.raises(RuntimeError, match="connection failed"):
+        connect("Server=localhost", ctx)
+    ctx.disable.assert_called_once()
+    ctx.collect.assert_not_called()
+
+
+@_needs_cpp
+@_needs_db
+@pytest.mark.parametrize("name", ["execute_insert", "executemany"])
+def test_failed_insert_scenario_rolls_back_partial_work(name):
+    import mssql_python
+    from profiler import scenarios
+    from profiler.core import _ProfilingContext
+
+    conn = mssql_python.connect(_CONN_STR)
+    ctx = _ProfilingContext()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                scenarios._CREATE_TABLE.replace("int_col INT,", "int_col INT CHECK (int_col = 0),")
+            )
+        conn.commit()
+        kwargs = {"count": 2} if name == "execute_insert" else {"row_count": 2}
+        with pytest.raises(mssql_python.DatabaseError):
+            getattr(scenarios, name)(conn, "#perf_test", ctx, **kwargs)
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM #perf_test")
+            assert cursor.fetchone()[0] == 0
+        assert not perf_timer.is_enabled()
+        assert not ddbc.profiling.is_enabled()
+    finally:
+        ctx.disable()
+        conn.close()
 
 
 @_needs_cpp

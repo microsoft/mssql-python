@@ -69,12 +69,8 @@ private:
     std::atomic<bool> enabled_{false};
     std::atomic<bool> timeline_enabled_{false};
     std::chrono::time_point<std::chrono::steady_clock> epoch_;
-    // Monotonic measurement-window counter. Bumped on every window boundary
-    // (enable(), reset(), reset_stats_only()). A ScopedTimer captures this at
-    // construction and record() drops the sample if the value has since moved,
-    // so a timer that starts in one window and finishes after another thread has
-    // collected/reset and enabled a new window is never mis-attributed to the new
-    // window (and never produces a negative timeline offset against its epoch).
+    // Reject samples crossing an aggregate-window boundary. Timeline restarts
+    // keep the aggregate window and are handled separately in record().
     std::atomic<uint64_t> generation_{0};
 
 public:
@@ -84,12 +80,16 @@ public:
     }
 
     void enable() {
+        std::lock_guard<std::mutex> lock(mutex_);
         // New window: move the generation so any timer still in flight from a
         // previous window is rejected by record() instead of landing here.
         generation_.fetch_add(1, std::memory_order_relaxed);
         enabled_ = true;
     }
-    void disable() { enabled_ = false; }
+    void disable() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        enabled_ = false;
+    }
     bool is_enabled() const { return enabled_; }
     uint64_t current_generation() const { return generation_.load(std::memory_order_relaxed); }
 
@@ -102,7 +102,10 @@ public:
         epoch_ = std::chrono::steady_clock::now();
         timeline_enabled_ = true;
     }
-    void disable_timeline() { timeline_enabled_ = false; }
+    void disable_timeline() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        timeline_enabled_ = false;
+    }
     bool is_timeline_enabled() const { return timeline_enabled_; }
 
     void record(const std::string& name, int64_t duration_ns,
@@ -110,19 +113,17 @@ public:
         if (!enabled_) return;
 
         std::lock_guard<std::mutex> lock(mutex_);
-        // Drop the sample if a window boundary happened between when this timer
-        // started and now: it belongs to a window that has already been collected
-        // and reset, so recording it here would corrupt the current window's
-        // totals (and, in timeline mode, yield a negative offset against the new
-        // epoch). Checked under the lock so it is ordered against reset*().
-        if (generation != generation_.load(std::memory_order_relaxed)) return;
+        // Check under the lock so disable(), enable() and resets cannot race the write.
+        if (!enabled_ || generation != generation_.load(std::memory_order_relaxed))
+            return;
         auto& stats = counters_[name];
         stats.total_time_ns += duration_ns;
         stats.call_count++;
         stats.min_time_ns = std::min(stats.min_time_ns, duration_ns);
         stats.max_time_ns = std::max(stats.max_time_ns, duration_ns);
 
-        if (timeline_enabled_) {
+        // Keep aggregate samples even if their timeline epoch has been replaced.
+        if (timeline_enabled_ && start >= epoch_) {
             auto offset = std::chrono::duration_cast<std::chrono::microseconds>(start - epoch_).count();
             timeline_.push_back({name, offset, duration_ns / 1000});
         }

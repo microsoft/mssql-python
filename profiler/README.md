@@ -115,6 +115,12 @@ each timer event in the order it happened with a start offset — useful for
 seeing the sequence and nesting of a single slow operation rather than just
 totals.
 
+Enabling profiling or resetting aggregate counters starts a new measurement window.
+Samples crossing that boundary, or finishing while profiling is disabled, are dropped.
+Restarting only the timeline drops spans that began before its new epoch but keeps
+their aggregate timings. Cross-layer timeline ordering remains approximate because
+the Python and native clocks have independently initialized epochs.
+
 ## Adding a timer
 
 To time a new spot in the code:
