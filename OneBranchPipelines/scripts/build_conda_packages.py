@@ -433,8 +433,12 @@ def make_verify_channel(output_dir: str, bld: str) -> str:
     if os.path.isdir(chan):
         shutil.rmtree(chan)
     shutil.copytree(bld, chan)
-    _log(f"verify channel (token-free alias of {bld}): {chan}")
-    return chan
+
+    # Prefer an explicit file:// URL for maximum conda compatibility (especially on Windows,
+    # where drive-letter paths can be parsed as URL schemes).
+    chan_url = "file:///" + chan.replace("\\", "/") if os.name == "nt" else "file://" + chan
+    _log(f"verify channel (token-free alias of {bld}): {chan_url}")
+    return chan_url
 
 
 def _is_emulated_cross(target_subdir: str) -> bool:
