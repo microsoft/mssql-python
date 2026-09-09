@@ -1,0 +1,189 @@
+name: sql2022-download-diagnostic
+trigger: none
+pr: none
+
+jobs:
+- job: SQL2022Diagnostic
+  displayName: 'SQL 2022 download diagnosis'
+  timeoutInMinutes: 22
+  cancelTimeoutInMinutes: 2
+  pool:
+    vmImage: 'windows-2025'
+  steps:
+  - checkout: none
+  - powershell: |
+      $ErrorActionPreference = 'Stop'
+      $root = Join-Path $env:AGENT_TEMPDIRECTORY 'sql2022-diagnostic'
+      $reports = Join-Path $root 'reports'
+      New-Item -ItemType Directory -Path $root, $reports -Force | Out-Null
+      $started = Get-Date
+      $downloadScript = @'
+      $ErrorActionPreference = 'Stop'
+      $ProgressPreference = 'SilentlyContinue'
+      Write-Host "Downloading SQL Server 2022 Express..."
+      Invoke-WebRequest -Uri "https://download.microsoft.com/download/5/1/4/5145fe04-4d30-4b85-b0d1-39533663a2f1/SQL2022-SSEI-Expr.exe" -OutFile "SQL2022-SSEI-Expr.exe"
+      Write-Host "Downloading installation media with the original bootstrapper command..."
+      Start-Process -FilePath "SQL2022-SSEI-Expr.exe" -ArgumentList "/Action=Download","/MediaPath=$env:TEMP","/MediaType=Core","/Quiet" -Wait
+      Write-Host "Bootstrapper process tree returned."
+      Get-ChildItem -Path $env:TEMP -Filter "SQLEXPR_x64_ENU.exe" -Recurse |
+          Select-Object FullName, Length | Format-List
+      '@
+      $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($downloadScript))
+      $process = Start-Process -FilePath "$PSHOME\powershell.exe" `
+          -ArgumentList '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded `
+          -WorkingDirectory $root -PassThru `
+          -RedirectStandardOutput (Join-Path $reports 'bootstrapper-stdout.txt') `
+          -RedirectStandardError (Join-Path $reports 'bootstrapper-stderr.txt')
+      $null = $process.Handle
+      $timedOut = $false
+      try {
+          Write-Host "Original download command running under supervised PID $($process.Id)."
+          if (-not $process.WaitForExit(180000)) {
+              $timedOut = $true
+              Write-Host "Original command did not finish within 180 seconds."
+              $allProcesses = @(Get-CimInstance Win32_Process)
+              $ids = @($process.Id)
+              do {
+                  $children = @($allProcesses | Where-Object {
+                      $_.ParentProcessId -in $ids -and $_.ProcessId -notin $ids
+                  })
+                  $ids += @($children.ProcessId)
+              } while ($children.Count -gt 0)
+              $allProcesses | Where-Object { $_.ProcessId -in $ids } |
+                  Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine |
+                  ConvertTo-Json -Depth 3 |
+                  Set-Content -Path (Join-Path $reports 'process-tree.json')
+              Get-NetTCPConnection | Where-Object { $_.OwningProcess -in $ids } |
+                  Select-Object OwningProcess, State, LocalAddress, LocalPort, RemoteAddress, RemotePort |
+                  ConvertTo-Json -Depth 3 |
+                  Set-Content -Path (Join-Path $reports 'network-connections.json')
+              & taskkill.exe /PID $process.Id /T /F
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Could not stop diagnostic process tree $($process.Id)."
+              }
+              $process.WaitForExit()
+          } else {
+              Write-Host "Original command exited with code $($process.ExitCode)."
+          }
+      } finally {
+          $sseiLogs = Join-Path $env:ProgramFiles 'Microsoft SQL Server\160\SSEI\LogFiles'
+          if (Test-Path $sseiLogs) {
+              Copy-Item -Path $sseiLogs -Destination (Join-Path $reports 'SSEI') -Recurse
+          } else {
+              Write-Host "The bootstrapper did not create $sseiLogs."
+          }
+          Get-ChildItem -Path $reports -Recurse -File |
+              Where-Object { $_.Extension -in '.log', '.txt', '.json' } |
+              ForEach-Object {
+                  Write-Host "--- $($_.FullName) ---"
+                  Get-Content -Path $_.FullName -Tail 150
+              }
+          $archive = Join-Path $root 'sql2022-download-diagnostics.zip'
+          Compress-Archive -Path "$reports\*" -DestinationPath $archive -Force
+          Write-Host "##vso[artifact.upload containerfolder=sql2022-download-diagnostics;artifactname=sql2022-download-diagnostics]$archive"
+          Write-Host "Diagnostic duration: $([math]::Round(((Get-Date) - $started).TotalSeconds, 1)) seconds."
+      }
+      if ($timedOut) {
+          throw 'The original SQL 2022 download command exceeded the diagnostic time limit.'
+      }
+      if ($process.ExitCode -ne 0) {
+          throw "The original download command failed with exit code $($process.ExitCode)."
+      }
+    displayName: 'Capture original SQL 2022 bootstrapper diagnostics'
+    continueOnError: true
+    timeoutInMinutes: 6
+
+  - powershell: |
+      $ErrorActionPreference = 'Stop'
+      $root = Join-Path $env:AGENT_TEMPDIRECTORY 'sql2022-offline'
+      New-Item -ItemType Directory -Path $root -Force | Out-Null
+      $installer = Join-Path $root 'SQLEXPR_x64_ENU.exe'
+      $url = 'https://download.microsoft.com/download/3/8/d/38de7036-2433-4207-8eae-06e247e17b25/SQLEXPR_x64_ENU.exe'
+      $expectedHash = '2E61C8BBDE6021F9026C54AD9DB4BBB1227E68761D4C00A6A50A2C70FE7AFE05'
+      $started = Get-Date
+      & curl.exe --fail --location --silent --show-error --connect-timeout 15 --max-time 180 `
+          --output $installer `
+          --write-out 'HTTP %{http_code}; downloaded %{size_download} bytes in %{time_total}s\n' $url
+      if ($LASTEXITCODE -ne 0) {
+          throw "Direct media download failed with curl exit code $LASTEXITCODE."
+      }
+      if ((Get-FileHash -Path $installer -Algorithm SHA256).Hash -ne $expectedHash) {
+          throw 'SQL 2022 media SHA256 does not match the verified Microsoft media.'
+      }
+      $signature = Get-AuthenticodeSignature -FilePath $installer
+      if ($signature.Status -ne 'Valid' -or
+          $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+          throw 'SQL 2022 media does not have a valid Microsoft signature.'
+      }
+      Write-Host "Verified Microsoft SQL 2022 media: $((Get-Item $installer).VersionInfo.FileVersion)."
+
+      function Invoke-BoundedProcess {
+          param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds)
+          $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru
+          $null = $process.Handle
+          if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              & taskkill.exe /PID $process.Id /T /F
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Could not stop timed-out process $($process.Id)."
+              }
+              throw "Process $([IO.Path]::GetFileName($FilePath)) exceeded $TimeoutSeconds seconds."
+          }
+          if ($process.ExitCode -notin 0, 3010) {
+              throw "Process $([IO.Path]::GetFileName($FilePath)) exited with code $($process.ExitCode)."
+          }
+          Write-Host "$([IO.Path]::GetFileName($FilePath)) exited with code $($process.ExitCode)."
+      }
+
+      $setupDirectory = Join-Path $root 'setup'
+      $password = [Guid]::NewGuid().ToString('N') + '!Aa1'
+      Write-Host "##vso[task.setsecret]$password"
+      try {
+          Write-Host 'Extracting verified installation media.'
+          Invoke-BoundedProcess -FilePath $installer `
+              -Arguments @("/x:$setupDirectory", '/u') -TimeoutSeconds 120
+          Write-Host 'Installing SQL Server on the disposable hosted agent.'
+          Invoke-BoundedProcess -FilePath (Join-Path $setupDirectory 'setup.exe') `
+              -Arguments @('/Q', '/ACTION=Install', '/FEATURES=SQLEngine',
+                  '/INSTANCENAME=MSSQLSERVER', '/SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"',
+                  '/SQLSYSADMINACCOUNTS="BUILTIN\Administrators"', '/TCPENABLED=1',
+                  '/SECURITYMODE=SQL', "/SAPWD=$password", '/IACCEPTSQLSERVERLICENSETERMS') `
+              -TimeoutSeconds 600
+          $env:SQLCMDPASSWORD = $password
+          $ready = $false
+          for ($attempt = 1; $attempt -le 15; $attempt++) {
+              & sqlcmd -S 'tcp:localhost,1433' -U sa -C -b -l 5 `
+                  -Q "SET NOCOUNT ON; SELECT @@VERSION; IF CONVERT(int, SERVERPROPERTY('ProductMajorVersion')) <> 16 THROW 51000, 'Expected SQL Server 2022', 1;"
+              if ($LASTEXITCODE -eq 0) {
+                  $ready = $true
+                  break
+              }
+              Start-Sleep -Seconds 2
+          }
+          if (-not $ready) {
+              throw 'SQL Server 2022 did not become reachable over TCP with SQL authentication.'
+          }
+          & sqlcmd -S 'tcp:localhost,1433' -U sa -C -b -l 15 `
+              -Q "CREATE DATABASE TestDB; CREATE LOGIN testuser WITH PASSWORD = '$password'; USE TestDB; CREATE USER testuser FOR LOGIN testuser; ALTER ROLE db_owner ADD MEMBER testuser;"
+          if ($LASTEXITCODE -ne 0) {
+              throw 'SQL Server TestDB/user provisioning failed.'
+          }
+          & sqlcmd -S 'tcp:localhost,1433' -U testuser -d TestDB -C -b -l 15 `
+              -Q "SET NOCOUNT ON; CREATE TABLE dbo.DiagnosticCheck (id int NOT NULL); INSERT INTO dbo.DiagnosticCheck VALUES (2022); IF (SELECT id FROM dbo.DiagnosticCheck) <> 2022 THROW 51001, 'Round trip failed', 1; SELECT DB_NAME() AS DatabaseName, ORIGINAL_LOGIN() AS LoginName, id FROM dbo.DiagnosticCheck;"
+          if ($LASTEXITCODE -ne 0) {
+              throw 'SQL Server testuser read/write round trip failed.'
+          }
+          Write-Host "Offline media installation and SQL round trip completed in $([math]::Round(((Get-Date) - $started).TotalSeconds, 1)) seconds."
+      } finally {
+          Remove-Item Env:\SQLCMDPASSWORD -ErrorAction SilentlyContinue
+          $logs = Join-Path $env:ProgramFiles 'Microsoft SQL Server\160\Setup Bootstrap\Log'
+          if (Test-Path $logs) {
+              Get-ChildItem -Path $logs -Recurse -Filter 'Summary*.txt' |
+                  Where-Object { $_.LastWriteTime -ge $started } |
+                  ForEach-Object {
+                      Write-Host "--- $($_.Name) ---"
+                      (Get-Content -Path $_.FullName -Raw).Replace($password, '***')
+                  }
+          }
+      }
+    displayName: 'Verify offline SQL 2022 installation and database access'
+    timeoutInMinutes: 16
