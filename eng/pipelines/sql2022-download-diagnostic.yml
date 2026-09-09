@@ -1,7 +1,3 @@
-name: sql2022-download-diagnostic
-trigger: none
-pr: none
-
 jobs:
 - job: SQL2022Diagnostic
   displayName: 'SQL 2022 download diagnosis'

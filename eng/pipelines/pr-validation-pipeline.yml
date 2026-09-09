@@ -1,5 +1,11 @@
 name: pr-validation-pipeline
 
+parameters:
+- name: sql2022DownloadDiagnostic
+  displayName: Run only SQL Server 2022 download diagnostics
+  type: boolean
+  default: false
+
 # Trigger the pipeline on merge to main branch
 trigger:
   branches:
@@ -7,7 +13,11 @@ trigger:
       - main
 
 jobs:
+- ${{ if parameters.sql2022DownloadDiagnostic }}:
+  - template: sql2022-download-diagnostic.yml
+
 - job: CodeQLAnalysis
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'CodeQL Security Analysis'
   pool:
     vmImage: 'ubuntu-latest'
@@ -46,6 +56,7 @@ jobs:
     displayName: 'Finalize CodeQL'
 
 - job: pytestonwindows
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'Windows x64'
   pool:
     vmImage: 'windows-latest'
@@ -460,6 +471,7 @@ jobs:
   #   displayName: 'Publish code coverage results'
 
 - job: PytestOnMacOS
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'macOS x86_64'
   # Colima + SQL Server container setup averages ~12.5 min but has a long tail
   # (setup has been observed at 17-39 min). The ADO default job timeout is 60 min,
@@ -730,6 +742,7 @@ jobs:
     continueOnError: true
 
 - job: PytestOnLinux
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'Linux x86_64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1082,6 +1095,7 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName)'
 
 - job: PytestOnLinux_ARM64
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'Linux ARM64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1354,6 +1368,7 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName) ARM64'
 
 - job: PytestOnLinux_RHEL9
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'Linux RedHat x86_64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1590,6 +1605,7 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9'
 
 - job: PytestOnLinux_RHEL9_ARM64
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'Linux RedHat ARM64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1839,6 +1855,7 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
 
 - job: PytestOnLinux_Alpine
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'Linux Alpine x86_64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -2111,6 +2128,7 @@ jobs:
       testRunTitle: 'Publish pytest results on Alpine x86_64'
 
 - job: PytestOnLinux_Alpine_ARM64
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'Linux Alpine ARM64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -2612,6 +2630,7 @@ jobs:
 #       testRunTitle: 'Publish pytest results on Ubuntu AzureSQL'
 
 - job: CodeCoverageReport
+  condition: and(succeeded(), ${{ eq(parameters.sql2022DownloadDiagnostic, false) }})
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
   pool:
     vmImage: 'ubuntu-latest'
