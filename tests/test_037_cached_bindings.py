@@ -163,6 +163,17 @@ def test_encoding_changes_rebind(cursor, db_connection, binding_events):
         b"\0" * 9000,
         bytearray(b"x" * 9000),
     ],
+    ids=[
+        "none",
+        "decimal",
+        "date",
+        "datetime",
+        "uuid",
+        "long-ascii",
+        "long-emoji",
+        "long-null-bytes",
+        "long-bytearray",
+    ],
 )
 def test_uncached_shapes_fall_back_and_recover(cursor, binding_events, value):
     cursor.execute("SELECT ?", [12]).fetchone()

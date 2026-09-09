@@ -113,14 +113,17 @@ void Connection::disconnect() {
             LOG("Disconnecting from database");
         }
 
-        // SQLDisconnect frees child statements. Retain their owners until it
-        // succeeds, then mark them so later cursor cleanup cannot double-free.
+        // Freeing the DBC handle below frees every child statement, so the
+        // children must be marked implicitly freed regardless of whether
+        // SQLDisconnect itself succeeds. Retain owning references only so the
+        // native binding buffers stay valid through the blocking disconnect;
+        // the marking and release happen unconditionally afterwards.
 
         // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
         // This protects against concurrent allocStatementHandle() calls or GC finalizers
         size_t originalSize = 0, afterCompactSize = 0, badHandleCount = 0;
-        // Keep statement buffers alive through the parent's blocking disconnect.
-        // Do not mark children freed until SQLDisconnect actually succeeds.
+        // Owning references held only to keep statement buffers alive through the
+        // parent's blocking disconnect; ownership is released immediately after.
         std::vector<SqlHandlePtr> childHandles;
         {
             std::lock_guard<std::mutex> lock(_childHandlesMutex);
@@ -180,11 +183,15 @@ void Connection::disconnect() {
             // via py::gil_scoped_acquire, which is unsafe during interpreter
             // shutdown or stack unwinding (can deadlock or call std::terminate).
         }
-        if (SQL_SUCCEEDED(ret)) {
-            for (const auto& handle : childHandles) {
-                handle->markImplicitlyFreed();
-                handle->releaseAfterFree();
-            }
+        // The DBC handle is freed unconditionally below, which frees every child
+        // statement. Mark all children implicitly freed and drop their native
+        // binding storage now, whether or not SQLDisconnect reported success, so
+        // later cursor cleanup can never double-free an already-freed handle.
+        for (const auto& handle : childHandles) {
+            handle->markImplicitlyFreed();
+            handle->releaseAfterFree();
+        }
+        {
             std::lock_guard<std::mutex> lock(_childHandlesMutex);
             _childStatementHandles.clear();
             _allocationsSinceCompaction = 0;
