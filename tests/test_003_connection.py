@@ -3492,7 +3492,7 @@ def test_connection_searchescape_consistency(db_connection):
 # ==================== SET_ATTR TEST CASES ====================
 
 
-def test_set_attr_constants_access():
+def test_constants_access():
     """Test that only supported constants are accessible.
 
     This test distinguishes between driver-independent (ODBC standard) and
@@ -3541,6 +3541,7 @@ def test_set_attr_constants_access():
         "SQL_CUR_USE_DRIVER",
     ]
     dm_value_constants = ["SQL_CD_TRUE", "SQL_CD_FALSE", "SQL_RESET_CONNECTION_YES"]
+    internal_type_constants = ["SQL_SS_UDT", "SQL_DATETIMEOFFSET"]
 
     # Check supported constants are present and int
     public_constants = odbc_attr_constants + odbc_value_constants + list(sql_server_type_constants)
@@ -3553,8 +3554,8 @@ def test_set_attr_constants_access():
             assert const_value == expected_value, f"{const_name} should equal {expected_value}"
             assert const_name in mssql_python.__all__, f"{const_name} should be in __all__"
 
-    # Check driver-manager–dependent constants are NOT present
-    for const_name in dm_attr_constants + dm_value_constants:
+    # Check unsupported or intentionally internal constants are NOT present
+    for const_name in dm_attr_constants + dm_value_constants + internal_type_constants:
         assert not hasattr(mssql_python, const_name), f"{const_name} should NOT be public API"
 
 
