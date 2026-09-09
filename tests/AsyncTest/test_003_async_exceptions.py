@@ -3,8 +3,8 @@ import asyncio
 import pytest
 
 from mssql_python import exceptions as public_exceptions
-from mssql_python.AsyncQuery import AsyncConnection
-from mssql_python.AsyncQuery.exception_translator import translate_py_core_exception
+from mssql_python.async_query import AsyncConnection
+from mssql_python.async_query.exception_translator import translate_py_core_exception
 
 EXCEPTION_NAMES = (
     "Warning",

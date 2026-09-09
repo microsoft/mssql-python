@@ -3,9 +3,9 @@ from types import ModuleType
 from unittest.mock import call, patch
 
 from mssql_python import OperationalError
-from mssql_python.AsyncQuery import AsyncConnection
-from mssql_python.AsyncQuery import async_connection
-from mssql_python.AsyncQuery import exception_translator
+from mssql_python.async_query import AsyncConnection
+from mssql_python.async_query import async_connection
+from mssql_python.async_query import exception_translator
 
 
 class FakeNativeConnection:

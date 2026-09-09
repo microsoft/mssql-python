@@ -2,7 +2,7 @@ from types import ModuleType
 
 import pytest
 
-from mssql_python.AsyncQuery import _native
+from mssql_python.async_query import _native
 
 
 def test_load_py_core_uses_direct_native_dependency(monkeypatch):

@@ -3,8 +3,8 @@ from types import ModuleType
 
 import pytest
 
-from mssql_python.AsyncQuery import AsyncConnection
-from mssql_python.AsyncQuery import async_connection
+from mssql_python.async_query import AsyncConnection
+from mssql_python.async_query import async_connection
 
 
 class FakeNativeConnection:
