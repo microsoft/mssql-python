@@ -130,10 +130,16 @@ public:
     }
 
     py::dict get_stats() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unordered_map<std::string, PerfStats> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot = counters_;
+        }
+        // Python allocation may run a finalizer that re-enters native recording.
+        // Only native data is copied under the mutex; build the report after unlocking.
         py::dict result;
 
-        for (const auto& [name, stats] : counters_) {
+        for (const auto& [name, stats] : snapshot) {
             py::dict d;
             // Convert accumulated nanoseconds to microseconds only here (never
             // per-sample), keeping sub-microsecond precision as fractional us so
@@ -168,9 +174,13 @@ public:
     }
 
     py::list get_timeline() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<TimelineEvent> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot = timeline_;
+        }
         py::list result;
-        for (const auto& ev : timeline_) {
+        for (const auto& ev : snapshot) {
             py::dict d;
             d["name"] = ev.name;
             d["start_us"] = ev.start_us;

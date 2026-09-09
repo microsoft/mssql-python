@@ -19,27 +19,66 @@ distinguish from C++ timers.
 
 import threading
 import time
+from contextlib import contextmanager
+from typing import NamedTuple
+
+
+class _Counter(NamedTuple):
+    calls: int
+    total_ns: int
+    min_ns: int
+    max_ns: int
+
+
+class _Event(NamedTuple):
+    name: str
+    start_ns: int
+    duration_ns: int
+
 
 _enabled = False
-_lock = threading.Lock()
+_lock = threading.RLock()
+_local = threading.local()
 _window_start_ns = 0
-_stats: dict[str, dict] = {}
-_timeline: list[dict] = []
+_stats: dict[str, _Counter] = {}
+_timeline: list[_Event] = []
 _timeline_enabled = False
 _epoch_ns: int = 0
 
 
+@contextmanager
+def _bookkeeping():
+    # GC can run SQL-cleanup finalizers during our own allocations. Suppress only
+    # recursive samples on this thread, not the cleanup or ordinary nested phases.
+    depth = getattr(_local, "depth", 0)
+    _local.depth = depth + 1
+    try:
+        yield
+    finally:
+        _local.depth = depth
+
+
 def enable():
     global _enabled, _window_start_ns
-    with _lock:
-        _window_start_ns = time.perf_counter_ns()
-        _enabled = True
+    with _bookkeeping():
+        release = _lock.release
+        _lock.acquire()
+        try:
+            _window_start_ns = time.perf_counter_ns()
+            _enabled = True
+        finally:
+            release()
 
 
 def disable():
     global _enabled
-    with _lock:
-        _enabled = False
+    with _bookkeeping():
+        release = _lock.release
+        _lock.acquire()
+        try:
+            _enabled = False
+        finally:
+            release()
 
 
 def is_enabled() -> bool:
@@ -47,60 +86,87 @@ def is_enabled() -> bool:
 
 
 def reset():
-    global _window_start_ns
-    with _lock:
-        _window_start_ns = time.perf_counter_ns()
-        _stats.clear()
-        _timeline.clear()
+    global _window_start_ns, _stats, _timeline
+    with _bookkeeping():
+        stats, timeline = {}, []
+        release = _lock.release
+        _lock.acquire()
+        try:
+            _window_start_ns = time.perf_counter_ns()
+            _stats = stats
+            _timeline = timeline
+        finally:
+            release()
 
 
 def reset_stats_only():
-    global _window_start_ns
-    with _lock:
-        _window_start_ns = time.perf_counter_ns()
-        _stats.clear()
+    global _window_start_ns, _stats
+    with _bookkeeping():
+        stats = {}
+        release = _lock.release
+        _lock.acquire()
+        try:
+            _window_start_ns = time.perf_counter_ns()
+            _stats = stats
+        finally:
+            release()
 
 
 def enable_timeline():
-    global _timeline_enabled, _epoch_ns
+    global _timeline_enabled, _epoch_ns, _timeline
     # Clear any previously recorded events when (re)setting the epoch, so every
     # event in _timeline shares the current epoch. Otherwise a second
     # enable_timeline() without an intervening reset() would leave stale events
     # whose offsets were computed from an older epoch, corrupting the sort.
-    with _lock:
-        _timeline.clear()
-        _epoch_ns = time.perf_counter_ns()
-        _timeline_enabled = True
+    with _bookkeeping():
+        timeline = []
+        release = _lock.release
+        _lock.acquire()
+        try:
+            _timeline = timeline
+            _epoch_ns = time.perf_counter_ns()
+            _timeline_enabled = True
+        finally:
+            release()
 
 
 def disable_timeline():
     global _timeline_enabled
-    with _lock:
-        _timeline_enabled = False
+    with _bookkeeping():
+        release = _lock.release
+        _lock.acquire()
+        try:
+            _timeline_enabled = False
+        finally:
+            release()
 
 
 def get_timeline() -> list[dict]:
-    with _lock:
+    with _bookkeeping():
+        # Built-in container copies hold the GIL on supported CPython builds.
+        # Immutable entries stay stable; no profiler lock surrounds GC allocations.
+        snapshot = _timeline.copy()
         return [
             {
-                "name": ev["name"],
-                "start_us": ev["start_ns"] // 1000,
-                "duration_us": ev["duration_ns"] // 1000,
+                "name": ev.name,
+                "start_us": ev.start_ns // 1000,
+                "duration_us": ev.duration_ns // 1000,
             }
-            for ev in _timeline
+            for ev in snapshot
         ]
 
 
 def get_stats() -> dict:
-    with _lock:
+    with _bookkeeping():
+        snapshot = _stats.copy()
         out = {}
-        for name, s in _stats.items():
+        for name, s in snapshot.items():
             # Keep fractional microseconds when converting accumulated samples.
             out[name] = {
-                "calls": s["calls"],
-                "total_us": s["total_ns"] / 1000.0,
-                "min_us": s["min_ns"] / 1000.0,
-                "max_us": s["max_ns"] / 1000.0,
+                "calls": s.calls,
+                "total_us": s.total_ns / 1000.0,
+                "min_us": s.min_ns / 1000.0,
+                "max_us": s.max_ns / 1000.0,
             }
         return out
 
@@ -170,32 +236,51 @@ def perf_stop(name: str, t0: int):
 
 
 def _record(name: str, elapsed: int, start_ns: int = 0):
-    with _lock:
-        # Serialize boundary checks with resets and recording, not just each flag read.
-        if not _enabled or (start_ns and start_ns < _window_start_ns):
-            return
-        entry = _stats.get(name)
-        if entry is None:
-            _stats[name] = {
-                "calls": 1,
-                "total_ns": elapsed,
-                "min_ns": elapsed,
-                "max_ns": elapsed,
-            }
-        else:
-            entry["calls"] += 1
-            entry["total_ns"] += elapsed
-            if elapsed < entry["min_ns"]:
-                entry["min_ns"] = elapsed
-            if elapsed > entry["max_ns"]:
-                entry["max_ns"] = elapsed
+    if getattr(_local, "depth", 0):
+        return
+    with _bookkeeping():
+        # Prebind the no-argument release: RLock.__exit__ and method lookup can
+        # allocate before unlocking, which is unsafe around GC finalizers.
+        release = _lock.release
+        while True:
+            _lock.acquire()
+            try:
+                if not _enabled or (start_ns and start_ns < _window_start_ns):
+                    return
+                stats = _stats
+                entry = stats.get(name)
+                window = _window_start_ns
+                timeline = _timeline
+                epoch = _epoch_ns
+                record_event = _timeline_enabled and start_ns and start_ns >= epoch
+            finally:
+                release()
 
-        # A timeline restart must not discard otherwise valid aggregate samples.
-        if _timeline_enabled and start_ns and start_ns >= _epoch_ns:
-            _timeline.append(
-                {
-                    "name": name,
-                    "start_ns": start_ns - _epoch_ns,
-                    "duration_ns": elapsed,
-                }
+            # Allocate before locking: GC may run a finalizer that waits for SQL
+            # on another thread, which must be able to finish its own recording.
+            updated = (
+                _Counter(1, elapsed, elapsed, elapsed)
+                if entry is None
+                else _Counter(
+                    entry.calls + 1,
+                    entry.total_ns + elapsed,
+                    min(entry.min_ns, elapsed),
+                    max(entry.max_ns, elapsed),
+                )
             )
+            event = _Event(name, start_ns - epoch, elapsed) if record_event else None
+
+            _lock.acquire()
+            try:
+                # Revalidate after allocations and any callbacks they triggered.
+                if not _enabled or window != _window_start_ns or stats is not _stats:
+                    return
+                if stats.get(name) is not entry:
+                    continue
+                stats[name] = updated
+                # A timeline-only restart must not discard valid aggregate samples.
+                if event is not None and _timeline_enabled and timeline is _timeline:
+                    timeline.append(event)
+                return
+            finally:
+                release()

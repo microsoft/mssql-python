@@ -24,6 +24,12 @@ require the dev-only `profiler/` package skip when it is absent from an installe
 wheel. Broader profiler testing and profiling-enabled CI builds are deferred to
 follow-up work.
 
+Use controlled diagnostic workloads with one owner of the process-wide profiling
+state: enable, run the workload, wait for worker threads to finish, then collect.
+Recording supports worker threads; independent concurrent profiling sessions are
+not supported. Enabled instrumentation adds bookkeeping overhead, so compare runs
+using the same profiling configuration.
+
 ## How the timers are named
 
 Every timer has a prefix telling you which layer it belongs to:
@@ -131,6 +137,11 @@ Samples crossing that boundary, or finishing while profiling is disabled, are dr
 Restarting only the timeline drops spans that began before its new epoch but keeps
 their aggregate timings. Cross-layer timeline ordering remains approximate because
 the Python and native clocks have independently initialized epochs.
+
+Reports use detached snapshots so garbage-collection finalizers can perform cleanup
+without re-entering a held counter lock. Python samples triggered recursively during
+profiler bookkeeping are intentionally omitted; the cleanup itself still runs.
+Ordinary nested workload timers and other threads are not suppressed.
 
 ## Adding a timer
 
