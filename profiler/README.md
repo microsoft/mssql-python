@@ -19,6 +19,11 @@ shipped driver's native path carries no profiler code. The Python-layer markers
 they are phase-level and, when profiling is disabled, reduce to a shared no-op
 context manager whose end-to-end cost is within run-to-run noise.
 
+Runtime-instrumentation tests remain part of the driver test suite. Tests that
+require the dev-only `profiler/` package skip when it is absent from an installed
+wheel. Broader profiler testing and profiling-enabled CI builds are deferred to
+follow-up work.
+
 ## How the timers are named
 
 Every timer has a prefix telling you which layer it belongs to:
@@ -73,6 +78,12 @@ slow query you are trying to diagnose:
 cursor.execute("SELECT ... your slow query ...")
 cursor.fetchall()
 ```
+
+The script runs as `__main__`, with its directory first on the import path and
+`sys.argv` containing only its filename (profiler flags are not forwarded).
+These settings are restored on exit, including when the script raises or calls
+`sys.exit()`. Script reading and compilation are outside the measured window.
+Run scripts synchronously: the temporary interpreter settings are process-wide.
 
 ### Option B: from Python directly
 

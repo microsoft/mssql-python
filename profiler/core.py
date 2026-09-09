@@ -200,47 +200,47 @@ class Profiler:
         The script gets `conn` (a live Connection) and `cursor` (a fresh Cursor)
         injected into its namespace.
         """
+        import sys
         import time
         from pathlib import Path
+        from types import ModuleType
 
-        path = Path(script_path)
+        path = Path(script_path).resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Script not found: {script_path}")
+        code = compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
 
         self._ensure_connection()
-        cursor = self._conn.cursor()
-
         self._print_header()
         print(f"\n{'#' * 100}")
         print(f"# CUSTOM: {path.name}")
         print(f"{'#' * 100}")
 
-        ns = {
-            "conn": self._conn,
-            "cursor": cursor,
-            "__name__": "__main__",
-            "__file__": str(path),
-        }
-
-        try:
-            # compile() is inside the guard so a SyntaxError in the user script
-            # still closes the cursor via the finally below.
-            code = compile(path.read_text(), str(path), "exec")
-            self._ctx.enable(timeline=self._timeline)
-            # Start the wall-clock only after enable(), so file read and compile
-            # (which the profiling counters don't see) aren't charged to the script.
-            t0 = time.perf_counter()
-            exec(code, ns)  # noqa: S102
-            wall_ms = (time.perf_counter() - t0) * 1000
-            cpp, py = self._ctx.collect()
-            if self._timeline:
-                cpp_tl, py_tl = self._ctx.collect_timeline()
-                self._ctx.disable_timeline()
-        finally:
-            # Always end the window and close the cursor, even if compile()/exec()
-            # raised, so profiling state and the cursor never leak into a later run.
-            self._ctx.disable()
-            cursor.close()
+        with self._conn.cursor() as cursor:
+            script_module = ModuleType("__main__")
+            script_module.__dict__.update(conn=self._conn, cursor=cursor, __file__=str(path))
+            old_argv, old_path = sys.argv, sys.path
+            old_main = sys.modules.get("__main__")
+            try:
+                sys.argv = [str(path)]
+                sys.path = [str(path.parent), *old_path]
+                # Dataclasses and imports of __main__ must see the script's globals.
+                sys.modules["__main__"] = script_module
+                self._ctx.enable(timeline=self._timeline)
+                t0 = time.perf_counter()
+                exec(code, script_module.__dict__)  # noqa: S102
+                wall_ms = (time.perf_counter() - t0) * 1000
+                cpp, py = self._ctx.collect()
+                if self._timeline:
+                    cpp_tl, py_tl = self._ctx.collect_timeline()
+                    self._ctx.disable_timeline()
+            finally:
+                sys.argv, sys.path = old_argv, old_path
+                if old_main is None:
+                    sys.modules.pop("__main__", None)
+                else:
+                    sys.modules["__main__"] = old_main
+                self._ctx.disable()
 
         result = {
             "title": f"CUSTOM: {path.name}",

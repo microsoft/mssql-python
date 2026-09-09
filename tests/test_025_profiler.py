@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from importlib.util import find_spec
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,6 +30,10 @@ try:
 except ImportError:
     ddbc = None
     CPP_PROFILING = False
+
+_needs_profiler = pytest.mark.skipif(
+    find_spec("profiler") is None, reason="dev-only profiler package is not installed"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -379,6 +384,7 @@ def test_cpp_reset_stats_only_keeps_timeline():
 # ---------------------------------------------------------------------------
 
 
+@_needs_profiler
 @_needs_cpp
 def test_context_collect_disables_profiling():
     """collect() must end the window: after it, profiling is off in both layers."""
@@ -398,6 +404,7 @@ def test_context_collect_disables_profiling():
     assert ddbc.profiling.is_enabled() is False
 
 
+@_needs_profiler
 @_needs_cpp
 def test_context_enable_timeline_arg_survives_collect():
     """Turning timeline on via enable(timeline=True) — without set_timeline() —
@@ -417,6 +424,7 @@ def test_context_enable_timeline_arg_survives_collect():
     ), f"timeline events were cleared on collect(): {py_tl}"
 
 
+@_needs_profiler
 @_needs_cpp
 def test_context_windows_do_not_leak_into_each_other():
     """Work done between two windows must not appear in the next window's stats."""
@@ -441,6 +449,7 @@ def test_context_windows_do_not_leak_into_each_other():
     assert "py::between::leak" not in py2
 
 
+@_needs_profiler
 @_needs_cpp
 def test_context_collect_stops_inflight_python_phase():
     from profiler.core import _ProfilingContext
@@ -453,6 +462,7 @@ def test_context_collect_stops_inflight_python_phase():
     assert ctx.collect_timeline() == ([], [])
 
 
+@_needs_profiler
 @_needs_cpp
 def test_context_can_turn_timeline_off_between_windows():
     from profiler.core import _ProfilingContext
@@ -469,6 +479,7 @@ def test_context_can_turn_timeline_off_between_windows():
     assert ctx.collect_timeline() == ([], [])
 
 
+@_needs_profiler
 @pytest.mark.parametrize(
     "name,kwargs",
     [
@@ -499,6 +510,7 @@ def test_scenario_failure_closes_cursor_even_if_rollback_fails(name, kwargs, rol
     ctx.disable.assert_called_once()
 
 
+@_needs_profiler
 def test_setup_failure_releases_cursor_and_transaction():
     from profiler.scenarios import setup_test_data
 
@@ -512,6 +524,7 @@ def test_setup_failure_releases_cursor_and_transaction():
     cursor.__exit__.assert_called_once()
 
 
+@_needs_profiler
 def test_connect_scenario_closes_connection_if_collection_fails(monkeypatch):
     from profiler.scenarios import connect
 
@@ -525,6 +538,7 @@ def test_connect_scenario_closes_connection_if_collection_fails(monkeypatch):
     ctx.disable.assert_called_once()
 
 
+@_needs_profiler
 def test_connect_scenario_disables_profiling_if_connection_fails(monkeypatch):
     from profiler.scenarios import connect
 
@@ -539,6 +553,7 @@ def test_connect_scenario_disables_profiling_if_connection_fails(monkeypatch):
     ctx.collect.assert_not_called()
 
 
+@_needs_profiler
 @_needs_cpp
 @_needs_db
 @pytest.mark.parametrize("name", ["execute_insert", "executemany"])
@@ -568,6 +583,7 @@ def test_failed_insert_scenario_rolls_back_partial_work(name):
         conn.close()
 
 
+@_needs_profiler
 @_needs_cpp
 def test_context_disable_turns_everything_off():
     from profiler.core import _ProfilingContext
@@ -579,6 +595,7 @@ def test_context_disable_turns_everything_off():
     assert ddbc.profiling.is_enabled() is False
 
 
+@_needs_profiler
 @_needs_cpp
 @_needs_db
 def test_run_script_disables_profiling_even_when_script_raises(tmp_path):
@@ -640,6 +657,7 @@ def test_perf_phase_disabled_returns_shared_noop():
     assert perf_timer.get_stats() == {}
 
 
+@_needs_profiler
 @_needs_cpp
 @_needs_db
 def test_run_script_bad_syntax_still_cleans_up(tmp_path):
@@ -659,6 +677,7 @@ def test_run_script_bad_syntax_still_cleans_up(tmp_path):
         p.close()
 
 
+@_needs_profiler
 @_needs_cpp
 @_needs_db
 def test_run_script_wall_time_reflects_exec_not_io(tmp_path):
