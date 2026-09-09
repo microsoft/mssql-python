@@ -154,6 +154,34 @@ legacy path (`_map_sql_type`, `SQLExecuteLegacy_wrap`) exists only for
   side; a "the native branch is missing a guard the old code had" claim requires showing
   the old code did something different on that input.
 
+## Code organization — where new code lives
+
+This is structural review, separate from the perf findings above. The repo already
+runs `black`, `lint-check`, and `pr-format-check` for mechanical style, so do not
+re-flag formatting or naming. Flag only the judgment those linters cannot make:
+*where* a new unit of code belongs.
+
+`ddbc_bindings.cpp` is a ~6,000-line monolith. The perf work deliberately carved
+cohesive units out of it into small, purpose-named headers under
+`mssql_python/pybind/` rather than growing the blob: parameter detection to
+`param_detect.hpp`, the type cache to `py_type_cache.hpp`, the `steal`/`borrow`
+refcount helpers to `py_ref.hpp`, and shared streaming/import helpers alongside.
+Hold new work to that same shape:
+
+- A new self-contained unit (a detector, a cache, an RAII wrapper, a streaming
+  loop, a dispatch table) belongs in its own single-responsibility header, not
+  appended to `ddbc_bindings.cpp`. A large new function bolted onto the monolith
+  is a finding even when it has no perf problem.
+- Name the header for its responsibility (`param_detect`, `py_ref`,
+  `py_type_cache`), one concern per header.
+- A helper shared between the native and legacy paths goes in a header only if it
+  is the genuinely-invariant part (the DAE chunk-streaming loop is the example).
+  Never extract per-path logic into a shared header just to remove duplication;
+  that is the "marry the dying path" trap in structural form.
+- Moving code out of the monolith is a pure `REFACTOR` with no behaviour change,
+  and it should be its own commit, separate from the perf change that motivated
+  it, so the diff stays reviewable and revertable.
+
 ## Review procedure
 
 1. Get the diff. Prefer the local checkout of the PR branch; read files with
@@ -165,10 +193,13 @@ legacy path (`_map_sql_type`, `SQLExecuteLegacy_wrap`) exists only for
    guard, or helper. Ask: what release-build number does this move? If none, it is
    a cut candidate.
 5. Check parity and the dying-path rules for any param-detect / bind change.
-6. If C++ changed, confirm the author rebuilt and ran the relevant tests against a
+6. Check code organization: does a new self-contained unit belong in its own header
+   rather than appended to `ddbc_bindings.cpp`? Report it as a structural finding,
+   kept separate from the perf findings.
+7. If C++ changed, confirm the author rebuilt and ran the relevant tests against a
    live SQL Server (the suite needs `DB_CONNECTION_STRING`); a perf claim needs a
    before/after on a named workload in a release build.
-7. Work only inside the checkout you were given. Do not switch branches, do not touch
+8. Work only inside the checkout you were given. Do not switch branches, do not touch
    the user's primary checkout, and keep any scratch files in the workspace, not /tmp.
    Read each changed file once and cite line ranges on later references instead of
    re-reading it; a bindings PR is large and re-reads are the main cost sink.
@@ -179,8 +210,9 @@ legacy path (`_map_sql_type`, `SQLExecuteLegacy_wrap`) exists only for
   number, then the mechanism. Not "A1 violation" but "this `py::cast` runs once
   per cell, so on a 1.2M-row fetch it is the measured 1,355 ms/batch tax; move it
   to raw `PyFloat_FromDouble` (Pattern 1)."
-- Separate blocking correctness/parity issues from optional simplifications. Say
-  which is which.
+- Separate blocking correctness/parity issues from optional simplifications, and
+  keep structural (code-organization) findings in their own bucket from perf
+  findings. Say which is which.
 - Cite the specific file and line, spelled out (`param_detect.hpp` 262, not a bare
   ref).
 - If a finding is "delete this," say what replaces it and why the deletion is
