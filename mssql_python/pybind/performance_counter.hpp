@@ -69,6 +69,13 @@ private:
     std::atomic<bool> enabled_{false};
     std::atomic<bool> timeline_enabled_{false};
     std::chrono::time_point<std::chrono::steady_clock> epoch_;
+    // Monotonic measurement-window counter. Bumped on every window boundary
+    // (enable(), reset(), reset_stats_only()). A ScopedTimer captures this at
+    // construction and record() drops the sample if the value has since moved,
+    // so a timer that starts in one window and finishes after another thread has
+    // collected/reset and enabled a new window is never mis-attributed to the new
+    // window (and never produces a negative timeline offset against its epoch).
+    std::atomic<uint64_t> generation_{0};
 
 public:
     static PerformanceCounter& instance() {
@@ -76,9 +83,15 @@ public:
         return counter;
     }
 
-    void enable() { enabled_ = true; }
+    void enable() {
+        // New window: move the generation so any timer still in flight from a
+        // previous window is rejected by record() instead of landing here.
+        generation_.fetch_add(1, std::memory_order_relaxed);
+        enabled_ = true;
+    }
     void disable() { enabled_ = false; }
     bool is_enabled() const { return enabled_; }
+    uint64_t current_generation() const { return generation_.load(std::memory_order_relaxed); }
 
     void enable_timeline() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -93,10 +106,16 @@ public:
     bool is_timeline_enabled() const { return timeline_enabled_; }
 
     void record(const std::string& name, int64_t duration_ns,
-                std::chrono::time_point<std::chrono::steady_clock> start) {
+                std::chrono::time_point<std::chrono::steady_clock> start, uint64_t generation) {
         if (!enabled_) return;
 
         std::lock_guard<std::mutex> lock(mutex_);
+        // Drop the sample if a window boundary happened between when this timer
+        // started and now: it belongs to a window that has already been collected
+        // and reset, so recording it here would corrupt the current window's
+        // totals (and, in timeline mode, yield a negative offset against the new
+        // epoch). Checked under the lock so it is ordered against reset*().
+        if (generation != generation_.load(std::memory_order_relaxed)) return;
         auto& stats = counters_[name];
         stats.total_time_ns += duration_ns;
         stats.call_count++;
@@ -134,12 +153,16 @@ public:
 
     void reset() {
         std::lock_guard<std::mutex> lock(mutex_);
+        // Counters are cleared, so any timer that started before now belongs to a
+        // window that no longer exists; move the generation to reject it.
+        generation_.fetch_add(1, std::memory_order_relaxed);
         counters_.clear();
         timeline_.clear();
     }
 
     void reset_stats_only() {
         std::lock_guard<std::mutex> lock(mutex_);
+        generation_.fetch_add(1, std::memory_order_relaxed);
         counters_.clear();
     }
 
@@ -167,11 +190,15 @@ private:
     // enable()/disable() between construction and destruction can never make us
     // read an uninitialized start_ or record a half-open interval.
     bool active_;
+    // Window generation captured at construction, handed back to record() so a
+    // sample that outlived its window is dropped rather than mis-attributed.
+    uint64_t startGeneration_{0};
 
 public:
     explicit ScopedTimer(const char* name)
         : name_(name), active_(PerformanceCounter::instance().is_enabled()) {
         if (active_) {
+            startGeneration_ = PerformanceCounter::instance().current_generation();
             start_ = std::chrono::steady_clock::now();
         }
     }
@@ -187,7 +214,7 @@ public:
                 auto end = std::chrono::steady_clock::now();
                 auto duration_ns =
                     std::chrono::duration_cast<std::chrono::nanoseconds>(end - start_).count();
-                PerformanceCounter::instance().record(name_, duration_ns, start_);
+                PerformanceCounter::instance().record(name_, duration_ns, start_, startGeneration_);
             } catch (...) {
                 // ignore: never let a profiling timer abort the process
             }
