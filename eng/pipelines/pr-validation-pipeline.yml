@@ -138,6 +138,8 @@ jobs:
       docker exec -e SQLCMDPASSWORD="$DB_PASSWORD" sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -C
       -b -l 10 -Q "SELECT 1"
 
+      echo "##vso[task.setvariable variable=SQL_CONTAINER_READY]true"
+
       python eng/scripts/diagnostics/macos_diagnostic.py preflight
 
       '
@@ -203,7 +205,7 @@ jobs:
       DB_CONNECTION_STRING: Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DIAG_DB_PASSWORD);TrustServerCertificate=yes
       PYTHONPATH: $(Build.SourcesDirectory)
       PYTHONFAULTHANDLER: '1'
-    condition: and(succeededOrFailed(), eq(variables['DIAG_READY'], 'true'))
+    condition: and(succeededOrFailed(), eq(variables['SQL_CONTAINER_READY'], 'true'))
     timeoutInMinutes: 10
   - script: python eng/scripts/diagnostics/macos_diagnostic.py control
     displayName: Diagnostic pyodbc timing control
@@ -247,3 +249,133 @@ jobs:
       artifact: diagnostic-macOS-$(sqlVersion)
     condition: and(always(), eq(variables['DIAG_REDACTED'], 'true'))
   condition: eq(${{ parameters.runMac }}, true)
+- job: WindowsNativeShutdownDiagnostics
+  displayName: Isolated Windows SQL2025 native shutdown diagnostics
+  pool:
+    vmImage: windows-latest
+  variables:
+    sqlVersion: SQL2025
+    pythonVersion: '3.14'
+    WINDOWS_DIAG_REDACTED: 'false'
+  condition: eq(${{ parameters.runWindows }}, true)
+  timeoutInMinutes: 50
+  cancelTimeoutInMinutes: 5
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: 3.14.7
+      addToPath: true
+      githubToken: $(GITHUB_TOKEN)
+    displayName: Use Python $(pythonVersion)
+    timeoutInMinutes: 5
+  - powershell: '$ErrorActionPreference = "Stop"
+
+      python -c "import secrets; print(''##vso[task.setvariable variable=DIAG_DB_PASSWORD;issecret=true]'' + ''Diag7!''
+      + secrets.token_hex(24))"
+
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      Write-Host "Fresh job-local SQL credential registered as secret"
+
+      git rev-parse HEAD
+
+      python --version
+
+      '
+    displayName: Initialize Windows diagnostics and fresh job-local SQL credential
+    timeoutInMinutes: 1
+  - script: 'python -m pip install --upgrade pip
+
+      pip install -r requirements.txt
+
+
+      python -m pip install pybind11==3.1.0 pytest==9.1.1
+
+      '
+    displayName: Install dependencies
+    timeoutInMinutes: 10
+  - powershell: "Write-Host \"Downloading SQL Server 2025 Express...\"\n# Download SQL Server 2025 Express installer\n\
+      $ProgressPreference = 'SilentlyContinue'\nInvoke-WebRequest -Uri \"https://go.microsoft.com/fwlink/p/?linkid=2216019&clcid=0x409&culture=en-us&country=us\"\
+      \ -OutFile \"SQL2025-SSEI-Expr.exe\"\n\nWrite-Host \"Installing SQL Server 2025 Express...\"\n# Install SQL\
+      \ Server 2025 Express with basic features\nStart-Process -FilePath \"SQL2025-SSEI-Expr.exe\" -ArgumentList\
+      \ \"/Action=Download\",\"/MediaPath=$env:TEMP\",\"/MediaType=Core\",\"/Quiet\" -Wait\n\n# Find the downloaded\
+      \ setup file\n$setupFile = Get-ChildItem -Path $env:TEMP -Filter \"SQLEXPR_x64_ENU.exe\" -Recurse | Select-Object\
+      \ -First 1\n\nif ($setupFile) {\n  Write-Host \"Extracting SQL Server setup files...\"\n  Start-Process -FilePath\
+      \ $setupFile.FullName -ArgumentList \"/x:$env:TEMP\\SQL2025Setup\",\"/u\" -Wait\n  \n  Write-Host \"Running\
+      \ SQL Server setup...\"\n  Start-Process -FilePath \"$env:TEMP\\SQL2025Setup\\setup.exe\" -ArgumentList \"\
+      /Q\",\"/ACTION=Install\",\"/FEATURES=SQLEngine\",\"/INSTANCENAME=MSSQLSERVER\",\"/SQLSVCACCOUNT=`\"NT AUTHORITY\\\
+      SYSTEM`\"\",\"/SQLSYSADMINACCOUNTS=`\"BUILTIN\\Administrators`\"\",\"/TCPENABLED=1\",\"/SECURITYMODE=SQL\"\
+      ,\"/SAPWD=$(DIAG_DB_PASSWORD)\",\"/IACCEPTSQLSERVERLICENSETERMS\" -Wait\n} else {\n  Write-Error \"Failed\
+      \ to download SQL Server setup file\"\n  exit 1\n}\n\nWrite-Host \"SQL Server 2025 installation completed\"\
+      \n"
+    displayName: Install SQL Server 2025 Express
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
+    env:
+      DIAG_DB_PASSWORD: $(DIAG_DB_PASSWORD)
+    timeoutInMinutes: 15
+  - powershell: "\n$ErrorActionPreference = 'Stop'\n$env:SQLCMDPASSWORD = $env:DIAG_DB_PASSWORD\n$connected = $false\n\
+      for ($attempt = 1; $attempt -le 30; $attempt++) {\n    sqlcmd -S localhost -U sa -C -b -l 5 -Q \"SELECT 1\"\
+      \n    if ($LASTEXITCODE -eq 0) {\n        $connected = $true\n        break\n    }\n    Start-Sleep -Seconds\
+      \ 2\n}\nif (-not $connected) { throw 'SQL2025 did not accept the diagnostic credential' }\n$queries = @(\n\
+      \    \"CREATE DATABASE TestDB\",\n    \"CREATE LOGIN testuser WITH PASSWORD = '$env:DIAG_DB_PASSWORD'\",\n\
+      \    \"USE TestDB; CREATE USER testuser FOR LOGIN testuser; ALTER ROLE db_owner ADD MEMBER testuser\"\n)\n\
+      foreach ($query in $queries) {\n    sqlcmd -S localhost -U sa -C -b -l 5 -t 30 -Q $query\n    if ($LASTEXITCODE\
+      \ -ne 0) { throw 'Diagnostic database provisioning failed' }\n}\n"
+    displayName: Setup database and user for SQL Server 2025
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
+    env:
+      DIAG_DB_PASSWORD: $(DIAG_DB_PASSWORD)
+    timeoutInMinutes: 5
+  - script: 'cd mssql_python\pybind
+
+      build.bat x64
+
+      '
+    displayName: Build .pyd file
+    timeoutInMinutes: 8
+  - task: PowerShell@2
+    displayName: Install mssql_py_core from NuGet wheels
+    inputs:
+      targetType: filePath
+      filePath: eng/scripts/install-mssql-py-core.ps1
+    timeoutInMinutes: 8
+  - powershell: '$ErrorActionPreference = "Stop"
+
+      $env:DB_CONNECTION_STRING = "Server=localhost;Database=TestDB;Uid=testuser;Pwd=$env:DIAG_DB_PASSWORD;TrustServerCertificate=yes"
+
+      python eng\scripts\diagnostics\windows_hosted_diagnostic.py --repo "$env:BUILD_SOURCESDIRECTORY" --output
+      "$env:DIAG_WORK_ROOT"
+
+      exit $LASTEXITCODE'
+    displayName: 'Windows native shutdown A/B/A: agent-side stack, text only'
+    env:
+      DIAG_DB_PASSWORD: $(DIAG_DB_PASSWORD)
+      DIAG_WORK_ROOT: $(Build.SourcesDirectory)\artifacts\windows-hosted-$(Build.BuildId)-$(System.JobAttempt)
+      DIAG_PUBLIC_ROOT: $(Build.ArtifactStagingDirectory)\windows-native-text
+    timeoutInMinutes: 25
+  - powershell: "$ErrorActionPreference = \"Stop\"\n$source = Join-Path $env:DIAG_WORK_ROOT \"evidence\"\n$target\
+      \ = $env:DIAG_PUBLIC_ROOT\nNew-Item -ItemType Directory -Path $target -Force | Out-Null\n$utf8 = New-Object\
+      \ System.Text.UTF8Encoding($false)\nif (Test-Path -LiteralPath $source) {\n    $files = @(Get-ChildItem -LiteralPath\
+      \ $source -File -Recurse)\n    foreach ($file in $files) {\n        if ($file.Extension.ToLowerInvariant()\
+      \ -notin @(\".json\", \".log\", \".txt\")) {\n            throw \"Non-text evidence blocked from public artifact\"\
+      \n        }\n    }\n    foreach ($file in $files) {\n        $text = [System.IO.File]::ReadAllText($file.FullName)\n\
+      \        if ($env:DIAG_DB_PASSWORD) {\n            $text = $text.Replace($env:DIAG_DB_PASSWORD, \"[REDACTED]\"\
+      )\n        }\n        [System.IO.File]::WriteAllText((Join-Path $target $file.Name), $text, $utf8)\n    }\n\
+      } else {\n    [System.IO.File]::WriteAllText(\n        (Join-Path $target \"diagnostic-not-started.json\"\
+      ),\n        '{\"diagnostic_workload_started\":false,\"note\":\"Inspect bounded prerequisite task result; no\
+      \ native experiment ran.\"}',\n        $utf8)\n}\nWrite-Host \"##vso[task.setvariable variable=WINDOWS_DIAG_REDACTED]true\"\
+      \nWrite-Host \"Only redacted text/JSON staged for publication; no process dumps, binaries or PDBs\""
+    displayName: Gate Windows public artifact to redacted text only
+    env:
+      DIAG_DB_PASSWORD: $(DIAG_DB_PASSWORD)
+      DIAG_WORK_ROOT: $(Build.SourcesDirectory)\artifacts\windows-hosted-$(Build.BuildId)-$(System.JobAttempt)
+      DIAG_PUBLIC_ROOT: $(Build.ArtifactStagingDirectory)\windows-native-text
+    condition: always()
+    timeoutInMinutes: 3
+  - task: PublishPipelineArtifact@1
+    displayName: Publish Windows redacted native diagnostic text only
+    inputs:
+      targetPath: $(Build.ArtifactStagingDirectory)\windows-native-text
+      artifact: diagnostic-Windows-SQL2025
+    condition: and(always(), eq(variables['WINDOWS_DIAG_REDACTED'], 'true'))
+    timeoutInMinutes: 3
