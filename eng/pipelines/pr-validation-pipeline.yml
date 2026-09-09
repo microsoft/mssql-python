@@ -135,12 +135,10 @@ jobs:
     timeoutInMinutes: 15
   - script: 'set -e
 
-      python -c "import mssql_python; print(''Native module loaded'')"
-
       docker exec -e SQLCMDPASSWORD="$DB_PASSWORD" sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -C
       -b -l 10 -Q "SELECT 1"
 
-      echo "##vso[task.setvariable variable=DIAG_READY]true"
+      python eng/scripts/diagnostics/macos_diagnostic.py preflight
 
       '
     displayName: Confirm diagnostic prerequisites
@@ -150,27 +148,7 @@ jobs:
       DB_CONNECTION_STRING: Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DIAG_DB_PASSWORD);TrustServerCertificate=yes
       PYTHONPATH: $(Build.SourcesDirectory)
       PYTHONFAULTHANDLER: '1'
-    timeoutInMinutes: 3
-  - script: python eng/scripts/diagnostics/macos_diagnostic.py suite
-    displayName: 'Diagnostic suite: original source and client/server timing'
-    env:
-      DIAG_OUTPUT: $(Build.ArtifactStagingDirectory)/rootcause
-      DB_PASSWORD: $(DIAG_DB_PASSWORD)
-      DB_CONNECTION_STRING: Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DIAG_DB_PASSWORD);TrustServerCertificate=yes
-      PYTHONPATH: $(Build.SourcesDirectory)
-      PYTHONFAULTHANDLER: '1'
-    condition: and(succeededOrFailed(), eq(variables['DIAG_READY'], 'true'))
-    timeoutInMinutes: 22
-  - script: python eng/scripts/diagnostics/macos_diagnostic.py targeted
-    displayName: 'Diagnostic targeted: original source and client/server timing'
-    env:
-      DIAG_OUTPUT: $(Build.ArtifactStagingDirectory)/rootcause
-      DB_PASSWORD: $(DIAG_DB_PASSWORD)
-      DB_CONNECTION_STRING: Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DIAG_DB_PASSWORD);TrustServerCertificate=yes
-      PYTHONPATH: $(Build.SourcesDirectory)
-      PYTHONFAULTHANDLER: '1'
-    condition: and(succeededOrFailed(), eq(variables['DIAG_READY'], 'true'))
-    timeoutInMinutes: 12
+    timeoutInMinutes: 5
   - script: python eng/scripts/diagnostics/macos_diagnostic.py probe
     displayName: 'Diagnostic probe: original source and client/server timing'
     env:
@@ -181,11 +159,33 @@ jobs:
       PYTHONFAULTHANDLER: '1'
     condition: and(succeededOrFailed(), eq(variables['DIAG_READY'], 'true'))
     timeoutInMinutes: 8
+  - script: python eng/scripts/diagnostics/macos_diagnostic.py targeted
+    displayName: 'Diagnostic targeted: original source and client/server timing'
+    env:
+      DIAG_OUTPUT: $(Build.ArtifactStagingDirectory)/rootcause
+      DB_PASSWORD: $(DIAG_DB_PASSWORD)
+      DB_CONNECTION_STRING: Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DIAG_DB_PASSWORD);TrustServerCertificate=yes
+      PYTHONPATH: $(Build.SourcesDirectory)
+      PYTHONFAULTHANDLER: '1'
+    condition: and(succeededOrFailed(), eq(variables['DIAG_READY'], 'true'))
+    timeoutInMinutes: 12
+  - script: python eng/scripts/diagnostics/macos_diagnostic.py suite
+    displayName: 'Diagnostic suite: original source and client/server timing'
+    env:
+      DIAG_OUTPUT: $(Build.ArtifactStagingDirectory)/rootcause
+      DB_PASSWORD: $(DIAG_DB_PASSWORD)
+      DB_CONNECTION_STRING: Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DIAG_DB_PASSWORD);TrustServerCertificate=yes
+      PYTHONPATH: $(Build.SourcesDirectory)
+      PYTHONFAULTHANDLER: '1'
+    condition: and(succeededOrFailed(), eq(variables['DIAG_READY'], 'true'))
+    timeoutInMinutes: 22
   - script: 'set -e
 
       brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
 
-      HOMEBREW_ACCEPT_EULA=Y ACCEPT_EULA=Y brew install msodbcsql18
+      brew trust --formula microsoft/mssql-release/msodbcsql18
+
+      HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_ACCEPT_EULA=Y ACCEPT_EULA=Y brew install microsoft/mssql-release/msodbcsql18
 
       python -m pip install pyodbc
 

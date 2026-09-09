@@ -234,7 +234,9 @@ def pooling_probes():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["suite", "targeted", "probe", "control", "snapshot"])
+    parser.add_argument(
+        "mode", choices=["preflight", "suite", "targeted", "probe", "control", "snapshot"]
+    )
     mode = parser.parse_args().mode
     emit(
         "runtime",
@@ -243,6 +245,44 @@ def main():
         platform=platform.platform(),
         monotonic=vars(time.get_clock_info("monotonic")),
     )
+    configured_password = next(
+        (
+            part.partition("=")[2]
+            for part in os.environ["DB_CONNECTION_STRING"].split(";")
+            if part.lower().startswith("pwd=")
+        ),
+        None,
+    )
+    emit(
+        "credential_wiring",
+        configured_matches_password_env=configured_password == os.environ["DB_PASSWORD"],
+        configured_length=len(configured_password) if configured_password is not None else None,
+        password_env_length=len(os.environ["DB_PASSWORD"]),
+    )
+    os.environ["DB_CONNECTION_STRING"] = (
+        "Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;"
+        + "Pwd="
+        + os.environ["DB_PASSWORD"]
+        + ";TrustServerCertificate=yes"
+    )
+    if mode == "preflight":
+        import mssql_python
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+
+        parsed = _ConnectionStringParser(validate_keywords=False)._parse(
+            os.environ["DB_CONNECTION_STRING"]
+        )
+        emit(
+            "parsed_credential",
+            matches_password_env=parsed.get("pwd") == os.environ["DB_PASSWORD"],
+        )
+        snapshot("preflight")
+        with closing(mssql_python.connect(os.environ["DB_CONNECTION_STRING"])) as conn:
+            with closing(conn.cursor()) as cursor:
+                cursor.execute("SELECT @@VERSION, @@SERVERNAME, @@SPID")
+                emit("driver_login", server_identity=tuple(cursor.fetchone()))
+        print("##vso[task.setvariable variable=DIAG_READY]true", flush=True)
+        return 0
     if mode == "snapshot":
         snapshot("final")
         return 0
