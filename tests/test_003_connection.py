@@ -3550,6 +3550,28 @@ def test_set_attr_constants_access():
         assert not hasattr(mssql_python, const_name), f"{const_name} should NOT be public API"
 
 
+def test_sql_server_type_constants_public_api():
+    """SQL Server-specific ODBC type constants must be exposed at the package level.
+
+    pyodbc exposes SQL_SS_TIME2, SQL_SS_XML, and SQL_SS_VARIANT as module-level
+    attributes. mssql_python must match so drop-in consumers (e.g. Django's SQL
+    Server backend, which reads Database.SQL_SS_TIME2) don't need a fallback.
+    """
+    expected = {
+        "SQL_SS_TIME2": -154,
+        "SQL_SS_XML": -152,
+        "SQL_SS_VARIANT": -150,
+    }
+    for const_name, const_value in expected.items():
+        assert hasattr(
+            mssql_python, const_name
+        ), f"{const_name} should be public API (pyodbc parity)"
+        assert (
+            getattr(mssql_python, const_name) == const_value
+        ), f"{const_name} should equal {const_value}"
+        assert const_name in mssql_python.__all__, f"{const_name} should be in __all__"
+
+
 def test_set_attr_basic_functionality(db_connection):
     """Test basic set_attr functionality with ODBC-standard attributes."""
     try:
