@@ -5,8 +5,9 @@
 # payload -- there is NO separate companion package) for every conda subdir, WITHOUT
 # rebuilding the wheels. It consumes the wheels already produced by the wheel build
 # pipeline (definition 2199): the mssql-python wheels (drop_Consolidate_ConsolidateArtifacts)
-# and the mssql-python-odbc wheels (drop_ConsolidateOdbc_ConsolidateArtifacts), then
-# repackages + validates them into conda packages on the matching platform agent.
+# and the mssql-python-odbc wheels (drop_ConsolidateOdbc_ConsolidateArtifacts). It
+# also downloads the pinned mssql-python-rs wheel set from its internal NuGet
+# transport, then repackages + validates them on the matching platform agent.
 #
 # WHY PER-OS (not one job for all OSs): unlike the odbc wheels (a pure data re-tag),
 # conda-build provisions a REAL per-subdir host env and `pip install`s the matching wheel
@@ -182,6 +183,11 @@ extends:
                   buildId: $(resources.pipeline.buildPipeline.runID)
                   artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
                   targetPath: '$(Pipeline.Workspace)/odbc_wheels'
+              - powershell: |
+                  python eng/scripts/download_mssql_python_rs_wheels.py `
+                    --output-dir "$(Pipeline.Workspace)/rs_wheels"
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                displayName: 'Download mssql-python-rs wheels'
               # win-64 conda build (the shared Python orchestrator loops all requested versions).
               - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
                 parameters:
@@ -189,6 +195,7 @@ extends:
                   condaSubdir: 'win-64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*win_amd64.whl'
+                  rsWheelFilter: 'mssql_python_rs-*-cp*-cp*-win_amd64.whl'
               # win-arm64 conda build: CROSS-built on THIS x64 agent via CONDA_SUBDIR, in the
               # SAME job as win-64. continueOnError=true so a win-arm64 hiccup (e.g. an Anaconda
               # `defaults` outage that breaks its solve) can NEVER nuke the native win-64 publish
@@ -209,6 +216,7 @@ extends:
                   condaTargetSubdir: 'win-arm64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*win_arm64.whl'
+                  rsWheelFilter: 'mssql_python_rs-*-cp*-cp*-win_arm64.whl'
                   outputDir: '$(Agent.TempDirectory)/conda-bld-winarm64'
                   continueOnError: true
               - task: PublishPipelineArtifact@1
@@ -259,6 +267,11 @@ extends:
                   buildId: $(resources.pipeline.buildPipeline.runID)
                   artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
                   targetPath: '$(Pipeline.Workspace)/odbc_wheels'
+              - bash: |
+                  set -euo pipefail
+                  python3 eng/scripts/download_mssql_python_rs_wheels.py \
+                    --output-dir "$(Pipeline.Workspace)/rs_wheels"
+                displayName: 'Download mssql-python-rs wheels'
               # osx-arm64: CROSS-built on the Intel agent (BEST-EFFORT -- the runtime import
               # auto-skips). The blocking static Mach-O audit verifies the universal binding's
               # arm64 slice and each architecture-specific vendored driver tree before staging.
@@ -269,6 +282,7 @@ extends:
                   continueOnError: true
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*macosx*universal2.whl'
+                  rsWheelFilter: 'mssql_python_rs-*-cp*-cp*-macosx_15_0_universal2.whl'
                   pythonVersions: '${{ parameters.pythonVersions }}'
               # osx-64: NATIVE on the Intel agent (BLOCKING -- real import + driver-load proof).
               - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
@@ -277,6 +291,7 @@ extends:
                   condaTargetSubdir: 'osx-64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*macosx*universal2.whl'
+                  rsWheelFilter: 'mssql_python_rs-*-cp*-cp*-macosx_15_0_universal2.whl'
                   pythonVersions: '${{ parameters.pythonVersions }}'
               - task: PublishPipelineArtifact@1
                 displayName: 'Publish macOS conda artifact'
@@ -336,12 +351,18 @@ extends:
                   buildId: $(resources.pipeline.buildPipeline.runID)
                   artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
                   targetPath: '$(Pipeline.Workspace)/odbc_wheels'
+              - bash: |
+                  set -euo pipefail
+                  python3 eng/scripts/download_mssql_python_rs_wheels.py \
+                    --output-dir "$(Pipeline.Workspace)/rs_wheels"
+                displayName: 'Download mssql-python-rs wheels'
               # linux-64: NATIVE glibc x86_64 host.
               - template: /OneBranchPipelines/steps/conda-build-validate-step-posix.yml@self
                 parameters:
                   condaSubdir: 'linux-64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*manylinux_2_28_x86_64.whl'
+                  rsWheelFilter: 'mssql_python_rs-*-cp*-cp*-linux_x86_64.whl'
                   pythonVersions: '${{ parameters.pythonVersions }}'
               # linux-aarch64: CROSS-target via QEMU binfmt. continueOnError=true (best-effort)
               # so a QEMU emulation flake can NEVER nuke the native linux-64 publish that SHARES
@@ -376,6 +397,7 @@ extends:
                   continueOnError: true
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*manylinux_2_28_aarch64.whl'
+                  rsWheelFilter: 'mssql_python_rs-*-cp*-cp*-linux_aarch64.whl'
                   pythonVersions: '${{ parameters.pythonVersions }}'
               - task: PublishPipelineArtifact@1
                 displayName: 'Publish Linux conda artifact'

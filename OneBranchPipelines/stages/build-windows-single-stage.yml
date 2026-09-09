@@ -290,18 +290,16 @@ stages:
                 pattern: 'ddbc_bindings.cp$(shortPyVer)-$(pydArch).pyd'
           
           # =========================
-          # MSSQL_PY_CORE INSTALLATION
+          # MSSQL-PYTHON-RS INSTALLATION
           # =========================
-          # Extract mssql_py_core from NuGet into repo root BEFORE testing
-          # Required for bulkcopy tests which use mssql_py_core native bindings
+          # Install mssql-python-rs as a separate distribution before testing.
           - task: PowerShell@2
-            displayName: 'Install mssql_py_core from NuGet'
+            displayName: 'Install mssql-python-rs from NuGet transport'
             inputs:
               targetType: 'filePath'
               filePath: '$(Build.SourcesDirectory)\eng\scripts\install-mssql-py-core.ps1'
-              # Pass the TARGET arch so a cross-compiled arm64 wheel vendors the
-              # win_arm64 core, not the x64 host's. The installer skips its import
-              # self-check for cross-arch; arm64 bulk copy is exercised on native agents.
+              # Cross-compiled arm64 wheels record the dependency but cannot install
+              # or execute it in the x64 host interpreter.
               arguments: '-TargetArch $(targetArch)'
           
           # =========================

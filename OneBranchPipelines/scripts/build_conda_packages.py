@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import NoReturn
 
@@ -81,8 +82,14 @@ def run_capture(cmd: list[str], *, env: dict[str, str] | None = None) -> tuple[i
 # 0. Gather THIS leg's wheels into one find-links dir + derive the versions.
 # ---------------------------------------------------------------------------
 def gather_wheels(
-    mssql_dir: str, mssql_glob: str, odbc_dir: str, odbc_filter: str, links: str
-) -> tuple[str, str]:
+    mssql_dir: str,
+    mssql_glob: str,
+    odbc_dir: str,
+    odbc_filter: str,
+    rs_dir: str,
+    rs_filter: str,
+    links: str,
+) -> tuple[str, str, str]:
     """Copy this platform's mssql-python wheel(s) (excluding the odbc package, whose filename
     also starts with mssql_python) + this platform's odbc wheel into ONE find-links dir. The
     dir is CLEARED first so a stale artifact from a reused workdir can never be validated."""
@@ -130,6 +137,39 @@ def gather_wheels(
     odbc = odbc_matches[0]
     shutil.copy2(odbc, links)
 
+    rs_matches = sorted(glob.glob(os.path.join(rs_dir, "**", rs_filter), recursive=True))
+    if not rs_matches:
+        _die(f"no mssql-python-rs wheel matching '{rs_filter}' in {rs_dir}")
+    rs_versions_by_wheel = {
+        os.path.basename(w): _wheel_version(os.path.basename(w), "mssql_python_rs")
+        for w in rs_matches
+    }
+    if any(version is None for version in rs_versions_by_wheel.values()):
+        _die(f"could not derive mssql-python-rs versions: {rs_versions_by_wheel}")
+    rs_versions = {version for version in rs_versions_by_wheel.values() if version is not None}
+    if len(rs_versions) != 1:
+        _die(f"mssql-python-rs wheels contain inconsistent versions: {rs_versions_by_wheel}")
+    rs_ver = next(iter(rs_versions))
+
+    for wheel in mssql:
+        required_rs_version = _required_rs_version(wheel)
+        if required_rs_version != rs_ver:
+            _die(
+                f"{os.path.basename(wheel)} requires mssql-python-rs=={required_rs_version}, "
+                f"but the staged mssql-python-rs wheels are version {rs_ver}"
+            )
+
+    mssql_python_tags = {_wheel_python_tag(os.path.basename(w)) for w in mssql}
+    rs_python_tags = {_wheel_python_tag(os.path.basename(w)) for w in rs_matches}
+    if None in mssql_python_tags or None in rs_python_tags or mssql_python_tags != rs_python_tags:
+        _die(
+            "mssql-python and mssql-python-rs wheels must cover identical Python tags: "
+            f"mssql-python={sorted(str(tag) for tag in mssql_python_tags)}, "
+            f"mssql-python-rs={sorted(str(tag) for tag in rs_python_tags)}"
+        )
+    for wheel in rs_matches:
+        shutil.copy2(wheel, links)
+
     _log("find-links wheels:")
     for f in sorted(os.listdir(links)):
         _log(f"  - {f}")
@@ -139,13 +179,45 @@ def gather_wheels(
     odbc_ver = _wheel_version(os.path.basename(odbc), "mssql_python_odbc")
     if not odbc_ver:
         _die(f"could not derive a version from ODBC wheel: {os.path.basename(odbc)}")
-    _log(f"Derived versions -> mssql-python={mssql_ver}  mssql-python-odbc={odbc_ver}")
-    return mssql_ver, odbc_ver
+    _log(
+        "Derived versions -> "
+        f"mssql-python={mssql_ver}  mssql-python-odbc={odbc_ver}  mssql-python-rs={rs_ver}"
+    )
+    return mssql_ver, odbc_ver, rs_ver
 
 
 def _wheel_version(name: str, dist: str) -> str | None:
     m = re.match(rf"^{re.escape(dist)}-([^-]+)-", name)
     return m.group(1) if m else None
+
+
+def _wheel_python_tag(name: str) -> str | None:
+    match = re.search(r"-(cp\d+)-cp\d+-", name)
+    return match.group(1) if match else None
+
+
+def _required_rs_version(wheel: str) -> str:
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_files = [
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        ]
+        if len(metadata_files) != 1:
+            _die(
+                f"{os.path.basename(wheel)} contains {len(metadata_files)} METADATA files; expected 1"
+            )
+        metadata = archive.read(metadata_files[0]).decode("utf-8")
+
+    requirements = []
+    for line in metadata.splitlines():
+        match = re.fullmatch(r"Requires-Dist:\s*mssql[-_]python[-_]rs\s*==\s*([^\s;]+)\s*", line)
+        if match:
+            requirements.append(match.group(1))
+    if len(requirements) != 1:
+        _die(
+            f"{os.path.basename(wheel)} must declare exactly one pinned "
+            "mssql-python-rs dependency"
+        )
+    return requirements[0]
 
 
 # ---------------------------------------------------------------------------
@@ -293,13 +365,14 @@ def detect_pythons(links: str, python_versions: str) -> list[str]:
 
 
 def build_env(
-    mssql_ver: str, odbc_ver: str, links: str, cross_target_subdir: str
+    mssql_ver: str, odbc_ver: str, rs_ver: str, links: str, cross_target_subdir: str
 ) -> dict[str, str]:
     """The environment consumed by the recipe (jinja + build.sh/bld.bat) and by conda-build."""
     env = dict(os.environ)
     env["WHEELS_DIR"] = links
     env["MSSQL_PYTHON_VERSION"] = mssql_ver
     env["MSSQL_ODBC_VERSION"] = odbc_ver
+    env["MSSQL_RS_VERSION"] = rs_ver
     if cross_target_subdir:
         # conda-build AND the verify `conda create` honor CONDA_SUBDIR -> the packages are
         # stamped for the target subdir and the import check runs the target Python where the
@@ -463,7 +536,7 @@ def _is_emulated_cross(target_subdir: str, cross_build: bool) -> bool:
     return False
 
 
-def _import_probe(mod_name: str, ok_label: str) -> str:
+def _import_probe(mod_name: str, ok_label: str, distribution_name: str | None = None) -> str:
     """A `python -c` body that imports mod_name and FAIL-CLOSED asserts it loaded from under
     sys.prefix (the conda env's own site-packages). os.chdir closes CWD shadowing; this also
     catches a stray PYTHONPATH/.pth that could still load the repo source -- proving the
@@ -471,13 +544,20 @@ def _import_probe(mod_name: str, ok_label: str) -> str:
     mode -- where the site-packages entry symlinks into the pkgs/ cache OUTSIDE the prefix -- is
     not false-failed: the import PATH stays under the prefix regardless of hard/soft link; only
     the symlink TARGET would not. Then prints ok_label + the version."""
+    version_expression = (
+        f"importlib.metadata.version({distribution_name!r})"
+        if distribution_name
+        else "m.__version__"
+    )
+    metadata_import = "import importlib.metadata;" if distribution_name else ""
     return (
         f"import os,sys,{mod_name} as m;"
+        f"{metadata_import}"
         "f=os.path.normcase(os.path.abspath(m.__file__));"
         "pref=os.path.normcase(os.path.abspath(sys.prefix));"
         f"assert f.startswith(pref+os.sep),{mod_name!r}+' loaded from '+m.__file__+"
         "', not under the conda env '+sys.prefix+' (stray PYTHONPATH/.pth?)';"
-        f"print({ok_label!r},m.__version__)"
+        f"print({ok_label!r},{version_expression})"
     )
 
 
@@ -636,6 +716,19 @@ def _verify_impl(
             ],
             env=env,
             what=f"import mssql_python_odbc (py {py})",
+        )
+        run(
+            [
+                conda,
+                "run",
+                "-n",
+                name,
+                "python",
+                "-c",
+                _import_probe("mssql_py_core", "RS_CORE_OK", "mssql-python-rs"),
+            ],
+            env=env,
+            what=f"import mssql_py_core (py {py})",
         )
 
         _log(f"=== [py {py}] DB-less driver-load proof (real ODBC driver must load) ===")
@@ -802,6 +895,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mssql-wheel-glob", default="mssql_python-*.whl")
     ap.add_argument("--odbc-wheel-dir", required=True)
     ap.add_argument("--odbc-wheel-filter", required=True)
+    ap.add_argument("--rs-wheel-dir", required=True)
+    ap.add_argument("--rs-wheel-filter", required=True)
     ap.add_argument("--recipe-root", required=True)
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--stage-dir", required=True)
@@ -840,6 +935,7 @@ def main(argv: list[str] | None = None) -> int:
     _log("==================== conda build inputs ====================")
     _log(f"mssqlWheelDir      : {args.mssql_wheel_dir}")
     _log(f"odbcWheelDir       : {args.odbc_wheel_dir}")
+    _log(f"rsWheelDir         : {args.rs_wheel_dir}")
     _log(f"recipeRoot         : {args.recipe_root}")
     _log(f"outputDir          : {output_dir}")
     _log(f"stageDir           : {args.stage_dir}")
@@ -848,11 +944,13 @@ def main(argv: list[str] | None = None) -> int:
     _log(f"pythonVersions     : {args.python_versions or '(auto-detect)'}")
     _log("============================================================")
 
-    mssql_ver, odbc_ver = gather_wheels(
+    mssql_ver, odbc_ver, rs_ver = gather_wheels(
         args.mssql_wheel_dir,
         args.mssql_wheel_glob,
         args.odbc_wheel_dir,
         args.odbc_wheel_filter,
+        args.rs_wheel_dir,
+        args.rs_wheel_filter,
         links,
     )
     conda = find_or_install_conda(output_dir)
@@ -861,7 +959,7 @@ def main(argv: list[str] | None = None) -> int:
     builder = create_builder_env(conda)
     pyvers = detect_pythons(links, args.python_versions)
     cross_build = bool(args.conda_target_subdir)
-    env = build_env(mssql_ver, odbc_ver, links, args.conda_target_subdir)
+    env = build_env(mssql_ver, odbc_ver, rs_ver, links, args.conda_target_subdir)
 
     build_packages(conda, builder, args.recipe_root, pyvers, bld, target, env)
     audit_packages(conda, builder, args.recipe_root, bld, target, env)

@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
-# Downloads the mssql-python-rs-wheels NuGet package (or its legacy name) from a
-# public Azure Artifacts feed and extracts the matching mssql_py_core binary into
-# the repository root so that 'import mssql_py_core' works from the source tree.
-#
-# The extracted files are placed at <repo-root>/mssql_py_core/ which contains:
-#   - __init__.py
-#   - mssql_py_core.<cpython-tag>.so  (native extension)
+# Downloads the mssql-python-rs-wheels NuGet package from a public Azure
+# Artifacts feed and installs the matching mssql-python-rs wheel with pip.
 #
 # This script is used identically for:
 #   - Local development (dev runs it after build.sh)
 #   - PR validation pipelines
-#   - Official build pipelines (before setup.py bdist_wheel)
+#   - Official build pipelines and tests
 #
-# The package version is read from eng/versions/mssql-py-core.version (required).
+# The package version is read from eng/versions/mssql-python-rs.version (required).
 #
 # Usage:
 #   ./install-mssql-py-core.sh [--feed-url URL]
@@ -24,7 +19,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PYTHON="${PYTHON:-$(command -v python || command -v python3)}"
 
 read_version() {
-    local version_file="$REPO_ROOT/eng/versions/mssql-py-core.version"
+    local version_file="$REPO_ROOT/eng/versions/mssql-python-rs.version"
     if [ ! -f "$version_file" ]; then
         echo "ERROR: Version file not found: $version_file"
         exit 1
@@ -74,11 +69,8 @@ print(f'cp{v.major}{v.minor} {platform.system().lower()} {platform.machine().low
             ;;
     esac
 
-    WHEEL_PATTERNS=(
-        "mssql_python_rs-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
-        "mssql_py_core-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
-    )
-    echo "Wheel patterns: ${WHEEL_PATTERNS[*]}"
+    WHEEL_PATTERN="mssql_python_rs-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
+    echo "Wheel pattern: $WHEEL_PATTERN"
 }
 
 download_nupkg() {
@@ -97,33 +89,19 @@ download_nupkg() {
 
     local version_lower
     version_lower=$(echo "$PACKAGE_VERSION" | tr '[:upper:]' '[:lower:]')
-    local package_id
-    NUPKG_PATH=""
-    for package_id in "mssql-python-rs-wheels" "mssql-py-core-wheels"; do
-        NUPKG_URL="${PACKAGE_BASE_URL}${package_id}/${version_lower}/${package_id}.${version_lower}.nupkg"
-        local candidate_path="$output_dir/${package_id}.${version_lower}.nupkg"
-        local http_status
-        echo "Downloading: $NUPKG_URL"
-        if ! http_status=$(curl -sSL -o "$candidate_path" -w '%{http_code}' "$NUPKG_URL"); then
-            rm -f "$candidate_path"
-            echo "ERROR: Failed to download NuGet package: $package_id $PACKAGE_VERSION" >&2
-            exit 1
-        fi
-        if [ "$http_status" = "200" ]; then
-            NUPKG_PATH="$candidate_path"
-            echo "Using NuGet package: $package_id"
-            break
-        fi
-        rm -f "$candidate_path"
-        if [ "$http_status" = "404" ]; then
-            echo "Package not available: $package_id $PACKAGE_VERSION"
-            continue
-        fi
-        echo "ERROR: Failed to download NuGet package: $package_id $PACKAGE_VERSION (HTTP $http_status)" >&2
+    local package_id="mssql-python-rs-wheels"
+    NUPKG_URL="${PACKAGE_BASE_URL}${package_id}/${version_lower}/${package_id}.${version_lower}.nupkg"
+    NUPKG_PATH="$output_dir/${package_id}.${version_lower}.nupkg"
+    local http_status
+    echo "Downloading: $NUPKG_URL"
+    if ! http_status=$(curl -sSL -o "$NUPKG_PATH" -w '%{http_code}' "$NUPKG_URL"); then
+        rm -f "$NUPKG_PATH"
+        echo "ERROR: Failed to download NuGet package: $package_id $PACKAGE_VERSION" >&2
         exit 1
-    done
-    if [ -z "$NUPKG_PATH" ]; then
-        echo "ERROR: Package version $PACKAGE_VERSION was not found under the new or legacy package ID"
+    fi
+    if [ "$http_status" != "200" ]; then
+        rm -f "$NUPKG_PATH"
+        echo "ERROR: Failed to download NuGet package: $package_id $PACKAGE_VERSION (HTTP $http_status)" >&2
         exit 1
     fi
 
@@ -156,17 +134,11 @@ find_matching_wheel() {
     fi
 
     MATCHING_WHEEL=""
-    local wheel_pattern
-    for wheel_pattern in "${WHEEL_PATTERNS[@]}"; do
-        MATCHING_WHEEL=$(find "$wheels_dir" -name "$wheel_pattern" -print -quit)
-        if [ -n "$MATCHING_WHEEL" ]; then
-            break
-        fi
-    done
+    MATCHING_WHEEL=$(find "$wheels_dir" -name "$WHEEL_PATTERN" -print -quit)
     if [ -z "$MATCHING_WHEEL" ]; then
         echo "Available wheels:"
         ls "$wheels_dir"/*.whl 2>/dev/null || echo "  (none)"
-        echo "ERROR: No wheel found matching: ${WHEEL_PATTERNS[*]}"
+        echo "ERROR: No wheel found matching: $WHEEL_PATTERN"
         exit 1
     fi
 
@@ -201,24 +173,22 @@ can_verify_import() {
     esac
 }
 
-extract_and_verify() {
-    local target_dir="$REPO_ROOT"
-    local core_dir="$target_dir/mssql_py_core"
+install_and_verify() {
+    local core_dir="$REPO_ROOT/mssql_py_core"
 
     if [ -d "$core_dir" ]; then
         rm -rf "$core_dir"
         echo "Cleaned previous mssql_py_core/"
     fi
 
-    "$PYTHON" "$SCRIPT_DIR/extract_wheel.py" "$MATCHING_WHEEL" "$target_dir"
+    "$PYTHON" -m pip install --force-reinstall --no-deps "$MATCHING_WHEEL"
+    "$PYTHON" -c "import importlib.metadata as m; assert m.version('mssql-python-rs') == '$PACKAGE_VERSION'"
 
     # Skip import verification when glibc is older than what the .so requires
     # (e.g. manylinux_2_34 build containers with glibc 2.34, matching .so requirements).
     if can_verify_import; then
         echo "Verifying import..."
-        pushd "$target_dir" > /dev/null
-        "$PYTHON" -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
-        popd > /dev/null
+        "$PYTHON" -c "import mssql_py_core; print(f'mssql_py_core loaded from {mssql_py_core.__file__}')"
     else
         echo "Skipping import verification (glibc too old for runtime load)"
     fi
@@ -236,13 +206,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "=== Install mssql_py_core from NuGet wheel package ==="
+echo "=== Install mssql-python-rs from NuGet wheel package ==="
 
 read_version
 detect_platform
 download_nupkg "$FEED_URL" "$OUTPUT_DIR"
 find_matching_wheel "$OUTPUT_DIR"
-extract_and_verify
+install_and_verify
 
 rm -rf "$OUTPUT_DIR"
-echo "=== mssql_py_core extracted successfully ==="
+echo "=== mssql-python-rs installed successfully ==="

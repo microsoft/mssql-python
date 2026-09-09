@@ -36,6 +36,11 @@ parameters:
   # else conda-build's pip install fails with DistributionNotFound.
   - name: odbcWheelFilter
     type: string
+  - name: rsWheelDir
+    type: string
+    default: '$(Pipeline.Workspace)/rs_wheels'
+  - name: rsWheelFilter
+    type: string
   # Repo conda/ recipe root (contains mssql-python/ and mssql-python-odbc/).
   - name: recipeRoot
     type: string
@@ -85,6 +90,8 @@ steps:
         --mssql-wheel-glob "${{ parameters.mssqlWheelGlob }}" \
         --odbc-wheel-dir "${{ parameters.odbcWheelDir }}" \
         --odbc-wheel-filter "${{ parameters.odbcWheelFilter }}" \
+        --rs-wheel-dir "${{ parameters.rsWheelDir }}" \
+        --rs-wheel-filter "${{ parameters.rsWheelFilter }}" \
         --recipe-root "${{ parameters.recipeRoot }}" \
         --output-dir "${{ parameters.outputDir }}" \
         --stage-dir "$(ob_outputDirectory)/conda" \

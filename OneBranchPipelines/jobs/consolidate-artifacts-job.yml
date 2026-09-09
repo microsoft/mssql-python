@@ -129,8 +129,10 @@ jobs:
       - bash: |
           set -e
           cp $(Build.SourcesDirectory)/eng/versions/mssql-py-core.version $(ob_outputDirectory)/dist/
+          cp $(Build.SourcesDirectory)/eng/versions/mssql-python-rs.version $(ob_outputDirectory)/dist/
           echo "mssql-py-core version: $(cat $(ob_outputDirectory)/dist/mssql-py-core.version)"
-        displayName: 'Include mssql-py-core version'
+          echo "mssql-python-rs version: $(cat $(ob_outputDirectory)/dist/mssql-python-rs.version)"
+        displayName: 'Include Rust dependency versions'
       
       # Verify consolidation
       - bash: |

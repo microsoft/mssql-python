@@ -77,7 +77,7 @@ unified-coverage/
 *venv*/
 **/*venv*/
 
-# Extracted mssql_py_core (from eng/scripts/install-mssql-py-core)
+# Ignore stale directories created by the retired NuGet extraction workflow.
 mssql_py_core/
 
 # learning files

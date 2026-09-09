@@ -7,6 +7,11 @@ setlocal enabledelayedexpansion
 set "SP=%PREFIX%\Lib\site-packages"
 if not exist "%SP%" mkdir "%SP%"
 set "PKG_UNDERSCORE=%PKG_NAME:-=_%"
+set "RS_VERSION=%MSSQL_RS_VERSION%"
+if not defined RS_VERSION (
+  echo ERROR: MSSQL_RS_VERSION is not set
+  exit /b 1
+)
 
 REM Target arch comes from the conda TARGET platform (win-64 / win-arm64), NOT from
 REM whether the host Python can execute -- a native win-arm64 host runs its own Python yet
@@ -39,20 +44,23 @@ if errorlevel 1 (
     echo ERROR: extracted "!CODE_WHL!" has no mssql_python\ddbc_bindings.cp%CONDA_PY% pyd ^(wrong-Python binding^).
     exit /b 1
   )
-  REM Keep mssql_py_core when the wheel provides a matching-arch native ext so bulk copy
-  REM ships (PR #737 makes the win-arm64 wheel vendor the arm64 core). If only the legacy
-  REM x64 core is present (a pre-#737 wheel), strip it so the package never carries a core
-  REM that can't load on the target -- the .pyd name encodes the arch. Bulk copy then lazily
-  REM reports "not available"; the rest of the DBAPI works. Mirrors the ddbc check above.
-  if exist "%SP%\mssql_py_core\mssql_py_core.cp%CONDA_PY%-!ODBC_ARCH!.pyd" (
-    echo Keeping matching-arch mssql_py_core; bulk copy enabled on the !ODBC_ARCH! package.
-  ) else (
-    echo No cp%CONDA_PY%-!ODBC_ARCH! mssql_py_core in the wheel; removing the mismatched core ^(bulk copy unavailable until the arm64-core wheel ships^).
-    if exist "%SP%\mssql_py_core" rmdir /s /q "%SP%\mssql_py_core"
-    if exist "%SP%\mssql_py_core.libs" rmdir /s /q "%SP%\mssql_py_core.libs"
+  set "RS_WHL="
+  for %%W in ("%WHEELS_DIR%\mssql_python_rs-!RS_VERSION!-cp%CONDA_PY%-*-!ODBC_ARCH!.whl") do if exist "%%~fW" set "RS_WHL=%%~fW"
+  if not defined RS_WHL (
+    echo ERROR: no mssql-python-rs==!RS_VERSION! cp%CONDA_PY% !ODBC_ARCH! wheel in "%WHEELS_DIR%"
+    exit /b 1
+  )
+  echo Extracting "!RS_WHL!" into "%SP%"
+  tar -xf "!RS_WHL!" -C "%SP%"
+  if errorlevel 1 exit /b 1
+  if not exist "%SP%\mssql_py_core\mssql_py_core.cp%CONDA_PY%-!ODBC_ARCH!.pyd" (
+    echo ERROR: extracted "!RS_WHL!" has no mssql_py_core\mssql_py_core.cp%CONDA_PY%-!ODBC_ARCH!.pyd ^(wrong-Python or wrong-architecture binding^).
+    exit /b 1
   )
 ) else (
   "%PYTHON%" -m pip install --no-deps --no-index --find-links "%WHEELS_DIR%" %PKG_NAME%==%PKG_VERSION% -vv
+  if errorlevel 1 exit /b 1
+  "%PYTHON%" -m pip install --no-deps --no-index --find-links "%WHEELS_DIR%" mssql-python-rs==!RS_VERSION! -vv
   if errorlevel 1 exit /b 1
 )
 
