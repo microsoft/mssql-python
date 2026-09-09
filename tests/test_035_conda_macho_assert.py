@@ -193,6 +193,17 @@ def test_osx_packages_accept_real_split_driver_layout(tmp_path, subdir):
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+@pytest.mark.parametrize("missing_library", _DRIVER_LIBRARIES)
+def test_target_driver_runtime_requires_every_library(tmp_path, missing_library):
+    payload = _realistic_payload(_fake_macho_fat([_X86_64, _ARM64]))
+    del payload[f"{_DRIVER_ROOT}/arm64/lib/{missing_library}"]
+
+    errors = mac.audit_package(_make_conda(tmp_path, "osx-arm64", payload))
+
+    assert any(missing_library in error for error in errors)
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
 def test_osx_arm64_accepts_thin_arm64_binding(tmp_path):
     p = _make_conda(
         tmp_path,

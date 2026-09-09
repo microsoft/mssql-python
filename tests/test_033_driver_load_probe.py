@@ -106,7 +106,7 @@ def _run_main_with_stub(monkeypatch, connect):
 
 
 def test_main_exits_nonzero_on_simulated_load_failure(monkeypatch):
-    def connect(_conn_str):
+    def connect(**_kwargs):
         raise RuntimeError(
             "Failed to load the driver. Please read the documentation to install the "
             "required dependencies."
@@ -121,7 +121,7 @@ def test_main_exits_nonzero_on_simulated_load_failure(monkeypatch):
 
 
 def test_main_passes_on_simulated_network_failure(monkeypatch):
-    def connect(_conn_str):
+    def connect(**_kwargs):
         raise RuntimeError(
             "[Microsoft][ODBC Driver 18 for SQL Server]TCP Provider: No connection could be "
             "made because the target machine actively refused it."
@@ -145,7 +145,7 @@ def test_main_overrides_inherited_alternative_provider(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", checked_import)
 
-    def connect(_conn_str):
+    def connect(**_kwargs):
         assert os.environ["MSSQL_PYTHON_NATIVE_PROVIDER"] == "msodbcsql18"
         raise RuntimeError(
             "[Microsoft][ODBC Driver 18 for SQL Server]TCP Provider: connection refused"
@@ -163,9 +163,34 @@ def test_main_passes_on_clean_connect(monkeypatch):
         def close(self):
             closed["value"] = True
 
-    def connect(_conn_str):
+    def connect(**_kwargs):
         return _Conn()
 
     probe = _run_main_with_stub(monkeypatch, connect)
     probe.main()
     assert closed["value"] is True
+
+
+def test_main_passes_complete_structured_connection_parameters(monkeypatch):
+    captured = {}
+
+    def connect(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        raise RuntimeError(
+            "[Microsoft][ODBC Driver 18 for SQL Server]TCP Provider: connection refused"
+        )
+
+    probe = _run_main_with_stub(monkeypatch, connect)
+    probe.main()
+
+    assert captured == {
+        "args": (),
+        "kwargs": {
+            "Server": "127.0.0.1,1",
+            "Database": "x",
+            "Trusted_Connection": "yes",
+            "Encrypt": "no",
+            "TrustServerCertificate": "yes",
+        },
+    }

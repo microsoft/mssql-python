@@ -102,10 +102,15 @@ def main():
     # Unreachable endpoint (nothing listens on TCP port 1) -> the driver loads,
     # attempts the socket, and fails fast at the network stage. The loopback:1 is a
     # dummy DB-less probe target, never a live endpoint.
-    conn_str = "Server=127.0.0.1,1;Database=x;Uid=x;Pwd=x;Encrypt=no;TrustServerCertificate=yes;"  # DevSkim: ignore DS162092
     outcome = None
     try:
-        conn = mssql_python.connect(conn_str)
+        conn = mssql_python.connect(
+            Server="127.0.0.1,1",  # DevSkim: ignore DS162092 - loopback-only probe
+            Database="x",
+            Trusted_Connection="yes",
+            Encrypt="no",
+            TrustServerCertificate="yes",
+        )
         # Reaching a real server on 127.0.0.1:1 is not expected, but a successful
         # connect still proves the driver loaded. Close it and pass.
         try:
