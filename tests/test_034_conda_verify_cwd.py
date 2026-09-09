@@ -49,7 +49,7 @@ def test_best_effort_consolidation_runs_after_upstream_failure():
     pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
     for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
         producer = pipeline.split(f"- stage: {stage_name}", 1)[1]
-        assert "dependsOn: []" in producer.split("jobs:", 1)[0]
+        assert "dependsOn: ValidateWheelProvenance" in producer.split("jobs:", 1)[0]
 
     stage = pipeline.split("- stage: ConsolidateConda", 1)[1]
     dependencies = stage.split("jobs:", 1)[0]
@@ -64,6 +64,28 @@ def test_best_effort_consolidation_runs_after_upstream_failure():
     job = _CONSOLIDATE_JOB_PATH.read_text(encoding="utf-8")
     consolidate = job.split("- job: ConsolidateArtifacts", 1)[1]
     assert "condition: succeededOrFailed()" in consolidate.split("pool:", 1)[0]
+
+
+def test_official_builds_require_main_wheel_provenance():
+    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
+    resource = pipeline.split("- pipeline: buildPipeline", 1)[1].split("extends:", 1)[0]
+    assert "branch: main" in resource
+
+    gate = pipeline.split("- stage: ValidateWheelProvenance", 1)[1].split("- stage: CondaWin64", 1)[
+        0
+    ]
+    assert '[[ -z "${WHEEL_SOURCE_BRANCH:-}" ]]' in gate
+    assert 'case "$ONEBRANCH_TYPE" in' in gate
+    assert "Official)" in gate
+    assert "NonOfficial) ;;" in gate
+    assert '[[ "$WHEEL_SOURCE_BRANCH" != "refs/heads/main" ]]' in gate
+    assert "unknown OneBranch type" in gate
+    assert "ONEBRANCH_TYPE: ${{ variables.effectiveOneBranchType }}" in gate
+    assert "WHEEL_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)" in gate
+
+    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
+        producer = pipeline.split(f"- stage: {stage_name}", 1)[1]
+        assert "dependsOn: ValidateWheelProvenance" in producer.split("jobs:", 1)[0]
 
 
 def test_windows_pool_demand_is_indented_under_demands_key():
@@ -363,6 +385,7 @@ def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path):
     mssql_dir, odbc_dir, links = _wheel_inputs(
         tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
     )
+    (mssql_dir / "mssql_python-1.2.3-cp312-cp312-win_amd64.whl").write_bytes(b"mssql")
 
     versions = mod.gather_wheels(
         str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
@@ -370,9 +393,26 @@ def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path):
 
     assert versions == ("1.2.3", "18.6.2")
     assert sorted(path.name for path in links.iterdir()) == [
+        "mssql_python-1.2.3-cp312-cp312-win_amd64.whl",
         "mssql_python-1.2.3-cp313-cp313-win_amd64.whl",
         "mssql_python_odbc-18.6.2-py3-none-win_amd64.whl",
     ]
+
+
+def test_gather_wheels_rejects_mixed_mssql_python_versions(tmp_path, capsys):
+    mod = _load_orchestrator()
+    mssql_dir, odbc_dir, links = _wheel_inputs(
+        tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
+    )
+    (mssql_dir / "mssql_python-9.9.9-cp312-cp312-win_amd64.whl").write_bytes(b"mssql")
+
+    with pytest.raises(SystemExit):
+        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+
+    error = capsys.readouterr().err
+    assert "inconsistent versions" in error
+    assert "1.2.3" in error
+    assert "9.9.9" in error
 
 
 def test_gather_wheels_rejects_no_odbc_match(tmp_path):
@@ -395,3 +435,41 @@ def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
 
     with pytest.raises(SystemExit):
         mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+
+
+@pytest.mark.parametrize(
+    ("target_subdir", "expected_channels"),
+    [
+        ("", ["microsoft", "conda-forge"]),
+        ("osx-arm64", ["microsoft", "conda-forge"]),
+        ("linux-aarch64", ["microsoft", "conda-forge"]),
+        ("win-arm64", ["defaults", "microsoft", "conda-forge"]),
+    ],
+)
+def test_conda_build_uses_only_explicit_channels(
+    target_subdir, expected_channels, tmp_path, monkeypatch
+):
+    mod = _load_orchestrator()
+    calls = []
+
+    def _capture_run(command, **_kwargs):
+        calls.append(list(command))
+
+    monkeypatch.setattr(mod, "run", _capture_run)
+
+    mod.build_packages(
+        "conda",
+        "conda_builder",
+        str(tmp_path / "recipe"),
+        ["3.13"],
+        str(tmp_path / "conda-bld"),
+        target_subdir,
+        {},
+    )
+
+    assert len(calls) == 1
+    command = calls[0]
+    assert "--override-channels" in command
+    assert [command[index + 1] for index, arg in enumerate(command) if arg == "-c"] == (
+        expected_channels
+    )

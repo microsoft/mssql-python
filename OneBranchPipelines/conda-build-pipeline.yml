@@ -69,6 +69,7 @@ resources:
   pipelines:
     - pipeline: buildPipeline
       source: 'Build-Release-Package-Pipeline'
+      branch: main
       trigger: none
 
 extends:
@@ -97,13 +98,55 @@ extends:
         enabled: true
 
     stages:
+      # Official packaging must consume wheels built from main. The resource default handles
+      # normal runs, while this runtime gate also blocks a manual resource-picker override.
+      # NonOfficial runs may deliberately select a feature-branch wheel run for validation.
+      - stage: ValidateWheelProvenance
+        displayName: 'Validate wheel artifact provenance'
+        dependsOn: []
+        jobs:
+          - job: ValidateSourceBranch
+            displayName: 'Require main wheel source for Official runs'
+            pool:
+              type: linux
+              isCustom: true
+              name: Azure Pipelines
+              vmImage: 'ubuntu-latest'
+            steps:
+              - checkout: none
+              - bash: |
+                  set -euo pipefail
+                  if [[ -z "${WHEEL_SOURCE_BRANCH:-}" ]]; then
+                    echo "ERROR: wheel pipeline resource did not expose sourceBranch." >&2
+                    exit 1
+                  fi
+                  echo "Wheel pipeline source branch: $WHEEL_SOURCE_BRANCH"
+                  case "$ONEBRANCH_TYPE" in
+                    Official)
+                      if [[ "$WHEEL_SOURCE_BRANCH" != "refs/heads/main" ]]; then
+                        echo "ERROR: Official conda builds require wheels from refs/heads/main; selected run is from $WHEEL_SOURCE_BRANCH." >&2
+                        exit 1
+                      fi
+                      ;;
+                    NonOfficial) ;;
+                    *)
+                      echo "ERROR: unknown OneBranch type '$ONEBRANCH_TYPE'; refusing to classify wheel provenance." >&2
+                      exit 1
+                      ;;
+                  esac
+                displayName: 'Validate selected wheel run source branch'
+                env:
+                  ONEBRANCH_TYPE: ${{ variables.effectiveOneBranchType }}
+                  WHEEL_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)
+
       # =========================
       # CONDA win-64 (native, per-Python)
       # =========================
       - stage: CondaWin64
         displayName: 'Conda win-64'
-        # OS producer stages are independent so one platform failure cannot skip the others.
-        dependsOn: []
+        # OS producer stages fan out after provenance validation, so one platform failure
+        # cannot skip the others.
+        dependsOn: ValidateWheelProvenance
         jobs:
           - job: BuildConda
             displayName: 'Build + validate win-64 conda'
@@ -180,7 +223,7 @@ extends:
       # =========================
       - stage: CondaMacOS
         displayName: 'Conda macOS (osx-arm64 + osx-64)'
-        dependsOn: []
+        dependsOn: ValidateWheelProvenance
         jobs:
           - job: BuildConda
             displayName: 'Build + validate macOS conda'
@@ -249,7 +292,7 @@ extends:
       # =========================
       - stage: CondaLinux
         displayName: 'Conda Linux (linux-64 + linux-aarch64)'
-        dependsOn: []
+        dependsOn: ValidateWheelProvenance
         jobs:
           - job: BuildConda
             displayName: 'Build + validate Linux conda'

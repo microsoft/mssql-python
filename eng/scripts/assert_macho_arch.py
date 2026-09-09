@@ -12,8 +12,9 @@ eng/scripts/audit_bundled_binaries.py (Linux ELF RUNPATH): it reads the Mach-O c
 straight out of the binding and vendored driver files in the built .conda payload. The binding
 must contain the package's arch slice (osx-arm64 -> arm64, osx-64 -> x86_64). The ODBC wheel
 deliberately bundles separate macos/arm64 and macos/x86_64 driver trees, so each tree is checked
-against its directory arch and the package target's tree must contain libmsodbcsql. FAT/universal
-binaries are validated like ``lipo -archs``, including complete tables and valid slice ranges.
+against its directory arch and the package target's runtime tree must contain all four required
+dylibs. FAT/universal binaries are validated like ``lipo -archs``, including complete tables and
+valid slice ranges.
 
 Exit 0 = every checked package satisfies the binding/driver architecture contract; non-zero =
 a mismatch/violation.
@@ -52,6 +53,14 @@ _DRIVER_DIR_ARCH = {
 }
 
 _NATIVE_SUFFIXES = (".dylib", ".so")
+_REQUIRED_DRIVER_LIBRARIES = frozenset(
+    {
+        "libltdl.7.dylib",
+        "libmsodbcsql.18.dylib",
+        "libodbc.2.dylib",
+        "libodbcinst.2.dylib",
+    }
+)
 
 # Mach-O / fat magics (mach-o/loader.h, mach-o/fat.h). The fat header is ALWAYS big-endian on
 # disk; a thin header's cputype word follows the header's own endianness.
@@ -159,7 +168,7 @@ def audit_package(path: str) -> list[str]:
 
     errors: list[str] = []
     binding_seen = 0
-    target_driver_seen = 0
+    target_driver_libraries: set[str] = set()
     for name, data in members:
         low = name.replace("\\", "/").lower()
         if not low.endswith(_NATIVE_SUFFIXES):
@@ -178,12 +187,8 @@ def audit_package(path: str) -> list[str]:
                 errors.append(f"{name}: unrecognized macOS driver architecture directory.")
                 continue
             is_runtime_location = len(parts) == 3 and parts[1] == "lib"
-            if (
-                base_low.startswith("libmsodbcsql")
-                and required_arch == expected
-                and is_runtime_location
-            ):
-                target_driver_seen += 1
+            if required_arch == expected and is_runtime_location:
+                target_driver_libraries.add(base_low)
         else:
             continue
         arches = macho_arches(data)
@@ -206,11 +211,12 @@ def audit_package(path: str) -> list[str]:
             f"{base_name}: no native binding (mssql_python/ddbc_bindings*.so) found in a "
             f"'{subdir}' package."
         )
-    if target_driver_seen == 0:
+    missing_driver_libraries = sorted(_REQUIRED_DRIVER_LIBRARIES - target_driver_libraries)
+    if missing_driver_libraries:
         errors.append(
-            f"{base_name}: no vendored ODBC driver for '{expected}' "
-            f"(mssql_python_odbc/libs/macos/{expected}/lib/libmsodbcsql*.dylib) found in a "
-            f"'{subdir}' package."
+            f"{base_name}: no vendored ODBC driver for '{expected}': incomplete runtime in "
+            f"mssql_python_odbc/libs/macos/{expected}/lib; missing: "
+            f"{', '.join(missing_driver_libraries)}."
         )
     return errors
 

@@ -89,13 +89,29 @@ def gather_wheels(
         shutil.rmtree(links)
     os.makedirs(links, exist_ok=True)
 
-    mssql = [
+    mssql = sorted(
         w
         for w in glob.glob(os.path.join(mssql_dir, mssql_glob))
         if not os.path.basename(w).startswith("mssql_python_odbc-")
-    ]
+    )
     if not mssql:
         _die(f"no mssql-python wheel matching '{mssql_glob}' in {mssql_dir}")
+
+    mssql_versions_by_wheel = {
+        os.path.basename(w): _wheel_version(os.path.basename(w), "mssql_python") for w in mssql
+    }
+    malformed_mssql = sorted(
+        name for name, version in mssql_versions_by_wheel.items() if version is None
+    )
+    if malformed_mssql:
+        _die(f"could not derive a version from mssql-python wheels: {malformed_mssql}")
+    mssql_versions = {
+        version for version in mssql_versions_by_wheel.values() if version is not None
+    }
+    if len(mssql_versions) != 1:
+        _die("mssql-python wheels contain inconsistent versions: " f"{mssql_versions_by_wheel}")
+    mssql_ver = next(iter(mssql_versions))
+
     for w in mssql:
         shutil.copy2(w, links)
 
@@ -119,10 +135,9 @@ def gather_wheels(
 
     # Derive versions from the wheel FILENAMES (single source of truth: the ESRP-signed
     # wheels), so the conda package version can NEVER drift from the wheel.
-    mssql_ver = _wheel_version(os.path.basename(mssql[0]), "mssql_python")
     odbc_ver = _wheel_version(os.path.basename(odbc), "mssql_python_odbc")
-    if not mssql_ver or not odbc_ver:
-        _die("could not derive versions from the wheel filenames")
+    if not odbc_ver:
+        _die(f"could not derive a version from ODBC wheel: {os.path.basename(odbc)}")
     _log(f"Derived versions -> mssql-python={mssql_ver}  mssql-python-odbc={odbc_ver}")
     return mssql_ver, odbc_ver
 
@@ -314,6 +329,9 @@ def build_packages(
     env: dict[str, str],
 ) -> None:
     recipe = os.path.join(recipe_root, "mssql-python")
+    channels = ["microsoft", "conda-forge"]
+    if target_subdir == "win-arm64":
+        channels.insert(0, "defaults")
     for py in pyvers:
         _log(f"=== [py {py}] build mssql-python (self-contained: vendors the ODBC payload) ===")
         cmd = [
@@ -330,9 +348,9 @@ def build_packages(
             "--output-folder",
             bld,
         ]
-        if target_subdir == "win-arm64":
-            # Add Anaconda defaults ahead of conda-forge for the win-arm64 host-env solve.
-            cmd += ["-c", "defaults", "-c", "conda-forge"]
+        for channel in channels:
+            cmd += ["-c", channel]
+        cmd.append("--override-channels")
         run(cmd, env=env, what=f"conda-build mssql-python (py {py})")
 
     # A local channel is only valid if it ALSO carries noarch/repodata.json (even empty) --
