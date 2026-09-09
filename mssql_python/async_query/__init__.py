@@ -2,6 +2,7 @@
 
 from ._native import load_py_core
 from .async_connection import AsyncConnection
+from .async_cursor import AsyncCursor
 from .exception_translator import (
     DataError,
     DatabaseError,
@@ -17,6 +18,7 @@ from .exception_translator import (
 
 __all__ = [
     "AsyncConnection",
+    "AsyncCursor",
     "DataError",
     "DatabaseError",
     "Error",

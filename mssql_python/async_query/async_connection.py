@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from ..logging import logger
 from ._native import load_py_core
+from .async_cursor import AsyncCursor
 from .exception_translator import (
     DataError,
     DatabaseError,
@@ -59,12 +60,12 @@ class AsyncConnection:
         logger.debug("AsyncConnection.connect: connected")
         return cls(native_connection)
 
-    def cursor(self) -> Any:
-        """Create a native asynchronous cursor sharing this connection."""
+    def cursor(self) -> AsyncCursor:
+        """Create a public asynchronous cursor sharing this connection."""
         with translate_py_core_exceptions():
-            cursor = self._native_connection.cursor()
+            native_cursor = self._native_connection.cursor()
         logger.debug("AsyncConnection.cursor: cursor created")
-        return cursor
+        return AsyncCursor(native_cursor)
 
     async def commit(self) -> None:
         """Commit the active transaction, if any."""

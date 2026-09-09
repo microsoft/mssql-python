@@ -3,7 +3,7 @@ from types import ModuleType
 
 import pytest
 
-from mssql_python.async_query import AsyncConnection
+from mssql_python.async_query import AsyncConnection, AsyncCursor
 from mssql_python.async_query import async_connection
 
 
@@ -124,7 +124,9 @@ def test_connection_delegates_complete_native_surface():
     native_connection = FakeNativeConnection()
     connection = AsyncConnection(native_connection)
 
-    assert connection.cursor() is native_connection.native_cursor
+    cursor = connection.cursor()
+    assert isinstance(cursor, AsyncCursor)
+    assert cursor._native_cursor is native_connection.native_cursor
     assert connection.timeout == 0
     connection.timeout = 12
     assert native_connection.timeout == 12

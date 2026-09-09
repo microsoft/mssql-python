@@ -30,6 +30,8 @@ _EXCEPTION_TYPES = {
     "NotSupportedError": NotSupportedError,
 }
 
+_ASYNC_DRIVER_ERROR = "Async operation failed"
+
 
 def translate_py_core_exception(error: Exception) -> Exception:
     """Return the equivalent public exception, or the original non-py-core error."""
@@ -45,7 +47,7 @@ def translate_py_core_exception(error: Exception) -> Exception:
             error_type.__name__,
             public_type.__name__,
         )
-        translated = public_type(str(error), "")
+        translated = public_type(_ASYNC_DRIVER_ERROR, str(error))
         for attribute in ("sql_errors", "info_messages"):
             if hasattr(error, attribute):
                 setattr(translated, attribute, getattr(error, attribute))

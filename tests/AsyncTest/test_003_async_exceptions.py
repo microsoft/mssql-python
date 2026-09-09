@@ -31,8 +31,19 @@ def test_translates_each_native_dbapi_exception(name):
     translated = translate_py_core_exception(native_error)
 
     assert isinstance(translated, getattr(public_exceptions, name))
-    assert translated.driver_error == "native failure"
-    assert translated.ddbc_error == ""
+    assert translated.driver_error == "Async operation failed"
+    assert translated.ddbc_error == "native failure"
+
+
+def test_translation_normalizes_native_detail_as_backend_error():
+    native_error = native_exception("OperationalError")(
+        "[Microsoft][ODBC Driver 18 for SQL Server]connection failed"
+    )
+
+    translated = translate_py_core_exception(native_error)
+
+    assert translated.driver_error == "Async operation failed"
+    assert translated.ddbc_error == "[Microsoft]connection failed"
 
 
 def test_translation_preserves_sql_diagnostics():
