@@ -39,41 +39,74 @@ _PY_DEP_RE = re.compile(r"python\s+(\d+)\.(\d+)")
 _DEFAULT_SUBDIR_PYTHONS = "win-arm64=3.12,3.13,3.14"
 
 
+def _require_index_object(index: object, path: str) -> dict:
+    if not isinstance(index, dict):
+        raise ValueError(f"{path}: info/index.json must contain a JSON object")
+    return index
+
+
+def _required_index_string(index: dict, key: str, path: str) -> str:
+    value = index.get(key)
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(
+            f"{path}: info/index.json field '{key}' must be a non-empty, trimmed string"
+        )
+    return value
+
+
 def _zstd_decompress(raw: bytes) -> bytes:
     """Decompress a zstandard blob, preferring the 3.14+ stdlib backend."""
     try:  # Python 3.14+
         from compression import zstd  # type: ignore
-
-        return zstd.decompress(raw)
-    except Exception:  # pragma: no cover - exercised via the third-party path
-        pass
-    import zstandard  # third-party fallback
-
-    return zstandard.ZstdDecompressor().decompress(raw)
+    except ImportError:
+        try:
+            import zstandard  # third-party fallback
+        except ImportError as exc:
+            raise RuntimeError(
+                "Unable to import 'zstandard': reading .conda (.tar.zst) metadata requires "
+                "Python 3.14+ with compression.zstd or a working 'zstandard' install "
+                "(pip install zstandard)."
+            ) from exc
+        return zstandard.ZstdDecompressor().decompress(raw)
+    return zstd.decompress(raw)
 
 
 def read_index_json(path: str) -> dict:
     """Return the parsed ``info/index.json`` from a ``.conda`` / ``.tar.bz2``."""
     if path.endswith(".conda"):
         with zipfile.ZipFile(path) as zf:
-            info_name = next(
-                (n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if info_name is None:
-                raise ValueError(f"{path}: no info-*.tar.zst member (malformed .conda package)")
-            info_blob = zf.read(info_name)
+            info_names = [
+                name
+                for name in zf.namelist()
+                if name.startswith("info-") and name.endswith(".tar.zst")
+            ]
+            if len(info_names) != 1:
+                raise ValueError(
+                    f"{path}: expected exactly one info-*.tar.zst member; "
+                    f"found {len(info_names)}"
+                )
+            info_blob = zf.read(info_names[0])
         with tarfile.open(fileobj=io.BytesIO(_zstd_decompress(info_blob))) as tf:
-            member = tf.extractfile("info/index.json")
-            if member is None:  # pragma: no cover - malformed package
-                raise ValueError(f"{path}: info/index.json missing")
-            return json.load(member)
+            index_members = [
+                member for member in tf.getmembers() if member.name == "info/index.json"
+            ]
+            if len(index_members) != 1 or not index_members[0].isfile():
+                raise ValueError(f"{path}: expected exactly one regular info/index.json member")
+            member = tf.extractfile(index_members[0])
+            if member is None:
+                raise ValueError(f"{path}: info/index.json is unreadable")
+            return _require_index_object(json.load(member), path)
     if path.endswith(".tar.bz2"):
         with tarfile.open(path, "r:bz2") as tf:
-            member = tf.extractfile("info/index.json")
-            if member is None:  # pragma: no cover - malformed package
-                raise ValueError(f"{path}: info/index.json missing")
-            return json.load(member)
+            index_members = [
+                member for member in tf.getmembers() if member.name == "info/index.json"
+            ]
+            if len(index_members) != 1 or not index_members[0].isfile():
+                raise ValueError(f"{path}: expected exactly one regular info/index.json member")
+            member = tf.extractfile(index_members[0])
+            if member is None:
+                raise ValueError(f"{path}: info/index.json is unreadable")
+            return _require_index_object(json.load(member), path)
     raise ValueError(f"{path}: unrecognized conda package extension")
 
 
@@ -115,9 +148,27 @@ def validate(
     expected_versions = expected_versions or {}
     subdir_pythons = subdir_pythons or {}
 
+    for policy_name, values in (
+        ("required_subdirs", required_subdirs),
+        ("allowed_subdirs", allowed_subdirs),
+        ("expected_pythons", expected_pythons),
+    ):
+        if not values:
+            errors.append(f"release policy '{policy_name}' must not be empty.")
+        elif len(values) != len(set(values)):
+            errors.append(f"release policy '{policy_name}' contains duplicates: {values}.")
+    missing_allowed = sorted(set(required_subdirs) - set(allowed_subdirs))
+    if missing_allowed:
+        errors.append(f"required subdirs are absent from allowed_subdirs: {missing_allowed}.")
+    for subdir, versions in sorted(subdir_pythons.items()):
+        if not versions:
+            errors.append(f"subdir Python override for '{subdir}' must not be empty.")
+
     # 1. Authoritative subdir must be allowed AND match the folder it was staged in.
     for p in packages:
         ident = f"{p['name']}-{p['version']}-{p['build']}"
+        if not p["version"]:
+            errors.append(f"{ident}: package version is missing.")
         if p["subdir"] not in allowed_subdirs:
             errors.append(
                 f"{ident}: real subdir '{p['subdir']}' is not in allowed set {allowed_subdirs}."
@@ -230,13 +281,17 @@ def collect_packages(root: str) -> list[dict]:
     packages = []
     for path in paths:
         index = read_index_json(path)
+        name = _required_index_string(index, "name", path)
+        version = _required_index_string(index, "version", path)
+        subdir = _required_index_string(index, "subdir", path)
+        build = _required_index_string(index, "build", path)
         packages.append(
             {
                 "folder": os.path.basename(os.path.dirname(path)),
-                "subdir": str(index.get("subdir", "")),
-                "name": str(index.get("name", "")),
-                "version": str(index.get("version", "")),
-                "build": str(index.get("build", "")),
+                "subdir": subdir,
+                "name": name,
+                "version": version,
+                "build": build,
                 "python": python_tag_from_index(index),
                 "path": path,
             }
@@ -256,6 +311,10 @@ def _parse_subdir_pythons(value: str) -> dict:
         if not chunk:
             continue
         subdir, _, pys = chunk.partition("=")
+        if not subdir.strip() or not pys.strip():
+            raise ValueError(
+                f"invalid subdir Python override '{chunk}'; expected subdir=X.Y[,X.Y]."
+            )
         result[subdir.strip()] = _split(pys)
     return result
 
@@ -278,7 +337,6 @@ def main(argv: list | None = None) -> int:
         help="Per-subdir Python overrides, e.g. 'win-arm64=3.12,3.13,3.14'.",
     )
     parser.add_argument("--mssql-python-version", default=None)
-    parser.add_argument("--mssql-python-odbc-version", default=None)
     args = parser.parse_args(argv)
 
     packages = collect_packages(args.root)
@@ -289,10 +347,6 @@ def main(argv: list | None = None) -> int:
     expected_versions = {}
     if args.mssql_python_version:
         expected_versions[_BINDING_NAME] = args.mssql_python_version
-    # --mssql-python-odbc-version is accepted for back-compat but ignored: the
-    # self-contained mssql-python package vendors the ODBC payload, so there is no
-    # separate companion package to version.
-
     subdir_pythons = _parse_subdir_pythons(args.subdir_pythons)
 
     print(f"Discovered {len(packages)} conda package(s):")

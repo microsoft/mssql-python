@@ -60,9 +60,13 @@ tdnf distro-sync && tdnf install -y libtool-ltdl krb5-libs glibc-iconv
 pip install mssql-python
 ```
 
-**Conda:** mssql-python is also published as a self-contained conda package — the ODBC Driver 18 payload and its native dependencies (`krb5`, `openssl`, `libltdl`) are resolved by conda, so none of the system `apt`/`dnf`/`apk`/`zypper` steps above are required. Both channels are needed: `mssql-python` comes from the `microsoft` channel and its dependencies resolve from `conda-forge`.
+**Conda:** mssql-python is also published as a self-contained conda package, including the ODBC Driver 18 payload. `mssql-python` comes from the `microsoft` channel. On Linux, its native `krb5`, OpenSSL, and `libltdl` dependencies resolve from `conda-forge`, so the system package steps above are not required. Windows uses SChannel. On macOS, encrypted connections require system OpenSSL from Homebrew (`brew install openssl`) or MacPorts because the ODBC driver does not load OpenSSL from the Conda environment. Windows ARM64 dependencies resolve from `defaults`.
 ```bash
-conda install -c microsoft -c conda-forge mssql-python
+# Windows x64, macOS, and Linux
+conda install -c microsoft -c conda-forge --strict-channel-priority --override-channels mssql-python
+
+# Windows ARM64
+conda install -c microsoft -c defaults --override-channels mssql-python
 ```
 
 ## Key Features

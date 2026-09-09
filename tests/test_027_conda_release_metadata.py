@@ -11,12 +11,21 @@ real ``.conda`` needed) plus one optional round-trip through the metadata reader
 import importlib.util
 import io
 import json
+import sys
 import tarfile
+import types
 from pathlib import Path
 
 import pytest
+import yaml
 
 _MODULE_PATH = Path(__file__).resolve().parent.parent / "conda" / "validate_conda_release.py"
+_ROOT = _MODULE_PATH.parent.parent
+_PROMOTER_PATH = _ROOT / "conda" / "promote_conda_release.py"
+_PUBLISH_STEP_PATH = _ROOT / "OneBranchPipelines" / "steps" / "conda-publish-step.yml"
+_RELEASE_STEP_PATH = _ROOT / "OneBranchPipelines" / "steps" / "conda-release-step.yml"
+_RELEASE_PIPELINE_PATH = _ROOT / "OneBranchPipelines" / "conda-release-pipeline.yml"
+_README_PATH = _ROOT / "README.md"
 
 # The conda/ sources are not shipped inside the built wheel, so the installed-wheel
 # test leg copies only tests/ into an isolated dir. Skip the whole module (rather than
@@ -36,6 +45,24 @@ def _load_module():
 
 
 vcr = _load_module()
+
+
+def _load_promoter():
+    inserted = str(_PROMOTER_PATH.parent)
+    sys.path.insert(0, inserted)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "promote_conda_release_under_test", _PROMOTER_PATH
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(inserted)
+
+
+promoter = _load_promoter()
 
 _REQUIRED = ["win-64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 _ALLOWED = ["win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
@@ -132,6 +159,15 @@ def test_version_mismatch_fails():
     ]
     errors = _run(pkgs)
     assert any("version" in e.lower() for e in errors)
+
+
+def test_missing_package_version_fails_without_expected_version():
+    packages = _healthy_set()
+    packages[0]["version"] = ""
+
+    errors = _run(packages, expected_versions={})
+
+    assert any("package version is missing" in error for error in errors)
 
 
 def test_multiple_versions_same_package_fails():
@@ -268,6 +304,37 @@ def test_parse_subdir_pythons():
     }
 
 
+@pytest.mark.parametrize("value", ["win-arm64", "=3.12", "win-arm64="])
+def test_parse_subdir_pythons_rejects_malformed_policy(value):
+    with pytest.raises(ValueError, match="invalid subdir Python override"):
+        vcr._parse_subdir_pythons(value)
+
+
+def test_release_policy_cannot_disable_required_matrix():
+    packages = _healthy_set()
+
+    assert any(
+        "required_subdirs" in error for error in vcr.validate(packages, [], _ALLOWED, _PYTHONS)
+    )
+    assert any(
+        "expected_pythons" in error for error in vcr.validate(packages, _REQUIRED, _ALLOWED, [])
+    )
+    assert any(
+        "absent from allowed" in error
+        for error in vcr.validate(packages, _REQUIRED, ["win-64"], _PYTHONS)
+    )
+    assert any(
+        "must not be empty" in error
+        for error in vcr.validate(
+            packages,
+            _REQUIRED,
+            _ALLOWED,
+            _PYTHONS,
+            subdir_pythons={"win-64": []},
+        )
+    )
+
+
 def test_python_tag_from_index():
     assert vcr.python_tag_from_index({"build": "py311_0"}) == "3.11"
     assert vcr.python_tag_from_index({"build": "py310h1a2b3c_0"}) == "3.10"
@@ -319,3 +386,428 @@ def test_read_index_json_roundtrip(tmp_path):
     got = vcr.read_index_json(str(conda_path))
     assert got["subdir"] == "win-64"
     assert vcr.python_tag_from_index(got) == "3.12"
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_read_index_json_rejects_multiple_info_payloads(tmp_path):
+    import zipfile
+
+    conda_path = tmp_path / "ambiguous.conda"
+    with zipfile.ZipFile(conda_path, "w") as archive:
+        archive.writestr("info-first.tar.zst", b"first")
+        archive.writestr("info-second.tar.zst", b"second")
+
+    with pytest.raises(ValueError, match="exactly one info-.*found 2"):
+        vcr.read_index_json(str(conda_path))
+
+
+def test_index_json_must_be_an_object():
+    with pytest.raises(ValueError, match="must contain a JSON object"):
+        vcr._require_index_object([], "package.conda")
+
+
+@pytest.mark.parametrize("value", [None, 123, "", " 1.13.0", "1.13.0 "])
+def test_required_index_fields_must_be_trimmed_strings(value):
+    with pytest.raises(ValueError, match="must be a non-empty, trimmed string"):
+        vcr._required_index_string({"version": value}, "version", "package.conda")
+
+
+def test_stdlib_zstd_data_error_does_not_fall_back(monkeypatch):
+    class CorruptFrameError(Exception):
+        pass
+
+    compression = types.ModuleType("compression")
+    compression.zstd = types.SimpleNamespace(
+        decompress=lambda _raw: (_ for _ in ()).throw(CorruptFrameError("corrupt frame"))
+    )
+    fallback = types.ModuleType("zstandard")
+    fallback.ZstdDecompressor = lambda: (_ for _ in ()).throw(
+        AssertionError("third-party fallback must not run after a data error")
+    )
+    monkeypatch.setitem(sys.modules, "compression", compression)
+    monkeypatch.setitem(sys.modules, "zstandard", fallback)
+
+    with pytest.raises(CorruptFrameError, match="corrupt frame"):
+        vcr._zstd_decompress(b"not zstd")
+
+
+def test_zstd_missing_backends_raise_clear_error(monkeypatch):
+    real_import = __import__
+
+    def _missing_backends(name, *args, **kwargs):
+        if name in {"compression", "zstandard"}:
+            raise ImportError(f"blocked {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _missing_backends)
+
+    with pytest.raises(RuntimeError, match="reading .conda.*requires"):
+        vcr._zstd_decompress(b"data")
+
+
+def test_publish_parameters_are_quoted_and_passed_via_environment():
+    publish = _PUBLISH_STEP_PATH.read_text(encoding="utf-8")
+
+    for name, parameter in (
+        ("CONDA_CHANNEL", "condaChannel"),
+        ("CONDA_LABEL", "condaLabel"),
+        ("REQUIRED_SUBDIRS", "requiredSubdirs"),
+        ("ALLOWED_SUBDIRS", "allowedSubdirs"),
+        ("PYTHON_VERSIONS", "pythonVersions"),
+    ):
+        assert f"{name}: '${{{{ parameters.{parameter} }}}}'" in publish
+
+    assert "$required = $env:REQUIRED_SUBDIRS.Split(',')" in publish
+    assert "$allowed  = $env:ALLOWED_SUBDIRS.Split(',')" in publish
+    assert "IsNullOrWhiteSpace($env:CONDA_LABEL)" in publish
+    assert "IsNullOrWhiteSpace($env:REQUIRED_SUBDIRS)" in publish
+    assert "IsNullOrWhiteSpace($env:ALLOWED_SUBDIRS)" in publish
+    assert "IsNullOrWhiteSpace($env:PYTHON_VERSIONS)" in publish
+    assert "$required.Count -eq 0" in publish
+    assert "$allowed.Count -eq 0" in publish
+    assert "$required = '${{ parameters.requiredSubdirs }}'" not in publish
+    assert "$allowed  = '${{ parameters.allowedSubdirs }}'" not in publish
+
+
+def test_release_pipeline_uses_resource_identity_and_gates_production_provenance():
+    pipeline = _RELEASE_PIPELINE_PATH.read_text(encoding="utf-8")
+    release = _RELEASE_STEP_PATH.read_text(encoding="utf-8")
+    publish = _PUBLISH_STEP_PATH.read_text(encoding="utf-8")
+
+    assert "branch: main" in pipeline
+    assert pipeline.count("- checkout: self") == 2
+    assert "default: 'microsoft'\n    values:\n      - 'microsoft'" in pipeline
+    assert "default: 'main'\n    values:\n      - 'main'" in pipeline
+    assert "CONDA_BUILD_PIPELINE_ID: $(resources.pipeline.buildPipeline.pipelineID)" in pipeline
+    assert "CONDA_BUILD_RUN_ID: $(resources.pipeline.buildPipeline.runID)" in pipeline
+    assert "CONDA_BUILD_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)" in pipeline
+    assert "CONDA_BUILD_SOURCE_COMMIT: $(resources.pipeline.buildPipeline.sourceCommit)" in pipeline
+    assert "RELEASE_SOURCE_BRANCH: $(Build.SourceBranch)" in pipeline
+    assert "$build.status -ne 'completed' -or $build.result -ne 'succeeded'" in pipeline
+    assert "$build.sourceBranch -ne 'refs/heads/main'" in pipeline
+    assert "$build.sourceVersion -ne $env:CONDA_BUILD_SOURCE_COMMIT" in pipeline
+    assert "$env:RELEASE_SOURCE_BRANCH -ne 'refs/heads/main'" in pipeline
+    assert "condaBuildDefinitionId" not in pipeline
+    assert "definition: $(resources.pipeline.buildPipeline.pipelineID)" in release
+    assert "definition: $(resources.pipeline.buildPipeline.pipelineID)" in publish
+    assert "buildDefinitionId" not in release
+    assert "buildDefinitionId" not in publish
+
+
+def test_release_boundary_runs_all_platform_audits_with_pinned_dependency():
+    release = _RELEASE_STEP_PATH.read_text(encoding="utf-8")
+
+    assert '"zstandard==0.23.0"' in release
+    assert "--only-binary=:all:" in release
+    assert "pip --isolated install" in release
+    assert "https://packagefeedproxy.microsoft.io/pypi/simple/" in release
+    for script in (
+        "audit_bundled_binaries.py",
+        "assert_pe_machine.py",
+        "assert_macho_arch.py",
+    ):
+        assert script in release
+    assert "--mssql-python-odbc-version" not in release
+    assert "odbcVersion" not in release
+
+
+def test_release_and_publish_template_defaults_stay_aligned():
+    release = yaml.safe_load(_RELEASE_STEP_PATH.read_text(encoding="utf-8"))
+    publish = yaml.safe_load(_PUBLISH_STEP_PATH.read_text(encoding="utf-8"))
+
+    def defaults(document):
+        return {parameter["name"]: parameter.get("default") for parameter in document["parameters"]}
+
+    release_defaults = defaults(release)
+    publish_defaults = defaults(publish)
+    for name in (
+        "condaArtifactName",
+        "requiredSubdirs",
+        "allowedSubdirs",
+        "pythonVersions",
+        "pythonVersion",
+    ):
+        assert publish_defaults[name] == release_defaults[name]
+
+
+def test_publish_uses_pinned_client_and_fail_closed_promotion_helper():
+    publish = _PUBLISH_STEP_PATH.read_text(encoding="utf-8")
+
+    assert '"anaconda-client==1.14.1"' in publish
+    assert '"zstandard==0.23.0"' in publish
+    assert "--only-binary=:all:" in publish
+    assert "pip --isolated install" in publish
+    assert "https://packagefeedproxy.microsoft.io/pypi/simple/" in publish
+    assert "m.version('anaconda-client') == '1.14.1'" in publish
+    assert "m.version('zstandard') == '0.23.0'" in publish
+    assert "ANACONDA_CLIENT_FORCE_STANDALONE: '1'" in publish
+    assert "python -m binstar_client.scripts.cli upload --help" in publish
+    assert "$output = @(& python -m binstar_client.scripts.cli @argsList 2>&1)" in publish
+    assert "$exitCode = $LASTEXITCODE" in publish
+    assert "if ($exitCode -eq 0)" in publish
+    assert "if ($attempt -lt 3)" in publish
+    assert "anaconda -V" not in publish
+    assert "anaconda --version" not in publish
+    assert "& anaconda" not in publish
+    assert "pip install --upgrade pip" not in publish
+    assert "promote_conda_release.py" in publish
+    assert "validate_conda_release.py" in publish
+    assert "Credential-boundary Conda release metadata validation failed" in publish
+    assert "--check-local-only" in publish
+    assert publish.index("validate_conda_release.py") < publish.index("--check-local-only")
+    assert publish.index("--check-local-only") < publish.index("==== Stage: upload")
+    assert "BINSTAR_CONFIG_DIR:" in publish
+    assert "url: https://api.anaconda.org" in publish
+    assert "ssl_verify: true" in publish
+    assert "get_config()" in publish
+    assert "@('upload', '--user'" in publish
+    assert "@('--at'" not in publish
+    assert "--expected-version" in publish
+    assert "anaconda show" not in publish
+    assert "anaconda move" not in publish
+    assert "NOTE: anaconda show exposed no sha256" not in publish
+
+
+def test_release_pool_demand_is_nested_under_demands():
+    pipeline = _RELEASE_PIPELINE_PATH.read_text(encoding="utf-8")
+    assert (
+        "              demands:\n"
+        "                - imageOverride -equals PYTHON-1ES-MMS2022\n" in pipeline
+    )
+
+
+def test_readme_documents_windows_arm64_defaults_channel():
+    readme = _README_PATH.read_text(encoding="utf-8")
+    assert "# Windows x64, macOS, and Linux" in readme
+    assert (
+        "conda install -c microsoft -c conda-forge --strict-channel-priority "
+        "--override-channels mssql-python" in readme
+    )
+    assert "# Windows ARM64" in readme
+    assert "conda install -c microsoft -c defaults --override-channels mssql-python" in readme
+    assert "brew install openssl" in readme
+    assert "does not load OpenSSL from the Conda environment" in readme
+
+
+class _FakeAnacondaApi:
+    def __init__(self, distributions):
+        self.distributions = distributions
+        self.calls = []
+        self.fail_add_after_apply = None
+        self.fail_remove_after_apply = None
+
+    def distribution(self, owner, package, version, basename):
+        self.calls.append(("distribution", owner, package, version, basename))
+        metadata = self.distributions[basename]
+        return {**metadata, "labels": list(metadata["labels"])}
+
+    def add_channel(self, label, owner, *, package, version, filename):
+        self.calls.append(("add", label, owner, package, version, filename))
+        labels = self.distributions[filename]["labels"]
+        if label not in labels:
+            labels.append(label)
+        if filename == self.fail_add_after_apply:
+            raise RuntimeError("simulated add failure after server update")
+
+    def remove_channel(self, label, owner, *, package, version, filename):
+        self.calls.append(("remove", label, owner, package, version, filename))
+        labels = self.distributions[filename]["labels"]
+        if label in labels:
+            labels.remove(label)
+        if (label, filename) == self.fail_remove_after_apply:
+            raise RuntimeError("simulated remove failure after server update")
+
+
+def _distribution(subdir, filename, version="1.13.0"):
+    return promoter.Distribution(
+        path=Path(filename),
+        package="mssql-python",
+        version=version,
+        basename=f"{subdir}/{filename}",
+        sha256=(filename.encode().hex() + "0" * 64)[:64],
+    )
+
+
+def _api_for(distributions, labels=("staging",)):
+    return _FakeAnacondaApi(
+        {
+            distribution.basename: {
+                "basename": distribution.basename,
+                "sha256": distribution.sha256,
+                "labels": list(labels),
+            }
+            for distribution in distributions
+        }
+    )
+
+
+def test_verify_distribution_uses_full_subdir_basename_and_requires_sha_and_label():
+    distribution = _distribution("win-64", "mssql-python-1.13.0-py312_0.conda")
+    api = _api_for([distribution])
+
+    labels = promoter.verify_distribution(api, "microsoft", distribution, required_label="staging")
+
+    assert labels == {"staging"}
+    assert api.calls[-1][-1] == distribution.basename
+
+    api.distributions[distribution.basename]["sha256"] = "bad"
+    with pytest.raises(RuntimeError, match="no valid SHA-256"):
+        promoter.verify_distribution(api, "microsoft", distribution)
+
+
+def test_promote_verifies_all_files_then_cleans_staging_label():
+    distributions = [
+        _distribution("win-64", "mssql-python-1.13.0-py312_0.conda"),
+        _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda"),
+    ]
+    api = _api_for(distributions)
+
+    promoter.promote(
+        api,
+        "microsoft",
+        "staging",
+        "main",
+        "1.13.0",
+        distributions,
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+
+    assert all(api.distributions[item.basename]["labels"] == ["main"] for item in distributions)
+    assert [call[0] for call in api.calls].count("add") == 2
+    assert [call[0] for call in api.calls].count("remove") == 2
+
+
+def test_promote_is_idempotent_after_partial_staging_cleanup():
+    first = _distribution("win-64", "mssql-python-1.13.0-py312_0.conda")
+    second = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
+    api = _api_for([first, second], labels=("staging", "main"))
+    api.distributions[first.basename]["labels"] = ["main"]
+
+    promoter.promote(
+        api,
+        "microsoft",
+        "staging",
+        "main",
+        "1.13.0",
+        [first, second],
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+
+    assert api.distributions[first.basename]["labels"] == ["main"]
+    assert api.distributions[second.basename]["labels"] == ["main"]
+    assert not any(call[0] == "add" for call in api.calls)
+
+
+def test_promote_recovers_matching_file_left_on_old_staging_label():
+    distribution = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
+    api = _api_for([distribution], labels=("main_staging_old",))
+
+    promoter.promote(
+        api,
+        "microsoft",
+        "main_staging_new",
+        "main",
+        "1.13.0",
+        [distribution],
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+
+    assert api.distributions[distribution.basename]["labels"] == ["main_staging_old", "main"]
+    add_labels = [call[1] for call in api.calls if call[0] == "add"]
+    assert add_labels == ["main_staging_new", "main"]
+
+
+def test_promote_accepts_ambiguous_add_failure_when_label_landed():
+    first = _distribution("win-64", "mssql-python-1.13.0-py312_0.conda")
+    second = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
+    api = _api_for([first, second])
+    api.fail_add_after_apply = second.basename
+
+    promoter.promote(
+        api,
+        "microsoft",
+        "staging",
+        "main",
+        "1.13.0",
+        [first, second],
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+
+    assert all(api.distributions[item.basename]["labels"] == ["main"] for item in (first, second))
+
+
+def test_promote_accepts_ambiguous_staging_cleanup_when_label_was_removed():
+    distribution = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
+    api = _api_for([distribution])
+    api.fail_remove_after_apply = ("staging", distribution.basename)
+
+    promoter.promote(
+        api,
+        "microsoft",
+        "staging",
+        "main",
+        "1.13.0",
+        [distribution],
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+
+    assert api.distributions[distribution.basename]["labels"] == ["main"]
+
+
+def test_promote_rolls_back_partial_label_promotion():
+    first = _distribution("win-64", "mssql-python-1.13.0-py312_0.conda")
+    second = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
+    api = _api_for([first, second])
+    api.fail_add_after_apply = second.basename
+
+    original_distribution = api.distribution
+    hide_target_once = {second.basename}
+
+    def fail_second_target_verification(owner, package, version, basename):
+        metadata = original_distribution(owner, package, version, basename)
+        if basename in hide_target_once and "main" in metadata["labels"]:
+            hide_target_once.remove(basename)
+            metadata["labels"].remove("main")
+        return metadata
+
+    api.distribution = fail_second_target_verification
+
+    with pytest.raises(RuntimeError, match="rollback of newly added target labels was attempted"):
+        promoter.promote(
+            api,
+            "microsoft",
+            "staging",
+            "main",
+            "1.13.0",
+            [first, second],
+            verify_attempts=1,
+            delay_seconds=0,
+        )
+
+    assert all(
+        api.distributions[item.basename]["labels"] == ["staging"] for item in (first, second)
+    )
+
+
+def test_promote_rejects_wrong_release_version_before_api_mutation():
+    distribution = _distribution("linux-64", "mssql-python-9.9.9-py313_0.conda", version="9.9.9")
+    api = _api_for([distribution])
+
+    with pytest.raises(ValueError, match="do not match expected"):
+        promoter.promote(
+            api,
+            "microsoft",
+            "staging",
+            "main",
+            "1.13.0",
+            [distribution],
+            verify_attempts=1,
+            delay_seconds=0,
+        )
+
+    assert api.calls == []

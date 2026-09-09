@@ -32,19 +32,14 @@ parameters:
     displayName: 'Anaconda.org channel/org to publish to'
     type: string
     default: 'microsoft'
+    values:
+      - 'microsoft'
   - name: condaLabel
     displayName: 'Anaconda.org channel label'
     type: string
     default: 'main'
-  # Infra setup: ADO definition id of the STANDALONE conda-build pipeline
-  # (conda-build-pipeline.yml), whose ConsolidateConda stage produces
-  # drop_ConsolidateConda_ConsolidateArtifacts. This is NOT the wheel pipeline
-  # (def 2199). Set it once the conda-build pipeline is registered in ADO; 0 is a
-  # placeholder that must be overridden before a real run.
-  - name: condaBuildDefinitionId
-    displayName: 'Conda-build pipeline ADO definition id'
-    type: number
-    default: 0
+    values:
+      - 'main'
   # The exact mssql-python version being released. When set, the readiness gate
   # asserts EVERY conda package matches it (not just internal one-version
   # consistency). Leave empty only for a consistency-only dry run.
@@ -70,12 +65,11 @@ resources:
   # The build pipeline whose consolidated conda artifact this pipeline validates + publishes.
   pipelines:
     - pipeline: buildPipeline
-      # Infra setup: the STANDALONE conda-build pipeline (backed by
-      # conda-build-pipeline.yml), whose ConsolidateConda stage publishes
-      # drop_ConsolidateConda_ConsolidateArtifacts. Update to its exact ADO
-      # definition name once registered. NOT the wheel pipeline
-      # (Build-Release-Package-Pipeline / def 2199), which no longer builds conda.
+      # Registered ADO definition Conda-Build-Pipeline, backed by conda-build-pipeline.yml. Its
+      # ConsolidateConda stage publishes drop_ConsolidateConda_ConsolidateArtifacts.
+      # This is not the wheel pipeline (definition 2199), which no longer builds Conda.
       source: 'Conda-Build-Pipeline'
+      branch: main
       trigger: none
 
 extends:
@@ -128,27 +122,115 @@ extends:
               isCustom: true
               name: Python-1ES-pool
               demands:
-              - imageOverride -equals PYTHON-1ES-MMS2022
+                - imageOverride -equals PYTHON-1ES-MMS2022
             variables:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
             steps:
-              # Publishing must PIN the exact version. With the provenance gate removed, an
-              # unpinned publish (empty version = "accept any single consistent version") could
-              # ship a stale/unintended artifact. Require a non-empty version when publishing.
+              - checkout: self
+                fetchDepth: 1
+              - task: PowerShell@2
+                displayName: 'Guard: selected conda-build run provenance'
+                env:
+                  CONDA_BUILD_PIPELINE_ID: $(resources.pipeline.buildPipeline.pipelineID)
+                  CONDA_BUILD_RUN_ID: $(resources.pipeline.buildPipeline.runID)
+                  CONDA_BUILD_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)
+                  CONDA_BUILD_SOURCE_COMMIT: $(resources.pipeline.buildPipeline.sourceCommit)
+                  RELEASE_SOURCE_BRANCH: $(Build.SourceBranch)
+                  PUBLISH_TO_CONDA: '${{ parameters.publishToConda }}'
+                  SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                  SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+                  SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    $ErrorActionPreference = 'Stop'
+
+                    $pipelineId = 0
+                    $runId = 0
+                    if (-not [int]::TryParse($env:CONDA_BUILD_PIPELINE_ID, [ref]$pipelineId) -or $pipelineId -le 0) {
+                      Write-Error "The conda-build pipeline resource did not expose a valid pipelineID."
+                      exit 1
+                    }
+                    if (-not [int]::TryParse($env:CONDA_BUILD_RUN_ID, [ref]$runId) -or $runId -le 0) {
+                      Write-Error "The conda-build pipeline resource did not expose a valid runID."
+                      exit 1
+                    }
+                    if ([string]::IsNullOrWhiteSpace($env:CONDA_BUILD_SOURCE_BRANCH)) {
+                      Write-Error "The conda-build pipeline resource did not expose sourceBranch."
+                      exit 1
+                    }
+                    if ($env:CONDA_BUILD_SOURCE_COMMIT -notmatch '^[0-9a-fA-F]{40}$') {
+                      Write-Error "The conda-build pipeline resource did not expose a valid sourceCommit."
+                      exit 1
+                    }
+                    $publishToConda = $false
+                    if (-not [bool]::TryParse($env:PUBLISH_TO_CONDA, [ref]$publishToConda)) {
+                      Write-Error "publishToConda is missing or invalid; refusing to classify producer provenance."
+                      exit 1
+                    }
+
+                    Write-Host "Selected conda-build run: pipeline=$pipelineId run=$runId branch=$env:CONDA_BUILD_SOURCE_BRANCH"
+                    if (-not $publishToConda) {
+                      Write-Host "Validate-only run: feature-branch producer artifacts are allowed."
+                      exit 0
+                    }
+
+                    if ($env:CONDA_BUILD_SOURCE_BRANCH -ne 'refs/heads/main') {
+                      Write-Error "Production Conda publication requires producer artifacts from refs/heads/main; selected run is from '$env:CONDA_BUILD_SOURCE_BRANCH'."
+                      exit 1
+                    }
+                    if ($env:RELEASE_SOURCE_BRANCH -ne 'refs/heads/main') {
+                      Write-Error "Production Conda publication requires release YAML from refs/heads/main; this run uses '$env:RELEASE_SOURCE_BRANCH'."
+                      exit 1
+                    }
+                    if ([string]::IsNullOrWhiteSpace($env:SYSTEM_ACCESSTOKEN)) {
+                      Write-Error "System.AccessToken is unavailable; producer run status cannot be verified."
+                      exit 1
+                    }
+
+                    $buildUri = "$env:SYSTEM_COLLECTIONURI$env:SYSTEM_TEAMPROJECTID/_apis/build/builds/$runId`?api-version=7.1"
+                    try {
+                      $build = Invoke-RestMethod -Uri $buildUri -Headers @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
+                    }
+                    catch {
+                      Write-Error "Failed to verify selected producer run '$runId': $($_.Exception.Message)"
+                      exit 1
+                    }
+
+                    if ([int]$build.definition.id -ne $pipelineId) {
+                      Write-Error "Selected run '$runId' belongs to pipeline '$($build.definition.id)', not declared resource pipeline '$pipelineId'."
+                      exit 1
+                    }
+                    if ($build.sourceBranch -ne 'refs/heads/main') {
+                      Write-Error "Azure Build API reports producer branch '$($build.sourceBranch)', not refs/heads/main."
+                      exit 1
+                    }
+                    if ($build.sourceVersion -ne $env:CONDA_BUILD_SOURCE_COMMIT) {
+                      Write-Error "Producer commit mismatch: resource='$env:CONDA_BUILD_SOURCE_COMMIT' API='$($build.sourceVersion)'."
+                      exit 1
+                    }
+                    if ($build.status -ne 'completed' -or $build.result -ne 'succeeded') {
+                      Write-Error "Producer run '$runId' is status='$($build.status)' result='$($build.result)'; production publication requires completed/succeeded."
+                      exit 1
+                    }
+                    Write-Host "Producer provenance verified: main, completed, succeeded."
+
+              # Publishing must pin the exact version in addition to producer provenance.
               - ${{ if eq(parameters.publishToConda, true) }}:
                 - task: PowerShell@2
                   displayName: 'Guard: expected mssql-python version is required to publish'
+                  env:
+                    MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
                   inputs:
                     targetType: 'inline'
                     script: |
-                      if ([string]::IsNullOrWhiteSpace('${{ parameters.mssqlPythonVersion }}')) {
+                      if ([string]::IsNullOrWhiteSpace($env:MSSQL_PYTHON_VERSION)) {
                         Write-Error "publishToConda=true but mssqlPythonVersion is empty. A production publish must pin the exact version (the release-readiness gate then asserts EVERY package matches it). Re-run with mssqlPythonVersion set."
                         exit 1
                       }
-                      Write-Host "Publish version pin: ${{ parameters.mssqlPythonVersion }}"
+                      Write-Host "Publish version pin: $env:MSSQL_PYTHON_VERSION"
               - template: /OneBranchPipelines/steps/conda-release-step.yml@self
                 parameters:
-                  buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
                   mssqlPythonVersion: '${{ parameters.mssqlPythonVersion }}'
 
               # Dry run (publishToConda=false): enumerate every package and print the exact
@@ -158,6 +240,9 @@ extends:
               - ${{ if eq(parameters.publishToConda, false) }}:
                 - task: PowerShell@2
                   displayName: 'Dry-run publish plan (validate-only): enumerate packages + print the anaconda upload plan (NO upload)'
+                  env:
+                    CONDA_CHANNEL: '${{ parameters.condaChannel }}'
+                    CONDA_LABEL: '${{ parameters.condaLabel }}'
                   inputs:
                     targetType: 'inline'
                     script: |
@@ -171,6 +256,15 @@ extends:
 
                       $pkgs = @(Get-ChildItem -Path $root -Recurse -Include *.conda, *.tar.bz2)
                       if ($pkgs.Count -eq 0) { Write-Error "No conda packages found under $root."; exit 1 }
+                      $identifierPattern = '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+                      if ($env:CONDA_CHANNEL -notmatch $identifierPattern) {
+                        Write-Error "Invalid condaChannel '$env:CONDA_CHANNEL'. Use letters, digits, dot, underscore, or hyphen; the first character must be alphanumeric."
+                        exit 1
+                      }
+                      if ($env:CONDA_LABEL -notmatch $identifierPattern) {
+                        Write-Error "Invalid condaLabel '$env:CONDA_LABEL'. Use letters, digits, dot, underscore, or hyphen; the first character must be alphanumeric."
+                        exit 1
+                      }
 
                       # mssql-python bindings only (the self-contained model ships no companion).
                       function Get-Binding($items) { @($items | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
@@ -189,11 +283,11 @@ extends:
                       }
 
                       Write-Host "`nanaconda upload PLAN (DRY-RUN - NOT executed):"
-                      Write-Host "  target channel/org : ${{ parameters.condaChannel }}"
-                      Write-Host "  target label       : ${{ parameters.condaLabel }}"
+                      Write-Host "  target channel/org : $env:CONDA_CHANNEL"
+                      Write-Host "  target label       : $env:CONDA_LABEL"
                       foreach ($p in ($pkgs | Sort-Object FullName)) {
                         $subdir = Split-Path -Leaf (Split-Path -Parent $p.FullName)
-                        Write-Host "  WOULD RUN: anaconda upload --user ${{ parameters.condaChannel }} --label ${{ parameters.condaLabel }} --skip-existing  $subdir/$($p.Name)"
+                        Write-Host "  WOULD RUN: anaconda upload --user $env:CONDA_CHANNEL --label $env:CONDA_LABEL --skip-existing  $subdir/$($p.Name)"
                       }
 
                       Write-Host "`n====================================="
@@ -217,8 +311,10 @@ extends:
               variables:
                 ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
               steps:
+                - checkout: self
+                  fetchDepth: 1
                 - template: /OneBranchPipelines/steps/conda-publish-step.yml@self
                   parameters:
-                    buildDefinitionId: ${{ parameters.condaBuildDefinitionId }}
                     condaChannel: '${{ parameters.condaChannel }}'
                     condaLabel: '${{ parameters.condaLabel }}'
+                    mssqlPythonVersion: '${{ parameters.mssqlPythonVersion }}'
