@@ -3493,11 +3493,11 @@ def test_connection_searchescape_consistency(db_connection):
 
 
 def test_set_attr_constants_access():
-    """Test that only relevant connection attribute constants are accessible.
+    """Test that only supported constants are accessible.
 
     This test distinguishes between driver-independent (ODBC standard) and
     driver-manager–dependent (may not be supported everywhere) constants.
-    Only ODBC-standard, cross-platform constants should be public API.
+    ODBC-standard and supported SQL Server-specific constants should be public API.
     """
     # ODBC-standard, driver-independent constants (should be public)
     odbc_attr_constants = [
@@ -3516,6 +3516,11 @@ def test_set_attr_constants_access():
         "SQL_MODE_READ_WRITE",
         "SQL_MODE_READ_ONLY",
     ]
+    sql_server_type_constants = {
+        "SQL_SS_TIME2": -154,
+        "SQL_SS_XML": -152,
+        "SQL_SS_VARIANT": -150,
+    }
 
     # Driver-manager–dependent or rarely supported constants (should NOT be public API)
     dm_attr_constants = [
@@ -3537,39 +3542,20 @@ def test_set_attr_constants_access():
     ]
     dm_value_constants = ["SQL_CD_TRUE", "SQL_CD_FALSE", "SQL_RESET_CONNECTION_YES"]
 
-    # Check ODBC-standard constants are present and int
-    for const_name in odbc_attr_constants + odbc_value_constants:
-        assert hasattr(
-            mssql_python, const_name
-        ), f"{const_name} should be available (ODBC standard)"
+    # Check supported constants are present and int
+    public_constants = odbc_attr_constants + odbc_value_constants + list(sql_server_type_constants)
+    for const_name in public_constants:
+        assert hasattr(mssql_python, const_name), f"{const_name} should be available"
         const_value = getattr(mssql_python, const_name)
         assert isinstance(const_value, int), f"{const_name} should be an integer"
+        if const_name in sql_server_type_constants:
+            expected_value = sql_server_type_constants[const_name]
+            assert const_value == expected_value, f"{const_name} should equal {expected_value}"
+            assert const_name in mssql_python.__all__, f"{const_name} should be in __all__"
 
     # Check driver-manager–dependent constants are NOT present
     for const_name in dm_attr_constants + dm_value_constants:
         assert not hasattr(mssql_python, const_name), f"{const_name} should NOT be public API"
-
-
-def test_sql_server_type_constants_public_api():
-    """SQL Server-specific ODBC type constants must be exposed at the package level.
-
-    pyodbc exposes SQL_SS_TIME2, SQL_SS_XML, and SQL_SS_VARIANT as module-level
-    attributes. mssql_python must match so drop-in consumers (e.g. Django's SQL
-    Server backend, which reads Database.SQL_SS_TIME2) don't need a fallback.
-    """
-    expected = {
-        "SQL_SS_TIME2": -154,
-        "SQL_SS_XML": -152,
-        "SQL_SS_VARIANT": -150,
-    }
-    for const_name, const_value in expected.items():
-        assert hasattr(
-            mssql_python, const_name
-        ), f"{const_name} should be public API (pyodbc parity)"
-        assert (
-            getattr(mssql_python, const_name) == const_value
-        ), f"{const_name} should equal {const_value}"
-        assert const_name in mssql_python.__all__, f"{const_name} should be in __all__"
 
 
 def test_set_attr_basic_functionality(db_connection):
