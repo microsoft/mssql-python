@@ -334,7 +334,9 @@ def main():
             '"-DCMAKE_MODULE_LINKER_FLAGS_RELEASE=/DEBUG /OPT:REF /OPT:ICF" && '
             f'"{cmake}" --build "{build}" --config Release'
         )
-        run([os.environ["COMSPEC"], "/d", "/c", command], "native-build", timeout=600)
+        # cmd.exe needs its inner quotes verbatim, not list2cmdline's backslash escapes.
+        build_command = f'"{os.environ["COMSPEC"]}" /d /s /c "{command}"'
+        run(build_command, "native-build", timeout=600)
         for suffix in ("pyd", "pdb"):
             name = f"ddbc_bindings.cp314-amd64.{suffix}"
             shutil.copy2(build / "Release" / name, source / "mssql_python" / name)
