@@ -187,7 +187,7 @@ def test_main_passes_complete_structured_connection_parameters(monkeypatch):
     assert captured == {
         "args": (),
         "kwargs": {
-            "Server": "127.0.0.1,1",
+            "Server": "127.0.0.1,1",  # DevSkim: ignore DS162092 - asserted loopback probe
             "Database": "x",
             "Trusted_Connection": "yes",
             "Encrypt": "no",

@@ -292,28 +292,32 @@ def detect_pythons(links: str, python_versions: str) -> list[str]:
     return pyvers
 
 
-def build_env(mssql_ver: str, odbc_ver: str, links: str, target_subdir: str) -> dict[str, str]:
+def build_env(
+    mssql_ver: str, odbc_ver: str, links: str, cross_target_subdir: str
+) -> dict[str, str]:
     """The environment consumed by the recipe (jinja + build.sh/bld.bat) and by conda-build."""
     env = dict(os.environ)
     env["WHEELS_DIR"] = links
     env["MSSQL_PYTHON_VERSION"] = mssql_ver
     env["MSSQL_ODBC_VERSION"] = odbc_ver
-    if target_subdir:
+    if cross_target_subdir:
         # conda-build AND the verify `conda create` honor CONDA_SUBDIR -> the packages are
         # stamped for the target subdir and the import check runs the target Python where the
         # host can execute it (natively / Rosetta 2 / QEMU binfmt).
-        env["CONDA_SUBDIR"] = target_subdir
-        _log(f"Cross-targeting conda subdir: CONDA_SUBDIR={target_subdir}")
-        if target_subdir == "win-arm64":
+        env["CONDA_SUBDIR"] = cross_target_subdir
+        _log(f"Cross-targeting conda subdir: CONDA_SUBDIR={cross_target_subdir}")
+        if cross_target_subdir == "win-arm64":
             # win-arm64 deps (python 3.12-3.14, cryptography, vc14_runtime, pyodbc) live on
             # Anaconda `defaults`, not conda-forge. Auto-accept the defaults ToS so the
             # unattended host-env + verify solves never block on a prompt.
             env["CONDA_PLUGINS_AUTO_ACCEPT_TOS"] = "yes"
             _log("win-arm64: CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes")
-        if target_subdir.endswith("aarch64") and os.path.isdir("/usr/aarch64-linux-gnu"):
+        if cross_target_subdir.endswith("aarch64") and os.path.isdir("/usr/aarch64-linux-gnu"):
             # Emulated aarch64 verify runs under qemu-user; point it at the aarch64 glibc loader.
             env.setdefault("QEMU_LD_PREFIX", "/usr/aarch64-linux-gnu")
             _log(f"Set QEMU_LD_PREFIX={env['QEMU_LD_PREFIX']} for emulated aarch64 verify")
+    else:
+        env.pop("CONDA_SUBDIR", None)
     return env
 
 
@@ -330,6 +334,9 @@ def build_packages(
     env: dict[str, str],
 ) -> None:
     recipe = os.path.join(recipe_root, "mssql-python")
+    croot = os.path.join(os.path.dirname(os.path.abspath(bld)), "croot")
+    if os.path.isdir(croot):
+        shutil.rmtree(croot)
     channels = ["microsoft", "conda-forge"]
     if target_subdir == "win-arm64":
         channels.insert(0, "defaults")
@@ -348,6 +355,8 @@ def build_packages(
             "--no-anaconda-upload",
             "--output-folder",
             bld,
+            "--croot",
+            croot,
         ]
         for channel in channels:
             cmd += ["-c", channel]
@@ -443,9 +452,9 @@ def make_verify_channel(output_dir: str, bld: str) -> str:
     return chan_url
 
 
-def _is_emulated_cross(target_subdir: str) -> bool:
+def _is_emulated_cross(target_subdir: str, cross_build: bool) -> bool:
     host = platform.machine().lower()
-    if target_subdir == "linux-aarch64" and host not in ("aarch64", "arm64"):
+    if cross_build and target_subdir == "linux-aarch64" and host not in ("aarch64", "arm64"):
         _log(
             f"NOTE: emulated CROSS leg (CONDA_SUBDIR={target_subdir} on {host}); runtime driver "
             f"probes are best-effort under QEMU binfmt, build/audit/import remain blocking."
@@ -479,6 +488,7 @@ def verify(
     pyvers: list[str],
     mssql_ver: str,
     target_subdir: str,
+    cross_build: bool,
     env: dict[str, str],
     workdir: str,
 ) -> None:
@@ -491,7 +501,7 @@ def verify(
     old_cwd = os.getcwd()
     os.chdir(workdir)
     try:
-        _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, env)
+        _verify_impl(conda, chan, recipe_root, pyvers, mssql_ver, target_subdir, cross_build, env)
     finally:
         os.chdir(old_cwd)
 
@@ -503,9 +513,10 @@ def _verify_impl(
     pyvers: list[str],
     mssql_ver: str,
     target_subdir: str,
+    cross_build: bool,
     env: dict[str, str],
 ) -> None:
-    emulated = _is_emulated_cross(target_subdir)
+    emulated = _is_emulated_cross(target_subdir, cross_build)
     is_win = sys.platform == "win32"
     for py in pyvers:
         sub = (target_subdir or "native").replace("-", "_")
@@ -513,7 +524,7 @@ def _verify_impl(
         run_ok([conda, "env", "remove", "-y", "-n", name])
         _log(f"=== [py {py}] create verify env from local channel ===")
 
-        cross_best_effort = target_subdir in ("win-arm64", "osx-arm64")
+        cross_best_effort = cross_build and target_subdir in ("win-arm64", "osx-arm64")
         if target_subdir == "win-arm64":
             # BLOCKING solvability gate: --dry-run resolves the FULL win-arm64 graph on x64
             # (no link / post-link / arm64 exec) -- a pure "installable?" check. win-arm64 deps
@@ -585,7 +596,7 @@ def _verify_impl(
         # Can the freshly built package's Python EXECUTE on this host?
         rc, out = run_capture([conda, "run", "-n", name, "python", "-c", "import sys"], env=env)
         if rc != 0:
-            if cross_best_effort or (target_subdir == "osx-arm64" and sys.platform == "darwin"):
+            if cross_best_effort:
                 _log(
                     f"=== [py {py}] {target_subdir} cross: target Python not executable on this "
                     f"host; deps SOLVED (blocking), skipping runtime import (arch enforced by "
@@ -849,14 +860,13 @@ def main(argv: list[str] | None = None) -> int:
     run([conda, "--version"], what="conda --version")
     builder = create_builder_env(conda)
     pyvers = detect_pythons(links, args.python_versions)
+    cross_build = bool(args.conda_target_subdir)
     env = build_env(mssql_ver, odbc_ver, links, args.conda_target_subdir)
 
-    build_packages(conda, builder, args.recipe_root, pyvers, bld, args.conda_target_subdir, env)
-    audit_packages(conda, builder, args.recipe_root, bld, args.conda_target_subdir, env)
+    build_packages(conda, builder, args.recipe_root, pyvers, bld, target, env)
+    audit_packages(conda, builder, args.recipe_root, bld, target, env)
     chan = make_verify_channel(output_dir, bld)
-    verify(
-        conda, chan, args.recipe_root, pyvers, mssql_ver, args.conda_target_subdir, env, output_dir
-    )
+    verify(conda, chan, args.recipe_root, pyvers, mssql_ver, target, cross_build, env, output_dir)
     stage(bld, args.stage_dir, target)
 
     _log("CONDA_BUILD_OK")
