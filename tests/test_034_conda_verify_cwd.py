@@ -98,23 +98,69 @@ def test_windows_pool_demand_is_indented_under_demands_key():
 
 
 @pytest.mark.parametrize(
-    ("target_subdir", "host", "expected"),
+    ("target_subdir", "cross_build", "host", "expected"),
     [
-        ("linux-aarch64", "x86_64", True),
-        ("linux-aarch64", "arm64", False),
-        ("win-arm64", "x86_64", False),
-        ("osx-arm64", "x86_64", False),
-        ("", "x86_64", False),
+        ("linux-aarch64", True, "x86_64", True),
+        ("linux-aarch64", True, "arm64", False),
+        ("linux-aarch64", False, "x86_64", False),
+        ("win-arm64", True, "x86_64", False),
+        ("osx-arm64", True, "x86_64", False),
+        ("", False, "x86_64", False),
     ],
 )
 def test_is_emulated_cross_only_classifies_linux_qemu(
-    target_subdir, host, expected, monkeypatch, capsys
+    target_subdir, cross_build, host, expected, monkeypatch, capsys
 ):
     mod = _load_orchestrator()
     monkeypatch.setattr(mod.platform, "machine", lambda: host)
 
-    assert mod._is_emulated_cross(target_subdir) is expected
+    assert mod._is_emulated_cross(target_subdir, cross_build) is expected
     assert ("QEMU" in capsys.readouterr().out) is expected
+
+
+@pytest.mark.parametrize(("cross_build", "should_fail"), [(False, True), (True, False)])
+def test_arm_target_execution_skip_requires_cross_build(
+    cross_build, should_fail, tmp_path, monkeypatch
+):
+    mod = _load_orchestrator()
+
+    def _fake_run(cmd, *args, **kwargs):
+        command = list(cmd)
+        target_python_probe = command[-2:] == ["-c", "import sys"]
+        return types.SimpleNamespace(
+            returncode=17 if target_python_probe else 0,
+            stdout="target Python cannot execute" if target_python_probe else "",
+        )
+
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
+    )
+
+    if should_fail:
+        with pytest.raises(SystemExit):
+            mod._verify_impl(
+                "conda",
+                str(tmp_path / "channel"),
+                str(tmp_path / "recipe"),
+                ["3.13"],
+                "1.2.3",
+                "osx-arm64",
+                cross_build,
+                {},
+            )
+    else:
+        mod._verify_impl(
+            "conda",
+            str(tmp_path / "channel"),
+            str(tmp_path / "recipe"),
+            ["3.13"],
+            "1.2.3",
+            "osx-arm64",
+            cross_build,
+            {},
+        )
 
 
 @pytest.mark.parametrize("target_subdir", ["win-arm64", "osx-arm64"])
@@ -144,6 +190,7 @@ def test_non_qemu_cross_driver_probe_failure_is_blocking(target_subdir, tmp_path
             ["3.13"],
             "1.2.3",
             target_subdir,
+            True,
             {},
         )
 
@@ -243,6 +290,7 @@ def test_verify_reports_conda_list_failure(monkeypatch, capsys, tmp_path):
             ["3.13"],
             "1.2.3",
             "",
+            False,
             {},
         )
     error = capsys.readouterr().err
@@ -278,7 +326,8 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
         str(tmp_path / "recipe"),
         ["3.11"],
         "1.2.3",
-        "",  # native target (no cross-skip)
+        "linux-64",
+        False,
         {},  # env: no CONDA_ASSERT_PREFIX_REACHABLE -> the ldd reachability gate self-skips
         str(workdir),
     )
@@ -326,7 +375,8 @@ def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
             str(tmp_path / "recipe"),
             ["3.11"],
             "1.2.3",
-            "",
+            "linux-64",
+            False,
             {},
             str(workdir),
         )
@@ -349,6 +399,96 @@ def test_make_verify_channel_returns_encoded_file_uri(tmp_path):
     assert "%20" in channel
     assert "%23" in channel
     assert (channel_path / "repodata.json").read_text(encoding="ascii") == "{}"
+
+
+def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monkeypatch):
+    mod = _load_orchestrator()
+    calls = {}
+
+    monkeypatch.setattr(mod, "gather_wheels", lambda *_args: ("1.2.3", "18.6.2"))
+    monkeypatch.setattr(mod, "find_or_install_conda", lambda _output_dir: "conda")
+    monkeypatch.setattr(mod, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mod, "create_builder_env", lambda _conda: "conda_builder")
+    monkeypatch.setattr(mod, "detect_pythons", lambda *_args: ["3.13"])
+
+    def _build_env(_mssql_ver, _odbc_ver, _links, cross_target_subdir):
+        calls["build_env"] = cross_target_subdir
+        return {}
+
+    def _build_packages(_conda, _builder, _recipe, _pyvers, _bld, target, _env):
+        calls["build"] = target
+
+    def _audit_packages(_conda, _builder, _recipe, _bld, target, _env):
+        calls["audit"] = target
+
+    def _verify(
+        _conda,
+        _channel,
+        _recipe,
+        _pyvers,
+        _version,
+        target,
+        cross_build,
+        _env,
+        _workdir,
+    ):
+        calls["verify"] = (target, cross_build)
+
+    def _stage(_bld, _stage_dir, target):
+        calls["stage"] = target
+
+    monkeypatch.setattr(mod, "build_env", _build_env)
+    monkeypatch.setattr(mod, "build_packages", _build_packages)
+    monkeypatch.setattr(mod, "audit_packages", _audit_packages)
+    monkeypatch.setattr(mod, "make_verify_channel", lambda *_args: "file:///channel")
+    monkeypatch.setattr(mod, "verify", _verify)
+    monkeypatch.setattr(mod, "stage", _stage)
+
+    result = mod.main(
+        [
+            "--mssql-wheel-dir",
+            str(tmp_path / "wheels"),
+            "--odbc-wheel-dir",
+            str(tmp_path / "odbc"),
+            "--odbc-wheel-filter",
+            "*.whl",
+            "--recipe-root",
+            str(tmp_path / "recipe"),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--stage-dir",
+            str(tmp_path / "stage"),
+            "--conda-subdir",
+            "linux-64",
+        ]
+    )
+
+    assert result == 0
+    assert calls == {
+        "build_env": "",
+        "build": "linux-64",
+        "audit": "linux-64",
+        "verify": ("linux-64", False),
+        "stage": "linux-64",
+    }
+
+
+def test_build_env_clears_ambient_subdir_for_native_build(monkeypatch):
+    mod = _load_orchestrator()
+    monkeypatch.setenv("CONDA_SUBDIR", "win-arm64")
+
+    env = mod.build_env("1.2.3", "18.6.2", "wheels", "")
+
+    assert "CONDA_SUBDIR" not in env
+
+
+def test_build_env_sets_subdir_for_cross_build(monkeypatch):
+    mod = _load_orchestrator()
+    monkeypatch.setenv("CONDA_SUBDIR", "win-64")
+
+    env = mod.build_env("1.2.3", "18.6.2", "wheels", "osx-arm64")
+
+    assert env["CONDA_SUBDIR"] == "osx-arm64"
 
 
 def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeypatch):
@@ -376,6 +516,7 @@ def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeyp
             ["3.11"],
             "1.2.3",
             "win-arm64",
+            True,
             {},
         )
 
@@ -468,6 +609,9 @@ def test_conda_build_uses_only_explicit_channels(
 ):
     mod = _load_orchestrator()
     calls = []
+    croot = tmp_path / "croot"
+    croot.mkdir()
+    (croot / "stale").write_text("stale", encoding="ascii")
 
     def _capture_run(command, **_kwargs):
         calls.append(list(command))
@@ -487,6 +631,8 @@ def test_conda_build_uses_only_explicit_channels(
     assert len(calls) == 1
     command = calls[0]
     assert "--override-channels" in command
+    assert command[command.index("--croot") + 1] == str(croot)
+    assert not croot.exists()
     assert [command[index + 1] for index, arg in enumerate(command) if arg == "-c"] == (
         expected_channels
     )
