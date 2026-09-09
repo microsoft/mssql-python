@@ -1732,7 +1732,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # it will be unwrapped for parameter binding. This means you cannot
         # pass a tuple as a single parameter value (but SQL Server doesn't
         # support tuple types as parameter values anyway).
-        with perf_phase("py::execute::param_unpack"):
+        with perf_phase("py::execute::param_prep"):
             if parameters:
                 # Check if single parameter is a nested container that should be unwrapped
                 # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))

@@ -28,9 +28,10 @@ class _ProfilingContext:
         if not hasattr(ddbc_bindings, "profiling"):
             raise RuntimeError(
                 "Native profiling is not available in this build. The C++ extension "
-                "was built without profiling instrumentation. Rebuild it with "
-                "ENABLE_PROFILING=1 (e.g. `ENABLE_PROFILING=1 bash "
-                "mssql_python/pybind/build.sh`, or `set ENABLE_PROFILING=1` then "
+                "was built without profiling instrumentation. Rebuild it from the "
+                "mssql_python/pybind directory with ENABLE_PROFILING=1 (e.g. "
+                "`cd mssql_python/pybind && ENABLE_PROFILING=1 bash build.sh`, or "
+                "`cd mssql_python\\pybind` then `set ENABLE_PROFILING=1` and "
                 "`build.bat` on Windows) before running the profiler."
             )
         self._cpp = ddbc_bindings.profiling
@@ -52,11 +53,15 @@ class _ProfilingContext:
             self._timeline_mode = True
         self._cpp.reset()
         self._py.reset()
-        self._cpp.enable()
-        self._py.enable()
+        # Set the timeline epoch BEFORE enabling profiling. Otherwise a timer that
+        # starts in the gap between enable() and enable_timeline() (native timers
+        # run with the GIL released) would finish with start_ < epoch_ and record a
+        # negative timeline offset, breaking ordering and indentation.
         if self._timeline_mode:
             self._cpp.enable_timeline()
             self._py.enable_timeline()
+        self._cpp.enable()
+        self._py.enable()
 
     def collect(self) -> tuple[dict, dict]:
         # End the measurement window: snapshot, then turn profiling OFF so nothing
