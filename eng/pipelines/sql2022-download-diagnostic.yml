@@ -17,7 +17,7 @@ jobs:
       $ErrorActionPreference = 'Stop'
       $ProgressPreference = 'SilentlyContinue'
       Write-Host "Downloading SQL Server 2022 Express..."
-      Invoke-WebRequest -Uri "https://download.microsoft.com/download/5/1/4/5145fe04-4d30-4b85-b0d1-39533663a2f1/SQL2022-SSEI-Expr.exe" -OutFile "SQL2022-SSEI-Expr.exe"
+      Invoke-WebRequest -Uri "https://download.microsoft.com/download/e5d37105-aa68-4488-8ed5-b579e3809ea1/SQL2022-SSEI-Expr.exe" -OutFile "SQL2022-SSEI-Expr.exe"
       Write-Host "Downloading installation media with the original bootstrapper command..."
       Start-Process -FilePath "SQL2022-SSEI-Expr.exe" -ArgumentList "/Action=Download","/MediaPath=$env:TEMP","/MediaType=Core","/Quiet" -Wait
       Write-Host "Bootstrapper process tree returned."
@@ -93,18 +93,10 @@ jobs:
       $ErrorActionPreference = 'Stop'
       $root = Join-Path $env:AGENT_TEMPDIRECTORY 'sql2022-offline'
       New-Item -ItemType Directory -Path $root -Force | Out-Null
-      $installer = Join-Path $root 'SQLEXPR_x64_ENU.exe'
-      $url = 'https://download.microsoft.com/download/3/8/d/38de7036-2433-4207-8eae-06e247e17b25/SQLEXPR_x64_ENU.exe'
-      $expectedHash = '2E61C8BBDE6021F9026C54AD9DB4BBB1227E68761D4C00A6A50A2C70FE7AFE05'
+      $installer = Join-Path $env:TEMP 'SQLEXPR_x64_ENU.exe'
       $started = Get-Date
-      & curl.exe --fail --location --silent --show-error --connect-timeout 15 --max-time 180 `
-          --output $installer `
-          --write-out 'HTTP %{http_code}; downloaded %{size_download} bytes in %{time_total}s\n' $url
-      if ($LASTEXITCODE -ne 0) {
-          throw "Direct media download failed with curl exit code $LASTEXITCODE."
-      }
-      if ((Get-FileHash -Path $installer -Algorithm SHA256).Hash -ne $expectedHash) {
-          throw 'SQL 2022 media SHA256 does not match the verified Microsoft media.'
+      if (-not (Test-Path $installer)) {
+          throw 'The supported bootstrapper did not download SQL 2022 installation media.'
       }
       $signature = Get-AuthenticodeSignature -FilePath $installer
       if ($signature.Status -ne 'Valid' -or
@@ -112,6 +104,7 @@ jobs:
           throw 'SQL 2022 media does not have a valid Microsoft signature.'
       }
       Write-Host "Verified Microsoft SQL 2022 media: $((Get-Item $installer).VersionInfo.FileVersion)."
+      Write-Host "Media SHA256: $((Get-FileHash -Path $installer -Algorithm SHA256).Hash)"
 
       function Invoke-BoundedProcess {
           param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds)
@@ -159,7 +152,12 @@ jobs:
               throw 'SQL Server 2022 did not become reachable over TCP with SQL authentication.'
           }
           & sqlcmd -S 'tcp:localhost,1433' -U sa -C -b -l 15 `
-              -Q "CREATE DATABASE TestDB; CREATE LOGIN testuser WITH PASSWORD = '$password'; USE TestDB; CREATE USER testuser FOR LOGIN testuser; ALTER ROLE db_owner ADD MEMBER testuser;"
+              -Q "CREATE DATABASE TestDB; CREATE LOGIN testuser WITH PASSWORD = '$password';"
+          if ($LASTEXITCODE -ne 0) {
+              throw 'SQL Server TestDB/login provisioning failed.'
+          }
+          & sqlcmd -S 'tcp:localhost,1433' -U sa -d TestDB -C -b -l 15 `
+              -Q "CREATE USER testuser FOR LOGIN testuser; ALTER ROLE db_owner ADD MEMBER testuser;"
           if ($LASTEXITCODE -ne 0) {
               throw 'SQL Server TestDB/user provisioning failed.'
           }
@@ -168,7 +166,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
               throw 'SQL Server testuser read/write round trip failed.'
           }
-          Write-Host "Offline media installation and SQL round trip completed in $([math]::Round(((Get-Date) - $started).TotalSeconds, 1)) seconds."
+          Write-Host "Supported bootstrapper media installation and SQL round trip completed in $([math]::Round(((Get-Date) - $started).TotalSeconds, 1)) seconds."
       } finally {
           Remove-Item Env:\SQLCMDPASSWORD -ErrorAction SilentlyContinue
           $logs = Join-Path $env:ProgramFiles 'Microsoft SQL Server\160\Setup Bootstrap\Log'
@@ -181,5 +179,5 @@ jobs:
                   }
           }
       }
-    displayName: 'Verify offline SQL 2022 installation and database access'
+    displayName: 'Verify supported SQL 2022 installation and database access'
     timeoutInMinutes: 16
