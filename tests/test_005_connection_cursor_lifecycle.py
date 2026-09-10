@@ -85,7 +85,7 @@ def test_no_segfault_on_gc(conn_str):
     # Properly escape the connection string for embedding in code
     escaped_conn_str = conn_str.replace("\\", "\\\\").replace('"', '\\"')
     code = f"""
-from mssql_python import connect
+from mssql_python import Cursor, connect
 conn = connect("{escaped_conn_str}")
 cursors = [conn.cursor() for _ in range(5)]
 for cur in cursors:
@@ -576,7 +576,7 @@ def test_mixed_cursor_cleanup_scenarios(conn_str, tmp_path):
     code = f"""
 import gc
 
-from mssql_python import connect
+from mssql_python import Cursor, connect
 
 # Test 1: Normal cursor close
 conn1 = connect(\"\"\"{conn_str}\"\"\")
@@ -593,8 +593,21 @@ print("PASS: Double close does not raise error")
 cursor2 = conn1.cursor()
 cursor2.execute("SELECT 2")
 cursor2.fetchall()
-del cursor2
-gc.collect()
+cursor2_id = id(cursor2)
+cursor2_close_calls = []
+original_close = Cursor.close
+
+def tracking_close(cursor):
+    cursor2_close_calls.append(id(cursor))
+    return original_close(cursor)
+
+Cursor.close = tracking_close
+try:
+    del cursor2
+    gc.collect()
+finally:
+    Cursor.close = original_close
+assert cursor2_id in cursor2_close_calls
 assert len(conn1._cursors) == 0
 print("PASS: Cursor __del__ cleaned up cursor")
 
