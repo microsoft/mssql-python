@@ -30,6 +30,7 @@ from mssql_python.exceptions import (
 )
 from mssql_python.row import Row
 from mssql_python import get_settings
+from mssql_python.perf_timer import perf_phase
 from mssql_python.parameter_helper import (
     detect_and_convert_parameters,
     parse_pyformat_params,
@@ -1782,18 +1783,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        if parameters:
-            ret = ddbc_bindings.DDBCSQLExecute(
-                self.hstmt,
-                operation,
-                parameters,
-                self._inputsizes,
-                self.is_stmt_prepared,
-                effective_use_prepare,
-                encoding_settings,
-            )
-        else:
-            ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
+        with perf_phase("py::execute::cpp_call"):
+            if parameters:
+                ret = ddbc_bindings.DDBCSQLExecute(
+                    self.hstmt,
+                    operation,
+                    parameters,
+                    self._inputsizes,
+                    self.is_stmt_prepared,
+                    effective_use_prepare,
+                    encoding_settings,
+                )
+            else:
+                ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
 
         # Check return code
         try:
@@ -2523,197 +2525,204 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
 
         # Prepare parameter type information
-        for col_index in range(param_count):
-            column = (
-                [row[col_index] for row in seq_of_parameters]
-                if hasattr(seq_of_parameters, "__getitem__")
-                else []
-            )
-            sample_value, min_val, max_val, _ = self._compute_column_type(column)
-
-            if self._inputsizes and col_index < len(self._inputsizes):
-                # Use explicitly set input sizes
-                sql_type, c_type, column_size, decimal_digits = self._inputsizes[col_index]
-
-                # Default is_dae to False
-                is_dae = False
-
-                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
-                if sql_type in (
-                    ddbc_sql_const.SQL_DECIMAL.value,
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                ):
-                    c_type = ddbc_sql_const.SQL_C_CHAR.value
-
-                # Check if this should be a DAE (data at execution) parameter based on column size
-                if sample_value is not None:
-                    if isinstance(sample_value, str) and column_size > MAX_INLINE_CHAR:
-                        is_dae = True
-                    elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
-                        is_dae = True
-
-                # Sanitize precision/scale for numeric types
-                numeric_buffer_size = 0
-                if sql_type in (
-                    ddbc_sql_const.SQL_DECIMAL.value,
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                ):
-                    column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
-                    decimal_digits = min(max(0, decimal_digits), column_size)
-                    # Provisional SQL_C_CHAR stride: size only from values that
-                    # are already Decimal. Do NOT convert non-Decimals here —
-                    # that bypasses the protected conversion loop below and can
-                    # leak MemoryError/RuntimeError (and value-bearing messages).
-                    # After conversion, bufferSize is widened from the produced
-                    # fixed-point text (same path that sanitizes failures).
-                    max_encoded = 0
-                    for row in seq_of_parameters:
-                        value = row[col_index]
-                        if isinstance(value, decimal.Decimal):
-                            max_encoded = max(max_encoded, len(format(value, "f")))
-                    numeric_buffer_size = max(max_encoded, column_size + 3, 1)
-
-                # For binary data columns with mixed content, we need to find max size
-                if sql_type in (
-                    ddbc_sql_const.SQL_BINARY.value,
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_LONGVARBINARY.value,
-                ):
-                    # Find the maximum size needed for any row's binary data
-                    max_binary_size = 0
-                    for row in seq_of_parameters:
-                        value = row[col_index]
-                        if value is not None and isinstance(value, (bytes, bytearray)):
-                            max_binary_size = max(max_binary_size, len(value))
-
-                    # For SQL Server VARBINARY(MAX), we need to use large object binding
-                    if column_size > 8000 or max_binary_size > 8000:
-                        sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
-                        is_dae = True
-
-                    # Update column_size to actual maximum size if it's larger
-                    # Always ensure at least a minimum size of 1 for empty strings
-                    column_size = max(max_binary_size, 1)
-
-                paraminfo = param_info()
-                paraminfo.paramCType = c_type
-                paraminfo.paramSQLType = sql_type
-                paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
-                paraminfo.columnSize = column_size
-                paraminfo.decimalDigits = decimal_digits
-                paraminfo.isDAE = is_dae
-                if numeric_buffer_size:
-                    paraminfo.bufferSize = numeric_buffer_size
-
-                # Ensure we never have SQL_C_DEFAULT (0) for C-type
-                if paraminfo.paramCType == 0:
-                    paraminfo.paramCType = ddbc_sql_const.SQL_C_DEFAULT.value
-
-                parameters_type.append(paraminfo)
-            else:
-                # Use auto-detection for columns without explicit types
+        # Columns configured via setinputsizes keep declared columnSize/decimalDigits
+        # through the post-conversion widen pass (bufferSize may still grow).
+        explicit_inputsize_cols = set()
+        with perf_phase("py::executemany::param_type_detection"):
+            for col_index in range(param_count):
                 column = (
                     [row[col_index] for row in seq_of_parameters]
                     if hasattr(seq_of_parameters, "__getitem__")
                     else []
                 )
-                sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(column)
+                sample_value, min_val, max_val, _ = self._compute_column_type(column)
 
-                # GH-745: auto-detected Decimal columns bind as SQL_NUMERIC (skipping
-                # the money-range VARCHAR shortcut) so a money-range value compared
-                # against a smaller numeric column does not overflow. executemany still
-                # string-binds via SQL_C_CHAR below; setinputsizes DECIMAL stays on the
-                # GH-503 string path above.
-                # Only force NUMERIC when every non-NULL value in the column is Decimal;
-                # a heterogeneous column keeps the prior sample-driven path.
-                non_null_values = [v for v in column if v is not None]
-                decimal_as_numeric = bool(non_null_values) and all(
-                    isinstance(v, decimal.Decimal) for v in non_null_values
-                )
+                if self._inputsizes and col_index < len(self._inputsizes):
+                    # Use explicitly set input sizes
+                    explicit_inputsize_cols.add(col_index)
+                    sql_type, c_type, column_size, decimal_digits = self._inputsizes[col_index]
 
-                dummy_row = list(sample_row)
-                paraminfo = self._create_parameter_types_list(
-                    sample_value,
-                    param_info,
-                    dummy_row,
-                    col_index,
-                    min_val=min_val,
-                    max_val=max_val,
-                    decimal_as_numeric=decimal_as_numeric,
-                )
+                    # Default is_dae to False
+                    is_dae = False
 
-                # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
-                # where BindParameterArray resolves the correct type via the
-                # SQLDescribeParam cache.  The previous SQL_VARCHAR hardcoded
-                # fallback was removed because it broke VARBINARY columns.
+                    # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
+                    if sql_type in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    ):
+                        c_type = ddbc_sql_const.SQL_C_CHAR.value
 
-                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding.
-                # _map_sql_type may return SQL_C_NUMERIC (expecting NumericData structs)
-                # but the conversion loop below converts all Decimal values to strings.
-                # The C type must match the actual data to avoid:
-                #   RuntimeError: Parameter's object type does not match parameter's C type
-                if paraminfo.paramSQLType in (
-                    ddbc_sql_const.SQL_DECIMAL.value,
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                ):
-                    paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
-                    # One NUMERIC(precision, scale) must fit every Decimal in the
-                    # batch (GH-745). Sample-only precision/scale is not enough.
-                    # columnSize is NUMERIC precision for SQLBindParameter, not a
-                    # string buffer length — do not widen it with max_decimal_len.
-                    batch_precision, batch_scale = self._batch_decimal_precision_scale(column)
-                    if batch_precision > 38:
-                        raise ValueError(
-                            "Precision of the numeric value is too high. "
-                            "The maximum precision supported by SQL Server is 38, "
-                            f"but got {batch_precision}."
-                        )
-                    if batch_precision > paraminfo.columnSize:
-                        paraminfo.columnSize = batch_precision
-                    if batch_scale > paraminfo.decimalDigits:
-                        paraminfo.decimalDigits = batch_scale
-                    # SQL_C_CHAR array stride is separate from SQL precision.
-                    # Fixed-point strings need room for sign, '.', and a leading
-                    # zero (e.g. Decimal("1E-38") -> 40 chars with precision 38).
-                    # Size from the longest encoded value in the batch.
-                    paraminfo.bufferSize = max(max_decimal_len, 1)
+                    # Check if this should be a DAE (data at execution) parameter based on column size
+                    if sample_value is not None:
+                        if isinstance(sample_value, str) and column_size > MAX_INLINE_CHAR:
+                            is_dae = True
+                        elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
+                            is_dae = True
 
-                # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
-                # The sample value's formatted string may be shorter than another
-                # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
-                # max_decimal_len was already computed during _compute_column_type
-                # so no extra iteration is needed.
-                if (
-                    paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
-                    and max_decimal_len > paraminfo.columnSize
-                ):
-                    paraminfo.columnSize = max_decimal_len
+                    # Sanitize precision/scale for numeric types
+                    numeric_buffer_size = 0
+                    if sql_type in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    ):
+                        column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
+                        decimal_digits = min(max(0, decimal_digits), column_size)
+                        # Provisional SQL_C_CHAR stride: size only from values that
+                        # are already Decimal. Do NOT convert non-Decimals here —
+                        # that bypasses the protected conversion loop below and can
+                        # leak MemoryError/RuntimeError (and value-bearing messages).
+                        # After conversion, bufferSize is widened from the produced
+                        # fixed-point text (same path that sanitizes failures).
+                        max_encoded = 0
+                        for row in seq_of_parameters:
+                            value = row[col_index]
+                            if isinstance(value, decimal.Decimal):
+                                max_encoded = max(max_encoded, len(format(value, "f")))
+                        numeric_buffer_size = max(max_encoded, column_size + 3, 1)
 
-                # Special handling for binary data in auto-detected types
-                if paraminfo.paramSQLType in (
-                    ddbc_sql_const.SQL_BINARY.value,
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_LONGVARBINARY.value,
-                ):
-                    # Find the maximum size needed for any row's binary data
-                    max_binary_size = 0
-                    for row in seq_of_parameters:
-                        value = row[col_index]
-                        if value is not None and isinstance(value, (bytes, bytearray)):
-                            max_binary_size = max(max_binary_size, len(value))
+                    # For binary data columns with mixed content, we need to find max size
+                    if sql_type in (
+                        ddbc_sql_const.SQL_BINARY.value,
+                        ddbc_sql_const.SQL_VARBINARY.value,
+                        ddbc_sql_const.SQL_LONGVARBINARY.value,
+                    ):
+                        # Find the maximum size needed for any row's binary data
+                        max_binary_size = 0
+                        for row in seq_of_parameters:
+                            value = row[col_index]
+                            if value is not None and isinstance(value, (bytes, bytearray)):
+                                max_binary_size = max(max_binary_size, len(value))
 
-                    # For SQL Server VARBINARY(MAX), we need to use large object binding
-                    if max_binary_size > 8000:
-                        paraminfo.paramSQLType = ddbc_sql_const.SQL_LONGVARBINARY.value
-                        paraminfo.isDAE = True
+                        # For SQL Server VARBINARY(MAX), we need to use large object binding
+                        if column_size > 8000 or max_binary_size > 8000:
+                            sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
+                            is_dae = True
 
-                    # Update column_size to actual maximum size
-                    # Always ensure at least a minimum size of 1 for empty strings
-                    paraminfo.columnSize = max(max_binary_size, 1)
+                        # Update column_size to actual maximum size if it's larger
+                        # Always ensure at least a minimum size of 1 for empty strings
+                        column_size = max(max_binary_size, 1)
 
-                parameters_type.append(paraminfo)
-                if paraminfo.isDAE:
-                    any_dae = True
+                    paraminfo = param_info()
+                    paraminfo.paramCType = c_type
+                    paraminfo.paramSQLType = sql_type
+                    paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
+                    paraminfo.columnSize = column_size
+                    paraminfo.decimalDigits = decimal_digits
+                    paraminfo.isDAE = is_dae
+                    if numeric_buffer_size:
+                        paraminfo.bufferSize = numeric_buffer_size
+
+                    # Ensure we never have SQL_C_DEFAULT (0) for C-type
+                    if paraminfo.paramCType == 0:
+                        paraminfo.paramCType = ddbc_sql_const.SQL_C_DEFAULT.value
+
+                    parameters_type.append(paraminfo)
+                else:
+                    # Use auto-detection for columns without explicit types
+                    column = (
+                        [row[col_index] for row in seq_of_parameters]
+                        if hasattr(seq_of_parameters, "__getitem__")
+                        else []
+                    )
+                    sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(
+                        column
+                    )
+
+                    # GH-745: auto-detected Decimal columns bind as SQL_NUMERIC (skipping
+                    # the money-range VARCHAR shortcut) so a money-range value compared
+                    # against a smaller numeric column does not overflow. executemany still
+                    # string-binds via SQL_C_CHAR below; setinputsizes DECIMAL stays on the
+                    # GH-503 string path above.
+                    # Only force NUMERIC when every non-NULL value in the column is Decimal;
+                    # a heterogeneous column keeps the prior sample-driven path.
+                    non_null_values = [v for v in column if v is not None]
+                    decimal_as_numeric = bool(non_null_values) and all(
+                        isinstance(v, decimal.Decimal) for v in non_null_values
+                    )
+
+                    dummy_row = list(sample_row)
+                    paraminfo = self._create_parameter_types_list(
+                        sample_value,
+                        param_info,
+                        dummy_row,
+                        col_index,
+                        min_val=min_val,
+                        max_val=max_val,
+                        decimal_as_numeric=decimal_as_numeric,
+                    )
+
+                    # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
+                    # where BindParameterArray resolves the correct type via the
+                    # SQLDescribeParam cache.  The previous SQL_VARCHAR hardcoded
+                    # fallback was removed because it broke VARBINARY columns.
+
+                    # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding.
+                    # _map_sql_type may return SQL_C_NUMERIC (expecting NumericData structs)
+                    # but the conversion loop below converts all Decimal values to strings.
+                    # The C type must match the actual data to avoid:
+                    #   RuntimeError: Parameter's object type does not match parameter's C type
+                    if paraminfo.paramSQLType in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    ):
+                        paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
+                        # One NUMERIC(precision, scale) must fit every Decimal in the
+                        # batch (GH-745). Sample-only precision/scale is not enough.
+                        # columnSize is NUMERIC precision for SQLBindParameter, not a
+                        # string buffer length — do not widen it with max_decimal_len.
+                        batch_precision, batch_scale = self._batch_decimal_precision_scale(column)
+                        if batch_precision > 38:
+                            raise ValueError(
+                                "Precision of the numeric value is too high. "
+                                "The maximum precision supported by SQL Server is 38, "
+                                f"but got {batch_precision}."
+                            )
+                        if batch_precision > paraminfo.columnSize:
+                            paraminfo.columnSize = batch_precision
+                        if batch_scale > paraminfo.decimalDigits:
+                            paraminfo.decimalDigits = batch_scale
+                        # SQL_C_CHAR array stride is separate from SQL precision.
+                        # Fixed-point strings need room for sign, '.', and a leading
+                        # zero (e.g. Decimal("1E-38") -> 40 chars with precision 38).
+                        # Size from the longest encoded value in the batch.
+                        paraminfo.bufferSize = max(max_decimal_len, 1)
+
+                    # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
+                    # The sample value's formatted string may be shorter than another
+                    # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
+                    # max_decimal_len was already computed during _compute_column_type
+                    # so no extra iteration is needed.
+                    if (
+                        paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
+                        and max_decimal_len > paraminfo.columnSize
+                    ):
+                        paraminfo.columnSize = max_decimal_len
+
+                    # Special handling for binary data in auto-detected types
+                    if paraminfo.paramSQLType in (
+                        ddbc_sql_const.SQL_BINARY.value,
+                        ddbc_sql_const.SQL_VARBINARY.value,
+                        ddbc_sql_const.SQL_LONGVARBINARY.value,
+                    ):
+                        # Find the maximum size needed for any row's binary data
+                        max_binary_size = 0
+                        for row in seq_of_parameters:
+                            value = row[col_index]
+                            if value is not None and isinstance(value, (bytes, bytearray)):
+                                max_binary_size = max(max_binary_size, len(value))
+
+                        # For SQL Server VARBINARY(MAX), we need to use large object binding
+                        if max_binary_size > 8000:
+                            paraminfo.paramSQLType = ddbc_sql_const.SQL_LONGVARBINARY.value
+                            paraminfo.isDAE = True
+
+                        # Update column_size to actual maximum size
+                        # Always ensure at least a minimum size of 1 for empty strings
+                        paraminfo.columnSize = max(max_binary_size, 1)
+
+                    parameters_type.append(paraminfo)
+                    if paraminfo.isDAE:
+                        any_dae = True
 
         if any_dae:
             logger.debug(
@@ -2723,112 +2732,118 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.execute(operation, row)
             return
 
-        # Process parameters into column-wise format with possible type conversions
-        # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
-        processed_parameters = []
-        for row_index, row in enumerate(seq_of_parameters):
-            processed_row = list(row)
-            for i, val in enumerate(processed_row):
-                if val is None:
-                    continue
-                time_text = _normalize_time_param(val, parameters_type[i].paramCType)
-                if time_text is not None:
-                    processed_row[i] = time_text
-                    continue
-                if (
-                    isinstance(val, decimal.Decimal)
-                    and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
-                ):
-                    processed_row[i] = format(val, "f")
-                # Convert all values to string for DECIMAL/NUMERIC columns (GH-503)
-                elif parameters_type[i].paramSQLType in (
+        with perf_phase("py::executemany::param_conversion"):
+            # Process parameters into column-wise format with possible type conversions
+            # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
+            processed_parameters = []
+            for row_index, row in enumerate(seq_of_parameters):
+                processed_row = list(row)
+                for i, val in enumerate(processed_row):
+                    if val is None:
+                        continue
+                    time_text = _normalize_time_param(val, parameters_type[i].paramCType)
+                    if time_text is not None:
+                        processed_row[i] = time_text
+                        continue
+                    if (
+                        isinstance(val, decimal.Decimal)
+                        and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
+                    ):
+                        processed_row[i] = format(val, "f")
+                    # Convert all values to string for DECIMAL/NUMERIC columns (GH-503)
+                    elif parameters_type[i].paramSQLType in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    ):
+                        if isinstance(val, decimal.Decimal):
+                            processed_row[i] = format(val, "f")
+                        else:
+                            # Do not embed the parameter value or the full row in the
+                            # message: rows may contain PII (SSNs, emails, balances)
+                            # that would leak into caller error handlers, tracebacks,
+                            # and log/APM stores. Report metadata only (row index,
+                            # column index, value type).
+                            err_msg = (
+                                f"Failed to convert parameter to Decimal at row "
+                                f"{row_index}, column {i} (value type: {type(val).__name__})"
+                            )
+                            # Split str(val) from the decimal parse so we only chain a
+                            # cause we know is value-free. decimal.DecimalException
+                            # messages (e.g. ConversionSyntax) never echo the input, so
+                            # they are safe to preserve for debugging. str(val) itself
+                            # or any other error could carry the value in its message
+                            # and surface through __cause__ / formatted tracebacks, so
+                            # those are re-raised with the chain suppressed (from None).
+                            try:
+                                val_text = str(val)
+                            except Exception:  # pylint: disable=broad-exception-caught
+                                raise ValueError(err_msg) from None
+                            try:
+                                processed_row[i] = format(decimal.Decimal(val_text), "f")
+                            except decimal.DecimalException as e:
+                                raise ValueError(err_msg) from e
+                            except Exception:  # pylint: disable=broad-exception-caught
+                                raise ValueError(err_msg) from None
+                processed_parameters.append(processed_row)
+
+        with perf_phase("py::executemany::param_processing"):
+            # Derive/widen SQL_C_CHAR bufferSize and (for auto-detect only) SQL
+            # NUMERIC precision/scale from text produced by the protected conversion.
+            # setinputsizes previously sized by converting independently (leaking raw
+            # MemoryError/RuntimeError); the auto-detect path already had a
+            # Decimal-only provisional size. Post-conversion strings are authoritative
+            # for precision on auto-detect (e.g. Decimal("1e15.00") + "2e16"). Explicit
+            # setinputsizes columnSize/decimalDigits stay as declared; bufferSize still
+            # grows so the CHAR array fits.
+            for col_index, ptype in enumerate(parameters_type):
+                if ptype.paramSQLType not in (
                     ddbc_sql_const.SQL_DECIMAL.value,
                     ddbc_sql_const.SQL_NUMERIC.value,
                 ):
-                    if isinstance(val, decimal.Decimal):
-                        processed_row[i] = format(val, "f")
-                    else:
-                        # Do not embed the parameter value or the full row in the
-                        # message: rows may contain PII (SSNs, emails, balances)
-                        # that would leak into caller error handlers, tracebacks,
-                        # and log/APM stores. Report metadata only (row index,
-                        # column index, value type).
-                        err_msg = (
-                            f"Failed to convert parameter to Decimal at row "
-                            f"{row_index}, column {i} (value type: {type(val).__name__})"
+                    continue
+                max_encoded = 0
+                max_scale = 0
+                max_int_digits = 0
+                found_numeric_text = False
+                for row in processed_parameters:
+                    val = row[col_index]
+                    if not isinstance(val, str):
+                        continue
+                    max_encoded = max(max_encoded, len(val))
+                    try:
+                        as_decimal = decimal.Decimal(val)
+                    except decimal.DecimalException:
+                        continue
+                    if not as_decimal.is_finite():
+                        continue
+                    precision, scale = self._decimal_sql_precision_scale(as_decimal)
+                    found_numeric_text = True
+                    max_scale = max(max_scale, scale)
+                    max_int_digits = max(max_int_digits, precision - scale)
+                if max_encoded:
+                    prior = getattr(ptype, "bufferSize", 0) or 0
+                    ptype.bufferSize = max(prior, max_encoded, 1)
+                # Honor explicit setinputsizes precision/scale; only auto-detect widens.
+                if found_numeric_text and col_index not in explicit_inputsize_cols:
+                    batch_precision = max(max_int_digits + max_scale, 1)
+                    if batch_precision > 38:
+                        raise ValueError(
+                            "Precision of the numeric value is too high. "
+                            "The maximum precision supported by SQL Server is 38, "
+                            f"but got {batch_precision}."
                         )
-                        # Split str(val) from the decimal parse so we only chain a
-                        # cause we know is value-free. decimal.DecimalException
-                        # messages (e.g. ConversionSyntax) never echo the input, so
-                        # they are safe to preserve for debugging. str(val) itself
-                        # or any other error could carry the value in its message
-                        # and surface through __cause__ / formatted tracebacks, so
-                        # those are re-raised with the chain suppressed (from None).
-                        try:
-                            val_text = str(val)
-                        except Exception:  # pylint: disable=broad-exception-caught
-                            raise ValueError(err_msg) from None
-                        try:
-                            processed_row[i] = format(decimal.Decimal(val_text), "f")
-                        except decimal.DecimalException as e:
-                            raise ValueError(err_msg) from e
-                        except Exception:  # pylint: disable=broad-exception-caught
-                            raise ValueError(err_msg) from None
-            processed_parameters.append(processed_row)
+                    if batch_precision > ptype.columnSize:
+                        ptype.columnSize = batch_precision
+                    if max_scale > ptype.decimalDigits:
+                        ptype.decimalDigits = max_scale
 
-        # Derive/widen SQL_C_CHAR bufferSize and SQL NUMERIC precision/scale from
-        # text produced by the protected DECIMAL/NUMERIC conversion above.
-        # setinputsizes previously sized by converting independently (leaking raw
-        # MemoryError/RuntimeError); the auto-detect path already had a
-        # Decimal-only provisional size. Post-conversion strings are authoritative
-        # for precision too: a mixed Decimal+numeric-string batch can need a wider
-        # columnSize than Decimals alone (e.g. Decimal("1e15.00") + "2e16").
-        for col_index, ptype in enumerate(parameters_type):
-            if ptype.paramSQLType not in (
-                ddbc_sql_const.SQL_DECIMAL.value,
-                ddbc_sql_const.SQL_NUMERIC.value,
-            ):
-                continue
-            max_encoded = 0
-            max_scale = 0
-            max_int_digits = 0
-            found_numeric_text = False
-            for row in processed_parameters:
-                val = row[col_index]
-                if not isinstance(val, str):
-                    continue
-                max_encoded = max(max_encoded, len(val))
-                try:
-                    as_decimal = decimal.Decimal(val)
-                except decimal.DecimalException:
-                    continue
-                if not as_decimal.is_finite():
-                    continue
-                precision, scale = self._decimal_sql_precision_scale(as_decimal)
-                found_numeric_text = True
-                max_scale = max(max_scale, scale)
-                max_int_digits = max(max_int_digits, precision - scale)
-            if max_encoded:
-                prior = getattr(ptype, "bufferSize", 0) or 0
-                ptype.bufferSize = max(prior, max_encoded, 1)
-            if found_numeric_text:
-                batch_precision = max(max_int_digits + max_scale, 1)
-                if batch_precision > 38:
-                    raise ValueError(
-                        "Precision of the numeric value is too high. "
-                        "The maximum precision supported by SQL Server is 38, "
-                        f"but got {batch_precision}."
-                    )
-                if batch_precision > ptype.columnSize:
-                    ptype.columnSize = batch_precision
-                if max_scale > ptype.decimalDigits:
-                    ptype.decimalDigits = max_scale
+            # Now transpose the processed parameters
+            columnwise_params, row_count = self._transpose_rowwise_to_columnwise(
+                processed_parameters
+            )
 
-        # Now transpose the processed parameters
-        columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
-
-        # Get encoding settings
-        encoding_settings = self._get_encoding_settings()
+            # Get encoding settings
+            encoding_settings = self._get_encoding_settings()
 
         # Debug logging: emit batch metadata only. Never log parameter values or
         # row representations here -- rows may contain PII (SSNs, emails,
@@ -2841,9 +2856,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             len(parameters_type),
         )
 
-        ret = ddbc_bindings.SQLExecuteMany(
-            self.hstmt, operation, columnwise_params, parameters_type, row_count, encoding_settings
-        )
+        with perf_phase("py::executemany::cpp_call"):
+            ret = ddbc_bindings.SQLExecuteMany(
+                self.hstmt,
+                operation,
+                columnwise_params,
+                parameters_type,
+                row_count,
+                encoding_settings,
+            )
 
         # Capture any diagnostic messages after execution
         if self.hstmt:

@@ -17475,6 +17475,49 @@ def test_setinputsizes_sql_decimal_runtimeerror_no_leak_unit(monkeypatch):
     assert marker not in formatted
 
 
+def test_setinputsizes_sql_numeric_keeps_declared_precision_scale(monkeypatch):
+    """Explicit setinputsizes NUMERIC(10,2) must not widen after conversion (sumitmsft).
+
+    bufferSize may still grow to fit the encoded text, but columnSize/decimalDigits
+    stay at the declared (10, 2) even when Decimal("1.234") needs scale 3.
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 1)
+
+    cur.setinputsizes([(mssql_python.SQL_NUMERIC, 10, 2)])
+    cur.executemany("SELECT ?", [(decimal.Decimal("1.234"),)])
+    pt = captured["parameters_type"][0]
+    encoded = format(decimal.Decimal("1.234"), "f")
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 10
+    assert pt.decimalDigits == 2
+    assert pt.bufferSize >= len(encoded)
+    assert captured["columnwise_params"][0][0] == encoded
+
+
 def test_setinputsizes_sql_decimal_buffer_from_protected_conversion(monkeypatch):
     """setinputsizes DECIMAL bufferSize comes from protected conversion text.
 

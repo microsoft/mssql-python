@@ -383,6 +383,10 @@ SQL_LONGVARBINARY: int
 SQL_DATE: int
 SQL_TIME: int
 SQL_TIMESTAMP: int
+# SQL Server-specific type constants (pyodbc parity)
+SQL_SS_TIME2: int
+SQL_SS_XML: int
+SQL_SS_VARIANT: int
 SQL_WMETADATA: int
 
 # Connection Attribute Constants
