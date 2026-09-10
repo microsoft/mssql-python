@@ -13,6 +13,9 @@ never leaks into the rest of the suite.
 """
 
 import os
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -86,6 +89,63 @@ def test_perf_phase_records_when_enabled():
     assert entry["calls"] == 1
     assert entry["total_us"] > 0
     assert entry["min_us"] <= entry["max_us"]
+
+
+def test_get_stats_gc_reentry_in_subprocess():
+    """A finalizer must not deadlock collection or change its returned snapshot."""
+    script = textwrap.dedent("""
+        import gc
+        import importlib.util
+        import sys
+
+        spec = importlib.util.spec_from_file_location("timer_under_test", sys.argv[1])
+        timer = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = timer
+        spec.loader.exec_module(timer)
+        timer.enable()
+        with timer.perf_phase("seed"):
+            pass
+        expected = timer.get_stats()
+        completed = []
+
+        class Cleanup:
+            def __del__(self):
+                with timer.perf_phase("finalizer"):
+                    pass
+                completed.append(True)
+
+        gc.disable()
+        garbage = Cleanup()
+        garbage.cycle = garbage
+        del garbage
+        steps = 0
+
+        def collect_during_snapshot(frame, event, arg):
+            global steps
+            if frame.f_code is timer.get_stats.__code__ and event == "line":
+                steps += 1
+                # Collect inside bookkeeping (or the old lock), not before entry.
+                if steps == 2:
+                    gc.collect()
+            return collect_during_snapshot
+
+        try:
+            sys.settrace(collect_during_snapshot)
+            snapshot = timer.get_stats()
+        finally:
+            sys.settrace(None)
+            timer.disable()
+            gc.enable()
+        assert completed == [True], "finalizer did not finish during collection"
+        assert snapshot == expected, (snapshot, expected)
+        """)
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script, perf_timer.__file__],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_perf_phase_aggregates_multiple_calls():
