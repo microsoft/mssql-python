@@ -127,8 +127,8 @@ def test_connection_pooling_reuse_spid(conn_str):
     assert spid1 == spid2, "Connections not reused - different SPIDs"
 
 
-def test_pooled_close_leaves_no_open_transaction(conn_str):
-    """A physical connection must not retain a transaction while parked."""
+def test_pooled_close_paths_leave_no_open_transaction(conn_str):
+    """Every close path must leave the physical connection transaction-clean."""
     _run_in_subprocess(
         """
         import os
@@ -137,47 +137,73 @@ def test_pooled_close_leaves_no_open_transaction(conn_str):
 
         conn_str = os.environ["DB_CONNECTION_STRING"]
         mssql_python.pooling(enabled=True, max_size=2, idle_timeout=30)
-        subject = mssql_python.connect(conn_str)
         observer = mssql_python.connect(conn_str, autocommit=True)
         try:
-            cursor = subject.cursor()
-            cursor.execute("SELECT @@SPID")
-            subject_spid = cursor.fetchone()[0]
             observer_cursor = observer.cursor()
-            observer_cursor.execute(
-                "SELECT open_transaction_count "
-                "FROM sys.dm_exec_sessions WHERE session_id = ?",
-                [subject_spid],
-            )
-            if observer_cursor.fetchone() is None:
-                import sys
 
-                print(
-                    "Test login cannot inspect another SQL Server session",
-                    file=sys.stderr,
+            scenarios = (
+                ("direct commit", False, "SELECT 1", None, "commit"),
+                ("prepared commit", False, "SELECT CAST(? AS INT)", [1], "commit"),
+                ("explicit rollback", False, "SELECT 1", None, "rollback"),
+                ("implicit close rollback", False, "SELECT 1", None, None),
+                ("autocommit close", True, "SELECT 1", None, None),
+            )
+            expected_spid = None
+            for name, autocommit, sql, params, action in scenarios:
+                subject = mssql_python.connect(conn_str, autocommit=autocommit)
+                try:
+                    assert subject.autocommit is autocommit
+                    cursor = subject.cursor()
+                    cursor.execute("SELECT @@SPID")
+                    subject_spid = cursor.fetchone()[0]
+                    if expected_spid is None:
+                        expected_spid = subject_spid
+                    else:
+                        assert subject_spid == expected_spid, (
+                            f"{name}: expected pooled SPID {expected_spid}, got {subject_spid}"
+                        )
+
+                    observer_cursor.execute(
+                        "SELECT open_transaction_count "
+                        "FROM sys.dm_exec_sessions WHERE session_id = ?",
+                        [subject_spid],
+                    )
+                    if observer_cursor.fetchone() is None:
+                        import sys
+
+                        print(
+                            "Test login cannot inspect another SQL Server session",
+                            file=sys.stderr,
+                        )
+                        sys.exit(77)
+
+                    if params is None:
+                        cursor.execute(sql)
+                    else:
+                        cursor.execute(sql, params)
+                    cursor.fetchone()
+                    if action == "commit":
+                        subject.commit()
+                    elif action == "rollback":
+                        subject.rollback()
+                    cursor.close()
+                finally:
+                    subject.close()
+
+                observer_cursor.execute(
+                    "SELECT open_transaction_count "
+                    "FROM sys.dm_exec_sessions WHERE session_id = ?",
+                    [subject_spid],
                 )
-                sys.exit(77)
+                row = observer_cursor.fetchone()
+                assert row is not None, f"{name}: parked SQL Server session was not visible"
+                assert row[0] == 0, (
+                    f"{name}: pooled SPID {subject_spid} retained "
+                    f"open_transaction_count={row[0]}"
+                )
 
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
-            subject.commit()
-            cursor.close()
-            subject.close()
-
-            observer_cursor.execute(
-                "SELECT open_transaction_count "
-                "FROM sys.dm_exec_sessions WHERE session_id = ?",
-                [subject_spid],
-            )
-            row = observer_cursor.fetchone()
-            assert row is not None, "The parked SQL Server session was not visible"
-            assert row[0] == 0, (
-                "Pooled connection retained an open transaction after close: "
-                f"SPID {subject_spid}, open_transaction_count={row[0]}"
-            )
             observer_cursor.close()
         finally:
-            subject.close()
             observer.close()
             mssql_python.pooling(enabled=False)
         """,
@@ -766,9 +792,9 @@ def test_pool_removes_invalid_connections(conn_str):
             spid, login_time = cur.fetchone()
             return (spid, login_time)
 
-        # Step 1: two distinct, autocommit connections. Autocommit avoids
-        # the implicit rollback in Connection.close(), which would
-        # otherwise fail on the killed session and leak its pool slot.
+        # Step 1: two distinct, autocommit connections. Autocommit keeps this
+        # test focused on detecting dead connections during checkout; failed
+        # manual-commit sanitation is covered separately below.
         victim = connect(conn_str)
         admin = connect(conn_str)
         victim.autocommit = True
@@ -831,6 +857,60 @@ def test_pool_removes_invalid_connections(conn_str):
             f"Pool returned the killed session {victim_id}; "
             f"saw sessions {seen_ids}"
         )
+        """,
+        conn_str,
+    )
+
+
+def test_failed_pool_sanitation_releases_capacity(conn_str):
+    """A connection discarded after failed sanitation must not consume a pool slot."""
+    _run_in_subprocess(
+        """
+        import os
+        import sys
+
+        from mssql_python import connect, pooling
+
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+        pooling(max_size=2, idle_timeout=30)
+        victim = connect(conn_str)
+        admin = connect(conn_str, autocommit=True)
+
+        victim_cursor = victim.cursor()
+        victim_cursor.execute("SELECT @@SPID")
+        victim_spid = victim_cursor.fetchone()[0]
+        victim_cursor.close()
+
+        try:
+            admin.cursor().execute(f"KILL {victim_spid}")
+        except Exception as exc:
+            message = str(exc)
+            if "permission" in message.lower() or "kill" in message.lower():
+                print(
+                    f"Skipping: KILL not permitted for this login: {message}",
+                    file=sys.stderr,
+                )
+                victim.close()
+                admin.close()
+                sys.exit(77)
+            raise
+
+        try:
+            victim.close()
+        except Exception:
+            pass
+
+        admin.close()
+
+        first = connect(conn_str)
+        second = connect(conn_str)
+        try:
+            assert first.cursor().execute("SELECT 1").fetchone()[0] == 1
+            assert second.cursor().execute("SELECT 1").fetchone()[0] == 1
+        finally:
+            first.close()
+            second.close()
+            pooling(enabled=False)
         """,
         conn_str,
     )

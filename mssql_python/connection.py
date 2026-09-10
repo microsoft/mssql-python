@@ -2158,21 +2158,21 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
-                if not self.autocommit:
+                if not self.autocommit and not self._pooling:
                     # If autocommit is disabled, rollback any uncommitted changes
-                    # This is important to ensure no partial transactions remain
-                    # For autocommit True, this is not necessary as each statement is
-                    # committed immediately
+                    # before disconnecting a non-pooled connection. Pooled
+                    # connections are rolled back by the native check-in path,
+                    # which can discard the connection and release its capacity
+                    # atomically if sanitation fails.
                     logger.debug("Rolling back uncommitted changes before closing connection.")
-                    try:
-                        self._conn.rollback()
-                    except RuntimeError as e:
-                        # Handle C++ layer RuntimeError with proper DB-API exception mapping
-                        _raise_connection_error(e)
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
-                self._conn.close()
-                self._conn = None
+                try:
+                    self._conn.close()
+                except RuntimeError as e:
+                    _raise_connection_error(e)
+                finally:
+                    self._conn = None
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical
