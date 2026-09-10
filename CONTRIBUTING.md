@@ -35,8 +35,12 @@ If you are a Microsoft organization member (internal contributor):
 
 All pull requests must include:
 
-- **Valid Title Prefix**: Your PR title must start with one of: `FEAT:`, `CHORE:`, `FIX:`, `DOC:`, `STYLE:`, `REFACTOR:`, `PERF:`, or `RELEASE:`
+- **Valid Title Prefix**: Your PR title must start with one of: `FEAT:`, `CHORE:`, `FIX:`, `DOC:`, `STYLE:`, `REFACTOR:`, `PERF:`, `RELEASE:`, or `AI:`
 - **Meaningful Summary**: Include a clear description of your changes under the "### Summary" section in the PR description (minimum 10 characters)
 - **Issue/Work Item Link** (only one required): 
   - External contributors: Link to a GitHub issue
   - Microsoft org members: Link to an ADO work item
+
+Use `AI:` for changes to AI tooling, agents, skills, prompts, or AI-assisted
+development workflows. It describes the subject of the change, not whether
+AI helped write it; ordinary driver fixes and features keep their usual prefixes.

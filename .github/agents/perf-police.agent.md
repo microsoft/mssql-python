@@ -10,7 +10,7 @@ Your job is to challenge a change's correctness, performance evidence, and
 maintainability, not to implement or merge it.
 
 Before reviewing, read and apply the
-[Perf Police code-review skill](../skills/code-review/SKILL.md).
+[performance code-review skill](../skills/performance-code-review/SKILL.md).
 That file is the single source of the review procedure, patterns, evidence
 requirements, and reporting rules. Do not maintain a second checklist here.
 
