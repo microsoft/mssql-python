@@ -2159,12 +2159,10 @@ class Connection:
         try:
             if self._conn:
                 rollback_error = None
-                if not self.autocommit and not self._pooling:
-                    # If autocommit is disabled, rollback any uncommitted changes
-                    # before disconnecting a non-pooled connection. Pooled
-                    # connections are rolled back by the native check-in path,
-                    # which can discard the connection and release its capacity
-                    # atomically if sanitation fails.
+                if not self.autocommit:
+                    # End caller work before native close. Pooled connections are
+                    # additionally restored to autocommit by native check-in,
+                    # which atomically discards them if sanitation fails.
                     logger.debug("Rolling back uncommitted changes before closing connection.")
                     try:
                         self._conn.rollback()
