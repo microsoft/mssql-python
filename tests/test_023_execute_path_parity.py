@@ -341,8 +341,19 @@ def test_setinputsizes_binary_dae(cursor):
         cursor.setinputsizes(None)
 
 
+def test_setinputsizes_character_dae(cursor):
+    """Declared character sizes over 4000 stream through the native DAE path."""
+    value = "x" * 5000
+    cursor.setinputsizes([(ddbc_sql_const.SQL_LONGVARCHAR.value, len(value), 0)])
+    try:
+        cursor.execute("SELECT LEN(CAST(? AS VARCHAR(MAX)))", [value])
+        assert cursor.fetchone()[0] == len(value)
+    finally:
+        cursor.setinputsizes(None)
+
+
 def test_setinputsizes_numeric_precision_and_scale_are_clamped(cursor):
-    """Oversized numeric metadata is clamped before narrowing to ODBC types."""
+    """Clamped numeric metadata must not make short Decimal text use DAE."""
     value = decimal.Decimal("0.1")
     cursor.setinputsizes([(ddbc_sql_const.SQL_DECIMAL.value, 10**100, 10**100)])
     try:

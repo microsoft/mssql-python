@@ -258,9 +258,9 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
     }
 
     info.isDAE =
-        (PyUnicode_Check(obj) && PyLongGreaterThan(columnSize, MAX_INLINE_CHAR)) ||
+        (PyUnicode_Check(obj) && info.columnSize > MAX_INLINE_CHAR) ||
         ((PyBytes_Check(obj) || PyByteArray_Check(obj)) &&
-         PyLongGreaterThan(columnSize, MAX_INLINE_BINARY));
+         info.columnSize > MAX_INLINE_BINARY);
 
     if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
         NormalizeTimeParam(params, index, info.columnSize);
