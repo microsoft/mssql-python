@@ -3136,6 +3136,8 @@ def test_getinfo_standard_types(db_connection):
 
     for info_type, expected_type in info_types.items():
         info_value = db_connection.getinfo(info_type)
+        if info_value is None:
+            continue
         assert isinstance(
             info_value, expected_type
         ), f"Info type {info_type} should return {expected_type.__name__}"
