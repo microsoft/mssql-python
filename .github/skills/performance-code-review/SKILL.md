@@ -205,8 +205,11 @@ concurrent-lifecycle design.
 ## Evaluate measurements, not just tables
 
 This skill evaluates performance evidence. It does not introduce a new profiler
-implementation or require a separate profiler agent. Consult the existing
-[profiler documentation](../../../profiler/README.md) when profiling is available.
+implementation or require a separate profiler agent. When new measurements are
+requested and the runtime is available, use the
+[mssql-profiler skill](../mssql-profiler/SKILL.md) to operate the existing
+profiler. Otherwise review the available artifacts and state the evidence gaps;
+do not start an unrelated benchmark merely because a review is running.
 
 ### Workload validity
 
