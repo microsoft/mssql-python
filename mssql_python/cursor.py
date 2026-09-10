@@ -2390,7 +2390,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         non_nulls = [v for v in column if v is not None]
         if not non_nulls or not all(isinstance(v, decimal.Decimal) for v in non_nulls):
             return False
-        if not all(SMALLMONEY_MIN <= v <= MONEY_MAX for v in non_nulls):
+        # The money shortcut (see _map_sql_type) string-binds any Decimal in
+        # the full MONEY range; SMALLMONEY is a subset of that range. The
+        # lower bound must be MONEY_MIN, not SMALLMONEY_MIN: a value like
+        # Decimal("-300000") is in the MONEY range but below SMALLMONEY_MIN,
+        # and using the smaller floor left such batches as SQL_VARCHAR,
+        # reintroducing the GH-745 overflow on negative money-range values.
+        if not all(MONEY_MIN <= v <= MONEY_MAX for v in non_nulls):
             return False
         paraminfo.paramSQLType = ddbc_sql_const.SQL_NUMERIC.value
         paraminfo.decimalDigits = max(

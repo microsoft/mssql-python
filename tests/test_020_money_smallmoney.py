@@ -530,7 +530,15 @@ def test_executemany_money_smallmoney(cursor, db_connection):
 
 
 class _ParamInfo:
-    """Duck-typed stand-in for ddbc_bindings.ParamInfo (no C extension needed)."""
+    """Duck-typed stand-in for ddbc_bindings.ParamInfo.
+
+    It avoids *constructing* a real ParamInfo (the pure-Python fields
+    `_apply_money_batch_declared_type` reads are enough), but the
+    `Cursor` import in `_bare_cursor` still pulls in the compiled
+    ddbc_bindings extension, so the test runs only where it is built
+    (CI); arm64 local runs stub the module (see the GH-745 red/green
+    script) rather than this file.
+    """
 
     def __init__(self, sql_type):
         self.paramSQLType = sql_type
@@ -569,6 +577,21 @@ def test_money_batch_redeclared_as_numeric():
     assert cur._apply_money_batch_declared_type(p, [Decimal("100"), Decimal("-2")]) is True
     assert p.paramSQLType == numeric
     assert p.decimalDigits == 0
+
+    # Negative money-range value below SMALLMONEY_MIN but inside the MONEY
+    # range: must still redeclare (the MONEY_MIN floor, not the SMALLMONEY
+    # floor, is the correct lower bound). GH-745 negative-value edge.
+    p = _ParamInfo(varchar)
+    assert cur._apply_money_batch_declared_type(p, [Decimal("-300000")]) is True
+    assert p.paramSQLType == numeric
+    assert p.decimalDigits == 0
+
+    # Below MONEY_MIN (negative overflow) -> unchanged (not a money value)
+    p = _ParamInfo(varchar)
+    assert cur._apply_money_batch_declared_type(
+        p, [Decimal("-922337203685477.5809")]
+    ) is False
+    assert p.paramSQLType == varchar
 
     # Above MONEY_MAX -> unchanged (existing NUMERIC path handles it)
     p = _ParamInfo(varchar)
