@@ -85,7 +85,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `money`/`varchar` in data-type precedence, `WHERE money_or_varchar_col = ?` can
   add a `CONVERT_IMPLICIT` on the column side that turns an index seek into a scan.
   `executemany` intentionally keeps its batch `VARCHAR` string binding (GH-503);
-  the remaining money-range case there is tracked in #745.
+  the remaining money-range case there is tracked in #745 (fixed below).
+- **GH-745:** A `Decimal` batch in the MONEY / SMALLMONEY range passed to
+  `executemany()` is now re-declared as `SQL_NUMERIC` (with the batch-wide maximum
+  scale) instead of keeping the sample row's `VARCHAR` money shortcut, mirroring
+  the GH-740 fix on the `execute()` paths. Previously such a batch compared
+  against a smaller `numeric`/`decimal` column (`WHERE v = ?`) made SQL Server
+  convert each row's `varchar`→`numeric` and raise an arithmetic overflow. The
+  batch still string-binds (GH-503), and `decimalDigits` uses the max scale across
+  the whole batch so mixed-scale rows all fit the declared type (a sample-only
+  switch would regress the GH-557 mixed-sign sizing). Only pure-Decimal columns
+  fully inside the money range are affected; wider values, mixed-type columns, and
+  `setinputsizes()`-typed columns are untouched.
 - **GH-725:** The `timeout` parameter of `connect()` / `Connection(...)` now
   correctly sets the **login (connection-attempt) timeout**
   (`SQL_ATTR_LOGIN_TIMEOUT`), matching pyodbc and its own docstring. Previously

@@ -8,8 +8,9 @@ Key implementation detail: on the execute() path every finite Decimal binds as
 SQL_NUMERIC using its own precision and scale, regardless of value. Binding no longer
 depends on whether the value falls in the MONEY/SMALLMONEY range, so an in-range value
 compared against a smaller numeric column returns no match instead of a varchar->numeric
-overflow (GH-740). executemany still string-binds Decimals (SQL_VARCHAR) to preserve
-scale-38 precision (GH-503), so that path is unchanged here.
+overflow (GH-740). executemany string-binds Decimals to preserve scale-38 precision
+(GH-503); a money-range batch is additionally re-declared as SQL_NUMERIC with batch-wide
+scale so the server does not overflow when coercing the strings (GH-745).
 """
 
 import pytest
@@ -526,6 +527,69 @@ def test_executemany_money_smallmoney(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
+
+
+class _ParamInfo:
+    """Duck-typed stand-in for ddbc_bindings.ParamInfo (no C extension needed)."""
+
+    def __init__(self, sql_type):
+        self.paramSQLType = sql_type
+        self.decimalDigits = 0
+        self.columnSize = 0
+
+
+def _bare_cursor():
+    """A Cursor instance that skips __init__ (no DB connection required)."""
+    from mssql_python.cursor import Cursor
+
+    return Cursor.__new__(Cursor)
+
+
+def test_money_batch_redeclared_as_numeric():
+    """GH-745: a money-range Decimal batch must declare SQL_NUMERIC (not the
+    VARCHAR shortcut), with decimalDigits = batch-wide max scale, so the server
+    does not overflow converting the strings. Mirrors the GH-740 fix on
+    execute(); the string binding (GH-503) is applied separately downstream."""
+    from mssql_python.constants import ConstantsDDBC as ddbc
+
+    cur = _bare_cursor()
+    varchar = ddbc.SQL_VARCHAR.value
+    numeric = ddbc.SQL_NUMERIC.value
+
+    # In-range batch, mixed scales -> redeclared NUMERIC with max scale 4
+    p = _ParamInfo(varchar)
+    assert cur._apply_money_batch_declared_type(
+        p, [Decimal("12345.6789"), Decimal("-0.0001"), None]
+    ) is True
+    assert p.paramSQLType == numeric
+    assert p.decimalDigits == 4
+
+    # Integer-valued money -> scale 0
+    p = _ParamInfo(varchar)
+    assert cur._apply_money_batch_declared_type(p, [Decimal("100"), Decimal("-2")]) is True
+    assert p.paramSQLType == numeric
+    assert p.decimalDigits == 0
+
+    # Above MONEY_MAX -> unchanged (existing NUMERIC path handles it)
+    p = _ParamInfo(varchar)
+    assert cur._apply_money_batch_declared_type(p, [Decimal("9999999999999999")]) is False
+    assert p.paramSQLType == varchar
+
+    # Mixed Decimal + str -> unchanged (not a pure Decimal column)
+    p = _ParamInfo(varchar)
+    assert cur._apply_money_batch_declared_type(p, [Decimal("1.5"), "2.5"]) is False
+    assert p.paramSQLType == varchar
+
+    # All-NULL column -> unchanged (nothing to type)
+    p = _ParamInfo(varchar)
+    assert cur._apply_money_batch_declared_type(p, [None, None]) is False
+    assert p.paramSQLType == varchar
+
+    # Already declared non-VARCHAR -> untouched
+    p = _ParamInfo(numeric)
+    assert cur._apply_money_batch_declared_type(p, [Decimal("1.5")]) is False
+    assert p.paramSQLType == numeric
+    assert p.decimalDigits == 0
 
 
 # =============================================================================

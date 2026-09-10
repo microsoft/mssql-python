@@ -2371,6 +2371,38 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         return sample_value, None, None, max_decimal_formatted_len
 
+    def _apply_money_batch_declared_type(self, paraminfo, column):
+        """GH-745: re-declare a money-range Decimal column as SQL_NUMERIC.
+
+        The auto-detection sample path takes the VARCHAR money shortcut
+        (see _map_sql_type), but a money-range Decimal compared against a
+        smaller numeric column overflows on the server side when bound as
+        VARCHAR - the same bug GH-740 fixed on the execute() paths. Declare
+        SQL_NUMERIC instead; the existing override below keeps the
+        SQL_C_CHAR string binding (GH-503), and decimalDigits uses the
+        batch-wide max scale so every row fits the declared type (a naive
+        sample-only switch regresses mixed-scale batches, GH-557 shape).
+
+        Returns True if the declaration was changed.
+        """
+        if paraminfo.paramSQLType != ddbc_sql_const.SQL_VARCHAR.value:
+            return False
+        non_nulls = [v for v in column if v is not None]
+        if not non_nulls or not all(isinstance(v, decimal.Decimal) for v in non_nulls):
+            return False
+        if not all(SMALLMONEY_MIN <= v <= MONEY_MAX for v in non_nulls):
+            return False
+        paraminfo.paramSQLType = ddbc_sql_const.SQL_NUMERIC.value
+        paraminfo.decimalDigits = max(
+            (-v.as_tuple().exponent) if v.as_tuple().exponent < 0 else 0 for v in non_nulls
+        )
+        logger.debug(
+            "executemany: money-range batch re-declared as SQL_NUMERIC, "
+            "decimalDigits=%d (GH-745)",
+            paraminfo.decimalDigits,
+        )
+        return True
+
     def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self,
         operation: str,
@@ -2560,6 +2592,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     min_val=min_val,
                     max_val=max_val,
                 )
+
+                # GH-745: a money-range Decimal batch declared as SQL_VARCHAR
+                # overflows on the server when compared against a smaller
+                # numeric column (the executemany remnant of GH-740). Re-declare
+                # as SQL_NUMERIC with batch-wide scale; string binding (GH-503)
+                # is preserved by the override below.
+                self._apply_money_batch_declared_type(paraminfo, column)
 
                 # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
                 # where BindParameterArray resolves the correct type via the
