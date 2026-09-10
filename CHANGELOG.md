@@ -57,6 +57,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- **GH-769:** `GetInfoConstants` and `get_info_constants()` now contain only
+  ODBC information-type IDs. Use `ConstantsDDBC` or the existing module-level
+  imports for `SQL_TXN_ISOLATION_LEVEL`, `SQL_CONCURRENCY`, `SQL_ROWSET_SIZE`,
+  `SQL_ROW_NUMBER`, `SQL_IC_*`, and `SQL_SQL92_*_SQL`. These are attributes or
+  return values, not inputs to `getinfo()`. Prefer `SQL_ATTR_TXN_ISOLATION`
+  for the connection attribute. The legacy `SQL_SQL92_*_SQL` names now alias
+  the ODBC conformance return values `SQL_SC_SQL92_ENTRY` (1),
+  `SQL_SC_SQL92_INTERMEDIATE` (4), and `SQL_SC_SQL92_FULL` (8);
+  `SQL_SC_FIPS127_2_TRANSITIONAL` is 2. Code referencing the removed enum
+  members must switch to these module-level constants.
 - Connection strings and string connection parameters that contain a NUL
   (`\x00`) character are now rejected up front with `InterfaceError` instead of
   being silently truncated at the NUL by the underlying driver.
@@ -69,6 +79,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-769:** Corrected 11 `GetInfoConstants` IDs for scalar functions, outer
+  joins, driver handles, cursor attributes, catalog support, and parameter
+  descriptions. Added the ODBC name `SQL_TIMEDATE_FUNCTIONS`, keeping
+  `SQL_DATETIME_FUNCTIONS` as an alias of 52. For advertised constants,
+  `getinfo()` now uses ODBC return types instead of guessing from the bytes: numeric
+  information is decoded as unsigned integers (including
+  `SQL_SQL_CONFORMANCE`, `SQL_CURSOR_SENSITIVITY`, and
+  `SQL_MAX_IDENTIFIER_LEN`), and character results use the Unicode path.
+  Unlisted raw IDs retain their existing decoding behavior. Malformed numeric
+  payloads raise `DatabaseError` rather than returning a guessed value.
+  Driver Manager-only handle queries can still be unsupported by the native
+  provider; correcting their IDs does not add Driver Manager support.
 - **GH-740:** A Python `Decimal` whose value falls in the SQL Server MONEY /
   SMALLMONEY range is now bound as `SQL_NUMERIC` with its own precision and scale
   on both `execute()` paths (native detection, and the legacy path reached when

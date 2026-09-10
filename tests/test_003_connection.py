@@ -3008,7 +3008,7 @@ def test_getinfo_sql_support(db_connection):
         # SQL conformance level
         sql_conformance = db_connection.getinfo(sql_const.SQL_SQL_CONFORMANCE.value)
         print("SQL Conformance = ", sql_conformance)
-        assert sql_conformance is not None, "SQL conformance should not be None"
+        assert isinstance(sql_conformance, int), "SQL conformance should be an integer"
 
         # Keywords - may return a very long string
         keywords = db_connection.getinfo(sql_const.SQL_KEYWORDS.value)
@@ -3135,25 +3135,10 @@ def test_getinfo_standard_types(db_connection):
     }
 
     for info_type, expected_type in info_types.items():
-        try:
-            info_value = db_connection.getinfo(info_type)
-            print(info_type, info_value)
-
-            # Skip None values (unsupported by driver)
-            if info_value is None:
-                continue
-
-            # Check type, allowing empty strings for string types
-            if expected_type == str:
-                assert isinstance(info_value, str), f"Info type {info_type} should return a string"
-            elif expected_type == int:
-                assert isinstance(
-                    info_value, int
-                ), f"Info type {info_type} should return an integer"
-
-        except Exception as e:
-            # Log but don't fail - some drivers might not support all info types
-            print(f"Info type {info_type} failed: {e}")
+        info_value = db_connection.getinfo(info_type)
+        assert isinstance(
+            info_value, expected_type
+        ), f"Info type {info_type} should return {expected_type.__name__}"
 
 
 def test_getinfo_numeric_limits(db_connection):
