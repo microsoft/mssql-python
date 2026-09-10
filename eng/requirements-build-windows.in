@@ -6,3 +6,4 @@ pyodbc
 pytest
 setuptools
 wheel
+zstandard

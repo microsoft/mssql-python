@@ -25,6 +25,7 @@ DIRECT_REQUIREMENTS = {
         "pytest",
         "setuptools",
         "wheel",
+        "zstandard",
     },
 }
 
