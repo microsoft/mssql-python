@@ -601,6 +601,10 @@ _DDBC_PUBLIC_API = {
     "SQL_TYPE_TIMESTAMP",
     "SQL_GUID",
     "SQL_XML",
+    # SQL Server-specific type constants (pyodbc parity)
+    "SQL_SS_TIME2",
+    "SQL_SS_XML",
+    "SQL_SS_VARIANT",
     # Connection attribute constants (ODBC-standard, driver-independent only)
     "SQL_ATTR_ACCESS_MODE",
     "SQL_ATTR_CONNECTION_TIMEOUT",
