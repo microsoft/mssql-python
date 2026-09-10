@@ -154,6 +154,9 @@ jobs:
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      # Pool eviction tests observe physical connections from a second session.
+      sqlcmd -S "localhost" -U "sa" -P "$env:DB_PASSWORD" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
@@ -220,6 +223,9 @@ jobs:
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      # Pool eviction tests observe physical connections from a second session.
+      sqlcmd -S "localhost" -U "sa" -P "$env:DB_PASSWORD" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2025'
     condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
