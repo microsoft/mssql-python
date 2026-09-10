@@ -286,7 +286,7 @@ stages:
                     cd /workspace/mssql_python/pybind;
                     bash build.sh;
                     
-                    # Step 3.5: Extract mssql_py_core from NuGet for this Python version
+                    # Step 3.5: Install mssql-python-rs separately for this Python version
                     bash /workspace/eng/scripts/install-mssql-py-core.sh;
                     
                     # Step 4: Build wheel
@@ -356,7 +356,7 @@ stages:
                     cd /workspace/mssql_python/pybind;
                     bash build.sh;
                     
-                    # Step 3.5: Extract mssql_py_core from NuGet for this Python version
+                    # Step 3.5: Install mssql-python-rs separately for this Python version
                     bash /workspace/eng/scripts/install-mssql-py-core.sh;
                     
                     # Step 4: Build wheel

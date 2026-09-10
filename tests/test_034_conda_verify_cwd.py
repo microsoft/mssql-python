@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -405,13 +406,13 @@ def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monk
     mod = _load_orchestrator()
     calls = {}
 
-    monkeypatch.setattr(mod, "gather_wheels", lambda *_args: ("1.2.3", "18.6.2"))
+    monkeypatch.setattr(mod, "gather_wheels", lambda *_args: ("1.2.3", "18.6.2", "0.1.0"))
     monkeypatch.setattr(mod, "find_or_install_conda", lambda _output_dir: "conda")
     monkeypatch.setattr(mod, "run", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(mod, "create_builder_env", lambda _conda: "conda_builder")
     monkeypatch.setattr(mod, "detect_pythons", lambda *_args: ["3.13"])
 
-    def _build_env(_mssql_ver, _odbc_ver, _links, cross_target_subdir):
+    def _build_env(_mssql_ver, _odbc_ver, _rs_ver, _links, cross_target_subdir):
         calls["build_env"] = cross_target_subdir
         return {}
 
@@ -452,6 +453,10 @@ def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monk
             str(tmp_path / "odbc"),
             "--odbc-wheel-filter",
             "*.whl",
+            "--rs-wheel-dir",
+            str(tmp_path / "rs"),
+            "--rs-wheel-filter",
+            "*.whl",
             "--recipe-root",
             str(tmp_path / "recipe"),
             "--output-dir",
@@ -477,18 +482,29 @@ def test_build_env_clears_ambient_subdir_for_native_build(monkeypatch):
     mod = _load_orchestrator()
     monkeypatch.setenv("CONDA_SUBDIR", "win-arm64")
 
-    env = mod.build_env("1.2.3", "18.6.2", "wheels", "")
+    env = mod.build_env("1.2.3", "18.6.2", "0.1.0", "wheels", "")
 
     assert "CONDA_SUBDIR" not in env
+    assert env["MSSQL_RS_VERSION"] == "0.1.0"
 
 
 def test_build_env_sets_subdir_for_cross_build(monkeypatch):
     mod = _load_orchestrator()
     monkeypatch.setenv("CONDA_SUBDIR", "win-64")
 
-    env = mod.build_env("1.2.3", "18.6.2", "wheels", "osx-arm64")
+    env = mod.build_env("1.2.3", "18.6.2", "0.1.0", "wheels", "osx-arm64")
 
     assert env["CONDA_SUBDIR"] == "osx-arm64"
+
+
+def test_import_probe_uses_split_distribution_metadata():
+    mod = _load_orchestrator()
+
+    probe = mod._import_probe("mssql_py_core", "RS_CORE_OK", "mssql-python-rs")
+
+    compile(probe, "<probe>", "exec")
+    assert "importlib.metadata.version('mssql-python-rs')" in probe
+    assert "m.__version__" not in probe
 
 
 def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeypatch):
@@ -526,46 +542,77 @@ def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeyp
     assert not any(command[1:3] == ["run", "-n"] for command in calls)
 
 
+def _write_mssql_wheel(path, rs_version="0.1.0"):
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(
+            "mssql_python-1.2.3.dist-info/METADATA",
+            "Metadata-Version: 2.1\n"
+            "Name: mssql-python\n"
+            "Version: 1.2.3\n"
+            f"Requires-Dist: mssql-python-rs=={rs_version}\n",
+        )
+
+
 def _wheel_inputs(tmp_path, odbc_names):
     mssql_dir = tmp_path / "mssql"
     odbc_dir = tmp_path / "odbc"
+    rs_dir = tmp_path / "rs"
     links = tmp_path / "links"
     mssql_dir.mkdir()
     odbc_dir.mkdir()
-    (mssql_dir / "mssql_python-1.2.3-cp313-cp313-win_amd64.whl").write_bytes(b"mssql")
+    rs_dir.mkdir()
+    _write_mssql_wheel(mssql_dir / "mssql_python-1.2.3-cp313-cp313-win_amd64.whl")
+    (rs_dir / "mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl").write_bytes(b"rs")
     for name in odbc_names:
         (odbc_dir / name).write_bytes(b"odbc")
-    return mssql_dir, odbc_dir, links
+    return mssql_dir, odbc_dir, rs_dir, links
 
 
 def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path):
     mod = _load_orchestrator()
-    mssql_dir, odbc_dir, links = _wheel_inputs(
+    mssql_dir, odbc_dir, rs_dir, links = _wheel_inputs(
         tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
     )
-    (mssql_dir / "mssql_python-1.2.3-cp312-cp312-win_amd64.whl").write_bytes(b"mssql")
+    _write_mssql_wheel(mssql_dir / "mssql_python-1.2.3-cp312-cp312-win_amd64.whl")
+    (rs_dir / "mssql_python_rs-0.1.0-cp312-cp312-win_amd64.whl").write_bytes(b"rs")
 
     versions = mod.gather_wheels(
-        str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
+        str(mssql_dir),
+        "mssql_python-*.whl",
+        str(odbc_dir),
+        "*.whl",
+        str(rs_dir),
+        "*.whl",
+        str(links),
     )
 
-    assert versions == ("1.2.3", "18.6.2")
+    assert versions == ("1.2.3", "18.6.2", "0.1.0")
     assert sorted(path.name for path in links.iterdir()) == [
         "mssql_python-1.2.3-cp312-cp312-win_amd64.whl",
         "mssql_python-1.2.3-cp313-cp313-win_amd64.whl",
         "mssql_python_odbc-18.6.2-py3-none-win_amd64.whl",
+        "mssql_python_rs-0.1.0-cp312-cp312-win_amd64.whl",
+        "mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl",
     ]
 
 
 def test_gather_wheels_rejects_mixed_mssql_python_versions(tmp_path, capsys):
     mod = _load_orchestrator()
-    mssql_dir, odbc_dir, links = _wheel_inputs(
+    mssql_dir, odbc_dir, rs_dir, links = _wheel_inputs(
         tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
     )
-    (mssql_dir / "mssql_python-9.9.9-cp312-cp312-win_amd64.whl").write_bytes(b"mssql")
+    _write_mssql_wheel(mssql_dir / "mssql_python-9.9.9-cp312-cp312-win_amd64.whl")
 
     with pytest.raises(SystemExit):
-        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+        mod.gather_wheels(
+            str(mssql_dir),
+            "mssql_python-*.whl",
+            str(odbc_dir),
+            "*.whl",
+            str(rs_dir),
+            "*.whl",
+            str(links),
+        )
 
     error = capsys.readouterr().err
     assert "inconsistent versions" in error
@@ -575,15 +622,23 @@ def test_gather_wheels_rejects_mixed_mssql_python_versions(tmp_path, capsys):
 
 def test_gather_wheels_rejects_no_odbc_match(tmp_path):
     mod = _load_orchestrator()
-    mssql_dir, odbc_dir, links = _wheel_inputs(tmp_path, [])
+    mssql_dir, odbc_dir, rs_dir, links = _wheel_inputs(tmp_path, [])
 
     with pytest.raises(SystemExit):
-        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+        mod.gather_wheels(
+            str(mssql_dir),
+            "mssql_python-*.whl",
+            str(odbc_dir),
+            "*.whl",
+            str(rs_dir),
+            "*.whl",
+            str(links),
+        )
 
 
 def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
     mod = _load_orchestrator()
-    mssql_dir, odbc_dir, links = _wheel_inputs(
+    mssql_dir, odbc_dir, rs_dir, links = _wheel_inputs(
         tmp_path,
         [
             "mssql_python_odbc-18.6.2-py3-none-win_amd64.whl",
@@ -592,7 +647,71 @@ def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
     )
 
     with pytest.raises(SystemExit):
-        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+        mod.gather_wheels(
+            str(mssql_dir),
+            "mssql_python-*.whl",
+            str(odbc_dir),
+            "*.whl",
+            str(rs_dir),
+            "*.whl",
+            str(links),
+        )
+
+
+def test_gather_wheels_rejects_mismatched_python_tags(tmp_path, capsys):
+    mod = _load_orchestrator()
+    mssql_dir, odbc_dir, rs_dir, links = _wheel_inputs(
+        tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
+    )
+    (rs_dir / "mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl").unlink()
+    (rs_dir / "mssql_python_rs-0.1.0-cp312-cp312-win_amd64.whl").write_bytes(b"rs")
+
+    with pytest.raises(SystemExit):
+        mod.gather_wheels(
+            str(mssql_dir),
+            "mssql_python-*.whl",
+            str(odbc_dir),
+            "*.whl",
+            str(rs_dir),
+            "*.whl",
+            str(links),
+        )
+
+    assert "identical Python tags" in capsys.readouterr().err
+
+
+def test_gather_wheels_rejects_mismatched_rs_dependency(tmp_path, capsys):
+    mod = _load_orchestrator()
+    mssql_dir, odbc_dir, rs_dir, links = _wheel_inputs(
+        tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
+    )
+    _write_mssql_wheel(
+        mssql_dir / "mssql_python-1.2.3-cp313-cp313-win_amd64.whl", rs_version="0.1.1"
+    )
+
+    with pytest.raises(SystemExit):
+        mod.gather_wheels(
+            str(mssql_dir),
+            "mssql_python-*.whl",
+            str(odbc_dir),
+            "*.whl",
+            str(rs_dir),
+            "*.whl",
+            str(links),
+        )
+
+    error = capsys.readouterr().err
+    assert "requires mssql-python-rs==0.1.1" in error
+    assert "staged mssql-python-rs wheels are version 0.1.0" in error
+
+
+def test_cross_build_scripts_validate_extracted_rs_binding():
+    repo_root = Path(__file__).parents[1]
+    windows_script = (repo_root / "conda" / "mssql-python" / "bld.bat").read_text()
+    posix_script = (repo_root / "conda" / "mssql-python" / "build.sh").read_text()
+
+    assert "mssql_py_core.cp%CONDA_PY%-!ODBC_ARCH!.pyd" in windows_script
+    assert "mssql_py_core.cpython-${CONDA_PY}-*.so" in posix_script
 
 
 @pytest.mark.parametrize(

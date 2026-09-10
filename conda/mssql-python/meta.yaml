@@ -24,6 +24,7 @@ build:
   script_env:
     - WHEELS_DIR
     - MSSQL_ODBC_VERSION
+    - MSSQL_RS_VERSION
 
 requirements:
   build:

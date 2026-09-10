@@ -1,4 +1,4 @@
-# Step template: Install mssql_py_core from NuGet wheel package
+# Step template: Install mssql-python-rs from the internal NuGet transport
 #
 # Usage:
 #   # Windows (host)
@@ -36,10 +36,10 @@ parameters:
     default: ''
 
 steps:
-# Windows: run the PowerShell script directly on the host
+# Windows: install the matching wheel into the host interpreter
 - ${{ if eq(parameters.platform, 'windows') }}:
   - task: PowerShell@2
-    displayName: 'Install mssql_py_core from NuGet wheels${{ parameters.displaySuffix }}'
+    displayName: 'Install mssql-python-rs${{ parameters.displaySuffix }}'
     inputs:
       targetType: 'filePath'
       filePath: 'eng/scripts/install-mssql-py-core.ps1'
@@ -49,7 +49,7 @@ steps:
   - script: |
       chmod +x eng/scripts/install-mssql-py-core.sh
       ./eng/scripts/install-mssql-py-core.sh
-    displayName: 'Install mssql_py_core from NuGet wheels${{ parameters.displaySuffix }}'
+    displayName: 'Install mssql-python-rs${{ parameters.displaySuffix }}'
 
 # Inside a Docker container
 - ${{ if eq(parameters.platform, 'container') }}:
@@ -59,4 +59,4 @@ steps:
         chmod +x eng/scripts/install-mssql-py-core.sh
         ./eng/scripts/install-mssql-py-core.sh
       "
-    displayName: 'Install mssql_py_core in ${{ parameters.containerName }}${{ parameters.displaySuffix }}'
+    displayName: 'Install mssql-python-rs in ${{ parameters.containerName }}${{ parameters.displaySuffix }}'

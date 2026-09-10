@@ -183,11 +183,10 @@ stages:
           # =========================
           # MSSQL_PY_CORE INSTALLATION
           # =========================
-          # Extract mssql_py_core from NuGet into repo root BEFORE testing
-          # Required for bulkcopy tests which use mssql_py_core native bindings
+          # Install mssql-python-rs as a separate distribution before testing.
           - script: |
               bash $(Build.SourcesDirectory)/eng/scripts/install-mssql-py-core.sh
-            displayName: 'Install mssql_py_core from NuGet'
+            displayName: 'Install mssql-python-rs from NuGet transport'
           
           # =========================
           # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE

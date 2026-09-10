@@ -205,6 +205,20 @@ extends:
                       filePath: '$(Build.SourcesDirectory)\OneBranchPipelines\scripts\validate-release-versions.ps1'
                       arguments: '-VersionFile "$(Build.SourcesDirectory)\artifacts\dist\mssql-py-core.version"'
 
+                  - task: PowerShell@2
+                    displayName: 'Validate mssql-python-rs dependency version'
+                    inputs:
+                      targetType: 'filePath'
+                      filePath: '$(Build.SourcesDirectory)\OneBranchPipelines\scripts\validate-release-versions.ps1'
+                      arguments: '-VersionFile "$(Build.SourcesDirectory)\artifacts\dist\mssql-python-rs.version"'
+
+                  - task: PowerShell@2
+                    displayName: 'Validate mssql-python-rs wheel dependency'
+                    inputs:
+                      targetType: 'filePath'
+                      filePath: '$(Build.SourcesDirectory)\OneBranchPipelines\scripts\validate-rs-wheel-dependency.ps1'
+                      arguments: '-WheelsDir "$(Build.SourcesDirectory)\artifacts\dist" -VersionFile "$(Build.SourcesDirectory)\artifacts\dist\mssql-python-rs.version"'
+
                   # Guard: if the released mssql-python wheel declares an
                   # mssql-python-odbc dependency, it MUST be the exact pinned version.
                   # A pre-pin build declares no such dependency and is allowed through

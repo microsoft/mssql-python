@@ -57,6 +57,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- `mssql-python` now depends on `mssql-python-rs==0.1.0` for `mssql_py_core`
+  and the alternate Rust ODBC provider. Its wheel no longer vendors files owned
+  by that companion distribution; build and test pipelines install it separately.
 - Connection strings and string connection parameters that contain a NUL
   (`\x00`) character are now rejected up front with `InterfaceError` instead of
   being silently truncated at the NUL by the underlying driver.

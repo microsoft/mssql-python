@@ -1,22 +1,21 @@
 <#
 .SYNOPSIS
-    Downloads the mssql-python-rs-wheels NuGet package (or its legacy name) from
-    a public Azure Artifacts feed and extracts the matching mssql_py_core binary
-    into the repository root so that 'import mssql_py_core' works from source.
+    Downloads the mssql-python-rs-wheels NuGet package from a public Azure
+    Artifacts feed and installs the matching mssql-python-rs wheel with pip.
 
 .PARAMETER FeedUrl
     The NuGet v3 feed URL. This is a public feed — no authentication required.
 
 .PARAMETER OutputDir
-    Temporary directory for downloaded artifacts. Cleaned up after extraction.
+    Temporary directory for downloaded artifacts. Cleaned up after installation.
     Defaults to $env:TEMP\mssql-python-rs-wheels.
 
 .PARAMETER TargetArch
     Target CPU architecture ('x64' or 'arm64') for cross-compilation builds.
-    When set, the matching-arch mssql_py_core wheel is selected instead of the
+    When set, the matching-arch mssql-python-rs wheel is selected instead of the
     host arch reported by platform.machine() -- required because Windows arm64
-    wheels are cross-built on an x64 host, where an unset value would vendor the
-    x64 core into the arm64 wheel. The import self-check is also skipped when the
+    wheels are cross-built on an x64 host, where an unset value would select the
+    x64 wheel for the arm64 build. The import self-check is also skipped when the
     target differs from the host (a cross-arch .pyd cannot load here). Defaults to
     empty (use host arch), which is correct for native/local builds.
 #>
@@ -32,7 +31,7 @@ $ScriptDir = $PSScriptRoot
 $RepoRoot = (Get-Item "$ScriptDir\..\..").FullName
 
 function Read-PackageVersion {
-    $versionFile = Join-Path $RepoRoot "eng\versions\mssql-py-core.version"
+    $versionFile = Join-Path $RepoRoot "eng\versions\mssql-python-rs.version"
     if (-not (Test-Path $versionFile)) {
         throw "Version file not found: $versionFile"
     }
@@ -80,11 +79,8 @@ function Get-PlatformInfo {
         default { throw "Unsupported platform: $script:Platform" }
     }
 
-    $script:WheelPatterns = @(
-        "mssql_python_rs-*-$script:PyVersion-$script:PyVersion-$script:WheelPlatform.whl"
-        "mssql_py_core-*-$script:PyVersion-$script:PyVersion-$script:WheelPlatform.whl"
-    )
-    Write-Host "Wheel patterns: $($script:WheelPatterns -join ', ')"
+    $script:WheelPattern = "mssql_python_rs-*-$script:PyVersion-$script:PyVersion-$script:WheelPlatform.whl"
+    Write-Host "Wheel pattern: $script:WheelPattern"
 }
 
 function Get-NupkgFromFeed {
@@ -101,30 +97,11 @@ function Get-NupkgFromFeed {
     if (-not $packageBaseUrl) { throw "Could not resolve PackageBaseAddress from feed" }
 
     $versionLower = $script:PackageVersion.ToLower()
-    $packageIds = @("mssql-python-rs-wheels", "mssql-py-core-wheels")
-    $script:NupkgPath = $null
-    foreach ($packageId in $packageIds) {
-        $nupkgUrl = "${packageBaseUrl}${packageId}/${versionLower}/${packageId}.${versionLower}.nupkg"
-        $candidatePath = Join-Path $OutputDir "${packageId}.${versionLower}.nupkg"
-        Write-Host "Downloading: $nupkgUrl"
-        try {
-            Invoke-WebRequest -Uri $nupkgUrl -OutFile $candidatePath
-            $script:NupkgPath = $candidatePath
-            Write-Host "Using NuGet package: $packageId"
-            break
-        }
-        catch {
-            Remove-Item $candidatePath -Force -ErrorAction SilentlyContinue
-            $statusCode = $_.Exception.Response.StatusCode
-            if (-not $statusCode -or [int]$statusCode -ne 404) {
-                throw
-            }
-            Write-Host "Package not available: $packageId $script:PackageVersion"
-        }
-    }
-    if (-not $script:NupkgPath) {
-        throw "Package version $script:PackageVersion was not found under: $($packageIds -join ', ')"
-    }
+    $packageId = "mssql-python-rs-wheels"
+    $nupkgUrl = "${packageBaseUrl}${packageId}/${versionLower}/${packageId}.${versionLower}.nupkg"
+    $script:NupkgPath = Join-Path $OutputDir "${packageId}.${versionLower}.nupkg"
+    Write-Host "Downloading: $nupkgUrl"
+    Invoke-WebRequest -Uri $nupkgUrl -OutFile $script:NupkgPath
 
     $sizeMB = [math]::Round((Get-Item $script:NupkgPath).Length / 1MB, 2)
     Write-Host "Downloaded: $script:NupkgPath ($sizeMB MB)"
@@ -145,15 +122,11 @@ function Find-MatchingWheel {
         throw "No 'wheels' directory found in NuGet package"
     }
 
-    $script:MatchingWheel = $null
-    foreach ($wheelPattern in $script:WheelPatterns) {
-        $script:MatchingWheel = Get-ChildItem $wheelsDir -Filter $wheelPattern | Select-Object -First 1
-        if ($script:MatchingWheel) { break }
-    }
+    $script:MatchingWheel = Get-ChildItem $wheelsDir -Filter $script:WheelPattern | Select-Object -First 1
     if (-not $script:MatchingWheel) {
         Write-Host "Available wheels:"
         Get-ChildItem $wheelsDir -Filter *.whl | ForEach-Object { Write-Host "  $_" }
-        throw "No wheel found matching: $($script:WheelPatterns -join ', ')"
+        throw "No wheel found matching: $script:WheelPattern"
     }
 
     Write-Host "Found: $($script:MatchingWheel.Name)"
@@ -166,31 +139,24 @@ function Install-AndVerify {
         Write-Host "Cleaned previous mssql_py_core/"
     }
 
-    & python "$ScriptDir\extract_wheel.py" $script:MatchingWheel.FullName $RepoRoot
-    if ($LASTEXITCODE -ne 0) { throw "Failed to extract mssql_py_core from wheel" }
-
-    # Skip the import self-check on cross-arch builds: an arm64 .pyd cannot be
-    # loaded by the x64 Python running on the build host. The wheel is still
-    # vendored correctly and is exercised by tests on native-arch agents.
+    # A cross-arch wheel cannot be installed into the host interpreter. The
+    # mssql-python wheel build only records dependency metadata on this leg;
+    # native agents exercise the installed distribution.
     if ($script:IsCrossArch) {
-        Write-Host "Skipping import verification (cross-arch build: target != host)"
+        Write-Host "Skipping mssql-python-rs installation (cross-arch build: target != host)"
         return
     }
 
-    Write-Host "Verifying import..."
-    Push-Location $RepoRoot
-    try {
-        & python -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
-        if ($LASTEXITCODE -ne 0) { throw "Failed to import mssql_py_core" }
-    }
-    finally {
-        Pop-Location
-    }
+    & python -m pip install --force-reinstall --no-deps $script:MatchingWheel.FullName
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install mssql-python-rs" }
+
+    & python -c "import importlib.metadata as m, mssql_py_core; assert m.version('mssql-python-rs') == '$script:PackageVersion'; print('mssql-python-rs', m.version('mssql-python-rs'), 'loaded from', mssql_py_core.__file__)"
+    if ($LASTEXITCODE -ne 0) { throw "Failed to verify installed mssql-python-rs" }
 }
 
 # --- main ---
 
-Write-Host "=== Install mssql_py_core from NuGet wheel package ==="
+Write-Host "=== Install mssql-python-rs from NuGet wheel package ==="
 
 Read-PackageVersion
 Get-PlatformInfo
@@ -199,4 +165,4 @@ Find-MatchingWheel -OutputDir $OutputDir
 Install-AndVerify
 
 Remove-Item $OutputDir -Recurse -Force -ErrorAction SilentlyContinue
-Write-Host "=== mssql_py_core extracted successfully ==="
+Write-Host "=== mssql-python-rs installed successfully ==="
