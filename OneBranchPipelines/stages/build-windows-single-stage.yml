@@ -343,18 +343,51 @@ stages:
               condition: ne(variables['targetArch'], 'arm64')
 
           # =========================
-          # TESTING
+          # WHEEL BUILD AND TESTING
           # =========================
-          # Run pytest to validate bindings (x64 only)
-          # ARM64 binaries cannot execute on x64 host, so tests are skipped
+          # Build the signed wheel for every architecture. Install and test x64
+          # wheels from a directory that cannot resolve mssql_python from the
+          # source checkout. ARM64 wheels cannot execute on the x64 build host.
           - powershell: |
-              Write-Host "Running pytests to validate bindings"
+              $ErrorActionPreference = "Stop"
+              Set-Location "$(Build.SourcesDirectory)"
+              python -m pip install --upgrade pip wheel setuptools
+              if ($LASTEXITCODE -ne 0) { throw "Failed to install wheel build dependencies" }
+              $env:ARCHITECTURE = "$(targetArch)"
+              python setup.py bdist_wheel
+              if ($LASTEXITCODE -ne 0) { throw "Failed to build wheel" }
+
               if ("$(targetArch)" -eq "arm64") {
-                Write-Host "Skipping pytests on Windows ARM64"
-              } else {
-                python -m pytest -v
+                Write-Host "Skipping wheel tests on Windows ARM64"
+                exit 0
               }
-            displayName: 'Run pytests'
+
+              $wheels = @(Get-ChildItem "$(Build.SourcesDirectory)\dist" -Filter *.whl -File)
+              if ($wheels.Count -ne 1) {
+                Write-Error "Expected one wheel in dist\, found $($wheels.Count)"
+                exit 1
+              }
+
+              python -m pip install --force-reinstall --no-deps "$($wheels[0].FullName)"
+              if ($LASTEXITCODE -ne 0) { throw "Failed to install built wheel" }
+
+              $testDir = Join-Path "$(Agent.TempDirectory)" "mssql-python-wheel-test"
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $testDir
+              New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+              Copy-Item "$(Build.SourcesDirectory)\tests" "$testDir\tests" -Recurse
+              Copy-Item "$(Build.SourcesDirectory)\.github" "$testDir\.github" -Recurse
+              Copy-Item "$(Build.SourcesDirectory)\pytest.ini" "$testDir\pytest.ini"
+
+              Push-Location $testDir
+              try {
+                python -c "import os,mssql_python as m; p=os.path.realpath(os.path.dirname(m.__file__)); s=os.path.realpath(os.environ['BUILD_SOURCESDIRECTORY']); assert not p.startswith(s), 'mssql_python resolved inside checkout: '+p; print('mssql_python resolved from installed wheel:', p)"
+                if ($LASTEXITCODE -ne 0) { throw "Built wheel did not import outside the checkout" }
+                python -m pytest tests -v
+                if ($LASTEXITCODE -ne 0) { throw "Wheel tests failed" }
+              } finally {
+                Pop-Location
+              }
+            displayName: 'Build and test wheel'
             env:
               DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
           
@@ -391,14 +424,6 @@ stages:
               TargetFolder: '$(Build.SourcesDirectory)\apiScan\pdbs\windows\py$(shortPyVer)\$(targetArch)'
             displayName: 'Copy PDB to ApiScan directory'
 
-          # Build Python wheel package from source distribution
-          # ARCHITECTURE environment variable controls target platform tagging
-          - script: |
-              python -m pip install --upgrade pip wheel setuptools
-              set ARCHITECTURE=$(targetArch)
-              python setup.py bdist_wheel
-            displayName: 'Build wheel package'
-          
           # =========================
           # SIGNED-WHEEL EVIDENCE (verification only)
           # =========================

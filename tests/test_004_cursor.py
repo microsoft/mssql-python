@@ -114,6 +114,8 @@ PARAM_TEST_DATA = [
 def test_package_sources_compile_with_warnings_as_errors():
     """Every package source must compile when warnings are promoted to errors."""
     package_dir = Path(__file__).parents[1] / "mssql_python"
+    if not package_dir.is_dir():
+        pytest.skip("requires a source checkout")
     for source in sorted(package_dir.glob("*.py")):
         with warnings.catch_warnings():
             warnings.simplefilter("error")

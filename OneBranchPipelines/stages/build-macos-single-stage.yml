@@ -221,43 +221,42 @@ stages:
               displayName: 'Install external ODBC wheel (mssql-python-odbc)'
 
           # =========================
-          # TESTING
+          # WHEEL BUILD AND TESTING
           # =========================
-          # Run pytest against SQL Server container
-          # Tests use localhost:1433 connection (SA user with password from variable)
-          # -v = verbose output (show test names and results)
+          # Build and retag the final wheel, then install and test it from a
+          # directory that cannot resolve mssql_python from the source checkout.
           - script: |
-              python -m pytest -v
-            displayName: 'Run pytests'
+              set -euo pipefail
+              cd "$(Build.SourcesDirectory)"
+              python -m pip install --upgrade pip wheel setuptools
+              python setup.py bdist_wheel
+              for whl in dist/*.whl; do
+                echo "Retagging: $(basename "$whl")"
+                wheel tags --platform-tag macosx_15_0_universal2 --remove "$whl"
+              done
+
+              TEST_DIR="$(Agent.TempDirectory)/mssql-python-wheel-test"
+              WHEEL=$(find "$(Build.SourcesDirectory)/dist" -maxdepth 1 -name '*.whl' -print -quit)
+              if [ -z "$WHEEL" ]; then
+                echo "No wheel found in dist/" >&2
+                exit 1
+              fi
+
+              python -m pip install --force-reinstall --no-deps "$WHEEL"
+              rm -rf "$TEST_DIR"
+              mkdir -p "$TEST_DIR"
+              cp -R "$(Build.SourcesDirectory)/tests" "$TEST_DIR/tests"
+              cp -R "$(Build.SourcesDirectory)/.github" "$TEST_DIR/.github"
+              cp "$(Build.SourcesDirectory)/pytest.ini" "$TEST_DIR/pytest.ini"
+
+              cd "$TEST_DIR"
+              python -c "import os,mssql_python as m; p=os.path.realpath(os.path.dirname(m.__file__)); s=os.path.realpath(os.environ['BUILD_SOURCESDIRECTORY']); assert not p.startswith(s), 'mssql_python resolved inside checkout: '+p; print('mssql_python resolved from installed wheel:', p)"
+              python -m pytest tests -v
+            displayName: 'Build and test wheel'
             env:
               # Connection string uses localhost (SQL Server container exposed on port 1433)
               # TrustServerCertificate=yes bypasses SSL cert validation (test env only)
               DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-          
-          # =========================
-          # WHEEL BUILD
-          # =========================
-
-          # Build wheel package from setup.py
-          # Wheel filename: mssql_python-X.Y.Z-cp3XX-cp3XX-macosx_XX_X_universal2.whl
-          # bdist_wheel = build binary wheel distribution (contains pre-compiled .so)
-          - script: |
-              python -m pip install --upgrade pip wheel setuptools
-              python setup.py bdist_wheel
-            displayName: 'Build wheel package'
-          
-          # Retag wheel to universal2 — the .so binary is already universal2 (CMake cross-compiles
-          # both arm64 + x86_64), but bdist_wheel may tag as x86_64 when the Python interpreter
-          # lacks universal2 support (e.g. Python 3.10 from UsePythonVersion@0 is x86_64-only).
-          # Same approach used in mssql-tds Rust pipeline (build-python-wheels-template.yml).
-          - script: |
-              for whl in dist/*.whl; do
-                echo "Retagging: $(basename $whl)"
-                wheel tags --platform-tag macosx_15_0_universal2 --remove "$whl"
-              done
-              echo "Wheels after retag:"
-              ls -lh dist/
-            displayName: 'Ensure universal2 platform tag'
           
           # =========================
           # ARTIFACT PUBLISHING

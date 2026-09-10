@@ -17,22 +17,26 @@ already loaded). Each case therefore runs in a fresh subprocess that shadows the
 the actionable guidance surfaced by ``connect()``.
 """
 
-import glob
 import os
 import subprocess
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_MSSQL_DIR = _REPO_ROOT / "mssql_python"
+_PACKAGE_SPEC = find_spec("mssql_python")
+_MSSQL_DIR = (
+    Path(next(iter(_PACKAGE_SPEC.submodule_search_locations))).resolve()
+    if _PACKAGE_SPEC and _PACKAGE_SPEC.submodule_search_locations
+    else _REPO_ROOT / "mssql_python"
+)
 
 # These tests drive the *native* resolver, so they require the compiled
-# extension. Skip cleanly in a source-only checkout where it was never built.
-_EXT_BUILT = bool(
-    glob.glob(str(_MSSQL_DIR / "ddbc_bindings.*.pyd"))
-    or glob.glob(str(_MSSQL_DIR / "ddbc_bindings.*.so"))
+# extension from either the checkout or the installed wheel.
+_EXT_BUILT = any(_MSSQL_DIR.glob("ddbc_bindings.*.pyd")) or any(
+    _MSSQL_DIR.glob("ddbc_bindings.*.so")
 )
 pytestmark = pytest.mark.skipif(not _EXT_BUILT, reason="native ddbc_bindings extension not built")
 
