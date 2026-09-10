@@ -2882,6 +2882,7 @@ def test_getinfo_string_encoding_utf16(db_connection):
         ("SQL_DRIVER_VER", sql_const.SQL_DRIVER_VER.value),
         ("SQL_DRIVER_NAME", sql_const.SQL_DRIVER_NAME.value),
         ("SQL_DRIVER_ODBC_VER", sql_const.SQL_DRIVER_ODBC_VER.value),
+        ("SQL_DATABASE_NAME", sql_const.SQL_DATABASE_NAME.value),
         ("SQL_SERVER_NAME", sql_const.SQL_SERVER_NAME.value),
     ]
 

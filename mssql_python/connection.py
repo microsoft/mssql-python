@@ -1880,6 +1880,7 @@ class Connection:
             # String types - these return strings in pyodbc
             string_type_constants = {
                 GetInfoConstants.SQL_DATA_SOURCE_NAME.value,
+                GetInfoConstants.SQL_DATABASE_NAME.value,
                 GetInfoConstants.SQL_DRIVER_NAME.value,
                 GetInfoConstants.SQL_DRIVER_VER.value,
                 GetInfoConstants.SQL_SERVER_NAME.value,
