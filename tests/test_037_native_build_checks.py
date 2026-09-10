@@ -15,6 +15,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "eng/scripts/scan_wheel_binaries.py"
+if not SCRIPT.is_file():
+    pytest.skip(
+        f"native build checks require checkout sources ({SCRIPT}); skipping",
+        allow_module_level=True,
+    )
+
 sys.path.insert(0, str(SCRIPT.parent))
 try:
     spec = importlib.util.spec_from_file_location("wheel_scan", SCRIPT)
@@ -29,6 +35,23 @@ def wheel_at(path, members):
         for name, data in members.items():
             archive.writestr(name, data)
     return path
+
+
+def test_source_less_wheel_layout_skips_checkout_checks(tmp_path):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    shutil.copy(__file__, tests / Path(__file__).name)
+    shutil.copy(ROOT / "pytest.ini", tmp_path / "pytest.ini")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--noconftest", "-q", str(tests)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    # No tests collected (5), not a collection error (2). The full wheel suite
+    # continues with its other modules; the checkout-only CI invocation must run tests.
+    assert result.returncode == 5, result.stdout + result.stderr
+    assert "1 skipped" in result.stdout
 
 
 def test_inventory_includes_versioned_libraries_resources_and_renamed_binaries(tmp_path):

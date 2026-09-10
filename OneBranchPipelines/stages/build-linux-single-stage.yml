@@ -294,6 +294,10 @@ stages:
                     cd /workspace;
                     python setup.py bdist_wheel;
                     
+                    # Check build tooling from the checkout before wheel-only isolation.
+                    python -m pip install -q pytest;
+                    python -m pytest --noconftest tests/test_037_native_build_checks.py -v;
+
                     # Step 5: Install wheel in isolated directory for testing
                     echo "Installing wheel in isolated test environment...";
                     TEST_DIR="/test_isolated_${PYBIN}";
@@ -316,7 +320,6 @@ stages:
                     
                     # Step 7: Setup test environment
                     echo "Setting up test environment...";
-                    $PY -m pip install -q pytest;
                     cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
                     # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
                     cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
@@ -364,6 +367,10 @@ stages:
                     cd /workspace;
                     python setup.py bdist_wheel;
                     
+                    # Check build tooling from the checkout before wheel-only isolation.
+                    python -m pip install -q pytest;
+                    python -m pytest --noconftest tests/test_037_native_build_checks.py -v;
+
                     # Step 5: Install wheel in isolated directory for testing
                     echo "Installing wheel in isolated test environment...";
                     TEST_DIR="/test_isolated_${PYBIN}";
@@ -386,7 +393,6 @@ stages:
                     
                     # Step 7: Setup test environment
                     echo "Setting up test environment...";
-                    $PY -m pip install -q pytest;
                     cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
                     # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
                     cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
