@@ -3,7 +3,7 @@
 from typing import Any
 
 from ..connection_string_parser import _ConnectionStringParser
-from ..exceptions import NotSupportedError
+from ..exceptions import InterfaceError, NotSupportedError
 from ..helpers import connstr_to_pycore_params
 
 
@@ -12,7 +12,10 @@ def build_async_connection_context(connection_str: str, timeout: int) -> dict[st
     if not isinstance(connection_str, str):
         raise TypeError("connection_str must be a string")
     if "\x00" in connection_str:
-        raise ValueError("Connection string must not contain a NUL (\\x00) character")
+        raise InterfaceError(
+            driver_error="Connection string must not contain a NUL (\\x00) character.",
+            ddbc_error="Embedded NUL in connection string.",
+        )
     if isinstance(timeout, bool) or not isinstance(timeout, int):
         raise TypeError("Login timeout must be an integer")
     if timeout < 0:

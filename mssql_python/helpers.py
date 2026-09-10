@@ -310,16 +310,18 @@ def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
     # but bulkcopy parses with validation off, so this mapping is the
     # authoritative filter in that path.
     pycore_params: dict = {}
+    seen_pycore_keys = set()
 
-    for connstr_key, pycore_key in _PYCORE_CONNECTION_KEY_MAP.items():
-        raw_value = params.get(connstr_key)
-        if raw_value is None:
+    for connstr_key, raw_value in params.items():
+        pycore_key = _PYCORE_CONNECTION_KEY_MAP.get(connstr_key)
+        if pycore_key is None or raw_value is None:
             continue
 
         # First-wins: match ODBC behaviour — first synonym in the
         # connection string takes precedence (e.g. Addr before Server).
-        if pycore_key in pycore_params:
+        if pycore_key in seen_pycore_keys:
             continue
+        seen_pycore_keys.add(pycore_key)
 
         # ODBC values are always strings; py-core expects native types for int keys.
         # Boolean params (trust_server_certificate, multi_subnet_failover) are passed

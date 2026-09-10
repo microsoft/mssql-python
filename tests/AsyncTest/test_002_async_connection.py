@@ -3,7 +3,7 @@ from types import ModuleType
 
 import pytest
 
-from mssql_python import ConnectionStringParseError, NotSupportedError
+from mssql_python import ConnectionStringParseError, InterfaceError, NotSupportedError
 from mssql_python.async_query import AsyncConnection, AsyncCursor
 from mssql_python.async_query import async_connection
 from mssql_python.async_query._connection_context import build_async_connection_context
@@ -185,6 +185,44 @@ def test_async_connection_rejects_invalid_numeric_option():
         )
 
 
+def test_async_connection_rejects_embedded_nul_with_interface_error():
+    with pytest.raises(InterfaceError) as exc_info:
+        build_async_connection_context(
+            "Server=test-server.example.invalid\x00;Database=test",
+            0,
+        )
+
+    assert (
+        exc_info.value.driver_error == "Connection string must not contain a NUL (\\x00) character."
+    )
+    assert exc_info.value.ddbc_error == "Embedded NUL in connection string."
+
+
+@pytest.mark.parametrize(
+    ("connection_str", "key", "expected"),
+    (
+        ("Addr=first;Server=second", "server", "first"),
+        ("Server=first;Addr=second", "server", "first"),
+        (
+            "Server=test;Trust_Server_Certificate=No;TrustServerCertificate=Yes",
+            "trust_server_certificate",
+            "No",
+        ),
+        (
+            "Server=test;TrustServerCertificate=No;Trust_Server_Certificate=Yes",
+            "trust_server_certificate",
+            "No",
+        ),
+        ("Server=test;Packet Size=4096;PacketSize=8192", "packet_size", 4096),
+        ("Server=test;PacketSize=4096;Packet Size=8192", "packet_size", 4096),
+    ),
+)
+def test_async_connection_preserves_first_synonym(connection_str, key, expected):
+    context = build_async_connection_context(connection_str, 0)
+
+    assert context[key] == expected
+
+
 def test_existing_pycore_conversion_remains_permissive_for_bcp():
     context = connstr_to_pycore_params(
         {
@@ -195,6 +233,17 @@ def test_existing_pycore_conversion_remains_permissive_for_bcp():
     )
 
     assert context == {"server": "test-server.example.invalid"}
+
+
+def test_bcp_conversion_does_not_fall_through_invalid_first_synonym():
+    context = connstr_to_pycore_params(
+        {
+            "packet size": "invalid",
+            "packetsize": "8192",
+        }
+    )
+
+    assert context == {}
 
 
 def test_async_connection_rejects_entra_authentication():
