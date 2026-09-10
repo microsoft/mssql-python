@@ -76,9 +76,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `SQL_SC_FIPS127_2_TRANSITIONAL` (2), `SQL_SC_SQL92_INTERMEDIATE` (4), and
   `SQL_SC_SQL92_FULL` (8). The deprecated `SQL_SQL92_*_SQL` names retain
   **127/128/129** solely for compatibility; they are not conformance flags.
-  For information types whose IDs are corrected, previously persisted enum
-  pickles and raw IDs cannot identify their original meaning; rebuild them from
-  the intended information-type names.
+  For information types whose IDs are corrected, previously persisted value-based
+  enum pickles and raw IDs cannot identify their original meaning; rebuild them
+  from the intended information-type names. Name-based enum pickles resolve
+  retained names to their corrected values.
 - Connection strings and string connection parameters that contain a NUL
   (`\x00`) character are now rejected up front with `InterfaceError` instead of
   being silently truncated at the NUL by the underlying driver.

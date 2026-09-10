@@ -571,9 +571,22 @@ def test_getinfo_current_enum_pickle_round_trip(name):
     assert pickle.loads(pickle.dumps(member)) is member
 
 
+def _pickle_enum_by_value(member, protocol):
+    return member.__class__, (member.value,)
+
+
+def _pickle_enum_by_name(member, protocol):
+    return getattr, (member.__class__, member.name)
+
+
+@pytest.mark.parametrize(
+    "reducer", [_pickle_enum_by_value, _pickle_enum_by_name], ids=["by_value", "by_name"]
+)
 @pytest.mark.parametrize("name,value", LEGACY_GETINFO_CONSTANTS.items())
-def test_getinfo_legacy_attribute_pickles_preserve_values(monkeypatch, name, value):
-    legacy = Enum("GetInfoConstants", {name: value}, module=constants.__name__)
+def test_getinfo_legacy_attribute_pickles_preserve_values(monkeypatch, name, value, reducer):
+    legacy = Enum(
+        "GetInfoConstants", {name: value, "__reduce_ex__": reducer}, module=constants.__name__
+    )
     with monkeypatch.context() as patch:
         patch.setattr(constants, "GetInfoConstants", legacy)
         serialized = pickle.dumps(legacy[name])
@@ -583,14 +596,26 @@ def test_getinfo_legacy_attribute_pickles_preserve_values(monkeypatch, name, val
     assert restored.value == value
 
 
-def test_getinfo_legacy_pickle_values_cannot_identify_the_original_name(monkeypatch):
+@pytest.mark.parametrize(
+    "reducer,expected_name",
+    [
+        pytest.param(_pickle_enum_by_value, "SQL_KEYSET_CURSOR_ATTRIBUTES1", id="by_value"),
+        pytest.param(_pickle_enum_by_name, "SQL_STATIC_CURSOR_ATTRIBUTES1", id="by_name"),
+    ],
+)
+def test_getinfo_legacy_pickle_resolves_using_its_serialized_form(
+    monkeypatch, reducer, expected_name
+):
+    # Enum's default reducer differs across Python versions; model both formats explicitly.
     legacy = Enum(
-        "GetInfoConstants", {"SQL_STATIC_CURSOR_ATTRIBUTES1": 150}, module=constants.__name__
+        "GetInfoConstants",
+        {"SQL_STATIC_CURSOR_ATTRIBUTES1": 150, "__reduce_ex__": reducer},
+        module=constants.__name__,
     )
     with monkeypatch.context() as patch:
         patch.setattr(constants, "GetInfoConstants", legacy)
         serialized = pickle.dumps(legacy.SQL_STATIC_CURSOR_ATTRIBUTES1)
 
-    # Old enum pickles store 150, not the name; after correction 150 means keyset.
-    assert pickle.loads(serialized) is G.SQL_KEYSET_CURSOR_ATTRIBUTES1
+    # Value-based pickles resolve 150 to keyset; name-based pickles keep the static identity.
+    assert pickle.loads(serialized) is G[expected_name]
     assert G["SQL_STATIC_CURSOR_ATTRIBUTES1"].value == 167
