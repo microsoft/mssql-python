@@ -73,7 +73,7 @@ def test_connect_delegates_directly_to_py_core(monkeypatch):
     py_core.PyAsyncCursor = object
     monkeypatch.setattr(async_connection, "load_py_core", lambda: py_core)
     connection_str = (
-        "Addr=test-server.example.invalid;Database={db;name};"
+        "Addr=localhost;Database={db;name};"
         "UID=test-user;PWD={p}}ass;word};Encrypt=Yes"
     )
     logger = object()
