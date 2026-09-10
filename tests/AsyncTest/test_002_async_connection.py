@@ -73,8 +73,7 @@ def test_connect_delegates_directly_to_py_core(monkeypatch):
     py_core.PyAsyncCursor = object
     monkeypatch.setattr(async_connection, "load_py_core", lambda: py_core)
     connection_str = (
-        "Addr=localhost;Database={db;name};"
-        "UID=test-user;PWD={p}}ass;word};Encrypt=Yes"
+        "Addr=localhost;Database={db;name};" "UID=test-user;PWD={p}}ass;word};Encrypt=Yes"
     )
     logger = object()
 
@@ -90,7 +89,7 @@ def test_connect_delegates_directly_to_py_core(monkeypatch):
     assert connection._native_connection is native_connection
     assert captured == {
         "context": {
-            "server": "test-server.example.invalid",
+            "server": "localhost",
             "database": "db;name",
             "user_name": "test-user",
             "password": "p}ass;word",
