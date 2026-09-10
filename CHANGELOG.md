@@ -69,6 +69,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-754:** Pooled connections are now rolled back and restored to autocommit
+  mode before being parked. This prevents an empty transaction from remaining
+  visible on an idle SQL Server session after `Connection.close()`.
 - **GH-740:** A Python `Decimal` whose value falls in the SQL Server MONEY /
   SMALLMONEY range is now bound as `SQL_NUMERIC` with its own precision and scale
   on both `execute()` paths (native detection, and the legacy path reached when

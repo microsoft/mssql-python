@@ -32,7 +32,7 @@ class Connection {
   public:
     Connection(const std::u16string& connStr, bool fromPool);
 
-    ~Connection();
+    ~Connection() noexcept;
 
     // Establish the connection using the stored connection string.
     void connect(const py::dict& attrs_before = py::dict());
@@ -53,6 +53,7 @@ class Connection {
     bool getAutocommit() const;
     bool isAlive() const;
     bool reset();
+    void prepareForPool();
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;
 

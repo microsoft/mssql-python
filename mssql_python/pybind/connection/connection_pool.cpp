@@ -329,6 +329,20 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
     }
 }
 
+void ConnectionPool::discard(std::shared_ptr<Connection> conn) {
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_current_size > 0)
+            --_current_size;
+    }
+    try {
+        conn->disconnect();
+    } catch (...) {
+        // The caller is already handling a sanitation failure. Connection's
+        // noexcept destructor still releases the ODBC handle.
+    }
+}
+
 bool ConnectionPool::canEvict() {
     std::lock_guard<std::mutex> lock(_mutex);
     // Never evict while any connection is checked out or in-flight. Reserved
@@ -502,6 +516,27 @@ void ConnectionPoolManager::returnConnection(const std::u16string& pool_key,
                     "connection failed: %s",
                     ex.what());
             }
+        }
+    }
+}
+
+void ConnectionPoolManager::discardConnection(const std::u16string& pool_key,
+                                               const std::shared_ptr<Connection> conn) {
+    std::shared_ptr<ConnectionPool> pool;
+    {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        auto it = _pools.find(pool_key);
+        if (it != _pools.end()) {
+            pool = it->second;
+        }
+    }
+    if (pool) {
+        pool->discard(conn);
+    } else if (conn) {
+        try {
+            conn->disconnect();
+        } catch (...) {
+            // Connection's noexcept destructor still releases the ODBC handle.
         }
     }
 }

@@ -34,6 +34,9 @@ class ConnectionPool {
     // Returns a connection to the pool for reuse
     void release(std::shared_ptr<Connection> conn);
 
+    // Permanently removes a checked-out connection and releases its capacity.
+    void discard(std::shared_ptr<Connection> conn);
+
     // Closes all connections in the pool, releasing resources
     void close();
 
@@ -81,6 +84,9 @@ class ConnectionPoolManager {
     // Returns a connection to its original pool, identified by pool_key
     // (the same key passed to acquireConnection).
     void returnConnection(const std::u16string& pool_key, std::shared_ptr<Connection> conn);
+
+    // Discards a connection that cannot safely be returned to its original pool.
+    void discardConnection(const std::u16string& pool_key, std::shared_ptr<Connection> conn);
 
     // Closes all pools and their connections
     void closePools();

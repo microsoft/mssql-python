@@ -52,8 +52,14 @@ Connection::Connection(const std::u16string& conn_str, bool use_pool)
     allocateDbcHandle();
 }
 
-Connection::~Connection() {
-    disconnect();  // fallback if user forgets to disconnect
+Connection::~Connection() noexcept {
+    try {
+        disconnect();  // fallback if user forgets to disconnect
+    } catch (...) {
+        // Destructors must not propagate ODBC disconnect failures. Releasing
+        // the handle still lets SqlHandle perform SQLFreeHandle cleanup.
+        _dbcHandle.reset();
+    }
 }
 
 // Allocates connection handle
@@ -564,6 +570,21 @@ bool Connection::reset() {
     return true;
 }
 
+void Connection::prepareForPool() {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+
+    if (!getAutocommit()) {
+        // End any caller transaction before check-in, then park the physical
+        // connection in autocommit mode. The SQL Server ODBC driver can leave
+        // an empty transaction visible after SQLEndTran while manual-commit
+        // mode remains enabled; switching modes ends that transaction.
+        rollback();
+        setAutocommit(true);
+    }
+}
+
 void Connection::updateLastUsed() {
     _lastUsed = std::chrono::steady_clock::now();
 }
@@ -659,7 +680,17 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
 
 ConnectionHandle::~ConnectionHandle() {
     if (_conn) {
-        close();
+        try {
+            close();
+        } catch (...) {
+            if (_conn) {
+                try {
+                    _conn->disconnect();
+                } catch (...) {
+                }
+            }
+            _conn = nullptr;
+        }
     }
 }
 
@@ -669,6 +700,19 @@ void ConnectionHandle::close() {
         ThrowStdException("Connection object is not initialized");
     }
     if (_usePool) {
+        try {
+            _conn->prepareForPool();
+        } catch (...) {
+            // Never retain a connection whose transaction state could not be
+            // sanitized. Discarding also releases this connection's reserved
+            // pool capacity. Preserve the original check-in error.
+            try {
+                ConnectionPoolManager::getInstance().discardConnection(_poolKey, _conn);
+            } catch (...) {
+            }
+            _conn = nullptr;
+            throw;
+        }
         ConnectionPoolManager::getInstance().returnConnection(_poolKey, _conn);
     } else {
         _conn->disconnect();

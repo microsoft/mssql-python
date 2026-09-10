@@ -127,6 +127,64 @@ def test_connection_pooling_reuse_spid(conn_str):
     assert spid1 == spid2, "Connections not reused - different SPIDs"
 
 
+def test_pooled_close_leaves_no_open_transaction(conn_str):
+    """A physical connection must not retain a transaction while parked."""
+    _run_in_subprocess(
+        """
+        import os
+
+        import mssql_python
+
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+        mssql_python.pooling(enabled=True, max_size=2, idle_timeout=30)
+        subject = mssql_python.connect(conn_str)
+        observer = mssql_python.connect(conn_str, autocommit=True)
+        try:
+            cursor = subject.cursor()
+            cursor.execute("SELECT @@SPID")
+            subject_spid = cursor.fetchone()[0]
+            observer_cursor = observer.cursor()
+            observer_cursor.execute(
+                "SELECT open_transaction_count "
+                "FROM sys.dm_exec_sessions WHERE session_id = ?",
+                [subject_spid],
+            )
+            if observer_cursor.fetchone() is None:
+                import sys
+
+                print(
+                    "Test login cannot inspect another SQL Server session",
+                    file=sys.stderr,
+                )
+                sys.exit(77)
+
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            subject.commit()
+            cursor.close()
+            subject.close()
+
+            observer_cursor.execute(
+                "SELECT open_transaction_count "
+                "FROM sys.dm_exec_sessions WHERE session_id = ?",
+                [subject_spid],
+            )
+            row = observer_cursor.fetchone()
+            assert row is not None, "The parked SQL Server session was not visible"
+            assert row[0] == 0, (
+                "Pooled connection retained an open transaction after close: "
+                f"SPID {subject_spid}, open_transaction_count={row[0]}"
+            )
+            observer_cursor.close()
+        finally:
+            subject.close()
+            observer.close()
+            mssql_python.pooling(enabled=False)
+        """,
+        conn_str,
+    )
+
+
 def test_connection_pooling_isolation_level_reset(conn_str):
     """Test that pooling correctly resets session state for isolation level.
 
