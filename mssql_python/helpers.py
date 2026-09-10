@@ -287,7 +287,7 @@ _PYCORE_INTEGER_KEYS = {
 
 
 def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
-    """Translate parsed ODBC connection-string params for py-core's bulk copy path.
+    """Translate parsed ODBC connection-string params for mssql-py-core connections.
 
     When ``cursor.bulkcopy()`` is called, mssql-python opens a *separate*
     connection through mssql-py-core.
