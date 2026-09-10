@@ -344,7 +344,9 @@ def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
         unsupported = sorted(set(params) - set(_PYCORE_CONNECTION_KEY_MAP))
         if unsupported:
             names = ", ".join(unsupported)
-            raise ValueError(f"Connection parameters are not supported for async queries: {names}")
+            raise ValueError(
+                f"Connection parameters are not supported for mssql-py-core connections: {names}"
+            )
 
     return pycore_params
 
