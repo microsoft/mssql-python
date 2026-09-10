@@ -287,21 +287,15 @@ _PYCORE_INTEGER_KEYS = {
 
 
 def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
-    """Translate parsed ODBC connection-string params for mssql-py-core connections.
+    """Translate parsed ODBC connection-string parameters for mssql-py-core.
 
-    When ``cursor.bulkcopy()`` is called, mssql-python opens a *separate*
-    connection through mssql-py-core.
-    py-core's ``connection.rs`` expects a Python dict with snake_case keys —
-    different from the ODBC-style keys that ``_ConnectionStringParser._parse``
-    returns.
+    Used by async connection setup and by bulk copy when it opens a separate
+    mssql-py-core connection. Keys are mapped to py-core's snake_case format,
+    numeric strings are converted to integers, and synonym precedence is
+    preserved.
 
-    This function bridges that gap: it maps lowercase ODBC keys (e.g.
-    ``"trustservercertificate"``) to py-core keys (``"trust_server_certificate"``)
-    and converts numeric strings to ``int`` for timeout/size params.
-    Boolean params (TrustServerCertificate, MultiSubnetFailover) are passed as
-    strings — ``connection.rs`` validates Yes/No and rejects invalid values.
-    Unrecognised keys are silently dropped unless ``strict`` is enabled. Strict
-    mode also rejects invalid integer values instead of using py-core defaults.
+    Unsupported keys and invalid integers are dropped by default. When
+    ``strict`` is enabled, they raise ``ValueError`` instead.
     """
     # Only keys listed below are forwarded to py-core.
     # Unknown/reserved keys (app, workstationid, language, connect_timeout,
