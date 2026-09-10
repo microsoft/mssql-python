@@ -303,18 +303,12 @@ class SqlHandle {
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
 
-    // Mark this handle as implicitly freed (freed by parent handle)
-    // This prevents double-free attempts when the ODBC driver automatically
-    // frees child handles (e.g., STMT handles when DBC handle is freed)
-    //
-    // SAFETY CONSTRAINTS:
-    // - ONLY call this on SQL_HANDLE_STMT handles
-    // - ONLY call this after the parent SQLDisconnect has succeeded
-    // - Calling on other handle types (ENV, DBC, DESC) will cause HANDLE LEAKS
-    // - The ODBC spec only guarantees automatic freeing of STMT handles by DBC parents
-    //
-    // Connection::disconnect() retains the tracked STMT owners through the
-    // disconnect, then marks them and releases their native binding storage.
+    // Suppress later statement cleanup after parent disconnect. Only use on
+    // SQL_HANDLE_STMT after successful SQLDisconnect, or when abandoning the
+    // parent during GIL-less teardown. Do not use on a recoverable disconnect error.
+    // This marker neither calls ODBC nor proves native deallocation succeeded.
+    // Connection::disconnect() retains statement buffers through SQLDisconnect
+    // and handles their release separately.
     void markImplicitlyFreed();
     SQLRETURN resetParameterBindings();
     void releaseAfterFree();

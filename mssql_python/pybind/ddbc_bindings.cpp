@@ -1622,10 +1622,8 @@ SQLSMALLINT SqlHandle::type() const {
 }
 
 void SqlHandle::markImplicitlyFreed() {
-    // SAFETY: Only STMT handles should be marked as implicitly freed.
-    // When a DBC handle is freed, the ODBC driver automatically frees all child STMT handles.
-    // Other handle types (ENV, DBC, DESC) are NOT automatically freed by parents.
-    // Calling this on wrong handle types will cause silent handle leaks.
+    // Only tracked STMT wrappers participate in Connection::disconnect() cleanup.
+    // This flag suppresses later ODBC calls; it does not free the native handle.
     if (_type != SQL_HANDLE_STMT) {
         // Log error but don't throw - we're likely in cleanup/destructor path
         LOG_ERROR("SAFETY VIOLATION: Attempted to mark non-STMT handle as implicitly freed. "
@@ -1688,11 +1686,8 @@ void SqlHandle::free() {
             return;
         }
 
-        // CRITICAL FIX: Check if handle was already implicitly freed by parent handle
-        // When Connection::disconnect() frees the DBC handle, the ODBC driver automatically
-        // frees all child STMT handles. We track this state to avoid double-free attempts.
-        // This approach avoids calling ODBC functions on potentially-freed handles, which
-        // would cause use-after-free errors.
+        // Connection::disconnect() has retired this wrapper after disconnect or
+        // terminal GIL-less cleanup. Do not call ODBC again on its former handle.
         if (_implicitly_freed) {
             releaseAfterFree();
             return;

@@ -119,17 +119,12 @@ void Connection::disconnect() {
             LOG("Disconnecting from database");
         }
 
-        // Freeing the DBC handle below frees every child statement, so the
-        // children must be marked implicitly freed regardless of whether
-        // SQLDisconnect itself succeeds. Retain owning references only so the
-        // native binding buffers stay valid through the blocking disconnect;
-        // the marking and release happen unconditionally afterwards.
+        // Retain child owners and bound buffers through SQLDisconnect. With the
+        // GIL held, checkError throws on failure before retiring any handles.
 
         // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
         // This protects against concurrent allocStatementHandle() calls or GC finalizers
         size_t originalSize = 0, afterCompactSize = 0, badHandleCount = 0;
-        // Owning references held only to keep statement buffers alive through the
-        // parent's blocking disconnect; ownership is released immediately after.
         std::vector<SqlHandlePtr> childHandles;
         {
             std::lock_guard<std::mutex> lock(_childHandlesMutex);
@@ -180,8 +175,8 @@ void Connection::disconnect() {
             // Destructor / shutdown path — GIL is not held, call directly.
             ret = SQLDisconnect_ptr(_dbcHandle->get());
         }
-        // In destructor/shutdown paths, suppress errors to avoid
-        // std::terminate() if this throws during stack unwinding.
+        // Surface errors with the GIL held. GIL-less teardown cannot safely
+        // translate errors through Python, so it continues retiring the handles.
         if (hasGil) {
             checkError(ret);
         } else if (!SQL_SUCCEEDED(ret)) {
@@ -189,10 +184,9 @@ void Connection::disconnect() {
             // via py::gil_scoped_acquire, which is unsafe during interpreter
             // shutdown or stack unwinding (can deadlock or call std::terminate).
         }
-        // The DBC handle is freed unconditionally below, which frees every child
-        // statement. Mark all children implicitly freed and drop their native
-        // binding storage now, whether or not SQLDisconnect reported success, so
-        // later cursor cleanup can never double-free an already-freed handle.
+        // Successful SQLDisconnect has already freed its child statements.
+        // GIL-less failure also retires these wrappers as the parent is abandoned;
+        // neither that failure nor dropping the DBC owner proves native deallocation.
         for (const auto& handle : childHandles) {
             handle->markImplicitlyFreed();
             handle->releaseAfterFree();

@@ -34,6 +34,7 @@
 #include <utility>
 #include <vector>
 
+#include "logger_bridge.hpp"
 #include "param_detect.hpp"  // ParamInfo, MAX_INLINE_BINARY, ODBC types and constants
 
 // One entry per bound parameter: the exact SQLBindParameter arguments ODBC holds.
