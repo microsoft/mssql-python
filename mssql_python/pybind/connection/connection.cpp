@@ -652,7 +652,8 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
     PERF_TIMER("ConnectionHandle::ConnectionHandle");
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
-                                                                       _poolKey, tokenFactory);
+                                                                       _poolKey, tokenFactory,
+                                                                       &_originPool);
         // acquireConnection returns nullptr when pooling was disabled out from
         // under us (a disable_pooling() won the race). Fall back to a non-pooled
         // connection and flip _usePool so close() disconnects it directly rather
@@ -707,13 +708,13 @@ void ConnectionHandle::close() {
             // sanitized. Discarding also releases this connection's reserved
             // pool capacity. Preserve the original check-in error.
             try {
-                ConnectionPoolManager::getInstance().discardConnection(_poolKey, _conn);
+                ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
             } catch (...) {
             }
             _conn = nullptr;
             throw;
         }
-        ConnectionPoolManager::getInstance().returnConnection(_poolKey, _conn);
+        ConnectionPoolManager::getInstance().returnConnection(_poolKey, _originPool, _conn);
     } else {
         _conn->disconnect();
     }

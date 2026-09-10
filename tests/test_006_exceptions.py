@@ -276,6 +276,27 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
     assert not isinstance(exc_info.value, RuntimeError)
 
 
+def test_close_cleans_up_after_non_pooled_rollback_failure():
+    """A rollback error must not defer native close to object destruction."""
+    from unittest.mock import MagicMock, patch
+
+    mock_conn = MagicMock()
+    mock_conn.get_autocommit.return_value = False
+    mock_conn.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    conn._pooling = False
+
+    with pytest.raises(OperationalError, match="Communication link failure"):
+        conn.close()
+
+    mock_conn.rollback.assert_called_once_with()
+    mock_conn.close.assert_called_once_with()
+    assert conn._conn is None
+    assert conn.closed
+
+
 def test_truncate_error_message_successful_cases():
     """Test truncate_error_message with valid Microsoft messages for comparison."""
 

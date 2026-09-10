@@ -132,6 +132,8 @@ class Connection {
     mutable std::mutex _childHandlesMutex;
 };
 
+class ConnectionPool;
+
 class ConnectionHandle {
   public:
     ConnectionHandle(const std::u16string& connStr, bool usePool,
@@ -160,4 +162,7 @@ class ConnectionHandle {
     // Entra access-token auth so distinct identities never share a pool.
     // Empty is never stored; the ctor falls back to _connStr.
     std::u16string _poolKey;
+    // Identifies the exact pool generation that issued _conn. A weak reference
+    // prevents a checked-out connection from keeping a disabled pool alive.
+    std::weak_ptr<ConnectionPool> _originPool;
 };

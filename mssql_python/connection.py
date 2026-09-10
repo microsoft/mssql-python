@@ -2158,6 +2158,7 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
+                rollback_error = None
                 if not self.autocommit and not self._pooling:
                     # If autocommit is disabled, rollback any uncommitted changes
                     # before disconnecting a non-pooled connection. Pooled
@@ -2165,6 +2166,10 @@ class Connection:
                     # which can discard the connection and release its capacity
                     # atomically if sanitation fails.
                     logger.debug("Rolling back uncommitted changes before closing connection.")
+                    try:
+                        self._conn.rollback()
+                    except RuntimeError as e:
+                        rollback_error = e
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
                 try:
@@ -2173,6 +2178,9 @@ class Connection:
                     _raise_connection_error(e)
                 finally:
                     self._conn = None
+                if rollback_error is not None:
+                    # Preserve prior DB-API error mapping after deterministic cleanup.
+                    _raise_connection_error(rollback_error)
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical

@@ -132,6 +132,7 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
     _run_in_subprocess(
         """
         import os
+        import sys
 
         import mssql_python
 
@@ -140,6 +141,23 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
         observer = mssql_python.connect(conn_str, autocommit=True)
         try:
             observer_cursor = observer.cursor()
+
+            def open_transaction_count(session_id):
+                try:
+                    observer_cursor.execute(
+                        "SELECT open_transaction_count "
+                        "FROM sys.dm_exec_sessions WHERE session_id = ?",
+                        [session_id],
+                    )
+                except Exception as exc:
+                    if "permission" in str(exc).lower():
+                        print(
+                            "Test login cannot inspect another SQL Server session",
+                            file=sys.stderr,
+                        )
+                        sys.exit(77)
+                    raise
+                return observer_cursor.fetchone()
 
             scenarios = (
                 ("direct commit", False, "SELECT 1", None, "commit"),
@@ -163,14 +181,7 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
                             f"{name}: expected pooled SPID {expected_spid}, got {subject_spid}"
                         )
 
-                    observer_cursor.execute(
-                        "SELECT open_transaction_count "
-                        "FROM sys.dm_exec_sessions WHERE session_id = ?",
-                        [subject_spid],
-                    )
-                    if observer_cursor.fetchone() is None:
-                        import sys
-
+                    if open_transaction_count(subject_spid) is None:
                         print(
                             "Test login cannot inspect another SQL Server session",
                             file=sys.stderr,
@@ -190,12 +201,7 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
                 finally:
                     subject.close()
 
-                observer_cursor.execute(
-                    "SELECT open_transaction_count "
-                    "FROM sys.dm_exec_sessions WHERE session_id = ?",
-                    [subject_spid],
-                )
-                row = observer_cursor.fetchone()
+                row = open_transaction_count(subject_spid)
                 assert row is not None, f"{name}: parked SQL Server session was not visible"
                 assert row[0] == 0, (
                     f"{name}: pooled SPID {subject_spid} retained "
@@ -868,6 +874,7 @@ def test_failed_pool_sanitation_releases_capacity(conn_str):
         """
         import os
         import sys
+        import time
 
         from mssql_python import connect, pooling
 
@@ -895,10 +902,22 @@ def test_failed_pool_sanitation_releases_capacity(conn_str):
                 sys.exit(77)
             raise
 
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                victim.cursor().execute("SELECT 1").fetchone()
+            except Exception:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("KILL did not terminate the victim connection")
+            time.sleep(0.05)
+
         try:
             victim.close()
         except Exception:
             pass
+        else:
+            raise AssertionError("Expected pooled sanitation to fail after KILL")
 
         admin.close()
 

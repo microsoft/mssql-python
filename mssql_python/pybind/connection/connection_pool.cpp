@@ -402,7 +402,9 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
 std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::u16string& connStr,
                                                                      const py::dict& attrs_before,
                                                                      const std::u16string& pool_key,
-                                                                     const py::object& token_factory) {
+                                                                     const py::object& token_factory,
+                                                                     std::weak_ptr<ConnectionPool>*
+                                                                         originating_pool) {
     PERF_TIMER("ConnectionPoolManager::acquireConnection");
     // Key the pool by pool_key when provided (identity-aware),
     // else fall back to the connection string (legacy behavior).
@@ -464,6 +466,9 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
             created = true;
         }
         pool = pool_ref;
+        if (originating_pool) {
+            *originating_pool = pool;
+        }
     }
     // Log after releasing _manager_mutex (#671): LOG() acquires the GIL, and
     // holding a native mutex across a GIL acquisition deadlocks a thread that
@@ -488,18 +493,18 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
     return pool->acquire(connStr, attrs_before, token_factory);
 }
 
-void ConnectionPoolManager::returnConnection(const std::u16string& pool_key,
-                                             const std::shared_ptr<Connection> conn) {
-    std::shared_ptr<ConnectionPool> pool;
+void ConnectionPoolManager::returnConnection(
+    const std::u16string& pool_key, const std::weak_ptr<ConnectionPool>& originating_pool,
+    const std::shared_ptr<Connection> conn) {
+    std::shared_ptr<ConnectionPool> pool = originating_pool.lock();
+    bool registered = false;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
         auto it = _pools.find(pool_key);
-        if (it != _pools.end()) {
-            pool = it->second;
-        }
+        registered = pool && it != _pools.end() && it->second == pool;
     }
     // Call release() outside _manager_mutex to avoid deadlock.
-    if (pool) {
+    if (registered) {
         pool->release(conn);
     } else {
         // No pool is registered under this key (e.g. the pool was lazily
@@ -520,19 +525,16 @@ void ConnectionPoolManager::returnConnection(const std::u16string& pool_key,
     }
 }
 
-void ConnectionPoolManager::discardConnection(const std::u16string& pool_key,
-                                               const std::shared_ptr<Connection> conn) {
-    std::shared_ptr<ConnectionPool> pool;
-    {
-        std::lock_guard<std::mutex> lock(_manager_mutex);
-        auto it = _pools.find(pool_key);
-        if (it != _pools.end()) {
-            pool = it->second;
-        }
+void ConnectionPoolManager::discardConnection(
+    const std::weak_ptr<ConnectionPool>& originating_pool,
+    const std::shared_ptr<Connection> conn) {
+    if (!conn) {
+        return;
     }
+    std::shared_ptr<ConnectionPool> pool = originating_pool.lock();
     if (pool) {
         pool->discard(conn);
-    } else if (conn) {
+    } else {
         try {
             conn->disconnect();
         } catch (...) {
