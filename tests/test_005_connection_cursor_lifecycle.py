@@ -574,8 +574,9 @@ def test_cursor_operations_after_close_raise_errors(conn_str):
 def test_mixed_cursor_cleanup_scenarios(conn_str, tmp_path):
     """Test various mixed cleanup scenarios in one script"""
     code = f"""
+import gc
+
 from mssql_python import connect
-from mssql_python.exceptions import ProgrammingError
 
 # Test 1: Normal cursor close
 conn1 = connect(\"\"\"{conn_str}\"\"\")
@@ -592,7 +593,10 @@ print("PASS: Double close does not raise error")
 cursor2 = conn1.cursor()
 cursor2.execute("SELECT 2")
 cursor2.fetchall()
-# Don't close cursor2, let __del__ handle it
+del cursor2
+gc.collect()
+assert len(conn1._cursors) == 0
+print("PASS: Cursor __del__ cleaned up cursor")
 
 # Test 4: Connection close cleans up cursors
 conn2 = connect(\"\"\"{conn_str}\"\"\")
@@ -611,6 +615,8 @@ print("PASS: Connection close cleaned up cursors")
 
 # Clean up
 conn1.close()
+del cursor1, cursor3, cursor4, conn1, conn2
+gc.collect()
 print("All tests passed")
 """
 
@@ -622,6 +628,7 @@ print("All tests passed")
 
     assert result.returncode == 0, f"Script failed: {result.stderr}"
     assert "PASS: Double close does not raise error" in result.stdout
+    assert "PASS: Cursor __del__ cleaned up cursor" in result.stdout
     assert "PASS: Connection close cleaned up cursors" in result.stdout
     assert "All tests passed" in result.stdout
     # Should not have error logs
