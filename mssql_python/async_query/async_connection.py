@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from ..logging import logger
 from ._native import load_py_core
+from ._connection_context import build_async_connection_context
 from .async_cursor import AsyncCursor
 from .exception_translator import (
     DataError,
@@ -40,17 +41,19 @@ class AsyncConnection:
     @classmethod
     async def connect(
         cls,
-        client_context_dict: dict,
-        python_logger: Optional[Any] = None,
+        connection_str: str = "",
         autocommit: bool = False,
+        timeout: int = 0,
+        python_logger: Optional[Any] = None,
     ) -> "AsyncConnection":
-        """Establish a direct asynchronous TDS connection through py-core."""
+        """Establish an asynchronous connection from an ODBC connection string."""
         logger.debug(
             "AsyncConnection.connect: starting; autocommit=%s; custom_logger=%s",
             autocommit,
             python_logger is not None,
         )
         with translate_py_core_exceptions():
+            client_context_dict = build_async_connection_context(connection_str, timeout)
             py_core = load_py_core()
             native_connection = await py_core.PyAsyncConnection.connect(
                 client_context_dict,

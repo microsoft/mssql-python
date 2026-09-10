@@ -3,8 +3,11 @@ from types import ModuleType
 
 import pytest
 
+from mssql_python import ConnectionStringParseError, NotSupportedError
 from mssql_python.async_query import AsyncConnection, AsyncCursor
 from mssql_python.async_query import async_connection
+from mssql_python.async_query._connection_context import build_async_connection_context
+from mssql_python.helpers import connstr_to_pycore_params
 
 
 class FakeNativeConnection:
@@ -69,16 +72,31 @@ def test_connect_delegates_directly_to_py_core(monkeypatch):
     py_core.PyAsyncConnection = FakePyAsyncConnection
     py_core.PyAsyncCursor = object
     monkeypatch.setattr(async_connection, "load_py_core", lambda: py_core)
-    context = {"server": "test-server.example.invalid"}
+    connection_str = (
+        "Addr=test-server.example.invalid;Database={db;name};"
+        "UID=test-user;PWD={p}}ass;word};Encrypt=Yes"
+    )
     logger = object()
 
     connection = asyncio.run(
-        AsyncConnection.connect(context, python_logger=logger, autocommit=True)
+        AsyncConnection.connect(
+            connection_str,
+            autocommit=True,
+            timeout=12,
+            python_logger=logger,
+        )
     )
 
     assert connection._native_connection is native_connection
     assert captured == {
-        "context": context,
+        "context": {
+            "server": "test-server.example.invalid",
+            "database": "db;name",
+            "user_name": "test-user",
+            "password": "p}ass;word",
+            "encryption": "Yes",
+            "connect_timeout": 12,
+        },
         "python_logger": logger,
         "autocommit": True,
     }
@@ -99,7 +117,7 @@ def test_connect_defaults_autocommit_to_false(monkeypatch):
     py_core.PyAsyncCursor = object
     monkeypatch.setattr(async_connection, "load_py_core", lambda: py_core)
 
-    connection = asyncio.run(AsyncConnection.connect({"server": "test-server.example.invalid"}))
+    connection = asyncio.run(AsyncConnection.connect("Server=test-server.example.invalid"))
 
     assert connection._native_connection is native_connection
     assert captured["autocommit"] is False
@@ -117,7 +135,85 @@ def test_connect_preserves_native_error(monkeypatch):
     monkeypatch.setattr(async_connection, "load_py_core", lambda: py_core)
 
     with pytest.raises(RuntimeError, match="native connect failed"):
-        asyncio.run(AsyncConnection.connect({"server": "invalid"}))
+        asyncio.run(AsyncConnection.connect("Server=invalid"))
+
+
+def test_sql_password_authentication_is_forwarded_to_py_core():
+    context = build_async_connection_context(
+        "Server=test-server.example.invalid;Authentication=SqlPassword;UID=user;PWD=password",
+        0,
+    )
+
+    assert context == {
+        "server": "test-server.example.invalid",
+        "authentication": "SqlPassword",
+        "user_name": "user",
+        "password": "password",
+    }
+
+
+def test_trusted_connection_is_forwarded_to_py_core():
+    context = build_async_connection_context(
+        "Server=test-server.example.invalid;Trusted_Connection=Yes",
+        0,
+    )
+
+    assert context == {
+        "server": "test-server.example.invalid",
+        "trusted_connection": "Yes",
+    }
+
+
+@pytest.mark.parametrize(
+    "connection_str",
+    (
+        "Server=test-server.example.invalid;Unknown=value",
+        "Server=test-server.example.invalid;Driver=custom",
+        "Server=test-server.example.invalid;Server=duplicate",
+    ),
+)
+def test_connection_string_parser_rejects_invalid_keywords(connection_str):
+    with pytest.raises(ConnectionStringParseError):
+        build_async_connection_context(connection_str, 0)
+
+
+def test_async_connection_rejects_invalid_numeric_option():
+    with pytest.raises(ValueError, match="packetsize.*integer"):
+        build_async_connection_context(
+            "Server=test-server.example.invalid;PacketSize=invalid",
+            0,
+        )
+
+
+def test_existing_pycore_conversion_remains_permissive_for_bcp():
+    context = connstr_to_pycore_params(
+        {
+            "server": "test-server.example.invalid",
+            "packetsize": "invalid",
+            "unsupported": "ignored",
+        }
+    )
+
+    assert context == {"server": "test-server.example.invalid"}
+
+
+def test_async_connection_rejects_entra_authentication():
+    with pytest.raises(NotSupportedError, match="Async Entra authentication is not supported"):
+        build_async_connection_context(
+            "Server=test-server.example.invalid;Authentication=ActiveDirectoryDefault",
+            0,
+        )
+
+
+@pytest.mark.parametrize("timeout", (True, 1.5, "10"))
+def test_async_connection_rejects_non_integer_login_timeout(timeout):
+    with pytest.raises(TypeError, match="Login timeout must be an integer"):
+        build_async_connection_context("Server=test-server.example.invalid", timeout)
+
+
+def test_async_connection_rejects_missing_server():
+    with pytest.raises(ValueError, match="SERVER parameter is required"):
+        build_async_connection_context("Database=test", 0)
 
 
 def test_connection_delegates_complete_native_surface():

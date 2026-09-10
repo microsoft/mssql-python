@@ -49,20 +49,16 @@ def test_connect_logging_does_not_include_client_context(monkeypatch):
     py_core.PyAsyncConnection = FakePyAsyncConnection
     py_core.PyAsyncCursor = object
     monkeypatch.setattr(async_connection, "load_py_core", lambda: py_core)
-    context = {
-        "server": "secret-server",
-        "user_name": "secret-user",
-        "password": "secret-password",
-        "access_token": "secret-token",
-    }
+    secrets = ("secret-server", "secret-user", "secret-password")
+    connection_str = "Server=secret-server;UID=secret-user;PWD=secret-password"
 
     with patch.object(async_connection.logger, "debug") as debug:
-        asyncio.run(AsyncConnection.connect(context, autocommit=True))
+        asyncio.run(AsyncConnection.connect(connection_str, autocommit=True))
 
     messages = str(debug.call_args_list)
     assert "AsyncConnection.connect: starting" in messages
     assert "AsyncConnection.connect: connected" in messages
-    assert all(value not in messages for value in context.values())
+    assert all(value not in messages for value in secrets)
 
 
 def test_connection_lifecycle_logs_important_boundaries():

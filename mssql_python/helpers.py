@@ -251,7 +251,42 @@ def validate_attribute_value(
     return True, None, sanitized_attr, sanitized_val
 
 
-def connstr_to_pycore_params(params: dict) -> dict:
+_PYCORE_CONNECTION_KEY_MAP = {
+    "uid": "user_name",
+    "pwd": "password",
+    "trusted_connection": "trusted_connection",
+    "authentication": "authentication",
+    "server": "server",
+    "addr": "server",
+    "address": "server",
+    "database": "database",
+    "applicationintent": "application_intent",
+    "encrypt": "encryption",
+    "trustservercertificate": "trust_server_certificate",
+    "trust_server_certificate": "trust_server_certificate",
+    "hostnameincertificate": "host_name_in_certificate",
+    "servercertificate": "server_certificate",
+    "serverspn": "server_spn",
+    "multisubnetfailover": "multi_subnet_failover",
+    "ipaddresspreference": "ip_address_preference",
+    "keepalive": "keep_alive",
+    "keepaliveinterval": "keep_alive_interval",
+    "packetsize": "packet_size",
+    "packet size": "packet_size",
+    "connectretrycount": "connect_retry_count",
+    "connectretryinterval": "connect_retry_interval",
+}
+
+_PYCORE_INTEGER_KEYS = {
+    "packet_size",
+    "connect_retry_count",
+    "connect_retry_interval",
+    "keep_alive",
+    "keep_alive_interval",
+}
+
+
+def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
     """Translate parsed ODBC connection-string params for py-core's bulk copy path.
 
     When ``cursor.bulkcopy()`` is called, mssql-python opens a *separate*
@@ -265,7 +300,8 @@ def connstr_to_pycore_params(params: dict) -> dict:
     and converts numeric strings to ``int`` for timeout/size params.
     Boolean params (TrustServerCertificate, MultiSubnetFailover) are passed as
     strings — ``connection.rs`` validates Yes/No and rejects invalid values.
-    Unrecognised keys are silently dropped.
+    Unrecognised keys are silently dropped unless ``strict`` is enabled. Strict
+    mode also rejects invalid integer values instead of using py-core defaults.
     """
     # Only keys listed below are forwarded to py-core.
     # Unknown/reserved keys (app, workstationid, language, connect_timeout,
@@ -273,49 +309,9 @@ def connstr_to_pycore_params(params: dict) -> dict:
     # path the parser validates keywords first (validate_keywords=True),
     # but bulkcopy parses with validation off, so this mapping is the
     # authoritative filter in that path.
-    key_map = {
-        # auth / credentials
-        "uid": "user_name",
-        "pwd": "password",
-        "trusted_connection": "trusted_connection",
-        "authentication": "authentication",
-        # server (accept parser synonyms)
-        "server": "server",
-        "addr": "server",
-        "address": "server",
-        # database
-        "database": "database",
-        "applicationintent": "application_intent",
-        # encryption / TLS (include snake_case alias the parser may emit)
-        "encrypt": "encryption",
-        "trustservercertificate": "trust_server_certificate",
-        "trust_server_certificate": "trust_server_certificate",
-        "hostnameincertificate": "host_name_in_certificate",
-        "servercertificate": "server_certificate",
-        # Kerberos
-        "serverspn": "server_spn",
-        # network
-        "multisubnetfailover": "multi_subnet_failover",
-        "ipaddresspreference": "ip_address_preference",
-        "keepalive": "keep_alive",
-        "keepaliveinterval": "keep_alive_interval",
-        # sizing / limits ("packet size" with space is a common pyodbc-ism)
-        "packetsize": "packet_size",
-        "packet size": "packet_size",
-        "connectretrycount": "connect_retry_count",
-        "connectretryinterval": "connect_retry_interval",
-    }
-    int_keys = {
-        "packet_size",
-        "connect_retry_count",
-        "connect_retry_interval",
-        "keep_alive",
-        "keep_alive_interval",
-    }
-
     pycore_params: dict = {}
 
-    for connstr_key, pycore_key in key_map.items():
+    for connstr_key, pycore_key in _PYCORE_CONNECTION_KEY_MAP.items():
         raw_value = params.get(connstr_key)
         if raw_value is None:
             continue
@@ -329,15 +325,24 @@ def connstr_to_pycore_params(params: dict) -> dict:
         # Boolean params (trust_server_certificate, multi_subnet_failover) are passed
         # as strings — all Yes/No validation is in connection.rs for single-location
         # consistency with Encrypt, ApplicationIntent, IPAddressPreference, etc.
-        if pycore_key in int_keys:
+        if pycore_key in _PYCORE_INTEGER_KEYS:
             # Numeric params (timeouts, packet size, etc.) — skip on bad input
             try:
                 pycore_params[pycore_key] = int(raw_value)
             except (ValueError, TypeError):
-                pass  # let py-core fall back to its compiled-in default
+                if strict:
+                    raise ValueError(
+                        f"Connection parameter '{connstr_key}' must be an integer"
+                    ) from None
         else:
             # String params (server, database, encryption, etc.) — pass through
             pycore_params[pycore_key] = raw_value
+
+    if strict:
+        unsupported = sorted(set(params) - set(_PYCORE_CONNECTION_KEY_MAP))
+        if unsupported:
+            names = ", ".join(unsupported)
+            raise ValueError(f"Connection parameters are not supported for async queries: {names}")
 
     return pycore_params
 
