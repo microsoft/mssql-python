@@ -69,6 +69,34 @@ conda install -c microsoft -c conda-forge --strict-channel-priority --override-c
 conda install -c microsoft -c defaults --override-channels mssql-python
 ```
 
+**Conda release maintainers:** `OneBranchPipelines/conda-release-pipeline.yml` defaults to
+`publishToConda=false`. Select the exact completed Conda build and expected package version.
+The pipeline verifies its recorded upstream wheel run, checks the 28-package matrix and
+ELF/PE/Mach-O payloads, and logs archive SHA-256 values and the upload plan without publishing.
+Feature-branch candidates are allowed only for validation; production requires release,
+Conda producer, and wheel sources on `refs/heads/main`. Recipe and wheel commits may differ,
+but each must match its authoritative run record. This is static release readiness, not
+live SQL/TLS, bulk-copy, or Arrow feature certification.
+
+**Production prerequisite (administrator setup, not performed by a dry run):** in the
+`SqlClientDrivers/mssql-python` ADO project, protect the existing **Anaconda Publishing**
+variable group **117** with an enabled native **Exclusive lock** check and a designated
+**Approval** check. Authorize only release definition **2322**, and grant its build identity
+read access to group/check configuration and run-check evidence. Record the installed check
+IDs as non-secret group variables `CONDA_PUBLICATION_LOCK_CHECK_ID` and
+`CONDA_PUBLICATION_APPROVAL_CHECK_ID`; absent or mismatched IDs block publication. Every writer to
+`microsoft/mssql-python` label `main` must use this same protected resource; other credentials
+or pipelines must not bypass it. The publish-only `CondaRelease` stage references this group
+with `lockBehavior: sequential`, and refuses upload or promotion without matching,
+successful current-stage checks. YAML `lockBehavior` alone does not create the lock.
+The server-enforced stage lock must cover snapshot, upload, promotion, rollback, and cleanup.
+Rollback is compensating, not atomic; a killed process can leave partial labels, which a
+subsequent authorized run must re-verify. Metadata/label API calls use 15-second connect
+and 60-second read timeouts; the publishing job, including CLI uploads, is capped at 60 minutes.
+Until resource setup and a controlled positive
+lock/approval evaluation are verified, production remains blocked; validate-only success
+does not prove or authorize production publication.
+
 ## Key Features
 ### Supported Platforms
  

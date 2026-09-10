@@ -3,10 +3,10 @@
 Uploads happen before this helper under a build-unique staging label. This module
 verifies every uploaded distribution against the local artifact, adds the public
 label to the complete set, and removes the staging label only after all target-label
-operations succeed. API exceptions are never swallowed. If promotion fails partway,
-a partial release.
-labels added by this invocation are rolled back; an interrupted invocation is safe to
-rerun and resumes from the labels already verified on the server.
+operations succeed. Publication requires an externally enforced exclusive lock for
+the owner/package/target label, held from before the snapshot through cleanup.
+Rollback is compensating, not atomic: only attempted additions absent from the
+initial snapshot are removed. An interrupted invocation resumes from verified labels.
 """
 
 from __future__ import annotations
@@ -17,10 +17,12 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
 from validate_conda_release import read_index_json
+from validate_conda_publication_lock import require_publication_lock
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -186,6 +188,7 @@ def promote(
     if staging_label == target_label:
         raise ValueError("Staging and target labels must be different.")
     validate_release_input(expected_version, distributions)
+    require_publication_lock(owner, "mssql-python", target_label)
 
     def verifier(
         distribution: Distribution,
@@ -241,10 +244,12 @@ def promote(
                 )
         initial_labels[distribution.basename] = labels
 
+    attempted_additions: list[Distribution] = []
     try:
         for distribution in distributions:
             add_error: Exception | None = None
             if target_label not in initial_labels[distribution.basename]:
+                attempted_additions.append(distribution)
                 try:
                     api.add_channel(
                         target_label,
@@ -271,9 +276,7 @@ def promote(
                 )
     except Exception as exc:
         rollback_errors: list[str] = []
-        for distribution in reversed(distributions):
-            if target_label in initial_labels[distribution.basename]:
-                continue
+        for distribution in reversed(attempted_additions):
             remove_error: Exception | None = None
             try:
                 api.remove_channel(
@@ -369,8 +372,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from binstar_client.utils import get_server_api  # type: ignore[import-not-found]
 
+    api = get_server_api(config={"url": _ANACONDA_API_URL, "ssl_verify": True})
+    # anaconda-client 1.14.1 does not set timeouts on its metadata/label requests.
+    api.session.request = partial(api.session.request, timeout=(15, 60))
     promote(
-        get_server_api(config={"url": _ANACONDA_API_URL, "ssl_verify": True}),
+        api,
         args.owner,
         args.staging_label,
         args.target_label,

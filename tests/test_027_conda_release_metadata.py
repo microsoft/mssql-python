@@ -17,7 +17,6 @@ import types
 from pathlib import Path
 
 import pytest
-import yaml
 
 _MODULE_PATH = Path(__file__).resolve().parent.parent / "conda" / "validate_conda_release.py"
 _ROOT = _MODULE_PATH.parent.parent
@@ -35,6 +34,9 @@ if not _MODULE_PATH.is_file():
         f"conda source not present ({_MODULE_PATH}); skipping conda release metadata tests",
         allow_module_level=True,
     )
+
+
+import yaml
 
 
 def _load_module():
@@ -64,10 +66,45 @@ def _load_promoter():
 
 promoter = _load_promoter()
 
+
+@pytest.fixture(autouse=True)
+def _mock_publication_guard(monkeypatch):
+    monkeypatch.setattr(promoter, "require_publication_lock", lambda *_scope: None)
+
+
 _REQUIRED = ["win-64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 _ALLOWED = ["win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 _PYTHONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 _MP_VER = "1.13.0"
+
+
+@pytest.mark.parametrize(
+    "source_present", [False, True], ids=["wheel-tests-only", "source-checkout"]
+)
+def test_collection_without_pyyaml(source_present, tmp_path, monkeypatch):
+    original_import = __import__
+    yaml_imports = []
+
+    def without_yaml(name, *args, **kwargs):
+        if name == "yaml" or name.startswith("yaml."):
+            yaml_imports.append(name)
+            raise ModuleNotFoundError("No module named 'yaml'", name=name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", without_yaml)
+    spec = importlib.util.spec_from_file_location("conda_metadata_without_yaml", __file__)
+    module = importlib.util.module_from_spec(spec)
+    if not source_present:
+        module.__file__ = str(tmp_path / "tests" / Path(__file__).name)
+
+    expected_error = ModuleNotFoundError if source_present else pytest.skip.Exception
+    expected_message = "No module named 'yaml'" if source_present else "conda source not present"
+    with pytest.raises(
+        (ModuleNotFoundError, pytest.skip.Exception), match=expected_message
+    ) as error:
+        spec.loader.exec_module(module)
+    assert error.type is expected_error
+    assert yaml_imports == (["yaml"] if source_present else [])
 
 
 def _binding(subdir, py, folder=None, version=_MP_VER):
@@ -483,15 +520,30 @@ def test_release_pipeline_uses_resource_identity_and_gates_production_provenance
     assert "CONDA_BUILD_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)" in pipeline
     assert "CONDA_BUILD_SOURCE_COMMIT: $(resources.pipeline.buildPipeline.sourceCommit)" in pipeline
     assert "RELEASE_SOURCE_BRANCH: $(Build.SourceBranch)" in pipeline
-    assert "$build.status -ne 'completed' -or $build.result -ne 'succeeded'" in pipeline
-    assert "$build.sourceBranch -ne 'refs/heads/main'" in pipeline
-    assert "$build.sourceVersion -ne $env:CONDA_BUILD_SOURCE_COMMIT" in pipeline
-    assert "$env:RELEASE_SOURCE_BRANCH -ne 'refs/heads/main'" in pipeline
+    assert "conda/validate_conda_provenance.py" in pipeline
+    assert "Recorded producer/wheel provenance verification failed" in pipeline
     assert "condaBuildDefinitionId" not in pipeline
     assert "definition: $(resources.pipeline.buildPipeline.pipelineID)" in release
     assert "definition: $(resources.pipeline.buildPipeline.pipelineID)" in publish
     assert "buildDefinitionId" not in release
     assert "buildDefinitionId" not in publish
+
+
+def test_protected_group_and_publisher_are_absent_from_validate_only_path():
+    pipeline = yaml.safe_load(_RELEASE_PIPELINE_PATH.read_text(encoding="utf-8"))
+    stage = pipeline["extends"]["parameters"]["stages"][0]
+    production = "${{ if eq(parameters.publishToConda, true) }}"
+    assert stage[production] == {
+        "lockBehavior": "sequential",
+        "variables": [{"group": "Anaconda Publishing"}],
+    }
+    assert not any("group" in variable for variable in pipeline["variables"])
+    assert stage["jobs"][0]["job"] == "ValidateConda"
+    assert stage["jobs"][1][production][0]["job"] == "PublishConda"
+    validation_steps = stage["jobs"][0]["steps"]
+    assert "ANACONDA_API_TOKEN" not in json.dumps(validation_steps)
+    assert "validate_conda_publication_lock.py" not in json.dumps(validation_steps)
+    assert "Get-FileHash -LiteralPath $p.FullName -Algorithm SHA256" in json.dumps(validation_steps)
 
 
 def test_release_boundary_runs_all_platform_audits_with_pinned_dependency():
@@ -551,6 +603,7 @@ def test_publish_uses_pinned_client_and_fail_closed_promotion_helper():
     assert "& anaconda" not in publish
     assert "pip install --upgrade pip" not in publish
     assert "promote_conda_release.py" in publish
+    assert publish.index("validate_conda_publication_lock.py") < publish.index("==== Stage: upload")
     assert "validate_conda_release.py" in publish
     assert "Credential-boundary Conda release metadata validation failed" in publish
     assert "--check-local-only" in publish
@@ -759,11 +812,14 @@ def test_promote_accepts_ambiguous_staging_cleanup_when_label_was_removed():
     assert api.distributions[distribution.basename]["labels"] == ["main"]
 
 
-def test_promote_rolls_back_partial_label_promotion():
+@pytest.mark.parametrize("rollback_reply_lost", [False, True])
+def test_promote_rolls_back_partial_label_promotion(rollback_reply_lost):
     first = _distribution("win-64", "mssql-python-1.13.0-py312_0.conda")
     second = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
     api = _api_for([first, second])
     api.fail_add_after_apply = second.basename
+    if rollback_reply_lost:
+        api.fail_remove_after_apply = ("main", second.basename)
 
     original_distribution = api.distribution
     hide_target_once = {second.basename}
@@ -794,6 +850,114 @@ def test_promote_rolls_back_partial_label_promotion():
     )
 
 
+def test_rollback_never_removes_unattempted_or_preexisting_target_labels():
+    previous = _distribution("win-64", "previous.conda")
+    failed = _distribution("linux-64", "failed.conda")
+    untouched = _distribution("osx-64", "untouched.conda")
+    api = _api_for([previous, failed, untouched])
+    api.distributions[previous.basename]["labels"].append("main")
+    original_distribution = api.distribution
+    hide_target_once = {failed.basename}
+
+    def hide_failed_add(owner, package, version, basename):
+        metadata = original_distribution(owner, package, version, basename)
+        if basename in hide_target_once and "main" in metadata["labels"]:
+            hide_target_once.remove(basename)
+            metadata["labels"].remove("main")
+        return metadata
+
+    api.distribution = hide_failed_add
+    with pytest.raises(RuntimeError, match="rollback"):
+        promoter.promote(
+            api,
+            "microsoft",
+            "staging",
+            "main",
+            "1.13.0",
+            [previous, failed, untouched],
+            verify_attempts=1,
+            delay_seconds=0,
+        )
+
+    removed = [call[-1] for call in api.calls if call[:2] == ("remove", "main")]
+    assert removed == [failed.basename]
+    assert api.distributions[previous.basename]["labels"] == ["staging", "main"]
+    assert api.distributions[untouched.basename]["labels"] == ["staging"]
+
+
+def test_publication_guard_rejects_before_initial_snapshot(monkeypatch):
+    distribution = _distribution("win-64", "package.conda")
+    api = _api_for([distribution])
+
+    def no_lock(*_scope):
+        raise RuntimeError("No exclusive publication lock")
+
+    monkeypatch.setattr(promoter, "require_publication_lock", no_lock)
+    with pytest.raises(RuntimeError, match="No exclusive publication lock"):
+        promoter.promote(api, "microsoft", "staging", "main", "1.13.0", [distribution])
+    assert api.calls == []
+
+
+@pytest.mark.parametrize("next_version", ["1.13.0", "1.14.0"])
+def test_simulated_stage_lock_spans_snapshot_rollback_and_next_publisher(monkeypatch, next_version):
+    import threading
+
+    stage_lock = threading.Lock()
+    distribution = _distribution("win-64", "package.conda")
+    api = _api_for([distribution], labels=("stage_a", "stage_b"))
+    original_read = api.distribution
+    fail_a_once = [True]
+    verified_scopes = []
+
+    def guard(*scope):
+        assert stage_lock.locked()
+        verified_scopes.append(scope)
+
+    def read_under_stage_lock(owner, package, version, basename):
+        # Model the server's protected-stage boundary, not a production local lock.
+        # A second stage cannot snapshot while the first promotes/rolls back/cleans up.
+        assert not stage_lock.acquire(blocking=False)
+        metadata = original_read(owner, package, version, basename)
+        if fail_a_once[0] and "main" in metadata["labels"]:
+            fail_a_once[0] = False
+            metadata["labels"].remove("main")
+        return metadata
+
+    monkeypatch.setattr(promoter, "require_publication_lock", guard)
+    api.distribution = read_under_stage_lock
+    with stage_lock:
+        with pytest.raises(RuntimeError, match="rollback"):
+            promoter.promote(
+                api,
+                "microsoft",
+                "stage_a",
+                "main",
+                "1.13.0",
+                [distribution],
+                verify_attempts=1,
+                delay_seconds=0,
+            )
+    assert "main" not in api.distributions[distribution.basename]["labels"]
+    next_distribution = distribution
+    if next_version != "1.13.0":
+        next_distribution = _distribution("win-64", "next.conda", version=next_version)
+        api.distributions.update(_api_for([next_distribution], labels=("stage_b",)).distributions)
+    with stage_lock:
+        promoter.promote(
+            api,
+            "microsoft",
+            "stage_b",
+            "main",
+            next_version,
+            [next_distribution],
+            verify_attempts=1,
+            delay_seconds=0,
+        )
+    expected = ["stage_a", "main"] if next_distribution is distribution else ["main"]
+    assert api.distributions[next_distribution.basename]["labels"] == expected
+    assert verified_scopes == [("microsoft", "mssql-python", "main")] * 2
+
+
 def test_promote_rejects_wrong_release_version_before_api_mutation():
     distribution = _distribution("linux-64", "mssql-python-9.9.9-py313_0.conda", version="9.9.9")
     api = _api_for([distribution])
@@ -811,3 +975,381 @@ def test_promote_rejects_wrong_release_version_before_api_mutation():
         )
 
     assert api.calls == []
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("sha256", None, "no valid SHA-256"),
+        ("sha256", "0" * 64, "SHA-256 mismatch"),
+        ("basename", "same.conda", "basename"),
+        ("basename", "../win-64/same.conda", "basename"),
+        ("labels", None, "labels list"),
+        ("labels", "main", "labels list"),
+        ("labels", [123], "labels list"),
+        ("labels", ["main_staging_1"], "missing required label"),
+    ],
+)
+def test_remote_identity_checksum_and_labels_fail_closed(field, value, message):
+    distribution = _distribution("win-64", "same.conda")
+    api = _api_for([distribution])
+    metadata = api.distributions[distribution.basename]
+    metadata[field] = value
+    api.distribution = lambda *_args: metadata
+    with pytest.raises(RuntimeError, match=message):
+        promoter.verify_distribution(api, "microsoft", distribution, required_label="main")
+
+
+def test_same_filename_on_different_platforms_is_not_a_duplicate():
+    distributions = [
+        _distribution("win-64", "same.conda"),
+        _distribution("linux-64", "same.conda"),
+    ]
+    api = _api_for(distributions)
+    promoter.promote(
+        api,
+        "microsoft",
+        "staging",
+        "main",
+        "1.13.0",
+        distributions,
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+    assert {call[-1] for call in api.calls} == {"win-64/same.conda", "linux-64/same.conda"}
+
+
+@pytest.mark.parametrize(
+    "owner,staging,target",
+    [
+        ("../org", "staging", "main"),
+        ("microsoft", "", "main"),
+        ("microsoft", "staging", "../main"),
+        ("microsoft", "main", "main"),
+    ],
+)
+def test_invalid_publication_scope_fails_before_any_remote_read(owner, staging, target):
+    distribution = _distribution("win-64", "package.conda")
+    api = _api_for([distribution])
+    with pytest.raises(ValueError):
+        promoter.promote(api, owner, staging, target, "1.13.0", [distribution])
+    assert api.calls == []
+
+
+def test_empty_and_duplicate_promotion_inputs_are_rejected():
+    distribution = _distribution("win-64", "package.conda")
+    with pytest.raises(ValueError, match="No Conda distributions"):
+        promoter.validate_release_input("1.13.0", [])
+    with pytest.raises(ValueError, match="Duplicate distribution"):
+        promoter.validate_release_input("1.13.0", [distribution, distribution])
+
+
+def test_partial_upload_cannot_start_public_label_promotion():
+    first = _distribution("win-64", "first.conda")
+    absent = _distribution("linux-64", "absent.conda")
+    api = _api_for([first])
+    with pytest.raises(KeyError):
+        promoter.promote(
+            api,
+            "microsoft",
+            "staging",
+            "main",
+            "1.13.0",
+            [first, absent],
+            verify_attempts=1,
+            delay_seconds=0,
+        )
+    assert not any(call[0] == "add" for call in api.calls)
+
+
+@pytest.mark.parametrize("success_on_last_attempt", [True, False])
+def test_eventual_consistency_retry_count_and_delay_are_bounded(
+    monkeypatch, success_on_last_attempt
+):
+    attempts, delays = [], []
+    monkeypatch.setattr(promoter.time, "sleep", delays.append)
+
+    def verify():
+        attempts.append(1)
+        if success_on_last_attempt and len(attempts) == 3:
+            return {"main"}
+        raise TimeoutError("metadata request timed out")
+
+    if success_on_last_attempt:
+        assert promoter._verify_with_retry(verify, "metadata", attempts=3, delay_seconds=5) == {
+            "main"
+        }
+    else:
+        with pytest.raises(TimeoutError):
+            promoter._verify_with_retry(verify, "metadata", attempts=3, delay_seconds=5)
+    assert len(attempts) == 3
+    assert delays == [5, 5]
+
+
+def test_rollback_failure_is_reported_and_does_not_erase_prior_good_membership():
+    previous = _distribution("win-64", "previous.conda")
+    failed = _distribution("linux-64", "failed.conda")
+    api = _api_for([previous, failed])
+    api.distributions[previous.basename]["labels"].append("main")
+    original_read = api.distribution
+    hide_target_once = {failed.basename}
+
+    def fail_verification(owner, package, version, basename):
+        metadata = original_read(owner, package, version, basename)
+        if basename in hide_target_once and "main" in metadata["labels"]:
+            hide_target_once.remove(basename)
+            metadata["labels"].remove("main")
+        return metadata
+
+    def fail_remove(*_args, **_kwargs):
+        raise TimeoutError("rollback did not reach server")
+
+    api.distribution = fail_verification
+    api.remove_channel = fail_remove
+    with pytest.raises(RuntimeError, match="Rollback errors.*rollback did not reach server"):
+        promoter.promote(
+            api,
+            "microsoft",
+            "staging",
+            "main",
+            "1.13.0",
+            [previous, failed],
+            verify_attempts=1,
+            delay_seconds=0,
+        )
+    assert "main" in api.distributions[previous.basename]["labels"]
+    assert "main" in api.distributions[failed.basename]["labels"]
+
+
+def test_interrupted_promotion_is_recoverable_but_not_atomic():
+    first = _distribution("win-64", "first.conda")
+    second = _distribution("linux-64", "second.conda")
+    api = _api_for([first, second])
+    original_add = api.add_channel
+
+    def interrupt_after_add(*args, **kwargs):
+        original_add(*args, **kwargs)
+        raise KeyboardInterrupt("simulated process interruption")
+
+    api.add_channel = interrupt_after_add
+    with pytest.raises(KeyboardInterrupt):
+        promoter.promote(
+            api,
+            "microsoft",
+            "staging",
+            "main",
+            "1.13.0",
+            [first, second],
+            verify_attempts=1,
+            delay_seconds=0,
+        )
+    assert "main" in api.distributions[first.basename]["labels"]
+    assert "main" not in api.distributions[second.basename]["labels"]
+    api.add_channel = original_add
+    promoter.promote(
+        api,
+        "microsoft",
+        "staging",
+        "main",
+        "1.13.0",
+        [first, second],
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+    assert all(api.distributions[item.basename]["labels"] == ["main"] for item in (first, second))
+
+
+def _write_release_archive(tmp_path, **overrides):
+    directory = tmp_path / "win-64"
+    directory.mkdir(exist_ok=True)
+    path = directory / "mssql-python-1.13.0-py312_0.tar.bz2"
+    index = {
+        "name": "mssql-python",
+        "version": "1.13.0",
+        "build": "py312_0",
+        "subdir": "win-64",
+        "depends": ["python >=3.12,<3.13.0a0"],
+        **overrides,
+    }
+    data = json.dumps(index).encode()
+    with tarfile.open(path, "w:bz2") as archive:
+        member = tarfile.TarInfo("info/index.json")
+        member.size = len(data)
+        archive.addfile(member, io.BytesIO(data))
+    return path
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [{"name": "unexpected"}, {"version": ""}, {"subdir": "../win-64"}],
+)
+def test_untrusted_local_metadata_is_rejected(tmp_path, metadata):
+    path = _write_release_archive(tmp_path, **metadata)
+    with pytest.raises(ValueError):
+        promoter.distribution_from_path(path)
+
+
+def test_local_only_cli_needs_neither_token_nor_publication_guard(tmp_path, monkeypatch, capsys):
+    path = _write_release_archive(tmp_path)
+    monkeypatch.delenv("ANACONDA_API_TOKEN", raising=False)
+    monkeypatch.delenv("SYSTEM_ACCESSTOKEN", raising=False)
+    monkeypatch.setattr(
+        promoter,
+        "require_publication_lock",
+        lambda *_args: pytest.fail("local-only must not inspect production controls"),
+    )
+    assert (
+        promoter.main(
+            [
+                "--owner",
+                "microsoft",
+                "--staging-label",
+                "local",
+                "--target-label",
+                "main",
+                "--expected-version",
+                "1.13.0",
+                "--check-local-only",
+                str(path),
+            ]
+        )
+        == 0
+    )
+    assert "LOCAL_RELEASE_INPUT_OK" in capsys.readouterr().out
+
+
+def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch):
+    path = _write_release_archive(tmp_path)
+    requests = []
+    api = types.SimpleNamespace(
+        session=types.SimpleNamespace(request=lambda *args, **kwargs: requests.append(kwargs))
+    )
+    client = types.ModuleType("binstar_client")
+    utils = types.ModuleType("binstar_client.utils")
+    utils.get_server_api = lambda **_kwargs: api
+    monkeypatch.setitem(sys.modules, "binstar_client", client)
+    monkeypatch.setitem(sys.modules, "binstar_client.utils", utils)
+    monkeypatch.setattr(
+        promoter,
+        "promote",
+        lambda api, *_args: api.session.request("GET", "https://api.anaconda.org/example"),
+    )
+    assert (
+        promoter.main(
+            [
+                "--owner",
+                "microsoft",
+                "--staging-label",
+                "staging",
+                "--target-label",
+                "main",
+                "--expected-version",
+                "1.13.0",
+                str(path),
+            ]
+        )
+        == 0
+    )
+    assert requests == [{"timeout": (15, 60)}]
+
+
+def test_metadata_cli_reads_real_archive_and_enforces_requested_matrix(tmp_path, capsys):
+    _write_release_archive(tmp_path)
+    assert vcr.main(["--root", str(tmp_path), "--mssql-python-version", "1.13.0"]) == 1
+    assert "MISSING" in capsys.readouterr().err
+    assert (
+        vcr.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--required-subdirs",
+                "win-64",
+                "--allowed-subdirs",
+                "win-64",
+                "--pythons",
+                "3.12",
+                "--mssql-python-version",
+                "1.13.0",
+            ]
+        )
+        == 0
+    )
+    assert "metadata-validated" in capsys.readouterr().out
+
+
+def test_metadata_cli_rejects_empty_and_25_of_28_default_release(tmp_path, monkeypatch, capsys):
+    assert vcr.main(["--root", str(tmp_path)]) == 1
+    assert "no conda packages" in capsys.readouterr().err
+    monkeypatch.setattr(vcr, "collect_packages", lambda _root: _healthy_set())
+    assert vcr.main(["--root", str(tmp_path)]) == 1
+    assert "win-arm64" in capsys.readouterr().err
+
+
+def test_staging_recovery_accepts_reply_lost_after_server_mutation():
+    distribution = _distribution("win-64", "package.conda")
+    api = _api_for([distribution], labels=("old_staging",))
+    api.fail_add_after_apply = distribution.basename
+    promoter.promote(
+        api,
+        "microsoft",
+        "new_staging",
+        "main",
+        "1.13.0",
+        [distribution],
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+    assert api.distributions[distribution.basename]["labels"] == ["old_staging", "main"]
+
+
+def test_failed_staging_cleanup_preserves_successful_publication():
+    distribution = _distribution("win-64", "package.conda")
+    api = _api_for([distribution])
+
+    def timeout_before_remove(*_args, **_kwargs):
+        raise TimeoutError("cleanup did not reach server")
+
+    api.remove_channel = timeout_before_remove
+    with pytest.raises(RuntimeError, match="Failed to remove staging label"):
+        promoter.promote(
+            api,
+            "microsoft",
+            "staging",
+            "main",
+            "1.13.0",
+            [distribution],
+            verify_attempts=1,
+            delay_seconds=0,
+        )
+    assert api.distributions[distribution.basename]["labels"] == ["staging", "main"]
+
+
+def test_missing_local_archive_and_version_are_rejected(tmp_path):
+    with pytest.raises(ValueError, match="does not exist"):
+        promoter.distribution_from_path(tmp_path / "missing.conda")
+    with pytest.raises(ValueError, match="Expected mssql-python version"):
+        promoter.validate_release_input("", [])
+
+
+@pytest.mark.parametrize("extension", [".conda", ".tar.bz2"])
+@pytest.mark.parametrize("index_kind", ["missing", "duplicate", "symlink"])
+def test_index_member_must_be_unique_regular_file(tmp_path, monkeypatch, extension, index_kind):
+    import zipfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w" if extension == ".conda" else "w:bz2") as archive:
+        for _ in range(2 if index_kind == "duplicate" else 1):
+            member = tarfile.TarInfo("other.json" if index_kind == "missing" else "info/index.json")
+            if index_kind == "symlink":
+                member.type = tarfile.SYMTYPE
+                member.linkname = "../../outside.json"
+            archive.addfile(member)
+    path = tmp_path / ("package" + extension)
+    if extension == ".conda":
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("info-package.tar.zst", buffer.getvalue())
+        monkeypatch.setattr(vcr, "_zstd_decompress", lambda raw: raw)
+    else:
+        path.write_bytes(buffer.getvalue())
+    with pytest.raises(ValueError, match="exactly one regular info/index.json"):
+        vcr.read_index_json(str(path))

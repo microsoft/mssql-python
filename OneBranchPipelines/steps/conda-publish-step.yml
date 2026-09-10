@@ -21,6 +21,8 @@
 #
 # The caller MUST:
 #   - run this ONLY after the conda-release-step.yml readiness gate has passed, and
+#   - hold the native Exclusive lock on group 117 for the entire CondaRelease stage,
+#     including snapshot, promotion, compensating rollback and cleanup, and
 #   - supply ANACONDA_API_TOKEN (variable group 'Anaconda Publishing') to the job.
 # This template never puts the token on the command line (anaconda-client reads it
 # from the env), so it never appears in the logs.
@@ -131,10 +133,27 @@ steps:
       REQUIRED_SUBDIRS: '${{ parameters.requiredSubdirs }}'
       ALLOWED_SUBDIRS: '${{ parameters.allowedSubdirs }}'
       PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+      SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
+      BUILD_BUILDID: $(Build.BuildId)
+      SYSTEM_STAGEID: $(System.StageId)
+      SYSTEM_STAGENAME: $(System.StageName)
+      SYSTEM_STAGEATTEMPT: $(System.StageAttempt)
+      BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+      BUILD_SOURCEVERSION: $(Build.SourceVersion)
+      CONDA_PUBLICATION_LOCK_CHECK_ID: $(CONDA_PUBLICATION_LOCK_CHECK_ID)
+      CONDA_PUBLICATION_APPROVAL_CHECK_ID: $(CONDA_PUBLICATION_APPROVAL_CHECK_ID)
     inputs:
       targetType: 'inline'
       script: |
         $ErrorActionPreference = 'Stop'
+
+        python "$(Build.SourcesDirectory)/conda/validate_conda_publication_lock.py"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Publication lock/approval evidence could not be verified. No upload is allowed."
+          exit 1
+        }
 
         # Refuse to publish without an explicit target channel (protects the dummy
         # pipeline, whose default channel is empty, from ever hitting production).
@@ -284,7 +303,8 @@ steps:
         # begin adding the public label. A mid-upload failure leaves only a non-main staging
         # set. Promotion verifies each label mutation and rolls back reported failures;
         # an interrupted run is idempotent and resumes from server-verified labels. The
-        # staging label includes the build id so concurrent/retried runs never collide.
+        # staging label distinguishes retries; the stage's protected variable-group
+        # lock, not this label, serializes publication to the shared public label.
         $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
 
         function Invoke-Anaconda($argsList) {

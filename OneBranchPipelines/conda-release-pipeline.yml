@@ -51,10 +51,6 @@ parameters:
 variables:
   - template: /OneBranchPipelines/variables/common-variables.yml@self
   - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
-  # ANACONDA_API_TOKEN lives in this org-scoped group; included ONLY when publishing so a
-  # validate-only run never requires the group to exist.
-  - ${{ if eq(parameters.publishToConda, true) }}:
-      - group: 'Anaconda Publishing'
 
 resources:
   repositories:
@@ -112,6 +108,12 @@ extends:
     stages:
       - stage: CondaRelease
         displayName: 'Validate & Publish Conda Release'
+        # Resource administrators must configure the native Exclusive lock and approval
+        # checks on group 117. lockBehavior alone does NOT create a lock.
+        ${{ if eq(parameters.publishToConda, true) }}:
+          lockBehavior: sequential
+          variables:
+            - group: 'Anaconda Publishing'
         jobs:
           # Gate: prove the consolidated conda set is complete (required subdirs +
           # full Python matrix + one version) before anything is published.
@@ -128,8 +130,13 @@ extends:
             steps:
               - checkout: self
                 fetchDepth: 1
+              - task: UsePythonVersion@0
+                displayName: 'Use Python 3.12 for provenance verification'
+                inputs:
+                  versionSpec: '3.12'
+                  addToPath: true
               - task: PowerShell@2
-                displayName: 'Guard: selected conda-build run provenance'
+                displayName: 'Guard: recorded Conda and upstream wheel run provenance'
                 env:
                   CONDA_BUILD_PIPELINE_ID: $(resources.pipeline.buildPipeline.pipelineID)
                   CONDA_BUILD_RUN_ID: $(resources.pipeline.buildPipeline.runID)
@@ -144,76 +151,11 @@ extends:
                   targetType: 'inline'
                   script: |
                     $ErrorActionPreference = 'Stop'
-
-                    $pipelineId = 0
-                    $runId = 0
-                    if (-not [int]::TryParse($env:CONDA_BUILD_PIPELINE_ID, [ref]$pipelineId) -or $pipelineId -le 0) {
-                      Write-Error "The conda-build pipeline resource did not expose a valid pipelineID."
+                    python "$(Build.SourcesDirectory)/conda/validate_conda_provenance.py"
+                    if ($LASTEXITCODE -ne 0) {
+                      Write-Error "Recorded producer/wheel provenance verification failed."
                       exit 1
                     }
-                    if (-not [int]::TryParse($env:CONDA_BUILD_RUN_ID, [ref]$runId) -or $runId -le 0) {
-                      Write-Error "The conda-build pipeline resource did not expose a valid runID."
-                      exit 1
-                    }
-                    if ([string]::IsNullOrWhiteSpace($env:CONDA_BUILD_SOURCE_BRANCH)) {
-                      Write-Error "The conda-build pipeline resource did not expose sourceBranch."
-                      exit 1
-                    }
-                    if ($env:CONDA_BUILD_SOURCE_COMMIT -notmatch '^[0-9a-fA-F]{40}$') {
-                      Write-Error "The conda-build pipeline resource did not expose a valid sourceCommit."
-                      exit 1
-                    }
-                    $publishToConda = $false
-                    if (-not [bool]::TryParse($env:PUBLISH_TO_CONDA, [ref]$publishToConda)) {
-                      Write-Error "publishToConda is missing or invalid; refusing to classify producer provenance."
-                      exit 1
-                    }
-
-                    Write-Host "Selected conda-build run: pipeline=$pipelineId run=$runId branch=$env:CONDA_BUILD_SOURCE_BRANCH"
-                    if (-not $publishToConda) {
-                      Write-Host "Validate-only run: feature-branch producer artifacts are allowed."
-                      exit 0
-                    }
-
-                    if ($env:CONDA_BUILD_SOURCE_BRANCH -ne 'refs/heads/main') {
-                      Write-Error "Production Conda publication requires producer artifacts from refs/heads/main; selected run is from '$env:CONDA_BUILD_SOURCE_BRANCH'."
-                      exit 1
-                    }
-                    if ($env:RELEASE_SOURCE_BRANCH -ne 'refs/heads/main') {
-                      Write-Error "Production Conda publication requires release YAML from refs/heads/main; this run uses '$env:RELEASE_SOURCE_BRANCH'."
-                      exit 1
-                    }
-                    if ([string]::IsNullOrWhiteSpace($env:SYSTEM_ACCESSTOKEN)) {
-                      Write-Error "System.AccessToken is unavailable; producer run status cannot be verified."
-                      exit 1
-                    }
-
-                    $buildUri = "$env:SYSTEM_COLLECTIONURI$env:SYSTEM_TEAMPROJECTID/_apis/build/builds/$runId`?api-version=7.1"
-                    try {
-                      $build = Invoke-RestMethod -Uri $buildUri -Headers @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
-                    }
-                    catch {
-                      Write-Error "Failed to verify selected producer run '$runId': $($_.Exception.Message)"
-                      exit 1
-                    }
-
-                    if ([int]$build.definition.id -ne $pipelineId) {
-                      Write-Error "Selected run '$runId' belongs to pipeline '$($build.definition.id)', not declared resource pipeline '$pipelineId'."
-                      exit 1
-                    }
-                    if ($build.sourceBranch -ne 'refs/heads/main') {
-                      Write-Error "Azure Build API reports producer branch '$($build.sourceBranch)', not refs/heads/main."
-                      exit 1
-                    }
-                    if ($build.sourceVersion -ne $env:CONDA_BUILD_SOURCE_COMMIT) {
-                      Write-Error "Producer commit mismatch: resource='$env:CONDA_BUILD_SOURCE_COMMIT' API='$($build.sourceVersion)'."
-                      exit 1
-                    }
-                    if ($build.status -ne 'completed' -or $build.result -ne 'succeeded') {
-                      Write-Error "Producer run '$runId' is status='$($build.status)' result='$($build.result)'; production publication requires completed/succeeded."
-                      exit 1
-                    }
-                    Write-Host "Producer provenance verified: main, completed, succeeded."
 
               # Publishing must pin the exact version in addition to producer provenance.
               - ${{ if eq(parameters.publishToConda, true) }}:
@@ -287,6 +229,8 @@ extends:
                       Write-Host "  target label       : $env:CONDA_LABEL"
                       foreach ($p in ($pkgs | Sort-Object FullName)) {
                         $subdir = Split-Path -Leaf (Split-Path -Parent $p.FullName)
+                        $sha256 = (Get-FileHash -LiteralPath $p.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                        Write-Host "  SHA256: $sha256  $subdir/$($p.Name)"
                         Write-Host "  WOULD RUN: anaconda upload --user $env:CONDA_CHANNEL --label $env:CONDA_LABEL --skip-existing  $subdir/$($p.Name)"
                       }
 
@@ -303,6 +247,8 @@ extends:
             - job: PublishConda
               displayName: 'Publish conda packages to Anaconda.org'
               dependsOn: ValidateConda
+              timeoutInMinutes: 60
+              cancelTimeoutInMinutes: 5
               templateContext:
                 type: releaseJob
                 isProduction: true
