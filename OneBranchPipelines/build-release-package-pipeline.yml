@@ -64,7 +64,7 @@ parameters:
     default: 'NonOfficial'
 
   # Enable/disable SDL security tasks (BinSkim, CredScan, PoliCheck, etc.)
-  # Set to false for faster builds during development
+  # NonOfficial builds may disable these for development; Official builds always run them.
   - name: runSdlTasks
     displayName: 'Run SDL Security Tasks'
     type: boolean
@@ -281,7 +281,7 @@ extends:
       # Checks for known vulnerabilities in compiled artifacts
       # break:true = fail build if critical issues found
       armory:
-        enabled: ${{ parameters.runSdlTasks }}
+        enabled: ${{ or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
         break: true
 
       # AsyncSdl - Asynchronous SDL tasks (run after build completion)
@@ -297,10 +297,10 @@ extends:
       # - Control Flow Guard (CFG)
       # Scans: .pyd (Python), .dll/.exe (Windows), .so (Linux), .dylib (macOS)
       binskim:
-        enabled: ${{ parameters.runSdlTasks }}
+        enabled: ${{ or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
         break: true  # Fail build on critical BinSkim errors
         # Recursive scan of all binary file types
-        analyzeTarget: '$(Build.SourcesDirectory)/**/*.{pyd,dll,exe,so,dylib}'
+        analyzeTarget: '$(Build.SourcesDirectory)/**/*.{pyd,dll,exe,so,so.*,dylib,rll}'
         analyzeRecurse: true
         # SARIF output (Static Analysis Results Interchange Format)
         logFile: '$(Build.ArtifactStagingDirectory)/BinSkimResults.sarif'
@@ -308,7 +308,7 @@ extends:
       # CodeInspector - Source code security analysis
       # Checks Python/C++ code for security anti-patterns
       codeinspector:
-        enabled: ${{ parameters.runSdlTasks }}
+        enabled: ${{ or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
         logLevel: Error
 
       # CodeQL - Semantic code analysis (GitHub Advanced Security)
@@ -319,7 +319,7 @@ extends:
       # - Integer overflows
       # security-extended suite = comprehensive security queries
       codeql:
-        enabled: ${{ parameters.runSdlTasks }}
+        enabled: ${{ or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
         language: 'python,cpp'
         sourceRoot: '$(REPO_ROOT)'
         querySuite: security-extended
@@ -328,7 +328,7 @@ extends:
       # Detects hardcoded credentials, API keys, passwords in code
       # Uses global baseline/suppression files configured above
       credscan:
-        enabled: ${{ parameters.runSdlTasks }}
+        enabled: ${{ or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
       
       # ESLint - JavaScript/TypeScript linter
       # Disabled: Not applicable to Python/C++ project
@@ -339,7 +339,7 @@ extends:
       # Scans code and documentation for inappropriate terms
       # Exclusion file contains approved exceptions (technical terms)
       policheck:
-        enabled: ${{ parameters.runSdlTasks }}
+        enabled: ${{ or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
         break: true
         exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
 
@@ -352,7 +352,7 @@ extends:
       # Uploads security scan results (SARIF files) to pipeline artifacts
       # Used for audit trail and compliance reporting
       publishLogs:
-        enabled: ${{ parameters.runSdlTasks }}
+        enabled: ${{ or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
 
       # SBOM - Software Bill of Materials
       # Generates machine-readable list of all dependencies
@@ -360,7 +360,7 @@ extends:
       # Format: SPDX or CycloneDX
       # Version automatically detected from wheel metadata (setup.py)
       sbom:
-        enabled: ${{ parameters.runSdlTasks }}
+        enabled: ${{ or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
         # This pipeline always builds both packages; name the SBOM after the primary
         # mssql-python wheel set.
         packageName: 'mssql-python'
@@ -369,7 +369,7 @@ extends:
       # Uploads scan results to Microsoft's TSA tool for tracking
       # Only enabled for Official builds (production compliance requirement)
       tsa:
-        enabled: ${{ and(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
+        enabled: ${{ eq(variables.effectiveOneBranchType, 'Official') }}
         configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
 
     # =========================
@@ -486,7 +486,7 @@ extends:
       # - dist/bindings/Windows/*.{pyd,pdb} (Windows native extensions)
       # - dist/bindings/macOS/*.so (macOS universal2 binaries)
       # - dist/bindings/Linux/*.so (Linux native extensions)
-      # This stage also runs final BinSkim scan on all binaries
+      # ScanWheelBinaries scans the consolidated wheel payloads on a Windows host.
       - stage: Consolidate
         displayName: 'Consolidate All Artifacts'
         dependsOn:
@@ -566,3 +566,12 @@ extends:
       # mssql-python build stages now install the external mssql-python-odbc wheel
       # (from ConsolidateOdbc) and run the full pytest suite against it — so the
       # external-package resolution is already validated end-to-end during the build.
+
+      - ${{ if or(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}:
+        - stage: ScanWheelBinaries
+          displayName: 'Validate binary scan coverage'
+          dependsOn:
+            - Consolidate
+            - ConsolidateOdbc
+          jobs:
+            - template: /OneBranchPipelines/jobs/scan-wheel-binaries-job.yml@self

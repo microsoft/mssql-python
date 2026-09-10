@@ -101,21 +101,23 @@ echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 
 # Configure CMake (with Clang coverage instrumentation on Linux only - codecov is not supported for macOS)
 echo "[DIAGNOSTIC] Running CMake configure"
+CONFIGURATION="${CMAKE_BUILD_TYPE:-Release}"
 if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
     echo "[ACTION] Configuring for Linux with Clang coverage instrumentation"
     cmake -DARCHITECTURE="$DETECTED_ARCH" \
+          -DCMAKE_BUILD_TYPE="$CONFIGURATION" \
           -DCMAKE_C_COMPILER=clang \
           -DCMAKE_CXX_COMPILER=clang++ \
-          -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
-          -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+          -DCMAKE_CXX_FLAGS="${CXXFLAGS:-} -fprofile-instr-generate -fcoverage-mapping" \
+          -DCMAKE_C_FLAGS="${CFLAGS:-} -fprofile-instr-generate -fcoverage-mapping" \
           "${SOURCE_DIR}"
 else
     if [[ "$OS" == "macOS" ]]; then
         echo "[ACTION] Configuring for macOS (default build)"
-        cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
+        cmake -DMACOS_STRING_FIX=ON -DCMAKE_BUILD_TYPE="$CONFIGURATION" "${SOURCE_DIR}"
     else
         echo "[ACTION] Configuring for Linux with architecture: $DETECTED_ARCH"
-        cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"
+        cmake -DARCHITECTURE="$DETECTED_ARCH" -DCMAKE_BUILD_TYPE="$CONFIGURATION" "${SOURCE_DIR}"
     fi
 fi
 
@@ -126,8 +128,8 @@ if [ $? -ne 0 ]; then
 fi
 
 # Build the project
-echo "[DIAGNOSTIC] Running CMake build with: cmake --build . --config Release"
-cmake --build . --config Release
+echo "[DIAGNOSTIC] Running CMake build with: cmake --build . --config $CONFIGURATION"
+cmake --build . --config "$CONFIGURATION"
 
 # Check if build succeeded
 if [ $? -ne 0 ]; then

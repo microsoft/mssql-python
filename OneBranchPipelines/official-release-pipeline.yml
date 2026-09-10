@@ -302,6 +302,15 @@ extends:
                     
                     Write-Host "`nAll wheels verified successfully!"
               
+              - template: /OneBranchPipelines/steps/scan-wheel-binaries-step.yml@self
+                parameters:
+                  wheelDirectory: '$(Build.SourcesDirectory)/artifacts/dist'
+                  symbolDirectory: '$(Build.SourcesDirectory)/artifacts/symbols'
+                  ${{ if eq(parameters.releasePackage, 'mssql-python') }}:
+                    expectedWheelCount: 34
+                  ${{ else }}:
+                    expectedWheelCount: 7
+
               # Step 5: Publish Symbols (mssql-python only; mssql-python-odbc has no PDBs)
               - ${{ if and(eq(parameters.publishSymbols, true), eq(parameters.releasePackage, 'mssql-python')) }}:
                   - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self

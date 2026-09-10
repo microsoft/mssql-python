@@ -52,7 +52,7 @@ stages:
         timeoutInMinutes: 120
         
         variables:
-          # Disable BinSkim for Linux - requires ICU libraries not available in manylinux/musllinux containers
+          # Wheel payloads are scanned on the Windows ScanWheelBinaries stage.
           - name: ob_sdl_binskim_enabled
             value: false
           # OneBranch output directory for artifacts (wheels, bindings, symbols)

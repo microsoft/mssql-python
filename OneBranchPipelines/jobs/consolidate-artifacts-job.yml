@@ -19,7 +19,7 @@ jobs:
       vmImage: 'ubuntu-latest'
     
     variables:
-      # Disable BinSkim - consolidation job only downloads artifacts, no binary builds
+      # Wheel payloads are scanned by the downstream ScanWheelBinaries stage.
       - name: ob_sdl_binskim_enabled
         value: false
       - name: ob_outputDirectory

@@ -54,7 +54,7 @@ stages:
         
         # Build Variables
         variables:
-          # Disable BinSkim (Windows-focused binary analyzer) - macOS uses Mach-O format, not PE
+          # Wheel payloads are scanned on the Windows ScanWheelBinaries stage.
           - name: ob_sdl_binskim_enabled
             value: false
           # OneBranch artifact output directory

@@ -1,0 +1,28 @@
+jobs:
+  - job: ScanWheelBinaries
+    displayName: 'Scan all built wheel payloads'
+    pool:
+      type: windows
+      isCustom: true
+      name: Python-1ES-pool
+      demands:
+        - imageOverride -equals PYTHON-1ES-MMS2022
+    variables:
+      ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+    steps:
+      - checkout: self
+        fetchDepth: 1
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download both consolidated wheel packages'
+        inputs:
+          buildType: 'current'
+          itemPattern: |
+            drop_Consolidate_ConsolidateArtifacts/dist/*.whl
+            drop_Consolidate_ConsolidateArtifacts/symbols/**
+            drop_ConsolidateOdbc_ConsolidateArtifacts/dist/*.whl
+          targetPath: '$(Pipeline.Workspace)/wheels-to-scan'
+      - template: /OneBranchPipelines/steps/scan-wheel-binaries-step.yml@self
+        parameters:
+          wheelDirectory: '$(Pipeline.Workspace)/wheels-to-scan'
+          expectedWheelCount: 41
+          symbolDirectory: '$(Pipeline.Workspace)/wheels-to-scan'

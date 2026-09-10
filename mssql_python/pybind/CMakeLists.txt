@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
 project(ddbc_bindings)
 
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build configuration" FORCE)
+endif()
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -345,6 +349,9 @@ else()
 endif()
 
 target_link_libraries(ddbc_bindings PRIVATE simdutf::simdutf)
+
+include(cmake/NativeBuildOptions.cmake)
+ddbc_native_build_options(ddbc_bindings)
 
 # Compiler definitions
 target_compile_definitions(ddbc_bindings PRIVATE 

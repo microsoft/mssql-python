@@ -1,0 +1,44 @@
+parameters:
+  - name: wheelDirectory
+    type: string
+  - name: expectedWheelCount
+    type: number
+  - name: symbolDirectory
+    type: string
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      architecture: 'x64'
+    displayName: 'Select Python for binary inventory'
+
+  - task: PowerShell@2
+    displayName: 'Scan built wheel payloads'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $toolRoot = "$(Build.BinariesDirectory)/binskim-4.4.9.11-$(Build.BuildId)-$(System.JobAttempt)"
+        New-Item -ItemType Directory -Path $toolRoot | Out-Null
+        $package = "$toolRoot/package.zip"
+        Invoke-WebRequest -UseBasicParsing -Uri "https://www.nuget.org/api/v2/package/Microsoft.CodeAnalysis.BinSkim/4.4.9.11" -OutFile $package
+        $expected = "69678989cbc273b5b50fcf98fb0fd978e1e35a3f844acb24254b31f0ce90c447"
+        if ((Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+          throw "BinSkim package digest mismatch"
+        }
+        Expand-Archive -Path $package -DestinationPath "$toolRoot/tool"
+        $scanner = "$toolRoot/tool/tools/net9.0/win-x64/BinSkim.exe"
+        & $scanner --version
+        if ($LASTEXITCODE -ne 0) { throw "BinSkim could not start" }
+        python "$(Build.SourcesDirectory)/eng/scripts/scan_wheel_binaries.py" `
+          "${{ parameters.wheelDirectory }}" "$(Build.BinariesDirectory)/wheel-scan-$(Build.BuildId)-$(System.JobAttempt)" $scanner `
+          --expected-wheels ${{ parameters.expectedWheelCount }} --symbols "${{ parameters.symbolDirectory }}"
+        if ($LASTEXITCODE -ne 0) { throw "Wheel binary validation failed" }
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish binary scan reports'
+    condition: succeededOrFailed()
+    inputs:
+      targetPath: '$(Build.BinariesDirectory)/wheel-scan-$(Build.BuildId)-$(System.JobAttempt)/reports'
+      artifact: 'wheel-binary-scan-$(System.StageName)-$(System.JobName)'
