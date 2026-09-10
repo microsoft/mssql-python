@@ -1970,10 +1970,7 @@ class Connection:
 
         # Check for invalid info_type values
         if info_type < 0:
-            logger.debug(
-                "warning",
-                f"Invalid info_type: {info_type}. Must be a positive integer.",
-            )
+            logger.debug("Invalid info_type: %d. Must be non-negative.", info_type)
             return None
 
         # Get the raw result from the C++ layer

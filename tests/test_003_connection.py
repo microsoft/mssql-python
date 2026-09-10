@@ -3008,7 +3008,7 @@ def test_getinfo_sql_support(db_connection):
         # SQL conformance level
         sql_conformance = db_connection.getinfo(sql_const.SQL_SQL_CONFORMANCE.value)
         print("SQL Conformance = ", sql_conformance)
-        assert isinstance(sql_conformance, int), "SQL conformance should be an integer"
+        assert type(sql_conformance) is int, "SQL conformance should be an integer"
 
         # Keywords - may return a very long string
         keywords = db_connection.getinfo(sql_const.SQL_KEYWORDS.value)

@@ -7,6 +7,7 @@ Regression coverage for SQLGetInfo IDs and ODBC return types (GH-769).
 import ast
 from decimal import Decimal
 from enum import Enum
+import logging
 from pathlib import Path
 import pickle
 import struct
@@ -375,6 +376,24 @@ def test_getinfo_closed_and_negative_requests(mock_connection):
     with pytest.raises(InterfaceError):
         Connection.getinfo(mock_connection, 118)
     mock_connection._conn.get_info.assert_not_called()
+
+
+@pytest.mark.parametrize("info_type", [-1, -65536])
+def test_getinfo_negative_id_logs_without_formatting_failure(
+    mock_connection, monkeypatch, capsys, info_type
+):
+    log_sink = Mock()
+    monkeypatch.setattr("mssql_python.connection.logger._logger", log_sink)
+    monkeypatch.setattr("mssql_python.connection.logger._cached_level", logging.DEBUG)
+
+    assert Connection.getinfo(mock_connection, info_type) is None
+    mock_connection._conn.get_info.assert_not_called()
+    log_sink.log.assert_called_once_with(
+        logging.DEBUG,
+        f"[Python] Invalid info_type: {info_type}. Must be non-negative.",
+        stacklevel=3,
+    )
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("result", [None, 1, "Y", True])
