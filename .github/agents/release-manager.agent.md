@@ -86,7 +86,7 @@ Classify each PR — **show user both lists**:
 | Prefix | Include? |
 |--------|----------|
 | `FIX:`, `PERF:`, `FEAT:`, `DOC:` | ✅ Yes — customer-facing |
-| `CHORE:`, `REFACTOR:`, `STYLE:`, `RELEASE:` | ❌ No — unless title clearly describes a user-visible change |
+| `CHORE:`, `REFACTOR:`, `STYLE:`, `RELEASE:`, `AI:` | ❌ No — unless title clearly describes a user-visible change |
 
 #### 2c — Rust changes (see Rust Dependency section above)
 
