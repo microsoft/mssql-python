@@ -155,8 +155,7 @@ stages:
           - powershell: |
               $ErrorActionPreference = "Stop"
               Write-Host "Installing Python dependencies..."
-              python -m pip install --upgrade pip
-              python -m pip install setuptools wheel pybind11 pytest psutil pyodbc
+              python -m pip install --require-hashes -r eng/requirements-build-windows.txt
               Write-Host "Dependencies installed successfully"
             displayName: 'Install Python dependencies'
           
@@ -394,7 +393,6 @@ stages:
           # Build Python wheel package from source distribution
           # ARCHITECTURE environment variable controls target platform tagging
           - script: |
-              python -m pip install --upgrade pip wheel setuptools
               set ARCHITECTURE=$(targetArch)
               python setup.py bdist_wheel
             displayName: 'Build wheel package'
@@ -409,8 +407,6 @@ stages:
           - ${{ if eq(parameters.signWindowsBinaries, true) }}:
             - pwsh: |
                 $ErrorActionPreference = 'Stop'
-
-                python -m pip install --upgrade wheel | Out-Null
 
                 $verifyRoot = Join-Path "$(Agent.TempDirectory)" "wheel-sign-verify"
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $verifyRoot

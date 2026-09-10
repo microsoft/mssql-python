@@ -29,6 +29,7 @@ from mssql_python.exceptions import (
     DatabaseError,
 )
 from mssql_python.row import Row
+from mssql_python.perf_timer import perf_phase
 from mssql_python import get_settings
 from mssql_python.parameter_helper import (
     detect_and_convert_parameters,
@@ -1731,34 +1732,37 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # it will be unwrapped for parameter binding. This means you cannot
         # pass a tuple as a single parameter value (but SQL Server doesn't
         # support tuple types as parameter values anyway).
-        if parameters:
-            # Check if single parameter is a nested container that should be unwrapped
-            # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
-            if isinstance(parameters, tuple) and len(parameters) == 1:
-                if isinstance(parameters[0], (tuple, list, dict)):
-                    actual_params = parameters[0]
-                elif isinstance(parameters[0], Row):
-                    # A Row (e.g. from fetchone()) is a sequence of column values.
-                    # Normalize it to a tuple so the downstream binding logic, which
-                    # only handles tuple/list/dict, can unwrap it into individual
-                    # parameters instead of treating the whole Row as one value.
-                    actual_params = tuple(parameters[0])
+        with perf_phase("py::execute::param_prep"):
+            if parameters:
+                # Check if single parameter is a nested container that should be unwrapped
+                # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
+                if isinstance(parameters, tuple) and len(parameters) == 1:
+                    if isinstance(parameters[0], (tuple, list, dict)):
+                        actual_params = parameters[0]
+                    elif isinstance(parameters[0], Row):
+                        # A Row (e.g. from fetchone()) is a sequence of column values.
+                        # Normalize it to a tuple so the downstream binding logic, which
+                        # only handles tuple/list/dict, can unwrap it into individual
+                        # parameters instead of treating the whole Row as one value.
+                        actual_params = tuple(parameters[0])
+                    else:
+                        actual_params = parameters
                 else:
                     actual_params = parameters
-            else:
-                actual_params = parameters
 
-            # Skip detect_and_convert_parameters when re-executing the same SQL —
-            # the parameter style (qmark vs pyformat) won't change between calls.
-            if operation == self.last_executed_stmt and isinstance(actual_params, (tuple, list)):
-                parameters = list(actual_params)
+                # Skip detect_and_convert_parameters when re-executing the same SQL —
+                # the parameter style (qmark vs pyformat) won't change between calls.
+                if operation == self.last_executed_stmt and isinstance(
+                    actual_params, (tuple, list)
+                ):
+                    parameters = list(actual_params)
+                else:
+                    operation, converted_params = detect_and_convert_parameters(
+                        operation, actual_params
+                    )
+                    parameters = list(converted_params)
             else:
-                operation, converted_params = detect_and_convert_parameters(
-                    operation, actual_params
-                )
-                parameters = list(converted_params)
-        else:
-            parameters = []
+                parameters = []
 
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
@@ -1782,18 +1786,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        if parameters:
-            ret = ddbc_bindings.DDBCSQLExecute(
-                self.hstmt,
-                operation,
-                parameters,
-                self._inputsizes,
-                self.is_stmt_prepared,
-                effective_use_prepare,
-                encoding_settings,
-            )
-        else:
-            ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
+        with perf_phase("py::execute::cpp_call"):
+            if parameters:
+                ret = ddbc_bindings.DDBCSQLExecute(
+                    self.hstmt,
+                    operation,
+                    parameters,
+                    self._inputsizes,
+                    self.is_stmt_prepared,
+                    effective_use_prepare,
+                    encoding_settings,
+                )
+            else:
+                ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
         # Check return code
         try:
 
@@ -1804,24 +1809,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._reset_cursor()
             raise
 
-        self._capture_diagnostics(ret)
+        # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
+        with perf_phase("py::execute::diag_records"):
+            self._capture_diagnostics(ret)
 
         self.last_executed_stmt = operation
 
-        # Update rowcount after execution
-        # TODO: rowcount return code from SQL needs to be handled
-        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+        with perf_phase("py::execute::post_execute"):
+            # Update rowcount after execution
+            # TODO: rowcount return code from SQL needs to be handled
+            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
 
-        # Initialize description after execution
-        # After successful execution, initialize description if there are results
-        column_metadata = []
-        try:
-            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
-            self._initialize_description(column_metadata)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            # If describe fails, it's likely there are no results (e.g., for INSERT)
-            self.description = None
-            self._column_sql_types = None
+            # Initialize description after execution
+            # After successful execution, initialize description if there are results
+            column_metadata = []
+            try:
+                ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+                self._initialize_description(column_metadata)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                # If describe fails, it's likely there are no results (e.g., for INSERT)
+                self.description = None
+                self._column_sql_types = None
 
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
@@ -2470,152 +2478,155 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
 
         # Prepare parameter type information
-        for col_index in range(param_count):
-            column = (
-                [row[col_index] for row in seq_of_parameters]
-                if hasattr(seq_of_parameters, "__getitem__")
-                else []
-            )
-            sample_value, min_val, max_val, _ = self._compute_column_type(column)
-
-            if self._inputsizes and col_index < len(self._inputsizes):
-                # Use explicitly set input sizes
-                sql_type, c_type, column_size, decimal_digits = self._inputsizes[col_index]
-
-                # Default is_dae to False
-                is_dae = False
-
-                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
-                if sql_type in (
-                    ddbc_sql_const.SQL_DECIMAL.value,
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                ):
-                    c_type = ddbc_sql_const.SQL_C_CHAR.value
-
-                # Check if this should be a DAE (data at execution) parameter based on column size
-                if sample_value is not None:
-                    if isinstance(sample_value, str) and column_size > MAX_INLINE_CHAR:
-                        is_dae = True
-                    elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
-                        is_dae = True
-
-                # Sanitize precision/scale for numeric types
-                if sql_type in (
-                    ddbc_sql_const.SQL_DECIMAL.value,
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                ):
-                    column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
-                    decimal_digits = min(max(0, decimal_digits), column_size)
-
-                # For binary data columns with mixed content, we need to find max size
-                if sql_type in (
-                    ddbc_sql_const.SQL_BINARY.value,
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_LONGVARBINARY.value,
-                ):
-                    # Find the maximum size needed for any row's binary data
-                    max_binary_size = 0
-                    for row in seq_of_parameters:
-                        value = row[col_index]
-                        if value is not None and isinstance(value, (bytes, bytearray)):
-                            max_binary_size = max(max_binary_size, len(value))
-
-                    # For SQL Server VARBINARY(MAX), we need to use large object binding
-                    if column_size > 8000 or max_binary_size > 8000:
-                        sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
-                        is_dae = True
-
-                    # Update column_size to actual maximum size if it's larger
-                    # Always ensure at least a minimum size of 1 for empty strings
-                    column_size = max(max_binary_size, 1)
-
-                paraminfo = param_info()
-                paraminfo.paramCType = c_type
-                paraminfo.paramSQLType = sql_type
-                paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
-                paraminfo.columnSize = column_size
-                paraminfo.decimalDigits = decimal_digits
-                paraminfo.isDAE = is_dae
-
-                # Ensure we never have SQL_C_DEFAULT (0) for C-type
-                if paraminfo.paramCType == 0:
-                    paraminfo.paramCType = ddbc_sql_const.SQL_C_DEFAULT.value
-
-                parameters_type.append(paraminfo)
-            else:
-                # Use auto-detection for columns without explicit types
+        with perf_phase("py::executemany::param_type_detection"):
+            for col_index in range(param_count):
                 column = (
                     [row[col_index] for row in seq_of_parameters]
                     if hasattr(seq_of_parameters, "__getitem__")
                     else []
                 )
-                sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(column)
+                sample_value, min_val, max_val, _ = self._compute_column_type(column)
 
-                dummy_row = list(sample_row)
-                paraminfo = self._create_parameter_types_list(
-                    sample_value,
-                    param_info,
-                    dummy_row,
-                    col_index,
-                    min_val=min_val,
-                    max_val=max_val,
-                )
+                if self._inputsizes and col_index < len(self._inputsizes):
+                    # Use explicitly set input sizes
+                    sql_type, c_type, column_size, decimal_digits = self._inputsizes[col_index]
 
-                # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
-                # where BindParameterArray resolves the correct type via the
-                # SQLDescribeParam cache.  The previous SQL_VARCHAR hardcoded
-                # fallback was removed because it broke VARBINARY columns.
+                    # Default is_dae to False
+                    is_dae = False
 
-                # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding.
-                # _map_sql_type may return SQL_C_NUMERIC (expecting NumericData structs)
-                # but the conversion loop below converts all Decimal values to strings.
-                # The C type must match the actual data to avoid:
-                #   RuntimeError: Parameter's object type does not match parameter's C type
-                if paraminfo.paramSQLType in (
-                    ddbc_sql_const.SQL_DECIMAL.value,
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                ):
-                    paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
-                    # Ensure columnSize accommodates the longest string representation
-                    if max_decimal_len > paraminfo.columnSize:
+                    # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding (GH-503)
+                    if sql_type in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    ):
+                        c_type = ddbc_sql_const.SQL_C_CHAR.value
+
+                    # Check if this should be a DAE (data at execution) parameter based on column size
+                    if sample_value is not None:
+                        if isinstance(sample_value, str) and column_size > MAX_INLINE_CHAR:
+                            is_dae = True
+                        elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
+                            is_dae = True
+
+                    # Sanitize precision/scale for numeric types
+                    if sql_type in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    ):
+                        column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
+                        decimal_digits = min(max(0, decimal_digits), column_size)
+
+                    # For binary data columns with mixed content, we need to find max size
+                    if sql_type in (
+                        ddbc_sql_const.SQL_BINARY.value,
+                        ddbc_sql_const.SQL_VARBINARY.value,
+                        ddbc_sql_const.SQL_LONGVARBINARY.value,
+                    ):
+                        # Find the maximum size needed for any row's binary data
+                        max_binary_size = 0
+                        for row in seq_of_parameters:
+                            value = row[col_index]
+                            if value is not None and isinstance(value, (bytes, bytearray)):
+                                max_binary_size = max(max_binary_size, len(value))
+
+                        # For SQL Server VARBINARY(MAX), we need to use large object binding
+                        if column_size > 8000 or max_binary_size > 8000:
+                            sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
+                            is_dae = True
+
+                        # Update column_size to actual maximum size if it's larger
+                        # Always ensure at least a minimum size of 1 for empty strings
+                        column_size = max(max_binary_size, 1)
+
+                    paraminfo = param_info()
+                    paraminfo.paramCType = c_type
+                    paraminfo.paramSQLType = sql_type
+                    paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
+                    paraminfo.columnSize = column_size
+                    paraminfo.decimalDigits = decimal_digits
+                    paraminfo.isDAE = is_dae
+
+                    # Ensure we never have SQL_C_DEFAULT (0) for C-type
+                    if paraminfo.paramCType == 0:
+                        paraminfo.paramCType = ddbc_sql_const.SQL_C_DEFAULT.value
+
+                    parameters_type.append(paraminfo)
+                else:
+                    # Use auto-detection for columns without explicit types
+                    column = (
+                        [row[col_index] for row in seq_of_parameters]
+                        if hasattr(seq_of_parameters, "__getitem__")
+                        else []
+                    )
+                    sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(
+                        column
+                    )
+
+                    dummy_row = list(sample_row)
+                    paraminfo = self._create_parameter_types_list(
+                        sample_value,
+                        param_info,
+                        dummy_row,
+                        col_index,
+                        min_val=min_val,
+                        max_val=max_val,
+                    )
+
+                    # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
+                    # where BindParameterArray resolves the correct type via the
+                    # SQLDescribeParam cache.  The previous SQL_VARCHAR hardcoded
+                    # fallback was removed because it broke VARBINARY columns.
+
+                    # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding.
+                    # _map_sql_type may return SQL_C_NUMERIC (expecting NumericData structs)
+                    # but the conversion loop below converts all Decimal values to strings.
+                    # The C type must match the actual data to avoid:
+                    #   RuntimeError: Parameter's object type does not match parameter's C type
+                    if paraminfo.paramSQLType in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    ):
+                        paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
+                        # Ensure columnSize accommodates the longest string representation
+                        if max_decimal_len > paraminfo.columnSize:
+                            paraminfo.columnSize = max_decimal_len
+
+                    # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
+                    # The sample value's formatted string may be shorter than another
+                    # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
+                    # max_decimal_len was already computed during _compute_column_type
+                    # so no extra iteration is needed.
+                    if (
+                        paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
+                        and max_decimal_len > paraminfo.columnSize
+                    ):
                         paraminfo.columnSize = max_decimal_len
 
-                # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
-                # The sample value's formatted string may be shorter than another
-                # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
-                # max_decimal_len was already computed during _compute_column_type
-                # so no extra iteration is needed.
-                if (
-                    paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
-                    and max_decimal_len > paraminfo.columnSize
-                ):
-                    paraminfo.columnSize = max_decimal_len
+                    # Special handling for binary data in auto-detected types
+                    if paraminfo.paramSQLType in (
+                        ddbc_sql_const.SQL_BINARY.value,
+                        ddbc_sql_const.SQL_VARBINARY.value,
+                        ddbc_sql_const.SQL_LONGVARBINARY.value,
+                    ):
+                        # Find the maximum size needed for any row's binary data
+                        max_binary_size = 0
+                        for row in seq_of_parameters:
+                            value = row[col_index]
+                            if value is not None and isinstance(value, (bytes, bytearray)):
+                                max_binary_size = max(max_binary_size, len(value))
 
-                # Special handling for binary data in auto-detected types
-                if paraminfo.paramSQLType in (
-                    ddbc_sql_const.SQL_BINARY.value,
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_LONGVARBINARY.value,
-                ):
-                    # Find the maximum size needed for any row's binary data
-                    max_binary_size = 0
-                    for row in seq_of_parameters:
-                        value = row[col_index]
-                        if value is not None and isinstance(value, (bytes, bytearray)):
-                            max_binary_size = max(max_binary_size, len(value))
+                        # For SQL Server VARBINARY(MAX), we need to use large object binding
+                        if max_binary_size > 8000:
+                            paraminfo.paramSQLType = ddbc_sql_const.SQL_LONGVARBINARY.value
+                            paraminfo.isDAE = True
 
-                    # For SQL Server VARBINARY(MAX), we need to use large object binding
-                    if max_binary_size > 8000:
-                        paraminfo.paramSQLType = ddbc_sql_const.SQL_LONGVARBINARY.value
-                        paraminfo.isDAE = True
+                        # Update column_size to actual maximum size
+                        # Always ensure at least a minimum size of 1 for empty strings
+                        paraminfo.columnSize = max(max_binary_size, 1)
 
-                    # Update column_size to actual maximum size
-                    # Always ensure at least a minimum size of 1 for empty strings
-                    paraminfo.columnSize = max(max_binary_size, 1)
-
-                parameters_type.append(paraminfo)
-                if paraminfo.isDAE:
-                    any_dae = True
+                    parameters_type.append(paraminfo)
+                    if paraminfo.isDAE:
+                        any_dae = True
 
         if any_dae:
             logger.debug(
@@ -2627,59 +2638,63 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
-        processed_parameters = []
-        for row_index, row in enumerate(seq_of_parameters):
-            processed_row = list(row)
-            for i, val in enumerate(processed_row):
-                if val is None:
-                    continue
-                time_text = _normalize_time_param(val, parameters_type[i].paramCType)
-                if time_text is not None:
-                    processed_row[i] = time_text
-                    continue
-                if (
-                    isinstance(val, decimal.Decimal)
-                    and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
-                ):
-                    processed_row[i] = format(val, "f")
-                # Convert all values to string for DECIMAL/NUMERIC columns (GH-503)
-                elif parameters_type[i].paramSQLType in (
-                    ddbc_sql_const.SQL_DECIMAL.value,
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                ):
-                    if isinstance(val, decimal.Decimal):
+        with perf_phase("py::executemany::param_conversion"):
+            processed_parameters = []
+            for row_index, row in enumerate(seq_of_parameters):
+                processed_row = list(row)
+                for i, val in enumerate(processed_row):
+                    if val is None:
+                        continue
+                    time_text = _normalize_time_param(val, parameters_type[i].paramCType)
+                    if time_text is not None:
+                        processed_row[i] = time_text
+                        continue
+                    if (
+                        isinstance(val, decimal.Decimal)
+                        and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
+                    ):
                         processed_row[i] = format(val, "f")
-                    else:
-                        # Do not embed the parameter value or the full row in the
-                        # message: rows may contain PII (SSNs, emails, balances)
-                        # that would leak into caller error handlers, tracebacks,
-                        # and log/APM stores. Report metadata only (row index,
-                        # column index, value type).
-                        err_msg = (
-                            f"Failed to convert parameter to Decimal at row "
-                            f"{row_index}, column {i} (value type: {type(val).__name__})"
-                        )
-                        # Split str(val) from the decimal parse so we only chain a
-                        # cause we know is value-free. decimal.DecimalException
-                        # messages (e.g. ConversionSyntax) never echo the input, so
-                        # they are safe to preserve for debugging. str(val) itself
-                        # or any other error could carry the value in its message
-                        # and surface through __cause__ / formatted tracebacks, so
-                        # those are re-raised with the chain suppressed (from None).
-                        try:
-                            val_text = str(val)
-                        except Exception:  # pylint: disable=broad-exception-caught
-                            raise ValueError(err_msg) from None
-                        try:
-                            processed_row[i] = format(decimal.Decimal(val_text), "f")
-                        except decimal.DecimalException as e:
-                            raise ValueError(err_msg) from e
-                        except Exception:  # pylint: disable=broad-exception-caught
-                            raise ValueError(err_msg) from None
-            processed_parameters.append(processed_row)
+                    # Convert all values to string for DECIMAL/NUMERIC columns (GH-503)
+                    elif parameters_type[i].paramSQLType in (
+                        ddbc_sql_const.SQL_DECIMAL.value,
+                        ddbc_sql_const.SQL_NUMERIC.value,
+                    ):
+                        if isinstance(val, decimal.Decimal):
+                            processed_row[i] = format(val, "f")
+                        else:
+                            # Do not embed the parameter value or the full row in the
+                            # message: rows may contain PII (SSNs, emails, balances)
+                            # that would leak into caller error handlers, tracebacks,
+                            # and log/APM stores. Report metadata only (row index,
+                            # column index, value type).
+                            err_msg = (
+                                f"Failed to convert parameter to Decimal at row "
+                                f"{row_index}, column {i} (value type: {type(val).__name__})"
+                            )
+                            # Split str(val) from the decimal parse so we only chain a
+                            # cause we know is value-free. decimal.DecimalException
+                            # messages (e.g. ConversionSyntax) never echo the input, so
+                            # they are safe to preserve for debugging. str(val) itself
+                            # or any other error could carry the value in its message
+                            # and surface through __cause__ / formatted tracebacks, so
+                            # those are re-raised with the chain suppressed (from None).
+                            try:
+                                val_text = str(val)
+                            except Exception:  # pylint: disable=broad-exception-caught
+                                raise ValueError(err_msg) from None
+                            try:
+                                processed_row[i] = format(decimal.Decimal(val_text), "f")
+                            except decimal.DecimalException as e:
+                                raise ValueError(err_msg) from e
+                            except Exception:  # pylint: disable=broad-exception-caught
+                                raise ValueError(err_msg) from None
+                processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
-        columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
+        with perf_phase("py::executemany::param_processing"):
+            columnwise_params, row_count = self._transpose_rowwise_to_columnwise(
+                processed_parameters
+            )
 
         # Get encoding settings
         encoding_settings = self._get_encoding_settings()
@@ -2695,13 +2710,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             len(parameters_type),
         )
 
-        ret = ddbc_bindings.SQLExecuteMany(
-            self.hstmt, operation, columnwise_params, parameters_type, row_count, encoding_settings
-        )
+        with perf_phase("py::executemany::cpp_call"):
+            ret = ddbc_bindings.SQLExecuteMany(
+                self.hstmt,
+                operation,
+                columnwise_params,
+                parameters_type,
+                row_count,
+                encoding_settings,
+            )
 
         # Capture any diagnostic messages after execution
-        if self.hstmt:
-            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+        with perf_phase("py::executemany::diag_records"):
+            if self.hstmt:
+                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
         try:
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
@@ -2756,16 +2778,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         row_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchOne(
-                self.hstmt,
-                row_data,
-                char_decoding.get("encoding", "utf-16le"),
-                wchar_decoding.get("encoding", "utf-16le"),
-                char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
-            )
+            with perf_phase("py::fetchone::cpp_call"):
+                ret = ddbc_bindings.DDBCSQLFetchOne(
+                    self.hstmt,
+                    row_data,
+                    char_decoding.get("encoding", "utf-16le"),
+                    wchar_decoding.get("encoding", "utf-16le"),
+                    char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
+                )
 
-            if self.hstmt:
-                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            with perf_phase("py::fetchone::diag_records"):
+                if self.hstmt:
+                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
                 # No more data available
@@ -2785,17 +2809,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Get column and converter maps
             column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
-            return Row(
-                row_data,
-                column_map,
-                cursor=self,
-                converter_map=converter_map,
-                uuid_str_indices=self._uuid_str_indices,
-                column_map_lower=column_map_lower,
-            )
-        except Exception as e:
+            with perf_phase("py::fetchone::row_wrap"):
+                return Row(
+                    row_data,
+                    column_map,
+                    cursor=self,
+                    converter_map=converter_map,
+                    uuid_str_indices=self._uuid_str_indices,
+                    column_map_lower=column_map_lower,
+                )
+        except Exception:
             # On error, don't increment rownumber - rethrow the error
-            raise e
+            raise
 
     def fetchmany(self, size: Optional[int] = None) -> List[Row]:
         """
@@ -2823,17 +2848,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchMany(
-                self.hstmt,
-                rows_data,
-                size,
-                char_decoding.get("encoding", "utf-16le"),
-                wchar_decoding.get("encoding", "utf-16le"),
-                char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
-            )
+            with perf_phase("py::fetchmany::cpp_call"):
+                ret = ddbc_bindings.DDBCSQLFetchMany(
+                    self.hstmt,
+                    rows_data,
+                    size,
+                    char_decoding.get("encoding", "utf-16le"),
+                    wchar_decoding.get("encoding", "utf-16le"),
+                    char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
+                )
 
-            if self.hstmt:
-                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            with perf_phase("py::fetchmany::diag_records"):
+                if self.hstmt:
+                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -2852,20 +2879,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
-            return [
-                Row(
-                    row_data,
-                    column_map,
-                    cursor=self,
-                    converter_map=converter_map,
-                    uuid_str_indices=uuid_idx,
-                    column_map_lower=column_map_lower,
-                )
-                for row_data in rows_data
-            ]
-        except Exception as e:
+            with perf_phase("py::fetchmany::row_wrap"):
+                return [
+                    Row(
+                        row_data,
+                        column_map,
+                        cursor=self,
+                        converter_map=converter_map,
+                        uuid_str_indices=uuid_idx,
+                        column_map_lower=column_map_lower,
+                    )
+                    for row_data in rows_data
+                ]
+        except Exception:
             # On error, don't increment rownumber - rethrow the error
-            raise e
+            raise
 
     def fetchall(self) -> List[Row]:
         """
@@ -2884,19 +2912,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchAll(
-                self.hstmt,
-                rows_data,
-                char_decoding.get("encoding", "utf-16le"),
-                wchar_decoding.get("encoding", "utf-16le"),
-                char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
-            )
+            with perf_phase("py::fetchall::cpp_call"):
+                ret = ddbc_bindings.DDBCSQLFetchAll(
+                    self.hstmt,
+                    rows_data,
+                    char_decoding.get("encoding", "utf-16le"),
+                    wchar_decoding.get("encoding", "utf-16le"),
+                    char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value),
+                )
 
             # Check for errors
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
-            if self.hstmt:
-                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            with perf_phase("py::fetchall::diag_records"):
+                if self.hstmt:
+                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -2914,20 +2944,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
-            return [
-                Row(
-                    row_data,
-                    column_map,
-                    cursor=self,
-                    converter_map=converter_map,
-                    uuid_str_indices=uuid_idx,
-                    column_map_lower=column_map_lower,
-                )
-                for row_data in rows_data
-            ]
-        except Exception as e:
+            with perf_phase("py::fetchall::row_wrap"):
+                return [
+                    Row(
+                        row_data,
+                        column_map,
+                        cursor=self,
+                        converter_map=converter_map,
+                        uuid_str_indices=uuid_idx,
+                        column_map_lower=column_map_lower,
+                    )
+                    for row_data in rows_data
+                ]
+        except Exception:
             # On error, don't increment rownumber - rethrow the error
-            raise e
+            raise
 
     def arrow_batch(self, batch_size: int = 8192) -> "pyarrow.RecordBatch":
         """

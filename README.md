@@ -176,7 +176,17 @@ provided by the bot. You will only need to do this once across all repos using o
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
- 
+
+### Performance profiling (internal)
+
+The driver ships with an optional, compile-time-gated profiler that times both the
+Python and native (C++) layers of a query. The **native (C++) instrumentation is off
+by default and compiled out of released wheels**; the thin Python-layer markers
+(`perf_timer.py` and the `perf_phase(...)` calls) do ship, but are a no-op unless
+profiling is explicitly enabled. It is intended for contributors diagnosing where time
+goes on the execute/fetch paths. See [`profiler/README.md`](profiler/README.md) for how
+to build with profiling enabled and run it.
+
 ## License
 The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](https://github.com/microsoft/mssql-python/tree/main/mssql_python_odbc/libs) folder 
 that are licensed under MICROSOFT SOFTWARE LICENSE TERMS.
