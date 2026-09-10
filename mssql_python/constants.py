@@ -206,14 +206,18 @@ class ConstantsDDBC(Enum):
     SQL_SC_SQL92_INTERMEDIATE = 4
     SQL_SC_SQL92_FULL = 8
 
-    # Compatibility spellings for SQL_SQL_CONFORMANCE return values
-    SQL_SQL92_ENTRY_SQL = SQL_SC_SQL92_ENTRY
-    SQL_SQL92_INTERMEDIATE_SQL = SQL_SC_SQL92_INTERMEDIATE
-    SQL_SQL92_FULL_SQL = SQL_SC_SQL92_FULL
+    # Deprecated compatibility values; use SQL_SC_* for SQL_SQL_CONFORMANCE results.
+    SQL_SQL92_ENTRY_SQL = 127
+    SQL_SQL92_INTERMEDIATE_SQL = 128
+    SQL_SQL92_FULL_SQL = 129
 
 
 class GetInfoConstants(Enum):
-    """ODBC information-type IDs accepted by Connection.getinfo()."""
+    """ODBC information-type IDs plus deprecated compatibility members.
+
+    The deprecated members at the end retain their original values throughout
+    1.x, but are not information-type names. See CHANGELOG.md for migration.
+    """
 
     # Driver and database information
     SQL_DRIVER_NAME = 6
@@ -261,8 +265,8 @@ class GetInfoConstants(Enum):
     # Data type support
     SQL_NUMERIC_FUNCTIONS = 49
     SQL_STRING_FUNCTIONS = 50
-    SQL_TIMEDATE_FUNCTIONS = 52
-    SQL_DATETIME_FUNCTIONS = SQL_TIMEDATE_FUNCTIONS
+    SQL_DATETIME_FUNCTIONS = 52
+    SQL_TIMEDATE_FUNCTIONS = SQL_DATETIME_FUNCTIONS
     SQL_SYSTEM_FUNCTIONS = 51
     SQL_CONVERT_FUNCTIONS = 48
     SQL_LIKE_ESCAPE_CLAUSE = 113
@@ -336,6 +340,19 @@ class GetInfoConstants(Enum):
     SQL_QUALIFIER_USAGE = 92
     SQL_TIMEDATE_ADD_INTERVALS = 109
     SQL_TIMEDATE_DIFF_INTERVALS = 110
+
+    # Deprecated non-information names retained for compatibility throughout 1.x.
+    SQL_TXN_ISOLATION_LEVEL = ConstantsDDBC.SQL_TXN_ISOLATION_LEVEL.value
+    SQL_CONCURRENCY = ConstantsDDBC.SQL_CONCURRENCY.value
+    SQL_ROWSET_SIZE = ConstantsDDBC.SQL_ROWSET_SIZE.value
+    SQL_ROW_NUMBER = ConstantsDDBC.SQL_ROW_NUMBER.value
+    SQL_IC_UPPER = ConstantsDDBC.SQL_IC_UPPER.value
+    SQL_IC_LOWER = ConstantsDDBC.SQL_IC_LOWER.value
+    SQL_IC_SENSITIVE = ConstantsDDBC.SQL_IC_SENSITIVE.value
+    SQL_IC_MIXED = ConstantsDDBC.SQL_IC_MIXED.value
+    SQL_SQL92_ENTRY_SQL = ConstantsDDBC.SQL_SQL92_ENTRY_SQL.value
+    SQL_SQL92_INTERMEDIATE_SQL = ConstantsDDBC.SQL_SQL92_INTERMEDIATE_SQL.value
+    SQL_SQL92_FULL_SQL = ConstantsDDBC.SQL_SQL92_FULL_SQL.value
 
 
 class AuthType(Enum):
@@ -555,10 +572,12 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
 
 def get_info_constants() -> Dict[str, int]:
     """
-    Returns a dictionary of all available GetInfo constants.
+    Return all GetInfoConstants names and values, including deprecated members.
 
-    This provides all SQLGetInfo constants that can be used with the Connection.getinfo() method
-    to retrieve metadata about the database server and driver.
+    Deprecated compatibility names remain included throughout 1.x so existing
+    dictionary lookups keep working. They are not valid information-type names;
+    their inclusion does not make them suitable inputs to Connection.getinfo().
+    See CHANGELOG.md for replacements and the deprecation policy.
 
     Returns:
         dict: Dictionary mapping constant names to their integer values
@@ -649,10 +668,11 @@ for _name, _member in ConstantsDDBC.__members__.items():
         _module_globals[_name] = _member.value
         _exported_names.append(_name)
 
-# Export all GetInfoConstants enum members as module-level constants
+# Export GetInfoConstants members not already exported from ConstantsDDBC.
 for _name, _member in GetInfoConstants.__members__.items():
-    _module_globals[_name] = _member.value
-    _exported_names.append(_name)
+    if _name not in _DDBC_PUBLIC_API:
+        _module_globals[_name] = _member.value
+        _exported_names.append(_name)
 
 # AuthType enum is exported as a class only (not individual members)
 # to avoid polluting the namespace with generic names like DEFAULT

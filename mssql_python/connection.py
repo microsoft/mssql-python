@@ -15,7 +15,8 @@ import weakref
 import re
 import codecs
 import warnings
-import sys
+import struct
+from types import MappingProxyType
 from typing import Any, Dict, Optional, Union, List, Tuple, Callable, Protocol, TYPE_CHECKING
 import threading
 
@@ -90,43 +91,119 @@ class TokenProvider(Protocol):
 SQL_WMETADATA: int = -99  # Special flag for column name decoding
 INFO_TYPE_STRING_THRESHOLD: int = 10000  # Legacy fallback for unlisted information types
 
-# SQLGetInfoW text results, including Y/N and SQL_OUTER_JOINS (also "F").
-# All other advertised information types return unsigned numeric values.
-_GETINFO_STRING_TYPES = frozenset(
+# ODBC integers have fixed widths and native byte order; handles are pointer-sized.
+_SQLUSMALLINT = struct.Struct("=H")
+_SQLUINTEGER = struct.Struct("=I")
+_SQLPOINTER = struct.Struct("P")
+
+# SQLGetInfoW return types. Only type information is shared, never connection metadata.
+_GETINFO_RETURN_TYPES = MappingProxyType(
     {
-        GetInfoConstants.SQL_DATA_SOURCE_NAME.value,
-        GetInfoConstants.SQL_DATABASE_NAME.value,
-        GetInfoConstants.SQL_DRIVER_NAME.value,
-        GetInfoConstants.SQL_DRIVER_VER.value,
-        GetInfoConstants.SQL_SERVER_NAME.value,
-        GetInfoConstants.SQL_USER_NAME.value,
-        GetInfoConstants.SQL_DRIVER_ODBC_VER.value,
-        GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value,
-        GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value,
-        GetInfoConstants.SQL_CATALOG_TERM.value,
-        GetInfoConstants.SQL_SCHEMA_TERM.value,
-        GetInfoConstants.SQL_TABLE_TERM.value,
-        GetInfoConstants.SQL_KEYWORDS.value,
-        GetInfoConstants.SQL_PROCEDURE_TERM.value,
-        GetInfoConstants.SQL_SPECIAL_CHARACTERS.value,
-        GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value,
-        GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value,
-        GetInfoConstants.SQL_ACCESSIBLE_TABLES.value,
-        GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value,
-        GetInfoConstants.SQL_EXPRESSIONS_IN_ORDERBY.value,
-        GetInfoConstants.SQL_LIKE_ESCAPE_CLAUSE.value,
-        GetInfoConstants.SQL_MULTIPLE_ACTIVE_TXN.value,
-        GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value,
-        GetInfoConstants.SQL_PROCEDURES.value,
-        GetInfoConstants.SQL_CATALOG_NAME.value,
-        GetInfoConstants.SQL_COLUMN_ALIAS.value,
-        GetInfoConstants.SQL_DESCRIBE_PARAMETER.value,
-        GetInfoConstants.SQL_ORDER_BY_COLUMNS_IN_SELECT.value,
-        GetInfoConstants.SQL_OUTER_JOINS.value,
-        GetInfoConstants.SQL_MULT_RESULT_SETS.value,
+        GetInfoConstants.SQL_DATA_SOURCE_NAME.value: str,
+        GetInfoConstants.SQL_DATABASE_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_VER.value: str,
+        GetInfoConstants.SQL_SERVER_NAME.value: str,
+        GetInfoConstants.SQL_USER_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_ODBC_VER.value: str,
+        GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value: str,
+        GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value: str,
+        GetInfoConstants.SQL_CATALOG_TERM.value: str,
+        GetInfoConstants.SQL_SCHEMA_TERM.value: str,
+        GetInfoConstants.SQL_TABLE_TERM.value: str,
+        GetInfoConstants.SQL_KEYWORDS.value: str,
+        GetInfoConstants.SQL_PROCEDURE_TERM.value: str,
+        GetInfoConstants.SQL_SPECIAL_CHARACTERS.value: str,
+        GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value: str,
+        GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value: str,
+        GetInfoConstants.SQL_ACCESSIBLE_TABLES.value: str,
+        GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value: str,
+        GetInfoConstants.SQL_EXPRESSIONS_IN_ORDERBY.value: str,
+        GetInfoConstants.SQL_LIKE_ESCAPE_CLAUSE.value: str,
+        GetInfoConstants.SQL_MULTIPLE_ACTIVE_TXN.value: str,
+        GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value: str,
+        GetInfoConstants.SQL_PROCEDURES.value: str,
+        GetInfoConstants.SQL_CATALOG_NAME.value: str,
+        GetInfoConstants.SQL_COLUMN_ALIAS.value: str,
+        GetInfoConstants.SQL_DESCRIBE_PARAMETER.value: str,
+        GetInfoConstants.SQL_ORDER_BY_COLUMNS_IN_SELECT.value: str,
+        GetInfoConstants.SQL_OUTER_JOINS.value: str,
+        GetInfoConstants.SQL_MULT_RESULT_SETS.value: str,
+        GetInfoConstants.SQL_DRIVER_HLIB.value: _SQLPOINTER,
+        GetInfoConstants.SQL_DRIVER_HENV.value: _SQLPOINTER,
+        GetInfoConstants.SQL_DRIVER_HDBC.value: _SQLPOINTER,
+        GetInfoConstants.SQL_SQL_CONFORMANCE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_IDENTIFIER_CASE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_SUBQUERIES.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CORRELATION_NAME.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CATALOG_USAGE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCHEMA_USAGE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TXN_CAPABLE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_TXN_ISOLATION_OPTION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STRING_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SYSTEM_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CONVERT_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_STATEMENT_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_CHAR_LITERAL_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_BINARY_LITERAL_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_TABLE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_SELECT.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_GROUP_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_ORDER_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_INDEX.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_TABLES_IN_SELECT.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_CONCURRENT_ACTIVITIES.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_DRIVER_CONNECTIONS.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_ROW_SIZE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_USER_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_GETDATA_EXTENSIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CURSOR_COMMIT_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CURSOR_ROLLBACK_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CURSOR_SENSITIVITY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BOOKMARK_PERSISTENCE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DYNAMIC_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DYNAMIC_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_KEYSET_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_KEYSET_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCROLL_OPTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCROLL_CONCURRENCY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FETCH_DIRECTION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_SENSITIVITY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BATCH_SUPPORT.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BATCH_ROW_COUNT.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_PARAM_ARRAY_ROW_COUNTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_PARAM_ARRAY_SELECTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_POSITIONED_STATEMENTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_GROUP_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_OJ_CAPABILITIES.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_QUOTED_IDENTIFIER_CASE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CONCAT_NULL_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_NULL_COLLATION.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_ALTER_TABLE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_UNION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DDL_INDEX.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_ADD_INTERVALS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_DIFF_INTERVALS.value: _SQLUINTEGER,
+        # Standard information types not currently exposed by GetInfoConstants.
+        17: str,  # SQL_DBMS_NAME
+        18: str,  # SQL_DBMS_VER
+        10000: str,  # SQL_XOPEN_CLI_YEAR
+        10021: _SQLUINTEGER,  # SQL_ASYNC_MODE
+        127: _SQLUINTEGER,  # SQL_CREATE_ASSERTION
     }
 )
-_GETINFO_NUMERIC_TYPES = frozenset(info.value for info in GetInfoConstants) - _GETINFO_STRING_TYPES
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
 # Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
@@ -1863,17 +1940,22 @@ class Connection:
 
         Returns:
             The requested information. The type of the returned value depends
-            on the information requested. For GetInfoConstants, character values (including
+            on the information requested. For registered ODBC types, character values (including
             "Y"/"N") return strings; numeric values and bitmasks return unsigned
-            integers. Unsupported information types return None.
+            integers. Native retrieval failures, including unsupported types,
+            timeouts, and connection loss, are logged and return None.
 
         Note:
             SQL_DRIVER_HDBC, SQL_DRIVER_HENV and SQL_DRIVER_HLIB are implemented
             by the ODBC Driver Manager, which this driver bypasses. Correct IDs
             do not imply that the selected native provider supports these queries.
+            A native provider may return cached metadata even after connection loss;
+            getinfo() is not a connection-health check.
+            Deprecated GetInfoConstants names are retained for API compatibility,
+            not as valid requests. Their integer values may request unrelated information.
 
         Raises:
-            DatabaseError: If a numeric result has an invalid byte length.
+            DatabaseError: If a numeric byte result does not match its ODBC type's width.
             InterfaceError: If the connection is closed.
         """
         if self._closed:
@@ -1898,7 +1980,7 @@ class Connection:
         try:
             raw_result = self._conn.get_info(info_type)
         except Exception as e:  # pylint: disable=broad-exception-caught
-            # Log the error and return None for invalid info types
+            # Preserve the legacy logged-None contract for native retrieval failures.
             logger.warning(f"getinfo({info_type}) failed: {e}")
             return None
 
@@ -1916,7 +1998,7 @@ class Connection:
             length = raw_result["length"]
 
             logger.debug(
-                "getinfo: info_type=%d, length=%d, data_type=%s",
+                "getinfo: info_type=%d, length=%r, data_type=%s",
                 info_type,
                 length,
                 type(data),
@@ -1924,8 +2006,9 @@ class Connection:
 
             # Explicit numeric types take precedence over the legacy high-ID
             # string fallback (e.g. SQL_MAX_IDENTIFIER_LEN is numeric at 10005).
-            is_string_type = info_type in _GETINFO_STRING_TYPES or (
-                info_type > INFO_TYPE_STRING_THRESHOLD and info_type not in _GETINFO_NUMERIC_TYPES
+            return_type = _GETINFO_RETURN_TYPES.get(info_type)
+            is_string_type = return_type is str or (
+                return_type is None and info_type > INFO_TYPE_STRING_THRESHOLD
             )
             if is_string_type:
                 # For string data, ensure we properly handle the byte array
@@ -1951,16 +2034,30 @@ class Connection:
                 else:
                     # If it's not bytes, return as is
                     return data
-            elif info_type in _GETINFO_NUMERIC_TYPES:
+            elif isinstance(return_type, struct.Struct):
                 if isinstance(data, bytes):
-                    if length not in (1, 2, 4, 8) or len(data) < length:
+                    if (
+                        type(length) is not int
+                        or length != return_type.size
+                        or len(data) < return_type.size
+                    ):
                         raise DatabaseError(
                             driver_error=f"Invalid numeric result length for getinfo({info_type})",
-                            ddbc_error=f"Got length={length} with {len(data)} bytes of data",
+                            ddbc_error=(
+                                f"Expected {return_type.size} bytes; "
+                                f"got length={length} with {len(data)} bytes of data"
+                            ),
                         )
-                    return int.from_bytes(data[:length], sys.byteorder, signed=False)
-                if isinstance(data, (int, float)) or (isinstance(data, str) and data.isdigit()):
-                    return int(data)
+                    return return_type.unpack_from(data)[0]
+                # Legacy non-byte payloads must not lose precision or change bool to int.
+                if isinstance(data, str) and data.isdecimal():
+                    try:
+                        return int(data)
+                    except ValueError:
+                        logger.debug(
+                            "Numeric getinfo compatibility value exceeds the integer conversion "
+                            "limit; returning it unchanged"
+                        )
                 return data
 
             # Preserve legacy handling for unregistered, driver-specific info types.

@@ -3120,27 +3120,24 @@ def test_getinfo_type_consistency(db_connection):
         assert result1 == result2, f"Value inconsistency for info type {info_type}"
 
 
-def test_getinfo_standard_types(db_connection):
+@pytest.mark.parametrize(
+    "info_type,expected_type",
+    [
+        (sql_const.SQL_ACCESSIBLE_TABLES.value, str),
+        (sql_const.SQL_DATA_SOURCE_NAME.value, str),
+        (sql_const.SQL_TABLE_TERM.value, str),
+        (sql_const.SQL_PROCEDURES.value, str),
+        (sql_const.SQL_MAX_IDENTIFIER_LEN.value, int),
+        (sql_const.SQL_OUTER_JOINS.value, str),
+    ],
+)
+def test_getinfo_standard_types(db_connection, info_type, expected_type):
     """Test a representative set of standard ODBC info types."""
 
-    # Dictionary of common info types and their expected value types
-    # Avoid DBMS-specific info types
-    info_types = {
-        sql_const.SQL_ACCESSIBLE_TABLES.value: str,  # "Y" or "N"
-        sql_const.SQL_DATA_SOURCE_NAME.value: str,  # DSN
-        sql_const.SQL_TABLE_TERM.value: str,  # Usually "table"
-        sql_const.SQL_PROCEDURES.value: str,  # "Y" or "N"
-        sql_const.SQL_MAX_IDENTIFIER_LEN.value: int,  # Max identifier length
-        sql_const.SQL_OUTER_JOINS.value: str,  # "Y" or "N"
-    }
-
-    for info_type, expected_type in info_types.items():
-        info_value = db_connection.getinfo(info_type)
-        if info_value is None:
-            continue
-        assert isinstance(
-            info_value, expected_type
-        ), f"Info type {info_type} should return {expected_type.__name__}"
+    info_value = db_connection.getinfo(info_type)
+    assert (
+        type(info_value) is expected_type
+    ), f"Info type {info_type} should return {expected_type.__name__}, got {info_value!r}"
 
 
 def test_getinfo_numeric_limits(db_connection):

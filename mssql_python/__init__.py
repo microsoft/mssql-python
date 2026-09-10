@@ -317,6 +317,7 @@ from .constants import (  # noqa: F401
     SQL_SC_FIPS127_2_TRANSITIONAL,
     SQL_SC_SQL92_INTERMEDIATE,
     SQL_SC_SQL92_FULL,
+    # Deprecated legacy values, not SQL conformance flags
     SQL_SQL92_ENTRY_SQL,
     SQL_SQL92_INTERMEDIATE_SQL,
     SQL_SQL92_FULL_SQL,
@@ -537,6 +538,7 @@ __all__ = [
     "SQL_SC_FIPS127_2_TRANSITIONAL",
     "SQL_SC_SQL92_INTERMEDIATE",
     "SQL_SC_SQL92_FULL",
+    # Deprecated legacy values, not SQL conformance flags
     "SQL_SQL92_ENTRY_SQL",
     "SQL_SQL92_INTERMEDIATE_SQL",
     "SQL_SQL92_FULL_SQL",

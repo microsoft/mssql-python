@@ -5,7 +5,10 @@ Regression coverage for SQLGetInfo IDs and ODBC return types (GH-769).
 """
 
 import ast
+from decimal import Decimal
+from enum import Enum
 from pathlib import Path
+import pickle
 import struct
 import sys
 from types import SimpleNamespace
@@ -15,7 +18,7 @@ import pytest
 
 import mssql_python
 from mssql_python import constants
-from mssql_python.connection import Connection, _GETINFO_NUMERIC_TYPES, _GETINFO_STRING_TYPES
+from mssql_python.connection import Connection, _GETINFO_RETURN_TYPES
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants as G
 from mssql_python.exceptions import DatabaseError, InterfaceError
 
@@ -130,7 +133,7 @@ ODBC_INFO = {
     "SQL_TIMEDATE_DIFF_INTERVALS": (110, 4),
 }
 
-NON_INFO_CONSTANTS = {
+LEGACY_GETINFO_CONSTANTS = {
     "SQL_TXN_ISOLATION_LEVEL": 108,
     "SQL_CONCURRENCY": 7,
     "SQL_ROWSET_SIZE": 9,
@@ -139,17 +142,28 @@ NON_INFO_CONSTANTS = {
     "SQL_IC_LOWER": 2,
     "SQL_IC_SENSITIVE": 3,
     "SQL_IC_MIXED": 4,
-    "SQL_SQL92_ENTRY_SQL": 1,
-    "SQL_SQL92_INTERMEDIATE_SQL": 4,
-    "SQL_SQL92_FULL_SQL": 8,
+    "SQL_SQL92_ENTRY_SQL": 127,
+    "SQL_SQL92_INTERMEDIATE_SQL": 128,
+    "SQL_SQL92_FULL_SQL": 129,
+}
+CONFORMANCE_VALUES = {
     "SQL_SC_SQL92_ENTRY": 1,
     "SQL_SC_FIPS127_2_TRANSITIONAL": 2,
     "SQL_SC_SQL92_INTERMEDIATE": 4,
     "SQL_SC_SQL92_FULL": 8,
 }
+NON_INFO_CONSTANTS = LEGACY_GETINFO_CONSTANTS | CONFORMANCE_VALUES
 
-NUMERIC_INFO = {name: spec for name, spec in ODBC_INFO.items() if spec[1]}
-STRING_INFO = {name: spec for name, spec in ODBC_INFO.items() if not spec[1]}
+UNLISTED_ODBC_INFO = {
+    "SQL_DBMS_NAME": (17, 0),
+    "SQL_DBMS_VER": (18, 0),
+    "SQL_XOPEN_CLI_YEAR": (10000, 0),
+    "SQL_ASYNC_MODE": (10021, 4),
+    "SQL_CREATE_ASSERTION": (127, 4),
+}
+ALL_ODBC_INFO = ODBC_INFO | UNLISTED_ODBC_INFO
+NUMERIC_INFO = {name: spec for name, spec in ALL_ODBC_INFO.items() if spec[1]}
+STRING_INFO = {name: spec for name, spec in ALL_ODBC_INFO.items() if not spec[1]}
 DRIVER_MANAGER_INFO = {"SQL_DRIVER_HDBC", "SQL_DRIVER_HENV", "SQL_DRIVER_HLIB"}
 
 
@@ -160,27 +174,46 @@ def mock_connection():
 
 
 def test_getinfo_reference_covers_every_member_and_alias():
-    assert set(G.__members__) == set(ODBC_INFO)
-    assert constants.get_info_constants() == {name: spec[0] for name, spec in ODBC_INFO.items()}
+    assert set(G.__members__) == ODBC_INFO.keys() | LEGACY_GETINFO_CONSTANTS.keys()
+    assert constants.get_info_constants() == (
+        {name: spec[0] for name, spec in ODBC_INFO.items()} | LEGACY_GETINFO_CONSTANTS
+    )
+    assert set(_GETINFO_RETURN_TYPES) == {spec[0] for spec in ALL_ODBC_INFO.values()}
     assert {name: member.name for name, member in G.__members__.items() if name != member.name} == {
-        "SQL_DATETIME_FUNCTIONS": "SQL_TIMEDATE_FUNCTIONS",
+        "SQL_TIMEDATE_FUNCTIONS": "SQL_DATETIME_FUNCTIONS",
         "SQL_ACTIVE_CONNECTIONS": "SQL_MAX_DRIVER_CONNECTIONS",
         "SQL_ACTIVE_STATEMENTS": "SQL_MAX_CONCURRENT_ACTIVITIES",
         "SQL_OWNER_USAGE": "SQL_SCHEMA_USAGE",
         "SQL_QUALIFIER_USAGE": "SQL_CATALOG_USAGE",
+        "SQL_TXN_ISOLATION_LEVEL": "SQL_MAX_CHAR_LITERAL_LEN",
+        "SQL_CONCURRENCY": "SQL_DRIVER_VER",
+        "SQL_ROW_NUMBER": "SQL_SEARCH_PATTERN_ESCAPE",
+        "SQL_IC_UPPER": "SQL_MAX_CONCURRENT_ACTIVITIES",
+        "SQL_IC_LOWER": "SQL_DATA_SOURCE_NAME",
+        "SQL_IC_SENSITIVE": "SQL_DRIVER_HDBC",
+        "SQL_IC_MIXED": "SQL_DRIVER_HENV",
     }
 
 
-@pytest.mark.parametrize("name", ODBC_INFO)
+@pytest.mark.parametrize("name", ALL_ODBC_INFO)
 def test_getinfo_ids_and_return_types_match_odbc(name):
-    info_id, size = ODBC_INFO[name]
-    assert G.__members__[name].value == info_id
+    info_id, size = ALL_ODBC_INFO[name]
+    if name in ODBC_INFO:
+        assert G.__members__[name].value == info_id
+    return_type = _GETINFO_RETURN_TYPES[info_id]
     if size:
-        assert info_id in _GETINFO_NUMERIC_TYPES
-        assert info_id not in _GETINFO_STRING_TYPES
+        assert isinstance(return_type, struct.Struct)
+        assert return_type.size == size
+        assert return_type.format == (
+            "P" if name in DRIVER_MANAGER_INFO else {2: "=H", 4: "=I"}[size]
+        )
     else:
-        assert info_id in _GETINFO_STRING_TYPES
-        assert info_id not in _GETINFO_NUMERIC_TYPES
+        assert return_type is str
+
+
+def test_getinfo_type_registry_is_immutable():
+    with pytest.raises(TypeError):
+        _GETINFO_RETURN_TYPES[118] = str
 
 
 def test_getinfo_public_exports_and_stubs():
@@ -196,8 +229,8 @@ def test_getinfo_public_exports_and_stubs():
     for name, value in expected.items():
         assert getattr(constants, name) == value
         assert getattr(mssql_python, name) == value
-        assert name in constants.__all__
-        assert name in mssql_python.__all__
+        assert constants.__all__.count(name) == 1
+        assert mssql_python.__all__.count(name) == 1
     changed_info_names = {
         "SQL_DRIVER_HDBC",
         "SQL_DRIVER_HENV",
@@ -216,11 +249,35 @@ def test_getinfo_public_exports_and_stubs():
         assert declarations[name] == "int"
 
 
-@pytest.mark.parametrize("name,value", NON_INFO_CONSTANTS.items())
-def test_non_info_constants_are_not_advertised_as_information_types(name, value):
+@pytest.mark.parametrize("name,value", CONFORMANCE_VALUES.items())
+def test_conformance_values_are_not_advertised_as_information_types(name, value):
     assert name not in G.__members__
     assert name not in constants.get_info_constants()
     assert ConstantsDDBC.__members__[name].value == value
+
+
+@pytest.mark.parametrize("name,value", LEGACY_GETINFO_CONSTANTS.items())
+def test_getinfo_legacy_attributes_and_imports_preserve_original_values(name, value):
+    assert getattr(G, name).value == value
+    assert G[name].value == value
+    assert constants.get_info_constants()[name] == value
+    assert getattr(ConstantsDDBC, name).value == value
+    assert getattr(constants, name) == value
+    assert getattr(mssql_python, name) == value
+
+
+def test_getinfo_datetime_alias_preserves_existing_canonical_name():
+    assert G.SQL_DATETIME_FUNCTIONS.name == "SQL_DATETIME_FUNCTIONS"
+    assert G.SQL_TIMEDATE_FUNCTIONS is G.SQL_DATETIME_FUNCTIONS
+    assert G.SQL_DATETIME_FUNCTIONS.value == 52
+
+
+def test_getinfo_legacy_name_does_not_change_colliding_information_type(mock_connection):
+    mock_connection._conn.get_info.return_value = {"data": b"\\\x00", "length": 2}
+    assert Connection.getinfo(mock_connection, G.SQL_ROW_NUMBER.value) == "\\"
+    assert Connection.getinfo(mock_connection, G.SQL_SEARCH_PATTERN_ESCAPE.value) == "\\"
+    assert mock_connection._conn.get_info.call_count == 2
+    mock_connection._conn.get_info.assert_called_with(14)
 
 
 @pytest.mark.parametrize("name", NUMERIC_INFO)
@@ -238,7 +295,8 @@ def test_getinfo_unsigned_numeric_values_and_forwarded_ids(mock_connection, name
         "data": value.to_bytes(size, sys.byteorder) + b"ignored padding",
         "length": size,
     }
-    result = Connection.getinfo(mock_connection, G.__members__[name].value)
+    request = G.__members__[name].value if name in ODBC_INFO else info_id
+    result = Connection.getinfo(mock_connection, request)
     assert type(result) is int
     assert result == value
     mock_connection._conn.get_info.assert_called_once_with(info_id)
@@ -253,7 +311,8 @@ def test_getinfo_character_values_are_preserved(mock_connection, name, value):
         "data": data + "\0ignored padding".encode("utf-16-le"),
         "length": len(data),
     }
-    result = Connection.getinfo(mock_connection, G.__members__[name].value)
+    request = G.__members__[name].value if name in ODBC_INFO else info_id
+    result = Connection.getinfo(mock_connection, request)
     assert type(result) is str
     assert result == value
     mock_connection._conn.get_info.assert_called_once_with(info_id)
@@ -268,6 +327,10 @@ def test_getinfo_character_values_are_preserved(mock_connection, name, value):
         (118, b"\x01\x00\x00", 3),
         (118, b"\x01\x00\x00\x00\x00", 5),
         (118, b"\x01\x00\x00\x00", -1),
+        (118, b"\x01\x00\x00\x00", 4.0),
+        (118, b"\x01\x00\x00\x00", "4"),
+        (118, b"\x01\x00\x00\x00", None),
+        (118, b"\x01\x00\x00\x00", True),
     ],
 )
 def test_getinfo_rejects_malformed_numeric_data(mock_connection, info_id, data, length):
@@ -335,9 +398,24 @@ def test_getinfo_unlisted_high_ids_keep_unicode_decoding(mock_connection, value)
     mock_connection._conn.get_info.assert_called_once_with(65000)
 
 
-@pytest.mark.parametrize("name", [name for name in ODBC_INFO if name not in DRIVER_MANAGER_INFO])
+@pytest.mark.parametrize(
+    "name",
+    [
+        (
+            pytest.param(
+                name,
+                marks=pytest.mark.skip(
+                    reason=f"{name} requires a Driver Manager; native providers are loaded directly"
+                ),
+            )
+            if name in DRIVER_MANAGER_INFO
+            else name
+        )
+        for name in ALL_ODBC_INFO
+    ],
+)
 def test_getinfo_matches_native_odbc_payload(db_connection, name):
-    info_id, size = ODBC_INFO[name]
+    info_id, size = ALL_ODBC_INFO[name]
     raw = db_connection._conn.get_info(info_id)
     assert isinstance(raw, dict)
     assert raw["info_type"] == info_id
@@ -349,7 +427,8 @@ def test_getinfo_matches_native_odbc_payload(db_connection, name):
     else:
         expected = data.decode("utf-16-le").rstrip("\0")
         expected_type = str
-    result = db_connection.getinfo(G.__members__[name].value)
+    request = G.__members__[name].value if name in ODBC_INFO else info_id
+    result = db_connection.getinfo(request)
     assert type(result) is expected_type
     assert result == expected
 
@@ -364,3 +443,135 @@ def test_getinfo_distinguishes_swapped_ids_even_when_driver_values_match(mock_co
     }
     assert Connection.getinfo(mock_connection, G.SQL_CATALOG_NAME.value) == "Y"
     assert Connection.getinfo(mock_connection, G.SQL_DESCRIBE_PARAMETER.value) == "N"
+
+
+@pytest.mark.parametrize(
+    "name,length",
+    [
+        (name, length)
+        for name, (_, size) in NUMERIC_INFO.items()
+        for length in (1, 2, 4, 8)
+        if length != size
+    ],
+)
+def test_getinfo_rejects_type_specific_wrong_widths(mock_connection, name, length):
+    info_id, _ = NUMERIC_INFO[name]
+    mock_connection._conn.get_info.return_value = {"data": b"\xff" * length, "length": length}
+    with pytest.raises(DatabaseError, match="Invalid numeric result length"):
+        Connection.getinfo(mock_connection, info_id)
+    mock_connection._conn.get_info.assert_called_once_with(info_id)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [1, -1, True, False, 1.9, float("inf"), Decimal("1.9"), "\u00b2", "", "1.9", "text", None],
+)
+def test_getinfo_nonbyte_numeric_values_are_not_lossily_coerced(mock_connection, data):
+    mock_connection._conn.get_info.return_value = {"data": data, "length": 4}
+    assert Connection.getinfo(mock_connection, 118) is data
+
+
+@pytest.mark.parametrize(
+    "data,expected", [("0", 0), ("000123", 123), ("123", 123), ("\u0661\u0662", 12)]
+)
+def test_getinfo_decimal_strings_keep_integer_compatibility(mock_connection, data, expected):
+    mock_connection._conn.get_info.return_value = {"data": data, "length": len(data)}
+    result = Connection.getinfo(mock_connection, 118)
+    assert type(result) is int
+    assert result == expected
+
+
+def test_getinfo_oversized_decimal_string_keeps_compatibility(mock_connection):
+    limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()
+    if not limit:
+        pytest.skip("Interpreter integer-string conversion limit is disabled or unavailable")
+    data = "1" * (limit + 1)
+    mock_connection._conn.get_info.return_value = {"data": data, "length": len(data)}
+    assert Connection.getinfo(mock_connection, 118) is data
+
+
+@pytest.mark.parametrize("sqlstate", ["HY096", "HYC00", "08S01", "08003", "HYT00", "HYT01"])
+def test_getinfo_native_failures_keep_logged_none_contract(mock_connection, monkeypatch, sqlstate):
+    warning = Mock()
+    monkeypatch.setattr("mssql_python.connection.logger.warning", warning)
+    mock_connection._conn.get_info.side_effect = RuntimeError(f"SQLSTATE:{sqlstate}:Native failure")
+    assert Connection.getinfo(mock_connection, 118) is None
+    mock_connection._conn.get_info.assert_called_once_with(118)
+    warning.assert_called_once()
+    assert sqlstate in warning.call_args.args[0]
+
+
+@pytest.mark.parametrize("info_id", [6, 999])
+@pytest.mark.parametrize("data", ["metadata", 1, 1.9, True, None, {"value": 1}])
+def test_getinfo_nonbyte_text_and_unknown_values_are_unchanged(mock_connection, info_id, data):
+    mock_connection._conn.get_info.return_value = {"data": data, "length": 4}
+    assert Connection.getinfo(mock_connection, info_id) is data
+
+
+@pytest.mark.parametrize("data,expected", [(b"\xff\xff", -1), (b"\xff" * 9, b"\xff" * 9)])
+def test_getinfo_unknown_binary_fallback_is_preserved(mock_connection, data, expected):
+    mock_connection._conn.get_info.return_value = {"data": data, "length": len(data)}
+    result = Connection.getinfo(mock_connection, 999)
+    assert type(result) is type(expected)
+    assert result == expected
+
+
+@pytest.mark.parametrize("result", [1.9, b"raw", [], {}, {"length": 4}])
+def test_getinfo_unrecognized_native_result_is_unchanged(mock_connection, result):
+    mock_connection._conn.get_info.return_value = result
+    assert Connection.getinfo(mock_connection, 118) is result
+
+
+def test_getinfo_missing_native_length_is_not_silently_defaulted(mock_connection):
+    mock_connection._conn.get_info.return_value = {"data": b"\x01\x00\x00\x00"}
+    with pytest.raises(KeyError, match="length"):
+        Connection.getinfo(mock_connection, 118)
+
+
+def test_getinfo_does_not_cache_metadata_across_connections(mock_connection):
+    other = SimpleNamespace(_closed=False, _conn=Mock())
+    mock_connection._conn.get_info.return_value = {
+        "data": (1).to_bytes(4, sys.byteorder),
+        "length": 4,
+    }
+    other._conn.get_info.return_value = {"data": (2).to_bytes(4, sys.byteorder), "length": 4}
+    assert Connection.getinfo(mock_connection, 118) == 1
+    assert Connection.getinfo(other, 118) == 2
+    mock_connection._conn.get_info.return_value = {
+        "data": (4).to_bytes(4, sys.byteorder),
+        "length": 4,
+    }
+    assert Connection.getinfo(mock_connection, 118) == 4
+    assert mock_connection._conn.get_info.call_count == 2
+    other._conn.get_info.assert_called_once_with(118)
+
+
+@pytest.mark.parametrize("name", list(ODBC_INFO) + list(LEGACY_GETINFO_CONSTANTS))
+def test_getinfo_current_enum_pickle_round_trip(name):
+    member = G.__members__[name]
+    assert pickle.loads(pickle.dumps(member)) is member
+
+
+@pytest.mark.parametrize("name,value", LEGACY_GETINFO_CONSTANTS.items())
+def test_getinfo_legacy_attribute_pickles_preserve_values(monkeypatch, name, value):
+    legacy = Enum("GetInfoConstants", {name: value}, module=constants.__name__)
+    with monkeypatch.context() as patch:
+        patch.setattr(constants, "GetInfoConstants", legacy)
+        serialized = pickle.dumps(legacy[name])
+
+    restored = pickle.loads(serialized)
+    assert restored is getattr(G, name)
+    assert restored.value == value
+
+
+def test_getinfo_legacy_pickle_values_cannot_identify_the_original_name(monkeypatch):
+    legacy = Enum(
+        "GetInfoConstants", {"SQL_STATIC_CURSOR_ATTRIBUTES1": 150}, module=constants.__name__
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(constants, "GetInfoConstants", legacy)
+        serialized = pickle.dumps(legacy.SQL_STATIC_CURSOR_ATTRIBUTES1)
+
+    # Old enum pickles store 150, not the name; after correction 150 means keyset.
+    assert pickle.loads(serialized) is G.SQL_KEYSET_CURSOR_ATTRIBUTES1
+    assert G["SQL_STATIC_CURSOR_ATTRIBUTES1"].value == 167
