@@ -47,6 +47,7 @@ jobs:
 
 - job: pytestonwindows
   displayName: 'Windows x64'
+  timeoutInMinutes: 90
   pool:
     vmImage: 'windows-latest'
   
@@ -55,14 +56,25 @@ jobs:
       SQLServer2022:
         sqlVersion: 'SQL2022'
         pythonVersion: '3.13'
+        profilerBuild: '1'
+        profilerCheck: 'on'
+        bindingArtifact: 'ddbc_bindings-profiling-SQL2022'
       SQLServer2025:
         sqlVersion: 'SQL2025'
         pythonVersion: '3.14'
+        profilerBuild: '1'
+        profilerCheck: 'on'
+        bindingArtifact: 'ddbc_bindings-profiling-SQL2025'
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
+        profilerBuild: '0'
+        profilerCheck: 'off'
+        bindingArtifact: 'ddbc_bindings'
 
   steps:
+  - checkout: self
+    fetchDepth: 0
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
@@ -229,6 +241,11 @@ jobs:
       cd mssql_python\pybind
       build.bat x64
     displayName: 'Build .pyd file'
+    env:
+      ENABLE_PROFILING: $(profilerBuild)
+
+  - script: python benchmarks/profiler_ci.py --check-build $(profilerCheck)
+    displayName: 'Verify native configuration and recording OFF before pytest'
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -295,33 +312,6 @@ jobs:
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
-
-  # Download baseline from latest main run (for PR comparison)
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      source: specific
-      project: $(System.TeamProjectId)
-      pipeline: $(System.DefinitionId)
-      runVersion: latestFromBranch
-      runBranch: refs/heads/main
-      artifact: 'perf-baseline-$(sqlVersion)'
-      path: $(Build.SourcesDirectory)
-    displayName: 'Download baseline from main'
-    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
-
-  # Rename downloaded baseline so the script finds it (artifact may be in a subfolder)
-  - powershell: |
-      $found = Get-ChildItem -Path "$(Build.SourcesDirectory)" -Filter "benchmark_results.json" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-      if ($null -ne $found) {
-        Copy-Item $found.FullName "benchmark_baseline.json" -Force
-        Write-Host "Baseline file ready: benchmark_baseline.json (from $($found.FullName))"
-      } else {
-        Write-Host "No baseline file downloaded (first run or artifact missing)"
-      }
-    displayName: 'Prepare baseline file'
-    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
 
   # Run performance benchmarks on SQL Server 2022
   - powershell: |
@@ -406,24 +396,23 @@ jobs:
         exit 1
       }
       
-      Write-Host "`nInstalling pyodbc..."
-      pip install pyodbc
-      
-      Write-Host "`nRunning performance benchmarks..."
-      python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
-    displayName: 'Run performance benchmarks on SQL Server 2022/2025'
+      python benchmarks/profiler_ci.py --reuse-candidate --leg "Windows-$(sqlVersion)" --output profiler-results
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    displayName: 'Compare profiling builds on SQL Server 2022/2025'
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
+    timeoutInMinutes: 40
     env:
+      SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-  # Publish benchmark results as artifact (consumed as baseline by future PR runs)
+  # Publish on PRs as well as main, including partial reports and failure logs.
   - task: PublishPipelineArtifact@1
     inputs:
-      targetPath: benchmark_results.json
-      artifact: 'perf-baseline-$(sqlVersion)'
-    displayName: 'Publish benchmark baseline'
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+      targetPath: profiler-results
+      artifact: 'profiler-Windows-$(sqlVersion)'
+    displayName: 'Publish paired profiler measurements'
+    condition: and(succeededOrFailed(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   - task: CopyFiles@2
@@ -443,7 +432,7 @@ jobs:
   - task: PublishBuildArtifacts@1
     inputs:
       PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-      ArtifactName: 'ddbc_bindings'
+      ArtifactName: '$(bindingArtifact)'
       publishLocation: 'Container'
     displayName: 'Publish build artifacts'
 
@@ -488,6 +477,9 @@ jobs:
         pythonVersion: '3.14'
 
   steps:
+  - checkout: self
+    fetchDepth: 0
+
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
@@ -588,7 +580,7 @@ jobs:
       pip install -r requirements.txt
 
       echo "Building pybind bindings (.so) (overlapped with container setup)..."
-      ( cd mssql_python/pybind && ./build.sh )
+      ( cd mssql_python/pybind && ENABLE_PROFILING=1 ./build.sh )
 
       echo "Waiting for container setup (Colima + SQL Server) to finish..."
       if ! wait "$SQL_PID"; then
@@ -600,6 +592,9 @@ jobs:
     displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: python benchmarks/profiler_ci.py --check-build on
+    displayName: 'Verify native configuration and recording OFF before pytest'
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -677,60 +672,35 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
-  # Download macOS baseline from latest main run (for PR comparison)
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      source: specific
-      project: $(System.TeamProjectId)
-      pipeline: $(System.DefinitionId)
-      runVersion: latestFromBranch
-      runBranch: refs/heads/main
-      artifact: 'perf-baseline-macOS-$(sqlVersion)'
-      path: $(Build.SourcesDirectory)
-    displayName: 'Download macOS baseline from main'
-    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
-
-  - script: |
-      found=$(find "$(Build.SourcesDirectory)" -name benchmark_results.json -type f 2>/dev/null | head -1)
-      if [ -n "$found" ]; then
-        cp "$found" benchmark_baseline.json
-        echo "Baseline file ready: benchmark_baseline.json (from $found)"
-      else
-        echo "No baseline file downloaded (first run or artifact missing)"
-      fi
-    displayName: 'Prepare macOS baseline file'
-    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
-
   # Run performance benchmarks on macOS
   - script: |
-      echo "Installing ODBC Driver 18 for pyodbc..."
+      set -euo pipefail
+      echo "Restoring build dependencies for isolated profiling builds..."
       brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
       # Newer Homebrew refuses to load formulae from third-party taps unless the tap is trusted
       brew trust microsoft/mssql-release || echo "brew trust failed; attempting install anyway"
-      HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 || echo "ODBC Driver 18 install failed — pyodbc benchmarks will be skipped"
-      pip install pyodbc
-      echo "Running performance benchmarks..."
-      python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
-    displayName: 'Run performance benchmarks on macOS $(sqlVersion)'
+      HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18
+      python benchmarks/profiler_ci.py --reuse-candidate --leg "macOS-$(sqlVersion)" --output profiler-results
+    displayName: 'Compare profiling builds on macOS $(sqlVersion)'
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    timeoutInMinutes: 20
+    timeoutInMinutes: 40
     continueOnError: true
     env:
+      SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-  # Publish benchmark results as artifact on main merges
+  # Both revisions and samples travel together; no historical baseline lookup.
   - task: PublishPipelineArtifact@1
     inputs:
-      targetPath: benchmark_results.json
-      artifact: 'perf-baseline-macOS-$(sqlVersion)'
-    displayName: 'Publish macOS benchmark baseline'
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+      targetPath: profiler-results
+      artifact: 'profiler-macOS-$(sqlVersion)'
+    displayName: 'Publish paired profiler measurements'
+    condition: and(succeededOrFailed(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
+  timeoutInMinutes: 90
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -764,6 +734,9 @@ jobs:
         useAzureSQL: 'false'
 
   steps:
+  - checkout: self
+    fetchDepth: 0
+
   - script: |
       # Create a Docker container for testing
       docker run -d --name test-container-$(distroName) \
@@ -900,11 +873,20 @@ jobs:
 
   - script: |
       # Build pybind bindings in the container
-      docker exec test-container-$(distroName) bash -c "
+      PROFILER_BUILD=0
+      PROFILER_CHECK=off
+      if [ "$(distroName)" = "Ubuntu" ]; then
+        PROFILER_BUILD=1
+        PROFILER_CHECK=on
+      fi
+      docker exec -e ENABLE_PROFILING="$PROFILER_BUILD" test-container-$(distroName) bash -c "
+        set -e
         source /opt/venv/bin/activate
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
+        cd ../..
+        python benchmarks/profiler_ci.py --check-build $PROFILER_CHECK
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
 
@@ -1007,55 +989,39 @@ jobs:
         echo "Running performance benchmarks on Ubuntu with SQL Server IP: $SQLSERVER_IP"
         
         docker exec \
+          -e BUILD_BUILDID="$(Build.BuildId)" \
+          -e SYSTEM_PULLREQUEST_SOURCECOMMITID="$(System.PullRequest.SourceCommitId)" \
           -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
           test-container-$(distroName) bash -c "
+          set -euo pipefail
           source /opt/venv/bin/activate
-          
-          echo 'Reinstalling ODBC Driver for benchmarking...'
           export DEBIAN_FRONTEND=noninteractive
-          
-          # Remove duplicate repository sources if they exist
-          rm -f /etc/apt/sources.list.d/microsoft-prod.list
-          
-          # Add Microsoft repository
-          curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-          curl -sSL https://packages.microsoft.com/config/ubuntu/24.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
-          
-          # Update package lists
+          # The Microsoft repository was configured by the earlier build step.
+          # Restore the ODBC headers and library link removed before pytest.
           apt-get update -qq
-          
-          # Install unixodbc and its dependencies first (provides libodbcinst.so.2 needed by msodbcsql18)
-          echo 'Installing unixODBC dependencies...'
-          apt-get install -y --no-install-recommends unixodbc unixodbc-dev libodbc1 odbcinst odbcinst1debian2
-          
-          # Verify libodbcinst.so.2 is available
-          ldconfig
-          ls -la /usr/lib/x86_64-linux-gnu/libodbcinst.so.2 || echo 'Warning: libodbcinst.so.2 not found'
-          
-          # Install ODBC Driver 18
-          echo 'Installing msodbcsql18...'
-          ACCEPT_EULA=Y apt-get install -y msodbcsql18
-          
-          # Verify ODBC driver installation
-          odbcinst -q -d -n 'ODBC Driver 18 for SQL Server' || echo 'Warning: ODBC Driver 18 not registered'
-          
-          echo 'Installing pyodbc for benchmarking...'
-          pip install pyodbc
-          echo 'Running performance benchmarks on $(distroName)'
-          if [ -f benchmark_baseline.json ]; then
-            python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json || echo 'Performance benchmark failed or database not available'
-          else
-            python benchmarks/perf-benchmarking.py --json benchmark_results.json || echo 'Performance benchmark failed or database not available'
-          fi
+          ACCEPT_EULA=Y apt-get install -y --no-install-recommends git unixodbc unixodbc-dev libodbc2 libodbcinst2 odbcinst msodbcsql18
+          apt-get install -y --reinstall libodbcinst2
+          git config --global --add safe.directory /workspace
+          odbcinst -q -d -n 'ODBC Driver 18 for SQL Server'
+          python benchmarks/profiler_ci.py --reuse-candidate --leg Linux-SQL2022 --output profiler-results
         "
       else
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
       fi
-    displayName: 'Run performance benchmarks in $(distroName) container'
+    displayName: 'Compare profiling builds in $(distroName) container'
     condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
+    timeoutInMinutes: 40
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: profiler-results
+      artifact: profiler-Linux-SQL2022
+    displayName: 'Publish paired profiler measurements'
+    condition: and(succeededOrFailed(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    continueOnError: true
 
   - script: |
       # Copy test results from container to host

@@ -7,8 +7,67 @@ This directory contains benchmark scripts for testing the performance of various
 ### 1. `bench_mssql.py` - Richbench Framework Benchmarks
 Comprehensive benchmarks using the richbench framework for detailed performance analysis.
 
-### 2. `perf-benchmarking.py` - Real-World Query Benchmarks
-Standalone script that tests real-world queries against AdventureWorks2022 database with statistical analysis.
+### 2. `profiler_ci.py` - PR Regression Comparisons
+CI compares profiling-enabled base and candidate revisions on the same agent and
+SQL Server. It replaces the historical pyodbc-normalized CI comparison; the old
+`perf-benchmarking.py` remains available for local driver-versus-pyodbc analysis.
+
+The 20-workload registry retains all 10 scenarios from `profiler/scenarios.py`,
+the four AdventureWorks queries (including 1.2M rows), both legacy 100K-row
+insertmanyvalues variants, two additional fetch batch sizes, and repeated positional
+and named-parameter execution.
+
+```bash
+# Requires build dependencies, pyarrow, and an AdventureWorks2022 connection.
+python benchmarks/profiler_ci.py --base main --candidate HEAD \
+    --leg Linux-SQL2022 --output profiler-results
+python benchmarks/profiler_report.py profiler-results/report.json
+```
+
+CI uses the PR-merge commit's first parent as the exact base snapshot. The five
+benchmark legs build the candidate with `ENABLE_PROFILING=1`, run pytest with
+recording disabled by default, then reuse that binary for the benchmark. Existing
+profiler-specific tests explicitly enable and clean up recording; ordinary driver
+tests do not. A pre-test check requires the expected native configuration and
+recording OFF. LocalDB, other Linux legs and the release pipelines still build the
+default configuration. Windows profiling artifacts are named separately from
+`ddbc_bindings` and are not release wheels.
+
+Only the base requires a second build, in a temporary git archive with profiling
+enabled. Local invocations build both archives unless `--reuse-candidate` is supplied;
+that option requires the requested candidate to be the current checkout HEAD.
+Both sides execute the same version of the workload suite. Each pass runs in a
+fresh interpreter. Five measured
+pairs follow one discarded warmup pair, alternating base/PR order. A local subset is
+available through `--scenarios`; it is not accepted as a complete CI report.
+
+The comparison is **advisory**, not a new merge gate. A regression signal requires
+over 20% paired-median slowdown, at least 1 ms additional median wall time, and at
+least 80% of pairs exceeding the relative threshold. Disagreement is reported as
+noisy. Paired runs reduce agent-to-agent noise; they do not eliminate server
+contention. Enabled profiler overhead is part of both measurements, so these are
+not production-wheel latency estimates.
+
+Per-phase inclusive duration deltas and call-count changes help locate regressions;
+they are not summed into wall-clock totals. Raw pairs and build/worker logs are
+published on PR and main runs as `profiler-<platform>-<SQL version>` artifacts.
+The existing five benchmark legs are covered: Windows and macOS on SQL2022/2025,
+and Linux Ubuntu on SQL2022. ARM, RHEL, Alpine, LocalDB, and Azure SQL are not
+implicitly compared against other platforms.
+
+`PR Profiler Report` creates or updates one comment per PR. Its privileged job
+checks out only the trusted base revision, never executes PR/artifact code, validates
+bounded JSON against the ADO build and GitHub merge/head identities, and ignores
+stale heads. Missing, skipped, malformed, or failed runs are shown as incomplete,
+not as a clean performance verdict. As a new base-branch reporting workflow, it
+starts reporting automatically after this infrastructure has merged; it does not
+grant fork-authored workflow code write credentials.
+
+The first main comparison after introduction may lack profiling support on its
+parent; that run is incomplete rather than falling back to an uninstrumented base.
+Subsequent comparisons use the new artifact format and do not consume old
+`perf-baseline-*` artifacts. For a fresh measurement after an ADO-only retry,
+re-run the GitHub reporting workflow as well.
 
 ## Why Benchmarks?
 - To measure the efficiency of `pyodbc` and `mssql_python` in handling database operations.
