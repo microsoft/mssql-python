@@ -15,7 +15,7 @@ from typing import Optional
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Driver version
-__version__ = "1.14.0"
+__version__ = "1.15.0"
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -179,6 +179,10 @@ from .constants import (  # noqa: F401
     SQL_TYPE_TIMESTAMP,
     SQL_GUID,
     SQL_XML,
+    # SQL Server-specific type constants (pyodbc parity)
+    SQL_SS_TIME2,
+    SQL_SS_XML,
+    SQL_SS_VARIANT,
     # Connection attribute constants
     SQL_ATTR_ACCESS_MODE,
     SQL_ATTR_CONNECTION_TIMEOUT,
@@ -388,6 +392,10 @@ __all__ = [
     "SQL_TYPE_TIMESTAMP",
     "SQL_GUID",
     "SQL_XML",
+    # SQL Server-specific type constants (pyodbc parity)
+    "SQL_SS_TIME2",
+    "SQL_SS_XML",
+    "SQL_SS_VARIANT",
     # Connection attribute constants
     "SQL_ATTR_ACCESS_MODE",
     "SQL_ATTR_CONNECTION_TIMEOUT",
