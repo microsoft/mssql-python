@@ -2158,8 +2158,14 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
+                autocommit_error = None
                 rollback_error = None
-                if not self.autocommit:
+                manual_commit = False
+                try:
+                    manual_commit = not self._conn.get_autocommit()
+                except RuntimeError as e:
+                    autocommit_error = e
+                if manual_commit:
                     # End caller work before native close. Pooled connections are
                     # additionally restored to autocommit by native check-in,
                     # which atomically discards them if sanitation fails.
@@ -2179,6 +2185,8 @@ class Connection:
                 if rollback_error is not None:
                     # Preserve prior DB-API error mapping after deterministic cleanup.
                     _raise_connection_error(rollback_error)
+                if autocommit_error is not None:
+                    _raise_connection_error(autocommit_error)
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical

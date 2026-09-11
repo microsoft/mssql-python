@@ -575,14 +575,17 @@ void Connection::prepareForPool() {
         ThrowStdException("Connection handle not allocated");
     }
 
-    if (!getAutocommit()) {
-        // End any caller transaction before check-in, then park the physical
-        // connection in autocommit mode. The SQL Server ODBC driver can leave
-        // an empty transaction visible after SQLEndTran while manual-commit
-        // mode remains enabled; switching modes ends that transaction.
-        rollback();
-        setAutocommit(true);
+    // Explicit BEGIN TRANSACTION is valid while ODBC autocommit is on, but
+    // SQLEndTran does not end that transaction until the connection enters
+    // manual-commit mode.
+    if (getAutocommit()) {
+        setAutocommit(false);
     }
+    rollback();
+    // The SQL Server ODBC driver can leave an empty transaction visible after
+    // SQLEndTran while manual-commit mode remains enabled, so always park the
+    // physical connection in autocommit mode.
+    setAutocommit(true);
 }
 
 void Connection::updateLastUsed() {

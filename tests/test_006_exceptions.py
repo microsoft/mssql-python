@@ -297,6 +297,25 @@ def test_close_cleans_up_after_non_pooled_rollback_failure():
     assert conn.closed
 
 
+def test_close_cleans_up_after_autocommit_read_failure():
+    """An autocommit read error must not bypass native close and handle release."""
+    from unittest.mock import MagicMock, patch
+
+    mock_conn = MagicMock()
+    mock_conn.get_autocommit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+
+    with pytest.raises(OperationalError, match="Communication link failure"):
+        conn.close()
+
+    mock_conn.rollback.assert_not_called()
+    mock_conn.close.assert_called_once_with()
+    assert conn._conn is None
+    assert conn.closed
+
+
 def test_truncate_error_message_successful_cases():
     """Test truncate_error_message with valid Microsoft messages for comparison."""
 

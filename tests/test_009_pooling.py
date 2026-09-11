@@ -165,6 +165,13 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
                 ("explicit rollback", False, "SELECT 1", None, "rollback"),
                 ("implicit close rollback", False, "SELECT 1", None, None),
                 ("autocommit close", True, "SELECT 1", None, None),
+                (
+                    "explicit transaction in autocommit",
+                    True,
+                    "BEGIN TRANSACTION; SELECT 1",
+                    None,
+                    None,
+                ),
             )
             expected_spid = None
             for name, autocommit, sql, params, action in scenarios:
@@ -841,8 +848,12 @@ def test_pool_removes_invalid_connections(conn_str):
         # login_time, so the identity check below catches the only
         # failure mode that matters.
 
-        # Step 3: return both to the pool.
-        victim.close()
+        # Step 3: close both. Sanitation of the killed connection should fail,
+        # discard it, and may surface that connection error to the caller.
+        try:
+            victim.close()
+        except Exception:
+            pass
         admin.close()
 
         # Step 4: re-acquire from the pool. Each must be working; the
