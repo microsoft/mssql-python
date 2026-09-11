@@ -1,6 +1,7 @@
 # Conda Publish Step Template
 # ============================================================================
-# Publishes the consolidated conda packages produced by the STANDALONE conda-build
+# Publication is intentionally disabled pending native release-control qualification.
+# Retains publication of the consolidated conda packages from the STANDALONE conda-build
 # pipeline (conda-build-pipeline.yml, artifact
 # drop_ConsolidateConda_ConsolidateArtifacts) to an Anaconda.org channel using
 # anaconda-client (`anaconda upload`).
@@ -132,7 +133,7 @@ steps:
         Write-Host "##vso[task.prependpath]$(Join-Path $publisherEnvironment 'Scripts')"
 
   - task: PowerShell@2
-    displayName: '${{ parameters.labelPrefix }}Publish conda packages to anaconda.org/${{ parameters.condaChannel }}'
+    displayName: '${{ parameters.labelPrefix }}Publish conda packages (disabled pending native qualification)'
     env:
       # anaconda-client reads ANACONDA_API_TOKEN automatically, so the token is
       # never passed on the command line and never appears in the logs. Supplied by
@@ -148,30 +149,12 @@ steps:
       REQUIRED_SUBDIRS: '${{ parameters.requiredSubdirs }}'
       ALLOWED_SUBDIRS: '${{ parameters.allowedSubdirs }}'
       PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-      SYSTEM_COLLECTIONURI: $(System.CollectionUri)
-      SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
-      BUILD_BUILDID: $(Build.BuildId)
-      SYSTEM_JOBID: $(System.JobId)
-      SYSTEM_JOBATTEMPT: $(System.JobAttempt)
-      SYSTEM_PHASEATTEMPT: $(System.PhaseAttempt)
-      SYSTEM_PLANID: $(System.PlanId)
-      SYSTEM_STAGENAME: $(System.StageName)
-      SYSTEM_STAGEATTEMPT: $(System.StageAttempt)
-      BUILD_SOURCEBRANCH: $(Build.SourceBranch)
-      BUILD_SOURCEVERSION: $(Build.SourceVersion)
-      CONDA_PUBLICATION_LOCK_CHECK_ID: $(CONDA_PUBLICATION_LOCK_CHECK_ID)
-      CONDA_PUBLICATION_APPROVAL_CHECK_ID: $(CONDA_PUBLICATION_APPROVAL_CHECK_ID)
     inputs:
       targetType: 'inline'
       script: |
         $ErrorActionPreference = 'Stop'
 
-        python "$(Build.SourcesDirectory)/conda/validate_conda_publication_lock.py"
-        if ($LASTEXITCODE -ne 0) {
-          Write-Error "Publication lock/approval evidence could not be verified. No upload is allowed."
-          exit 1
-        }
+        throw "Conda publication is disabled until native ADO approvals, exclusive locking and publishing-credential access are qualified. Keep publishToConda=false; enabling remote mutations requires a reviewed code change."
 
         # Refuse to publish without an explicit target channel (protects the dummy
         # pipeline, whose default channel is empty, from ever hitting production).

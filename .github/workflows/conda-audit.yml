@@ -37,7 +37,6 @@ on:
       - 'tests/test_034_conda_verify_cwd.py'
       - 'tests/test_035_conda_macho_assert.py'
       - 'tests/test_036_conda_provenance.py'
-      - 'tests/test_037_conda_publication_lock.py'
       - 'requirements.txt'
       - '.github/workflows/conda-audit.yml'
 
@@ -69,7 +68,6 @@ jobs:
                            tests/test_034_conda_verify_cwd.py \
                            tests/test_035_conda_macho_assert.py \
                            tests/test_036_conda_provenance.py \
-                           tests/test_037_conda_publication_lock.py \
                            tests/test_027_conda_release_metadata.py -q
 
       - name: Fetch the shipped linux wheels from PyPI

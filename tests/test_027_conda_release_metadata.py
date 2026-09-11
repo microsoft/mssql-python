@@ -64,7 +64,10 @@ promoter = _load_promoter()
 
 @pytest.fixture(autouse=True)
 def _mock_publication_guard(monkeypatch):
-    monkeypatch.setattr(promoter, "require_publication_lock", lambda *_scope: None)
+    """Exercise promotion algorithms, not operational permission to publish."""
+    guard = promoter._require_publication_enabled
+    monkeypatch.setattr(promoter, "_require_publication_enabled", lambda: None)
+    return guard
 
 
 _REQUIRED = ["win-64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
@@ -663,59 +666,44 @@ def test_rollback_never_removes_unattempted_or_preexisting_target_labels():
 
 
 @pytest.mark.parametrize("operation", [promoter.promote, promoter.cleanup_staging])
-def test_publication_guard_rejects_before_initial_snapshot(monkeypatch, operation):
+def test_publication_disabled_before_any_api_request(
+    monkeypatch, operation, _mock_publication_guard
+):
     distribution = _distribution("win-64", "package.conda")
     api = _api_for([distribution])
-
-    def no_lock(*_scope):
-        raise RuntimeError("No exclusive publication lock")
-
-    monkeypatch.setattr(promoter, "require_publication_lock", no_lock)
-    with pytest.raises(RuntimeError, match="No exclusive publication lock"):
+    monkeypatch.setenv("PUBLISH_TO_CONDA", "true")
+    monkeypatch.setenv("ANACONDA_API_TOKEN", "unused-test-token")
+    monkeypatch.setattr(promoter, "_require_publication_enabled", _mock_publication_guard)
+    with pytest.raises(RuntimeError, match="publication is disabled until native ADO approvals"):
         operation(api, "microsoft", "staging", "main", "1.13.0", [distribution])
     assert api.calls == []
 
 
 @pytest.mark.parametrize("next_version", ["1.13.0", "1.14.0"])
-def test_simulated_stage_lock_spans_snapshot_rollback_and_next_publisher(monkeypatch, next_version):
-    import threading
-
-    stage_lock = threading.Lock()
+def test_retry_after_rollback_preserves_other_staging_labels(next_version):
     distribution = _distribution("win-64", "package.conda")
     api = _api_for([distribution], labels=("stage_a", "stage_b"))
     original_read = api.distribution
     fail_a_once = [True]
-    verified_scopes = []
 
-    def guard(*scope):
-        assert stage_lock.locked()
-        verified_scopes.append(scope)
-
-    def read_under_stage_lock(owner, package, version, basename):
-        # Model the server's protected-stage boundary, not a production local lock.
-        # A second stage cannot snapshot while the first promotes/rolls back/cleans up.
-        assert not stage_lock.acquire(blocking=False)
+    def fail_target_verification_once(owner, package, version, basename):
         metadata = original_read(owner, package, version, basename)
         if fail_a_once[0] and "main" in metadata["labels"]:
             fail_a_once[0] = False
             metadata["labels"].remove("main")
         return metadata
 
-    monkeypatch.setattr(promoter, "require_publication_lock", guard)
-    api.distribution = read_under_stage_lock
-    with stage_lock:
-        with pytest.raises(RuntimeError, match="rollback"):
-            _promote(api, [distribution], staging="stage_a")
+    api.distribution = fail_target_verification_once
+    with pytest.raises(RuntimeError, match="rollback"):
+        _promote(api, [distribution], staging="stage_a")
     assert "main" not in api.distributions[distribution.basename]["labels"]
     next_distribution = distribution
     if next_version != "1.13.0":
         next_distribution = _distribution("win-64", "next.conda", version=next_version)
         api.distributions.update(_api_for([next_distribution], labels=("stage_b",)).distributions)
-    with stage_lock:
-        _promote(api, [next_distribution], staging="stage_b", version=next_version)
+    _promote(api, [next_distribution], staging="stage_b", version=next_version)
     expected = ["stage_a", "main"] if next_distribution is distribution else ["main"]
     assert api.distributions[next_distribution.basename]["labels"] == expected
-    assert verified_scopes == [("microsoft", "mssql-python", "main")] * 2
 
 
 def test_promote_rejects_wrong_release_version_before_api_mutation():
@@ -1164,9 +1152,10 @@ def test_local_only_cli_needs_neither_token_nor_publication_guard(tmp_path, monk
     monkeypatch.delenv("SYSTEM_ACCESSTOKEN", raising=False)
     monkeypatch.setattr(
         promoter,
-        "require_publication_lock",
+        "_require_publication_enabled",
         lambda *_args: pytest.fail("local-only must not inspect production controls"),
     )
+    monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
     assert (
         promoter.main(
             [
@@ -1185,6 +1174,32 @@ def test_local_only_cli_needs_neither_token_nor_publication_guard(tmp_path, monk
         == 0
     )
     assert "LOCAL_RELEASE_INPUT_OK" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("cleanup", [False, True])
+def test_mutating_cli_is_disabled_before_client_creation(
+    tmp_path, monkeypatch, cleanup, _mock_publication_guard
+):
+    path = _write_release_archive(tmp_path)
+    monkeypatch.setenv("PUBLISH_TO_CONDA", "true")
+    monkeypatch.setenv("ANACONDA_API_TOKEN", "unused-test-token")
+    monkeypatch.setattr(promoter, "_require_publication_enabled", _mock_publication_guard)
+    monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
+    with pytest.raises(RuntimeError, match="publication is disabled until native ADO approvals"):
+        promoter.main(
+            [
+                "--owner",
+                "microsoft",
+                "--staging-label",
+                "staging",
+                "--target-label",
+                "main",
+                "--expected-version",
+                "1.13.0",
+                *(["--cleanup-staging"] if cleanup else []),
+                str(path),
+            ]
+        )
 
 
 @pytest.mark.parametrize("cleanup", [False, True])

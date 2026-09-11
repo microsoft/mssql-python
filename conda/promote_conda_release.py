@@ -1,4 +1,8 @@
-"""Verify and promote a staged Conda release through the Anaconda API.
+"""Validate local inputs and retain staged Conda promotion/recovery logic.
+
+Remote publication and recovery are intentionally disabled pending qualification of
+native ADO approvals, exclusive locking and publishing-credential access. A reviewed
+code change is required before either mutation entrypoint may be enabled.
 
 Uploads happen before this helper under a build-unique staging label. This module
 verifies every uploaded distribution against the local artifact, adds the public
@@ -10,7 +14,7 @@ initial snapshot are removed. An interrupted invocation resumes from verified la
 Local archives must use the metadata-derived canonical basename that the pinned
 upload client sends; a renamed file is rejected before any upload.
 
-Failed pipeline uploads/promotions invoke --cleanup-staging for their attempted
+After enablement, failed uploads/promotions invoke --cleanup-staging for their attempted
 archives. After a hard interruption, run this same option with the original exact
 staging label and retained archives under the protected publication stage. Cleanup
 verifies identity/SHA-256 and removes only that staging label, never public labels
@@ -30,11 +34,18 @@ from pathlib import Path
 from typing import Any, Callable
 
 from validate_conda_release import _required_index_string, read_index_json
-from validate_conda_publication_lock import require_publication_lock
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ANACONDA_API_URL = "https://api.anaconda.org"
+
+
+def _require_publication_enabled() -> None:
+    raise RuntimeError(
+        "Conda publication is disabled until native ADO approvals, exclusive locking "
+        "and publishing-credential access are qualified. Keep publishToConda=false; "
+        "enabling remote mutations requires a reviewed code change."
+    )
 
 
 @dataclass(frozen=True)
@@ -200,7 +211,7 @@ def _require_publication(
     if staging_label == target_label:
         raise ValueError("Staging and target labels must be different.")
     validate_release_input(expected_version, distributions)
-    require_publication_lock(owner, "mssql-python", target_label)
+    _require_publication_enabled()
 
 
 def _remove_staging_label(
@@ -473,6 +484,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    _require_publication(
+        args.owner, args.staging_label, args.target_label, args.expected_version, distributions
+    )
     from binstar_client.utils import get_server_api  # type: ignore[import-not-found]
 
     api = get_server_api(config={"url": _ANACONDA_API_URL, "ssl_verify": True})
