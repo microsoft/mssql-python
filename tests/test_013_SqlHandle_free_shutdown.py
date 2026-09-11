@@ -5,8 +5,8 @@ Licensed under the MIT license.
 Comprehensive test suite for SqlHandle::free() behavior during Python shutdown.
 
 This test validates the critical fix in ddbc_bindings.cpp SqlHandle::free() method
-that prevents segfaults when Python is shutting down by skipping handle cleanup
-for STMT (Type 3) and DBC (Type 2) handles whose parents may already be freed.
+that skips late STMT (Type 3) and DBC (Type 2) cleanup during Python shutdown,
+and late ENV (Type 1) cleanup on Windows to avoid calling torn-down SSPI state.
 
 Handle Hierarchy:
 - ENV (Type 1, SQL_HANDLE_ENV) - Static singleton, no parent
@@ -17,7 +17,8 @@ Protection Logic:
 - During Python shutdown (pythonShuttingDown=true):
   * Type 3 (STMT) handles: Skip SQLFreeHandle (parent DBC may be freed)
   * Type 2 (DBC) handles: Skip SQLFreeHandle (parent static ENV may be destructing)
-  * Type 1 (ENV) handles: Normal cleanup (no parent, static lifetime)
+  * Type 1 (ENV) handles: Skip SQLFreeHandle on Windows; unchanged on Unix
+- While Python is running, normal physical handle cleanup is unchanged.
 
 Test Strategy:
 - Use subprocess isolation to test actual Python interpreter shutdown
@@ -308,47 +309,68 @@ class TestHandleFreeShutdown:
         assert "Connection 2: created and cursor closed" in result.stdout
         print(f"PASS: DBC handle (Type 2) cleanup during shutdown")
 
-    def test_env_handle_cleanup_at_shutdown(self, conn_str):
+    @pytest.mark.parametrize("pooling_enabled", [False, True], ids=["nonpooled", "pooled"])
+    def test_env_handle_cleanup_at_shutdown(self, conn_str, pooling_enabled):
         """
         Test ENV handle (Type 1) cleanup during Python shutdown.
 
         Scenario:
-        1. Create and close connections (ENV handle is static singleton)
-        2. Let Python shutdown
-        3. ENV handle is static and should follow normal C++ destruction
-        4. ENV handle should NOT be skipped (no protection needed)
+        1. Create connections and query through the shared static ENV
+        2. Explicitly close cursors and connections
+        3. Drain any pooled connections while Python is still running
+        4. Let the static ENV owner destruct at process exit
 
         Expected: No segfault, clean exit
-        Note: ENV handle is static and destructs via normal C++ mechanisms,
-              not during Python GC. This test verifies the overall flow.
+        On Windows, even fully closed, nonpooled connections used to crash when
+        the static ENV owner called SQLFreeHandle from DLL_PROCESS_DETACH after
+        Python finalization. The ENV free must be skipped only during shutdown;
+        query execution and explicit connection/cursor cleanup must still work.
         """
         script = textwrap.dedent(f"""
+            import atexit
+            import os
             import sys
-            from mssql_python import connect
+
+            # Registered before the driver so this runs after its atexit cleanup.
+            atexit.register(lambda: print("Python connection and pool cleanup completed"))
+            from mssql_python import connect, pooling
+            from mssql_python.pooling import shutdown_pooling
+
+            pooling(enabled={pooling_enabled})
             
             # Create and properly close connections
             # ENV handle is static singleton shared across all connections
             for i in range(3):
-                conn = connect("{conn_str}")
+                conn = connect(os.environ["DB_CONNECTION_STRING"])
                 cursor = conn.cursor()
                 cursor.execute(f"SELECT {{i}} AS test_value")
-                cursor.fetchall()
+                assert cursor.fetchone()[0] == i
+                assert cursor.fetchone() is None
                 cursor.close()
                 conn.close()
+                assert cursor.closed
+                assert conn.closed
                 print(f"Connection {{i}}: properly closed")
-            
-            # ENV handle is static and will destruct via C++ static destruction
-            # It does NOT have pythonShuttingDown protection (Type 1 not in check)
+
+            shutdown_pooling()
             print("ENV handle cleanup test: All connections closed properly")
             sys.exit(0)
         """)
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env={**os.environ, "DB_CONNECTION_STRING": conn_str},
         )
 
-        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert result.returncode == 0, (
+            f"Process exited with {result.returncode}.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
         assert "ENV handle cleanup test: All connections closed properly" in result.stdout
+        assert "Python connection and pool cleanup completed" in result.stdout
         assert "Connection 0: properly closed" in result.stdout
         assert "Connection 1: properly closed" in result.stdout
         assert "Connection 2: properly closed" in result.stdout
@@ -410,7 +432,7 @@ class TestHandleFreeShutdown:
             # Let Python shutdown with mixed cleanup state
             # - Type 3 (STMT) handles from conn1 cursors: skipped during shutdown
             # - Type 2 (DBC) handles from conn1, conn2: skipped during shutdown
-            # - Type 1 (ENV) handle: normal C++ static destruction
+            # - Type 1 (ENV) handle: late ODBC cleanup skipped on Windows
             print("Mixed handle cleanup test: Exiting with partial cleanup")
             sys.exit(0)
         """)
@@ -448,7 +470,8 @@ class TestHandleFreeShutdown:
                 conn = connect("{conn_str}")
                 cursor = conn.cursor()
                 cursor.execute(f"SELECT {{i}} AS test")
-                cursor.fetchall()
+                assert cursor.fetchone()[0] == i
+                assert cursor.fetchone() is None
                 
                 # Close every other cursor
                 if i % 2 == 0:
@@ -648,7 +671,8 @@ class TestHandleFreeShutdown:
             conn1 = connect("{conn_str}")
             cursor1 = conn1.cursor()
             cursor1.execute("SELECT 1 AS baseline_test")
-            cursor1.fetchall()
+            assert cursor1.fetchone()[0] == 1
+            assert cursor1.fetchone() is None
             cursor1.close()
             conn1.close()
             print("Scenario 1: Normal cleanup completed")
@@ -657,7 +681,8 @@ class TestHandleFreeShutdown:
             conn2 = connect("{conn_str}")
             cursor2 = conn2.cursor()
             cursor2.execute("SELECT 2 AS cursor_closed_test")
-            cursor2.fetchall()
+            assert cursor2.fetchone()[0] == 2
+            assert cursor2.fetchone() is None
             cursor2.close()
             # conn2 intentionally left open - DBC handle cleanup skipped at shutdown
             print("Scenario 2: Cursor closed, connection left open")
@@ -666,7 +691,8 @@ class TestHandleFreeShutdown:
             conn3 = connect("{conn_str}")
             cursor3 = conn3.cursor()
             cursor3.execute("SELECT 3 AS both_open_test")
-            cursor3.fetchall()
+            assert cursor3.fetchone()[0] == 3
+            assert cursor3.fetchone() is None
             # Both intentionally left open - STMT and DBC handle cleanup skipped
             print("Scenario 3: Both cursor and connection left open")
             
@@ -676,7 +702,8 @@ class TestHandleFreeShutdown:
             for i in range(5):
                 c = conn4.cursor()
                 c.execute(f"SELECT {{i}} AS multi_cursor_test")
-                c.fetchall()
+                assert c.fetchone()[0] == i
+                assert c.fetchone() is None
                 cursors.append(c)
             # All intentionally left open
             print("Scenario 4: Multiple cursors per connection left open")
@@ -685,7 +712,7 @@ class TestHandleFreeShutdown:
             print("During Python shutdown:")
             print("- Type 3 (STMT) handles: SQLFreeHandle SKIPPED")
             print("- Type 2 (DBC) handles: SQLFreeHandle SKIPPED")
-            print("- Type 1 (ENV) handle: Normal C++ static destruction")
+            print("- Type 1 (ENV) handle: Late ODBC cleanup skipped on Windows")
             print("=== Exiting ===")
             sys.exit(0)
         """)
