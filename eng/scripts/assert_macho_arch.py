@@ -28,7 +28,11 @@ import os
 import struct
 import sys
 
-from _conda_pkg import iter_payload_members as _iter_payload_members, read_index
+from _conda_pkg import (
+    iter_payload_members as _iter_payload_members,
+    read_index,
+    validate_native_contract,
+)
 
 # Mach-O cputype (mach/machine.h): the base type OR'd with the 64-bit ABI flag -> lipo name.
 _CPU_ARCH_ABI64 = 0x01000000
@@ -152,7 +156,8 @@ def audit_package(path: str) -> list[str]:
     """Return violation strings for one package (empty == clean / skipped non-macOS)."""
     base_name = os.path.basename(path)
     try:
-        subdir = read_subdir(path)
+        index = read_index(path)
+        subdir = str(index.get("subdir", ""))
     except Exception as exc:  # malformed must FAIL, never silently skip
         return [f"{base_name}: unreadable/malformed package metadata ({exc})."]
 
@@ -166,7 +171,7 @@ def audit_package(path: str) -> list[str]:
     except ValueError as exc:  # malformed payload (e.g. .conda missing pkg-*.tar.zst)
         return [f"{base_name}: unreadable/malformed package payload ({exc})."]
 
-    errors: list[str] = []
+    errors = validate_native_contract(members, index)
     binding_seen = 0
     target_driver_libraries: set[str] = set()
     for name, data in members:
@@ -177,6 +182,8 @@ def audit_package(path: str) -> list[str]:
         required_arch = None
         if "/mssql_python/" in low and base_low.startswith("ddbc_bindings") and low.endswith(".so"):
             binding_seen += 1
+            required_arch = expected
+        elif "/mssql_py_core/" in low and low.endswith(".so"):
             required_arch = expected
         elif "/mssql_python_odbc/libs/macos/" in low and low.endswith(".dylib"):
             relative = low.split("/mssql_python_odbc/libs/macos/", 1)[1]

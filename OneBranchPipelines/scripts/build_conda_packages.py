@@ -4,7 +4,7 @@
 Replaces build-conda-packages.ps1 + build-conda-packages.sh (the same 7-step pipeline
 written twice, which had already drifted). conda is Python and every agent has a bootstrap
 interpreter, so ONE orchestrator runs on every leg; the platform differences (the Miniforge
-installer, the win-arm64 Terms-of-Service auto-accept, the Linux-only reachability gate) are
+installer, the win-arm64 channel profile, the Linux-only reachability gate) are
 a handful of branches, not a second 360-line script. Running as a NORMAL process also means
 the caller reads the exit code directly -- so the PowerShell ErrorActionPreference flips, the
 `2>$null` swallows, and the `cmd /c "exit 0"` reset all disappear.
@@ -306,12 +306,6 @@ def build_env(
         # host can execute it (natively / Rosetta 2 / QEMU binfmt).
         env["CONDA_SUBDIR"] = cross_target_subdir
         _log(f"Cross-targeting conda subdir: CONDA_SUBDIR={cross_target_subdir}")
-        if cross_target_subdir == "win-arm64":
-            # win-arm64 deps (python 3.12-3.14, cryptography, vc14_runtime, pyodbc) live on
-            # Anaconda `defaults`, not conda-forge. Auto-accept the defaults ToS so the
-            # unattended host-env + verify solves never block on a prompt.
-            env["CONDA_PLUGINS_AUTO_ACCEPT_TOS"] = "yes"
-            _log("win-arm64: CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes")
         if cross_target_subdir.endswith("aarch64") and os.path.isdir("/usr/aarch64-linux-gnu"):
             # Emulated aarch64 verify runs under qemu-user; point it at the aarch64 glibc loader.
             env.setdefault("QEMU_LD_PREFIX", "/usr/aarch64-linux-gnu")
@@ -392,17 +386,16 @@ def audit_packages(
         env=env,
         what="RUNPATH self-containment audit",
     )
-    # win-arm64 is cross-built on x64 where its runtime import is skipped, so its arch is
-    # trusted from the wheel filename UNLESS the PE machine assert reads it out of the payload.
-    if target_subdir == "win-arm64":
+    # Both Windows packages must retain the core; cross builds also rely on static architecture.
+    if target_subdir in ("win-64", "win-arm64"):
         pe = os.path.join(eng, "assert_pe_machine.py")
         if not os.path.isfile(pe):
             _die(f"PE machine-type assert script not found at {pe}")
-        _log("=== win-arm64 PE machine-type assert (vendored .pyd/.dll must be ARM64) ===")
+        _log(f"=== {target_subdir} PE machine-type and required native-component assert ===")
         run(
-            [conda, "run", "-n", builder, "python", pe, "--root", bld, "--subdir", "win-arm64"],
+            [conda, "run", "-n", builder, "python", pe, "--root", bld, "--subdir", target_subdir],
             env=env,
-            what="win-arm64 PE machine-type assert",
+            what=f"{target_subdir} PE machine-type assert",
         )
     # osx legs: verify the universal binding contains the target slice and each thin vendored
     # driver dylib matches its architecture-specific directory. osx-arm64 is cross-built on the
@@ -470,14 +463,27 @@ def _import_probe(mod_name: str, ok_label: str) -> str:
     INSTALLED package, not the checkout. Uses abspath (NOT realpath) so conda's softlink install
     mode -- where the site-packages entry symlinks into the pkgs/ cache OUTSIDE the prefix -- is
     not false-failed: the import PATH stays under the prefix regardless of hard/soft link; only
-    the symlink TARGET would not. Then prints ok_label + the version."""
+    the symlink TARGET would not. Then prints ok_label + the installed module path."""
     return (
         f"import os,sys,{mod_name} as m;"
         "f=os.path.normcase(os.path.abspath(m.__file__));"
         "pref=os.path.normcase(os.path.abspath(sys.prefix));"
         f"assert f.startswith(pref+os.sep),{mod_name!r}+' loaded from '+m.__file__+"
         "', not under the conda env '+sys.prefix+' (stray PYTHONPATH/.pth?)';"
-        f"print({ok_label!r},m.__version__)"
+        f"print({ok_label!r},m.__file__)"
+    )
+
+
+def _core_probe() -> str:
+    return (
+        _import_probe("mssql_py_core", "CORE_PACKAGE_OK") + ";import importlib.machinery;"
+        "exts=[v for k,v in list(sys.modules.items()) "
+        "if (k=='mssql_py_core' or k.startswith('mssql_py_core.')) "
+        "and isinstance(getattr(v,'__loader__',None),importlib.machinery.ExtensionFileLoader)];"
+        "assert exts,'mssql_py_core did not load its required native extension';"
+        "assert all(os.path.normcase(os.path.abspath(v.__file__)).startswith(pref+os.sep) "
+        "for v in exts),'core native extension loaded outside installed prefix';"
+        "print('CORE_NATIVE_OK',*[v.__file__ for v in exts])"
     )
 
 
@@ -610,6 +616,12 @@ def _verify_impl(
                 f"arm64 cross-build. Refusing to silently skip validation. Output: {out}"
             )
 
+        # A separate process prevents API/driver preloads from masking core load failures.
+        run(
+            [conda, "run", "-n", name, "python", "-c", _core_probe()],
+            env=env,
+            what=f"independent required mssql_py_core load (py {py})",
+        )
         _log(f"=== [py {py}] import mssql_python + prove the vendored ODBC payload is present ===")
         run(
             [

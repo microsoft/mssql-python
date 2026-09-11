@@ -53,7 +53,7 @@ def _load_module():
 audit = _load_module()
 
 
-def _make_elf64(runpath=None, rpath=None, needed=(), machine=62):
+def _make_elf64(runpath=None, rpath=None, needed=(), machine=62, versions=()):
     """Build a minimal, self-consistent ELF64-LE with real program headers.
 
     Emits a PT_LOAD (vaddr == file offset, covering the whole file) + a PT_DYNAMIC,
@@ -78,8 +78,17 @@ def _make_elf64(runpath=None, rpath=None, needed=(), machine=62):
     rp_rel = add_str(runpath) if runpath is not None else None
     rpath_rel = add_str(rpath) if rpath is not None else None
     need_rels = [add_str(n) for n in needed]
+    version_rels = [add_str(n) for n in versions]
+    library_rel = add_str("libc.so.6") if versions else 0
+    verneed_off = dynstr_off + len(dynstr)
+    verneed = b""
+    if versions:
+        verneed = struct.pack("<HHIII", 1, len(versions), library_rel, 16, 0)
+        for position, relative in enumerate(version_rels):
+            next_aux = 16 if position < len(versions) - 1 else 0
+            verneed += struct.pack("<IHHII", 0, 0, position + 2, relative, next_aux)
 
-    dynamic_off = dynstr_off + len(dynstr)
+    dynamic_off = verneed_off + len(verneed)
     dyn = b""
     if rp_rel is not None:
         dyn += struct.pack("<qQ", audit._DT_RUNPATH, rp_rel)
@@ -88,6 +97,10 @@ def _make_elf64(runpath=None, rpath=None, needed=(), machine=62):
     for nr in need_rels:
         dyn += struct.pack("<qQ", audit._DT_NEEDED, nr)
     dyn += struct.pack("<qQ", audit._DT_STRTAB, dynstr_off)  # vaddr == offset (PT_LOAD v=0)
+    dyn += struct.pack("<qQ", audit._DT_STRSZ, len(dynstr))
+    if versions:
+        dyn += struct.pack("<qQ", audit._DT_VERNEED, verneed_off)
+        dyn += struct.pack("<qQ", audit._DT_VERNEEDNUM, 1)
     dyn += struct.pack("<qQ", 0, 0)  # DT_NULL
 
     total = dynamic_off + len(dyn)
@@ -124,7 +137,7 @@ def _make_elf64(runpath=None, rpath=None, needed=(), machine=62):
         0,  # e_shstrndx
     )
     assert len(ehdr) == ehdr_size
-    return ehdr + ph_load + ph_dyn + dynstr + dyn
+    return ehdr + ph_load + ph_dyn + dynstr + verneed + dyn
 
 
 _LIBDIR = "lib/python3.12/site-packages/mssql_python_odbc/libs/linux/debian_ubuntu/x86_64/lib"
@@ -133,7 +146,17 @@ _CLIMB_ENTRY = "$ORIGIN/../../../../../../../.."
 _GOOD_RUNPATH = "$ORIGIN:" + _CLIMB_ENTRY
 _DRIVER_NEEDED = ["libkrb5.so.3", "libgssapi_krb5.so.2", "libodbcinst.so.2"]
 _INST_NEEDED = ["libltdl.so.7"]
-_GOOD_DEPENDS = ["python", "azure-identity", "krb5", "libtool", "openssl >=3,<4"]
+_GOOD_DEPENDS = [
+    "python >=3.12,<3.13.0a0",
+    "python_abi 3.12.* *_cp312",
+    "__glibc >=2.34",
+    "azure-identity",
+    "krb5",
+    "libtool",
+    "openssl >=3,<4",
+]
+_BINDING = "lib/python3.12/site-packages/mssql_python/ddbc_bindings.cp312-x86_64.so"
+_CORE = "lib/python3.12/site-packages/mssql_py_core/mssql_py_core.cpython-312-x86_64-linux-gnu.so"
 _DISTROS_BY_SUBDIR = {
     "linux-64": ("alpine", "debian_ubuntu", "rhel", "suse"),
     "linux-aarch64": ("alpine", "debian_ubuntu", "rhel"),
@@ -151,6 +174,7 @@ def _make_pkg(
     inst_needed=None,
     machine=62,
     distros=None,
+    native_payload=None,
 ):
     """Write a minimal package with complete per-distro driver trees by default."""
     p = tmp_path / "mssql-python-1.13.0-py312_0.tar.bz2"
@@ -174,6 +198,16 @@ def _make_pkg(
             ).encode(),
         )
         arch = "arm64" if subdir == "linux-aarch64" else "x86_64"
+        extension_arch = "aarch64" if subdir == "linux-aarch64" else "x86_64"
+        if native_payload is None:
+            native_payload = {
+                _BINDING.replace("x86_64", extension_arch): _make_elf64(machine=machine),
+                _CORE.replace("x86_64", extension_arch): _make_elf64(
+                    machine=machine, versions=("GLIBC_2.2.5", "GLIBC_2.34")
+                ),
+            }
+        for name, data in native_payload.items():
+            add(name, data)
         selected_distros = distros or _DISTROS_BY_SUBDIR.get(subdir, ("debian_ubuntu",))
         for distro in selected_distros:
             libdir = (
@@ -232,6 +266,115 @@ def test_expected_climb_entry_is_exact():
 
 def test_audit_passes_with_exact_climb(tmp_path):
     assert audit.audit_package(_make_pkg(tmp_path)) == []
+
+
+@pytest.mark.parametrize("missing", [_BINDING, _CORE])
+def test_full_feature_package_requires_binding_and_core(tmp_path, missing):
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64()}
+    del native[missing]
+    errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native))
+    assert any("exactly one" in error for error in errors)
+
+
+@pytest.mark.parametrize("component", [_BINDING, _CORE])
+def test_every_required_extension_checks_elf_arch_not_filename(tmp_path, component):
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64()}
+    native[component] = _make_elf64(machine=183)
+    errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native))
+    assert any(component in error and "does not match" in error for error in errors)
+
+
+@pytest.mark.parametrize("component", [_BINDING, _CORE])
+@pytest.mark.parametrize("wrong_tag", ["311", "312t", "312d"])
+def test_required_extensions_reject_wrong_or_non_normal_abi(tmp_path, component, wrong_tag):
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64()}
+    data = native.pop(component)
+    native[component.replace("312", wrong_tag)] = data
+    assert audit.audit_package(_make_pkg(tmp_path, native_payload=native))
+
+
+def test_core_abi3_and_extra_normal_bindings_are_supported(tmp_path):
+    native = {
+        _BINDING: _make_elf64(),
+        _BINDING.replace("312", "310"): _make_elf64(),
+        _CORE.replace("cpython-312-x86_64-linux-gnu", "abi3"): _make_elf64(),
+    }
+    assert audit.audit_package(_make_pkg(tmp_path, native_payload=native)) == []
+
+
+@pytest.mark.parametrize(
+    "abi",
+    [
+        "python_abi 3.12.* *_cp312t",
+        "python_abi 3.12.* *_cp311",
+        "python_abi 3.11.* *_cp311",
+        "python_abi >=3.12",
+    ],
+)
+def test_archive_requires_consistent_normal_python_abi_metadata(tmp_path, abi):
+    depends = [abi if d.startswith("python_abi ") else d for d in _GOOD_DEPENDS]
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    assert any("python_abi" in error or "native binding" in error for error in errors)
+
+
+@pytest.mark.parametrize("declared", ["2.28", "2.33"])
+def test_core_symbol_floor_cannot_exceed_archive_glibc_minimum(tmp_path, declared):
+    depends = [f"__glibc >={declared}" if d.startswith("__glibc ") else d for d in _GOOD_DEPENDS]
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    assert any(_CORE in error and "GLIBC_2.34" in error for error in errors)
+
+
+@pytest.mark.parametrize("declared", ["2.34", "2.34.0", "2.35"])
+def test_core_symbol_floor_compatible_with_archive_minimum(tmp_path, declared):
+    depends = [f"__glibc >={declared}" if d.startswith("__glibc ") else d for d in _GOOD_DEPENDS]
+    assert audit.audit_package(_make_pkg(tmp_path, depends=depends)) == []
+
+
+def test_symbol_floor_is_read_from_version_needs_not_arbitrary_bytes(tmp_path):
+    native = {
+        _BINDING: _make_elf64(),
+        _CORE: _make_elf64(versions=("GLIBC_2.34",)) + b"GLIBC_99.99\x00",
+    }
+    assert audit.audit_package(_make_pkg(tmp_path, native_payload=native)) == []
+
+
+def test_auxiliary_native_library_symbol_floor_is_checked(tmp_path):
+    extra = "lib/python3.12/site-packages/mssql_py_core.libs/libsupport.so.1"
+    native = {
+        _BINDING: _make_elf64(),
+        _CORE: _make_elf64(),
+        extra: _make_elf64(versions=("GLIBC_2.35",)),
+    }
+    errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native))
+    assert any(extra in error and "GLIBC_2.35" in error for error in errors)
+
+
+@pytest.mark.parametrize("spec", [None, "__glibc >=2.28|>=2.34", "__glibc >=2.34junk"])
+def test_missing_or_ambiguous_glibc_floor_is_rejected(tmp_path, spec):
+    depends = [d for d in _GOOD_DEPENDS if not d.startswith("__glibc")]
+    if spec:
+        depends.append(spec)
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    assert any("glibc compatibility metadata" in error for error in errors)
+
+
+@pytest.mark.parametrize("damage", ["truncated", "version-address", "aux-chain", "class"])
+def test_malformed_required_core_elf_cannot_pass(tmp_path, damage):
+    core = bytearray(_make_elf64(versions=("GLIBC_2.2.5", "GLIBC_2.34")))
+    if damage == "truncated":
+        core = core[:70]
+    elif damage == "version-address":
+        tag = core.index(struct.pack("<q", audit._DT_VERNEED))
+        struct.pack_into("<Q", core, tag + 8, len(core) + 1)
+    elif damage == "aux-chain":
+        tag = core.index(struct.pack("<q", audit._DT_VERNEED))
+        record = struct.unpack_from("<Q", core, tag + 8)[0]
+        struct.pack_into("<I", core, record + 16 + 12, 0)
+    else:
+        core[4] = 1
+    native = {_BINDING: _make_elf64(), _CORE: bytes(core)}
+    errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native))
+    assert any(_CORE in error and "ELF" in error for error in errors)
 
 
 def test_audit_fails_when_entire_required_distro_tree_is_missing(tmp_path):
@@ -476,6 +619,8 @@ def test_audit_allows_musl_variant_without_libltdl(tmp_path):
             ).encode(),
         )
         # glibc debian_ubuntu (complete: NEEDs libltdl/krb5).
+        add(_BINDING, _make_elf64())
+        add(_CORE, _make_elf64())
         add(
             f"{_LIBDIR}/libmsodbcsql-18.6.so.2.1", _make_elf64(_GOOD_RUNPATH, needed=_DRIVER_NEEDED)
         )
