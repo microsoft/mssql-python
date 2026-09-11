@@ -39,11 +39,17 @@ if errorlevel 1 (
     echo ERROR: extracted "!CODE_WHL!" has no mssql_python\ddbc_bindings.cp%CONDA_PY% pyd ^(wrong-Python binding^).
     exit /b 1
   )
-  REM Never silently drop bulk copy. Bare .pyd is the Windows stable-ABI suffix;
-  REM the package's PE audit checks actual architecture before staging.
-  if not exist "%SP%\mssql_py_core\mssql_py_core.cp%CONDA_PY%-!ODBC_ARCH!.pyd" if not exist "%SP%\mssql_py_core\mssql_py_core.pyd" (
-    echo ERROR: required mssql_py_core is missing or incompatible with cp%CONDA_PY% !ODBC_ARCH!. Use a corrected upstream wheel; refusing reduced functionality.
-    exit /b 1
+  REM Keep mssql_py_core when the wheel provides a matching-arch native ext so bulk copy
+  REM ships (PR #737 makes the win-arm64 wheel vendor the arm64 core). If only the legacy
+  REM x64 core is present (a pre-#737 wheel), strip it so the package never carries a core
+  REM that can't load on the target -- the .pyd name encodes the arch. Bulk copy then lazily
+  REM reports "not available"; the rest of the DBAPI works. Mirrors the ddbc check above.
+  if exist "%SP%\mssql_py_core\mssql_py_core.cp%CONDA_PY%-!ODBC_ARCH!.pyd" (
+    echo Keeping matching-arch mssql_py_core; bulk copy enabled on the !ODBC_ARCH! package.
+  ) else (
+    echo No cp%CONDA_PY%-!ODBC_ARCH! mssql_py_core in the wheel; removing the mismatched core ^(bulk copy unavailable until the arm64-core wheel ships^).
+    if exist "%SP%\mssql_py_core" rmdir /s /q "%SP%\mssql_py_core"
+    if exist "%SP%\mssql_py_core.libs" rmdir /s /q "%SP%\mssql_py_core.libs"
   )
 ) else (
   "%PYTHON%" -m pip install --no-deps --no-index --find-links "%WHEELS_DIR%" %PKG_NAME%==%PKG_VERSION% -vv

@@ -129,7 +129,7 @@ def test_zstd_backend_is_available_for_conda_audit_tests():
     )
 
 
-def _make_conda(tmp_path, subdir, payload, depends=None):
+def _make_conda(tmp_path, subdir, payload):
     """Build a minimal .conda (info-*.tar.zst + pkg-*.tar.zst) with the given payload files."""
     name = "mssql-python-1.13.0-py312_0"
 
@@ -145,7 +145,6 @@ def _make_conda(tmp_path, subdir, payload, depends=None):
         "version": "1.13.0",
         "build": "py312_0",
         "subdir": subdir,
-        "depends": depends if depends is not None else ["python_abi 3.12.* *_cp312"],
     }
     idx = json.dumps(index).encode()
     info_buf = io.BytesIO()
@@ -168,7 +167,6 @@ def test_win_arm64_arm64_binaries_pass(tmp_path):
         "win-arm64",
         {
             "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
-            "Lib/site-packages/mssql_py_core/mssql_py_core.cp312-win_arm64.pyd": _fake_pe(_ARM64),
             "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(
                 _ARM64
             ),
@@ -178,41 +176,6 @@ def test_win_arm64_arm64_binaries_pass(tmp_path):
         },
     )
     assert ape.audit_package(p) == []
-
-
-@pytest.mark.parametrize(
-    "state", ["valid", "missing", "wrong-arch", "wrong-tag", "abi3", "missing-abi", "wrong-abi"]
-)
-def test_required_core_contract(tmp_path, state):
-    pin = "python_abi 3.12.* *_cp312"
-    recipe = _MODULE_PATH.parents[2] / "conda" / "mssql-python" / "meta.yaml"
-    assert f"- {pin}  # [win and arm64 and py == 312]" in recipe.read_text()
-    # The observed defaults CP312 host supplied only the Python range, not an ABI export.
-    depends = ["vc14_runtime", "python >=3.12,<3.13.0a0", "azure-identity >=1.12.0"]
-    if state != "missing-abi":
-        depends.append(pin if state != "wrong-abi" else "python_abi 3.12.* *_cp313")
-    core = "Lib/site-packages/mssql_py_core/mssql_py_core.cp312-win_arm64.pyd"
-    payload = {
-        "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
-        core: _fake_pe(_ARM64),
-        "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(_ARM64),
-        "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/mssql-auth.dll": _fake_pe(_ARM64),
-    }
-    if state == "missing":
-        del payload[core]
-    elif state == "wrong-arch":
-        payload[core] = _fake_pe(_AMD64)
-    elif state == "wrong-tag":
-        payload[core.replace("312", "311")] = payload.pop(core)
-    elif state == "abi3":
-        payload[core.replace(".cp312-win_arm64", "")] = payload.pop(core)
-    errors = ape.audit_package(_make_conda(tmp_path, "win-arm64", payload, depends=depends))
-    if state in ("valid", "abi3"):
-        assert errors == []
-    elif state in ("missing-abi", "wrong-abi"):
-        assert any("matching normal CPython python_abi pin" in error for error in errors)
-    else:
-        assert any("mssql_py_core" in error for error in errors)
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")

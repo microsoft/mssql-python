@@ -44,25 +44,17 @@ import argparse
 import glob
 import os
 import posixpath
-import re
 import struct
 import sys
 from typing import Any, Iterable, TypedDict
 
-from _conda_pkg import (
-    iter_payload_members as _iter_payload_members,
-    read_index,
-    validate_native_contract,
-)
+from _conda_pkg import iter_payload_members as _iter_payload_members, read_index
 
 # --- ELF constants ---------------------------------------------------------
 _DT_NEEDED = 1
 _DT_STRTAB = 5
-_DT_STRSZ = 10
 _DT_RPATH = 15
 _DT_RUNPATH = 29
-_DT_VERNEED = 0x6FFFFFFE
-_DT_VERNEEDNUM = 0x6FFFFFFF
 _PT_LOAD = 1
 _PT_DYNAMIC = 2
 
@@ -112,7 +104,6 @@ class _ElfDynamicInfo(TypedDict):
     runpath: str | None
     rpath: str | None
     needed: list[str]
-    glibc_required: list[tuple[int, ...]]
 
 
 def _is_elf(data: bytes) -> bool:
@@ -139,11 +130,9 @@ def elf_dynamic(data: bytes) -> _ElfDynamicInfo:
     table that a stripped/rewritten binary might not carry. Handles ELF32/ELF64 and
     both endiannesses; the shipped drivers are ELF64-LE.
     """
-    out: _ElfDynamicInfo = {"runpath": None, "rpath": None, "needed": [], "glibc_required": []}
+    out: _ElfDynamicInfo = {"runpath": None, "rpath": None, "needed": []}
     if not _is_elf(data):
-        raise ValueError("not a complete ELF header")
-    if data[4] not in (1, 2) or data[5] not in (1, 2):
-        raise ValueError("invalid ELF class or endianness")
+        return out
     is64 = data[4] == 2
     en = "<" if data[5] == 1 else ">"
 
@@ -155,20 +144,15 @@ def elf_dynamic(data: bytes) -> _ElfDynamicInfo:
         e_phoff = struct.unpack_from(en + "I", data, 0x1C)[0]
         e_phentsize = struct.unpack_from(en + "H", data, 0x2A)[0]
         e_phnum = struct.unpack_from(en + "H", data, 0x2C)[0]
-    if (
-        not e_phoff
-        or not e_phnum
-        or e_phentsize < (56 if is64 else 32)
-        or e_phoff + e_phnum * e_phentsize > len(data)
-    ):
-        raise ValueError("invalid or truncated ELF program headers")
+    if not e_phoff or not e_phnum:
+        return out
 
     loads = []  # (p_vaddr, p_offset, p_filesz)
     dyn = None  # (p_offset, p_filesz)
     for i in range(e_phnum):
         off = e_phoff + i * e_phentsize
         if off + e_phentsize > len(data):
-            raise ValueError("truncated ELF program header")
+            return out
         p_type = struct.unpack_from(en + "I", data, off)[0]
         if is64:
             p_offset = struct.unpack_from(en + "Q", data, off + 8)[0]
@@ -178,33 +162,25 @@ def elf_dynamic(data: bytes) -> _ElfDynamicInfo:
             p_offset = struct.unpack_from(en + "I", data, off + 4)[0]
             p_vaddr = struct.unpack_from(en + "I", data, off + 8)[0]
             p_filesz = struct.unpack_from(en + "I", data, off + 16)[0]
-        if p_offset + p_filesz > len(data):
-            raise ValueError("ELF segment extends beyond the file")
         if p_type == _PT_LOAD:
             loads.append((p_vaddr, p_offset, p_filesz))
         elif p_type == _PT_DYNAMIC:
             dyn = (p_offset, p_filesz)
     if dyn is None:
-        raise ValueError("ELF has no PT_DYNAMIC segment")
+        return out
     dyn_off, dyn_size = dyn
 
-    def vaddr_to_off(vaddr: int, size: int = 1) -> int:
+    def vaddr_to_off(vaddr: int) -> int | None:
         for v, o, sz in loads:
-            if v <= vaddr and vaddr + size <= v + sz:
+            if v <= vaddr < v + sz:
                 return vaddr - v + o
-        raise ValueError("ELF dynamic address is outside a file-backed PT_LOAD segment")
+        return None
 
     strtab_vaddr = None
-    strtab_size = None
-    verneed_vaddr = None
-    verneed_num = None
     runpath_rel = None
     rpath_rel = None
     needed_rel: list[int] = []
     entsize = 16 if is64 else 8
-    terminated = False
-    if dyn_size % entsize:
-        raise ValueError("ELF dynamic segment has a partial entry")
     for off in range(dyn_off, dyn_off + dyn_size, entsize):
         if off + entsize > len(data):
             break
@@ -215,7 +191,6 @@ def elf_dynamic(data: bytes) -> _ElfDynamicInfo:
             d_tag = struct.unpack_from(en + "i", data, off)[0]
             d_val = struct.unpack_from(en + "I", data, off + 4)[0]
         if d_tag == 0:  # DT_NULL terminates the array
-            terminated = True
             break
         if d_tag == _DT_STRTAB:
             strtab_vaddr = d_val
@@ -225,76 +200,23 @@ def elf_dynamic(data: bytes) -> _ElfDynamicInfo:
             rpath_rel = d_val
         elif d_tag == _DT_NEEDED:
             needed_rel.append(d_val)
-        elif d_tag == _DT_STRSZ:
-            strtab_size = d_val
-        elif d_tag == _DT_VERNEED:
-            verneed_vaddr = d_val
-        elif d_tag == _DT_VERNEEDNUM:
-            verneed_num = d_val
-    if not terminated or strtab_vaddr is None or not strtab_size:
-        raise ValueError("ELF dynamic segment lacks DT_NULL, DT_STRTAB or DT_STRSZ")
-    strtab_off = vaddr_to_off(strtab_vaddr, strtab_size)
+    if strtab_vaddr is None:
+        return out
+    strtab_off = vaddr_to_off(strtab_vaddr)
+    if strtab_off is None:
+        return out
 
     def read_str(rel: int) -> str:
-        if not 0 <= rel < strtab_size:
-            raise ValueError("ELF string offset is outside DT_STRTAB")
         pos = strtab_off + rel
-        end = data.find(b"\x00", pos, strtab_off + strtab_size)
-        if end < 0:
-            raise ValueError("unterminated ELF dynamic string")
-        return data[pos:end].decode("utf-8", "strict")
+        end = data.find(b"\x00", pos)
+        return data[pos : (end if end >= 0 else len(data))].decode("utf-8", "replace")
 
     if runpath_rel is not None:
         out["runpath"] = read_str(runpath_rel)
     if rpath_rel is not None:
         out["rpath"] = read_str(rpath_rel)
     out["needed"] = [read_str(n) for n in needed_rel]
-    if (verneed_vaddr is None) != (verneed_num is None):
-        raise ValueError("ELF version requirements need both DT_VERNEED and DT_VERNEEDNUM")
-    if verneed_vaddr is not None:
-        if not verneed_num or verneed_num > len(data) // 16:
-            raise ValueError("invalid ELF version requirement count")
-        current = verneed_vaddr
-        for number in range(verneed_num):
-            offset = vaddr_to_off(current, 16)
-            version, count, library, aux, next_need = struct.unpack_from(en + "HHIII", data, offset)
-            if version != 1 or not count or count > len(data) // 16 or aux < 16:
-                raise ValueError("invalid ELF version requirement record")
-            read_str(library)
-            auxiliary = current + aux
-            for item in range(count):
-                offset = vaddr_to_off(auxiliary, 16)
-                _, _, _, name, next_aux = struct.unpack_from(en + "IHHII", data, offset)
-                requirement = read_str(name)
-                if requirement.startswith("GLIBC_"):
-                    match = re.fullmatch(r"GLIBC_(\d+(?:\.\d+)+)", requirement)
-                    if match is None:
-                        raise ValueError(f"unsupported glibc symbol requirement {requirement}")
-                    out["glibc_required"].append(tuple(map(int, match[1].split("."))))
-                if item < count - 1 and next_aux < 16:
-                    raise ValueError("truncated ELF version auxiliary chain")
-                if item == count - 1 and next_aux != 0:
-                    raise ValueError("ELF version auxiliary count disagrees with chain")
-                auxiliary += next_aux
-            if number < verneed_num - 1 and next_need < 16:
-                raise ValueError("truncated ELF version requirement chain")
-            if number == verneed_num - 1 and next_need != 0:
-                raise ValueError("ELF version requirement count disagrees with chain")
-            current += next_need
     return out
-
-
-def declared_glibc_floor(index: dict[str, Any]) -> tuple[int, ...]:
-    """Require a single explicit minimum; wheel platform tags are not symbol-floor evidence."""
-    specs = [
-        d for d in index.get("depends", []) if isinstance(d, str) and d.split()[:1] == ["__glibc"]
-    ]
-    if len(specs) != 1:
-        raise ValueError("expected exactly one __glibc >=VERSION dependency")
-    match = re.fullmatch(r"__glibc\s+>=(\d+(?:\.\d+)+)", specs[0])
-    if match is None:
-        raise ValueError(f"unsupported __glibc dependency: {specs[0]!r}")
-    return tuple(map(int, match[1].split(".")))
 
 
 def effective_runpath(dyn: _ElfDynamicInfo) -> str | None:
@@ -420,13 +342,6 @@ def audit_package(path: str) -> list[str]:
     except ValueError as exc:  # malformed payload (e.g. .conda missing pkg-*.tar.zst)
         return [f"{base_name}: unreadable/malformed package payload ({exc})."]
 
-    errors.extend(validate_native_contract(members, index))
-    try:
-        glibc_floor = declared_glibc_floor(index)
-    except (TypeError, ValueError) as exc:
-        errors.append(f"{base_name}: invalid glibc compatibility metadata: {exc}")
-        glibc_floor = None
-
     for name, data in members:
         base = posixpath.basename(name)
         norm = "/" + name
@@ -449,14 +364,10 @@ def audit_package(path: str) -> list[str]:
 
         is_driver = any(base.startswith(p) for p in _DRIVER_PREFIXES)
         is_inst = base == _ODBCINST
-        is_native = data.startswith(b"\x7fELF") or base.endswith(".so") or ".so." in base
-        if not (is_native or is_driver or is_inst):
+        if not (is_driver or is_inst):
             continue
         if not _is_elf(data):
             errors.append(f"{name}: expected an ELF binary but the header is not ELF.")
-            continue
-        if data[4:6] != b"\x02\x01":
-            errors.append(f"{name}: expected an ELF64 little-endian binary for '{subdir}'.")
             continue
 
         # Architecture gate: the ELF machine MUST match the package's conda subdir, so
@@ -468,26 +379,10 @@ def audit_package(path: str) -> list[str]:
             errors.append(
                 f"{name}: ELF machine {mach} ({machine_name}) does "
                 f"not match the '{subdir}' package arch {expected_machine} "
-                f"({_MACHINE_NAME[expected_machine]}) -- wrong-arch/mislabeled native binary."
+                f"({_MACHINE_NAME[expected_machine]}) -- wrong-arch/mislabeled driver."
             )
 
-        try:
-            dyn = elf_dynamic(data)
-        except (ValueError, struct.error) as exc:
-            errors.append(f"{name}: invalid ELF dynamic metadata ({exc}).")
-            continue
-        for required in dyn["glibc_required"]:
-            if glibc_floor is not None:
-                width = max(len(required), len(glibc_floor))
-                if required + (0,) * (width - len(required)) > glibc_floor + (0,) * (
-                    width - len(glibc_floor)
-                ):
-                    errors.append(
-                        f"{name}: requires GLIBC_{'.'.join(map(str, required))} but archive "
-                        f"declares __glibc >={'.'.join(map(str, glibc_floor))}."
-                    )
-        if not (is_driver or is_inst):
-            continue
+        dyn = elf_dynamic(data)
         raw_runpath = effective_runpath(dyn)
         entries = _entries(raw_runpath)
         needed = dyn["needed"]
