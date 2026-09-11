@@ -200,70 +200,8 @@ steps:
         }
 
         $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
-        if (-not (Test-Path $root)) {
-          Write-Error "Consolidated conda tree not found at $root. Did ConsolidateConda run in the selected build?"
-          exit 1
-        }
-
-        if ([string]::IsNullOrWhiteSpace($env:REQUIRED_SUBDIRS)) { Write-Error "requiredSubdirs is empty. Refusing to publish without a required platform matrix."; exit 1 }
-        if ([string]::IsNullOrWhiteSpace($env:ALLOWED_SUBDIRS)) { Write-Error "allowedSubdirs is empty. Refusing to publish without an allowed platform policy."; exit 1 }
-        if ([string]::IsNullOrWhiteSpace($env:PYTHON_VERSIONS)) { Write-Error "pythonVersions is empty. Refusing to publish without a Python matrix."; exit 1 }
-        $required = $env:REQUIRED_SUBDIRS.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-        $allowed  = $env:ALLOWED_SUBDIRS.Split(',')  | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-        if ($required.Count -eq 0) { Write-Error "requiredSubdirs is empty. Refusing to publish without a required platform matrix."; exit 1 }
-        if ($allowed.Count -eq 0) { Write-Error "allowedSubdirs is empty. Refusing to publish without an allowed platform policy."; exit 1 }
-
-        $pkgs = @(Get-ChildItem -Path $root -Recurse -Include *.conda, *.tar.bz2)
-        if ($pkgs.Count -eq 0) { Write-Error "No conda packages found under $root. Refusing to publish an empty set."; exit 1 }
-
-        $bySubdir = $pkgs | Group-Object { $_.Directory.Name }
-        function Get-Binding($grp) { @($grp | Where-Object { $_.Name -like 'mssql-python-*' -and $_.Name -notlike 'mssql-python-odbc-*' }) }
-
-        Write-Host "Discovered $($pkgs.Count) conda package(s) across $($bySubdir.Count) subdir(s):"
-        foreach ($g in ($bySubdir | Sort-Object Name)) {
-          Write-Host ("  {0,-14} mssql-python={1}" -f $g.Name, (Get-Binding $g.Group).Count)
-        }
-
-        $failed = $false
-
-        # No mis-stamped subdir.
-        foreach ($g in $bySubdir) {
-          if ($allowed -notcontains $g.Name) {
-            Write-Host "##vso[task.logissue type=error]Unexpected conda subdir '$($g.Name)' (not in allowedSubdirs). Refusing to publish."
-            $failed = $true
-          }
-        }
-
-        # Every required subdir present with at least one mssql-python package.
-        $foundSubdirs = @($bySubdir | ForEach-Object { $_.Name })
-        foreach ($req in $required) {
-          if ($foundSubdirs -notcontains $req) {
-            Write-Host "##vso[task.logissue type=error]Required conda subdir '$req' is MISSING. Refusing to publish an incomplete set."
-            $failed = $true
-            continue
-          }
-          if ((Get-Binding ($bySubdir | Where-Object { $_.Name -eq $req }).Group).Count -eq 0) {
-            Write-Host "##vso[task.logissue type=error]Subdir '$req' has no mssql-python package."
-            $failed = $true
-          }
-        }
-
-        # The self-contained mssql-python vendors the ODBC payload, so a stray
-        # mssql-python-odbc package (the old separate companion) must never ship.
-        $stray = @($pkgs | Where-Object { $_.Name -like 'mssql-python-odbc-*' })
-        if ($stray.Count -gt 0) {
-          Write-Host "##vso[task.logissue type=error]Found $($stray.Count) stray mssql-python-odbc package(s); the self-contained model ships only mssql-python. Refusing to publish."
-          $failed = $true
-        }
-
-        $binding = Get-Binding $pkgs
-        if ($binding.Count -eq 0) {
-          Write-Host "##vso[task.logissue type=error]No mssql-python packages found. Refusing to publish an empty set."
-          $failed = $true
-        }
-
-        if ($failed) { Write-Error "Conda publish pre-check FAILED. Refusing to publish an incomplete/mislabeled set."; exit 1 }
-
+        # Revalidate every archive from THIS job's fresh download. The metadata
+        # gate owns package identity, platform/Python policy and exact-version checks.
         $metadataGate = "$(Build.SourcesDirectory)/conda/validate_conda_release.py"
         if (-not (Test-Path $metadataGate)) {
           Write-Error "Conda release metadata gate not found at $metadataGate."
@@ -285,7 +223,9 @@ steps:
           Write-Error "Conda promotion helper not found at $promoter."
           exit 1
         }
-        $packagePaths = @($binding | Sort-Object FullName | ForEach-Object { $_.FullName })
+        # Upload the entire validated set, never a filename-filtered subset.
+        $pkgs = @(Get-ChildItem -Path $root -Recurse -File -Include *.conda, *.tar.bz2 | Sort-Object FullName)
+        $packagePaths = @($pkgs | ForEach-Object { $_.FullName })
         python "$promoter" `
           --owner "$env:CONDA_CHANNEL" `
           --staging-label "local-preflight" `
@@ -331,8 +271,8 @@ steps:
           return $false
         }
 
-        Write-Host "==== Stage: upload $($binding.Count) package(s) to label '$stagingLabel' ===="
-        foreach ($p in ($binding | Sort-Object FullName)) {
+        Write-Host "==== Stage: upload $($pkgs.Count) package(s) to label '$stagingLabel' ===="
+        foreach ($p in $pkgs) {
           Write-Host "Uploading $($p.Directory.Name)/$($p.Name) -> $stagingLabel ..."
           if (-not (Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)"))) {
             Write-Error "Failed to stage $($p.Name) after 3 attempts. The public label was NOT touched."
@@ -352,4 +292,4 @@ steps:
         }
 
         Write-Host ""
-        Write-Host "Published $($binding.Count) verified mssql-python conda package(s) to anaconda.org/$($env:CONDA_CHANNEL) (label $($env:CONDA_LABEL)) via staging label '$stagingLabel'."
+        Write-Host "Published $($pkgs.Count) verified mssql-python conda package(s) to anaconda.org/$($env:CONDA_CHANNEL) (label $($env:CONDA_LABEL)) via staging label '$stagingLabel'."

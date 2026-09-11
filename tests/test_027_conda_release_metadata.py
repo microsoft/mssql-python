@@ -11,6 +11,7 @@ real ``.conda`` needed) plus one optional round-trip through the metadata reader
 import importlib.util
 import io
 import json
+import re
 import sys
 import tarfile
 import types
@@ -347,29 +348,24 @@ def test_parse_subdir_pythons_rejects_malformed_policy(value):
         vcr._parse_subdir_pythons(value)
 
 
-def test_release_policy_cannot_disable_required_matrix():
-    packages = _healthy_set()
-
-    assert any(
-        "required_subdirs" in error for error in vcr.validate(packages, [], _ALLOWED, _PYTHONS)
+@pytest.mark.parametrize(
+    "policy, message",
+    [
+        ({"required_subdirs": []}, "required_subdirs"),
+        ({"allowed_subdirs": []}, "allowed_subdirs"),
+        ({"expected_pythons": []}, "expected_pythons"),
+        ({"allowed_subdirs": ["win-64"]}, "absent from allowed"),
+        ({"required_subdirs": _REQUIRED * 2}, "duplicates"),
+        ({"allowed_subdirs": _ALLOWED * 2}, "duplicates"),
+        ({"expected_pythons": _PYTHONS * 2}, "duplicates"),
+        ({"subdir_pythons": {"win-64": []}}, "must not be empty"),
+    ],
+)
+def test_release_policy_cannot_disable_required_matrix(policy, message):
+    arguments = dict(
+        required_subdirs=_REQUIRED, allowed_subdirs=_ALLOWED, expected_pythons=_PYTHONS
     )
-    assert any(
-        "expected_pythons" in error for error in vcr.validate(packages, _REQUIRED, _ALLOWED, [])
-    )
-    assert any(
-        "absent from allowed" in error
-        for error in vcr.validate(packages, _REQUIRED, ["win-64"], _PYTHONS)
-    )
-    assert any(
-        "must not be empty" in error
-        for error in vcr.validate(
-            packages,
-            _REQUIRED,
-            _ALLOWED,
-            _PYTHONS,
-            subdir_pythons={"win-64": []},
-        )
-    )
+    assert any(message in error for error in vcr.validate(_healthy_set(), **(arguments | policy)))
 
 
 def test_python_tag_from_index():
@@ -482,51 +478,55 @@ def test_zstd_missing_backends_raise_clear_error(monkeypatch):
         vcr._zstd_decompress(b"data")
 
 
-def test_publish_parameters_are_quoted_and_passed_via_environment():
-    publish = _PUBLISH_STEP_PATH.read_text(encoding="utf-8")
+@pytest.fixture
+def publish_steps():
+    return yaml.safe_load(_PUBLISH_STEP_PATH.read_text(encoding="utf-8"))["steps"]
 
-    for name, parameter in (
+
+@pytest.mark.parametrize(
+    "name, parameter",
+    [
         ("CONDA_CHANNEL", "condaChannel"),
         ("CONDA_LABEL", "condaLabel"),
+        ("MSSQL_PYTHON_VERSION", "mssqlPythonVersion"),
         ("REQUIRED_SUBDIRS", "requiredSubdirs"),
         ("ALLOWED_SUBDIRS", "allowedSubdirs"),
         ("PYTHON_VERSIONS", "pythonVersions"),
-    ):
-        assert f"{name}: '${{{{ parameters.{parameter} }}}}'" in publish
-
-    assert "$required = $env:REQUIRED_SUBDIRS.Split(',')" in publish
-    assert "$allowed  = $env:ALLOWED_SUBDIRS.Split(',')" in publish
-    assert "IsNullOrWhiteSpace($env:CONDA_LABEL)" in publish
-    assert "IsNullOrWhiteSpace($env:REQUIRED_SUBDIRS)" in publish
-    assert "IsNullOrWhiteSpace($env:ALLOWED_SUBDIRS)" in publish
-    assert "IsNullOrWhiteSpace($env:PYTHON_VERSIONS)" in publish
-    assert "$required.Count -eq 0" in publish
-    assert "$allowed.Count -eq 0" in publish
-    assert "$required = '${{ parameters.requiredSubdirs }}'" not in publish
-    assert "$allowed  = '${{ parameters.allowedSubdirs }}'" not in publish
+    ],
+)
+def test_publish_parameters_are_passed_via_environment(publish_steps, name, parameter):
+    step = publish_steps[-1]
+    assert step["env"][name] == "${{ parameters." + parameter + " }}"
+    assert f"$env:{name}" in step["inputs"]["script"]
+    assert "${{" not in step["inputs"]["script"]
 
 
 def test_release_pipeline_uses_resource_identity_and_gates_production_provenance():
-    pipeline = _RELEASE_PIPELINE_PATH.read_text(encoding="utf-8")
-    release = _RELEASE_STEP_PATH.read_text(encoding="utf-8")
-    publish = _PUBLISH_STEP_PATH.read_text(encoding="utf-8")
-
-    assert "branch: main" in pipeline
-    assert pipeline.count("- checkout: self") == 2
-    assert "default: 'microsoft'\n    values:\n      - 'microsoft'" in pipeline
-    assert "default: 'main'\n    values:\n      - 'main'" in pipeline
-    assert "CONDA_BUILD_PIPELINE_ID: $(resources.pipeline.buildPipeline.pipelineID)" in pipeline
-    assert "CONDA_BUILD_RUN_ID: $(resources.pipeline.buildPipeline.runID)" in pipeline
-    assert "CONDA_BUILD_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)" in pipeline
-    assert "CONDA_BUILD_SOURCE_COMMIT: $(resources.pipeline.buildPipeline.sourceCommit)" in pipeline
-    assert "RELEASE_SOURCE_BRANCH: $(Build.SourceBranch)" in pipeline
-    assert "conda/validate_conda_provenance.py" in pipeline
-    assert "Recorded producer/wheel provenance verification failed" in pipeline
-    assert "condaBuildDefinitionId" not in pipeline
-    assert "definition: $(resources.pipeline.buildPipeline.pipelineID)" in release
-    assert "definition: $(resources.pipeline.buildPipeline.pipelineID)" in publish
-    assert "buildDefinitionId" not in release
-    assert "buildDefinitionId" not in publish
+    pipeline = yaml.safe_load(_RELEASE_PIPELINE_PATH.read_text(encoding="utf-8"))
+    resource = pipeline["resources"]["pipelines"][0]
+    assert (resource["pipeline"], resource["branch"]) == ("buildPipeline", "main")
+    parameters = {p["name"]: p for p in pipeline["parameters"]}
+    for name, value in (("condaChannel", "microsoft"), ("condaLabel", "main")):
+        assert parameters[name]["default"] == value
+        assert parameters[name]["values"] == [value]
+    steps = pipeline["extends"]["parameters"]["stages"][0]["jobs"][0]["steps"]
+    assert steps[0]["checkout"] == "self"
+    guard = next(step for step in steps if "CONDA_BUILD_RUN_ID" in step.get("env", {}))
+    for name, field in (
+        ("CONDA_BUILD_PIPELINE_ID", "pipelineID"),
+        ("CONDA_BUILD_RUN_ID", "runID"),
+        ("CONDA_BUILD_SOURCE_BRANCH", "sourceBranch"),
+        ("CONDA_BUILD_SOURCE_COMMIT", "sourceCommit"),
+    ):
+        assert guard["env"][name] == f"$(resources.pipeline.buildPipeline.{field})"
+    assert guard["env"]["RELEASE_SOURCE_BRANCH"] == "$(Build.SourceBranch)"
+    assert "conda/validate_conda_provenance.py" in guard["inputs"]["script"]
+    assert "$LASTEXITCODE -ne 0" in guard["inputs"]["script"]
+    for path in (_RELEASE_STEP_PATH, _PUBLISH_STEP_PATH):
+        download = yaml.safe_load(path.read_text(encoding="utf-8"))["steps"][0]
+        assert download["task"] == "DownloadPipelineArtifact@2"
+        assert download["inputs"]["definition"] == "$(resources.pipeline.buildPipeline.pipelineID)"
+        assert download["inputs"]["buildId"] == "$(resources.pipeline.buildPipeline.runID)"
 
 
 def test_protected_group_and_publisher_are_absent_from_validate_only_path():
@@ -582,51 +582,77 @@ def test_release_and_publish_template_defaults_stay_aligned():
         assert publish_defaults[name] == release_defaults[name]
 
 
-def test_publish_uses_pinned_client_and_fail_closed_promotion_helper():
-    publish = _PUBLISH_STEP_PATH.read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    "package, version", [("anaconda-client", "1.14.1"), ("zstandard", "0.23.0")]
+)
+def test_publish_uses_pinned_client(publish_steps, package, version):
+    install = publish_steps[2]["inputs"]["script"]
+    assert f'"{package}=={version}"' in install
+    assert f"m.version('{package}') == '{version}'" in install
+    assert "pip --isolated install" in install
+    assert "--only-binary=:all:" in install
+    assert "https://packagefeedproxy.microsoft.io/pypi/simple/" in install
+    assert "python -m binstar_client.scripts.cli upload --help" in install
 
-    assert '"anaconda-client==1.14.1"' in publish
-    assert '"zstandard==0.23.0"' in publish
-    assert "--only-binary=:all:" in publish
-    assert "pip --isolated install" in publish
-    assert "https://packagefeedproxy.microsoft.io/pypi/simple/" in publish
-    assert "m.version('anaconda-client') == '1.14.1'" in publish
-    assert "m.version('zstandard') == '0.23.0'" in publish
-    assert "ANACONDA_CLIENT_FORCE_STANDALONE: '1'" in publish
-    assert "python -m binstar_client.scripts.cli upload --help" in publish
-    assert "$output = @(& python -m binstar_client.scripts.cli @argsList 2>&1)" in publish
-    assert "$exitCode = $LASTEXITCODE" in publish
-    assert "if ($exitCode -eq 0)" in publish
-    assert "if ($attempt -lt 3)" in publish
-    assert "anaconda -V" not in publish
-    assert "anaconda --version" not in publish
-    assert "& anaconda" not in publish
-    assert "pip install --upgrade pip" not in publish
-    assert "promote_conda_release.py" in publish
-    assert publish.index("validate_conda_publication_lock.py") < publish.index("==== Stage: upload")
-    assert "validate_conda_release.py" in publish
-    assert "Credential-boundary Conda release metadata validation failed" in publish
-    assert "--check-local-only" in publish
-    assert publish.index("validate_conda_release.py") < publish.index("--check-local-only")
-    assert publish.index("--check-local-only") < publish.index("==== Stage: upload")
-    assert "BINSTAR_CONFIG_DIR:" in publish
-    assert "url: https://api.anaconda.org" in publish
-    assert "ssl_verify: true" in publish
-    assert "get_config()" in publish
-    assert "@('upload', '--user'" in publish
-    assert "@('--at'" not in publish
-    assert "--expected-version" in publish
-    assert "anaconda show" not in publish
-    assert "anaconda move" not in publish
-    assert "NOTE: anaconda show exposed no sha256" not in publish
+
+def test_publish_isolates_credentials_and_requires_verified_endpoint(publish_steps):
+    step = publish_steps[-1]
+    script = step["inputs"]["script"]
+    assert step["env"]["ANACONDA_API_TOKEN"] == "$(ANACONDA_API_TOKEN)"
+    assert step["env"]["ANACONDA_CLIENT_FORCE_STANDALONE"] == "1"
+    assert "$(Build.BuildId)" in step["env"]["BINSTAR_CONFIG_DIR"]
+    for name in (
+        "CONDA_CHANNEL",
+        "CONDA_LABEL",
+        "MSSQL_PYTHON_VERSION",
+        "ANACONDA_API_TOKEN",
+        "BINSTAR_CONFIG_DIR",
+    ):
+        assert f"IsNullOrWhiteSpace($env:{name})" in script
+    assert "url: https://api.anaconda.org" in script
+    assert "ssl_verify: true" in script
+    assert "get_config()" in script
+    assert "@('--at'" not in script
+
+
+def test_publish_validates_fresh_download_before_uploading_every_archive(publish_steps):
+    assert publish_steps[0]["inputs"]["targetPath"] == "$(Build.SourcesDirectory)/conda-artifacts"
+    script = publish_steps[-1]["inputs"]["script"]
+    commands = re.findall(
+        r"^\s*python (.*?)(?=\n\s*if\s*\(\$LASTEXITCODE\s+-ne\s+0\)\s*\{[^}]*\bexit\s+1\b)",
+        script,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert len(commands) == 5
+    assert "validate_conda_publication_lock.py" in commands[0]
+    assert "get_config()" in commands[1]
+    assert '"$metadataGate"' in commands[2]
+    for option, variable in (
+        ("root", "$root"),
+        ("required-subdirs", "$env:REQUIRED_SUBDIRS"),
+        ("allowed-subdirs", "$env:ALLOWED_SUBDIRS"),
+        ("pythons", "$env:PYTHON_VERSIONS"),
+        ("mssql-python-version", "$env:MSSQL_PYTHON_VERSION"),
+    ):
+        assert f'--{option} "{variable}"' in commands[2]
+    assert "--check-local-only" in commands[3]
+    assert "@packagePaths" in commands[3] and "@packagePaths" in commands[4]
+    assert script.index("--check-local-only") < script.index("==== Stage: upload")
+    assert "Get-ChildItem" in script and "*.conda, *.tar.bz2" in script
+    assert "Where-Object" not in script
+    assert "foreach ($p in $pkgs)" in script
+    assert "--expected-version" in commands[3] and "--expected-version" in commands[4]
+    assert "@('upload', '--user'" in script and "'--skip-existing'" in script
+    assert "$exitCode = $LASTEXITCODE" in script
+    assert "if ($exitCode -eq 0)" in script and "if ($attempt -lt 3)" in script
 
 
 def test_release_pool_demand_is_nested_under_demands():
-    pipeline = _RELEASE_PIPELINE_PATH.read_text(encoding="utf-8")
-    assert (
-        "              demands:\n"
-        "                - imageOverride -equals PYTHON-1ES-MMS2022\n" in pipeline
-    )
+    pipeline = yaml.safe_load(_RELEASE_PIPELINE_PATH.read_text(encoding="utf-8"))
+    pool = pipeline["extends"]["parameters"]["stages"][0]["jobs"][0]["pool"]
+    assert pool["type"] == "windows"
+    assert pool["name"] == "Python-1ES-pool"
+    assert pool["demands"] == ["imageOverride -equals PYTHON-1ES-MMS2022"]
 
 
 def test_readme_documents_windows_arm64_defaults_channel():
@@ -1277,12 +1303,30 @@ def test_metadata_cli_reads_real_archive_and_enforces_requested_matrix(tmp_path,
     assert "metadata-validated" in capsys.readouterr().out
 
 
-def test_metadata_cli_rejects_empty_and_25_of_28_default_release(tmp_path, monkeypatch, capsys):
-    assert vcr.main(["--root", str(tmp_path)]) == 1
-    assert "no conda packages" in capsys.readouterr().err
-    monkeypatch.setattr(vcr, "collect_packages", lambda _root: _healthy_set())
-    assert vcr.main(["--root", str(tmp_path)]) == 1
-    assert "win-arm64" in capsys.readouterr().err
+@pytest.mark.parametrize(
+    "count, policy, message",
+    [
+        (0, [], "no conda packages"),
+        (25, [], "win-arm64"),
+        (28, [], ""),
+        (28, ["--mssql-python-version", "wrong"], "!= expected"),
+        (28, ["--required-subdirs", ""], "must not be empty"),
+        (28, ["--required-subdirs", " , "], "must not be empty"),
+        (28, ["--allowed-subdirs", ""], "must not be empty"),
+        (28, ["--allowed-subdirs", " , "], "must not be empty"),
+        (28, ["--pythons", ""], "must not be empty"),
+        (28, ["--pythons", " , "], "must not be empty"),
+        (28, ["--allowed-subdirs", "invalid"], "not in allowed set"),
+    ],
+)
+def test_metadata_cli_enforces_full_default_release_policy(
+    tmp_path, monkeypatch, capsys, count, policy, message
+):
+    packages = _healthy_set() + [_binding("win-arm64", py) for py in _PYTHONS[2:]]
+    monkeypatch.setattr(vcr, "collect_packages", lambda _root: packages[:count])
+    assert vcr.main(["--root", str(tmp_path), *policy]) == (1 if message else 0)
+    output = capsys.readouterr()
+    assert message in output.err if message else "metadata-validated" in output.out
 
 
 def test_staging_recovery_accepts_reply_lost_after_server_mutation():
