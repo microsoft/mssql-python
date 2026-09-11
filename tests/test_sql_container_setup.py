@@ -411,8 +411,57 @@ def test_total_attempt_budget_reserves_cleanup(setup_factory, colima, cap, total
     assert docker.created == 0
 
 
+def _linux_process_state(pid, proc_root=Path("/proc")):
+    try:
+        stat = (proc_root / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    # comm may contain spaces, newlines and parentheses; state follows its last ')'.
+    comm, separator, fields = stat.rpartition(")")
+    fields = fields.split()
+    assert separator and comm.startswith(f"{pid} (") and fields, "Malformed process stat"
+    assert len(fields[0]) == 1, "Malformed process state"
+    return fields[0]
+
+
+@pytest.mark.parametrize(
+    "comm, state", [("worker", "R"), ("odd) (worker", "Z"), ("worker\nwith ) space", "S")]
+)
+def test_linux_process_state_without_ps(tmp_path, monkeypatch, comm, state):
+    proc = tmp_path / "123"
+    proc.mkdir()
+    (proc / "stat").write_text(f"123 ({comm}) {state} 1 2 3\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", "")
+    assert _linux_process_state(123, tmp_path) == state
+
+
+def test_linux_process_state_when_already_reaped(tmp_path):
+    assert _linux_process_state(123, tmp_path) is None
+
+
+def test_linux_process_state_handles_reaping_during_read(tmp_path, monkeypatch):
+    def reaped(*args, **kwargs):
+        raise ProcessLookupError("Process exited during stat read")
+
+    monkeypatch.setattr(Path, "read_text", reaped)
+    assert _linux_process_state(123, tmp_path) is None
+
+
+def test_linux_process_state_does_not_mask_permission_errors(tmp_path, monkeypatch):
+    def denied(*args, **kwargs):
+        raise PermissionError("Process stat is not readable")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(PermissionError):
+        _linux_process_state(123, tmp_path)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="Unix descendant process-group contract")
-def test_exited_launcher_descendant_is_terminated_without_touching_other_groups(tmp_path):
+def test_exited_launcher_descendant_is_terminated_without_touching_other_groups(
+    tmp_path, monkeypatch
+):
+    if sys.platform.startswith("linux"):
+        monkeypatch.setenv("PATH", "")
     ready = tmp_path / "descendant"
     child = (
         "import os,pathlib,signal,time; "
@@ -434,12 +483,22 @@ def test_exited_launcher_descendant_is_terminated_without_touching_other_groups(
             sql_setup.Commands("").run([sys.executable, "-c", launcher], 5)
         assert time.monotonic() - start < 6
         child_pid = int(ready.read_text())
-        state = subprocess.run(
-            ["ps", "-o", "stat=", "-p", str(child_pid)],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        ).stdout.strip()
+        reaped_deadline = time.monotonic() + 2
+        while True:
+            if sys.platform.startswith("linux"):
+                state = _linux_process_state(child_pid)
+            else:
+                result = subprocess.run(
+                    ["/bin/ps", "-o", "stat=", "-p", str(child_pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                assert result.returncode in (0, 1) and not result.stderr, result.stderr
+                state = result.stdout.strip()
+            if not state or state.startswith("Z") or time.monotonic() >= reaped_deadline:
+                break
+            time.sleep(0.01)
         assert not state or state.startswith("Z")
         assert unrelated.poll() is None
     finally:
