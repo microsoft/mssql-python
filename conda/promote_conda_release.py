@@ -7,6 +7,12 @@ operations succeed. Publication requires an externally enforced exclusive lock f
 the owner/package/target label, held from before the snapshot through cleanup.
 Rollback is compensating, not atomic: only attempted additions absent from the
 initial snapshot are removed. An interrupted invocation resumes from verified labels.
+
+Failed pipeline uploads/promotions invoke --cleanup-staging for their attempted
+archives. After a hard interruption, run this same option with the original exact
+staging label and retained archives under the protected publication stage. Cleanup
+verifies identity/SHA-256 and removes only that staging label, never public labels
+or files. It is bounded, compensating recovery, not guaranteed cleanup after a kill.
 """
 
 from __future__ import annotations
@@ -169,6 +175,119 @@ def validate_release_input(expected_version: str, distributions: list[Distributi
         )
 
 
+def _require_publication(
+    owner: str,
+    staging_label: str,
+    target_label: str,
+    expected_version: str,
+    distributions: list[Distribution],
+) -> None:
+    if not _IDENTIFIER_RE.fullmatch(owner):
+        raise ValueError(f"Invalid Anaconda owner/channel: {owner!r}")
+    for label_name, label in (("staging", staging_label), ("target", target_label)):
+        if not _IDENTIFIER_RE.fullmatch(label):
+            raise ValueError(f"Invalid {label_name} label: {label!r}")
+    if staging_label == target_label:
+        raise ValueError("Staging and target labels must be different.")
+    validate_release_input(expected_version, distributions)
+    require_publication_lock(owner, "mssql-python", target_label)
+
+
+def _remove_staging_label(
+    api: Any,
+    owner: str,
+    distribution: Distribution,
+    staging_label: str,
+    labels: set[str],
+    *,
+    required_target: str | None,
+    verify_attempts: int,
+    delay_seconds: float,
+) -> None:
+    cleanup_error: Exception | None = None
+    if staging_label in labels:
+        try:
+            api.remove_channel(
+                staging_label,
+                owner,
+                package=distribution.package,
+                version=distribution.version,
+                filename=distribution.basename,
+            )
+        except Exception as exc:
+            cleanup_error = exc
+    try:
+        _verify_with_retry(
+            partial(
+                verify_distribution,
+                api,
+                owner,
+                distribution,
+                required_label=required_target,
+                forbidden_label=staging_label,
+            ),
+            f"Verify staging cleanup {distribution.basename}",
+            attempts=verify_attempts,
+            delay_seconds=delay_seconds,
+        )
+    except Exception as verification_error:
+        raise RuntimeError(
+            f"Failed to remove staging label from '{distribution.basename}': "
+            f"remove={cleanup_error}; verify={verification_error}"
+        ) from verification_error
+    if cleanup_error is not None:
+        print(
+            f"Staging cleanup API reported an error but '{distribution.basename}' "
+            f"verified clean: {cleanup_error}",
+            flush=True,
+        )
+
+
+def cleanup_staging(
+    api: Any,
+    owner: str,
+    staging_label: str,
+    target_label: str,
+    expected_version: str,
+    distributions: list[Distribution],
+    *,
+    verify_attempts: int = 3,
+    delay_seconds: float = 5,
+) -> None:
+    """Remove only the specified staging label from verified attempted uploads."""
+    _require_publication(owner, staging_label, target_label, expected_version, distributions)
+    from binstar_client.errors import NotFound  # type: ignore[import-not-found]
+
+    errors: list[str] = []
+    for distribution in distributions:
+        try:
+            try:
+                labels = _verify_with_retry(
+                    partial(verify_distribution, api, owner, distribution),
+                    f"Verify cleanup input {distribution.basename}",
+                    attempts=verify_attempts,
+                    delay_seconds=delay_seconds,
+                )
+            except NotFound:
+                print(f"Cleanup: '{distribution.basename}' is not present on the server.")
+                continue
+            _remove_staging_label(
+                api,
+                owner,
+                distribution,
+                staging_label,
+                labels,
+                required_target=None,
+                verify_attempts=verify_attempts,
+                delay_seconds=delay_seconds,
+            )
+        except Exception as exc:
+            # Continue compensating other attempted uploads, but report every failure.
+            errors.append(f"{distribution.basename}: {exc}")
+    if errors:
+        raise RuntimeError(f"Staging cleanup incomplete for '{staging_label}': {errors}")
+
+
 def promote(
     api: Any,
     owner: str,
@@ -180,15 +299,7 @@ def promote(
     verify_attempts: int = 3,
     delay_seconds: float = 5,
 ) -> None:
-    if not _IDENTIFIER_RE.fullmatch(owner):
-        raise ValueError(f"Invalid Anaconda owner/channel: {owner!r}")
-    for label_name, label in (("staging", staging_label), ("target", target_label)):
-        if not _IDENTIFIER_RE.fullmatch(label):
-            raise ValueError(f"Invalid {label_name} label: {label!r}")
-    if staging_label == target_label:
-        raise ValueError("Staging and target labels must be different.")
-    validate_release_input(expected_version, distributions)
-    require_publication_lock(owner, "mssql-python", target_label)
+    _require_publication(owner, staging_label, target_label, expected_version, distributions)
 
     def verifier(
         distribution: Distribution,
@@ -315,40 +426,16 @@ def promote(
         ) from exc
 
     for distribution in distributions:
-        cleanup_error: Exception | None = None
-        if staging_label in initial_labels[distribution.basename]:
-            try:
-                api.remove_channel(
-                    staging_label,
-                    owner,
-                    package=distribution.package,
-                    version=distribution.version,
-                    filename=distribution.basename,
-                )
-            except Exception as exc:
-                cleanup_error = exc
-        try:
-            _verify_with_retry(
-                verifier(
-                    distribution,
-                    required_label=target_label,
-                    forbidden_label=staging_label,
-                ),
-                f"Verify staging cleanup {distribution.basename}",
-                attempts=verify_attempts,
-                delay_seconds=delay_seconds,
-            )
-        except Exception as verification_error:
-            raise RuntimeError(
-                f"Failed to remove staging label from '{distribution.basename}': "
-                f"remove={cleanup_error}; verify={verification_error}"
-            ) from verification_error
-        if cleanup_error is not None:
-            print(
-                f"Staging cleanup API reported an error but '{distribution.basename}' "
-                f"verified clean: {cleanup_error}",
-                flush=True,
-            )
+        _remove_staging_label(
+            api,
+            owner,
+            distribution,
+            staging_label,
+            initial_labels[distribution.basename],
+            required_target=target_label,
+            verify_attempts=verify_attempts,
+            delay_seconds=delay_seconds,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -357,7 +444,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--staging-label", required=True)
     parser.add_argument("--target-label", required=True)
     parser.add_argument("--expected-version", required=True)
-    parser.add_argument("--check-local-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check-local-only", action="store_true")
+    mode.add_argument(
+        "--cleanup-staging",
+        action="store_true",
+        help="Recover attempted uploads: verify exact files and remove only this staging label.",
+    )
     parser.add_argument("packages", nargs="+")
     args = parser.parse_args(argv)
 
@@ -375,7 +468,8 @@ def main(argv: list[str] | None = None) -> int:
     api = get_server_api(config={"url": _ANACONDA_API_URL, "ssl_verify": True})
     # anaconda-client 1.14.1 does not set timeouts on its metadata/label requests.
     api.session.request = partial(api.session.request, timeout=(15, 60))
-    promote(
+    operation = cleanup_staging if args.cleanup_staging else promote
+    operation(
         api,
         args.owner,
         args.staging_label,
@@ -383,10 +477,13 @@ def main(argv: list[str] | None = None) -> int:
         args.expected_version,
         distributions,
     )
-    print(
-        f"PROMOTION_OK: verified and promoted {len(distributions)} distribution(s) "
-        f"to {args.owner}/{args.target_label}."
-    )
+    if args.cleanup_staging:
+        print(f"STAGING_CLEANUP_OK: verified cleanup of label '{args.staging_label}'.")
+    else:
+        print(
+            f"PROMOTION_OK: verified and promoted {len(distributions)} distribution(s) "
+            f"to {args.owner}/{args.target_label}."
+        )
     return 0
 
 

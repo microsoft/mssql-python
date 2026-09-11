@@ -18,10 +18,15 @@ on:
   pull_request:
     paths:
       - 'conda/**'
+      - 'eng/scripts/_conda_pkg.py'
       - 'eng/scripts/audit_bundled_binaries.py'
       - 'eng/scripts/assert_macho_arch.py'
       - 'eng/scripts/assert_pe_machine.py'
       - 'OneBranchPipelines/scripts/build_conda_packages.py'
+      - 'OneBranchPipelines/conda-build-pipeline.yml'
+      - 'OneBranchPipelines/steps/conda-build-validate-step*.yml'
+      - 'OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml'
+      - 'OneBranchPipelines/variables/*.yml'
       - 'OneBranchPipelines/conda-release-pipeline.yml'
       - 'OneBranchPipelines/steps/conda-release-step.yml'
       - 'OneBranchPipelines/steps/conda-publish-step.yml'
@@ -33,6 +38,7 @@ on:
       - 'tests/test_035_conda_macho_assert.py'
       - 'tests/test_036_conda_provenance.py'
       - 'tests/test_037_conda_publication_lock.py'
+      - 'requirements.txt'
       - '.github/workflows/conda-audit.yml'
 
 permissions:
@@ -70,8 +76,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p wheels
-          # --no-deps: pull ONLY the two wheels we repackage (not azure-identity etc).
-          python -m pip download --no-deps mssql-python mssql-python-odbc -d wheels
+          # Known public CP311/linux-64 pair, not qualification of the checkout's driver.
+          # mssql-python 1.14.0 requires exactly mssql-python-odbc 18.6.2.1.
+          cat > wheel-inputs.txt <<'EOF'
+          mssql-python==1.14.0 --hash=sha256:2f1cd90ec569ddce446c4ccf58ab3a6f6872e98fe950fcb223b2dab8992a9395
+          mssql-python-odbc==18.6.2.1 --hash=sha256:b8aad821f3b8637b0e6d4637f4b730ed9897c4665fa99d47e44e97fd1c79c77a
+          EOF
+          python -m pip download --no-deps --only-binary=:all: --require-hashes \
+            -r wheel-inputs.txt -d wheels
           echo "Downloaded:"; ls -1 wheels
 
       - name: Build + audit a linux-64 conda package

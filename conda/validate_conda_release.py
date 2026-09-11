@@ -31,7 +31,8 @@ from collections import defaultdict
 _BINDING_NAME = "mssql-python"
 
 _PY_TAG_RE = re.compile(r"py(\d)(\d{1,2})")
-_PY_DEP_RE = re.compile(r"python\s+(\d+)\.(\d+)")
+_PY_DEP_RE = re.compile(r"python\s+(?:==?)?(\d+)\.(\d+)(?:\.(?:\d+|\*))?(?:\s+\S+)?")
+_PY_RANGE_RE = re.compile(r"python\s+>=\s*(\d+)\.(\d+)(?:\.\d+)?\s*,\s*<\s*(\d+)\.(\d+)(?:\.0a0)?")
 
 # Some subdirs legitimately ship a REDUCED Python matrix. win-arm64's conda
 # dependencies (cryptography, pyodbc) are published on Anaconda `defaults` only
@@ -114,16 +115,22 @@ def python_tag_from_index(index: dict) -> str:
     """Extract the ``X.Y`` Python version a package is built for, or ``''``.
 
     Uses the build string's ``pyXY`` token first (authoritative for conda-build
-    Python packages), then falls back to a ``python X.Y`` run dependency. A
-    Python-agnostic package (build string ``0``) has neither and returns ``''``.
+    Python packages), then falls back to a pinned run dependency or the bounded
+    ``python >=X.Y,<X.(Y+1).0a0`` form emitted by conda-build. Unbounded or
+    cross-minor ranges do not identify one Python variant and return ``''``.
     """
     match = _PY_TAG_RE.search(str(index.get("build", "")))
     if match:
         return f"{match.group(1)}.{match.group(2)}"
     for dep in index.get("depends", []) or []:
-        match = _PY_DEP_RE.match(str(dep))
+        match = _PY_DEP_RE.fullmatch(str(dep).strip())
         if match:
             return f"{match.group(1)}.{match.group(2)}"
+        match = _PY_RANGE_RE.fullmatch(str(dep).strip())
+        if match:
+            major, minor, upper_major, upper_minor = map(int, match.groups())
+            if (upper_major, upper_minor) == (major, minor + 1):
+                return f"{major}.{minor}"
     return ""
 
 
@@ -315,7 +322,10 @@ def _parse_subdir_pythons(value: str) -> dict:
             raise ValueError(
                 f"invalid subdir Python override '{chunk}'; expected subdir=X.Y[,X.Y]."
             )
-        result[subdir.strip()] = _split(pys)
+        subdir = subdir.strip()
+        if subdir in result:
+            raise ValueError(f"invalid subdir Python override: duplicate subdir '{subdir}'.")
+        result[subdir] = _split(pys)
     return result
 
 

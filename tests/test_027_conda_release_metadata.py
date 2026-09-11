@@ -332,7 +332,16 @@ def test_parse_subdir_pythons():
     }
 
 
-@pytest.mark.parametrize("value", ["win-arm64", "=3.12", "win-arm64="])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "win-arm64",
+        "=3.12",
+        "win-arm64=",
+        "win-arm64=3.12;win-arm64=3.13",
+        "win-arm64=3.12; win-arm64 =3.12",
+    ],
+)
 def test_parse_subdir_pythons_rejects_malformed_policy(value):
     with pytest.raises(ValueError, match="invalid subdir Python override"):
         vcr._parse_subdir_pythons(value)
@@ -358,13 +367,25 @@ def test_release_policy_cannot_disable_required_matrix(policy, message):
     assert any(message in error for error in vcr.validate(_healthy_set(), **(arguments | policy)))
 
 
-def test_python_tag_from_index():
-    assert vcr.python_tag_from_index({"build": "py311_0"}) == "3.11"
-    assert vcr.python_tag_from_index({"build": "py310h1a2b3c_0"}) == "3.10"
-    assert (
-        vcr.python_tag_from_index({"build": "0", "depends": ["python 3.12.* *_cpython"]}) == "3.12"
-    )
-    assert vcr.python_tag_from_index({"build": "0"}) == ""
+@pytest.mark.parametrize(
+    "index, expected",
+    [
+        ({"build": "py311_0"}, "3.11"),
+        ({"build": "py310h1a2b3c_0"}, "3.10"),
+        ({"build": "0", "depends": ["python 3.12.* *_cpython"]}, "3.12"),
+        ({"build": "0", "depends": ["python >=3.12,<3.13.0a0"]}, "3.12"),
+        ({"depends": ["python >=3.12.1, <3.13"]}, "3.12"),
+        ({"depends": ["python ==3.12.*"]}, "3.12"),
+        ({"depends": ["python >=3.12"]}, ""),
+        ({"depends": ["python >=3.12,<3.14.0a0"]}, ""),
+        ({"depends": ["python 3.12,<3.14"]}, ""),
+        ({"depends": ["python <3.12"]}, ""),
+        ({"depends": ["python >=3.12,<3.13|>=3.13"]}, ""),
+        ({"build": "0"}, ""),
+    ],
+)
+def test_python_tag_from_index(index, expected):
+    assert vcr.python_tag_from_index(index) == expected
 
 
 def _zstd_available():
@@ -711,7 +732,8 @@ def test_rollback_never_removes_unattempted_or_preexisting_target_labels():
     assert api.distributions[untouched.basename]["labels"] == ["staging"]
 
 
-def test_publication_guard_rejects_before_initial_snapshot(monkeypatch):
+@pytest.mark.parametrize("operation", [promoter.promote, promoter.cleanup_staging])
+def test_publication_guard_rejects_before_initial_snapshot(monkeypatch, operation):
     distribution = _distribution("win-64", "package.conda")
     api = _api_for([distribution])
 
@@ -720,7 +742,7 @@ def test_publication_guard_rejects_before_initial_snapshot(monkeypatch):
 
     monkeypatch.setattr(promoter, "require_publication_lock", no_lock)
     with pytest.raises(RuntimeError, match="No exclusive publication lock"):
-        promoter.promote(api, "microsoft", "staging", "main", "1.13.0", [distribution])
+        operation(api, "microsoft", "staging", "main", "1.13.0", [distribution])
     assert api.calls == []
 
 
@@ -854,11 +876,12 @@ def test_same_filename_on_different_platforms_is_not_a_duplicate():
         ("microsoft", "main", "main"),
     ],
 )
-def test_invalid_publication_scope_fails_before_any_remote_read(owner, staging, target):
+@pytest.mark.parametrize("operation", [promoter.promote, promoter.cleanup_staging])
+def test_invalid_publication_scope_fails_before_any_remote_read(owner, staging, target, operation):
     distribution = _distribution("win-64", "package.conda")
     api = _api_for([distribution])
     with pytest.raises(ValueError):
-        promoter.promote(api, owner, staging, target, "1.13.0", [distribution])
+        operation(api, owner, staging, target, "1.13.0", [distribution])
     assert api.calls == []
 
 
@@ -886,6 +909,79 @@ def test_partial_upload_cannot_start_public_label_promotion():
             delay_seconds=0,
         )
     assert not any(call[0] == "add" for call in api.calls)
+
+
+@pytest.fixture
+def cleanup_not_found(monkeypatch):
+    class NotFound(Exception):
+        pass
+
+    errors = types.ModuleType("binstar_client.errors")
+    errors.NotFound = NotFound
+    monkeypatch.setitem(sys.modules, "binstar_client.errors", errors)
+    return NotFound
+
+
+@pytest.mark.parametrize("reply_lost", [False, True])
+def test_failed_upload_cleanup_preserves_public_and_other_staging_labels(
+    cleanup_not_found, reply_lost
+):
+    first = _distribution("win-64", "same.conda")
+    absent = _distribution("linux-64", "same.conda")
+    api = _api_for([first], labels=("staging", "main", "another_build"))
+    if reply_lost:
+        api.fail_remove_after_apply = ("staging", first.basename)
+    original_read = api.distribution
+
+    def read(owner, package, version, basename):
+        if basename == absent.basename:
+            raise cleanup_not_found("upload never landed")
+        return original_read(owner, package, version, basename)
+
+    api.distribution = read
+    promoter.cleanup_staging(
+        api, "microsoft", "staging", "main", "1.13.0", [first, absent], verify_attempts=1
+    )
+    assert api.distributions[first.basename]["labels"] == ["main", "another_build"]
+    assert [call for call in api.calls if call[0] != "distribution"] == [
+        ("remove", "staging", "microsoft", first.package, first.version, first.basename)
+    ]
+
+
+@pytest.mark.parametrize("failure", ["checksum", "identity", "timeout", "remove"])
+def test_cleanup_reports_failures_but_continues_other_verified_files(cleanup_not_found, failure):
+    failed = _distribution("win-64", "failed.conda")
+    good = _distribution("linux-64", "good.conda")
+    api = _api_for([failed, good], labels=("staging", "main"))
+    if failure == "checksum":
+        api.distributions[failed.basename]["sha256"] = "0" * 64
+    elif failure == "identity":
+        api.distributions[failed.basename]["basename"] = "wrong/failed.conda"
+    elif failure == "timeout":
+        original_read = api.distribution
+
+        def read(owner, package, version, basename):
+            if basename == failed.basename:
+                raise TimeoutError("metadata unavailable")
+            return original_read(owner, package, version, basename)
+
+        api.distribution = read
+    else:
+        original_remove = api.remove_channel
+
+        def remove(*args, **kwargs):
+            if kwargs["filename"] == failed.basename:
+                raise TimeoutError("remove did not reach server")
+            original_remove(*args, **kwargs)
+
+        api.remove_channel = remove
+    with pytest.raises(RuntimeError, match="Staging cleanup incomplete.*failed.conda"):
+        promoter.cleanup_staging(
+            api, "microsoft", "staging", "main", "1.13.0", [failed, good], verify_attempts=1
+        )
+    assert api.distributions[failed.basename]["labels"] == ["staging", "main"]
+    assert api.distributions[good.basename]["labels"] == ["main"]
+    assert not any(call[0] == "add" or call[:2] == ("remove", "main") for call in api.calls)
 
 
 @pytest.mark.parametrize("success_on_last_attempt", [True, False])
@@ -1044,7 +1140,8 @@ def test_local_only_cli_needs_neither_token_nor_publication_guard(tmp_path, monk
     assert "LOCAL_RELEASE_INPUT_OK" in capsys.readouterr().out
 
 
-def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cleanup", [False, True])
+def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch, cleanup):
     path = _write_release_archive(tmp_path)
     requests = []
     api = types.SimpleNamespace(
@@ -1057,7 +1154,7 @@ def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "binstar_client.utils", utils)
     monkeypatch.setattr(
         promoter,
-        "promote",
+        "cleanup_staging" if cleanup else "promote",
         lambda api, *_args: api.session.request("GET", "https://api.anaconda.org/example"),
     )
     assert (
@@ -1071,6 +1168,7 @@ def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch):
                 "main",
                 "--expected-version",
                 "1.13.0",
+                *(["--cleanup-staging"] if cleanup else []),
                 str(path),
             ]
         )
@@ -1079,8 +1177,9 @@ def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch):
     assert requests == [{"timeout": (15, 60)}]
 
 
-def test_metadata_cli_reads_real_archive_and_enforces_requested_matrix(tmp_path, capsys):
-    _write_release_archive(tmp_path)
+@pytest.mark.parametrize("build", ["py312_0", "0"])
+def test_metadata_cli_reads_real_archive_and_enforces_requested_matrix(tmp_path, capsys, build):
+    _write_release_archive(tmp_path, build=build)
     assert vcr.main(["--root", str(tmp_path), "--mssql-python-version", "1.13.0"]) == 1
     assert "MISSING" in capsys.readouterr().err
     assert (

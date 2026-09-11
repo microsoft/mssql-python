@@ -240,8 +240,8 @@ steps:
 
         # Staged-then-promoted publish: upload the FULL set to a BUILD-UNIQUE staging
         # label first; only after every package lands AND its bytes are verified do we
-        # begin adding the public label. A mid-upload failure leaves only a non-main staging
-        # set. Promotion verifies each label mutation and rolls back reported failures;
+        # begin adding the public label. Failed uploads/promotions clean this run's staging
+        # label from attempted files. Promotion verifies each mutation and rolls back failures;
         # an interrupted run is idempotent and resumes from server-verified labels. The
         # staging label distinguishes retries; the stage's protected variable-group
         # lock, not this label, serializes publication to the shared public label.
@@ -272,23 +272,45 @@ steps:
         }
 
         Write-Host "==== Stage: upload $($pkgs.Count) package(s) to label '$stagingLabel' ===="
-        foreach ($p in $pkgs) {
-          Write-Host "Uploading $($p.Directory.Name)/$($p.Name) -> $stagingLabel ..."
-          if (-not (Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)"))) {
-            Write-Error "Failed to stage $($p.Name) after 3 attempts. The public label was NOT touched."
-            exit 1
+        $attemptedPaths = @()
+        try {
+          foreach ($p in $pkgs) {
+            # Include the failed attempt too: the upload may land before its response is lost.
+            $attemptedPaths += $p.FullName
+            Write-Host "Uploading $($p.Directory.Name)/$($p.Name) -> $stagingLabel ..."
+            if (-not (Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)"))) {
+              throw "Failed to stage $($p.Name) after 3 attempts. The public label was NOT touched."
+            }
+          }
+
+          python "$promoter" `
+            --owner "$env:CONDA_CHANNEL" `
+            --staging-label "$stagingLabel" `
+            --target-label "$env:CONDA_LABEL" `
+            --expected-version "$env:MSSQL_PYTHON_VERSION" `
+            @packagePaths
+          if ($LASTEXITCODE -ne 0) {
+            throw "Conda staging verification/promotion failed."
           }
         }
-
-        python "$promoter" `
-          --owner "$env:CONDA_CHANNEL" `
-          --staging-label "$stagingLabel" `
-          --target-label "$env:CONDA_LABEL" `
-          --expected-version "$env:MSSQL_PYTHON_VERSION" `
-          @packagePaths
-        if ($LASTEXITCODE -ne 0) {
-          Write-Error "Conda staging verification/promotion failed."
-          exit 1
+        catch {
+          $publicationError = $_
+          if ($attemptedPaths.Count -gt 0) {
+            try {
+              python "$promoter" `
+                --owner "$env:CONDA_CHANNEL" `
+                --staging-label "$stagingLabel" `
+                --target-label "$env:CONDA_LABEL" `
+                --expected-version "$env:MSSQL_PYTHON_VERSION" `
+                --cleanup-staging `
+                @attemptedPaths
+              if ($LASTEXITCODE -ne 0) { throw "Staging cleanup exited with code $LASTEXITCODE." }
+            }
+            catch {
+              Write-Warning "Cleanup incomplete: $_. Recover with --cleanup-staging, exact label '$stagingLabel', and the retained attempted archives under the protected publication stage."
+            }
+          }
+          throw $publicationError
         }
 
         Write-Host ""
