@@ -182,6 +182,10 @@ from .constants import (  # noqa: F401
     SQL_TYPE_TIMESTAMP,
     SQL_GUID,
     SQL_XML,
+    # SQL Server-specific type constants (pyodbc parity)
+    SQL_SS_TIME2,
+    SQL_SS_XML,
+    SQL_SS_VARIANT,
     # Connection attribute constants
     SQL_ATTR_ACCESS_MODE,
     SQL_ATTR_CONNECTION_TIMEOUT,
@@ -393,6 +397,10 @@ __all__ = [
     "SQL_TYPE_TIMESTAMP",
     "SQL_GUID",
     "SQL_XML",
+    # SQL Server-specific type constants (pyodbc parity)
+    "SQL_SS_TIME2",
+    "SQL_SS_XML",
+    "SQL_SS_VARIANT",
     # Connection attribute constants
     "SQL_ATTR_ACCESS_MODE",
     "SQL_ATTR_CONNECTION_TIMEOUT",

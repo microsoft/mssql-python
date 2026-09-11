@@ -10,6 +10,7 @@
 
 // Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 
 // Refresh threshold for expiry-aware checkout: a pooled connection whose access
 // token expires within this many seconds is discarded and reopened with a fresh
@@ -58,6 +59,7 @@ ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
                                                     const py::dict& attrs_before,
                                                     const py::object& token_factory) {
+    PERF_TIMER("ConnectionPool::acquire");
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
     bool needs_connect = false;
@@ -302,6 +304,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
 }
 
 void ConnectionPool::release(std::shared_ptr<Connection> conn) {
+    PERF_TIMER("ConnectionPool::release");
     bool should_disconnect = false;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -358,6 +361,7 @@ bool ConnectionPool::canEvict() {
 }
 
 void ConnectionPool::close() {
+    PERF_TIMER("ConnectionPool::close");
     std::vector<std::shared_ptr<Connection>> to_close;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -385,6 +389,7 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
                                                                      const py::dict& attrs_before,
                                                                      const std::u16string& pool_key,
                                                                      const py::object& token_factory) {
+    PERF_TIMER("ConnectionPoolManager::acquireConnection");
     // Key the pool by pool_key when provided (identity-aware),
     // else fall back to the connection string (legacy behavior).
     const std::u16string& key = pool_key.empty() ? connStr : pool_key;
