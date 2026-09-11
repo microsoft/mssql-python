@@ -62,7 +62,7 @@ parameters:
   - name: pythonVersions
     type: string
     default: '3.10,3.11,3.12,3.13,3.14'
-  # Python used to install/run anaconda-client in the release job.
+  # The publisher hash lock targets CPython 3.12 / Windows x64; other runtimes reject.
   - name: pythonVersion
     type: string
     default: '3.12'
@@ -91,30 +91,45 @@ steps:
 
   - task: PowerShell@2
     displayName: '${{ parameters.labelPrefix }}Install anaconda-client'
+    env:
+      ANACONDA_API_TOKEN: ''
+      SYSTEM_ACCESSTOKEN: ''
     inputs:
       targetType: 'inline'
       script: |
         $ErrorActionPreference = 'Stop'
-        # This credentialed job uses a fixed version available through the configured
-        # Microsoft package feed; never upgrade pip or float the publishing client.
-        python -m pip --isolated install --disable-pip-version-check --only-binary=:all: `
+        python -c "import sys, sysconfig; assert sys.implementation.name == 'cpython' and sys.version_info[:2] == (3, 12) and sys.platform == 'win32' and sysconfig.get_platform() == 'win-amd64', 'Publisher lock requires CPython 3.12 Windows x64'"
+        if ($LASTEXITCODE -ne 0) { throw "Publisher runtime does not match the reviewed hash lock." }
+        $lock = "$(Build.SourcesDirectory)/conda/requirements-publish.txt"
+        if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) { throw "Publisher dependency lock is missing." }
+        # A fresh venv avoids trusting already-installed packages or their startup hooks.
+        # Only the later publishing task maps credentials into its environment.
+        $publisherEnvironment = Join-Path "$(Agent.TempDirectory)" ("conda-publisher-" + [guid]::NewGuid().ToString('N'))
+        if (Test-Path -LiteralPath $publisherEnvironment) { throw "Publisher environment already exists." }
+        python -m venv "$publisherEnvironment"
+        if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated publisher environment." }
+        $publisherPython = Join-Path $publisherEnvironment 'Scripts\python.exe'
+        & $publisherPython -m pip --isolated install --disable-pip-version-check --require-hashes --only-binary=:all: `
           --index-url "https://packagefeedproxy.microsoft.io/pypi/simple/" `
-          "anaconda-client==1.14.1" "zstandard==0.23.0"
+          -r "$lock"
         if ($LASTEXITCODE -ne 0) {
-          Write-Error "Failed to install pinned anaconda-client==1.14.1 and zstandard==0.23.0."
+          Write-Error "Failed to install the complete hash-locked publisher dependency closure."
           exit 1
         }
-        python -c "import importlib.metadata as m; assert m.version('anaconda-client') == '1.14.1'; assert m.version('zstandard') == '0.23.0'; from binstar_client.utils import get_server_api; import zstandard; print('pinned publisher APIs ready')"
+        & $publisherPython -m pip --isolated check
+        if ($LASTEXITCODE -ne 0) { throw "Publisher dependency closure is inconsistent." }
+        & $publisherPython -c "import importlib.metadata as m; assert m.version('anaconda-client') == '1.14.1'; assert m.version('zstandard') == '0.23.0'; from binstar_client.utils import get_server_api; import zstandard; print('pinned publisher APIs ready')"
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Pinned anaconda-client version/API verification failed."
           exit 1
         }
         $env:ANACONDA_CLIENT_FORCE_STANDALONE = '1'
-        python -m binstar_client.scripts.cli upload --help | Out-Null
+        & $publisherPython -m binstar_client.scripts.cli upload --help | Out-Null
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Pinned anaconda-client upload module is unavailable."
           exit 1
         }
+        Write-Host "##vso[task.prependpath]$(Join-Path $publisherEnvironment 'Scripts')"
 
   - task: PowerShell@2
     displayName: '${{ parameters.labelPrefix }}Publish conda packages to anaconda.org/${{ parameters.condaChannel }}'
@@ -137,7 +152,10 @@ steps:
       SYSTEM_COLLECTIONURI: $(System.CollectionUri)
       SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
       BUILD_BUILDID: $(Build.BuildId)
-      SYSTEM_STAGEID: $(System.StageId)
+      SYSTEM_JOBID: $(System.JobId)
+      SYSTEM_JOBATTEMPT: $(System.JobAttempt)
+      SYSTEM_PHASEATTEMPT: $(System.PhaseAttempt)
+      SYSTEM_PLANID: $(System.PlanId)
       SYSTEM_STAGENAME: $(System.StageName)
       SYSTEM_STAGEATTEMPT: $(System.StageAttempt)
       BUILD_SOURCEBRANCH: $(Build.SourceBranch)

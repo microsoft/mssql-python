@@ -14,6 +14,7 @@ import json
 import sys
 import tarfile
 import types
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -1060,7 +1061,9 @@ def test_interrupted_promotion_is_recoverable_but_not_atomic():
     assert all(api.distributions[item.basename]["labels"] == ["main"] for item in (first, second))
 
 
-def _write_release_archive(tmp_path, *, folder="win-64", extension=".tar.bz2", **overrides):
+def _write_release_archive(
+    tmp_path, *, folder="win-64", extension=".tar.bz2", payload=b"canonical payload", **overrides
+):
     directory = tmp_path / folder
     directory.mkdir(exist_ok=True)
     index = {
@@ -1084,11 +1087,18 @@ def _write_release_archive(tmp_path, *, folder="win-64", extension=".tar.bz2", *
         except ImportError:
             import zstandard
 
-            compressed = zstandard.ZstdCompressor().compress(buffer.getvalue())
+            compress = zstandard.ZstdCompressor().compress
         else:
-            compressed = zstd.compress(buffer.getvalue())
+            compress = zstd.compress
+        payload_tar = io.BytesIO()
+        with tarfile.open(fileobj=payload_tar, mode="w") as archive:
+            member = tarfile.TarInfo("payload-marker.txt")
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
         with zipfile.ZipFile(path, "w") as archive:
-            archive.writestr("info-package.tar.zst", compressed)
+            archive.writestr("metadata.json", json.dumps({"conda_pkg_format_version": 2}))
+            archive.writestr(f"info-{path.stem}.tar.zst", compress(buffer.getvalue()))
+            archive.writestr(f"pkg-{path.stem}.tar.zst", compress(payload_tar.getvalue()))
     else:
         path.write_bytes(buffer.getvalue())
     return path
@@ -1133,13 +1143,108 @@ def test_local_preflight_requires_canonical_archive_basename(
         *map(str, paths),
     ]
     if renamed:
-        with pytest.raises(ValueError, match="canonical basename"):
+        with pytest.raises(ValueError, match="canonical"):
             promoter.main(args)
     else:
         assert promoter.main(args) == 0
         assert {promoter.distribution_from_path(p).basename for p in paths} == {
             f"{subdir}/mssql-python-1.13.0-py312_0{extension}" for subdir in ("win-64", "linux-64")
         }
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing-pkg",
+        "decoy-first-pkg",
+        "duplicate-pkg",
+        "noncanonical-pkg",
+        "noncanonical-info",
+        "duplicate-metadata",
+        "missing-metadata",
+        "extra-member",
+        "unsupported-version",
+        "boolean-version",
+        "non-object-metadata",
+    ],
+)
+def test_conda_container_shape_rejects_before_publication(tmp_path, monkeypatch, mutation):
+    path = _write_release_archive(tmp_path, extension=".conda")
+    with zipfile.ZipFile(path) as archive:
+        entries = [(info.filename, archive.read(info)) for info in archive.infolist()]
+    pkg = next(entry for entry in entries if entry[0].startswith("pkg-"))
+    if mutation == "missing-pkg":
+        entries.remove(pkg)
+    elif mutation == "decoy-first-pkg":
+        decoy_path = _write_release_archive(
+            tmp_path, extension=".conda", payload=b"different audit decoy"
+        )
+        with zipfile.ZipFile(decoy_path) as archive:
+            decoy = archive.read(pkg[0])
+        assert decoy != pkg[1]
+        entries.insert(0, ("pkg-audit-decoy.tar.zst", decoy))
+    elif mutation == "duplicate-pkg":
+        entries.append(pkg)
+    elif mutation.startswith("noncanonical-"):
+        component = mutation.split("-")[1]
+        entries = [
+            (f"{component}-wrong.tar.zst" if name.startswith(component + "-") else name, data)
+            for name, data in entries
+        ]
+    elif mutation == "duplicate-metadata":
+        entries.append(entries[0])
+    elif mutation == "missing-metadata":
+        entries = [entry for entry in entries if entry[0] != "metadata.json"]
+    elif mutation == "extra-member":
+        entries.append(("unexpected.txt", b"unexpected"))
+    else:
+        metadata = {
+            "unsupported-version": {"conda_pkg_format_version": 3},
+            "boolean-version": {"conda_pkg_format_version": True},
+            "non-object-metadata": [],
+        }[mutation]
+        entries[0] = ("metadata.json", json.dumps(metadata).encode())
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Duplicate name", category=UserWarning)
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data in entries:
+                archive.writestr(name, data)
+    assert (
+        vcr.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--required-subdirs",
+                "win-64",
+                "--allowed-subdirs",
+                "win-64",
+                "--pythons",
+                "3.12",
+                "--mssql-python-version",
+                _MP_VER,
+            ]
+        )
+        == 1
+    )
+    monkeypatch.setattr(
+        promoter, "promote", lambda *_args: pytest.fail("invalid archive must not publish")
+    )
+    with pytest.raises(ValueError):
+        promoter.main(
+            [
+                "--owner",
+                "microsoft",
+                "--staging-label",
+                "local",
+                "--target-label",
+                "main",
+                "--expected-version",
+                _MP_VER,
+                "--check-local-only",
+                str(path),
+            ]
+        )
 
 
 @pytest.mark.parametrize(
@@ -1354,7 +1459,9 @@ def test_index_member_must_be_unique_regular_file(tmp_path, monkeypatch, extensi
     path = tmp_path / ("package" + extension)
     if extension == ".conda":
         with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("metadata.json", json.dumps({"conda_pkg_format_version": 2}))
             archive.writestr("info-package.tar.zst", buffer.getvalue())
+            archive.writestr("pkg-package.tar.zst", b"not read by the metadata reader")
         monkeypatch.setattr(vcr, "_zstd_decompress", lambda raw: raw)
     else:
         path.write_bytes(buffer.getvalue())

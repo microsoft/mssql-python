@@ -1,4 +1,4 @@
-"""Synthetic native-check contract tests, NOT live lock acquisition qualification."""
+"""Synthetic policy tests, NOT live lock acquisition or revision-API qualification."""
 
 import copy
 import importlib.util
@@ -24,6 +24,8 @@ finally:
 RUN = 174300  # Synthetic publication run, not a claim that a real run was queued.
 PLAN = "ea0e4c86-98f9-4a6c-8338-beb1f44e861c"
 STAGE_ID = "91e40e28-d0dd-5294-89cc-d0fc47500c9a"
+PHASE_ID = "2eb4672b-d4ee-5173-5915-e9448b452ff6"
+JOB_ID = "434a55e9-bbcf-549f-282d-77286bd65e3c"
 CHECKPOINT = "08890543-3c78-57a1-f278-a9d77e3a93d7"
 LOCK_ID, APPROVAL_ID = 901, 902  # Synthetic; actual group117 has no installed checks.
 RESOURCE = {"type": "variablegroup", "id": "117", "name": "Anaconda Publishing"}
@@ -92,6 +94,22 @@ def evidence():
                     "attempt": 1,
                     "state": "completed",
                     "result": "succeeded",
+                },
+                {
+                    "id": PHASE_ID,
+                    "parentId": STAGE_ID,
+                    "type": "Phase",
+                    "attempt": 1,
+                    "state": "inProgress",
+                    "result": None,
+                },
+                {
+                    "id": JOB_ID,
+                    "parentId": PHASE_ID,
+                    "type": "Job",
+                    "attempt": 1,
+                    "state": "inProgress",
+                    "result": None,
                 },
             ]
         },
@@ -260,6 +278,36 @@ def test_evaluated_configuration_must_match_current_resource_and_revision(
         verify(evidence)
 
 
+@pytest.mark.parametrize("index", [0, 1])
+@pytest.mark.parametrize(
+    "current,evaluated",
+    [
+        (None, 2),
+        (2, None),
+        (None, None),
+        (2, 1),
+        (0, 0),
+        (-1, -1),
+        (True, True),
+        (2.0, 2.0),
+        ("invalid", "invalid"),
+    ],
+)
+def test_revision_evidence_is_mandatory_not_a_live_api_contract(
+    evidence, index, current, evaluated
+):
+    for record, revision in (
+        (evidence["configurations"]["value"][index], current),
+        (evidence["suite"]["checkRuns"][index]["checkConfigurationRef"], evaluated),
+    ):
+        if revision is None:
+            record.pop("version")
+        else:
+            record["version"] = revision
+    with pytest.raises(ValueError):
+        verify(evidence)
+
+
 @pytest.mark.parametrize("which", ["configuration", "check", "stage", "checkpoint"])
 def test_duplicate_evidence_is_not_accepted(evidence, which):
     if which == "configuration":
@@ -322,7 +370,10 @@ def pipeline_env(monkeypatch):
     values = {
         "SYSTEM_TEAMPROJECTID": guard.PROJECT_ID,
         "SYSTEM_STAGENAME": "CondaRelease",
-        "SYSTEM_STAGEID": STAGE_ID,
+        "SYSTEM_JOBID": JOB_ID,
+        "SYSTEM_JOBATTEMPT": "1",
+        "SYSTEM_PHASEATTEMPT": "1",
+        "SYSTEM_PLANID": PLAN,
         "SYSTEM_STAGEATTEMPT": "1",
         "BUILD_BUILDID": str(RUN),
         "BUILD_SOURCEBRANCH": "refs/heads/main",
@@ -337,7 +388,8 @@ def pipeline_env(monkeypatch):
     return values
 
 
-def test_callback_fetches_only_expected_current_run_resources(monkeypatch, pipeline_env, evidence):
+@pytest.fixture
+def recorded_api(monkeypatch, evidence):
     calls = []
     paths = [
         ("distributedtask/variablegroups/117?api-version=7.1", "group"),
@@ -357,15 +409,64 @@ def test_callback_fetches_only_expected_current_run_resources(monkeypatch, pipel
             "suite",
         ),
     ]
-    responses = {path: evidence[key] for path, key in paths}
+    responses = dict(paths)
 
     def get_json(path):
         calls.append(path)
-        return responses[path]
+        return evidence[responses[path]]
 
     monkeypatch.setattr(guard, "ado_get_json", get_json)
+    return calls, [path for path, _ in paths]
+
+
+def test_callback_fetches_only_expected_current_run_resources(
+    monkeypatch, pipeline_env, recorded_api
+):
+    monkeypatch.delenv("SYSTEM_STAGEID", raising=False)
+    calls, expected_paths = recorded_api
     assert guard.require_publication_lock("microsoft", "mssql-python", "main")["buildId"] == RUN
-    assert calls == [path for path, _ in paths]
+    assert calls == expected_paths
+
+
+@pytest.mark.parametrize(
+    "index,field,value",
+    [
+        (3, "id", CHECKPOINT),
+        (3, "parentId", STAGE_ID),
+        (3, "type", "Task"),
+        (3, "attempt", 2),
+        (3, "state", "completed"),
+        (3, "result", "succeeded"),
+        (2, "id", CHECKPOINT),
+        (2, "parentId", CHECKPOINT),
+        (2, "type", "Job"),
+        (2, "attempt", 2),
+        (2, "state", "completed"),
+        (2, "result", "succeeded"),
+    ],
+)
+def test_current_job_ancestry_and_attempts_are_required(
+    pipeline_env, recorded_api, evidence, index, field, value
+):
+    evidence["timeline"]["records"][index][field] = value
+    with pytest.raises(ValueError):
+        guard.require_publication_lock()
+    assert len(recorded_api[0]) == 5
+
+
+@pytest.mark.parametrize("index", [2, 3])
+def test_ambiguous_current_job_or_phase_rejects(pipeline_env, recorded_api, evidence, index):
+    evidence["timeline"]["records"].append(copy.deepcopy(evidence["timeline"]["records"][index]))
+    with pytest.raises(ValueError):
+        guard.require_publication_lock()
+    assert len(recorded_api[0]) == 5
+
+
+def test_current_plan_must_match_authenticated_build(monkeypatch, pipeline_env, recorded_api):
+    monkeypatch.setenv("SYSTEM_PLANID", STAGE_ID)
+    with pytest.raises(ValueError):
+        guard.require_publication_lock()
+    assert len(recorded_api[0]) == 5
 
 
 @pytest.mark.parametrize(
@@ -373,7 +474,10 @@ def test_callback_fetches_only_expected_current_run_resources(monkeypatch, pipel
     [
         "SYSTEM_TEAMPROJECTID",
         "SYSTEM_STAGENAME",
-        "SYSTEM_STAGEID",
+        "SYSTEM_JOBID",
+        "SYSTEM_JOBATTEMPT",
+        "SYSTEM_PHASEATTEMPT",
+        "SYSTEM_PLANID",
         "SYSTEM_STAGEATTEMPT",
         "BUILD_BUILDID",
         "BUILD_SOURCEBRANCH",

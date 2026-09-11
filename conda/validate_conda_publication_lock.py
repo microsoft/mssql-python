@@ -9,6 +9,10 @@ Never call during dry-run. Producer/wheel provenance remains a separate caller g
 Positive lock-specific API evidence is UNVERIFIED in this project. Positive tests
 describe an expected contract, not proven production enforcement. Empty/unknown
 states reject publication pending administrator setup and live verification.
+The public CheckConfiguration schema documents isDisabled, not isEnabled, and does
+not promise revision fields. Current and evaluated revisions are nevertheless
+mandatory here: unavailable revision proof blocks publication, not stale-check
+validation. A supported positive revision/acquisition contract still needs qualification.
 """
 
 from __future__ import annotations
@@ -70,11 +74,44 @@ def _resource(value: object) -> bool:
     return _at(value, "type") == "variablegroup" and _at(value, "id") == str(GROUP_ID)
 
 
-def _checkpoint(timeline: dict, stage_attempt: int) -> tuple[dict, dict]:
+def _stage_id_for_job(timeline: dict, job_id: str, job_attempt: int, phase_attempt: int) -> str:
+    """Follow the observed OneBranch Job -> Phase -> Stage timeline relationship."""
+    records = _items(_at(timeline, "records"))
+    job = _one(
+        records,
+        lambda r: r.get("type") == "Job" and r.get("id") == job_id,
+        "current job identity is missing or ambiguous.",
+    )
+    _require(
+        _id(job.get("attempt")) == job_attempt
+        and job.get("state") == "inProgress"
+        and job.get("result") is None,
+        "current job attempt is not running.",
+    )
+    phase_id = job.get("parentId")
+    _require(bool(_UUID.fullmatch(str(phase_id))), "invalid current phase identity.")
+    phase = _one(
+        records,
+        lambda r: r.get("type") == "Phase" and r.get("id") == phase_id,
+        "current job phase is missing or ambiguous.",
+    )
+    _require(
+        _id(phase.get("attempt")) == phase_attempt
+        and phase.get("state") == "inProgress"
+        and phase.get("result") is None,
+        "current phase attempt is not running.",
+    )
+    stage_id = phase.get("parentId")
+    _require(bool(_UUID.fullmatch(str(stage_id))), "invalid parent stage identity.")
+    return stage_id
+
+
+def _checkpoint(timeline: dict, stage_attempt: int, stage_id: str) -> tuple[dict, dict]:
     records = _items(_at(timeline, "records"))
     stage = _one(
         records,
         lambda r: r.get("type") == "Stage"
+        and r.get("id") == stage_id
         and r.get("identifier") == STAGE
         and r.get("attempt") == stage_attempt
         and not isinstance(r.get("attempt"), bool),
@@ -156,7 +193,7 @@ def validate_publication_lock(
     _require(_at(build, "result") is None, "current build already has a result.")
     plan_id = _at(build, "orchestrationPlan", "planId")
     _require(bool(_UUID.fullmatch(str(plan_id))), "missing or invalid build plan ID.")
-    stage, checkpoint = _checkpoint(_at(evidence, "timeline"), stage_attempt)
+    stage, checkpoint = _checkpoint(_at(evidence, "timeline"), stage_attempt, stage_id)
     _require(stage["id"] == stage_id, "current stage ID differs from timeline stage.")
     suite = _at(evidence, "suite")
     context = _at(suite, "context")
@@ -198,12 +235,14 @@ def validate_publication_lock(
         _require(_resource(_at(reference, "resource")), "wrong evaluated resource.")
         _require(_at(reference, "type", "id") == check_type, "wrong evaluated native type.")
         _require(check.get("status") == "approved", "lock state is unverified.")
-        # If a configuration revision is exposed, never accept a stale evaluation.
-        if "version" in config:
-            _require(
-                _id(config["version"]) == _id(_at(reference, "version")),
-                "check configuration changed since stage evaluation.",
-            )
+        _require(
+            config.get("version") is not None and _at(reference, "version") is not None,
+            "current/evaluated check revision proof is unavailable; publication is unqualified.",
+        )
+        _require(
+            _id(config["version"]) == _id(_at(reference, "version")),
+            "check configuration changed since stage evaluation.",
+        )
     return {
         "buildId": run_id,
         "resourceId": GROUP_ID,
@@ -225,13 +264,16 @@ def require_publication_lock(
     _require(os.environ.get("SYSTEM_TEAMPROJECTID") == PROJECT_ID, "unexpected project.")
     _require(os.environ.get("SYSTEM_STAGENAME") == STAGE, "caller is not in CondaRelease.")
     _require(os.environ.get("BUILD_SOURCEBRANCH") == MAIN, "caller is not using main.")
-    stage_id = os.environ.get("SYSTEM_STAGEID", "")
-    _require(bool(_UUID.fullmatch(stage_id)), "System.StageId is unavailable or invalid.")
+    job_id = os.environ.get("SYSTEM_JOBID", "")
+    plan_id = os.environ.get("SYSTEM_PLANID", "")
+    _require(bool(_UUID.fullmatch(job_id)), "System.JobId is unavailable or invalid.")
+    _require(bool(_UUID.fullmatch(plan_id)), "System.PlanId is unavailable or invalid.")
+    job_attempt = _id(os.environ.get("SYSTEM_JOBATTEMPT"))
+    phase_attempt = _id(os.environ.get("SYSTEM_PHASEATTEMPT"))
     arguments = {
         "run_id": _id(os.environ.get("BUILD_BUILDID")),
         "source_commit": os.environ.get("BUILD_SOURCEVERSION", ""),
         "stage_attempt": _id(os.environ.get("SYSTEM_STAGEATTEMPT")),
-        "stage_id": stage_id,
         "lock_check_id": _id(os.environ.get("CONDA_PUBLICATION_LOCK_CHECK_ID")),
         "approval_check_id": _id(os.environ.get("CONDA_PUBLICATION_APPROVAL_CHECK_ID")),
         "owner": owner,
@@ -252,7 +294,16 @@ def require_publication_lock(
             "build": ado_get_json(f"build/builds/{run_id}?api-version=7.1"),
             "timeline": ado_get_json(f"build/builds/{run_id}/timeline?api-version=7.1"),
         }
-        _, checkpoint = _checkpoint(evidence["timeline"], arguments["stage_attempt"])
+        _require(
+            _at(evidence["build"], "orchestrationPlan", "planId") == plan_id,
+            "current plan differs from authenticated build.",
+        )
+        arguments["stage_id"] = _stage_id_for_job(
+            evidence["timeline"], job_id, job_attempt, phase_attempt
+        )
+        _, checkpoint = _checkpoint(
+            evidence["timeline"], arguments["stage_attempt"], arguments["stage_id"]
+        )
         evidence["suite"] = ado_get_json(
             f"pipelines/checks/runs/{checkpoint['id']}?$expand=resources&api-version=7.1-preview.1"
         )

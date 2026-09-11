@@ -29,6 +29,7 @@ import sys
 import tarfile
 import zipfile
 from collections import defaultdict
+from pathlib import Path
 
 _BINDING_NAME = "mssql-python"
 
@@ -79,16 +80,34 @@ def read_index_json(path: str) -> dict:
     """Return the parsed ``info/index.json`` from a ``.conda`` / ``.tar.bz2``."""
     if path.endswith(".conda"):
         with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()
+            if len(names) != len(set(names)):
+                raise ValueError(f"{path}: duplicate ZIP entries are not allowed")
             info_names = [
-                name
-                for name in zf.namelist()
-                if name.startswith("info-") and name.endswith(".tar.zst")
+                name for name in names if name.startswith("info-") and name.endswith(".tar.zst")
             ]
             if len(info_names) != 1:
                 raise ValueError(
                     f"{path}: expected exactly one info-*.tar.zst member; "
                     f"found {len(info_names)}"
                 )
+            pkg_names = [
+                name for name in names if name.startswith("pkg-") and name.endswith(".tar.zst")
+            ]
+            if len(pkg_names) != 1:
+                raise ValueError(
+                    f"{path}: expected exactly one pkg-*.tar.zst member; found {len(pkg_names)}"
+                )
+            stem = Path(path).stem
+            if set(names) != {"metadata.json", f"info-{stem}.tar.zst", f"pkg-{stem}.tar.zst"}:
+                raise ValueError(f"{path}: expected only canonical metadata.json/info/pkg members")
+            metadata = json.loads(zf.read("metadata.json"))
+            if (
+                not isinstance(metadata, dict)
+                or type(metadata.get("conda_pkg_format_version")) is not int
+                or metadata["conda_pkg_format_version"] != 2
+            ):
+                raise ValueError(f"{path}: metadata.json must declare conda_pkg_format_version 2")
             info_blob = zf.read(info_names[0])
         with tarfile.open(fileobj=io.BytesIO(_zstd_decompress(info_blob))) as tf:
             index_members = [

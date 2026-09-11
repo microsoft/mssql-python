@@ -1,0 +1,6 @@
+# Publisher only: CPython 3.12, Windows x64; not shared build/test dependencies.
+# Regenerate on Windows with the repository's uv 0.12.6:
+# uv pip compile --no-config --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.12 --python-platform x86_64-pc-windows-msvc --only-binary :all: --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ --output-file conda\requirements-publish.txt conda\requirements-publish.in
+# Verify in a fresh Python 3.12 venv with pip --require-hashes --only-binary=:all:.
+anaconda-client==1.14.1
+zstandard==0.23.0
