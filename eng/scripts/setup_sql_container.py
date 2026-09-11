@@ -29,10 +29,12 @@ each command's original group and still-owned unreaped child, with at most four
 seconds of teardown within the original command budget. Hard host loss can
 still prevent cleanup; the pipeline also runs --cleanup.
 Permission or identity failures are reported as incomplete, nonretryable
-teardown without replacing the original failure or cancellation. Group checks
-are not atomic with signalling: departed groups are not followed, and a reaped
-PID observed again is not targeted. A missing leader alone does not establish
-that its original group is gone.
+teardown without replacing the earliest failure or cancellation. On POSIX this
+helper is the sole waiter: waitid(WNOWAIT) observes exit without releasing the
+leader's PID before the final possible group signal. The child is then reaped
+once. Default SIGCHLD handling and non-reaping APIs are required; lost wait
+ownership forbids further signalling. This does not protect against arbitrary
+external code stealing wait statuses. Departed groups are never followed.
 
 Colima is a daemon launcher, not a finite-output command. Its direct exit is
 captured through a private anonymous temporary file, without requiring EOF or
@@ -162,6 +164,151 @@ class Result:
 class StopResult:
     reaped: bool
     errors: list[str]
+    interrupted: int | None = None
+
+
+class ChildProcess:
+    """Keep POSIX wait ownership until all possible group signals are finished."""
+
+    @staticmethod
+    def check_platform():
+        if os.name != "posix":
+            return
+        required = (
+            "waitid",
+            "waitpid",
+            "waitstatus_to_exitcode",
+            "P_PID",
+            "WEXITED",
+            "WNOHANG",
+            "WNOWAIT",
+            "CLD_EXITED",
+            "CLD_KILLED",
+            "CLD_DUMPED",
+        )
+        if any(not hasattr(os, name) for name in required) or any(
+            not callable(getattr(os, name))
+            for name in ("waitid", "waitpid", "waitstatus_to_exitcode")
+        ):
+            raise SetupFailure(
+                "Required non-reaping child observation is unavailable", retryable=False
+            )
+        if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+            raise SetupFailure(
+                "Default SIGCHLD handling is required for wait ownership", retryable=False
+            )
+
+    def __init__(self, process):
+        self.process = process
+        self.posix = os.name == "posix"
+        self.observed_code = None
+        self.reaped = False
+        self.signals_finished = False
+        self.failure = None
+
+    def lose_ownership(self, message):
+        if self.failure is None:
+            self.failure = message
+        raise SetupFailure(self.failure, retryable=False) from None
+
+    def require_owned(self):
+        if self.failure is not None:
+            self.lose_ownership(self.failure)
+        if self.reaped or self.process.returncode is not None:
+            self.lose_ownership("Child wait ownership lost: already reaped outside its holder")
+        if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+            self.lose_ownership("Child wait ownership lost: SIGCHLD handling changed")
+
+    def observe(self):
+        if self.failure is not None:
+            self.lose_ownership(self.failure)
+        if self.reaped:
+            return self.process.returncode
+        if not self.posix:
+            self.observed_code = self.process.poll()
+            self.reaped = self.observed_code is not None
+            return self.observed_code
+        self.require_owned()
+        try:
+            status = os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            self.lose_ownership("Child wait ownership lost (ECHILD)")
+        except OSError as exc:
+            self.lose_ownership(f"Cannot observe owned child without reaping (errno={exc.errno})")
+        if status is None:
+            if self.observed_code is not None:
+                self.lose_ownership("Previously observed child exit is no longer waitable")
+            return None
+        if status.si_pid != self.process.pid:
+            self.lose_ownership("Unexpected child identity in non-reaping observation")
+        if status.si_code == os.CLD_EXITED:
+            code = status.si_status
+        elif status.si_code in (os.CLD_KILLED, os.CLD_DUMPED):
+            code = -status.si_status
+        else:
+            self.lose_ownership("Unexpected child state in non-reaping observation")
+        if self.observed_code is not None and code != self.observed_code:
+            self.lose_ownership("Child exit status changed while held unreaped")
+        self.observed_code = code
+        return self.observed_code
+
+    def signal_authority(self):
+        if self.signals_finished:
+            self.lose_ownership("Child signalling attempted after its final reap phase began")
+        if self.posix:
+            self.require_owned()
+        return self.observe()
+
+    def wait(self, timeout):
+        if not self.posix:
+            self.observed_code = self.process.wait(timeout=timeout)
+            self.reaped = True
+            return self.observed_code
+        deadline = time.monotonic() + timeout
+        while True:
+            code = self.observe()
+            if code is not None:
+                return code
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("owned setup child", timeout)
+            time.sleep(min(0.05, remaining))
+
+    def reap(self, timeout):
+        self.signals_finished = True
+        if self.failure is not None:
+            self.lose_ownership(self.failure)
+        if self.reaped:
+            return self.process.returncode
+        if not self.posix:
+            return self.wait(timeout)
+        deadline = time.monotonic() + timeout
+        while True:
+            self.require_owned()
+            try:
+                pid, status = os.waitpid(self.process.pid, os.WNOHANG)
+            except ChildProcessError:
+                self.lose_ownership("Child wait ownership lost during final reap (ECHILD)")
+            except OSError as exc:
+                self.lose_ownership(f"Cannot reap owned child (errno={exc.errno})")
+            if pid == self.process.pid:
+                try:
+                    code = os.waitstatus_to_exitcode(status)
+                except ValueError:
+                    self.lose_ownership("Unexpected child status during final reap")
+                self.process.returncode = code
+                self.reaped = True
+                if self.observed_code is not None and code != self.observed_code:
+                    self.lose_ownership("Child exit status changed after non-reaping observation")
+                return code
+            if pid != 0:
+                self.lose_ownership("Unexpected child identity during final reap")
+            if self.observed_code is not None:
+                self.lose_ownership("Observed child exit disappeared before final reap")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("owned setup child", timeout)
+            time.sleep(min(0.05, remaining))
 
 
 class Commands:
@@ -169,16 +316,28 @@ class Commands:
         self.password = password
 
     @staticmethod
-    def stop(process, deadline):
+    def stop(child, deadline):
+        process = child.process
         errors = []
         group_blocked = False
+        interrupted = None
+
+        def record(exc):
+            nonlocal interrupted
+            if isinstance(exc, Cancelled):
+                if interrupted is None:
+                    interrupted = exc.signum
+                errors.append(f"Command teardown interrupted by signal {exc.signum}")
+            else:
+                errors.append(str(exc))
 
         def signal_child(name):
-            # Popen rechecks its own unreaped child before signalling its PID.
-            if process.poll() is not None:
-                return
             try:
-                if name == "TERM":
+                if child.signal_authority() is not None:
+                    return
+                if child.posix:
+                    os.kill(process.pid, getattr(signal, "SIG" + name))
+                elif name == "TERM":
                     process.terminate()
                 else:
                     process.kill()
@@ -189,31 +348,39 @@ class Commands:
                     f"Permission denied sending SIG{name} to owned child "
                     f"{process.pid} (errno={exc.errno})"
                 )
+            except (SetupFailure, Cancelled) as exc:
+                record(exc)
 
         def signal_owned(name):
             nonlocal group_blocked
-            if os.name != "posix":
+            if not child.posix:
                 signal_child(name)
                 return
             if group_blocked:
                 signal_child(name)
                 return
-            reaped = process.poll() is not None
+            try:
+                child.signal_authority()
+            except (SetupFailure, Cancelled) as exc:
+                record(exc)
+                group_blocked = True
+                return
             try:
                 group = os.getpgid(process.pid)
             except ProcessLookupError:
-                # Descendants may still hold the original group and stdout.
+                # The unreaped leader still pins this identity even if its
+                # group lookup no longer sees it.
                 pass
             except PermissionError as exc:
                 errors.append(
                     f"Permission denied checking original group {process.pid} (errno={exc.errno})"
                 )
                 group_blocked = True
+            except Cancelled as exc:
+                record(exc)
+                return
             else:
-                if reaped:
-                    errors.append(f"Reaped PID {process.pid} is present again; group not signalled")
-                    group_blocked = True
-                elif group != process.pid:
+                if group != process.pid:
                     errors.append(
                         f"Owned child {process.pid} left its original group; "
                         f"group {group} not followed"
@@ -223,6 +390,7 @@ class Commands:
                 signal_child(name)
                 return
             try:
+                child.signal_authority()
                 os.killpg(process.pid, getattr(signal, "SIG" + name))
             except ProcessLookupError:
                 signal_child(name)
@@ -233,18 +401,25 @@ class Commands:
                 )
                 group_blocked = True
                 signal_child(name)
+            except (SetupFailure, Cancelled) as exc:
+                record(exc)
+                group_blocked = True
 
         signal_owned("TERM")
         try:
-            process.wait(timeout=max(0, min(1, (deadline - time.monotonic()) / 2)))
+            child.wait(timeout=max(0, min(1, (deadline - time.monotonic()) / 2)))
         except subprocess.TimeoutExpired:
             pass
+        except (SetupFailure, Cancelled) as exc:
+            record(exc)
         signal_owned("KILL")
         try:
-            process.wait(timeout=max(0, min(1, deadline - time.monotonic())))
+            child.reap(timeout=max(0, min(1, deadline - time.monotonic())))
         except subprocess.TimeoutExpired:
-            return StopResult(False, errors)
-        return StopResult(True, errors)
+            pass
+        except (SetupFailure, Cancelled) as exc:
+            record(exc)
+        return StopResult(child.reaped, errors, interrupted)
 
     @staticmethod
     def snapshot(output, capture):
@@ -308,6 +483,7 @@ class Commands:
         grace = min(4, timeout / 2)
         work_deadline = deadline - grace
         capture = SafeCapture(self.password)
+        ChildProcess.check_platform()
         try:
             process = subprocess.Popen(
                 args,
@@ -318,6 +494,7 @@ class Commands:
             )
         except OSError:
             raise SetupFailure("Cannot launch required setup command", retryable=False) from None
+        child = ChildProcess(process)
         output_done = threading.Event()
         read_errors = ["Setup output reader did not complete"] if output_file is None else []
 
@@ -333,11 +510,21 @@ class Commands:
 
         reader = threading.Thread(target=read_output, daemon=True) if output_file is None else None
         reader_started = False
-        timed_out = False
-        drain_timed_out = False
-        stopped = StopResult(True, [])
-        pending_error = None
+        primary = None
+        exit_failure = None
         problems = []
+
+        def record_error(exc):
+            nonlocal primary
+            if primary is None:
+                primary = exit_failure or exc
+                if primary is exc:
+                    return
+            problems.append(
+                f"Additional cancellation during teardown (signal {exc.signum})"
+                if isinstance(exc, Cancelled)
+                else str(exc)
+            )
 
         def failure_message(reason):
             message = reason
@@ -357,72 +544,91 @@ class Commands:
                         "Cannot start setup output reader", retryable=False
                     ) from None
             try:
-                process.wait(timeout=max(0, work_deadline - time.monotonic()))
+                code = child.wait(timeout=max(0, work_deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
-                timed_out = True
-            if not timed_out and output_file is None:
-                drain_timed_out = not output_done.wait(
-                    timeout=max(0, work_deadline - time.monotonic())
-                )
+                primary = SetupTimeout("Setup command timed out")
+            else:
+                if code in (-signal.SIGINT, -signal.SIGTERM, 130, 143):
+                    exit_failure = Cancelled(
+                        signal.SIGINT if code in (-signal.SIGINT, 130) else signal.SIGTERM
+                    )
+                elif code != 0:
+                    exit_failure = SetupFailure(f"Setup command failed (exit {code})")
+                if output_file is None:
+                    if not output_done.wait(timeout=max(0, work_deadline - time.monotonic())):
+                        record_error(
+                            SetupFailure("Setup command output drain timed out", retryable=False)
+                        )
+                    elif read_errors:
+                        record_error(SetupFailure(read_errors[0], retryable=False))
         except (Cancelled, SetupFailure) as exc:
-            pending_error = exc
-            raise
+            record_error(exc)
         finally:
             teardown_deadline = min(deadline, time.monotonic() + 4)
+            try:
+                code = child.observe()
+            except (SetupFailure, Cancelled) as exc:
+                record_error(exc)
+                code = child.observed_code
             if (
-                process.poll() is None
+                primary is not None
+                or code is None
                 or (output_file is None and (not output_done.is_set() or read_errors))
-                or (
-                    output_file is not None
-                    and (pending_error is not None or process.returncode != 0)
-                )
+                or (output_file is not None and code != 0)
             ):
-                stopped = self.stop(process, teardown_deadline)
-            problems.extend(stopped.errors)
+                stopped = self.stop(child, teardown_deadline)
+                problems.extend(stopped.errors)
+                if stopped.interrupted is not None:
+                    record_error(Cancelled(stopped.interrupted))
+            else:
+                try:
+                    child.reap(timeout=max(0, min(1, teardown_deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    problems.append("Final child reap exceeded its deadline")
+                except (SetupFailure, Cancelled) as exc:
+                    record_error(exc)
             if reader_started:
-                output_done.wait(timeout=max(0, teardown_deadline - time.monotonic()))
+                try:
+                    output_done.wait(timeout=max(0, teardown_deadline - time.monotonic()))
+                except Cancelled as exc:
+                    record_error(exc)
             if output_file is not None:
                 try:
                     self.snapshot(output_file, capture)
                 except OSError as exc:
                     problems.append(f"Cannot read Colima startup snapshot (errno={exc.errno})")
+                except Cancelled as exc:
+                    record_error(exc)
                 output_done.set()
             elif not reader_started or output_done.is_set():
                 try:
                     process.stdout.close()
                 except OSError as exc:
                     problems.append(f"Cannot close command output (errno={exc.errno})")
-            if not stopped.reaped:
+                except Cancelled as exc:
+                    record_error(exc)
+            if not child.reaped:
                 problems.append("Owned child could not be reaped within the teardown deadline")
             if reader_started and not output_done.is_set():
                 problems.append("Output reader did not finish within the teardown deadline")
             elif reader_started and read_errors:
                 problems.append("Output capture error: " + read_errors[0])
-            if pending_error is not None:
-                reason = (
-                    f"Command cancelled (signal {pending_error.signum})"
-                    if isinstance(pending_error, Cancelled)
-                    else str(pending_error)
+        if not child.reaped or process.returncode is None:
+            problems.append("Command has no verified final child exit status")
+        if primary is None and problems:
+            primary = exit_failure or SetupFailure("Setup command teardown failed", retryable=False)
+        if primary is not None:
+            if isinstance(primary, Cancelled):
+                print(
+                    "[sql] " + failure_message(f"Command cancelled (signal {primary.signum})"),
+                    file=sys.stderr,
+                    flush=True,
                 )
-                print("[sql] " + failure_message(reason), file=sys.stderr, flush=True)
-        if timed_out:
-            raise SetupTimeout(
-                failure_message("Setup command timed out"),
-                retryable=not problems and not read_errors,
-            )
-        if drain_timed_out or not output_done.is_set():
-            raise SetupFailure(
-                failure_message("Setup command output drain timed out"), retryable=False
-            )
-        if read_errors:
-            raise SetupFailure(failure_message(read_errors[0]), retryable=False)
-        if problems:
-            reason = (
-                f"Setup command failed (exit {process.returncode})"
-                if process.returncode
-                else "Setup command teardown failed"
-            )
-            raise SetupFailure(failure_message(reason), retryable=False)
+                raise primary
+            if problems or read_errors:
+                primary.retryable = False
+            primary.args = (failure_message(str(primary)),)
+            raise primary from None
         return Result(process.returncode, capture.output())
 
 
