@@ -133,6 +133,7 @@ def test_zstd_backend_is_available_for_conda_audit_tests():
 
 
 def test_wheel_retains_normal_and_stable_abi_core_extensions(tmp_path):
+    pytest.importorskip("setuptools", reason="Wheel archive regression requires setuptools")
     pytest.importorskip("wheel", reason="Wheel archive regression requires the wheel build backend")
     shutil.copy2(_MODULE_PATH.parents[2] / "setup.py", tmp_path / "setup.py")
     sources = {
