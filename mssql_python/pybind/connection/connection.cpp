@@ -18,6 +18,17 @@
 #include "logger_bridge.hpp"
 #include "performance_counter.hpp"
 
+static bool isPythonFinalizing() {
+    if (Py_IsInitialized() == 0) {
+        return true;
+    }
+#if PY_VERSION_HEX >= 0x030D0000
+    return Py_IsFinalizing() != 0;
+#else
+    return _Py_IsFinalizing() != 0;
+#endif
+}
+
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
         LOG("Allocating ODBC environment handle");
@@ -52,8 +63,14 @@ Connection::Connection(const std::u16string& conn_str, bool use_pool)
     allocateDbcHandle();
 }
 
-Connection::~Connection() {
-    disconnect();  // fallback if user forgets to disconnect
+Connection::~Connection() noexcept {
+    try {
+        disconnect();  // fallback if user forgets to disconnect
+    } catch (...) {
+        // Destructors must not propagate ODBC disconnect failures. Releasing
+        // the handle still lets SqlHandle perform SQLFreeHandle cleanup.
+        _dbcHandle.reset();
+    }
 }
 
 // Allocates connection handle
@@ -113,7 +130,7 @@ void Connection::disconnect() {
     // Py_IsInitialized() is checked first: after Py_Finalize() the interpreter is
     // gone and PyGILState_Check() is unreliable, so treat "not initialized" as
     // "no GIL" and skip all Python calls. (#671 follow-up)
-    bool hasGil = Py_IsInitialized() != 0 && PyGILState_Check() != 0;
+    bool hasGil = !isPythonFinalizing() && PyGILState_Check() != 0;
     if (_dbcHandle) {
         if (hasGil) {
             LOG("Disconnecting from database");
@@ -192,6 +209,17 @@ void Connection::disconnect() {
     } else if (hasGil) {
         LOG("No connection handle to disconnect");
     }
+}
+
+void Connection::abandonDuringFinalization() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(_childHandlesMutex);
+        _childStatementHandles.clear();
+        _allocationsSinceCompaction = 0;
+    }
+    // SqlHandle::free() already suppresses SQLFreeHandle during finalization.
+    // Clearing the shared pointer leaves process teardown to the operating system.
+    _dbcHandle.reset();
 }
 
 // TODO(microsoft): Add an exception class in C++ for error handling,
@@ -564,6 +592,26 @@ bool Connection::reset() {
     return true;
 }
 
+void Connection::prepareForPool(bool transactionAlreadyRolledBack) {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+
+    // Explicit BEGIN TRANSACTION is valid while ODBC autocommit is on, but
+    // SQLEndTran does not end that transaction until the connection enters
+    // manual-commit mode.
+    if (getAutocommit()) {
+        setAutocommit(false);
+    }
+    if (!transactionAlreadyRolledBack) {
+        rollback();
+    }
+    // The SQL Server ODBC driver can leave an empty transaction visible after
+    // SQLEndTran while manual-commit mode remains enabled, so always park the
+    // physical connection in autocommit mode.
+    setAutocommit(true);
+}
+
 void Connection::updateLastUsed() {
     _lastUsed = std::chrono::steady_clock::now();
 }
@@ -631,7 +679,8 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
     PERF_TIMER("ConnectionHandle::ConnectionHandle");
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
-                                                                       _poolKey, tokenFactory);
+                                                                       _poolKey, tokenFactory,
+                                                                       &_originPool);
         // acquireConnection returns nullptr when pooling was disabled out from
         // under us (a disable_pooling() won the race). Fall back to a non-pooled
         // connection and flip _usePool so close() disconnects it directly rather
@@ -659,17 +708,48 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
 
 ConnectionHandle::~ConnectionHandle() {
     if (_conn) {
-        close();
+        if (isPythonFinalizing()) {
+            _conn->abandonDuringFinalization();
+            _conn = nullptr;
+            return;
+        }
+        try {
+            // A destructor cannot report sanitation errors to a caller. Discard
+            // instead of running close(), which performs logging and transaction
+            // operations that are unsafe during late object teardown.
+            ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
+        } catch (...) {
+            if (_conn) {
+                try {
+                    _conn->disconnect();
+                } catch (...) {
+                }
+            }
+            _conn = nullptr;
+        }
     }
 }
 
-void ConnectionHandle::close() {
+void ConnectionHandle::close(bool transactionAlreadyRolledBack) {
     PERF_TIMER("ConnectionHandle::close");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
     if (_usePool) {
-        ConnectionPoolManager::getInstance().returnConnection(_poolKey, _conn);
+        try {
+            _conn->prepareForPool(transactionAlreadyRolledBack);
+        } catch (...) {
+            // Never retain a connection whose transaction state could not be
+            // sanitized. Discarding also releases this connection's reserved
+            // pool capacity. Preserve the original check-in error.
+            try {
+                ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
+            } catch (...) {
+            }
+            _conn = nullptr;
+            throw;
+        }
+        ConnectionPoolManager::getInstance().returnConnection(_poolKey, _originPool, _conn);
     } else {
         _conn->disconnect();
     }

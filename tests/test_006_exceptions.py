@@ -276,6 +276,104 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
     assert not isinstance(exc_info.value, RuntimeError)
 
 
+def test_close_cleans_up_after_rollback_failure():
+    """A rollback error must not defer native close to object destruction."""
+    from unittest.mock import MagicMock, patch
+
+    mock_conn = MagicMock()
+    mock_conn.get_autocommit.return_value = False
+    mock_conn.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+
+    with pytest.raises(OperationalError, match="Communication link failure"):
+        conn.close()
+
+    mock_conn.rollback.assert_called_once_with()
+    mock_conn.close.assert_called_once_with(False)
+    assert conn._conn is None
+    assert conn.closed
+
+
+def test_close_cleans_up_after_autocommit_read_failure():
+    """An autocommit read error must not bypass native close and handle release."""
+    from unittest.mock import MagicMock, patch
+
+    mock_conn = MagicMock()
+    mock_conn.get_autocommit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+
+    with pytest.raises(OperationalError, match="Communication link failure"):
+        conn.close()
+
+    mock_conn.rollback.assert_not_called()
+    mock_conn.close.assert_called_once_with(False)
+    assert conn._conn is None
+    assert conn.closed
+
+
+def test_close_reports_successful_rollback_to_native_cleanup():
+    """Native pool cleanup must not repeat a successful Python rollback."""
+    from unittest.mock import MagicMock, patch
+
+    mock_conn = MagicMock()
+    mock_conn.get_autocommit.return_value = False
+
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+
+    conn.close()
+
+    mock_conn.rollback.assert_called_once_with()
+    mock_conn.close.assert_called_once_with(True)
+
+
+def test_autocommit_close_delegates_transaction_cleanup_to_native():
+    """Autocommit may still contain an explicit SQL transaction."""
+    from unittest.mock import MagicMock, patch
+
+    mock_conn = MagicMock()
+    mock_conn.get_autocommit.return_value = True
+
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect(
+            "Server=testserver;Database=mydb;Trusted_Connection=yes;",
+            autocommit=True,
+        )
+
+    conn.close()
+
+    mock_conn.rollback.assert_not_called()
+    mock_conn.close.assert_called_once_with(False)
+
+
+@pytest.mark.parametrize("preclose_failure", ["autocommit", "rollback"])
+def test_native_close_error_takes_precedence_over_preclose_failure(preclose_failure):
+    """The native close error wins, but the wrapper still releases its handle."""
+    from unittest.mock import MagicMock, patch
+
+    mock_conn = MagicMock()
+    if preclose_failure == "autocommit":
+        mock_conn.get_autocommit.side_effect = RuntimeError("SQLSTATE:08S01:Autocommit read failed")
+    else:
+        mock_conn.get_autocommit.return_value = False
+        mock_conn.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Rollback failed")
+    mock_conn.close.side_effect = RuntimeError("SQLSTATE:08003:Native close failed")
+
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+
+    with pytest.raises(OperationalError, match="Native close failed"):
+        conn.close()
+
+    mock_conn.close.assert_called_once_with(False)
+    assert conn._conn is None
+    assert conn.closed
+
+
 def test_truncate_error_message_successful_cases():
     """Test truncate_error_message with valid Microsoft messages for comparison."""
 
