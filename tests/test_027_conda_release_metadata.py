@@ -521,6 +521,19 @@ def _api_for(distributions, labels=("staging",)):
     )
 
 
+def _promote(api, distributions, *, staging="staging", version="1.13.0"):
+    return promoter.promote(
+        api,
+        "microsoft",
+        staging,
+        "main",
+        version,
+        distributions,
+        verify_attempts=1,
+        delay_seconds=0,
+    )
+
+
 def test_verify_distribution_uses_full_subdir_basename_and_requires_sha_and_label():
     distribution = _distribution("win-64", "mssql-python-1.13.0-py312_0.conda")
     api = _api_for([distribution])
@@ -542,16 +555,7 @@ def test_promote_verifies_all_files_then_cleans_staging_label():
     ]
     api = _api_for(distributions)
 
-    promoter.promote(
-        api,
-        "microsoft",
-        "staging",
-        "main",
-        "1.13.0",
-        distributions,
-        verify_attempts=1,
-        delay_seconds=0,
-    )
+    _promote(api, distributions)
 
     assert all(api.distributions[item.basename]["labels"] == ["main"] for item in distributions)
     assert [call[0] for call in api.calls].count("add") == 2
@@ -564,16 +568,7 @@ def test_promote_is_idempotent_after_partial_staging_cleanup():
     api = _api_for([first, second], labels=("staging", "main"))
     api.distributions[first.basename]["labels"] = ["main"]
 
-    promoter.promote(
-        api,
-        "microsoft",
-        "staging",
-        "main",
-        "1.13.0",
-        [first, second],
-        verify_attempts=1,
-        delay_seconds=0,
-    )
+    _promote(api, [first, second])
 
     assert api.distributions[first.basename]["labels"] == ["main"]
     assert api.distributions[second.basename]["labels"] == ["main"]
@@ -584,16 +579,7 @@ def test_promote_recovers_matching_file_left_on_old_staging_label():
     distribution = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
     api = _api_for([distribution], labels=("main_staging_old",))
 
-    promoter.promote(
-        api,
-        "microsoft",
-        "main_staging_new",
-        "main",
-        "1.13.0",
-        [distribution],
-        verify_attempts=1,
-        delay_seconds=0,
-    )
+    _promote(api, [distribution], staging="main_staging_new")
 
     assert api.distributions[distribution.basename]["labels"] == ["main_staging_old", "main"]
     add_labels = [call[1] for call in api.calls if call[0] == "add"]
@@ -606,16 +592,7 @@ def test_promote_accepts_ambiguous_add_failure_when_label_landed():
     api = _api_for([first, second])
     api.fail_add_after_apply = second.basename
 
-    promoter.promote(
-        api,
-        "microsoft",
-        "staging",
-        "main",
-        "1.13.0",
-        [first, second],
-        verify_attempts=1,
-        delay_seconds=0,
-    )
+    _promote(api, [first, second])
 
     assert all(api.distributions[item.basename]["labels"] == ["main"] for item in (first, second))
 
@@ -625,16 +602,7 @@ def test_promote_accepts_ambiguous_staging_cleanup_when_label_was_removed():
     api = _api_for([distribution])
     api.fail_remove_after_apply = ("staging", distribution.basename)
 
-    promoter.promote(
-        api,
-        "microsoft",
-        "staging",
-        "main",
-        "1.13.0",
-        [distribution],
-        verify_attempts=1,
-        delay_seconds=0,
-    )
+    _promote(api, [distribution])
 
     assert api.distributions[distribution.basename]["labels"] == ["main"]
 
@@ -661,16 +629,7 @@ def test_promote_rolls_back_partial_label_promotion(rollback_reply_lost):
     api.distribution = fail_second_target_verification
 
     with pytest.raises(RuntimeError, match="rollback of newly added target labels was attempted"):
-        promoter.promote(
-            api,
-            "microsoft",
-            "staging",
-            "main",
-            "1.13.0",
-            [first, second],
-            verify_attempts=1,
-            delay_seconds=0,
-        )
+        _promote(api, [first, second])
 
     assert all(
         api.distributions[item.basename]["labels"] == ["staging"] for item in (first, second)
@@ -695,16 +654,7 @@ def test_rollback_never_removes_unattempted_or_preexisting_target_labels():
 
     api.distribution = hide_failed_add
     with pytest.raises(RuntimeError, match="rollback"):
-        promoter.promote(
-            api,
-            "microsoft",
-            "staging",
-            "main",
-            "1.13.0",
-            [previous, failed, untouched],
-            verify_attempts=1,
-            delay_seconds=0,
-        )
+        _promote(api, [previous, failed, untouched])
 
     removed = [call[-1] for call in api.calls if call[:2] == ("remove", "main")]
     assert removed == [failed.basename]
@@ -755,32 +705,14 @@ def test_simulated_stage_lock_spans_snapshot_rollback_and_next_publisher(monkeyp
     api.distribution = read_under_stage_lock
     with stage_lock:
         with pytest.raises(RuntimeError, match="rollback"):
-            promoter.promote(
-                api,
-                "microsoft",
-                "stage_a",
-                "main",
-                "1.13.0",
-                [distribution],
-                verify_attempts=1,
-                delay_seconds=0,
-            )
+            _promote(api, [distribution], staging="stage_a")
     assert "main" not in api.distributions[distribution.basename]["labels"]
     next_distribution = distribution
     if next_version != "1.13.0":
         next_distribution = _distribution("win-64", "next.conda", version=next_version)
         api.distributions.update(_api_for([next_distribution], labels=("stage_b",)).distributions)
     with stage_lock:
-        promoter.promote(
-            api,
-            "microsoft",
-            "stage_b",
-            "main",
-            next_version,
-            [next_distribution],
-            verify_attempts=1,
-            delay_seconds=0,
-        )
+        _promote(api, [next_distribution], staging="stage_b", version=next_version)
     expected = ["stage_a", "main"] if next_distribution is distribution else ["main"]
     assert api.distributions[next_distribution.basename]["labels"] == expected
     assert verified_scopes == [("microsoft", "mssql-python", "main")] * 2
@@ -791,16 +723,7 @@ def test_promote_rejects_wrong_release_version_before_api_mutation():
     api = _api_for([distribution])
 
     with pytest.raises(ValueError, match="do not match expected"):
-        promoter.promote(
-            api,
-            "microsoft",
-            "staging",
-            "main",
-            "1.13.0",
-            [distribution],
-            verify_attempts=1,
-            delay_seconds=0,
-        )
+        _promote(api, [distribution])
 
     assert api.calls == []
 
@@ -834,16 +757,7 @@ def test_same_filename_on_different_platforms_is_not_a_duplicate():
         _distribution("linux-64", "same.conda"),
     ]
     api = _api_for(distributions)
-    promoter.promote(
-        api,
-        "microsoft",
-        "staging",
-        "main",
-        "1.13.0",
-        distributions,
-        verify_attempts=1,
-        delay_seconds=0,
-    )
+    _promote(api, distributions)
     assert {call[-1] for call in api.calls} == {"win-64/same.conda", "linux-64/same.conda"}
 
 
@@ -878,16 +792,7 @@ def test_partial_upload_cannot_start_public_label_promotion():
     absent = _distribution("linux-64", "absent.conda")
     api = _api_for([first])
     with pytest.raises(KeyError):
-        promoter.promote(
-            api,
-            "microsoft",
-            "staging",
-            "main",
-            "1.13.0",
-            [first, absent],
-            verify_attempts=1,
-            delay_seconds=0,
-        )
+        _promote(api, [first, absent])
     assert not any(call[0] == "add" for call in api.calls)
 
 
@@ -1009,16 +914,7 @@ def test_rollback_failure_is_reported_and_does_not_erase_prior_good_membership()
     api.distribution = fail_verification
     api.remove_channel = fail_remove
     with pytest.raises(RuntimeError, match="Rollback errors.*rollback did not reach server"):
-        promoter.promote(
-            api,
-            "microsoft",
-            "staging",
-            "main",
-            "1.13.0",
-            [previous, failed],
-            verify_attempts=1,
-            delay_seconds=0,
-        )
+        _promote(api, [previous, failed])
     assert "main" in api.distributions[previous.basename]["labels"]
     assert "main" in api.distributions[failed.basename]["labels"]
 
@@ -1035,29 +931,11 @@ def test_interrupted_promotion_is_recoverable_but_not_atomic():
 
     api.add_channel = interrupt_after_add
     with pytest.raises(KeyboardInterrupt):
-        promoter.promote(
-            api,
-            "microsoft",
-            "staging",
-            "main",
-            "1.13.0",
-            [first, second],
-            verify_attempts=1,
-            delay_seconds=0,
-        )
+        _promote(api, [first, second])
     assert "main" in api.distributions[first.basename]["labels"]
     assert "main" not in api.distributions[second.basename]["labels"]
     api.add_channel = original_add
-    promoter.promote(
-        api,
-        "microsoft",
-        "staging",
-        "main",
-        "1.13.0",
-        [first, second],
-        verify_attempts=1,
-        delay_seconds=0,
-    )
+    _promote(api, [first, second])
     assert all(api.distributions[item.basename]["labels"] == ["main"] for item in (first, second))
 
 
@@ -1401,16 +1279,7 @@ def test_staging_recovery_accepts_reply_lost_after_server_mutation():
     distribution = _distribution("win-64", "package.conda")
     api = _api_for([distribution], labels=("old_staging",))
     api.fail_add_after_apply = distribution.basename
-    promoter.promote(
-        api,
-        "microsoft",
-        "new_staging",
-        "main",
-        "1.13.0",
-        [distribution],
-        verify_attempts=1,
-        delay_seconds=0,
-    )
+    _promote(api, [distribution], staging="new_staging")
     assert api.distributions[distribution.basename]["labels"] == ["old_staging", "main"]
 
 
@@ -1423,16 +1292,7 @@ def test_failed_staging_cleanup_preserves_successful_publication():
 
     api.remove_channel = timeout_before_remove
     with pytest.raises(RuntimeError, match="Failed to remove staging label"):
-        promoter.promote(
-            api,
-            "microsoft",
-            "staging",
-            "main",
-            "1.13.0",
-            [distribution],
-            verify_attempts=1,
-            delay_seconds=0,
-        )
+        _promote(api, [distribution])
     assert api.distributions[distribution.basename]["labels"] == ["staging", "main"]
 
 

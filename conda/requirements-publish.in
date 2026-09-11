@@ -1,6 +1,19 @@
 # Publisher only: CPython 3.12, Windows x64; not shared build/test dependencies.
-# Regenerate on Windows with the repository's uv 0.12.6:
-# uv pip compile --no-config --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.12 --python-platform x86_64-pc-windows-msvc --only-binary :all: --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ --output-file conda\requirements-publish.txt conda\requirements-publish.in
-# Verify in a fresh Python 3.12 venv with pip --require-hashes --only-binary=:all:.
+# Reproduce from the repo root in PowerShell with that Python on PATH and uv 0.12.6:
+# $work = Join-Path $env:TEMP ([guid]::NewGuid().ToString()); New-Item -ItemType Directory $work | Out-Null
+# $feed = 'https://packagefeedproxy.microsoft.io/pypi/simple/'
+# $target = @('--python-version', '3.12', '--python-platform', 'x86_64-pc-windows-msvc', '--only-binary', ':all:')
+# $hashes = @('--no-config', '--no-cache', '--generate-hashes', '--no-emit-index-url', '--no-header', '--strip-extras')
+# uv pip compile @hashes @target --default-index $feed --constraint conda\requirements-publish.txt `
+#   --output-file "$work\resolved.txt" conda\requirements-publish.in
+# python -m pip --isolated download --require-hashes --only-binary=:all: --index-url $feed `
+#   --dest "$work\wheels" -r "$work\resolved.txt"
+# uv pip compile @hashes @target --no-index --find-links "$work\wheels" `
+#   --output-file "$work\target.txt" conda\requirements-publish.in
+# if ($LASTEXITCODE -eq 0) { Move-Item "$work\target.txt" conda\requirements-publish.txt -Force }
+# A fresh output avoids uv retaining hashes from an existing lock.
+# Constraints retain reviewed versions; omit --constraint only for intentional dependency updates.
+# One tested target wheel per version: unavailable wheels fail closed until reviewed regeneration.
+# Verify in a fresh target venv with pip --require-hashes --only-binary=:all:.
 anaconda-client==1.14.1
 zstandard==0.23.0
