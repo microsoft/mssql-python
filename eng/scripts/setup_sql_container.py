@@ -6,17 +6,28 @@ required for setup and is never an argument. Use --database TestDB on Linux
 test legs, --colima on macOS, and --cleanup for the always-running final step.
 Cleanup refuses containers without the matching owner label.
 
-Only SQL pull/create/start/readiness/database setup is retried. Colima starts
-once. Configuration, ownership, preflight and cleanup failures are terminal.
+Only SQL lookup/pull/create/start/readiness/database setup is retried. Colima
+starts once. The owned-container lookup also checks Docker availability, so
+transient read-only failures can consume the same two attempts without creating
+or removing anything. Missing tools, invalid configuration/lookup results,
+ownership conflicts and unsafe cleanup are terminal.
 Linux/macOS attempts are bounded at 600/900 seconds including diagnostics and
 cleanup; entire invocations at 1260/2460 seconds including macOS VM startup.
 Command budgets include termination/output-drain grace. Cleanup-only uses a
 115-second deadline. OS scheduling/host loss can defeat cooperative deadlines;
 the pipeline also enforces outer task limits.
 
-Diagnostics retain redacted beginning/end excerpts, not dumps or full inspect
-output. Timeout/cancellation stops only subprocesses created by this helper.
-Hard host loss can still prevent cleanup; the pipeline also runs --cleanup.
+Readiness polls for 120/180 seconds (Linux/macOS), then performs one final
+state/query check bounded at 45 seconds, for at most 165/225 seconds total.
+Both are clamped to the remaining attempt/global budget, preserving cleanup.
+
+Docker diagnostics request only the last 30 minutes and at most 5000 lines,
+within 20 seconds. Redacted output retains 32768-character head/tail excerpts
+plus at most 8192 characters of fatal/Reason context, not complete history.
+No dumps or full inspect output are collected. Timeout/cancellation stops only
+subprocess groups created by this helper, with at most four seconds of teardown
+within the original command budget. Hard host loss can still prevent cleanup;
+the pipeline also runs --cleanup.
 """
 
 import argparse
@@ -45,6 +56,10 @@ class SetupFailure(Exception):
         self.retryable = retryable
 
 
+class SetupTimeout(SetupFailure):
+    pass
+
+
 class Cancelled(BaseException):
     def __init__(self, signum):
         self.signum = signum
@@ -70,9 +85,17 @@ class SafeCapture:
         self.head = ""
         self.tail = ""
         self.total = 0
+        self.fatal_context = ""
+        self.context_remaining = 0
 
     def add(self, line):
         safe = redact(line, self.password)
+        if re.search(r"\bfatal\b|\bReason:", safe, re.IGNORECASE):
+            self.context_remaining = 12
+        if self.context_remaining:
+            remaining = min(8192, self.limit // 4) - len(self.fatal_context)
+            self.fatal_context += safe[:remaining]
+            self.context_remaining -= 1
         self.total += len(safe)
         remaining = self.limit - len(self.head)
         self.head += safe[:remaining]
@@ -104,7 +127,12 @@ class SafeCapture:
 
     def output(self):
         marker = "\n[diagnostic output truncated]\n" if self.total > 2 * self.limit else ""
-        return self.head + marker + self.tail
+        context = (
+            "\n[fatal/Reason context from retrieved output]\n" + self.fatal_context
+            if marker and self.fatal_context
+            else ""
+        )
+        return self.head + marker + context + self.tail
 
 
 @dataclass
@@ -147,9 +175,10 @@ class Commands:
 
     def run(self, args, timeout, *, env=None):
         if timeout <= 0:
-            raise SetupFailure("SQL setup deadline exhausted")
+            raise SetupTimeout("SQL setup deadline exhausted")
         deadline = time.monotonic() + timeout
         grace = min(4, timeout / 2)
+        work_deadline = deadline - grace
         capture = SafeCapture(self.password)
         try:
             process = subprocess.Popen(
@@ -161,37 +190,58 @@ class Commands:
             )
         except OSError:
             raise SetupFailure("Cannot launch required setup command", retryable=False) from None
-        reader = threading.Thread(target=capture.read, args=(process.stdout,), daemon=True)
-        reader.start()
+        output_done = threading.Event()
+        read_errors = ["Setup output reader did not complete"]
+
+        def read_output():
+            try:
+                capture.read(process.stdout)
+            except OSError:
+                read_errors[:] = ["Cannot read setup command output"]
+            else:
+                read_errors.clear()
+            finally:
+                output_done.set()
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader_started = False
         timed_out = False
-        descendant_output = False
+        drain_timed_out = False
         reaped = True
         try:
             try:
-                process.wait(timeout=max(0, deadline - time.monotonic() - grace))
+                reader.start()
+                reader_started = True
+            except RuntimeError:
+                raise SetupFailure("Cannot start setup output reader", retryable=False) from None
+            try:
+                process.wait(timeout=max(0, work_deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 timed_out = True
+            if not timed_out:
+                drain_timed_out = not output_done.wait(
+                    timeout=max(0, work_deadline - time.monotonic())
+                )
         finally:
-            if process.poll() is None:
-                reaped = self.stop(process, deadline)
-            else:
-                reader.join(timeout=max(0, min(0.2, (deadline - time.monotonic()) / 4)))
-                if reader.is_alive():
-                    descendant_output = True
-                    reaped = self.stop(process, deadline)
-            reader.join(timeout=max(0, deadline - time.monotonic()))
-            if not reader.is_alive():
+            teardown_deadline = min(deadline, time.monotonic() + 4)
+            if process.poll() is None or not output_done.is_set() or read_errors:
+                reaped = self.stop(process, teardown_deadline)
+            if reader_started:
+                output_done.wait(timeout=max(0, teardown_deadline - time.monotonic()))
+            if not reader_started or output_done.is_set():
                 process.stdout.close()
-            if not reaped or reader.is_alive():
+            if not reaped or (reader_started and not output_done.is_set()):
                 print("[sql] Command teardown incomplete within its deadline", file=sys.stderr)
         if not reaped:
             raise SetupFailure("Setup command could not be reaped", retryable=False)
-        if reader.is_alive():
-            raise SetupFailure("Setup command output did not close", retryable=False)
-        if descendant_output:
-            raise SetupFailure("Setup command left descendants holding output", retryable=False)
+        if read_errors:
+            raise SetupFailure(read_errors[0], retryable=False)
+        if drain_timed_out or not output_done.is_set():
+            raise SetupFailure(
+                "Setup command output drain timed out\n" + capture.output(), retryable=False
+            )
         if timed_out:
-            raise SetupFailure("Setup command timed out\n" + capture.output())
+            raise SetupTimeout("Setup command timed out\n" + capture.output())
         return Result(process.returncode, capture.output())
 
 
@@ -212,6 +262,7 @@ class SqlSetup:
         self.deadline = time.monotonic() + (115 if args.cleanup else 2460 if args.colima else 1260)
         self.phase_deadline = self.deadline
         self.container = None
+        self.creation_requested = False
         self.image_id = None
         self.docker = ["docker"] + (["--context", "colima"] if args.colima else [])
         self.env = os.environ.copy()
@@ -226,7 +277,7 @@ class SqlSetup:
         end = min(self.deadline, self.phase_deadline if deadline is None else deadline)
         remaining = min(timeout, end - time.monotonic())
         if remaining <= 0:
-            raise SetupFailure("SQL setup deadline exhausted")
+            raise SetupTimeout("SQL setup deadline exhausted")
         result = self.commands.run(args, remaining, env=self.env)
         if result.returncode in (-signal.SIGINT, -signal.SIGTERM, 130, 143):
             raise Cancelled(
@@ -246,7 +297,7 @@ class SqlSetup:
             "--all",
             "--no-trunc",
             "--filter",
-            f"name=^/{self.args.name}$",
+            f"name=^/{re.escape(self.args.name)}$",
             "--format",
             "{{.ID}}",
             deadline=deadline,
@@ -273,11 +324,23 @@ class SqlSetup:
             f"Container {container.identifier}: status={container.status} "
             f"exit={container.exit_code} OOMKilled={container.oom_killed} image={container.image}"
         )
+        self.log(
+            "Container log excerpts (last 30m, max 5000 lines; may omit older history; "
+            "retained output may be truncated):"
+        )
         try:
             result = self.docker_command(
-                "logs", container.identifier, timeout=20, check=False, deadline=deadline
+                "logs",
+                "--since",
+                "30m",
+                "--tail",
+                "5000",
+                container.identifier,
+                timeout=20,
+                check=False,
+                deadline=deadline,
             )
-            self.log("Container log excerpts:\n" + result.output)
+            self.log(result.output)
             if result.returncode:
                 self.log(f"Container logs unavailable (exit {result.returncode})")
         except SetupFailure as exc:
@@ -304,11 +367,10 @@ class SqlSetup:
             )
         self.remove(container, deadline=self.phase_deadline)
 
-    def preflight(self):
+    def prepare_runtime(self):
         if self.args.colima and not self.args.cleanup:
             self.log("Starting Colima once (outside SQL retry)")
             self.command(["colima", "start", "--cpu", "4", "--memory", "8", "--disk", "50"], 600)
-        self.docker_command("info", "--format", "{{.ServerVersion}}")
 
     def acquire_image(self):
         if self.image_id is not None:
@@ -360,16 +422,55 @@ class SqlSetup:
             deadline=deadline,
         )
 
+    def readiness_probe(self, deadline):
+        current = self.find_owned(deadline=deadline)
+        if current is None or current.identifier != self.container.identifier:
+            raise SetupFailure("SQL container disappeared or was replaced", retryable=False)
+        if current.status != "running":
+            raise SetupFailure(
+                f"SQL container exited before readiness (status={current.status}, "
+                f"exit={current.exit_code}, OOMKilled={current.oom_killed})"
+            )
+        probe = self.sql("SELECT 1", deadline=deadline)
+        if probe.returncode in (126, 127):
+            raise SetupFailure("Required sqlcmd executable is unavailable", retryable=False)
+        return probe
+
+    def wait_ready(self):
+        polling_deadline = min(
+            self.deadline,
+            self.phase_deadline,
+            time.monotonic() + (180 if self.args.colima else 120),
+        )
+        while time.monotonic() < polling_deadline:
+            try:
+                probe = self.readiness_probe(polling_deadline)
+            except SetupTimeout as exc:
+                self.log(f"Readiness probe timed out: {exc}")
+            else:
+                if probe.returncode == 0:
+                    return
+            time.sleep(max(0, min(2, polling_deadline - time.monotonic())))
+        final_deadline = min(self.deadline, self.phase_deadline, polling_deadline + 45)
+        if time.monotonic() >= final_deadline:
+            raise SetupTimeout("SQL readiness budget exhausted before final probe")
+        self.log("Polling window ended; performing one final bounded SQL readiness check")
+        probe = self.readiness_probe(final_deadline)
+        if probe.returncode != 0:
+            raise SetupFailure("SQL final readiness check failed\n" + probe.output)
+
     def attempt(self):
         stale = self.find_owned()
         if stale is not None:
             self.log("Removing pre-existing same-job container before fresh setup")
             self.diagnostics(stale, deadline=min(self.phase_deadline, time.monotonic() + 20))
             try:
-                self.remove(stale, deadline=min(self.phase_deadline, time.monotonic() + 30))
+                self.remove(stale, deadline=self.phase_deadline)
             except SetupFailure as exc:
                 raise SetupFailure(str(exc), retryable=False) from None
         self.acquire_image()
+        # The daemon may create the container even when the CLI times out.
+        self.creation_requested = True
         self.docker_command(
             "create",
             "--name",
@@ -391,39 +492,20 @@ class SqlSetup:
         if self.container is None:
             raise SetupFailure("Created SQL container was not found")
         self.docker_command("start", self.container.identifier, timeout=30)
-        ready_deadline = min(
-            self.phase_deadline, time.monotonic() + (180 if self.args.colima else 120)
-        )
-        last_output = ""
-        while time.monotonic() < ready_deadline:
-            current = self.find_owned(deadline=ready_deadline)
-            if current is None or current.identifier != self.container.identifier:
-                raise SetupFailure("SQL container disappeared or was replaced", retryable=False)
-            if current.status != "running":
-                raise SetupFailure(
-                    f"SQL container exited before readiness (status={current.status}, "
-                    f"exit={current.exit_code}, OOMKilled={current.oom_killed})"
-                )
-            probe = self.sql("SELECT 1", deadline=ready_deadline)
-            if probe.returncode == 0:
-                if self.args.database:
-                    result = self.sql("CREATE DATABASE TestDB", timeout=30, query_timeout=15)
-                    if result.returncode != 0:
-                        raise SetupFailure("TestDB initialization failed\n" + result.output)
-                return
-            if probe.returncode in (126, 127):
-                raise SetupFailure("Required sqlcmd executable is unavailable", retryable=False)
-            last_output = probe.output
-            time.sleep(max(0, min(2, ready_deadline - time.monotonic())))
-        raise SetupFailure("SQL readiness deadline exhausted\n" + last_output)
+        self.wait_ready()
+        if self.args.database:
+            result = self.sql("CREATE DATABASE TestDB", timeout=30, query_timeout=15)
+            if result.returncode != 0:
+                raise SetupFailure("TestDB initialization failed\n" + result.output)
 
     def setup(self):
-        self.preflight()
+        self.prepare_runtime()
         if self.args.cleanup:
             self.cleanup(evidence=False)
             self.log("Owned SQL container cleanup complete (or already absent)")
             return
         for number in (1, 2):
+            self.creation_requested = False
             self.log(f"SQL setup attempt {number}/2")
             attempt_end = min(
                 self.deadline,
@@ -435,16 +517,16 @@ class SqlSetup:
             except SetupFailure as exc:
                 self.log(f"Attempt {number}/2 failed: {exc}")
                 self.phase_deadline = attempt_end
-                try:
-                    self.cleanup()
-                except SetupFailure as cleanup_error:
-                    raise SetupFailure(
-                        f"Cannot safely recover/clean up: {cleanup_error}", retryable=False
-                    ) from None
+                if self.creation_requested:
+                    try:
+                        self.cleanup()
+                    except SetupFailure as cleanup_error:
+                        raise SetupFailure(
+                            f"Cannot safely recover/clean up: {cleanup_error}", retryable=False
+                        ) from None
                 if not exc.retryable or number == 2:
                     raise SetupFailure("SQL setup failed; no further attempts", retryable=False)
                 self.phase_deadline = self.deadline
-                self.docker_command("info", "--format", "{{.ServerVersion}}")
                 if self.deadline - time.monotonic() < 5:
                     raise SetupFailure("SQL setup deadline exhausted before retry", retryable=False)
                 self.log("Retrying SQL setup only after 5 seconds")
@@ -500,7 +582,7 @@ def main(argv=None):
         print("[sql] Setup cancelled; no retry", flush=True)
         if setup is not None:
             try:
-                setup.cleanup()
+                setup.cleanup(evidence=not setup.args.cleanup)
             except SetupFailure as cleanup_error:
                 setup.log(f"Cancellation cleanup failed: {cleanup_error}")
         return 128 + exc.signum

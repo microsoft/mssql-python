@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Hosted experiment only: delegate Docker and kill only the labelled test SQL container."""
+
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 
 def record(event):
@@ -25,12 +27,29 @@ def main():
     operation = args[offset]
     identifier = args[-1] if operation in ("start", "rm", "logs") else None
     if operation == "exec":
-        rest = args[offset + 1:]
+        rest = args[offset + 1 :]
         if rest[:2] != ["--env", "SQLCMDPASSWORD"] or len(rest) < 4:
             record({"event": "unexpected-exec-shape"})
             return 93
         identifier = rest[2]
     record({"event": "before", "operation": operation, "id": identifier})
+    mode = os.environ["RECOVERY_MODE"]
+    if operation == "container" and args[offset + 1 : offset + 2] == ["ls"]:
+        events = [
+            json.loads(line)
+            for line in Path(os.environ["RECOVERY_EVENTS"]).read_text(encoding="utf-8").splitlines()
+        ]
+        lookups = sum(
+            event["event"] == "before" and event.get("operation") == "container" for event in events
+        )
+        if mode == "unavailable":
+            record({"event": "injected-read-only-unavailable"})
+            print("Injected Docker API unavailable (read-only lookup)", file=sys.stderr)
+            return 1
+        if mode == "busy-once" and lookups == 1:
+            record({"event": "injected-read-only-timeout"})
+            time.sleep(60)
+            return 94
     real = os.environ["REAL_DOCKER"]
     result = subprocess.run([real] + args)
     record({"event": "after", "operation": operation, "id": identifier, "code": result.returncode})
@@ -40,25 +59,33 @@ def main():
         json.loads(line)
         for line in Path(os.environ["RECOVERY_EVENTS"]).read_text(encoding="utf-8").splitlines()
     ]
-    starts = sum(event.get("operation") == "start" and event["event"] == "before" for event in events)
-    mode = os.environ["RECOVERY_MODE"]
-    if mode == "clean" or (mode == "recover" and starts != 1):
+    starts = sum(
+        event.get("operation") == "start" and event["event"] == "before" for event in events
+    )
+    if mode not in ("recover", "permanent") or (mode == "recover" and starts != 1):
         return 0
     context = args[:offset]
     owner = subprocess.run(
-        [real] + context + [
-            "inspect", "--format",
+        [real]
+        + context
+        + [
+            "inspect",
+            "--format",
             '{{index .Config.Labels "com.microsoft.mssql-python.ci-owner"}}',
             identifier,
         ],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     if owner.returncode or owner.stdout.strip() != os.environ["RECOVERY_OWNER"]:
         record({"event": "injection-refused", "id": identifier})
         return 91
     killed = subprocess.run(
         [real] + context + ["kill", "--signal", "KILL", identifier],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
     )
     record({"event": "injected-exit", "id": identifier, "code": killed.returncode})
     return killed.returncode
