@@ -1,0 +1,307 @@
+{
+  "base": "89c225157c41299a897fc981cdeba4da934e62f9",
+  "lf_tree_sha256": "543c678c0f2d038fd6896918de92763a5581f66fdcb93cc395e738cb438e0636",
+  "normalization": "Require reviewed LF content hashes, then materialize exact tested CRLF bytes where needed before native build.",
+  "files": {
+    "mssql_python\\__init__.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "7bb1c3b26a78fdefbac85d79611151017d55e8fb55fb10a29e665f4e86355247",
+      "tested_bytes_sha256": "3ee1406c671196690d29963b3073a134e6aa2066b4854b9a4362accfa08bf4d3"
+    },
+    "mssql_python\\auth.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "a521d0dc1f2978f9c3eef050e7d7d10e4b094e1e818d4c24e8f5bb1caccf8f28",
+      "tested_bytes_sha256": "6743b5285dfefaec19fcba6b4d0f9474474af1918e6ea407bbbcd31c0d0d767f"
+    },
+    "mssql_python\\connection.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "d324ea896826d5282cf78fa49fce3a34219a732fbbf69053b2cbd23b27d5cb68",
+      "tested_bytes_sha256": "674970c58683ea9356a15c7a6a496dbe89d222ae1634deac37544badd5e0a12a"
+    },
+    "mssql_python\\connection_string_builder.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "6a2413dc93ea382db0c51fffd38d8de7760b00993caa315545f6b13b95085764",
+      "tested_bytes_sha256": "0af1acdd55dbad9dd62e7f1d86ce386bf967f8b785447411499a57aa294cf36e"
+    },
+    "mssql_python\\connection_string_parser.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "84340eae84ab28aefb41432c36d5d23b4d7ef673bde5b8189e6ca56cc02edb88",
+      "tested_bytes_sha256": "023723f204e9757a24b379c1f405ed7ad4390a7a2121db644699d332020272f9"
+    },
+    "mssql_python\\constants.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "217bf139faaced37d0840bdabd32ecb150b513197422736a74192d8b62ec03c9",
+      "tested_bytes_sha256": "f60eea15b8cd0595ff7f4f83853be260b97e6da23b90d4deb0ffd4898c4bb194"
+    },
+    "mssql_python\\cursor.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "6d74d4f4580976db16c546294f22a24a34dc6a9c1bbd585b2fc93069219b0459",
+      "tested_bytes_sha256": "ceffb01f613db2c0ab01da73fdd8d31713043f7a77b26ea6fe20d9494d539daa"
+    },
+    "mssql_python\\db_connection.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "e1f4366f6662ae2d0d609d94b3a047254098a9c7de54b5890a94bb280fad83e3",
+      "tested_bytes_sha256": "2a5bdf2cfd51bc9d556a5ea9548d2a534732540838848fc18e1900be4d5ad7fe"
+    },
+    "mssql_python\\ddbc_bindings.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "c8bc4c66baba7570adb59b72f63cd749c9a780ad582b31d2cf249d090699e70b",
+      "tested_bytes_sha256": "efa79cdcaba7794009b2e6a3e88b5c5fec62441244514638590a9d010cbffca3"
+    },
+    "mssql_python\\decimal_config.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "4a3b87db7b5567c2640e5bad375f2b09ca198d1262771d4211e86529ac4c2c9e",
+      "tested_bytes_sha256": "baac3fa825359cd36168a8d287ca8fd733a9b98c813473e904c8d65e15ade66f"
+    },
+    "mssql_python\\exceptions.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "56c50b0ef951a08a5f249b19a055ec01b7c9cceb6dced6ad604e1c8e3e205563",
+      "tested_bytes_sha256": "754ff34f79ecfe3765338ae650533188fa5a5ec23374a191c9dd6b3088261ec1"
+    },
+    "mssql_python\\helpers.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "efd49fca53b3ba2e9431c771bef8bcc574c905e0abb46d6eaf0971c841f8b109",
+      "tested_bytes_sha256": "1c0ae77c666552a3b2cefd661c5ddd178d6a376fe2f4b9cd73431d51a6d89f19"
+    },
+    "mssql_python\\logging.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "2e07f4ffb5b6f2baef8a6b235a76c3fac367e62702b2e89af48b185090ba6fd6",
+      "tested_bytes_sha256": "08d9239be0c4f4977ec58abf73b183358b72b261f8a4a18a92d0be1accb14e1d"
+    },
+    "mssql_python\\mssql_python.pyi": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "53839188c8c641ed58a832d9111bd6d5698a1abf060ce5f8971c2e367c3e9cd6",
+      "tested_bytes_sha256": "83ae328c669eb6681978cc6aac8dcbcbfa27fb6515aaf8221996f240a6dcba63"
+    },
+    "mssql_python\\odbc_provider.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "972fd056013263b97020fa0e838fea6f82a89e15302bb76176114d32002b6d8d",
+      "tested_bytes_sha256": "164ca6de010761763d19037f603820f0aeb0aeec3a95d679fa8f551c135c1223"
+    },
+    "mssql_python\\parameter_helper.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "e28739d0ceb153c208950141f1f0321de4ea0b3a8fc08c22c627405cabb90438",
+      "tested_bytes_sha256": "0ce10deb7dd4342f9a871fc765a3b797f091793b4aec4abf0f341cebdbde3f63"
+    },
+    "mssql_python\\perf_timer.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "05a85851674c577f7e2a29db030e61f191de79feb115e585935bb70e68c11669",
+      "tested_bytes_sha256": "1254840dbaab9668aeefa1d1180be3818793661d464485022fb95ef0d8a99f40"
+    },
+    "mssql_python\\pooling.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "26606f627efe190edc8e8f113e12b1d798ab3847e8361280a6b52922b78a400b",
+      "tested_bytes_sha256": "6109d9f19712b91d1c8a3af7455512ab0a721fd77e0a56bd38075a6c924f889f"
+    },
+    "mssql_python\\pybind\\CMakeLists.txt": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "1395a48af828ec3fe88e7ed9f7905d7c1a0da0f045ba80d15e40fc3ce14f66c5",
+      "tested_bytes_sha256": "36ce618896448d6cf71dcb2cc8fa7da7b5c5cca7d619d6b1dbb6f7bf70d1e5ea"
+    },
+    "mssql_python\\pybind\\build.bat": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "3fb417a1d90c9dd1b4540130d0b966edbd7cf938a971c85ff59babc41665545f",
+      "tested_bytes_sha256": "b38a3dade3272b07308135c27f1b18d9ac585aeb299f51d781c64c9d98c70f11"
+    },
+    "mssql_python\\pybind\\connection\\connection.cpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "f489839b08bbcf9b2365695d127f3336688e9008499bc2ffb06d5a8ef10843d8",
+      "tested_bytes_sha256": "b152fd2f9302be0198040b5e716b88a14e03e8e325c1355c0c2ee6bc0fcdc441"
+    },
+    "mssql_python\\pybind\\connection\\connection.h": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "7f5ff0f0a157e03af59c6a163227bce312283afe6b373481c275f368c6f0f899",
+      "tested_bytes_sha256": "617b4382c6b939f654f93d6da936b8fd0831237aae41f47da31401a5eb1721d5"
+    },
+    "mssql_python\\pybind\\connection\\connection_pool.cpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "47a48f1df33475018635b067dc3d84f4f5078d9bc15ca24303daa9eeef0d3fad",
+      "tested_bytes_sha256": "7f1b7097c00a421fd09efc1629c437db0f9541de76c151c42cd75ca847ba4a44"
+    },
+    "mssql_python\\pybind\\connection\\connection_pool.h": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "84ba4f8fc089b70175199f51b03f5d5b95b1a63a72fc2ace4294000f27e17eb3",
+      "tested_bytes_sha256": "4f8e61bc00ed710c26fbb18916176442715e898c3160e20c6a9916c92428fed1"
+    },
+    "mssql_python\\pybind\\ddbc_bindings.cpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "625d19fe240ecf8839f1f7db4572c0c927311cba053032abdb4d49ecfbfed897",
+      "tested_bytes_sha256": "0c13dc80c518f0640a242bb5ee6ec3a14183ef65132609828d7ffb7f4712ce17"
+    },
+    "mssql_python\\pybind\\ddbc_bindings.h": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "b7a351f1f510db9bed57ce86767208a19916a2094d97f8a1273412dbd09b104a",
+      "tested_bytes_sha256": "92d15777b7c8eefe21f0e0ecd5421bf4a801194398c0bd9e3d7364e21d7f8f7c"
+    },
+    "mssql_python\\pybind\\keep_single_arch.bat": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "f8196e3f32f82ba1d79b59b0a45f18afdbc778f89fc4b3793719be4e96de7573",
+      "tested_bytes_sha256": "4de40cc6ea867dded131114906d6032c45908e3f6398dd79589f62829d530a30"
+    },
+    "mssql_python\\pybind\\logger_bridge.cpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "6544c2532fc73d51007a7653cea3bd8e76e780db5b139bb582b048cceed4f79f",
+      "tested_bytes_sha256": "702820100bdc0eedeb9dcc8e75b45e3167860c47330d17b2ba00cfec08c13fb4"
+    },
+    "mssql_python\\pybind\\logger_bridge.hpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "a46a06fb3376f0a6a2cb1e6f323fa913bc9f22197ae12b02a39f81893a7c22fa",
+      "tested_bytes_sha256": "7770398b7e6ac219a6f68ecc34a0b8c8e75f3bf17008bbb610731daca78551c2"
+    },
+    "mssql_python\\pybind\\param_detect.hpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "bba818e28e0c815407581f2ddf89a5ad834d21b609dfa745bf0131c855359157",
+      "tested_bytes_sha256": "0dd4a254b54b3d95cf53377a0102cead65e87c388a1d0210b5f5f33f3166f49a"
+    },
+    "mssql_python\\pybind\\performance_counter.hpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "f55ea0b3e913ef264fae7397f9081cf205b988df8f942692fdfd62dcb2670076",
+      "tested_bytes_sha256": "5a2244ba43fa6826fa0765da226d3af37cb9755cf4f2b8a3b54fe5761fcf23d5"
+    },
+    "mssql_python\\pybind\\py_ref.hpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "d36cd4c3e33386953fd6d1ac73eba2ab27387e2d5737e6dd49acef3e8683f22d",
+      "tested_bytes_sha256": "6ca1415c911e772fccdb59afbeca193ea14c619209340a621bc7490e966986dd"
+    },
+    "mssql_python\\pybind\\py_type_cache.hpp": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "e1263135385bd79d949fd07fccc9de1883cf977c159497c958edd4f4258210b0",
+      "tested_bytes_sha256": "f11e2a73f25cb60b40dd44a18344d634f8d6863ca5cbc791099d42bea48a4abe"
+    },
+    "mssql_python\\pybind\\utf_utils.h": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "e2bd300217adb925b718caf77f6efced25f6e113c8190dab30f62af454f0801e",
+      "tested_bytes_sha256": "9561612d0e7bd043309ec63d394bc46aa255912897f98dcc9aa3e0abb6a17ba3"
+    },
+    "mssql_python\\row.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "6c5c12478c8c3cc5a2793d4f1c55d49f8725888a21260031334024a6da00c663",
+      "tested_bytes_sha256": "81f5528946e52f948f920f99a0ecc79f11ddc574754a032d31871e07a4181ec9"
+    },
+    "mssql_python\\type.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "f9fc1d576bf5cb79d214fd70967f0605c1b319549321a63c625528ec10792204",
+      "tested_bytes_sha256": "f0c02eed1458257ea6ef4eeb68df508fdf6aaf92065a75420e9dc8ffed53aa68"
+    },
+    "mssql_python_odbc\\__init__.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "0a777799bfc63a03f6ec48d1145b728dd19411460e9de9547ff4868d556a9a0e",
+      "tested_bytes_sha256": "1f3b1eefcf4503d1daeadd339e89dc96b68d89efbecaafd10776fc33aa9d2ecf"
+    },
+    "mssql_python_odbc\\libs\\windows\\x64\\1033\\msodbcsqlr18.rll": {
+      "text": false,
+      "tested_crlf": false,
+      "lf_sha256": "eec8103c80d1a6f1f5b68b2b6fc99f3c84a1788e59dd62a75e3d8373135cb3b7",
+      "tested_bytes_sha256": "eec8103c80d1a6f1f5b68b2b6fc99f3c84a1788e59dd62a75e3d8373135cb3b7"
+    },
+    "mssql_python_odbc\\libs\\windows\\x64\\msodbcdiag18.dll": {
+      "text": false,
+      "tested_crlf": false,
+      "lf_sha256": "67d8fb3289f845347f06fe9b9515ae50695fbd652aace9f98b8a8cc650e03f25",
+      "tested_bytes_sha256": "67d8fb3289f845347f06fe9b9515ae50695fbd652aace9f98b8a8cc650e03f25"
+    },
+    "mssql_python_odbc\\libs\\windows\\x64\\msodbcsql18.dll": {
+      "text": false,
+      "tested_crlf": false,
+      "lf_sha256": "d456bb1d0a17d6772cc1c04cf905bfcab33d80c3a14cc4b2aa636e761f89bf41",
+      "tested_bytes_sha256": "d456bb1d0a17d6772cc1c04cf905bfcab33d80c3a14cc4b2aa636e761f89bf41"
+    },
+    "mssql_python_odbc\\libs\\windows\\x64\\mssql-auth.dll": {
+      "text": false,
+      "tested_crlf": false,
+      "lf_sha256": "32f663e5cfd3eb104899e4427d3e692a4de9932a52ed8cd253348723e1478498",
+      "tested_bytes_sha256": "32f663e5cfd3eb104899e4427d3e692a4de9932a52ed8cd253348723e1478498"
+    },
+    "mssql_python_odbc\\libs\\windows\\x64\\vcredist\\msvcp140.dll": {
+      "text": false,
+      "tested_crlf": false,
+      "lf_sha256": "9057d39b36b6c7d054865ee2bf9cde7a490fe3b01ec4e82514687e24f576269f",
+      "tested_bytes_sha256": "9057d39b36b6c7d054865ee2bf9cde7a490fe3b01ec4e82514687e24f576269f"
+    },
+    "pytest.ini": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "3e3db34483c7d1f8610713577773e9821f068738aaeffc9b21d5fdc6f8698c16",
+      "tested_bytes_sha256": "1287326370acaf78d4f6cf6a959c16d709dc7535639f4680235a06ce0328ec22"
+    },
+    "requirements.txt": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "ab15eef6e3e2b07131a9b47543281191d615345c9eddd06595fce3f842d515af",
+      "tested_bytes_sha256": "11431d5c7dfbb69aa654114587ea774caeb550468032920eaab12e6597c8f215"
+    },
+    "tests\\conftest.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "37bdecc55b7419d5bb903f7e20429447c61d77501974513669fbc189397e3473",
+      "tested_bytes_sha256": "a901dc148eb4eedac7730739f180a9a174c6b60d5c447e09ae491e2ff6797b1d"
+    },
+    "tests\\test_005_connection_cursor_lifecycle.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "20ce9c025de180481b440b6129e82d572600a8e80c378a5648b32bca7161409a",
+      "tested_bytes_sha256": "4a5adca4ff2cbeb97fe6a984045720265ee354c813fbaf957fddda623d41d30b"
+    },
+    "tests\\test_009_pooling.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "def24bfdde6aff198cf3f0be4884e84a5d35fab3dc9290622e2fd85a4655233a",
+      "tested_bytes_sha256": "5107b47193759c357496e793312e709960b24955705ba2f72aeeffa3daa4e8af"
+    },
+    "tests\\test_013_SqlHandle_free_shutdown.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "644da700668fe808d5faf93ad45692f96e224199ef9935d06a802d8964b3bcf8",
+      "tested_bytes_sha256": "b454fb8422acae01e254d3ace124715cb8861e6143465150f9435ab96a35553f"
+    },
+    "tests\\test_024_context_manager_transaction.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "8357d0f3af1369b7ff999bbb86e2ee47cd37fb9bda14ea5142198ff0106aca43",
+      "tested_bytes_sha256": "2168540bb7c733e5653ce0b6d96783878cfaf5455f09bf24c143826218415c92"
+    },
+    "tests\\test_025_logging_concurrency_deadlock.py": {
+      "text": true,
+      "tested_crlf": true,
+      "lf_sha256": "9c48c1c9982d1aa2d8beb993908f8d7350f8bab986af395553eab3f86ff9cb0a",
+      "tested_bytes_sha256": "adabb7cb7127cb5b3302433b93dbd3c520cebe40ec82ec11dba3961a69ad1055"
+    }
+  }
+}
