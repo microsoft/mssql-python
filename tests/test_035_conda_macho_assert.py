@@ -10,8 +10,12 @@ accepting the real wheel layout with separate thin arm64 and x86_64 driver direc
 import importlib.util
 import io
 import json
+import os
+import shutil
 import struct
+import subprocess
 import sys
+import sysconfig
 import tarfile
 import zipfile
 from pathlib import Path
@@ -133,7 +137,7 @@ def _zstd_compress(raw: bytes) -> bytes:
         return zstandard.ZstdCompressor().compress(raw)
 
 
-def _make_conda(tmp_path, subdir, payload):
+def _make_conda(tmp_path, subdir, payload, depends=("python_abi 3.12.* *_cp312",)):
     """Build a minimal .conda (info-*.tar.zst + pkg-*.tar.zst) with the given payload files."""
     name = "mssql-python-1.13.0-py312_0"
 
@@ -145,6 +149,7 @@ def _make_conda(tmp_path, subdir, payload):
             tf.addfile(ti, io.BytesIO(data))
 
     index = {"name": "mssql-python", "version": "1.13.0", "build": "py312_0", "subdir": subdir}
+    index["depends"] = depends
     idx = json.dumps(index).encode()
     info_buf = io.BytesIO()
     with tarfile.open(fileobj=info_buf, mode="w") as tf:
@@ -159,7 +164,15 @@ def _make_conda(tmp_path, subdir, payload):
     return str(conda_path)
 
 
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_malformed_dependencies_are_reported(tmp_path):
+    errors = mac.audit_package(_make_conda(tmp_path, "osx-arm64", {}, depends=None))
+    assert any("malformed" in error and "depends" in error for error in errors)
+
+
 _BINDING = "lib/python3.12/site-packages/mssql_python/ddbc_bindings.cp312-darwin.so"
+_CORE = "lib/python3.12/site-packages/mssql_py_core/mssql_py_core.cpython-312-darwin.so"
+_CORE_INIT = "lib/python3.12/site-packages/mssql_py_core/__init__.py"
 _DRIVER_ROOT = "lib/python3.12/site-packages/mssql_python_odbc/libs/macos"
 _DRIVER_LIBRARIES = (
     "libltdl.7.dylib",
@@ -173,11 +186,99 @@ def _realistic_payload(binding, arm64=None, x86_64=None):
     """Mirror the wheel's two architecture-specific four-library driver directories."""
     arm64 = arm64 or _fake_macho_thin(_ARM64)
     x86_64 = x86_64 or _fake_macho_thin(_X86_64)
-    payload = {_BINDING: binding}
+    payload = {
+        _BINDING: binding,
+        _CORE: _fake_macho_fat([_X86_64, _ARM64]),
+        _CORE_INIT: b"from .mssql_py_core import *\n",
+    }
     for library in _DRIVER_LIBRARIES:
         payload[f"{_DRIVER_ROOT}/arm64/lib/{library}"] = arm64
         payload[f"{_DRIVER_ROOT}/x86_64/lib/{library}"] = x86_64
     return payload
+
+
+@pytest.mark.parametrize("cross_build", [False, True])
+@pytest.mark.parametrize("state", ["valid", "missing", "missing-init", "wrong-tag", "abi3"])
+def test_unix_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, state):
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("Direct Unix recipe execution requires bash")
+    tools = subprocess.run([bash, "-c", "command -v unzip"], capture_output=True, timeout=10)
+    if tools.returncode:
+        pytest.skip("Direct Unix recipe execution requires unzip")
+    payload = _realistic_payload(_fake_macho_fat([_X86_64, _ARM64]))
+    core = _CORE
+    if not cross_build:
+        core = _CORE.rsplit("/", 1)[0] + "/mssql_py_core" + sysconfig.get_config_var("EXT_SUFFIX")
+        payload[core] = payload.pop(_CORE)
+    if state == "missing":
+        del payload[core]
+    elif state == "missing-init":
+        del payload[_CORE_INIT]
+    elif state == "wrong-tag":
+        payload[core + ".wrong-tag"] = payload.pop(core)
+    elif state == "abi3":
+        payload[_CORE.replace("cpython-312-darwin", "abi3")] = payload.pop(core)
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    code_tag = "cp312-cp312-macosx_15_0_universal2" if cross_build else "py3-none-any"
+    odbc_tag = "py3-none-macosx_15_0_universal2" if cross_build else "py3-none-any"
+    with zipfile.ZipFile(wheels / f"mssql_python-1.13.0-{code_tag}.whl", "w") as wheel:
+        for name, data in payload.items():
+            if "/mssql_python_odbc/" not in name:
+                wheel.writestr(name.removeprefix("lib/python3.12/site-packages/"), data)
+        wheel.writestr(
+            "mssql_python-1.13.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: mssql-python\nVersion: 1.13.0\n",
+        )
+        wheel.writestr(
+            "mssql_python-1.13.0.dist-info/WHEEL",
+            f"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: {code_tag}\n",
+        )
+        wheel.writestr("mssql_python-1.13.0.dist-info/RECORD", "")
+    with zipfile.ZipFile(wheels / f"mssql_python_odbc-18.6.2.1-{odbc_tag}.whl", "w") as wheel:
+        wheel.writestr("mssql_python_odbc/__init__.py", "")
+        wheel.writestr(
+            "mssql_python_odbc-18.6.2.1.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: mssql-python-odbc\nVersion: 18.6.2.1\n",
+        )
+        wheel.writestr(
+            "mssql_python_odbc-18.6.2.1.dist-info/WHEEL",
+            f"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: {odbc_tag}\n",
+        )
+        wheel.writestr("mssql_python_odbc-18.6.2.1.dist-info/RECORD", "")
+    site_packages = tmp_path / "site-packages"
+    result = subprocess.run(
+        [bash, (_MODULE_PATH.parents[2] / "conda/mssql-python/build.sh").as_posix()],
+        env=dict(
+            os.environ,
+            PYTHON=(
+                (tmp_path / "nonexecutable-python").as_posix()
+                if cross_build
+                else Path(sys.executable).as_posix()
+            ),
+            PKG_NAME="mssql-python",
+            PKG_VERSION="1.13.0",
+            CONDA_PY="312",
+            WHEELS_DIR=wheels.as_posix(),
+            SP_DIR=site_packages.as_posix(),
+            PREFIX=(tmp_path / "prefix").as_posix(),
+            MSSQL_ODBC_VERSION="18.6.2.1",
+            PIP_TARGET=str(site_packages),
+            PIP_CONFIG_FILE=os.devnull,
+            PIP_USER="0",
+        ),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+    if state in ("valid", "abi3"):
+        assert result.returncode == 0, output
+        assert (site_packages / "mssql_python_odbc/__init__.py").is_file()
+    else:
+        assert result.returncode != 0, output
+        assert "ERROR: required mssql_py_core" in output
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
@@ -190,6 +291,27 @@ def test_osx_packages_accept_real_split_driver_layout(tmp_path, subdir):
         _realistic_payload(_fake_macho_fat([_X86_64, _ARM64])),
     )
     assert mac.audit_package(p) == []
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+@pytest.mark.parametrize("state", ["missing", "missing-init", "wrong-arch", "wrong-tag", "abi3"])
+def test_required_core_contract(tmp_path, state):
+    payload = _realistic_payload(_fake_macho_fat([_X86_64, _ARM64]))
+    if state == "missing":
+        del payload[_CORE]
+    elif state == "missing-init":
+        del payload[_CORE_INIT]
+    elif state == "wrong-arch":
+        payload[_CORE] = _fake_macho_thin(_X86_64)
+    elif state == "wrong-tag":
+        payload[_CORE.replace("312", "311")] = payload.pop(_CORE)
+    else:
+        payload[_CORE.replace("cpython-312-darwin", "abi3")] = payload.pop(_CORE)
+    errors = mac.audit_package(_make_conda(tmp_path, "osx-arm64", payload))
+    if state == "abi3":
+        assert errors == []
+    else:
+        assert any("mssql_py_core" in error for error in errors)
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")

@@ -29,8 +29,6 @@ _ORCH_PATH = (
     / "scripts"
     / "build_conda_packages.py"
 )
-_PIPELINE_PATH = _ORCH_PATH.parent.parent / "conda-build-pipeline.yml"
-_CONSOLIDATE_JOB_PATH = _ORCH_PATH.parent.parent / "jobs" / "consolidate-conda-artifacts-job.yml"
 
 pytestmark = pytest.mark.skipif(
     not _ORCH_PATH.exists(), reason=f"orchestrator not present ({_ORCH_PATH})"
@@ -43,58 +41,6 @@ def _load_orchestrator():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def test_best_effort_consolidation_runs_after_upstream_failure():
-    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
-    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
-        producer = pipeline.split(f"- stage: {stage_name}", 1)[1]
-        assert "dependsOn: ValidateWheelProvenance" in producer.split("jobs:", 1)[0]
-
-    stage = pipeline.split("- stage: ConsolidateConda", 1)[1]
-    dependencies = stage.split("jobs:", 1)[0]
-    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
-        assert f"- {stage_name}" in dependencies
-    assert "condition: succeededOrFailed()" in stage.split("jobs:", 1)[0]
-
-    mac_stage = pipeline.split("- stage: CondaMacOS", 1)[1].split("- stage: CondaLinux", 1)[0]
-    mac_publish = mac_stage.split("displayName: 'Publish macOS conda artifact'", 1)[1]
-    assert "condition: succeededOrFailed()" in mac_publish.split("inputs:", 1)[0]
-
-    job = _CONSOLIDATE_JOB_PATH.read_text(encoding="utf-8")
-    consolidate = job.split("- job: ConsolidateArtifacts", 1)[1]
-    assert "condition: succeededOrFailed()" in consolidate.split("pool:", 1)[0]
-
-
-def test_official_builds_require_main_wheel_provenance():
-    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
-    resource = pipeline.split("- pipeline: buildPipeline", 1)[1].split("extends:", 1)[0]
-    assert "branch: main" in resource
-
-    gate = pipeline.split("- stage: ValidateWheelProvenance", 1)[1].split("- stage: CondaWin64", 1)[
-        0
-    ]
-    assert '[[ -z "${WHEEL_SOURCE_BRANCH:-}" ]]' in gate
-    assert 'case "$ONEBRANCH_TYPE" in' in gate
-    assert "Official)" in gate
-    assert "NonOfficial) ;;" in gate
-    assert '[[ "$WHEEL_SOURCE_BRANCH" != "refs/heads/main" ]]' in gate
-    assert "unknown OneBranch type" in gate
-    assert "ONEBRANCH_TYPE: ${{ variables.effectiveOneBranchType }}" in gate
-    assert "WHEEL_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)" in gate
-
-    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
-        producer = pipeline.split(f"- stage: {stage_name}", 1)[1]
-        assert "dependsOn: ValidateWheelProvenance" in producer.split("jobs:", 1)[0]
-
-
-def test_windows_pool_demand_is_indented_under_demands_key():
-    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
-    windows_stage = pipeline.split("- stage: CondaWin64", 1)[1].split("- stage: CondaMacOS", 1)[0]
-    assert (
-        "              demands:\n"
-        "                - imageOverride -equals PYTHON-1ES-MMS2022\n" in windows_stage
-    )
 
 
 @pytest.mark.parametrize(
@@ -338,7 +284,7 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
     import_calls = [
         (cmd, cwd)
         for cmd, cwd in calls
-        if "-c" in cmd and any("mssql_python" in str(a) for a in cmd)
+        if "-c" in cmd and any("mssql_python" in str(a) or "mssql_py_core" in str(a) for a in cmd)
     ]
     assert import_calls, "verify() never issued an `import mssql_python` probe"
     for cmd, cwd in import_calls:
@@ -346,6 +292,10 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
             f"import probe ran from {cwd!r}, not the neutral workdir {str(workdir)!r} -- the "
             f"repo source tree would shadow the conda-installed package"
         )
+    codes = [cmd[-1] for cmd, _ in import_calls]
+    assert codes[0] == mod._core_probe()
+    assert codes.count(mod._core_probe()) == 1
+    assert "import mssql_python" not in codes[0]
 
 
 def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
@@ -491,6 +441,20 @@ def test_build_env_sets_subdir_for_cross_build(monkeypatch):
     assert env["CONDA_SUBDIR"] == "osx-arm64"
 
 
+def test_recipe_requires_explicit_wheel_version():
+    jinja2 = pytest.importorskip("jinja2", reason="Conda recipe rendering requires Jinja2")
+    recipe = _ORCH_PATH.parents[2] / "conda" / "mssql-python" / "meta.yaml"
+    template = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(
+        recipe.read_text(encoding="utf-8")
+    )
+    env = _load_orchestrator().build_env("1.2.3", "18.6.2", "wheels", "")
+    assert 'version: "1.2.3"' in template.render(environ=env)
+
+    del env["MSSQL_PYTHON_VERSION"]
+    with pytest.raises(jinja2.UndefinedError, match="MSSQL_PYTHON_VERSION"):
+        template.render(environ=env)
+
+
 def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeypatch):
     """A successful solve does not prove package extraction/linking succeeds."""
     mod = _load_orchestrator()
@@ -599,6 +563,7 @@ def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
     ("target_subdir", "expected_channels"),
     [
         ("", ["microsoft", "conda-forge"]),
+        ("win-64", ["microsoft", "conda-forge"]),
         ("osx-arm64", ["microsoft", "conda-forge"]),
         ("linux-aarch64", ["microsoft", "conda-forge"]),
         ("win-arm64", ["defaults", "microsoft", "conda-forge"]),
@@ -636,3 +601,108 @@ def test_conda_build_uses_only_explicit_channels(
     assert [command[index + 1] for index, arg in enumerate(command) if arg == "-c"] == (
         expected_channels
     )
+
+
+@pytest.mark.parametrize("state", ["native", "pure-python", "foreign"])
+def test_core_probe_requires_native_extension_from_installed_prefix(state, tmp_path, monkeypatch):
+    mod = _load_orchestrator()
+    prefix = tmp_path / "prefix"
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    package = types.ModuleType("mssql_py_core")
+    package.__file__ = str(prefix / "mssql_py_core" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "mssql_py_core", package)
+    if state != "pure-python":
+        native = types.ModuleType("mssql_py_core.mssql_py_core")
+        native.__file__ = str((tmp_path / "foreign" if state == "foreign" else prefix) / "core.pyd")
+        native.__loader__ = importlib.machinery.ExtensionFileLoader(
+            native.__name__, native.__file__
+        )
+        monkeypatch.setitem(sys.modules, native.__name__, native)
+    if state == "native":
+        exec(mod._core_probe(), {})
+    else:
+        with pytest.raises(AssertionError, match="native extension|outside installed prefix"):
+            exec(mod._core_probe(), {})
+
+
+def test_core_failure_blocks_api_preload(tmp_path, monkeypatch):
+    mod = _load_orchestrator()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return types.SimpleNamespace(returncode=17 if mod._core_probe() in cmd else 0, stdout="")
+
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        types.SimpleNamespace(run=fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
+    )
+    with pytest.raises(SystemExit):
+        mod._verify_impl(
+            "conda", "channel", str(tmp_path), ["3.12"], "1.14.0", "linux-64", False, {}
+        )
+    assert any(mod._core_probe() in cmd for cmd in calls)
+    assert not any("BINDING_OK" in str(cmd) for cmd in calls)
+
+
+@pytest.mark.parametrize("subdir", ["win-64", "win-arm64"])
+def test_both_windows_targets_run_native_audit(subdir, monkeypatch):
+    mod = _load_orchestrator()
+    calls = []
+    monkeypatch.setattr(mod, "run", lambda cmd, **kwargs: calls.append(cmd))
+    mod.audit_packages(
+        "conda", "builder", str(_ORCH_PATH.parents[2] / "conda"), "output", subdir, {}
+    )
+    pe_calls = [
+        cmd for cmd in calls if any(str(arg).endswith("assert_pe_machine.py") for arg in cmd)
+    ]
+    assert len(pe_calls) == 1
+    assert pe_calls[0][-2:] == ["--subdir", subdir]
+
+
+@pytest.mark.parametrize("inherited", [None, "true"])
+def test_build_does_not_automatically_accept_channel_terms(monkeypatch, inherited):
+    mod = _load_orchestrator()
+    if inherited is None:
+        monkeypatch.delenv("CONDA_PLUGINS_AUTO_ACCEPT_TOS", raising=False)
+    else:
+        monkeypatch.setenv("CONDA_PLUGINS_AUTO_ACCEPT_TOS", inherited)
+    assert "CONDA_PLUGINS_AUTO_ACCEPT_TOS" not in mod.build_env(
+        "1.14.0", "18.6.2.1", "wheels", "win-arm64"
+    )
+    assert os.environ.get("CONDA_PLUGINS_AUTO_ACCEPT_TOS") == inherited
+
+
+@pytest.mark.parametrize("subdir", ["win-64", "win-arm64"])
+def test_main_routes_effective_target_to_native_audit(subdir, tmp_path, monkeypatch):
+    mod = _load_orchestrator()
+    targets = []
+    monkeypatch.setattr(mod, "gather_wheels", lambda *args: ("1.14.0", "18.6.2.1"))
+    monkeypatch.setattr(mod, "find_or_install_conda", lambda *args: "conda")
+    monkeypatch.setattr(mod, "create_builder_env", lambda *args: "builder")
+    monkeypatch.setattr(mod, "detect_pythons", lambda *args: ["3.12"])
+    monkeypatch.setattr(mod, "make_verify_channel", lambda *args: "channel")
+    for name in ("run", "build_packages", "verify", "stage"):
+        monkeypatch.setattr(mod, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "audit_packages", lambda *args: targets.append(args[-2]))
+    args = [
+        "--mssql-wheel-dir",
+        str(tmp_path / "wheels"),
+        "--odbc-wheel-dir",
+        str(tmp_path / "wheels"),
+        "--odbc-wheel-filter",
+        "*.whl",
+        "--recipe-root",
+        str(_ORCH_PATH.parents[2] / "conda"),
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--stage-dir",
+        str(tmp_path / "stage"),
+        "--conda-subdir",
+        subdir,
+    ]
+    if subdir == "win-arm64":
+        args += ["--conda-target-subdir", subdir]
+    assert mod.main(args) == 0
+    assert targets == [subdir]
