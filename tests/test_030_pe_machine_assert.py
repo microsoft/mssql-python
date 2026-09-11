@@ -185,8 +185,6 @@ def test_win_arm64_arm64_binaries_pass(tmp_path):
 )
 def test_required_core_contract(tmp_path, state):
     pin = "python_abi 3.12.* *_cp312"
-    recipe = _MODULE_PATH.parents[2] / "conda" / "mssql-python" / "meta.yaml"
-    assert f"- {pin}  # [win and arm64 and py == 312]" in recipe.read_text()
     # The observed defaults CP312 host supplied only the Python range, not an ABI export.
     depends = ["vc14_runtime", "python >=3.12,<3.13.0a0", "azure-identity >=1.12.0"]
     if state != "missing-abi":

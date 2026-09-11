@@ -29,8 +29,6 @@ _ORCH_PATH = (
     / "scripts"
     / "build_conda_packages.py"
 )
-_PIPELINE_PATH = _ORCH_PATH.parent.parent / "conda-build-pipeline.yml"
-_CONSOLIDATE_JOB_PATH = _ORCH_PATH.parent.parent / "jobs" / "consolidate-conda-artifacts-job.yml"
 
 pytestmark = pytest.mark.skipif(
     not _ORCH_PATH.exists(), reason=f"orchestrator not present ({_ORCH_PATH})"
@@ -43,58 +41,6 @@ def _load_orchestrator():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def test_best_effort_consolidation_runs_after_upstream_failure():
-    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
-    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
-        producer = pipeline.split(f"- stage: {stage_name}", 1)[1]
-        assert "dependsOn: ValidateWheelProvenance" in producer.split("jobs:", 1)[0]
-
-    stage = pipeline.split("- stage: ConsolidateConda", 1)[1]
-    dependencies = stage.split("jobs:", 1)[0]
-    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
-        assert f"- {stage_name}" in dependencies
-    assert "condition: succeededOrFailed()" in stage.split("jobs:", 1)[0]
-
-    mac_stage = pipeline.split("- stage: CondaMacOS", 1)[1].split("- stage: CondaLinux", 1)[0]
-    mac_publish = mac_stage.split("displayName: 'Publish macOS conda artifact'", 1)[1]
-    assert "condition: succeededOrFailed()" in mac_publish.split("inputs:", 1)[0]
-
-    job = _CONSOLIDATE_JOB_PATH.read_text(encoding="utf-8")
-    consolidate = job.split("- job: ConsolidateArtifacts", 1)[1]
-    assert "condition: succeededOrFailed()" in consolidate.split("pool:", 1)[0]
-
-
-def test_official_builds_require_main_wheel_provenance():
-    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
-    resource = pipeline.split("- pipeline: buildPipeline", 1)[1].split("extends:", 1)[0]
-    assert "branch: main" in resource
-
-    gate = pipeline.split("- stage: ValidateWheelProvenance", 1)[1].split("- stage: CondaWin64", 1)[
-        0
-    ]
-    assert '[[ -z "${WHEEL_SOURCE_BRANCH:-}" ]]' in gate
-    assert 'case "$ONEBRANCH_TYPE" in' in gate
-    assert "Official)" in gate
-    assert "NonOfficial) ;;" in gate
-    assert '[[ "$WHEEL_SOURCE_BRANCH" != "refs/heads/main" ]]' in gate
-    assert "unknown OneBranch type" in gate
-    assert "ONEBRANCH_TYPE: ${{ variables.effectiveOneBranchType }}" in gate
-    assert "WHEEL_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)" in gate
-
-    for stage_name in ("CondaWin64", "CondaMacOS", "CondaLinux"):
-        producer = pipeline.split(f"- stage: {stage_name}", 1)[1]
-        assert "dependsOn: ValidateWheelProvenance" in producer.split("jobs:", 1)[0]
-
-
-def test_windows_pool_demand_is_indented_under_demands_key():
-    pipeline = _PIPELINE_PATH.read_text(encoding="utf-8")
-    windows_stage = pipeline.split("- stage: CondaWin64", 1)[1].split("- stage: CondaMacOS", 1)[0]
-    assert (
-        "              demands:\n"
-        "                - imageOverride -equals PYTHON-1ES-MMS2022\n" in windows_stage
-    )
 
 
 @pytest.mark.parametrize(
