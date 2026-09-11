@@ -5,6 +5,10 @@ Conda package**, including the required bulk-copy core. Pip instead installs
 `mssql-python-odbc` as a separate companion distribution. Neither requires a
 separately installed ODBC driver or driver manager.
 
+Direct recipe builds must set `MSSQL_PYTHON_VERSION` to the exact selected code-wheel
+version before rendering/building. The shared orchestrator derives and supplies it
+automatically; omitted input fails recipe rendering instead of choosing a release.
+
 This is a temporary candidate, not an announcement of public channel availability.
 Obtain the exact candidate archive/channel from its owner and install into a new
 Conda environment. Activate it and select the same interpreter/kernel in your IDE
@@ -35,6 +39,6 @@ the Windows ARM64 dependency profile includes Anaconda `defaults`. Run this exis
 build workflow only in a disposable isolated installation: shared-environment
 ownership hardening is outside this change. Publication/provenance tooling is proposed
 in a separate release-additions PR, without a required merge order; see the
-[release-maintainer prerequisites](../README.md#installation).
+[release status and qualification caveats](../README.md#installation).
 Neither this native-packaging change nor validate-only success authorizes production
 publication.

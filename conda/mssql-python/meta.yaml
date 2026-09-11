@@ -1,4 +1,4 @@
-{% set version = environ.get('MSSQL_PYTHON_VERSION', '1.14.0') %}
+{% set version = environ['MSSQL_PYTHON_VERSION'] %}
 
 package:
   name: mssql-python

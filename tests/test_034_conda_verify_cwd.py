@@ -441,6 +441,20 @@ def test_build_env_sets_subdir_for_cross_build(monkeypatch):
     assert env["CONDA_SUBDIR"] == "osx-arm64"
 
 
+def test_recipe_requires_explicit_wheel_version():
+    jinja2 = pytest.importorskip("jinja2", reason="Conda recipe rendering requires Jinja2")
+    recipe = _ORCH_PATH.parents[2] / "conda" / "mssql-python" / "meta.yaml"
+    template = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(
+        recipe.read_text(encoding="utf-8")
+    )
+    env = _load_orchestrator().build_env("1.2.3", "18.6.2", "wheels", "")
+    assert 'version: "1.2.3"' in template.render(environ=env)
+
+    del env["MSSQL_PYTHON_VERSION"]
+    with pytest.raises(jinja2.UndefinedError, match="MSSQL_PYTHON_VERSION"):
+        template.render(environ=env)
+
+
 def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeypatch):
     """A successful solve does not prove package extraction/linking succeeds."""
     mod = _load_orchestrator()
