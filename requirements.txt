@@ -1,7 +1,6 @@
 # Testing dependencies
 pytest
 pytest-cov
-PyYAML
 zstandard
 coverage
 unittest-xml-reporting
