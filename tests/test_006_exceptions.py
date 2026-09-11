@@ -292,7 +292,7 @@ def test_close_cleans_up_after_non_pooled_rollback_failure():
         conn.close()
 
     mock_conn.rollback.assert_called_once_with()
-    mock_conn.close.assert_called_once_with()
+    mock_conn.close.assert_called_once_with(False)
     assert conn._conn is None
     assert conn.closed
 
@@ -311,9 +311,25 @@ def test_close_cleans_up_after_autocommit_read_failure():
         conn.close()
 
     mock_conn.rollback.assert_not_called()
-    mock_conn.close.assert_called_once_with()
+    mock_conn.close.assert_called_once_with(False)
     assert conn._conn is None
     assert conn.closed
+
+
+def test_close_reports_successful_rollback_to_native_cleanup():
+    """Native pool cleanup must not repeat a successful Python rollback."""
+    from unittest.mock import MagicMock, patch
+
+    mock_conn = MagicMock()
+    mock_conn.get_autocommit.return_value = False
+
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+
+    conn.close()
+
+    mock_conn.rollback.assert_called_once_with()
+    mock_conn.close.assert_called_once_with(True)
 
 
 def test_truncate_error_message_successful_cases():

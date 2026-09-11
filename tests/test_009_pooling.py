@@ -888,8 +888,18 @@ def test_failed_pool_sanitation_releases_capacity(conn_str):
         import time
 
         from mssql_python import connect, pooling
+        from mssql_python.connection_string_builder import _ConnectionStringBuilder
+        from mssql_python.connection_string_parser import _ConnectionStringParser
 
         conn_str = os.environ["DB_CONNECTION_STRING"]
+        parsed = _ConnectionStringParser(validate_keywords=True)._parse(conn_str)
+        normalized = {}
+        for key, value in parsed.items():
+            canonical = _ConnectionStringParser.normalize_key(key)
+            if canonical not in normalized:
+                normalized[canonical] = value
+        normalized["ConnectRetryCount"] = "0"
+        conn_str = _ConnectionStringBuilder(normalized).build()
         pooling(max_size=2, idle_timeout=30)
         victim = connect(conn_str)
         admin = connect(conn_str, autocommit=True)

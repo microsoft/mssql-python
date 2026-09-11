@@ -18,6 +18,17 @@
 #include "logger_bridge.hpp"
 #include "performance_counter.hpp"
 
+static bool isPythonFinalizing() {
+    if (Py_IsInitialized() == 0) {
+        return true;
+    }
+#if PY_VERSION_HEX >= 0x030D0000
+    return Py_IsFinalizing() != 0;
+#else
+    return _Py_IsFinalizing() != 0;
+#endif
+}
+
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
         LOG("Allocating ODBC environment handle");
@@ -119,7 +130,7 @@ void Connection::disconnect() {
     // Py_IsInitialized() is checked first: after Py_Finalize() the interpreter is
     // gone and PyGILState_Check() is unreliable, so treat "not initialized" as
     // "no GIL" and skip all Python calls. (#671 follow-up)
-    bool hasGil = Py_IsInitialized() != 0 && PyGILState_Check() != 0;
+    bool hasGil = !isPythonFinalizing() && PyGILState_Check() != 0;
     if (_dbcHandle) {
         if (hasGil) {
             LOG("Disconnecting from database");
@@ -570,7 +581,7 @@ bool Connection::reset() {
     return true;
 }
 
-void Connection::prepareForPool() {
+void Connection::prepareForPool(bool transactionAlreadyRolledBack) {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -581,7 +592,9 @@ void Connection::prepareForPool() {
     if (getAutocommit()) {
         setAutocommit(false);
     }
-    rollback();
+    if (!transactionAlreadyRolledBack) {
+        rollback();
+    }
     // The SQL Server ODBC driver can leave an empty transaction visible after
     // SQLEndTran while manual-commit mode remains enabled, so always park the
     // physical connection in autocommit mode.
@@ -684,6 +697,14 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
 
 ConnectionHandle::~ConnectionHandle() {
     if (_conn) {
+        if (isPythonFinalizing()) {
+            try {
+                _conn->disconnect();
+            } catch (...) {
+            }
+            _conn = nullptr;
+            return;
+        }
         try {
             close();
         } catch (...) {
@@ -698,14 +719,14 @@ ConnectionHandle::~ConnectionHandle() {
     }
 }
 
-void ConnectionHandle::close() {
+void ConnectionHandle::close(bool transactionAlreadyRolledBack) {
     PERF_TIMER("ConnectionHandle::close");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
     if (_usePool) {
         try {
-            _conn->prepareForPool();
+            _conn->prepareForPool(transactionAlreadyRolledBack);
         } catch (...) {
             // Never retain a connection whose transaction state could not be
             // sanitized. Discarding also releases this connection's reserved

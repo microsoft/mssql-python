@@ -2177,7 +2177,7 @@ class Connection:
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
                 try:
-                    self._conn.close()
+                    self._conn.close(manual_commit and rollback_error is None)
                 except RuntimeError as e:
                     _raise_connection_error(e)
                 finally:

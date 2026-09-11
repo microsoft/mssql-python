@@ -53,7 +53,7 @@ class Connection {
     bool getAutocommit() const;
     bool isAlive() const;
     bool reset();
-    void prepareForPool();
+    void prepareForPool(bool transactionAlreadyRolledBack = false);
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;
 
@@ -142,7 +142,7 @@ class ConnectionHandle {
                      const py::object& tokenFactory = py::object());
     ~ConnectionHandle();
 
-    void close();
+    void close(bool transactionAlreadyRolledBack = false);
     void commit();
     void rollback();
     void setAutocommit(bool enabled);

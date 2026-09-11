@@ -6094,7 +6094,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                       const py::object&>(),
              py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict(),
              py::arg("pool_key") = std::u16string(), py::arg("token_factory") = py::none())
-        .def("close", &ConnectionHandle::close, "Close the connection")
+        .def("close", &ConnectionHandle::close,
+             py::arg("transaction_already_rolled_back") = false, "Close the connection")
         .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
