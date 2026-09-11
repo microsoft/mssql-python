@@ -476,6 +476,9 @@ jobs:
     vmImage: 'macos-latest'
 
   variables:
+    # Apply to setup, benchmark consumers and final cleanup without changing
+    # the Docker client's global context.
+    DOCKER_CONTEXT: colima
     # pip's on-disk download/wheel cache. Persisted across runs by the Cache@2
     # task below so `pip install -r requirements.txt` reuses wheels instead of
     # re-downloading them on every run. Exposed to script steps as the
@@ -523,70 +526,39 @@ jobs:
 
   - script: |
       set -e
-      # Overlap the ENTIRE container-side setup (Colima VM boot -> image pull ->
-      # container start -> SQL readiness) with the CPU-bound Python setup (pip
-      # install + pybind build). The two chains are independent until pytest, so
-      # we run the container chain in the background and the build in the
-      # foreground, then wait for the container before continuing.
-      #
-      # On the Intel macOS-15 hosted runner the linux/amd64 SQL Server image runs
-      # natively (no emulation); the dominant container costs are the Colima VM
-      # boot (~2-4 min) and the ~2 GB image pull, both of which are hidden behind
-      # the build here.
-      #
-      # NOTE: this deliberately merges what used to be separate steps (start
-      # Colima, pull+start SQL, install Python deps, build pybind). Splitting them
-      # back out restores the previous per-step timing breakdown.
-      setup_sql() {
-        echo "[sql] Starting Colima VM..."
-        colima start --cpu 4 --memory 8 --disk 50
-        docker context use colima >/dev/null || true
-        docker version
-
-        echo "[sql] Pulling SQL Server image..."
-        docker pull "$(sqlServerImage)"
-
-        echo "[sql] Starting SQL Server container..."
-        docker run \
-          --name sqlserver \
-          -e ACCEPT_EULA=Y \
-          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-          -p 1433:1433 \
-          -d "$(sqlServerImage)"
-
-        echo "[sql] Waiting for SQL Server to accept connections..."
-        for i in {1..30}; do
-          if docker exec sqlserver \
-            /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost -U SA -P "$DB_PASSWORD" \
-            -C -Q "SELECT 1"; then
-            echo "[sql] SQL Server is ready."
-            return 0
+      # Only SQL lifecycle is retried. Colima starts once, overlapped with the
+      # unchanged dependency/native build chain. The helper bounds SQL work
+      # and redacts output before it reaches this job-private log.
+      SQL_LOG="$(Agent.TempDirectory)/sql-setup-$(System.JobId).log"
+      SQL_HELPER="$(Build.SourcesDirectory)/eng/scripts/setup_sql_container.py"
+      SQL_OWNER="$(Build.BuildId).$(System.JobId)"
+      SQL_PID=
+      finish_setup() {
+        status=$?
+        trap - EXIT INT TERM
+        if [ -n "$SQL_PID" ]; then
+          if kill -0 "$SQL_PID" 2>/dev/null; then
+            kill -TERM "$SQL_PID" || echo "[sql] Background setup already stopped"
           fi
-          sleep 2
-        done
-
-        # One last probe: the loop sleeps after its final attempt, so SQL can
-        # become reachable in that window and would otherwise be missed.
-        if docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost -U SA -P "$DB_PASSWORD" \
-          -C -Q "SELECT 1"; then
-          echo "[sql] SQL Server is ready."
-          return 0
+          wait "$SQL_PID" || echo "[sql] Background setup stopped or failed"
         fi
-
-        # sqlcmd only reports that the client could not connect. When the
-        # container itself exited (bad password policy, EULA, OOM, port clash)
-        # the reason is in the container's own log, so surface it here.
-        echo "[sql] SQL Server did not become ready in time." >&2
-        echo "[sql] ---- docker logs sqlserver (last 200 lines) ----" >&2
-        docker logs --tail 200 sqlserver >&2 || true
-        return 1
+        if [ -f "$SQL_LOG" ]; then
+          cat "$SQL_LOG"
+          rm -f "$SQL_LOG"
+        fi
+        if [ "$status" -ne 0 ]; then
+          python3 "$SQL_HELPER" --name sqlserver --owner "$SQL_OWNER" --colima --cleanup \
+            || echo "[sql] Cleanup failed; final job cleanup will also run"
+        fi
+        exit "$status"
       }
+      trap finish_setup EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
 
       echo "Starting container setup (Colima + SQL Server) in the background..."
-      setup_sql > /tmp/sql_setup.log 2>&1 &
+      python3 "$SQL_HELPER" --name sqlserver --owner "$SQL_OWNER" \
+        --image "$(sqlServerImage)" --colima > "$SQL_LOG" 2>&1 &
       SQL_PID=$!
 
       echo "Installing Python dependencies (overlapped with container setup)..."
@@ -597,12 +569,12 @@ jobs:
       ( cd mssql_python/pybind && ./build.sh )
 
       echo "Waiting for container setup (Colima + SQL Server) to finish..."
-      if ! wait "$SQL_PID"; then
-        echo "Container setup failed:"
-        cat /tmp/sql_setup.log
-        exit 1
+      SQL_STATUS=0
+      wait "$SQL_PID" || SQL_STATUS=$?
+      SQL_PID=
+      if [ "$SQL_STATUS" -ne 0 ]; then
+        exit "$SQL_STATUS"
       fi
-      cat /tmp/sql_setup.log
     displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -735,6 +707,15 @@ jobs:
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
+  - script: |
+      python3 eng/scripts/setup_sql_container.py --cleanup --colima \
+        --name sqlserver --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up macOS SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
   pool:
@@ -781,56 +762,12 @@ jobs:
     displayName: 'Create $(distroName) container'
 
   - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-$(distroName) \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        $(sqlServerImage)
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-$(distroName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-$(distroName) (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-$(distroName) || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-$(distroName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-$(distroName)" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "$(sqlServerImage)" --database TestDB
     displayName: 'Start SQL Server container for $(distroName)'
-    condition: eq(variables['useAzureSQL'], 'false')
+    condition: and(succeeded(), eq(variables['useAzureSQL'], 'false'))
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -1071,13 +1008,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-$(distroName)" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-$(distroName) SQL container'
+    condition: and(always(), eq(variables['useAzureSQL'], 'false'))
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-$(distroName) || true
       docker rm test-container-$(distroName) || true
-      if [ "$(useAzureSQL)" = "false" ]; then
-        docker stop sqlserver-$(distroName) || true
-        docker rm sqlserver-$(distroName) || true
-      fi
     displayName: 'Clean up $(distroName) containers'
     condition: always()
 
@@ -1127,56 +1068,11 @@ jobs:
     displayName: 'Create $(distroName) ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-$(distroName)-$(archName) \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName)-$(archName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-$(distroName)-$(archName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-$(distroName)-$(archName) (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-$(distroName)-$(archName) || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-$(distroName)-$(archName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-$(distroName)-$(archName)" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for $(distroName) ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -1345,11 +1241,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-$(distroName)-$(archName)" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-$(distroName)-$(archName) SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-$(distroName)-$(archName) || true
       docker rm test-container-$(distroName)-$(archName) || true
-      docker stop sqlserver-$(distroName)-$(archName) || true
-      docker rm sqlserver-$(distroName)-$(archName) || true
     displayName: 'Clean up $(distroName) ARM64 containers'
     condition: always()
 
@@ -1376,55 +1278,11 @@ jobs:
     displayName: 'Create RHEL 9 container'
 
   - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-rhel9 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-rhel9 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-rhel9 (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-rhel9 || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-rhel9 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-rhel9" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for RHEL 9'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -1581,11 +1439,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-rhel9" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-rhel9 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-rhel9 || true
       docker rm test-container-rhel9 || true
-      docker stop sqlserver-rhel9 || true
-      docker rm sqlserver-rhel9 || true
     displayName: 'Clean up RHEL 9 containers'
     condition: always()
 
@@ -1620,56 +1484,11 @@ jobs:
     displayName: 'Create RHEL 9 ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-rhel9-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-rhel9-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-rhel9-arm64 (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-rhel9-arm64 || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-rhel9-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-rhel9-arm64" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for RHEL 9 ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -1830,11 +1649,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-rhel9-arm64" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-rhel9-arm64 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-rhel9-arm64 || true
       docker rm test-container-rhel9-arm64 || true
-      docker stop sqlserver-rhel9-arm64 || true
-      docker rm sqlserver-rhel9-arm64 || true
     displayName: 'Clean up RHEL 9 ARM64 containers'
     condition: always()
 
@@ -1869,56 +1694,11 @@ jobs:
     displayName: 'Create Alpine x86_64 container'
 
   - script: |
-      # Start SQL Server container (x86_64)
-      docker run -d --name sqlserver-alpine \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-alpine \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-alpine \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-alpine (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-alpine || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-alpine \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-alpine" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for Alpine x86_64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -2102,11 +1882,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-alpine" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-alpine SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-alpine || true
       docker rm test-container-alpine || true
-      docker stop sqlserver-alpine || true
-      docker rm sqlserver-alpine || true
     displayName: 'Clean up Alpine x86_64 containers'
     condition: always()
 
@@ -2143,56 +1929,11 @@ jobs:
     displayName: 'Create Alpine ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-alpine-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-alpine-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-alpine-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-alpine-arm64 (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-alpine-arm64 || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-alpine-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-alpine-arm64" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for Alpine ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -2377,11 +2118,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-alpine-arm64" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-alpine-arm64 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-alpine-arm64 || true
       docker rm test-container-alpine-arm64 || true
-      docker stop sqlserver-alpine-arm64 || true
-      docker rm sqlserver-alpine-arm64 || true
     displayName: 'Clean up Alpine ARM64 containers'
     condition: always()
 
@@ -2630,44 +2377,11 @@ jobs:
     displayName: 'Install build dependencies'
 
   - script: |
-      # Start SQL Server container
-      docker pull mcr.microsoft.com/mssql/server:2022-latest
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        -d mcr.microsoft.com/mssql/server:2022-latest
-
-      # Wait until SQL Server is ready
-      sql_ready=false
-      for i in {1..30}; do
-        if docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1"; then
-          sql_ready=true
-          break
-        fi
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if ! docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1"; then
-          echo "SQL Server did not become ready after 30 attempts"
-          echo "---- docker logs sqlserver (last 200 lines) ----"
-          docker logs --tail 200 sqlserver || true
-          exit 1
-        fi
-      fi
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest"
     displayName: 'Start SQL Server container'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -2714,3 +2428,12 @@ jobs:
       reportDirectory: 'unified-coverage'
       failIfCoverageEmpty: true
     displayName: 'Publish unified code coverage results'
+
+  - script: |
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name sqlserver --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up coverage SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
