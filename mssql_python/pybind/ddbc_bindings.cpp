@@ -2197,6 +2197,22 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     return exec_rc;
 }
 
+// Array element width for SQL_C_CHAR / SQL_C_WCHAR / SQL_C_BINARY parameter
+// arrays. columnSize is the SQLBindParameter ColumnSize (NUMERIC precision for
+// SQL_NUMERIC/SQL_DECIMAL). bufferSize, when set, is the encoded-string stride.
+// For NUMERIC/DECIMAL string binds with bufferSize==0, reserve precision+3 so
+// sign, decimal point, and a leading zero always fit (e.g. "-0." + 38 digits).
+static inline SQLULEN ArrayDataBufferWidth(const ParamInfo& info) {
+    if (info.bufferSize > 0) {
+        return info.bufferSize;
+    }
+    if ((info.paramSQLType == SQL_NUMERIC || info.paramSQLType == SQL_DECIMAL) &&
+        (info.paramCType == SQL_C_CHAR || info.paramCType == SQL_C_WCHAR)) {
+        return info.columnSize + 3;
+    }
+    return info.columnSize;
+}
+
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
                              std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers,
@@ -2269,27 +2285,28 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     break;
                 }
                 case SQL_C_WCHAR: {
+                    const SQLULEN dataWidth = ArrayDataBufferWidth(info);
                     LOG("BindParameterArray: Binding SQL_C_WCHAR array - "
-                        "param_index=%d, count=%zu, column_size=%zu",
-                        paramIndex, paramSetSize, info.columnSize);
+                        "param_index=%d, count=%zu, column_size=%zu, buffer_width=%zu",
+                        paramIndex, paramSetSize, info.columnSize, dataWidth);
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers, paramSetSize * (dataWidth + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(wcharArray + i * (info.columnSize + 1), 0,
-                                        (info.columnSize + 1) * sizeof(SQLWCHAR));
+                            std::memset(wcharArray + i * (dataWidth + 1), 0,
+                                        (dataWidth + 1) * sizeof(SQLWCHAR));
                         } else {
                             std::u16string wstr = columnValues[i].cast<std::u16string>();
                             // u16string is already UTF-16, so the
                             // original check is sufficient
-                            if (wstr.length() > info.columnSize) {
+                            if (wstr.length() > dataWidth) {
                                 ThrowStdException("Input string exceeds allowed column size "
                                                   "at parameter index " +
                                                   std::to_string(paramIndex));
                             }
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(),
+                            std::memcpy(wcharArray + i * (dataWidth + 1), wstr.c_str(),
                                         (wstr.length() + 1) * sizeof(SQLWCHAR));
                             strLenOrIndArray[i] = SQL_NTS;
                         }
@@ -2298,7 +2315,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = wcharArray;
-                    bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                    bufferLength = (dataWidth + 1) * sizeof(SQLWCHAR);
                     break;
                 }
                 case SQL_C_TINYINT:
@@ -2366,17 +2383,23 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                 }
                 case SQL_C_CHAR:
                 case SQL_C_BINARY: {
+                    // dataWidth is the per-row buffer stride. For SQL_NUMERIC /
+                    // SQL_DECIMAL + SQL_C_CHAR, columnSize stays as SQL precision
+                    // for SQLBindParameter; buffer width comes from bufferSize
+                    // (longest fixed-point encoding) or precision+3 fallback.
+                    const SQLULEN dataWidth = ArrayDataBufferWidth(info);
                     LOG("BindParameterArray: Binding SQL_C_CHAR/BINARY array - "
-                        "param_index=%d, count=%zu, column_size=%zu, encoding='%s'",
-                        paramIndex, paramSetSize, info.columnSize, charEncoding.c_str());
+                        "param_index=%d, count=%zu, column_size=%zu, buffer_width=%zu, "
+                        "encoding='%s'",
+                        paramIndex, paramSetSize, info.columnSize, dataWidth,
+                        charEncoding.c_str());
                     char* charArray = AllocateParamBufferArray<char>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers, paramSetSize * (dataWidth + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(charArray + i * (info.columnSize + 1), 0,
-                                        info.columnSize + 1);
+                            std::memset(charArray + i * (dataWidth + 1), 0, dataWidth + 1);
                         } else {
                             std::string encodedStr;
 
@@ -2406,15 +2429,15 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                 encodedStr = columnValues[i].cast<std::string>();
                             }
 
-                            if (encodedStr.size() > info.columnSize) {
+                            if (encodedStr.size() > dataWidth) {
                                 LOG("BindParameterArray: String/binary too "
                                     "long - param_index=%d, row=%zu, size=%zu, "
                                     "max=%zu",
-                                    paramIndex, i, encodedStr.size(), info.columnSize);
+                                    paramIndex, i, encodedStr.size(), dataWidth);
                                 ThrowStdException("Input exceeds column size at index " +
                                                   std::to_string(i));
                             }
-                            std::memcpy(charArray + i * (info.columnSize + 1), encodedStr.c_str(),
+                            std::memcpy(charArray + i * (dataWidth + 1), encodedStr.c_str(),
                                         encodedStr.size());
                             strLenOrIndArray[i] = static_cast<SQLLEN>(encodedStr.size());
                         }
@@ -2423,7 +2446,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = charArray;
-                    bufferLength = info.columnSize + 1;
+                    bufferLength = static_cast<SQLLEN>(dataWidth + 1);
                     break;
                 }
                 case SQL_C_BIT: {
@@ -6054,6 +6077,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("paramCType", &ParamInfo::paramCType)
         .def_readwrite("paramSQLType", &ParamInfo::paramSQLType)
         .def_readwrite("columnSize", &ParamInfo::columnSize)
+        .def_readwrite("bufferSize", &ParamInfo::bufferSize)
         .def_readwrite("decimalDigits", &ParamInfo::decimalDigits)
         .def_readwrite("strLenOrInd", &ParamInfo::strLenOrInd)
         .def_property(

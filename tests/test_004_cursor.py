@@ -10558,20 +10558,21 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
 
 
 def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
-    """A parameter whose str() raises must not leak the exception text (GH-503).
+    """A parameter whose str() raises RuntimeError must not leak the text (GH-503).
 
     Exception chaining (raise ... from e) can surface a value-bearing cause
     through __cause__ and formatted tracebacks. For a value whose str() raises,
     the chain must be suppressed so the metadata-only guarantee holds across
-    tracebacks and APM/log shippers, not just str(exc).
+    tracebacks and APM/log shippers, not just str(exc). The sizing pass must
+    not convert independently, or a raw RuntimeError escapes sanitization.
     """
     cursor = db_connection.cursor()
 
-    secret = "secret-987-65-4321"
+    secret = "synthetic-private-parameter"
 
     class ExplodingStr:
         def __str__(self):
-            raise ValueError(secret)
+            raise RuntimeError(secret)
 
     cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
     try:
@@ -17232,6 +17233,505 @@ def test_map_sql_type_decimal_in_money_returns_varchar():
     sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
     assert sql_type == _C.SQL_VARCHAR.value
     assert c_type == _C.SQL_C_CHAR.value
+
+
+def test_gh745_batch_decimal_precision_scale_covers_all_rows():
+    """_batch_decimal_precision_scale fits every Decimal in the column."""
+    cur = _make_bare_cursor()
+    column = [
+        decimal.Decimal("1.0"),
+        decimal.Decimal("12345.6789"),
+        decimal.Decimal("-0.1"),
+    ]
+    precision, scale = cur._batch_decimal_precision_scale(column)
+    assert scale >= 4
+    assert precision >= 9
+
+
+def test_gh745_executemany_money_range_binds_as_numeric(monkeypatch):
+    """executemany auto-detect binds money-range Decimals as SQL_NUMERIC (GH-745)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [
+        (decimal.Decimal("12.34"),),
+        (decimal.Decimal("12345.6789"),),
+        (decimal.Decimal("-0.1"),),
+    ]
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"]
+    assert len(pt) == 1
+    assert pt[0].paramSQLType == _C.SQL_NUMERIC.value
+    assert pt[0].paramCType == _C.SQL_C_CHAR.value
+    # columnSize is NUMERIC precision (not formatted-string length).
+    assert pt[0].columnSize == 9
+    assert pt[0].columnSize <= 38
+    assert pt[0].decimalDigits >= 4
+    longest = max(len(v) for v in captured["columnwise_params"][0])
+    assert pt[0].bufferSize >= longest
+    for val in captured["columnwise_params"][0]:
+        assert isinstance(val, str)
+
+
+def test_gh745_batch_decimal_rejects_non_finite():
+    """_batch_decimal_precision_scale must not silently skip NaN/Infinity."""
+    cur = _make_bare_cursor()
+    column = [decimal.Decimal("1.0"), decimal.Decimal("NaN")]
+    with pytest.raises(ValueError, match="non-finite"):
+        cur._batch_decimal_precision_scale(column)
+
+
+def test_gh745_executemany_near_max_precision_stays_within_38(monkeypatch):
+    """NUMERIC columnSize stays <= 38; CHAR bufferWidth fits Decimal("1E-38")."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 1)
+    # Decimal('1E-38') needs precision=38, scale=38. Formatted string length is > 38,
+    # so columnSize must stay at precision while bufferSize covers the encoding.
+    tiny = decimal.Decimal("1E-38")
+    encoded = format(tiny, "f")
+    data = [(tiny,)]
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"][0]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 38
+    assert pt.decimalDigits == 38
+    assert len(encoded) == 40
+    assert pt.bufferSize >= len(encoded)
+    assert captured["columnwise_params"][0][0] == encoded
+
+
+def test_gh745_executemany_buffer_fits_mixed_sign_short_precision(monkeypatch):
+    """Mixed-sign Decimals must fit CHAR buffer even when precision is small.
+
+    e.g. [-12.34, 56.78] -> NUMERIC(4,2) but "-12.34" is 6 characters.
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [(decimal.Decimal("-12.34"),), (decimal.Decimal("56.78"),)]
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"][0]
+    encoded = [format(decimal.Decimal("-12.34"), "f"), format(decimal.Decimal("56.78"), "f")]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 4
+    assert pt.decimalDigits == 2
+    assert pt.bufferSize >= max(len(s) for s in encoded)
+    assert pt.bufferSize > pt.columnSize
+    assert captured["columnwise_params"][0] == encoded
+
+
+def test_setinputsizes_sql_decimal_memoryerror_no_leak_unit(monkeypatch):
+    """Huge scientific string must raise sanitized ValueError, not MemoryError."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    sensitive_value = "1e999999999999999999"
+    cur.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+    with pytest.raises(ValueError) as exc_info:
+        cur.executemany("INSERT INTO t VALUES (?)", [(sensitive_value,)])
+
+    message = str(exc_info.value)
+    assert "Failed to convert parameter" in message
+    assert "row 0" in message
+    assert "column 0" in message
+    assert exc_info.value.__cause__ is None
+    assert sensitive_value not in message
+    formatted = "".join(
+        traceback.format_exception(
+            type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+        )
+    )
+    assert sensitive_value not in formatted
+
+
+def test_setinputsizes_sql_decimal_runtimeerror_no_leak_unit(monkeypatch):
+    """str() raising RuntimeError must become sanitized ValueError (no marker leak)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    marker = "synthetic-private-parameter"
+
+    class ExplodingStr:
+        def __str__(self):
+            raise RuntimeError(marker)
+
+    cur.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+    with pytest.raises(ValueError) as exc_info:
+        cur.executemany("INSERT INTO t VALUES (?)", [(ExplodingStr(),)])
+
+    assert marker not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert "row 0" in str(exc_info.value)
+    assert "column 0" in str(exc_info.value)
+    formatted = "".join(
+        traceback.format_exception(
+            type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+        )
+    )
+    assert marker not in formatted
+
+
+def test_setinputsizes_sql_numeric_keeps_declared_precision_scale(monkeypatch):
+    """Explicit setinputsizes NUMERIC(10,2) must not widen after conversion (sumitmsft).
+
+    bufferSize may still grow to fit the encoded text, but columnSize/decimalDigits
+    stay at the declared (10, 2) even when Decimal("1.234") needs scale 3.
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 1)
+
+    cur.setinputsizes([(mssql_python.SQL_NUMERIC, 10, 2)])
+    cur.executemany("SELECT ?", [(decimal.Decimal("1.234"),)])
+    pt = captured["parameters_type"][0]
+    encoded = format(decimal.Decimal("1.234"), "f")
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 10
+    assert pt.decimalDigits == 2
+    assert pt.bufferSize >= len(encoded)
+    assert captured["columnwise_params"][0][0] == encoded
+
+
+def test_setinputsizes_sql_decimal_buffer_from_protected_conversion(monkeypatch):
+    """setinputsizes DECIMAL bufferSize comes from protected conversion text.
+
+    Provisional sizing must not convert non-Decimals (that leaked MemoryError /
+    RuntimeError). After the protected loop, bufferSize must still fit
+    Decimal("1E-38") and string inputs like "1E-38".
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    def _run(data):
+        cur = Cursor.__new__(Cursor)
+        cur._timeout = 0
+        cur.closed = False
+        cur.hstmt = MagicMock()
+        cur.messages = []
+        cur.is_stmt_prepared = [False]
+        cur._connection = MagicMock()
+        cur._connection._encoding = "utf-8"
+        cur._connection._conn = MagicMock()
+        captured = {}
+
+        def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+            captured["parameters_type"] = param_types
+            captured["columnwise_params"] = col_params
+            return 0
+
+        monkeypatch.setattr(cur, "_check_closed", lambda: None)
+        monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+        monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: len(data))
+        cur.setinputsizes([(mssql_python.SQL_DECIMAL, 38, 38)])
+        cur.executemany("INSERT INTO t VALUES (?)", data)
+        return captured
+
+    tiny = decimal.Decimal("1E-38")
+    encoded = format(tiny, "f")
+    assert len(encoded) == 40
+
+    for payload in ([(tiny,)], [("1E-38",)]):
+        captured = _run(payload)
+        pt = captured["parameters_type"][0]
+        assert pt.paramSQLType == _C.SQL_DECIMAL.value
+        assert pt.columnSize == 38
+        assert pt.decimalDigits == 38
+        assert pt.bufferSize >= len(encoded)
+        assert captured["columnwise_params"][0][0] == encoded
+
+
+def test_gh745_executemany_batch_precision_over_38_raises(monkeypatch):
+    """Mixed batch whose combined precision exceeds 38 must raise ValueError."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+    # 20 integer digits + 20 fractional digits across rows => batch precision 40.
+    data = [
+        (decimal.Decimal("1" * 20),),
+        (decimal.Decimal("0." + ("1" * 20)),),
+    ]
+    with pytest.raises(ValueError, match="maximum precision supported by SQL Server is 38"):
+        cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+
+
+def test_gh745_executemany_mixed_decimal_string_widens_precision(monkeypatch):
+    """Post-conversion numeric strings must widen NUMERIC columnSize (bewithgaurav).
+
+    Decimal("1000000000000000.00") alone is NUMERIC(18,2) (16 integer digits). A
+    sibling string "20000000000000000" needs 17 integer digits. After the protected
+    conversion, columnSize must cover both without using formatted-string length
+    as SQL precision.
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+
+    decimal_val = decimal.Decimal("1000000000000000.00")
+    string_val = "20000000000000000"
+    data = [(decimal_val,), (string_val,)]
+    cur.executemany("INSERT INTO t VALUES (?)", data)
+
+    pt = captured["parameters_type"][0]
+    encoded = [format(decimal_val, "f"), format(decimal.Decimal(string_val), "f")]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.paramCType == _C.SQL_C_CHAR.value
+    # 17 integer digits (from the string) + scale 2 (from the Decimal) => 19.
+    # Do not treat formatted-string length as precision; it only coincides here.
+    assert pt.columnSize == 19
+    assert pt.columnSize <= 38
+    assert pt.decimalDigits == 2
+    assert pt.bufferSize >= max(len(s) for s in encoded)
+    assert captured["columnwise_params"][0] == encoded
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [(decimal.Decimal("1.0"),), (decimal.Decimal("NaN"),)],
+        [(decimal.Decimal("NaN"),), (decimal.Decimal("1.0"),)],
+        [(decimal.Decimal("Infinity"),), (decimal.Decimal("1.0"),)],
+        [(decimal.Decimal("1.0"),), (decimal.Decimal("-Infinity"),)],
+    ],
+    ids=["finite-then-nan", "nan-then-finite", "inf-then-finite", "finite-then-neginf"],
+)
+def test_gh745_executemany_rejects_non_finite_both_orders(monkeypatch, data):
+    """executemany must raise ValueError for NaN/Inf, not TypeError (sumitmsft)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    with pytest.raises(ValueError, match="non-finite"):
+        cur.executemany("INSERT INTO t VALUES (?)", data)
+
+
+def test_gh745_compute_column_type_rejects_non_finite():
+    """_compute_column_type must reject NaN before exponent comparisons."""
+    cur = _make_bare_cursor()
+    with pytest.raises(ValueError, match="non-finite"):
+        cur._compute_column_type([decimal.Decimal("1.0"), decimal.Decimal("NaN")])
+
+
+def test_gh745_executemany_heterogeneous_column_skips_numeric_force(monkeypatch):
+    """A Decimal sample plus a non-Decimal value must not force the NUMERIC path."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [
+        (decimal.Decimal("12.34"),),
+        ("not-a-decimal",),
+    ]
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"][0]
+    # Sample is Decimal but column is heterogeneous — stay off the forced NUMERIC path.
+    assert pt.paramSQLType != _C.SQL_NUMERIC.value
 
 
 def test_executemany_numeric_override_needed():
