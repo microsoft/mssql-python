@@ -106,10 +106,12 @@ jobs:
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
       $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
       $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
-      [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
-      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-      icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+      [System.IO.File]::Create($sqlPath).Dispose()
       try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to secure temporary SQL file" }
+        [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
         sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
         if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       } finally {
