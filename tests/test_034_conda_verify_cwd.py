@@ -661,12 +661,17 @@ def test_both_windows_targets_run_native_audit(subdir, monkeypatch):
     assert pe_calls[0][-2:] == ["--subdir", subdir]
 
 
-def test_build_does_not_automatically_accept_channel_terms(monkeypatch):
+@pytest.mark.parametrize("inherited", [None, "true"])
+def test_build_does_not_automatically_accept_channel_terms(monkeypatch, inherited):
     mod = _load_orchestrator()
-    monkeypatch.delenv("CONDA_PLUGINS_AUTO_ACCEPT_TOS", raising=False)
+    if inherited is None:
+        monkeypatch.delenv("CONDA_PLUGINS_AUTO_ACCEPT_TOS", raising=False)
+    else:
+        monkeypatch.setenv("CONDA_PLUGINS_AUTO_ACCEPT_TOS", inherited)
     assert "CONDA_PLUGINS_AUTO_ACCEPT_TOS" not in mod.build_env(
         "1.14.0", "18.6.2.1", "wheels", "win-arm64"
     )
+    assert os.environ.get("CONDA_PLUGINS_AUTO_ACCEPT_TOS") == inherited
 
 
 @pytest.mark.parametrize("subdir", ["win-64", "win-arm64"])

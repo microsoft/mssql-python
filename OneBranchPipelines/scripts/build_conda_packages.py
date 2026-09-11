@@ -297,6 +297,7 @@ def build_env(
 ) -> dict[str, str]:
     """The environment consumed by the recipe (jinja + build.sh/bld.bat) and by conda-build."""
     env = dict(os.environ)
+    env.pop("CONDA_PLUGINS_AUTO_ACCEPT_TOS", None)
     env["WHEELS_DIR"] = links
     env["MSSQL_PYTHON_VERSION"] = mssql_ver
     env["MSSQL_ODBC_VERSION"] = odbc_ver
