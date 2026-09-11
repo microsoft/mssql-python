@@ -24,7 +24,11 @@ import os
 import struct
 import sys
 
-from _conda_pkg import iter_payload_members as _iter_payload_members, read_index
+from _conda_pkg import (
+    iter_payload_members as _iter_payload_members,
+    read_index,
+    validate_native_contract,
+)
 
 # IMAGE_FILE_MACHINE_* (winnt.h): the PE COFF Machine field -> a short name.
 _MACHINES = {
@@ -86,7 +90,8 @@ def audit_package(path: str) -> list[str]:
     """Return violation strings for one package (empty == clean / skipped non-Windows)."""
     base_name = os.path.basename(path)
     try:
-        subdir = read_subdir(path)
+        index = read_index(path)
+        subdir = str(index.get("subdir", ""))
     except Exception as exc:  # malformed must FAIL, never silently skip
         return [f"{base_name}: unreadable/malformed package metadata ({exc})."]
 
@@ -101,7 +106,7 @@ def audit_package(path: str) -> list[str]:
     except ValueError as exc:  # malformed payload (e.g. .conda missing pkg-*.tar.zst)
         return [f"{base_name}: unreadable/malformed package payload ({exc})."]
 
-    errors: list[str] = []
+    errors = validate_native_contract(members, index)
     native_seen = 0
     binding_seen = 0
     driver_dll_seen = 0

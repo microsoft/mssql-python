@@ -12,7 +12,7 @@ The driver is compatible with all the Python versions >= 3.10
 > **Important Note:**
 >
 > ### ODBC Driver Distribution
-> The ODBC driver binaries used by `mssql-python` are distributed exclusively through a dedicated companion package:
+> For **pip/PyPI installations**, the ODBC driver binaries used by `mssql-python` are distributed through a dedicated companion distribution:
 >
 > - Package: `mssql-python-odbc`
 > - Import name: `mssql_python_odbc`
@@ -20,12 +20,18 @@ The driver is compatible with all the Python versions >= 3.10
 >
 > `mssql-python` depends on `mssql-python-odbc==18.6.2.1`. The ODBC driver is loaded lazily when the first connection is created. `pip install mssql-python` transparently pulls the companion package alongside it — no separate install step is required.
 >
-> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. Creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
+> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. For pip installations, creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
+>
+> The **temporary Conda candidate** instead combines the code and ODBC payload in one `mssql-python` Conda package. It does not require a separately installed Conda ODBC package. This is not an announcement of public channel availability or release qualification; see the [Conda installation, migration, and readiness guide](conda/README.md).
 >
 > ### ODBC Provider Selection (opt-in)
 > `mssql-python` also supports selecting an alternate native ODBC provider before the first connection, via the `mssql_python.native_provider` module property or the `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable (which takes precedence). A conflicting property assignment emits a `RuntimeWarning`. The default, `"msodbcsql18"`, is unchanged; opting into `"mssql-odbc"` requires the `mssql-python-rs` package (which bundles the Rust ODBC driver alongside the Rust TDS core). Call `mssql_python.get_native_provider_info()` to check the selected provider, source, package version, and resolved driver path.
 
 ## Installation
+
+The pip commands below describe the public release. The temporary combined Conda
+candidate has a separate platform matrix and Linux compatibility floor; it is not
+covered by the public release's production-readiness statement above.
  
 **Windows:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
@@ -59,6 +65,55 @@ tdnf distro-sync && tdnf install -y libtool-ltdl krb5-libs glibc-iconv
 
 pip install mssql-python
 ```
+
+**Conda candidate:** Obtain the exact candidate channel and version from its owner;
+these changes do not publish packages to the public `microsoft` channel. The candidate
+includes the ODBC Driver 18 payload and required bulk-copy core. Linux requires
+**glibc >=2.34** for that complete payload; `krb5`, OpenSSL, and `libltdl` resolve from
+`conda-forge`, so the system package steps above are not required. Windows uses SChannel.
+On macOS, encrypted connections still require system OpenSSL from Homebrew
+(`brew install openssl`) or MacPorts, not Conda OpenSSL. Windows ARM64 dependencies
+resolve from `defaults`; handle channel terms separately, without automatic acceptance.
+Use a fresh environment and replace the placeholders with the owner-provided values:
+```bash
+# Windows x64, macOS, and Linux
+conda install -c "<candidate-channel>" -c microsoft -c conda-forge --strict-channel-priority --override-channels "mssql-python=<candidate-version>"
+
+# Windows ARM64
+conda install -c "<candidate-channel>" -c microsoft -c defaults --override-channels "mssql-python=<candidate-version>"
+```
+
+**Conda release maintainers:** The dependent [release-additions PR](https://github.com/microsoft/mssql-python/pull/720)
+supplies `OneBranchPipelines/conda-release-pipeline.yml` and the publication/provenance
+validators; they are not part of this native-packaging change. The workflow described
+below requires those additions and does not establish that production setup or publication
+has occurred. Its default is `publishToConda=false`.
+Select the exact completed Conda build and expected package version.
+The pipeline verifies its recorded upstream wheel run, checks the 28-package matrix and
+ELF/PE/Mach-O payloads, and logs archive SHA-256 values and the upload plan without publishing.
+Feature-branch candidates are allowed only for validation; production requires release,
+Conda producer, and wheel sources on `refs/heads/main`. Recipe and wheel commits may differ,
+but each must match its authoritative run record. This is static release readiness, not
+live SQL/TLS, bulk-copy, or Arrow feature certification.
+
+**Production prerequisite (administrator setup, not performed by a dry run):** in the
+`SqlClientDrivers/mssql-python` ADO project, protect the existing **Anaconda Publishing**
+variable group **117** with an enabled native **Exclusive lock** check and a designated
+**Approval** check. Authorize only release definition **2322**, and grant its build identity
+read access to group/check configuration and run-check evidence. Record the installed check
+IDs as non-secret group variables `CONDA_PUBLICATION_LOCK_CHECK_ID` and
+`CONDA_PUBLICATION_APPROVAL_CHECK_ID`; absent or mismatched IDs block publication. Every writer to
+`microsoft/mssql-python` label `main` must use this same protected resource; other credentials
+or pipelines must not bypass it. The dependent workflow's publish-only `CondaRelease` stage references this group
+with `lockBehavior: sequential`, and refuses upload or promotion without matching,
+successful current-stage checks. YAML `lockBehavior` alone does not create the lock.
+The server-enforced stage lock must cover snapshot, upload, promotion, rollback, and cleanup.
+Rollback is compensating, not atomic; a killed process can leave partial labels, which a
+subsequent authorized run must re-verify. Metadata/label API calls use 15-second connect
+and 60-second read timeouts; the publishing job, including CLI uploads, is capped at 60 minutes.
+Until resource setup and a controlled positive
+lock/approval evaluation are verified, production remains blocked; validate-only success
+does not prove or authorize production publication.
 
 ## Key Features
 ### Supported Platforms

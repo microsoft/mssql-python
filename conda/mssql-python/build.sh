@@ -26,7 +26,9 @@ else
   # universal2 wheels are cpXY-specific (compiled ddbc_bindings), so filter on the
   # target CONDA_PY to never grab another interpreter's wheel (mirrors bld.bat).
   code_whl=""
-  for w in "$WHEELS_DIR/${pkg_underscore}-${PKG_VERSION}-cp${CONDA_PY}-"*.whl; do
+  # Match macosx explicitly (like the odbc glob below) so a stray Linux cpXY wheel staged in
+  # the same dir can never be picked up on this macOS-only cross branch.
+  for w in "$WHEELS_DIR/${pkg_underscore}-${PKG_VERSION}-cp${CONDA_PY}-"*macosx*.whl; do
     [ -e "$w" ] && { code_whl="$w"; break; }
   done
   [ -n "$code_whl" ] || { echo "ERROR: no ${PKG_NAME}==${PKG_VERSION} cp${CONDA_PY} wheel in '$WHEELS_DIR'" >&2; exit 1; }
