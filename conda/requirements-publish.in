@@ -15,5 +15,6 @@
 # Constraints retain reviewed versions; omit --constraint only for intentional dependency updates.
 # One tested target wheel per version: unavailable wheels fail closed until reviewed regeneration.
 # Verify in a fresh target venv with pip --require-hashes --only-binary=:all:.
+# Keep conda\requirements-release.txt on the same zstandard target pin/hash when refreshing.
 anaconda-client==1.14.1
 zstandard==0.23.0

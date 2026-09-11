@@ -71,8 +71,7 @@ parameters:
   - name: mssqlPythonVersion
     type: string
     default: ''
-  # Fixed validation interpreter so release dependency availability does not vary
-  # with the hosted agent's ambient Python installation.
+  # The audit dependency hash targets CPython 3.12 / Windows x64, like the publisher.
   - name: pythonVersion
     type: string
     default: '3.12'
@@ -100,16 +99,16 @@ steps:
       addToPath: true
 
   - task: PowerShell@2
-    displayName: '${{ parameters.labelPrefix }}Install pinned release-audit dependency'
+    displayName: '${{ parameters.labelPrefix }}Install hash-locked release-audit dependency'
     inputs:
       targetType: 'inline'
       script: |
         $ErrorActionPreference = 'Stop'
-        python -m pip --isolated install --disable-pip-version-check --only-binary=:all: `
+        python -m pip --isolated install --disable-pip-version-check --force-reinstall --require-hashes --only-binary=:all: `
           --index-url "https://packagefeedproxy.microsoft.io/pypi/simple/" `
-          "zstandard==0.23.0"
+          -r "$(Build.SourcesDirectory)/conda/requirements-release.txt"
         if ($LASTEXITCODE -ne 0) {
-          Write-Error "Failed to install pinned zstandard==0.23.0 for release validation."
+          Write-Error "Failed to install hash-locked zstandard for release validation."
           exit 1
         }
 

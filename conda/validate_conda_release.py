@@ -8,6 +8,7 @@ NO separate companion package:
 
 * every package's real ``subdir`` is in the allowed set AND matches its folder
   (catches a mislabeled / mis-stamped leg);
+* every archive uses its metadata-derived canonical basename;
 * the only package name is ``mssql-python`` and its version matches the expected
   release version (or, if none supplied, is internally consistent -- one version);
 * build tags, recognized exact/bounded Python requirements, and optional canonical
@@ -57,6 +58,20 @@ def _required_index_string(index: dict, key: str, path: str) -> str:
             f"{path}: info/index.json field '{key}' must be a non-empty, trimmed string"
         )
     return value
+
+
+def _validated_package_identity(index: dict, path: str) -> tuple[str, str, str, str]:
+    name, version, subdir, build = (
+        _required_index_string(index, key, path) for key in ("name", "version", "subdir", "build")
+    )
+    extension = ".conda" if path.endswith(".conda") else ".tar.bz2"
+    canonical_name = f"{name}-{version}-{build}{extension}"
+    if Path(path).name != canonical_name:
+        raise ValueError(
+            f"{path}: must use canonical basename '{canonical_name}': "
+            "anaconda-client normalizes upload names from metadata."
+        )
+    return name, version, subdir, build
 
 
 def _zstd_decompress(raw: bytes) -> bytes:
@@ -143,8 +158,7 @@ def python_tag_from_index(index: dict) -> str:
     """
     minors = set()
     abi_minors = set()
-    match = _PY_TAG_RE.search(str(index.get("build", "")))
-    if match:
+    for match in _PY_TAG_RE.finditer(str(index.get("build", ""))):
         minors.add(f"{match.group(1)}.{match.group(2)}")
     for dep in index.get("depends", []) or []:
         match = _PY_DEP_RE.fullmatch(str(dep).strip())
@@ -193,7 +207,7 @@ def validate(
         ("allowed_subdirs", allowed_subdirs),
         ("expected_pythons", expected_pythons),
     ):
-        if not values:
+        if not values or any(not value.strip() for value in values):
             errors.append(f"release policy '{policy_name}' must not be empty.")
         elif len(values) != len(set(values)):
             errors.append(f"release policy '{policy_name}' contains duplicates: {values}.")
@@ -201,8 +215,10 @@ def validate(
     if missing_allowed:
         errors.append(f"required subdirs are absent from allowed_subdirs: {missing_allowed}.")
     for subdir, versions in sorted(subdir_pythons.items()):
-        if not versions:
+        if not versions or any(not version.strip() for version in versions):
             errors.append(f"subdir Python override for '{subdir}' must not be empty.")
+        elif len(versions) != len(set(versions)):
+            errors.append(f"subdir Python override for '{subdir}' contains duplicates: {versions}.")
 
     # 1. Authoritative subdir must be allowed AND match the folder it was staged in.
     for p in packages:
@@ -321,10 +337,7 @@ def collect_packages(root: str) -> list[dict]:
     packages = []
     for path in paths:
         index = read_index_json(path)
-        name = _required_index_string(index, "name", path)
-        version = _required_index_string(index, "version", path)
-        subdir = _required_index_string(index, "subdir", path)
-        build = _required_index_string(index, "build", path)
+        name, version, subdir, build = _validated_package_identity(index, path)
         packages.append(
             {
                 "folder": os.path.basename(os.path.dirname(path)),
@@ -340,16 +353,21 @@ def collect_packages(root: str) -> list[dict]:
 
 
 def _split(value: str) -> list[str]:
-    return [x.strip() for x in value.split(",") if x.strip()]
+    values = [x.strip() for x in value.split(",")]
+    if any(not item for item in values):
+        raise ValueError("release policy entries must not be empty.")
+    if len(values) != len(set(values)):
+        raise ValueError(f"release policy contains duplicates: {values}.")
+    return values
 
 
 def _parse_subdir_pythons(value: str) -> dict:
     """Parse ``subdir=py,py;subdir2=py,py`` into ``{subdir: [py, ...]}``."""
     result: dict = {}
+    if not value.strip():
+        return result
     for chunk in value.split(";"):
         chunk = chunk.strip()
-        if not chunk:
-            continue
         subdir, _, pys = chunk.partition("=")
         if not subdir.strip() or not pys.strip():
             raise ValueError(
@@ -358,7 +376,10 @@ def _parse_subdir_pythons(value: str) -> dict:
         subdir = subdir.strip()
         if subdir in result:
             raise ValueError(f"invalid subdir Python override: duplicate subdir '{subdir}'.")
-        result[subdir] = _split(pys)
+        try:
+            result[subdir] = _split(pys)
+        except ValueError as exc:
+            raise ValueError(f"invalid subdir Python override '{chunk}': {exc}") from exc
     return result
 
 
@@ -383,6 +404,10 @@ def main(argv: list | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        required_subdirs = _split(args.required_subdirs)
+        allowed_subdirs = _split(args.allowed_subdirs)
+        expected_pythons = _split(args.pythons)
+        subdir_pythons = _parse_subdir_pythons(args.subdir_pythons)
         packages = collect_packages(args.root)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -394,7 +419,6 @@ def main(argv: list | None = None) -> int:
     expected_versions = {}
     if args.mssql_python_version:
         expected_versions[_BINDING_NAME] = args.mssql_python_version
-    subdir_pythons = _parse_subdir_pythons(args.subdir_pythons)
 
     print(f"Discovered {len(packages)} conda package(s):")
     for p in sorted(packages, key=lambda x: (x["subdir"], x["name"], x["python"])):
@@ -407,9 +431,9 @@ def main(argv: list | None = None) -> int:
 
     errors = validate(
         packages,
-        required_subdirs=_split(args.required_subdirs),
-        allowed_subdirs=_split(args.allowed_subdirs),
-        expected_pythons=_split(args.pythons),
+        required_subdirs=required_subdirs,
+        allowed_subdirs=allowed_subdirs,
+        expected_pythons=expected_pythons,
         expected_versions=expected_versions,
         subdir_pythons=subdir_pythons,
     )

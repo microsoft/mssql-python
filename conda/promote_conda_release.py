@@ -33,7 +33,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
-from validate_conda_release import _required_index_string, read_index_json
+from validate_conda_release import _validated_package_identity, read_index_json
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -63,25 +63,13 @@ def distribution_from_path(path: str | Path) -> Distribution:
         raise ValueError(f"Conda package does not exist: {package_path}")
 
     index = read_index_json(str(package_path))
-    package = str(index.get("name", "")).strip()
-    version = str(index.get("version", "")).strip()
-    subdir = str(index.get("subdir", "")).strip()
+    package, version, subdir, _ = _validated_package_identity(index, str(package_path))
     if package != "mssql-python":
         raise ValueError(f"Unexpected package '{package}' in {package_path.name}.")
-    if not version:
-        raise ValueError(f"Package version is missing in {package_path.name}.")
-    if not subdir or package_path.parent.name != subdir:
+    if package_path.parent.name != subdir:
         raise ValueError(
             f"Package {package_path.name} is staged under '{package_path.parent.name}' "
-            f"but metadata subdir is '{subdir or '<missing>'}'."
-        )
-    build = _required_index_string(index, "build", str(package_path))
-    extension = ".conda" if package_path.name.endswith(".conda") else ".tar.bz2"
-    canonical_name = f"{package}-{version}-{build}{extension}"
-    if package_path.name != canonical_name:
-        raise ValueError(
-            f"Package {package_path.name} must use canonical basename '{canonical_name}': "
-            "anaconda-client normalizes upload names from metadata."
+            f"but metadata subdir is '{subdir}'."
         )
 
     return Distribution(

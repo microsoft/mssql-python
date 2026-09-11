@@ -337,6 +337,9 @@ def test_parse_subdir_pythons():
         "win-arm64=",
         "win-arm64=3.12;win-arm64=3.13",
         "win-arm64=3.12; win-arm64 =3.12",
+        "win-arm64=3.12,",
+        "win-arm64=3.12,3.12",
+        "win-arm64=3.12;",
     ],
 )
 def test_parse_subdir_pythons_rejects_malformed_policy(value):
@@ -355,6 +358,11 @@ def test_parse_subdir_pythons_rejects_malformed_policy(value):
         ({"allowed_subdirs": _ALLOWED * 2}, "duplicates"),
         ({"expected_pythons": _PYTHONS * 2}, "duplicates"),
         ({"subdir_pythons": {"win-64": []}}, "must not be empty"),
+        ({"required_subdirs": [*_REQUIRED, ""]}, "must not be empty"),
+        ({"allowed_subdirs": [*_ALLOWED, ""]}, "must not be empty"),
+        ({"expected_pythons": [*_PYTHONS, ""]}, "must not be empty"),
+        ({"subdir_pythons": {"win-64": ["3.12", ""]}}, "must not be empty"),
+        ({"subdir_pythons": {"win-64": ["3.12", "3.12"]}}, "duplicates"),
     ],
 )
 def test_release_policy_cannot_disable_required_matrix(policy, message):
@@ -958,6 +966,35 @@ def test_untrusted_local_metadata_is_rejected(tmp_path, metadata):
         promoter.distribution_from_path(path)
 
 
+@pytest.mark.parametrize("field", ["name", "version", "subdir"])
+@pytest.mark.parametrize("value", [None, True, 123, "", " {value}", "{value} "])
+def test_promoter_rejects_normalized_metadata_before_client(tmp_path, monkeypatch, field, value):
+    canonical = {"name": "mssql-python", "version": _MP_VER, "subdir": "win-64"}
+    malformed = value.format(value=canonical[field]) if isinstance(value, str) else value
+    path = _write_release_archive(tmp_path, **{field: malformed})
+    normalized = {**canonical, field: str(malformed).strip()}
+    directory = tmp_path / normalized["subdir"]
+    directory.mkdir(exist_ok=True)
+    path = path.rename(directory / f"{normalized['name']}-{normalized['version']}-py312_0.tar.bz2")
+    monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
+    for mode in ([], ["--check-local-only"], ["--cleanup-staging"]):
+        with pytest.raises(ValueError, match=f"field '{field}'.*trimmed string"):
+            promoter.main(
+                [
+                    "--owner",
+                    "microsoft",
+                    "--staging-label",
+                    "local",
+                    "--target-label",
+                    "main",
+                    "--expected-version",
+                    normalized["version"],
+                    *mode,
+                    str(path),
+                ]
+            )
+
+
 @pytest.mark.parametrize("extension", [".tar.bz2", ".conda"])
 @pytest.mark.parametrize("renamed", [False, True])
 def test_local_preflight_requires_canonical_archive_basename(
@@ -971,6 +1008,19 @@ def test_local_preflight_requires_canonical_archive_basename(
     ]
     if renamed:
         paths[1] = paths[1].rename(paths[1].with_name("renamed" + extension))
+        if extension == ".conda":
+            with zipfile.ZipFile(paths[1]) as archive:
+                entries = [(info.filename, archive.read(info)) for info in archive.infolist()]
+            with zipfile.ZipFile(paths[1], "w") as archive:
+                for name, data in entries:
+                    if name.startswith(("info-", "pkg-")):
+                        name = f"{name.split('-', 1)[0]}-{paths[1].stem}.tar.zst"
+                    archive.writestr(name, data)
+        with pytest.raises(ValueError, match="canonical"):
+            vcr.collect_packages(str(tmp_path))
+        assert vcr.main(["--root", str(tmp_path)]) == 1
+    else:
+        assert len(vcr.collect_packages(str(tmp_path))) == 2
     monkeypatch.setattr(
         promoter, "promote", lambda *_args: pytest.fail("local preflight must not publish")
     )
@@ -1101,6 +1151,9 @@ def test_conda_container_shape_rejects_before_publication(tmp_path, monkeypatch,
         ("py312_0", ["python >=3.12", "python_abi 3.13.* *_cp313"], "Conflicting"),
         ("py312_0", ["python_abi 3.12.* *_cp313"], "Conflicting"),
         ("0", ["python ==3.12.*", "python ==3.13.*"], "Conflicting"),
+        ("py312_py313_0", ["python 3.12.*"], "Conflicting"),
+        ("py313_py312_0", ["python 3.13.*"], "Conflicting"),
+        ("py312_py312h123_0", ["python 3.12.*"], ""),
         ("0", ["python 3.12.* *_cpython", "python >=3.12,<3.13.0a0"], ""),
         ("py312_0", ["python >=3.10", "python"], ""),
         ("py312_0", ["python >=3.12,<3.13.0a0", "python_abi 3.12.* *_cp312"], ""),
@@ -1256,6 +1309,41 @@ def test_metadata_cli_enforces_full_default_release_policy(
     assert vcr.main(["--root", str(tmp_path), *policy]) == (1 if message else 0)
     output = capsys.readouterr()
     assert message in output.err if message else "metadata-validated" in output.out
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--required-subdirs", ",".join(_REQUIRED)),
+        ("--allowed-subdirs", ",".join(_ALLOWED)),
+        ("--pythons", ",".join(_PYTHONS)),
+        ("--subdir-pythons", "win-arm64=3.12,3.13,3.14"),
+    ],
+)
+@pytest.mark.parametrize("empty_entry", ["{value},", "{value}, ,3.14"])
+def test_metadata_cli_rejects_empty_policy_entries(
+    tmp_path, monkeypatch, capsys, option, value, empty_entry
+):
+    packages = _healthy_set() + [_binding("win-arm64", py) for py in _PYTHONS[2:]]
+    monkeypatch.setattr(vcr, "collect_packages", lambda _root: packages)
+    assert vcr.main(["--root", str(tmp_path), option, empty_entry.format(value=value)]) == 1
+    assert "must not be empty" in capsys.readouterr().err
+
+
+def test_metadata_cli_rejects_distinct_builds_in_one_matrix_cell(tmp_path, capsys):
+    for subdir in _ALLOWED:
+        for py in _PYTHONS[2:] if subdir == "win-arm64" else _PYTHONS:
+            _write_release_archive(
+                tmp_path,
+                folder=subdir,
+                build=f"py{py.replace('.', '')}_0",
+                depends=[f"python {py}.*"],
+            )
+    assert vcr.main(["--root", str(tmp_path)]) == 0
+    _write_release_archive(tmp_path, build="py312_1")
+    assert len(list(tmp_path.rglob("*.tar.bz2"))) == 29
+    assert vcr.main(["--root", str(tmp_path)]) == 1
+    assert "DUPLICATE" in capsys.readouterr().err
 
 
 def test_staging_recovery_accepts_reply_lost_after_server_mutation():
