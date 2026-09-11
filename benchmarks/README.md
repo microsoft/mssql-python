@@ -41,6 +41,13 @@ fresh interpreter. Five measured
 pairs follow one discarded warmup pair, alternating base/PR order. A local subset is
 available through `--scenarios`; it is not accepted as a complete CI report.
 
+Each worker has a ten-minute limit for the entire workload suite, with a shared
+35-minute build/measurement budget inside the CI step's 40-minute limit. Worker
+logs identify each starting/completed scenario and emit stack traces every minute.
+Per-worker JSON checkpoints retain finished scenarios and identify the active one
+if the process fails or is killed. Partial workers never count as measured pairs;
+incomplete reports do not produce a regression verdict.
+
 The comparison is **advisory**, not a new merge gate. A regression signal requires
 over 20% paired-median slowdown, at least 1 ms additional median wall time, and at
 least 80% of pairs exceeding the relative threshold. Disagreement is reported as

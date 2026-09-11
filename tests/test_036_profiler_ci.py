@@ -5,8 +5,10 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 import zipfile
 
 import pytest
@@ -200,6 +202,71 @@ def test_revisions_use_exact_first_parent(monkeypatch):
     assert calls[1][-1] == "b" * 40 + "^1^{commit}"
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch, capsys, fail):
+    output = tmp_path / "base-0.json"
+    result = dict(wall_ms=10.0, cpp={"ddbc::run": {}}, py={}, detail="Rows: 10")
+    profiler = MagicMock()
+    profiler.__enter__.return_value = profiler
+    profiler._conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("16.0",)
+
+    def run(name):
+        partial = json.loads(output.read_text())
+        assert partial["active_scenario"] == name
+        if name == "second":
+            assert set(partial["scenarios"]) == {"first"}
+            if fail:
+                raise RuntimeError("workload failure")
+        return [result]
+
+    profiler.run.side_effect = run
+    core = SimpleNamespace(Profiler=lambda: profiler)
+    workloads = SimpleNamespace(registry=lambda: {"first": None, "second": None})
+    monkeypatch.setattr(controller, "check_build", lambda *a, **kw: None)
+    monkeypatch.setattr(controller, "load_suite", lambda: (core, workloads))
+    args = SimpleNamespace(source_root=tmp_path, scenarios=None, output=output)
+    if fail:
+        with pytest.raises(RuntimeError, match="workload failure"):
+            controller.worker(args)
+        assert json.loads(output.read_text())["active_scenario"] == "second"
+    else:
+        controller.worker(args)
+        final = json.loads(output.read_text())
+        assert final["environment"]["sql_version"] == "16.0"
+        assert set(final["scenarios"]) == {"first", "second"}
+        assert "active_scenario" not in final
+    assert "Starting scenario: second" in capsys.readouterr().out
+    profiler.__exit__.assert_called_once()
+
+
+def test_measure_timeout_retains_partial_results_and_log(tmp_path, monkeypatch):
+    output = tmp_path / "base-0.json"
+    output.write_text('{"stale": true}')
+
+    def timeout(command, **kwargs):
+        assert not output.exists()
+        assert command[1] == "-u"
+        assert kwargs["timeout"] == 3
+        output.write_text('{"status":"running","active_scenario":"fetchone"}')
+        kwargs["stdout"].write("Starting scenario: fetchone\n")
+        raise subprocess.TimeoutExpired(command, 3)
+
+    monkeypatch.setattr(controller.subprocess, "run", timeout)
+    with pytest.raises(subprocess.TimeoutExpired):
+        controller.measure(tmp_path, output, ["fetchone"], timeout=3)
+    assert json.loads(output.read_text())["active_scenario"] == "fetchone"
+    assert "Starting scenario: fetchone" in output.with_suffix(".log").read_text()
+
+
+def test_overall_budget_caps_build_and_worker_time(monkeypatch):
+    monkeypatch.setattr(controller.time, "monotonic", lambda: 100)
+    assert controller.remaining(110, controller.WORKER_TIMEOUT) == 10
+    assert controller.remaining(1000, 60) == 60
+    with pytest.raises(TimeoutError, match="overall"):
+        controller.remaining(100, controller.WORKER_TIMEOUT)
+    assert controller.BENCHMARK_TIMEOUT < 40 * 60
+
+
 def test_build_check_rejects_foreign_provider_and_enabled_recording(tmp_path, monkeypatch):
     native = SimpleNamespace(
         __file__=str(tmp_path / "binding.so"), profiling=SimpleNamespace(is_enabled=lambda: False)
@@ -328,6 +395,9 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
     assert '-e BUILD_BUILDID="$(Build.BuildId)"' in benchmark
     assert "git config --global --add safe.directory /workspace" in benchmark
     assert "apt-get install -y --reinstall libodbcinst2" in benchmark
+    assert benchmark.index("apt-get install -y --reinstall libodbcinst2") < benchmark.index(
+        "ACCEPT_EULA=Y apt-get install"
+    )
     assert "libodbc1 " not in benchmark and "odbcinst1debian2" not in benchmark
 
 

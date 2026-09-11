@@ -999,8 +999,8 @@ jobs:
           # The Microsoft repository was configured by the earlier build step.
           # Restore the ODBC headers and library link removed before pytest.
           apt-get update -qq
-          ACCEPT_EULA=Y apt-get install -y --no-install-recommends git unixodbc unixodbc-dev libodbc2 libodbcinst2 odbcinst msodbcsql18
           apt-get install -y --reinstall libodbcinst2
+          ACCEPT_EULA=Y apt-get install -y --no-install-recommends git unixodbc unixodbc-dev libodbc2 libodbcinst2 odbcinst msodbcsql18
           git config --global --add safe.directory /workspace
           odbcinst -q -d -n 'ODBC Driver 18 for SQL Server'
           python benchmarks/profiler_ci.py --reuse-candidate --leg Linux-SQL2022 --output profiler-results

@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import faulthandler
 import hashlib
 import importlib.util
 import io
@@ -14,10 +15,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"[0-9a-f]{40}")
 LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
+# Leave five minutes of the CI step's 40-minute budget for artifact publication.
+BENCHMARK_TIMEOUT = 35 * 60
+WORKER_TIMEOUT = 10 * 60
 
 
 def git(*args):
@@ -42,7 +47,7 @@ def checkout(revision, path):
             tar.extractall(path, filter="data")
 
 
-def build(path, log):
+def build(path, log, timeout=900):
     env = dict(os.environ, ENABLE_PROFILING="1")
     # build scripts find Python via PATH; keep the controller's interpreter.
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env["PATH"]
@@ -54,7 +59,7 @@ def build(path, log):
             env=env,
             stdout=output,
             stderr=subprocess.STDOUT,
-            timeout=900,
+            timeout=timeout,
             check=True,
         )
 
@@ -104,8 +109,30 @@ def worker(args):
     core.SCENARIOS = cases
     # The runner owns enable/disable/cleanup, just as in the documented CLI.
     with core.Profiler() as profiler:
-        with contextlib.redirect_stdout(io.StringIO()):
-            results = profiler.run(*chosen)
+        output = {}
+        for name in chosen:
+            print(f"Starting scenario: {name}", flush=True)
+            args.output.write_text(
+                json.dumps(dict(status="running", active_scenario=name, scenarios=output)),
+                encoding="utf-8",
+            )
+            # Keep phase tables out of logs, but never hide which workload stalled.
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = profiler.run(name)[0]
+            if result["cpp"] is None or result["py"] is None:
+                raise RuntimeError(f"Scenario {name} was skipped")
+            if not result["cpp"]:
+                raise RuntimeError(f"Scenario {name} has no native samples")
+            output[name] = {key: result[key] for key in ("wall_ms", "cpp", "py")}
+            output[name]["work"] = result.get("detail", "Connection: 1").split(" (")[0]
+            args.output.write_text(
+                json.dumps(
+                    dict(status="running", active_scenario=None, scenarios=output), allow_nan=False
+                ),
+                encoding="utf-8",
+            )
+            print(f"Completed scenario: {name} ({result['wall_ms']:.3f} ms)", flush=True)
+        print("Collecting server metadata", flush=True)
         profiler._ensure_connection()
         with profiler._conn.cursor() as cursor:
             cursor.execute("SELECT CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR(80))")
@@ -116,24 +143,16 @@ def worker(args):
             python=platform.python_version(),
             sql_version=sql_version,
         )
-        output = {}
-        for name, result in zip(chosen, results):
-            if result["cpp"] is None or result["py"] is None:
-                raise RuntimeError(f"Scenario {name} was skipped")
-            if not result["cpp"]:
-                raise RuntimeError(f"Scenario {name} has no native samples")
-            # Only generated workload counts and instrumentation, never query data.
-            output[name] = {key: result[key] for key in ("wall_ms", "cpp", "py")}
-            output[name]["work"] = result.get("detail", "Connection: 1").split(" (")[0]
         args.output.write_text(
             json.dumps(dict(environment=environment, scenarios=output), allow_nan=False),
             encoding="utf-8",
         )
 
 
-def measure(path, output, scenarios):
+def measure(path, output, scenarios, timeout=WORKER_TIMEOUT):
     command = [
         sys.executable,
+        "-u",
         str(Path(__file__).resolve()),
         "--worker",
         "--source-root",
@@ -143,9 +162,17 @@ def measure(path, output, scenarios):
     ]
     if scenarios:
         command += ["--scenarios", *scenarios]
+    output.unlink(missing_ok=True)
     with output.with_suffix(".log").open("w", encoding="utf-8") as log:
-        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=240, check=True)
+        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=True)
     return json.loads(output.read_text(encoding="utf-8"))
+
+
+def remaining(deadline, limit):
+    seconds = deadline - time.monotonic()
+    if seconds <= 0:
+        raise TimeoutError("Profiler CI exhausted its overall build/measurement budget")
+    return min(seconds, limit)
 
 
 def run(args):
@@ -178,6 +205,7 @@ def run(args):
         pairs=[],
     )
     report_path.write_text(json.dumps(report), encoding="utf-8")
+    deadline = time.monotonic() + BENCHMARK_TIMEOUT
     # CI reuses the profiling build already exercised by pytest. The base always
     # has its own checkout and process. Local runs can build both sides instead.
     with tempfile.TemporaryDirectory(prefix="profiler-ci-") as directory:
@@ -190,12 +218,12 @@ def run(args):
                 subprocess.run(
                     [sys.executable, str(Path(__file__).resolve()), "--check-build", "on"],
                     check=True,
-                    timeout=60,
+                    timeout=remaining(deadline, 60),
                 )
                 continue
             checkout(revision, paths[side])
             print(f"Building profiling {side}: {revision}", flush=True)
-            build(paths[side], args.output / f"build-{side}.log")
+            build(paths[side], args.output / f"build-{side}.log", remaining(deadline, 900))
         for sample in range(args.warmups + args.samples):
             pair = {}
             order = ("base", "candidate") if sample % 2 == 0 else ("candidate", "base")
@@ -205,6 +233,7 @@ def run(args):
                     paths[side],
                     args.output / f"{side}-{sample}.json",
                     args.scenarios,
+                    remaining(deadline, WORKER_TIMEOUT),
                 )
             if pair["base"]["environment"] != pair["candidate"]["environment"]:
                 raise RuntimeError("Base and candidate environments differ")
@@ -243,7 +272,14 @@ def main():
     elif args.worker:
         if args.source_root is None or args.output is None:
             parser.error("--worker requires --source-root and --output")
-        worker(args)
+        # Dumps contain stack locations, not locals or connection strings. The
+        # parent still kills/reaps the worker at its deadline if it cannot finish.
+        faulthandler.enable()
+        faulthandler.dump_traceback_later(60, repeat=True)
+        try:
+            worker(args)
+        finally:
+            faulthandler.cancel_dump_traceback_later()
     else:
         if (
             not args.output
