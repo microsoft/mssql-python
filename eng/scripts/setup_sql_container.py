@@ -7,7 +7,8 @@ test legs, --colima on macOS, and --cleanup for the always-running final step.
 Cleanup refuses containers without the matching owner label.
 
 Only SQL lookup/pull/create/start/readiness/database setup is retried. Colima
-starts once. The owned-container lookup also checks Docker availability, so
+starts once within the remaining overall setup budget, without a separate
+startup timeout. The owned-container lookup also checks Docker availability, so
 transient read-only failures can consume the same two attempts without creating
 or removing anything. Missing tools, invalid configuration/lookup results,
 ownership conflicts and unsafe cleanup are terminal.
@@ -590,7 +591,7 @@ class SqlSetup:
             self.log("Starting Colima once (outside SQL retry)")
             result = self.command(
                 ["colima", "start", "--cpu", "4", "--memory", "8", "--disk", "50"],
-                600,
+                self.deadline - time.monotonic(),
                 launcher=True,
             )
             self.log("Colima launcher completed; Docker and SQL readiness still require checks")
