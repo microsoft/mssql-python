@@ -1,0 +1,392 @@
+# Conda Publish Step Template
+# ============================================================================
+# Review a dry run before explicitly publishing. Keep publishing credentials restricted.
+# Publishes the consolidated conda packages from the STANDALONE conda-build
+# pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) to an Anaconda.org channel using
+# anaconda-client (`anaconda upload`).
+#
+# Reference pattern: azure-sdk-for-python's conda publish
+# (eng/pipelines/templates/stages/archetype-conda-release.yml), which runs
+# `anaconda upload --user Microsoft --skip-existing` inside a 1ES releaseJob and
+# authenticates via the ANACONDA_API_TOKEN env var. ESRP has NO Conda ContentType,
+# so anaconda-client is the sanctioned publish path.
+#
+# Two adaptations vs. azure-sdk:
+#   1. Our packages are NON-noarch (native binding + driver), so they live under
+#      per-platform subdirs (win-64 / osx-arm64 / linux-64), NOT a single noarch
+#      folder. We recurse every subdir.
+#   2. The self-contained mssql-python package vendors the ODBC payload, so there is
+#      no separate companion to order; we still refuse to publish an incomplete or
+#      mislabeled set.
+#
+# The caller MUST:
+#   - run this ONLY after the conda-release-step.yml readiness gate has passed, and
+#   - coordinate one publication or recovery at a time for the same target, and
+#   - supply ANACONDA_API_TOKEN (variable group 'Anaconda Publishing') to the job.
+# This template never puts the token on the command line (anaconda-client reads it
+# from the env), so it never appears in the logs.
+parameters:
+  # Consolidated conda artifact name (see consolidate-conda-artifacts-job.yml).
+  - name: condaArtifactName
+    type: string
+    default: 'drop_ConsolidateConda_ConsolidateArtifacts'
+  # Target Anaconda.org channel/org (e.g. 'microsoft'). Empty is rejected so a
+  # test pipeline can never accidentally push to the production channel.
+  - name: condaChannel
+    type: string
+    default: ''
+  # Channel label to publish under (production packages go to 'main').
+  - name: condaLabel
+    type: string
+    default: 'main'
+  # Exact release version; required again at the credentialed publish boundary so
+  # this job never relies only on validation performed by a prior job.
+  - name: mssqlPythonVersion
+    type: string
+    default: ''
+  # Comma-separated subdirs a complete release MUST contain (full PyPI parity minus
+  # musllinux, which has no conda subdir). win-arm64 IS included -- the build enforces
+  # its --dry-run solve + PE-arch assert, so a missing/broken win-arm64 blocks the
+  # release. Guards against publishing an incomplete set even if this step is run
+  # standalone. Keep in sync with conda-release-step.yml.
+  - name: requiredSubdirs
+    type: string
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Comma-separated superset of subdirs allowed to appear; anything else fails.
+  - name: allowedSubdirs
+    type: string
+    default: 'win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64'
+  # Expected Python matrix, mirrored from conda-release-step.yml and rechecked
+  # against this job's independently downloaded artifact before upload.
+  - name: pythonVersions
+    type: string
+    default: '3.10,3.11,3.12,3.13,3.14'
+  # The publisher hash lock targets CPython 3.12 / Windows x64; other runtimes reject.
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
+  - name: labelPrefix
+    type: string
+    default: ''
+
+steps:
+  - task: DownloadPipelineArtifact@2
+    displayName: '${{ parameters.labelPrefix }}Download consolidated conda packages (publish)'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: $(resources.pipeline.buildPipeline.pipelineID)
+      buildVersionToDownload: 'specific'
+      buildId: $(resources.pipeline.buildPipeline.runID)
+      artifactName: '${{ parameters.condaArtifactName }}'
+      targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
+
+  - task: UsePythonVersion@0
+    displayName: '${{ parameters.labelPrefix }}Use Python ${{ parameters.pythonVersion }}'
+    inputs:
+      versionSpec: '${{ parameters.pythonVersion }}'
+      addToPath: true
+
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Install anaconda-client'
+    env:
+      ANACONDA_API_TOKEN: ''
+      SYSTEM_ACCESSTOKEN: ''
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        python -c "import sys, sysconfig; assert sys.implementation.name == 'cpython' and sys.version_info[:2] == (3, 12) and sys.platform == 'win32' and sysconfig.get_platform() == 'win-amd64', 'Publisher lock requires CPython 3.12 Windows x64'"
+        if ($LASTEXITCODE -ne 0) { throw "Publisher runtime does not match the reviewed hash lock." }
+        $lock = "$(Build.SourcesDirectory)/conda/requirements-publish.txt"
+        if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) { throw "Publisher dependency lock is missing." }
+        # A fresh venv avoids trusting already-installed packages or their startup hooks.
+        # Only the later publishing task maps credentials into its environment.
+        $publisherEnvironment = Join-Path "$(Agent.TempDirectory)" ("conda-publisher-" + [guid]::NewGuid().ToString('N'))
+        if (Test-Path -LiteralPath $publisherEnvironment) { throw "Publisher environment already exists." }
+        python -m venv "$publisherEnvironment"
+        if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated publisher environment." }
+        $publisherPython = Join-Path $publisherEnvironment 'Scripts\python.exe'
+        & $publisherPython -m pip --isolated install --disable-pip-version-check --require-hashes --only-binary=:all: `
+          --index-url "https://packagefeedproxy.microsoft.io/pypi/simple/" `
+          -r "$lock"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Failed to install the complete hash-locked publisher dependency closure."
+          exit 1
+        }
+        & $publisherPython -m pip --isolated check
+        if ($LASTEXITCODE -ne 0) { throw "Publisher dependency closure is inconsistent." }
+        & $publisherPython -c "import importlib.metadata as m; assert m.version('anaconda-client') == '1.14.1'; assert m.version('zstandard') == '0.23.0'; from binstar_client.utils import get_server_api; import zstandard; print('pinned publisher APIs ready')"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Pinned anaconda-client version/API verification failed."
+          exit 1
+        }
+        $env:ANACONDA_CLIENT_FORCE_STANDALONE = '1'
+        & $publisherPython -m binstar_client.scripts.cli upload --help | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Pinned anaconda-client upload module is unavailable."
+          exit 1
+        }
+        Write-Host "##vso[task.prependpath]$(Join-Path $publisherEnvironment 'Scripts')"
+
+  - task: PowerShell@2
+    displayName: '${{ parameters.labelPrefix }}Publish conda packages to anaconda.org/${{ parameters.condaChannel }}'
+    env:
+      # anaconda-client reads ANACONDA_API_TOKEN automatically, so the token is
+      # never passed on the command line and never appears in the logs. Supplied by
+      # the caller from the 'Anaconda Publishing' variable group.
+      ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
+      ANACONDA_CLIENT_FORCE_STANDALONE: '1'
+      BINSTAR_CONFIG_DIR: '$(Agent.TempDirectory)/anaconda-client-$(Build.BuildId)'
+      # Queue-time values are surfaced as env vars rather than interpolated into the script text.
+      # Reading them at runtime via $env: keeps PowerShell syntax independent of operator input.
+      CONDA_CHANNEL: '${{ parameters.condaChannel }}'
+      CONDA_LABEL: '${{ parameters.condaLabel }}'
+      MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
+      REQUIRED_SUBDIRS: '${{ parameters.requiredSubdirs }}'
+      ALLOWED_SUBDIRS: '${{ parameters.allowedSubdirs }}'
+      PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = 'Stop'
+
+        # Refuse to publish without an explicit target channel (protects the dummy
+        # pipeline, whose default channel is empty, from ever hitting production).
+        if ([string]::IsNullOrWhiteSpace($env:CONDA_CHANNEL)) {
+          Write-Error "condaChannel is empty. Supply the target Anaconda.org channel/org (production = 'microsoft')."
+          exit 1
+        }
+        if ([string]::IsNullOrWhiteSpace($env:CONDA_LABEL)) {
+          Write-Error "condaLabel is empty. Supply the Anaconda.org label to publish (production = 'main')."
+          exit 1
+        }
+        if ([string]::IsNullOrWhiteSpace($env:MSSQL_PYTHON_VERSION)) {
+          Write-Error "mssqlPythonVersion is empty. Production publication requires an exact version."
+          exit 1
+        }
+
+        $identifierPattern = '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+        if ($env:CONDA_CHANNEL -notmatch $identifierPattern) {
+          Write-Error "Invalid condaChannel '$env:CONDA_CHANNEL'. Use letters, digits, dot, underscore, or hyphen; the first character must be alphanumeric."
+          exit 1
+        }
+        if ($env:CONDA_LABEL -notmatch $identifierPattern) {
+          Write-Error "Invalid condaLabel '$env:CONDA_LABEL'. Use letters, digits, dot, underscore, or hyphen; the first character must be alphanumeric."
+          exit 1
+        }
+
+        if ([string]::IsNullOrWhiteSpace($env:ANACONDA_API_TOKEN)) {
+          Write-Error "ANACONDA_API_TOKEN is not set. Add the 'Anaconda Publishing' variable group to the job."
+          exit 1
+        }
+
+        if ([string]::IsNullOrWhiteSpace($env:BINSTAR_CONFIG_DIR)) {
+          Write-Error "BINSTAR_CONFIG_DIR is empty; refusing to use ambient Anaconda client configuration."
+          exit 1
+        }
+        $clientConfigDir = Join-Path $env:BINSTAR_CONFIG_DIR 'data'
+        New-Item -ItemType Directory -Force -Path $clientConfigDir | Out-Null
+        @('url: https://api.anaconda.org', 'ssl_verify: true') |
+          Set-Content -Path (Join-Path $clientConfigDir 'config.yaml') -Encoding ASCII
+        python -c "from binstar_client.utils import get_config; c=get_config(); assert c['url']=='https://api.anaconda.org'; assert c['ssl_verify'] is True; print('Anaconda endpoint configuration verified')"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Failed to verify isolated Anaconda endpoint configuration."
+          exit 1
+        }
+
+        $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
+        # Revalidate every archive from THIS job's fresh download. The metadata
+        # gate owns package identity, platform/Python policy and exact-version checks.
+        $metadataGate = "$(Build.SourcesDirectory)/conda/validate_conda_release.py"
+        if (-not (Test-Path $metadataGate)) {
+          Write-Error "Conda release metadata gate not found at $metadataGate."
+          exit 1
+        }
+        python "$metadataGate" `
+          --root "$root" `
+          --required-subdirs "$env:REQUIRED_SUBDIRS" `
+          --allowed-subdirs "$env:ALLOWED_SUBDIRS" `
+          --pythons "$env:PYTHON_VERSIONS" `
+          --mssql-python-version "$env:MSSQL_PYTHON_VERSION"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Credential-boundary Conda release metadata validation failed."
+          exit 1
+        }
+
+        $promoter = "$(Build.SourcesDirectory)/conda/promote_conda_release.py"
+        if (-not (Test-Path $promoter)) {
+          Write-Error "Conda promotion helper not found at $promoter."
+          exit 1
+        }
+        # Upload the entire validated set, never a filename-filtered subset.
+        $pkgs = @(Get-ChildItem -Path $root -Recurse -File -Include *.conda, *.tar.bz2 | Sort-Object FullName)
+        $packagePaths = @($pkgs | ForEach-Object { $_.FullName })
+        $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
+        python "$promoter" `
+          --owner "$env:CONDA_CHANNEL" `
+          --staging-label "$stagingLabel" `
+          --target-label "$env:CONDA_LABEL" `
+          --expected-version "$env:MSSQL_PYTHON_VERSION" `
+          --check-local-only `
+          @packagePaths
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Local Conda release input validation failed before upload."
+          exit 1
+        }
+
+        # Staged-then-promoted publish: upload the FULL set to a BUILD-UNIQUE staging
+        # label first; only after every package lands AND its bytes are verified do we
+        # begin adding the public label. Failed uploads/promotions clean this run's staging
+        # label from attempted files. Promotion verifies each mutation and rolls back failures;
+        # an interrupted run is idempotent and resumes from server-verified labels. The
+        # staging label distinguishes retries but does not prevent overlapping writers.
+        # The team must coordinate one publication or recovery at a time for this target.
+        # Bound stalled writers, not just retry counts. Start the 20-minute upload
+        # budget at the first attempt; reserve termination time within that budget.
+        # Preparation and compensating cleanup have separate costs: this is not a
+        # guarantee that they finish inside the enclosing 60-minute job deadline.
+        $attemptTimeoutMs = 120000
+        $uploadBudgetMs = 1200000
+        $terminationTimeoutMs = 10000
+        $uploadState = @{
+          Clock = [System.Diagnostics.Stopwatch]::new()
+          AttemptedPaths = [System.Collections.Generic.List[string]]::new()
+          TerminationUncertain = $false
+        }
+        $pythonExecutable = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+        function Invoke-Anaconda($argsList) {
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            $remainingMs = $uploadBudgetMs - $uploadState.Clock.ElapsedMilliseconds
+            $waitMs = [int][Math]::Min($attemptTimeoutMs, $remainingMs - 2 * $terminationTimeoutMs)
+            if ($waitMs -le 0) { throw "Aggregate upload budget exhausted before attempt $attempt. No new upload was started." }
+            # Start-Process joins ArgumentList on PS5.1. Quote for the Windows CRT,
+            # including empty arguments, embedded quotes and trailing backslashes.
+            $quotedArgs = foreach ($value in @('-m', 'binstar_client.scripts.cli') + $argsList) {
+              '"' + ([string]$value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+            }
+            $logPrefix = Join-Path $env:AGENT_TEMPDIRECTORY ("conda-upload-" + [guid]::NewGuid().ToString('N'))
+            $stdoutPath = "$logPrefix.stdout"
+            $stderrPath = "$logPrefix.stderr"
+            $process = $null
+            try {
+              $uploadState.Clock.Start()
+              # Record even an ambiguous failed launch/response, but not budget-rejected files.
+              if (-not $uploadState.AttemptedPaths.Contains($argsList[-1])) {
+                $uploadState.AttemptedPaths.Add($argsList[-1])
+              }
+              $process = Start-Process -FilePath $pythonExecutable -ArgumentList ($quotedArgs -join ' ') `
+                -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+              $null = $process.Handle
+              if ($process.WaitForExit($waitMs)) {
+                if ($process.ExitCode -eq 0) { return }
+                $failure = "exit $($process.ExitCode)"
+              }
+              else {
+                $failure = "timeout after $waitMs ms"
+                $uploadState.TerminationUncertain = $true
+                $killer = $null
+                try {
+                  $killer = Start-Process -FilePath "$env:SystemRoot\System32\taskkill.exe" `
+                    -ArgumentList @('/PID', $process.Id, '/T', '/F') -NoNewWindow -PassThru
+                  $null = $killer.Handle
+                  if (-not $killer.WaitForExit($terminationTimeoutMs)) {
+                    $killer.Kill()
+                    throw "Process-tree termination command exceeded its deadline."
+                  }
+                  if ($killer.ExitCode -ne 0 -or -not $process.WaitForExit($terminationTimeoutMs)) {
+                    throw "Process-tree termination could not be confirmed."
+                  }
+                  $uploadState.TerminationUncertain = $false
+                }
+                catch {
+                  throw "Upload $failure; owned writer PID $($process.Id) may still be active: $_"
+                }
+                finally {
+                  if ($null -ne $killer) { $killer.Dispose() }
+                }
+              }
+            }
+            catch {
+              if ($null -ne $process -and -not $uploadState.TerminationUncertain) {
+                $uploadState.TerminationUncertain = $true
+                throw "Process control failed for owned writer PID $($process.Id); termination is unconfirmed: $_"
+              }
+              throw
+            }
+            finally {
+              if (-not $uploadState.TerminationUncertain) {
+                foreach ($logPath in @($stdoutPath, $stderrPath)) {
+                  if (Test-Path -LiteralPath $logPath) {
+                    Write-Host "Uploader log (last 8192 bytes): $logPath"
+                    $log = $null
+                    try {
+                      $log = [IO.File]::Open($logPath, 'Open', 'Read', 'ReadWrite')
+                      $null = $log.Seek([Math]::Max(0, $log.Length - 8192), 'Begin')
+                      $buffer = [byte[]]::new(8192)
+                      $count = $log.Read($buffer, 0, $buffer.Length)
+                      Write-Host ([Text.Encoding]::UTF8.GetString($buffer, 0, $count))
+                    }
+                    catch { Write-Warning "Could not read uploader log '$logPath': $_" }
+                    finally { if ($null -ne $log) { $log.Dispose() } }
+                    Remove-Item -LiteralPath $logPath -ErrorAction Continue
+                  }
+                }
+              }
+              if ($null -ne $process) { $process.Dispose() }
+            }
+            if ($attempt -lt 3) {
+              Write-Host "attempt $attempt failed ($failure); retrying in up to 5s ..."
+              $delayMs = [int][Math]::Min(5000, [Math]::Max(0, $uploadBudgetMs - $uploadState.Clock.ElapsedMilliseconds))
+              Start-Sleep -Milliseconds $delayMs
+            }
+          }
+          throw "Failed to stage $($argsList[-1]) after 3 attempts ($failure). The public label was NOT touched."
+        }
+
+        Write-Host "==== Stage: upload $($pkgs.Count) package(s) to label '$stagingLabel' ===="
+        try {
+          foreach ($p in $pkgs) {
+            Write-Host "Uploading $($p.Directory.Name)/$($p.Name) -> $stagingLabel ..."
+            Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)")
+          }
+
+          python "$promoter" `
+            --owner "$env:CONDA_CHANNEL" `
+            --staging-label "$stagingLabel" `
+            --target-label "$env:CONDA_LABEL" `
+            --expected-version "$env:MSSQL_PYTHON_VERSION" `
+            @packagePaths
+          if ($LASTEXITCODE -ne 0) {
+            throw "Conda staging verification/promotion failed."
+          }
+        }
+        catch {
+          $publicationError = $_
+          if ($uploadState.TerminationUncertain) {
+            Write-Warning "Writer termination is unconfirmed; staging state is uncertain. No retry, promotion or remote cleanup is safe until the owned writer is confirmed stopped. Upload logs were retained."
+            throw $publicationError
+          }
+          $attemptedPaths = @($uploadState.AttemptedPaths.ToArray())
+          if ($attemptedPaths.Count -gt 0) {
+            try {
+              python "$promoter" `
+                --owner "$env:CONDA_CHANNEL" `
+                --staging-label "$stagingLabel" `
+                --target-label "$env:CONDA_LABEL" `
+                --expected-version "$env:MSSQL_PYTHON_VERSION" `
+                --cleanup-staging `
+                @attemptedPaths
+              if ($LASTEXITCODE -ne 0) { throw "Staging cleanup exited with code $LASTEXITCODE." }
+            }
+            catch {
+              Write-Warning "Cleanup incomplete: $_. Recover with --cleanup-staging, exact label '$stagingLabel', and the retained attempted archives; ensure no other publication or recovery is running for this target."
+            }
+          }
+          throw $publicationError
+        }
+
+        Write-Host ""
+        Write-Host "Published $($pkgs.Count) verified mssql-python conda package(s) to anaconda.org/$($env:CONDA_CHANNEL) (label $($env:CONDA_LABEL)) via staging label '$stagingLabel'."
