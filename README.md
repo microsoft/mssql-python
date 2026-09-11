@@ -83,11 +83,13 @@ conda install -c "<candidate-channel>" -c microsoft -c conda-forge --strict-chan
 conda install -c "<candidate-channel>" -c microsoft -c defaults --override-channels "mssql-python=<candidate-version>"
 ```
 
-**Conda release maintainers:** The dependent [release-additions PR](https://github.com/microsoft/mssql-python/pull/720)
-supplies `OneBranchPipelines/conda-release-pipeline.yml` and the publication/provenance
-validators; they are not part of this native-packaging change. The workflow described
-below requires those additions and does not establish that production setup or publication
-has occurred. Its default is `publishToConda=false`.
+**Conda release maintainers:** Planned release tooling is proposed separately in the
+[release-additions PR](https://github.com/microsoft/mssql-python/pull/720), including
+`OneBranchPipelines/conda-release-pipeline.yml` and the publication/provenance validators.
+These native-packaging changes do not provide that workflow or require a particular merge
+order. The workflow described below applies only when that separate tooling is available;
+it does not establish that production setup or publication has occurred.
+Its default is `publishToConda=false`.
 Select the exact completed Conda build and expected package version.
 The pipeline verifies its recorded upstream wheel run, checks the 28-package matrix and
 ELF/PE/Mach-O payloads, and logs archive SHA-256 values and the upload plan without publishing.
@@ -104,7 +106,7 @@ read access to group/check configuration and run-check evidence. Record the inst
 IDs as non-secret group variables `CONDA_PUBLICATION_LOCK_CHECK_ID` and
 `CONDA_PUBLICATION_APPROVAL_CHECK_ID`; absent or mismatched IDs block publication. Every writer to
 `microsoft/mssql-python` label `main` must use this same protected resource; other credentials
-or pipelines must not bypass it. The dependent workflow's publish-only `CondaRelease` stage references this group
+or pipelines must not bypass it. The proposed workflow's publish-only `CondaRelease` stage references this group
 with `lockBehavior: sequential`, and refuses upload or promotion without matching,
 successful current-stage checks. YAML `lockBehavior` alone does not create the lock.
 The server-enforced stage lock must cover snapshot, upload, promotion, rollback, and cleanup.

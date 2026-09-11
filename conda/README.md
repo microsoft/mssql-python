@@ -33,7 +33,8 @@ configuration remain external prerequisites.
 Use only organizationally approved channels and handle applicable terms separately;
 the Windows ARM64 dependency profile includes Anaconda `defaults`. Run this existing
 build workflow only in a disposable isolated installation: shared-environment
-ownership hardening is outside this change. The dependent release-additions PR supplies
-the proposed publication/provenance gates; see the [release-maintainer prerequisites](../README.md#installation).
+ownership hardening is outside this change. Publication/provenance tooling is proposed
+in a separate release-additions PR, without a required merge order; see the
+[release-maintainer prerequisites](../README.md#installation).
 Neither this native-packaging change nor validate-only success authorizes production
 publication.
