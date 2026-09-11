@@ -1,7 +1,8 @@
 # Conda Publish Step Template
 # ============================================================================
-# Publication is intentionally disabled pending native release-control qualification.
-# Retains publication of the consolidated conda packages from the STANDALONE conda-build
+# Native approvals, exclusive locking and restricted credential access must be
+# configured before first use; selecting publishToConda=true is not an approval.
+# Publishes the consolidated conda packages from the STANDALONE conda-build
 # pipeline (conda-build-pipeline.yml, artifact
 # drop_ConsolidateConda_ConsolidateArtifacts) to an Anaconda.org channel using
 # anaconda-client (`anaconda upload`).
@@ -133,7 +134,7 @@ steps:
         Write-Host "##vso[task.prependpath]$(Join-Path $publisherEnvironment 'Scripts')"
 
   - task: PowerShell@2
-    displayName: '${{ parameters.labelPrefix }}Publish conda packages (disabled pending native qualification)'
+    displayName: '${{ parameters.labelPrefix }}Publish conda packages to anaconda.org/${{ parameters.condaChannel }}'
     env:
       # anaconda-client reads ANACONDA_API_TOKEN automatically, so the token is
       # never passed on the command line and never appears in the logs. Supplied by
@@ -153,8 +154,6 @@ steps:
       targetType: 'inline'
       script: |
         $ErrorActionPreference = 'Stop'
-
-        throw "Conda publication is disabled until native ADO approvals, exclusive locking and publishing-credential access are qualified. Keep publishToConda=false; enabling remote mutations requires a reviewed code change."
 
         # Refuse to publish without an explicit target channel (protects the dummy
         # pipeline, whose default channel is empty, from ever hitting production).

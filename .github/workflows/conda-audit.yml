@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p wheels
-          # Known public CP311/linux-64 pair, not qualification of the checkout's driver.
+          # Historical CP311/linux-64 control, not 1.15.0 qualification (not yet on PyPI).
           # mssql-python 1.14.0 requires exactly mssql-python-odbc 18.6.2.1.
           cat > wheel-inputs.txt <<'EOF'
           mssql-python==1.14.0 --hash=sha256:2f1cd90ec569ddce446c4ccf58ab3a6f6872e98fe950fcb223b2dab8992a9395

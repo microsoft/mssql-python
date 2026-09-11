@@ -1,8 +1,9 @@
-"""Validate local inputs and retain staged Conda promotion/recovery logic.
+"""Validate local inputs and promote or recover exact staged Conda archives.
 
-Remote publication and recovery are intentionally disabled pending qualification of
-native ADO approvals, exclusive locking and publishing-credential access. A reviewed
-code change is required before either mutation entrypoint may be enabled.
+Run mutations only within the protected native ADO publication lifecycle, using
+restricted publishing credentials. Native approvals, exclusive locking and pipeline
+authorization are deployment prerequisites; this low-level helper does not acquire
+a lock or attest approval. --check-local-only needs neither credentials nor an API client.
 
 Uploads happen before this helper under a build-unique staging label. This module
 verifies every uploaded distribution against the local artifact, adds the public
@@ -14,7 +15,7 @@ initial snapshot are removed. An interrupted invocation resumes from verified la
 Local archives must use the metadata-derived canonical basename that the pinned
 upload client sends; a renamed file is rejected before any upload.
 
-After enablement, failed uploads/promotions invoke --cleanup-staging for their attempted
+Failed uploads/promotions invoke --cleanup-staging for their attempted
 archives. After a hard interruption, run this same option with the original exact
 staging label and retained archives under the protected publication stage. Cleanup
 verifies identity/SHA-256 and removes only that staging label, never public labels
@@ -38,14 +39,6 @@ from validate_conda_release import _required_index_string, read_index_json
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ANACONDA_API_URL = "https://api.anaconda.org"
-
-
-def _require_publication_enabled() -> None:
-    raise RuntimeError(
-        "Conda publication is disabled until native ADO approvals, exclusive locking "
-        "and publishing-credential access are qualified. Keep publishToConda=false; "
-        "enabling remote mutations requires a reviewed code change."
-    )
 
 
 @dataclass(frozen=True)
@@ -211,7 +204,6 @@ def _require_publication(
     if staging_label == target_label:
         raise ValueError("Staging and target labels must be different.")
     validate_release_input(expected_version, distributions)
-    _require_publication_enabled()
 
 
 def _remove_staging_label(

@@ -5,7 +5,7 @@
 # by the STANDALONE conda-build pipeline (conda-build-pipeline.yml, artifact
 # drop_ConsolidateConda_ConsolidateArtifacts) -- NOT the wheel pipeline (def 2199), which no
 # longer produces any conda artifact -- enforces the release-readiness gate (conda-release-
-# step: required subdirs + full Python matrix + one version), and retains a disabled production path for the SELF-CONTAINED
+# step: required subdirs + full Python matrix + one version), and -- when publishToConda=true -- publishes the SELF-CONTAINED
 # mssql-python conda package to Anaconda.org via anaconda-client (conda-publish-step; ESRP
 # has no Conda ContentType). There is a single self-contained package (it vendors the ODBC
 # Driver 18 payload); no companion. When publishToConda=false (the default), the same gate
@@ -16,10 +16,10 @@
 # (no Production Service-Tree classification required, so a validate-only run passes the
 # inventory-compliance gate); publishToConda=true (real release) extends the Official template
 # (deliberate, gated production publish -- the definition must be classified Production to
-# upload after qualification and a reviewed unblock). Manual trigger only.
-# Publication is intentionally blocked in the publish step and promoter. Before enabling
-# it, qualify native approvals and exclusive locking on 'Anaconda Publishing' (group 117)
-# for every authorized publisher, including recovery, and restrict publishing-credential access.
+# upload). Manual trigger only; selecting true is not an approval.
+# Before the first live run, administrators must qualify native approvals and exclusive
+# locking on 'Anaconda Publishing' (group 117), pipeline authorization and restricted
+# publishing-credential access for every authorized publisher, including recovery.
 # The OneBranch YAML needs an actual ADO run to fully validate.
 # =========================================================================================
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaRelease
@@ -29,7 +29,7 @@ pr: none
 
 parameters:
   - name: publishToConda
-    displayName: 'Publish Conda Packages (DISABLED pending native qualification)'
+    displayName: 'Publish Conda Packages to Anaconda.org (PRODUCTION)'
     type: boolean
     default: false  # Safety: default to a validate-only dry run.
   - name: condaChannel
@@ -46,11 +46,11 @@ parameters:
       - 'main'
   # The exact mssql-python version being released. When set, the readiness gate
   # asserts EVERY conda package matches it (not just internal one-version
-  # consistency). Leave empty only for a consistency-only dry run.
+  # consistency). Override the release default explicitly; use empty only for a consistency-only dry run.
   - name: mssqlPythonVersion
-    displayName: 'Expected mssql-python release version (e.g. 1.13.0)'
+    displayName: 'Expected mssql-python release version (e.g. 1.15.0)'
     type: string
-    default: ''
+    default: '1.15.0'
 
 variables:
   - template: /OneBranchPipelines/variables/common-variables.yml@self
@@ -240,7 +240,7 @@ extends:
 
                       Write-Host "`n====================================="
                       Write-Host "DRY-RUN COMPLETE: no 'anaconda upload' was executed (publishToConda=false)."
-                      Write-Host "For a real (gated, staged-then-promoted) publish, re-run with publishToConda=true."
+                      Write-Host "Before selecting publishToConda=true, qualify native approvals, exclusive locking, pipeline authorization and publishing-credential access."
                       Write-Host "====================================="
 
           # PRODUCTION publish (releaseJob) -- runs ONLY when publishToConda=true and
