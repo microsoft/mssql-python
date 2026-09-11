@@ -199,6 +199,7 @@ def test_osx_packages_accept_real_split_driver_layout(tmp_path, subdir):
     assert mac.audit_package(p) == []
 
 
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
 @pytest.mark.parametrize("state", ["missing", "missing-init", "wrong-arch", "wrong-tag", "abi3"])
 def test_required_core_contract(tmp_path, state):
     payload = _realistic_payload(_fake_macho_fat([_X86_64, _ARM64]))
