@@ -39,7 +39,6 @@ PyBind11 provides:
 
 ### Enhancements
 
-- **Selectable Native ODBC Providers** - Applications can opt in or out of the `msodbcsql18` and `mssql-odbc` native providers to control which bundled provider is used (#730).
 - **Faster parameterized queries with `setinputsizes()`** - Queries that declare parameter types up front now execute measurably faster (up to ~50%), especially repeated `execute()` workloads. No code changes needed (#736).
 - **`memoryview` Support in `Binary()`** - `Binary()` now accepts `memoryview` objects in addition to existing bytes-like inputs (#741).
 - **Module-Level SQL Server Type Constants** - SQL Server-specific type constants are now available directly from the `mssql_python` module for simpler API access (#764).
