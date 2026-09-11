@@ -37,8 +37,16 @@ load do not establish those results. Applicable OS, certificate and authenticati
 configuration remain external prerequisites.
 
 Use only organizationally approved channels and handle applicable terms separately;
-the Windows ARM64 dependency profile includes Anaconda `defaults`. Run this existing
-build workflow only in a disposable isolated installation: shared-environment
+the Windows ARM64 dependency profile includes Anaconda `defaults`. Before unattended
+Windows ARM64 builds, agent owners must use approved provisioning to put a disposable
+Conda installation on `PATH`, with applicable channel terms handled for the job's
+execution identity. The orchestrator's automatic Miniforge installation does not
+establish that approval. If Conda enforces terms that have not been handled, the build
+or verification solve stops with Conda's diagnostic; provision the prerequisite before
+running again. Automatic acceptance, including an inherited
+`CONDA_PLUGINS_AUTO_ACCEPT_TOS` opt-in, remains disabled.
+
+Run this existing build workflow only in a disposable isolated installation: shared-environment
 ownership hardening is outside this change. Publication/provenance tooling is proposed
 in a separate release-additions PR, without a required merge order; see the
 [release status and qualification caveats](../README.md#installation).
