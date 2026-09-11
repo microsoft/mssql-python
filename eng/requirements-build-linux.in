@@ -1,0 +1,6 @@
+# Dependencies required to build and run pytest against Linux release wheels.
+pip
+pybind11
+pytest
+setuptools
+wheel
