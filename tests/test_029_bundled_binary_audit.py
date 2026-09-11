@@ -170,7 +170,7 @@ def _make_pkg(
     rpath=None,
     subdir="linux-64",
     vendored=None,
-    depends=None,
+    depends=tuple(_GOOD_DEPENDS),
     driver_needed=None,
     inst_needed=None,
     machine=62,
@@ -194,7 +194,7 @@ def _make_pkg(
                     "version": "1.13.0",
                     "build": "py312_0",
                     "subdir": subdir,
-                    "depends": _GOOD_DEPENDS if depends is None else depends,
+                    "depends": depends,
                 }
             ).encode(),
         )
@@ -239,6 +239,15 @@ def _make_pkg(
 
 
 # --- low-level parser -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "depends",
+    [None, 17, "python_abi 3.12.* *_cp312", {"python_abi": "3.12"}, ["python_abi", None]],
+)
+def test_audit_reports_malformed_dependency_field(tmp_path, depends):
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    assert any("malformed" in error and "depends" in error for error in errors)
 
 
 def test_elf_dynamic_pt_parse():

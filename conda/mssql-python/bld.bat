@@ -39,15 +39,20 @@ if errorlevel 1 (
     echo ERROR: extracted "!CODE_WHL!" has no mssql_python\ddbc_bindings.cp%CONDA_PY% pyd ^(wrong-Python binding^).
     exit /b 1
   )
-  REM Never silently drop bulk copy. Bare .pyd is the Windows stable-ABI suffix;
-  REM the package's PE audit checks actual architecture before staging.
-  if not exist "%SP%\mssql_py_core\mssql_py_core.cp%CONDA_PY%-!ODBC_ARCH!.pyd" if not exist "%SP%\mssql_py_core\mssql_py_core.pyd" (
-    echo ERROR: required mssql_py_core is missing or incompatible with cp%CONDA_PY% !ODBC_ARCH!. Use a corrected upstream wheel; refusing reduced functionality.
-    exit /b 1
-  )
 ) else (
   "%PYTHON%" -m pip install --no-deps --no-index --find-links "%WHEELS_DIR%" %PKG_NAME%==%PKG_VERSION% -vv
   if errorlevel 1 exit /b 1
+)
+
+REM Both install paths require bulk copy. The PE audit still checks actual architecture.
+if not exist "%SP%\mssql_py_core\__init__.py" (
+  echo ERROR: required mssql_py_core initializer is missing. Use a corrected upstream wheel; refusing reduced functionality.
+  exit /b 1
+)
+REM Bare .pyd is the Windows stable-ABI suffix.
+if not exist "%SP%\mssql_py_core\mssql_py_core.cp%CONDA_PY%-!ODBC_ARCH!.pyd" if not exist "%SP%\mssql_py_core\mssql_py_core.pyd" (
+  echo ERROR: required mssql_py_core is missing or incompatible with cp%CONDA_PY% !ODBC_ARCH!. Use a corrected upstream wheel; refusing reduced functionality.
+  exit /b 1
 )
 
 REM Extract the arch-specific odbc wheel into the SAME site-packages so

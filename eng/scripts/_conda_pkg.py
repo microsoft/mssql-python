@@ -157,11 +157,18 @@ def read_index(path: str) -> dict[str, Any]:
             member = tf.extractfile("info/index.json")
             if member is None:
                 raise ValueError("info/index.json missing")
-            return json.load(member)
-    if path.endswith(".tar.bz2"):
+            index = json.load(member)
+    elif path.endswith(".tar.bz2"):
         with tarfile.open(path, "r:bz2") as tf:
             member = tf.extractfile("info/index.json")
             if member is None:
                 raise ValueError("info/index.json missing")
-            return json.load(member)
-    raise ValueError("unrecognized conda package extension")
+            index = json.load(member)
+    else:
+        raise ValueError("unrecognized conda package extension")
+    if not isinstance(index, dict):
+        raise ValueError("info/index.json must be an object")
+    depends = index.get("depends", [])
+    if not isinstance(depends, list) or any(not isinstance(dep, str) for dep in depends):
+        raise ValueError("info/index.json depends must be a list of dependency strings")
+    return index

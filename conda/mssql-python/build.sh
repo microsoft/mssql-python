@@ -18,7 +18,9 @@ odbc_ver="${MSSQL_ODBC_VERSION:?MSSQL_ODBC_VERSION not set}"
 if "$PYTHON" -c "import sys" >/dev/null 2>&1; then
   "$PYTHON" -m pip install --no-deps --no-index --find-links "$WHEELS_DIR" "$PKG_NAME==$PKG_VERSION" -vv
   "$PYTHON" -m pip install --no-deps --no-index --find-links "$WHEELS_DIR" "mssql-python-odbc==$odbc_ver" -vv
+  core_suffix="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
 else
+  core_suffix=".cpython-${CONDA_PY}-darwin.so"
   echo "Host Python '$PYTHON' is not executable on this agent (non-emulated cross-build);"
   echo "extracting both wheels into \$SP_DIR without running Python."
   mkdir -p "$SP_DIR"
@@ -52,6 +54,15 @@ else
   }
   echo "Extracting '$odbc_whl' -> '$SP_DIR'"
   unzip -oq "$odbc_whl" -d "$SP_DIR"
+fi
+
+# Both install paths require bulk copy; the platform audits still check binary headers.
+if [ ! -f "$SP_DIR/mssql_py_core/__init__.py" ] || {
+  [ ! -f "$SP_DIR/mssql_py_core/mssql_py_core${core_suffix}" ] &&
+  [ ! -f "$SP_DIR/mssql_py_core/mssql_py_core.abi3.so" ]
+}; then
+  echo "ERROR: required mssql_py_core initializer or compatible extension is missing. Use a corrected upstream wheel; refusing reduced functionality." >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------

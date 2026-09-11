@@ -9,10 +9,12 @@ the package subdir. These tests exercise the pure PE parser plus a ``.conda`` ro
 import importlib.util
 import io
 import json
+import os
 import shutil
 import struct
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import zipfile
 from pathlib import Path
@@ -170,7 +172,81 @@ def test_wheel_retains_normal_and_stable_abi_core_extensions(tmp_path):
             assert wheel.read(f"mssql_py_core/{name}") == b"native payload fixture"
 
 
-def _make_conda(tmp_path, subdir, payload, depends=None):
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows recipe requires cmd.exe")
+@pytest.mark.parametrize("cross_build", [False, True])
+@pytest.mark.parametrize("state", ["valid", "missing", "missing-init", "wrong-tag", "abi3"])
+def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, state):
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    prefix = tmp_path / "prefix"
+    site_packages = prefix / "Lib" / "site-packages"
+    tag = f"{sys.version_info.major}{sys.version_info.minor}"
+    arch = sysconfig.get_platform().replace("-", "_")
+    machine = _ARM64 if arch == "win_arm64" else _AMD64
+    core = f"mssql_py_core/mssql_py_core.cp{tag}-{arch}.pyd"
+    payload = {
+        "mssql_python/__init__.py": b"",
+        f"mssql_python/ddbc_bindings.cp{tag}-{arch}.pyd": _fake_pe(machine),
+        "mssql_py_core/__init__.py": b"from .mssql_py_core import *\n",
+        core: _fake_pe(machine),
+    }
+    if state == "missing":
+        del payload[core]
+    elif state == "missing-init":
+        del payload["mssql_py_core/__init__.py"]
+    elif state == "wrong-tag":
+        payload[core.replace(f".cp{tag}-", ".cp999-")] = payload.pop(core)
+    elif state == "abi3":
+        payload["mssql_py_core/mssql_py_core.pyd"] = payload.pop(core)
+    dist_info = "mssql_python-1.13.0.dist-info"
+    payload[f"{dist_info}/METADATA"] = (
+        b"Metadata-Version: 2.1\nName: mssql-python\nVersion: 1.13.0\n"
+    )
+    payload[f"{dist_info}/WHEEL"] = (
+        f"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: cp{tag}-cp{tag}-{arch}\n".encode()
+    )
+    payload[f"{dist_info}/RECORD"] = "\n".join(f"{name},," for name in payload).encode()
+    with zipfile.ZipFile(wheels / f"mssql_python-1.13.0-cp{tag}-cp{tag}-{arch}.whl", "w") as wheel:
+        for name, data in payload.items():
+            wheel.writestr(name, data)
+    with zipfile.ZipFile(wheels / f"mssql_python_odbc-18.6.2.1-py3-none-{arch}.whl", "w") as wheel:
+        wheel.writestr("mssql_python_odbc/__init__.py", "")
+    env = dict(
+        os.environ,
+        PREFIX=str(prefix),
+        PYTHON=str(tmp_path / "nonexecutable-python") if cross_build else sys.executable,
+        PKG_NAME="mssql-python",
+        PKG_VERSION="1.13.0",
+        CONDA_PY=tag,
+        target_platform="win-arm64" if arch == "win_arm64" else "win-64",
+        WHEELS_DIR=str(wheels),
+        MSSQL_ODBC_VERSION="18.6.2.1",
+        PIP_TARGET=str(site_packages),
+        PIP_CONFIG_FILE=os.devnull,
+        PIP_USER="0",
+    )
+    result = subprocess.run(
+        [
+            os.environ["COMSPEC"],
+            "/d",
+            "/c",
+            str(_MODULE_PATH.parents[2] / "conda/mssql-python/bld.bat"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    output = result.stdout + result.stderr
+    if state in ("valid", "abi3"):
+        assert result.returncode == 0, output
+        assert (site_packages / "mssql_python_odbc/__init__.py").is_file()
+    else:
+        assert result.returncode != 0, output
+        assert "ERROR: required mssql_py_core" in output
+
+
+def _make_conda(tmp_path, subdir, payload, depends=("python_abi 3.12.* *_cp312",)):
     """Build a minimal .conda (info-*.tar.zst + pkg-*.tar.zst) with the given payload files."""
     name = "mssql-python-1.13.0-py312_0"
 
@@ -186,7 +262,7 @@ def _make_conda(tmp_path, subdir, payload, depends=None):
         "version": "1.13.0",
         "build": "py312_0",
         "subdir": subdir,
-        "depends": depends if depends is not None else ["python_abi 3.12.* *_cp312"],
+        "depends": depends,
     }
     idx = json.dumps(index).encode()
     info_buf = io.BytesIO()
@@ -200,6 +276,12 @@ def _make_conda(tmp_path, subdir, payload, depends=None):
         zf.writestr(f"pkg-{name}.tar.zst", _zstd_compress(pkg_buf.getvalue()))
         zf.writestr(f"info-{name}.tar.zst", _zstd_compress(info_buf.getvalue()))
     return str(conda_path)
+
+
+@pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
+def test_malformed_dependencies_are_reported(tmp_path):
+    errors = ape.audit_package(_make_conda(tmp_path, "win-arm64", {}, depends=None))
+    assert any("malformed" in error and "depends" in error for error in errors)
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")

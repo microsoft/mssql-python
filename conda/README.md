@@ -8,6 +8,8 @@ separately installed ODBC driver or driver manager.
 Direct recipe builds must set `MSSQL_PYTHON_VERSION` to the exact selected code-wheel
 version before rendering/building. The shared orchestrator derives and supplies it
 automatically; omitted input fails recipe rendering instead of choosing a release.
+Both native installation and cross extraction require the bulk-copy initializer and
+a compatible extension filename. The separate native audits still validate binary headers.
 
 This is a temporary candidate, not an announcement of public channel availability.
 Obtain the exact candidate archive/channel from its owner and install into a new
