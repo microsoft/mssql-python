@@ -149,6 +149,7 @@ class ConstantsDDBC(Enum):
     SQL_ATTR_PACKET_SIZE = 112
     SQL_ATTR_QUIET_MODE = 111
     SQL_ATTR_TXN_ISOLATION = 108
+    SQL_TXN_ISOLATION_LEVEL = SQL_ATTR_TXN_ISOLATION  # Legacy Python spelling
     SQL_ATTR_TRACE = 104
     SQL_ATTR_TRACEFILE = 105
     SQL_ATTR_TRANSLATE_LIB = 106
@@ -190,10 +191,32 @@ class ConstantsDDBC(Enum):
     # Query Timeout Constants
     SQL_ATTR_QUERY_TIMEOUT = 0
 
+    # Legacy statement options, not SQLGetInfo information types
+    SQL_CONCURRENCY = 7
+    SQL_ROWSET_SIZE = 9
+    SQL_ROW_NUMBER = 14
+
+    # SQLGetInfo return values, not information types
+    SQL_IC_UPPER = 1
+    SQL_IC_LOWER = 2
+    SQL_IC_SENSITIVE = 3
+    SQL_IC_MIXED = 4
+    SQL_SC_SQL92_ENTRY = 1
+    SQL_SC_FIPS127_2_TRANSITIONAL = 2
+    SQL_SC_SQL92_INTERMEDIATE = 4
+    SQL_SC_SQL92_FULL = 8
+
+    # Deprecated compatibility values; use SQL_SC_* for SQL_SQL_CONFORMANCE results.
+    SQL_SQL92_ENTRY_SQL = 127
+    SQL_SQL92_INTERMEDIATE_SQL = 128
+    SQL_SQL92_FULL_SQL = 129
+
 
 class GetInfoConstants(Enum):
-    """
-    These constants are used with various methods like getinfo().
+    """ODBC information-type IDs plus deprecated compatibility members.
+
+    The deprecated members at the end retain their original values throughout
+    1.x, but are not information-type names. See CHANGELOG.md for migration.
     """
 
     # Driver and database information
@@ -201,8 +224,8 @@ class GetInfoConstants(Enum):
     SQL_DRIVER_VER = 7
     SQL_DRIVER_ODBC_VER = 77
     SQL_DRIVER_HLIB = 76
-    SQL_DRIVER_HENV = 75
-    SQL_DRIVER_HDBC = 74
+    SQL_DRIVER_HENV = 4
+    SQL_DRIVER_HDBC = 3
     SQL_DATA_SOURCE_NAME = 2
     SQL_DATABASE_NAME = 16
     SQL_SERVER_NAME = 13
@@ -214,9 +237,6 @@ class GetInfoConstants(Enum):
     SQL_IDENTIFIER_CASE = 28
     SQL_IDENTIFIER_QUOTE_CHAR = 29
     SQL_SPECIAL_CHARACTERS = 94
-    SQL_SQL92_ENTRY_SQL = 127
-    SQL_SQL92_INTERMEDIATE_SQL = 128
-    SQL_SQL92_FULL_SQL = 129
     SQL_SUBQUERIES = 95
     SQL_EXPRESSIONS_IN_ORDERBY = 27
     SQL_CORRELATION_NAME = 74
@@ -230,24 +250,24 @@ class GetInfoConstants(Enum):
     SQL_PROCEDURES = 21
     SQL_ACCESSIBLE_TABLES = 19
     SQL_ACCESSIBLE_PROCEDURES = 20
-    SQL_CATALOG_NAME = 10002
+    SQL_CATALOG_NAME = 10003
     SQL_CATALOG_USAGE = 92
     SQL_SCHEMA_USAGE = 91
     SQL_COLUMN_ALIAS = 87
-    SQL_DESCRIBE_PARAMETER = 10003
+    SQL_DESCRIBE_PARAMETER = 10002
 
     # Transaction support
     SQL_TXN_CAPABLE = 46
     SQL_TXN_ISOLATION_OPTION = 72
     SQL_DEFAULT_TXN_ISOLATION = 26
     SQL_MULTIPLE_ACTIVE_TXN = 37
-    SQL_TXN_ISOLATION_LEVEL = 108
 
     # Data type support
     SQL_NUMERIC_FUNCTIONS = 49
     SQL_STRING_FUNCTIONS = 50
-    SQL_DATETIME_FUNCTIONS = 51
-    SQL_SYSTEM_FUNCTIONS = 58
+    SQL_DATETIME_FUNCTIONS = 52
+    SQL_TIMEDATE_FUNCTIONS = SQL_DATETIME_FUNCTIONS
+    SQL_SYSTEM_FUNCTIONS = 51
     SQL_CONVERT_FUNCTIONS = 48
     SQL_LIKE_ESCAPE_CLAUSE = 113
 
@@ -271,7 +291,7 @@ class GetInfoConstants(Enum):
     SQL_MAX_ROW_SIZE = 104
     SQL_MAX_USER_NAME_LEN = 107
 
-    # Connection attributes
+    # Connection information and legacy information-type aliases
     SQL_ACTIVE_CONNECTIONS = 0
     SQL_ACTIVE_STATEMENTS = 1
     SQL_DATA_SOURCE_READ_ONLY = 25
@@ -287,16 +307,13 @@ class GetInfoConstants(Enum):
     SQL_DYNAMIC_CURSOR_ATTRIBUTES2 = 145
     SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1 = 146
     SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2 = 147
-    SQL_STATIC_CURSOR_ATTRIBUTES1 = 150
-    SQL_STATIC_CURSOR_ATTRIBUTES2 = 151
-    SQL_KEYSET_CURSOR_ATTRIBUTES1 = 148
-    SQL_KEYSET_CURSOR_ATTRIBUTES2 = 149
+    SQL_STATIC_CURSOR_ATTRIBUTES1 = 167
+    SQL_STATIC_CURSOR_ATTRIBUTES2 = 168
+    SQL_KEYSET_CURSOR_ATTRIBUTES1 = 150
+    SQL_KEYSET_CURSOR_ATTRIBUTES2 = 151
     SQL_SCROLL_OPTIONS = 44
     SQL_SCROLL_CONCURRENCY = 43
     SQL_FETCH_DIRECTION = 8
-    SQL_ROWSET_SIZE = 9
-    SQL_CONCURRENCY = 7
-    SQL_ROW_NUMBER = 14
     SQL_STATIC_SENSITIVITY = 83
     SQL_BATCH_SUPPORT = 121
     SQL_BATCH_ROW_COUNT = 120
@@ -309,7 +326,7 @@ class GetInfoConstants(Enum):
 
     # Other constants
     SQL_GROUP_BY = 88
-    SQL_OJ_CAPABILITIES = 65
+    SQL_OJ_CAPABILITIES = 115
     SQL_ORDER_BY_COLUMNS_IN_SELECT = 90
     SQL_OUTER_JOINS = 38
     SQL_QUOTED_IDENTIFIER_CASE = 93
@@ -324,11 +341,18 @@ class GetInfoConstants(Enum):
     SQL_TIMEDATE_ADD_INTERVALS = 109
     SQL_TIMEDATE_DIFF_INTERVALS = 110
 
-    # Return values for some getinfo functions
-    SQL_IC_UPPER = 1
-    SQL_IC_LOWER = 2
-    SQL_IC_SENSITIVE = 3
-    SQL_IC_MIXED = 4
+    # Deprecated non-information names retained for compatibility throughout 1.x.
+    SQL_TXN_ISOLATION_LEVEL = ConstantsDDBC.SQL_TXN_ISOLATION_LEVEL.value
+    SQL_CONCURRENCY = ConstantsDDBC.SQL_CONCURRENCY.value
+    SQL_ROWSET_SIZE = ConstantsDDBC.SQL_ROWSET_SIZE.value
+    SQL_ROW_NUMBER = ConstantsDDBC.SQL_ROW_NUMBER.value
+    SQL_IC_UPPER = ConstantsDDBC.SQL_IC_UPPER.value
+    SQL_IC_LOWER = ConstantsDDBC.SQL_IC_LOWER.value
+    SQL_IC_SENSITIVE = ConstantsDDBC.SQL_IC_SENSITIVE.value
+    SQL_IC_MIXED = ConstantsDDBC.SQL_IC_MIXED.value
+    SQL_SQL92_ENTRY_SQL = ConstantsDDBC.SQL_SQL92_ENTRY_SQL.value
+    SQL_SQL92_INTERMEDIATE_SQL = ConstantsDDBC.SQL_SQL92_INTERMEDIATE_SQL.value
+    SQL_SQL92_FULL_SQL = ConstantsDDBC.SQL_SQL92_FULL_SQL.value
 
 
 class AuthType(Enum):
@@ -548,10 +572,12 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
 
 def get_info_constants() -> Dict[str, int]:
     """
-    Returns a dictionary of all available GetInfo constants.
+    Return all GetInfoConstants names and values, including deprecated members.
 
-    This provides all SQLGetInfo constants that can be used with the Connection.getinfo() method
-    to retrieve metadata about the database server and driver.
+    Deprecated compatibility names remain included throughout 1.x so existing
+    dictionary lookups keep working. They are not valid information-type names;
+    their inclusion does not make them suitable inputs to Connection.getinfo().
+    See CHANGELOG.md for replacements and the deprecation policy.
 
     Returns:
         dict: Dictionary mapping constant names to their integer values
@@ -605,6 +631,23 @@ _DDBC_PUBLIC_API = {
     "SQL_ATTR_LOGIN_TIMEOUT",
     "SQL_ATTR_PACKET_SIZE",
     "SQL_ATTR_TXN_ISOLATION",
+    "SQL_TXN_ISOLATION_LEVEL",
+    # Legacy statement options
+    "SQL_CONCURRENCY",
+    "SQL_ROWSET_SIZE",
+    "SQL_ROW_NUMBER",
+    # SQLGetInfo return values and compatibility spellings
+    "SQL_IC_UPPER",
+    "SQL_IC_LOWER",
+    "SQL_IC_SENSITIVE",
+    "SQL_IC_MIXED",
+    "SQL_SC_SQL92_ENTRY",
+    "SQL_SC_FIPS127_2_TRANSITIONAL",
+    "SQL_SC_SQL92_INTERMEDIATE",
+    "SQL_SC_SQL92_FULL",
+    "SQL_SQL92_ENTRY_SQL",
+    "SQL_SQL92_INTERMEDIATE_SQL",
+    "SQL_SQL92_FULL_SQL",
     # Transaction isolation levels
     "SQL_TXN_READ_UNCOMMITTED",
     "SQL_TXN_READ_COMMITTED",
@@ -625,10 +668,11 @@ for _name, _member in ConstantsDDBC.__members__.items():
         _module_globals[_name] = _member.value
         _exported_names.append(_name)
 
-# Export all GetInfoConstants enum members as module-level constants
+# Export GetInfoConstants members not already exported from ConstantsDDBC.
 for _name, _member in GetInfoConstants.__members__.items():
-    _module_globals[_name] = _member.value
-    _exported_names.append(_name)
+    if _name not in _DDBC_PUBLIC_API:
+        _module_globals[_name] = _member.value
+        _exported_names.append(_name)
 
 # AuthType enum is exported as a class only (not individual members)
 # to avoid polluting the namespace with generic names like DEFAULT
