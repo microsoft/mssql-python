@@ -17,6 +17,11 @@ from mssql_python import connect
 from mssql_python.connection_string_parser import sanitize_connection_string
 import time
 
+# Phase 5: shared fixtures for the async POC suite. Kept in this top-level
+# conftest so pytest auto-loads them without needing tests/ to be a package.
+import pytest_asyncio
+import mssql_python as _mssql_python
+
 
 class _MaskedConnectionString(str):
     """A str that behaves like the connection string but never reveals its
@@ -140,3 +145,38 @@ def cursor(db_connection):
     cursor = db_connection.cursor()
     yield cursor
     cursor.close()
+
+
+# ---------------------------------------------------------------------------
+# Async POC fixtures (used by tests/test_030_async_poc.py)
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session")
+def async_conn_str(conn_str):
+    """Session-scoped connection string. Skips the whole async suite if the
+    ``DB_CONNECTION_STRING`` env var is unset."""
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING is not set")
+    return conn_str
+
+
+@pytest_asyncio.fixture
+async def async_connection(async_conn_str):
+    """Function-scoped ``AsyncConnection`` — each test gets a fresh session so
+    cancellation / close tests don't leak state between cases."""
+    conn = await _mssql_python.connect_async(async_conn_str)
+    try:
+        yield conn
+    finally:
+        if not conn.closed:
+            await conn.close()
+
+
+@pytest_asyncio.fixture
+async def async_cursor(async_connection):
+    """Function-scoped ``AsyncCursor`` bound to :func:`async_connection`."""
+    cur = async_connection.cursor()
+    try:
+        yield cur
+    finally:
+        if not cur.closed:
+            await cur.close()
