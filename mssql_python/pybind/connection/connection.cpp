@@ -211,6 +211,17 @@ void Connection::disconnect() {
     }
 }
 
+void Connection::abandonDuringFinalization() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(_childHandlesMutex);
+        _childStatementHandles.clear();
+        _allocationsSinceCompaction = 0;
+    }
+    // SqlHandle::free() already suppresses SQLFreeHandle during finalization.
+    // Clearing the shared pointer leaves process teardown to the operating system.
+    _dbcHandle.reset();
+}
+
 // TODO(microsoft): Add an exception class in C++ for error handling,
 // DB spec compliant
 void Connection::checkError(SQLRETURN ret) const {
@@ -698,15 +709,15 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
 ConnectionHandle::~ConnectionHandle() {
     if (_conn) {
         if (isPythonFinalizing()) {
-            try {
-                _conn->disconnect();
-            } catch (...) {
-            }
+            _conn->abandonDuringFinalization();
             _conn = nullptr;
             return;
         }
         try {
-            close();
+            // A destructor cannot report sanitation errors to a caller. Discard
+            // instead of running close(), which performs logging and transaction
+            // operations that are unsafe during late object teardown.
+            ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
         } catch (...) {
             if (_conn) {
                 try {

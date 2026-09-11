@@ -40,6 +40,9 @@ class Connection {
     // Disconnect and free the connection handle.
     void disconnect();
 
+    // Relinquish native handles without ODBC calls during interpreter finalization.
+    void abandonDuringFinalization() noexcept;
+
     // Commit the current transaction.
     void commit();
 
