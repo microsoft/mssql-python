@@ -21,8 +21,9 @@ context manager whose end-to-end cost is within run-to-run noise.
 
 Runtime-instrumentation tests remain part of the driver test suite. Tests that
 require the dev-only `profiler/` package skip when it is absent from an installed
-wheel. Broader profiler testing and profiling-enabled CI builds are deferred to
-follow-up work.
+wheel. The [paired CI benchmark guide](../benchmarks/README.md) describes isolated
+profiling builds, scenario coverage and advisory PR regression comments. Broader
+profiler testing remains follow-up work.
 
 Use controlled diagnostic workloads with one owner of the process-wide profiling
 state: enable, run the workload, wait for worker threads to finish, then collect.
