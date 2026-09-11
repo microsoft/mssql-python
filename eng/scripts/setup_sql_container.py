@@ -24,21 +24,37 @@ Both are clamped to the remaining attempt/global budget, preserving cleanup.
 Docker diagnostics request only the last 30 minutes and at most 5000 lines,
 within 20 seconds. Redacted output retains 32768-character head/tail excerpts
 plus at most 8192 characters of fatal/Reason context, not complete history.
-No dumps or full inspect output are collected. Timeout/cancellation stops only
-subprocess groups created by this helper, with at most four seconds of teardown
-within the original command budget. Hard host loss can still prevent cleanup;
-the pipeline also runs --cleanup.
+No dumps or full inspect output are collected. Timeout/cancellation targets only
+each command's original group and still-owned unreaped child, with at most four
+seconds of teardown within the original command budget. Hard host loss can
+still prevent cleanup; the pipeline also runs --cleanup.
+Permission or identity failures are reported as incomplete, nonretryable
+teardown without replacing the original failure or cancellation. Group checks
+are not atomic with signalling: departed groups are not followed, and a reaped
+PID observed again is not targeted. A missing leader alone does not establish
+that its original group is gone.
+
+Colima is a daemon launcher, not a finite-output command. Its direct exit is
+captured through a private anonymous temporary file, without requiring EOF or
+stopping successful background processes. Only a fixed-size startup snapshot
+is read/redacted; Docker/SQL readiness is checked separately. The parent closes
+its descriptor on every outcome. Daemons can retain the unlinked backing inode
+until their descriptors close or the hosted job ends: raw backing storage is
+not hard-capped. This contract is intended for job-scoped hosted Colima startup,
+not a general-purpose persistent daemon logging service.
 """
 
 import argparse
 import codecs
 from dataclasses import dataclass
+import io
 import json
 import os
 import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -105,8 +121,9 @@ class SafeCapture:
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pending = ""
         omitted = False
+        read = getattr(stream, "read1", stream.read)
         while True:
-            chunk = stream.read(4096)
+            chunk = read(4096)
             text = decoder.decode(chunk, final=not chunk)
             for part in text.splitlines(keepends=True):
                 pending += part
@@ -141,39 +158,150 @@ class Result:
     output: str
 
 
+@dataclass
+class StopResult:
+    reaped: bool
+    errors: list[str]
+
+
 class Commands:
     def __init__(self, password):
         self.password = password
 
     @staticmethod
     def stop(process, deadline):
-        # start_new_session gives each command its own group. The launcher may
-        # already be reaped while a descendant still holds its output pipe.
-        try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGTERM)
-            elif process.poll() is None:
-                process.terminate()
-        except ProcessLookupError:
-            pass
+        errors = []
+        group_blocked = False
+
+        def signal_child(name):
+            # Popen rechecks its own unreaped child before signalling its PID.
+            if process.poll() is not None:
+                return
+            try:
+                if name == "TERM":
+                    process.terminate()
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            except PermissionError as exc:
+                errors.append(
+                    f"Permission denied sending SIG{name} to owned child "
+                    f"{process.pid} (errno={exc.errno})"
+                )
+
+        def signal_owned(name):
+            nonlocal group_blocked
+            if os.name != "posix":
+                signal_child(name)
+                return
+            if group_blocked:
+                signal_child(name)
+                return
+            reaped = process.poll() is not None
+            try:
+                group = os.getpgid(process.pid)
+            except ProcessLookupError:
+                # Descendants may still hold the original group and stdout.
+                pass
+            except PermissionError as exc:
+                errors.append(
+                    f"Permission denied checking original group {process.pid} (errno={exc.errno})"
+                )
+                group_blocked = True
+            else:
+                if reaped:
+                    errors.append(f"Reaped PID {process.pid} is present again; group not signalled")
+                    group_blocked = True
+                elif group != process.pid:
+                    errors.append(
+                        f"Owned child {process.pid} left its original group; "
+                        f"group {group} not followed"
+                    )
+                    group_blocked = True
+            if group_blocked:
+                signal_child(name)
+                return
+            try:
+                os.killpg(process.pid, getattr(signal, "SIG" + name))
+            except ProcessLookupError:
+                signal_child(name)
+            except PermissionError as exc:
+                errors.append(
+                    f"Permission denied sending SIG{name} to original group "
+                    f"{process.pid} (errno={exc.errno})"
+                )
+                group_blocked = True
+                signal_child(name)
+
+        signal_owned("TERM")
         try:
             process.wait(timeout=max(0, min(1, (deadline - time.monotonic()) / 2)))
         except subprocess.TimeoutExpired:
             pass
-        try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            elif process.poll() is None:
-                process.kill()
-        except ProcessLookupError:
-            pass
+        signal_owned("KILL")
         try:
             process.wait(timeout=max(0, min(1, deadline - time.monotonic())))
         except subprocess.TimeoutExpired:
-            return False
-        return True
+            return StopResult(False, errors)
+        return StopResult(True, errors)
+
+    @staticmethod
+    def snapshot(output, capture):
+        output.flush()
+        size = os.fstat(output.fileno()).st_size
+        window = 65536
+        ranges = [(0, size)] if size <= 2 * window else [(0, window), (size - window, window)]
+        capture.add(
+            "[Colima startup snapshot: at most 64KiB head and 64KiB tail; "
+            "partial boundary lines and later background output omitted]\n"
+        )
+        for index, (offset, length) in enumerate(ranges):
+            if index:
+                capture.context_remaining = 0
+                capture.add("[Colima startup snapshot truncated; middle output omitted]\n")
+            if hasattr(os, "pread"):
+                data = os.pread(output.fileno(), length, offset)
+            else:
+                output.seek(offset)
+                data = output.read(length)
+            if offset:
+                data = data.partition(b"\n")[2]
+            if data and not data.endswith(b"\n"):
+                data = data[: data.rfind(b"\n") + 1]
+            capture.read(io.BytesIO(data))
+
+    def run_launcher(self, args, timeout, *, env=None):
+        deadline = time.monotonic() + timeout
+        try:
+            output = tempfile.TemporaryFile(mode="a+b")
+        except OSError as exc:
+            raise SetupFailure(
+                f"Cannot create private Colima output capture (errno={exc.errno})", retryable=False
+            ) from None
+        primary = None
+        try:
+            return self._run(args, deadline - time.monotonic(), env=env, output_file=output)
+        except (SetupFailure, Cancelled) as exc:
+            primary = exc
+            raise
+        finally:
+            try:
+                output.close()
+            except OSError as exc:
+                message = f"Cannot close private Colima output capture (errno={exc.errno})"
+                if primary is None:
+                    raise SetupFailure(message, retryable=False) from None
+                if isinstance(primary, SetupFailure):
+                    primary.retryable = False
+                    primary.args = (str(primary) + "\n" + message,)
+                else:
+                    print("[sql] " + message, file=sys.stderr, flush=True)
 
     def run(self, args, timeout, *, env=None):
+        return self._run(args, timeout, env=env)
+
+    def _run(self, args, timeout, *, env=None, output_file=None):
         if timeout <= 0:
             raise SetupTimeout("SQL setup deadline exhausted")
         deadline = time.monotonic() + timeout
@@ -183,7 +311,7 @@ class Commands:
         try:
             process = subprocess.Popen(
                 args,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.PIPE if output_file is None else output_file,
                 stderr=subprocess.STDOUT,
                 env=env,
                 start_new_session=os.name == "posix",
@@ -191,7 +319,7 @@ class Commands:
         except OSError:
             raise SetupFailure("Cannot launch required setup command", retryable=False) from None
         output_done = threading.Event()
-        read_errors = ["Setup output reader did not complete"]
+        read_errors = ["Setup output reader did not complete"] if output_file is None else []
 
         def read_output():
             try:
@@ -203,45 +331,98 @@ class Commands:
             finally:
                 output_done.set()
 
-        reader = threading.Thread(target=read_output, daemon=True)
+        reader = threading.Thread(target=read_output, daemon=True) if output_file is None else None
         reader_started = False
         timed_out = False
         drain_timed_out = False
-        reaped = True
+        stopped = StopResult(True, [])
+        pending_error = None
+        problems = []
+
+        def failure_message(reason):
+            message = reason
+            if problems:
+                message += "\nCommand teardown incomplete:\n" + "\n".join(problems)
+            message += "\nCaptured command output (may be incomplete):"
+            message += "\n" + (capture.output() or "[no completed output lines captured]")
+            return redact(message, self.password)
+
         try:
-            try:
-                reader.start()
-                reader_started = True
-            except RuntimeError:
-                raise SetupFailure("Cannot start setup output reader", retryable=False) from None
+            if reader is not None:
+                try:
+                    reader.start()
+                    reader_started = True
+                except RuntimeError:
+                    raise SetupFailure(
+                        "Cannot start setup output reader", retryable=False
+                    ) from None
             try:
                 process.wait(timeout=max(0, work_deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 timed_out = True
-            if not timed_out:
+            if not timed_out and output_file is None:
                 drain_timed_out = not output_done.wait(
                     timeout=max(0, work_deadline - time.monotonic())
                 )
+        except (Cancelled, SetupFailure) as exc:
+            pending_error = exc
+            raise
         finally:
             teardown_deadline = min(deadline, time.monotonic() + 4)
-            if process.poll() is None or not output_done.is_set() or read_errors:
-                reaped = self.stop(process, teardown_deadline)
+            if (
+                process.poll() is None
+                or (output_file is None and (not output_done.is_set() or read_errors))
+                or (
+                    output_file is not None
+                    and (pending_error is not None or process.returncode != 0)
+                )
+            ):
+                stopped = self.stop(process, teardown_deadline)
+            problems.extend(stopped.errors)
             if reader_started:
                 output_done.wait(timeout=max(0, teardown_deadline - time.monotonic()))
-            if not reader_started or output_done.is_set():
-                process.stdout.close()
-            if not reaped or (reader_started and not output_done.is_set()):
-                print("[sql] Command teardown incomplete within its deadline", file=sys.stderr)
-        if not reaped:
-            raise SetupFailure("Setup command could not be reaped", retryable=False)
-        if read_errors:
-            raise SetupFailure(read_errors[0], retryable=False)
+            if output_file is not None:
+                try:
+                    self.snapshot(output_file, capture)
+                except OSError as exc:
+                    problems.append(f"Cannot read Colima startup snapshot (errno={exc.errno})")
+                output_done.set()
+            elif not reader_started or output_done.is_set():
+                try:
+                    process.stdout.close()
+                except OSError as exc:
+                    problems.append(f"Cannot close command output (errno={exc.errno})")
+            if not stopped.reaped:
+                problems.append("Owned child could not be reaped within the teardown deadline")
+            if reader_started and not output_done.is_set():
+                problems.append("Output reader did not finish within the teardown deadline")
+            elif reader_started and read_errors:
+                problems.append("Output capture error: " + read_errors[0])
+            if pending_error is not None:
+                reason = (
+                    f"Command cancelled (signal {pending_error.signum})"
+                    if isinstance(pending_error, Cancelled)
+                    else str(pending_error)
+                )
+                print("[sql] " + failure_message(reason), file=sys.stderr, flush=True)
+        if timed_out:
+            raise SetupTimeout(
+                failure_message("Setup command timed out"),
+                retryable=not problems and not read_errors,
+            )
         if drain_timed_out or not output_done.is_set():
             raise SetupFailure(
-                "Setup command output drain timed out\n" + capture.output(), retryable=False
+                failure_message("Setup command output drain timed out"), retryable=False
             )
-        if timed_out:
-            raise SetupTimeout("Setup command timed out\n" + capture.output())
+        if read_errors:
+            raise SetupFailure(failure_message(read_errors[0]), retryable=False)
+        if problems:
+            reason = (
+                f"Setup command failed (exit {process.returncode})"
+                if process.returncode
+                else "Setup command teardown failed"
+            )
+            raise SetupFailure(failure_message(reason), retryable=False)
         return Result(process.returncode, capture.output())
 
 
@@ -273,12 +454,13 @@ class SqlSetup:
     def log(self, message):
         print("[sql] " + redact(message, self.password), flush=True)
 
-    def command(self, args, timeout=15, *, check=True, deadline=None):
+    def command(self, args, timeout=15, *, check=True, deadline=None, launcher=False):
         end = min(self.deadline, self.phase_deadline if deadline is None else deadline)
         remaining = min(timeout, end - time.monotonic())
         if remaining <= 0:
             raise SetupTimeout("SQL setup deadline exhausted")
-        result = self.commands.run(args, remaining, env=self.env)
+        run = self.commands.run_launcher if launcher else self.commands.run
+        result = run(args, remaining, env=self.env)
         if result.returncode in (-signal.SIGINT, -signal.SIGTERM, 130, 143):
             raise Cancelled(
                 signal.SIGINT if result.returncode in (-signal.SIGINT, 130) else signal.SIGTERM
@@ -345,6 +527,8 @@ class SqlSetup:
                 self.log(f"Container logs unavailable (exit {result.returncode})")
         except SetupFailure as exc:
             self.log(f"Container logs unavailable: {exc}")
+            if not exc.retryable:
+                raise
 
     def remove(self, container, *, deadline):
         self.docker_command("rm", "--force", container.identifier, timeout=30, deadline=deadline)
@@ -352,6 +536,37 @@ class SqlSetup:
         if remaining is not None:
             raise SetupFailure("Owned container still exists after removal", retryable=False)
         self.container = None
+
+    def remove_with_evidence(self, container, *, deadline, diagnostic_deadline):
+        diagnostic_error = None
+        try:
+            self.diagnostics(container, deadline=diagnostic_deadline)
+        except (SetupFailure, Cancelled) as exc:
+            diagnostic_error = exc
+        try:
+            self.remove(container, deadline=deadline)
+        except (SetupFailure, Cancelled) as removal_error:
+            if diagnostic_error is None:
+                raise
+            if isinstance(diagnostic_error, Cancelled):
+                self.log(
+                    "Owned removal also failed during diagnostic cancellation: "
+                    + (
+                        f"signal {removal_error.signum}"
+                        if isinstance(removal_error, Cancelled)
+                        else str(removal_error)
+                    )
+                )
+                raise diagnostic_error from None
+            if isinstance(removal_error, Cancelled):
+                self.log(f"Diagnostics also failed before removal cancellation: {diagnostic_error}")
+                raise
+            raise SetupFailure(
+                f"Diagnostics failed: {diagnostic_error}\nOwned removal failed: {removal_error}",
+                retryable=False,
+            ) from None
+        if diagnostic_error is not None:
+            raise diagnostic_error
 
     def cleanup(self, *, evidence=True):
         # Include lookup/ownership checks and removal verification in addition
@@ -362,15 +577,24 @@ class SqlSetup:
             self.container = None
             return
         if evidence:
-            self.diagnostics(
-                container, deadline=min(self.phase_deadline - 30, time.monotonic() + 20)
+            self.remove_with_evidence(
+                container,
+                deadline=self.phase_deadline,
+                diagnostic_deadline=min(self.phase_deadline - 30, time.monotonic() + 20),
             )
-        self.remove(container, deadline=self.phase_deadline)
+        else:
+            self.remove(container, deadline=self.phase_deadline)
 
     def prepare_runtime(self):
         if self.args.colima and not self.args.cleanup:
             self.log("Starting Colima once (outside SQL retry)")
-            self.command(["colima", "start", "--cpu", "4", "--memory", "8", "--disk", "50"], 600)
+            result = self.command(
+                ["colima", "start", "--cpu", "4", "--memory", "8", "--disk", "50"],
+                600,
+                launcher=True,
+            )
+            self.log("Colima launcher completed; Docker and SQL readiness still require checks")
+            self.log(result.output)
 
     def acquire_image(self):
         if self.image_id is not None:
@@ -446,6 +670,8 @@ class SqlSetup:
             try:
                 probe = self.readiness_probe(polling_deadline)
             except SetupTimeout as exc:
+                if not exc.retryable:
+                    raise
                 self.log(f"Readiness probe timed out: {exc}")
             else:
                 if probe.returncode == 0:
@@ -463,9 +689,12 @@ class SqlSetup:
         stale = self.find_owned()
         if stale is not None:
             self.log("Removing pre-existing same-job container before fresh setup")
-            self.diagnostics(stale, deadline=min(self.phase_deadline, time.monotonic() + 20))
             try:
-                self.remove(stale, deadline=self.phase_deadline)
+                self.remove_with_evidence(
+                    stale,
+                    deadline=self.phase_deadline,
+                    diagnostic_deadline=min(self.phase_deadline, time.monotonic() + 20),
+                )
             except SetupFailure as exc:
                 raise SetupFailure(str(exc), retryable=False) from None
         self.acquire_image()
@@ -522,7 +751,8 @@ class SqlSetup:
                         self.cleanup()
                     except SetupFailure as cleanup_error:
                         raise SetupFailure(
-                            f"Cannot safely recover/clean up: {cleanup_error}", retryable=False
+                            f"SQL setup failed: {exc}\nCannot safely recover/clean up: {cleanup_error}",
+                            retryable=False,
                         ) from None
                 if not exc.retryable or number == 2:
                     raise SetupFailure("SQL setup failed; no further attempts", retryable=False)
