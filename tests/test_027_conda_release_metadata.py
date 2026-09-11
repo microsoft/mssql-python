@@ -14,6 +14,7 @@ import json
 import sys
 import tarfile
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -381,6 +382,7 @@ def test_release_policy_cannot_disable_required_matrix(policy, message):
         ({"depends": ["python 3.12,<3.14"]}, ""),
         ({"depends": ["python <3.12"]}, ""),
         ({"depends": ["python >=3.12,<3.13|>=3.13"]}, ""),
+        ({"depends": ["python_abi 3.12.* *_cp312"]}, ""),
         ({"build": "0"}, ""),
     ],
 )
@@ -404,30 +406,7 @@ def _zstd_available():
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
 def test_read_index_json_roundtrip(tmp_path):
-    import zipfile
-
-    index = {"name": "mssql-python", "version": _MP_VER, "build": "py312_0", "subdir": "win-64"}
-    # Build info/index.json -> tar -> zstd -> .conda zip, then read it back.
-    tar_buf = io.BytesIO()
-    with tarfile.open(fileobj=tar_buf, mode="w") as tf:
-        data = json.dumps(index).encode()
-        ti = tarfile.TarInfo("info/index.json")
-        ti.size = len(data)
-        tf.addfile(ti, io.BytesIO(data))
-    try:
-        from compression import zstd  # py3.14+
-
-        compressed = zstd.compress(tar_buf.getvalue())
-    except Exception:
-        import zstandard
-
-        compressed = zstandard.ZstdCompressor().compress(tar_buf.getvalue())
-
-    conda_path = tmp_path / "mssql-python-1.13.0-py312_0.conda"
-    with zipfile.ZipFile(conda_path, "w") as zf:
-        zf.writestr("info-mssql-python-1.13.0-py312_0.tar.zst", compressed)
-
-    got = vcr.read_index_json(str(conda_path))
+    got = vcr.read_index_json(str(_write_release_archive(tmp_path, extension=".conda")))
     assert got["subdir"] == "win-64"
     assert vcr.python_tag_from_index(got) == "3.12"
 
@@ -1081,23 +1060,37 @@ def test_interrupted_promotion_is_recoverable_but_not_atomic():
     assert all(api.distributions[item.basename]["labels"] == ["main"] for item in (first, second))
 
 
-def _write_release_archive(tmp_path, **overrides):
-    directory = tmp_path / "win-64"
+def _write_release_archive(tmp_path, *, folder="win-64", extension=".tar.bz2", **overrides):
+    directory = tmp_path / folder
     directory.mkdir(exist_ok=True)
-    path = directory / "mssql-python-1.13.0-py312_0.tar.bz2"
     index = {
         "name": "mssql-python",
         "version": "1.13.0",
         "build": "py312_0",
-        "subdir": "win-64",
+        "subdir": folder,
         "depends": ["python >=3.12,<3.13.0a0"],
         **overrides,
     }
+    path = directory / f"{index['name']}-{index['version']}-{index['build']}{extension}"
     data = json.dumps(index).encode()
-    with tarfile.open(path, "w:bz2") as archive:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w" if extension == ".conda" else "w:bz2") as archive:
         member = tarfile.TarInfo("info/index.json")
         member.size = len(data)
         archive.addfile(member, io.BytesIO(data))
+    if extension == ".conda":
+        try:
+            from compression import zstd
+        except ImportError:
+            import zstandard
+
+            compressed = zstandard.ZstdCompressor().compress(buffer.getvalue())
+        else:
+            compressed = zstd.compress(buffer.getvalue())
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("info-package.tar.zst", compressed)
+    else:
+        path.write_bytes(buffer.getvalue())
     return path
 
 
@@ -1109,6 +1102,77 @@ def test_untrusted_local_metadata_is_rejected(tmp_path, metadata):
     path = _write_release_archive(tmp_path, **metadata)
     with pytest.raises(ValueError):
         promoter.distribution_from_path(path)
+
+
+@pytest.mark.parametrize("extension", [".tar.bz2", ".conda"])
+@pytest.mark.parametrize("renamed", [False, True])
+def test_local_preflight_requires_canonical_archive_basename(
+    tmp_path, monkeypatch, extension, renamed
+):
+    if extension == ".conda" and not _zstd_available():
+        pytest.skip("no zstandard backend available")
+    paths = [
+        _write_release_archive(tmp_path, folder=subdir, extension=extension)
+        for subdir in ("win-64", "linux-64")
+    ]
+    if renamed:
+        paths[1] = paths[1].rename(paths[1].with_name("renamed" + extension))
+    monkeypatch.setattr(
+        promoter, "promote", lambda *_args: pytest.fail("local preflight must not publish")
+    )
+    args = [
+        "--owner",
+        "microsoft",
+        "--staging-label",
+        "local",
+        "--target-label",
+        "main",
+        "--expected-version",
+        _MP_VER,
+        "--check-local-only",
+        *map(str, paths),
+    ]
+    if renamed:
+        with pytest.raises(ValueError, match="canonical basename"):
+            promoter.main(args)
+    else:
+        assert promoter.main(args) == 0
+        assert {promoter.distribution_from_path(p).basename for p in paths} == {
+            f"{subdir}/mssql-python-1.13.0-py312_0{extension}" for subdir in ("win-64", "linux-64")
+        }
+
+
+@pytest.mark.parametrize(
+    "build, depends, error",
+    [
+        ("0", ["python >=3.12,<3.13.0a0", "python >=3.13,<3.14.0a0"], "Conflicting"),
+        ("0", ["python >=3.13,<3.14.0a0", "python >=3.12,<3.13.0a0"], "Conflicting"),
+        ("py312_0", ["python >=3.13,<3.14.0a0"], "Conflicting"),
+        ("py312_0", ["python >=3.12,<3.13.0a0", "python >=3.13,<3.14.0a0"], "Conflicting"),
+        ("py312_0", ["python >=3.12", "python_abi 3.13.* *_cp313"], "Conflicting"),
+        ("py312_0", ["python_abi 3.12.* *_cp313"], "Conflicting"),
+        ("0", ["python ==3.12.*", "python ==3.13.*"], "Conflicting"),
+        ("0", ["python 3.12.* *_cpython", "python >=3.12,<3.13.0a0"], ""),
+        ("py312_0", ["python >=3.10", "python"], ""),
+        ("py312_0", ["python >=3.12,<3.13.0a0", "python_abi 3.12.* *_cp312"], ""),
+        ("0", ["python >=3.12", "python"], "no detectable Python tag"),
+    ],
+)
+def test_metadata_agreement_across_full_archive_matrix(tmp_path, capsys, build, depends, error):
+    for subdir in _ALLOWED:
+        for py in _PYTHONS[2:] if subdir == "win-arm64" else _PYTHONS:
+            minor = int(py.split(".")[1])
+            index = {
+                "build": f"py{py.replace('.', '')}_0",
+                "depends": [f"python >={py},<3.{minor + 1}.0a0"],
+            }
+            if (subdir, py) == ("win-64", "3.12"):
+                index.update(build=build, depends=depends)
+            _write_release_archive(tmp_path, folder=subdir, **index)
+    assert len(list(tmp_path.rglob("*.tar.bz2"))) == 28
+    assert vcr.main(["--root", str(tmp_path), "--mssql-python-version", _MP_VER]) == bool(error)
+    output = capsys.readouterr()
+    assert error in output.err if error else "metadata-validated" in output.out
 
 
 def test_local_only_cli_needs_neither_token_nor_publication_guard(tmp_path, monkeypatch, capsys):

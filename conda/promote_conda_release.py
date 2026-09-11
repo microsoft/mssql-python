@@ -7,6 +7,8 @@ operations succeed. Publication requires an externally enforced exclusive lock f
 the owner/package/target label, held from before the snapshot through cleanup.
 Rollback is compensating, not atomic: only attempted additions absent from the
 initial snapshot are removed. An interrupted invocation resumes from verified labels.
+Local archives must use the metadata-derived canonical basename that the pinned
+upload client sends; a renamed file is rejected before any upload.
 
 Failed pipeline uploads/promotions invoke --cleanup-staging for their attempted
 archives. After a hard interruption, run this same option with the original exact
@@ -27,7 +29,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
-from validate_conda_release import read_index_json
+from validate_conda_release import _required_index_string, read_index_json
 from validate_conda_publication_lock import require_publication_lock
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -69,6 +71,14 @@ def distribution_from_path(path: str | Path) -> Distribution:
         raise ValueError(
             f"Package {package_path.name} is staged under '{package_path.parent.name}' "
             f"but metadata subdir is '{subdir or '<missing>'}'."
+        )
+    build = _required_index_string(index, "build", str(package_path))
+    extension = ".conda" if package_path.name.endswith(".conda") else ".tar.bz2"
+    canonical_name = f"{package}-{version}-{build}{extension}"
+    if package_path.name != canonical_name:
+        raise ValueError(
+            f"Package {package_path.name} must use canonical basename '{canonical_name}': "
+            "anaconda-client normalizes upload names from metadata."
         )
 
     return Distribution(

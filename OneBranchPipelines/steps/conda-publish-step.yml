@@ -247,40 +247,113 @@ steps:
         # lock, not this label, serializes publication to the shared public label.
         $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
 
+        # Bound stalled writers, not just retry counts. Start the 20-minute upload
+        # budget at the first attempt; reserve termination time within that budget.
+        # Preparation and compensating cleanup have separate costs: this is not a
+        # guarantee that they finish inside the enclosing 60-minute job deadline.
+        $attemptTimeoutMs = 120000
+        $uploadBudgetMs = 1200000
+        $terminationTimeoutMs = 10000
+        $uploadState = @{
+          Clock = [System.Diagnostics.Stopwatch]::new()
+          AttemptedPaths = [System.Collections.Generic.List[string]]::new()
+          TerminationUncertain = $false
+        }
+        $pythonExecutable = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         function Invoke-Anaconda($argsList) {
           for ($attempt = 1; $attempt -le 3; $attempt++) {
-            # anaconda-client logs normal information to stderr. PowerShell 5.1 can
-            # surface that as NativeCommandError under ErrorActionPreference=Stop,
-            # so capture the merged stream and decide solely from the process exit code.
-            $oldErrorActionPreference = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
+            $remainingMs = $uploadBudgetMs - $uploadState.Clock.ElapsedMilliseconds
+            $waitMs = [int][Math]::Min($attemptTimeoutMs, $remainingMs - 2 * $terminationTimeoutMs)
+            if ($waitMs -le 0) { throw "Aggregate upload budget exhausted before attempt $attempt. No new upload was started." }
+            # Start-Process joins ArgumentList on PS5.1. Quote for the Windows CRT,
+            # including empty arguments, embedded quotes and trailing backslashes.
+            $quotedArgs = foreach ($value in @('-m', 'binstar_client.scripts.cli') + $argsList) {
+              '"' + ([string]$value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+            }
+            $logPrefix = Join-Path $env:AGENT_TEMPDIRECTORY ("conda-upload-" + [guid]::NewGuid().ToString('N'))
+            $stdoutPath = "$logPrefix.stdout"
+            $stderrPath = "$logPrefix.stderr"
+            $process = $null
             try {
-              $output = @(& python -m binstar_client.scripts.cli @argsList 2>&1)
-              $exitCode = $LASTEXITCODE
+              $uploadState.Clock.Start()
+              # Record even an ambiguous failed launch/response, but not budget-rejected files.
+              if (-not $uploadState.AttemptedPaths.Contains($argsList[-1])) {
+                $uploadState.AttemptedPaths.Add($argsList[-1])
+              }
+              $process = Start-Process -FilePath $pythonExecutable -ArgumentList ($quotedArgs -join ' ') `
+                -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+              $null = $process.Handle
+              if ($process.WaitForExit($waitMs)) {
+                if ($process.ExitCode -eq 0) { return }
+                $failure = "exit $($process.ExitCode)"
+              }
+              else {
+                $failure = "timeout after $waitMs ms"
+                $uploadState.TerminationUncertain = $true
+                $killer = $null
+                try {
+                  $killer = Start-Process -FilePath "$env:SystemRoot\System32\taskkill.exe" `
+                    -ArgumentList @('/PID', $process.Id, '/T', '/F') -NoNewWindow -PassThru
+                  $null = $killer.Handle
+                  if (-not $killer.WaitForExit($terminationTimeoutMs)) {
+                    $killer.Kill()
+                    throw "Process-tree termination command exceeded its deadline."
+                  }
+                  if ($killer.ExitCode -ne 0 -or -not $process.WaitForExit($terminationTimeoutMs)) {
+                    throw "Process-tree termination could not be confirmed."
+                  }
+                  $uploadState.TerminationUncertain = $false
+                }
+                catch {
+                  throw "Upload $failure; owned writer PID $($process.Id) may still be active: $_"
+                }
+                finally {
+                  if ($null -ne $killer) { $killer.Dispose() }
+                }
+              }
+            }
+            catch {
+              if ($null -ne $process -and -not $uploadState.TerminationUncertain) {
+                $uploadState.TerminationUncertain = $true
+                throw "Process control failed for owned writer PID $($process.Id); termination is unconfirmed: $_"
+              }
+              throw
             }
             finally {
-              $ErrorActionPreference = $oldErrorActionPreference
+              if (-not $uploadState.TerminationUncertain) {
+                foreach ($logPath in @($stdoutPath, $stderrPath)) {
+                  if (Test-Path -LiteralPath $logPath) {
+                    Write-Host "Uploader log (last 8192 bytes): $logPath"
+                    $log = $null
+                    try {
+                      $log = [IO.File]::Open($logPath, 'Open', 'Read', 'ReadWrite')
+                      $null = $log.Seek([Math]::Max(0, $log.Length - 8192), 'Begin')
+                      $buffer = [byte[]]::new(8192)
+                      $count = $log.Read($buffer, 0, $buffer.Length)
+                      Write-Host ([Text.Encoding]::UTF8.GetString($buffer, 0, $count))
+                    }
+                    catch { Write-Warning "Could not read uploader log '$logPath': $_" }
+                    finally { if ($null -ne $log) { $log.Dispose() } }
+                    Remove-Item -LiteralPath $logPath -ErrorAction Continue
+                  }
+                }
+              }
+              if ($null -ne $process) { $process.Dispose() }
             }
-            $output | ForEach-Object { Write-Host "$_" }
-            if ($exitCode -eq 0) { return $true }
             if ($attempt -lt 3) {
-              Write-Host "attempt $attempt failed (exit $exitCode); retrying in 5s ..."
-              Start-Sleep -Seconds 5
+              Write-Host "attempt $attempt failed ($failure); retrying in up to 5s ..."
+              $delayMs = [int][Math]::Min(5000, [Math]::Max(0, $uploadBudgetMs - $uploadState.Clock.ElapsedMilliseconds))
+              Start-Sleep -Milliseconds $delayMs
             }
           }
-          return $false
+          throw "Failed to stage $($argsList[-1]) after 3 attempts ($failure). The public label was NOT touched."
         }
 
         Write-Host "==== Stage: upload $($pkgs.Count) package(s) to label '$stagingLabel' ===="
-        $attemptedPaths = @()
         try {
           foreach ($p in $pkgs) {
-            # Include the failed attempt too: the upload may land before its response is lost.
-            $attemptedPaths += $p.FullName
             Write-Host "Uploading $($p.Directory.Name)/$($p.Name) -> $stagingLabel ..."
-            if (-not (Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)"))) {
-              throw "Failed to stage $($p.Name) after 3 attempts. The public label was NOT touched."
-            }
+            Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)")
           }
 
           python "$promoter" `
@@ -295,6 +368,11 @@ steps:
         }
         catch {
           $publicationError = $_
+          if ($uploadState.TerminationUncertain) {
+            Write-Warning "Writer termination is unconfirmed; staging state is uncertain. No retry, promotion or remote cleanup is safe until the owned writer is confirmed stopped. Upload logs were retained."
+            throw $publicationError
+          }
+          $attemptedPaths = @($uploadState.AttemptedPaths.ToArray())
           if ($attemptedPaths.Count -gt 0) {
             try {
               python "$promoter" `
