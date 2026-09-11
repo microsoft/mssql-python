@@ -35,20 +35,24 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.14.0
+## What's new in v1.15.0
 
 ### Enhancements
 
-- **Faster Parameter Detection and Execution** - Parameter type detection and binding now run in a native C++ pipeline, substantially reducing per-parameter overhead and improving throughput for wide and batched `execute()` workloads (#549).
+- **Selectable Native ODBC Providers** - Applications can opt in or out of the `msodbcsql18` and `mssql-odbc` native providers to control which bundled provider is used (#730).
+- **Faster `setinputsizes()` Execution** - Parameterized workloads using `setinputsizes()` now route through the native C++ execution pipeline, reducing Python-side overhead (#736).
+- **`memoryview` Support in `Binary()`** - `Binary()` now accepts `memoryview` objects in addition to existing bytes-like inputs (#741).
+- **Module-Level SQL Server Type Constants** - SQL Server-specific type constants are now available directly from the `mssql_python` module for simpler API access (#764).
 
 ### Bug Fixes
 
-- **Bulk Copy Accepts `timeout=0`** - `bulkcopy()` now treats zero as no timeout, matching the BCP API contract, while continuing to reject negative, non-integer, and boolean values (#698).
-- **Arrow Reader Fetch Exceptions Are Preserved** - Defensive cursor cleanup no longer masks the original exception raised while fetching Arrow result batches (#718).
-- **Decimal Conversion Errors No Longer Expose Parameter Values** - `executemany()` Decimal conversion failures now report metadata only, preventing parameter rows and sensitive values from leaking through exception messages or chained tracebacks (#719).
-- **Arrow View Types Work in Bulk Copy** - Polars `string_view` columns exported through the Arrow C Data Interface now round-trip correctly through `bulkcopy_arrow()` (#717, via `mssql_py_core`).
-- **`connect(timeout=)` Sets the Login Timeout** - The constructor timeout now bounds connection attempts as documented instead of setting the per-statement query timeout; timeout validation is consistent across both APIs (#728).
-- **Windows Extension Loading Uses Interpreter Architecture** - The loader now selects the native binary using the Python interpreter architecture, fixing x64 Python on Windows ARM64 hosts and avoiding fallback warnings on stdout (#727).
+- **Concurrent Logging No Longer Deadlocks** - Logging now avoids GIL and mutex lock-order inversions during concurrent multithreaded use (#678).
+- **Correct Rust Core in Windows ARM64 Wheels** - Windows ARM64 wheels now vendor the matching `mssql_py_core` binary, restoring installation and bulk-copy compatibility (#737).
+- **Reliable Package-Local DLL Loading on Windows** - Bundled driver and authentication DLLs are resolved from package-local directories for more reliable deployment (#735).
+- **Consistent Decimal Parameter Binding** - `Decimal` values are now bound as `SQL_NUMERIC` regardless of their value, preventing inconsistent parameter typing (#742).
+- **ODBC 3.x Parameter Types** - Parameter binding now uses ODBC 3.x types instead of obsolete ODBC 2.x types for improved standards compatibility (#758).
+- **Database Name Metadata Is Decoded** - `Connection.getinfo(SQL_DATABASE_NAME)` now returns correctly decoded text (#771).
+- **Mixed Cursor Cleanup No Longer Crashes at Shutdown** - Cleanup for connections with mixed cursor states no longer causes a process-shutdown crash (#772).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
