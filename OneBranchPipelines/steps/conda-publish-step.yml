@@ -224,9 +224,10 @@ steps:
         # Upload the entire validated set, never a filename-filtered subset.
         $pkgs = @(Get-ChildItem -Path $root -Recurse -File -Include *.conda, *.tar.bz2 | Sort-Object FullName)
         $packagePaths = @($pkgs | ForEach-Object { $_.FullName })
+        $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
         python "$promoter" `
           --owner "$env:CONDA_CHANNEL" `
-          --staging-label "local-preflight" `
+          --staging-label "$stagingLabel" `
           --target-label "$env:CONDA_LABEL" `
           --expected-version "$env:MSSQL_PYTHON_VERSION" `
           --check-local-only `
@@ -243,8 +244,6 @@ steps:
         # an interrupted run is idempotent and resumes from server-verified labels. The
         # staging label distinguishes retries but does not prevent overlapping writers.
         # The team must coordinate one publication or recovery at a time for this target.
-        $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
-
         # Bound stalled writers, not just retry counts. Start the 20-minute upload
         # budget at the first attempt; reserve termination time within that budget.
         # Preparation and compensating cleanup have separate costs: this is not a

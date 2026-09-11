@@ -3,9 +3,11 @@
 Use restricted publishing credentials and coordinate one publication or recovery at
 a time for the same owner/package/target label. This helper does not prevent concurrent
 writers; overlapping runs can interfere with labels and rollback. --check-local-only
-needs neither credentials nor an API client.
+validates archives and publication scope without credentials or an API client.
 
-Uploads happen before this helper under a build-unique staging label. This module
+Staging labels must use ``<target>_staging_<numeric-build-id>``; this namespace is
+reserved and cannot be a public target. Recovery uses the original build's label.
+Uploads happen before promotion under that build-unique staging label. This module
 verifies every uploaded distribution against the local artifact, adds the public
 label to the complete set, and removes the staging label only after all target-label
 operations succeed.
@@ -17,7 +19,7 @@ upload client sends; a renamed file is rejected before any upload.
 Failed uploads/promotions invoke --cleanup-staging for their attempted
 archives. After a hard interruption, run this same option with the original exact
 staging label and retained archives, with no overlapping publisher or recovery. Cleanup
-verifies identity/SHA-256 and removes only that staging label, never public labels
+verifies identity/SHA-256 and removes only that build's staging label, never its target label
 or files. It is bounded, compensating recovery, not guaranteed cleanup after a kill.
 """
 
@@ -190,6 +192,10 @@ def _require_publication(
             raise ValueError(f"Invalid {label_name} label: {label!r}")
     if staging_label == target_label:
         raise ValueError("Staging and target labels must be different.")
+    if re.fullmatch(r".+_staging_[0-9]+", target_label):
+        raise ValueError("Target labels must not use the reserved staging namespace.")
+    if not re.fullmatch(rf"{re.escape(target_label)}_staging_[0-9]+", staging_label):
+        raise ValueError(f"Staging label must use '{target_label}_staging_<numeric-build-id>'.")
     validate_release_input(expected_version, distributions)
 
 
@@ -455,7 +461,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     distributions = [distribution_from_path(path) for path in args.packages]
-    validate_release_input(args.expected_version, distributions)
+    _require_publication(
+        args.owner, args.staging_label, args.target_label, args.expected_version, distributions
+    )
     if args.check_local_only:
         print(
             f"LOCAL_RELEASE_INPUT_OK: verified {len(distributions)} distribution(s) "
@@ -463,9 +471,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    _require_publication(
-        args.owner, args.staging_label, args.target_label, args.expected_version, distributions
-    )
     from binstar_client.utils import get_server_api  # type: ignore[import-not-found]
 
     api = get_server_api(config={"url": _ANACONDA_API_URL, "ssl_verify": True})

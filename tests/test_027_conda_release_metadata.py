@@ -511,7 +511,10 @@ def _distribution(subdir, filename, version="1.13.0"):
     )
 
 
-def _api_for(distributions, labels=("staging",)):
+_STAGING = "main_staging_123"
+
+
+def _api_for(distributions, labels=(_STAGING,)):
     return _FakeAnacondaApi(
         {
             distribution.basename: {
@@ -524,7 +527,7 @@ def _api_for(distributions, labels=("staging",)):
     )
 
 
-def _promote(api, distributions, *, staging="staging", version="1.13.0"):
+def _promote(api, distributions, *, staging=_STAGING, version="1.13.0"):
     return promoter.promote(
         api,
         "microsoft",
@@ -541,9 +544,9 @@ def test_verify_distribution_uses_full_subdir_basename_and_requires_sha_and_labe
     distribution = _distribution("win-64", "mssql-python-1.13.0-py312_0.conda")
     api = _api_for([distribution])
 
-    labels = promoter.verify_distribution(api, "microsoft", distribution, required_label="staging")
+    labels = promoter.verify_distribution(api, "microsoft", distribution, required_label=_STAGING)
 
-    assert labels == {"staging"}
+    assert labels == {_STAGING}
     assert api.calls[-1][-1] == distribution.basename
 
     api.distributions[distribution.basename]["sha256"] = "bad"
@@ -568,7 +571,7 @@ def test_promote_verifies_all_files_then_cleans_staging_label():
 def test_promote_is_idempotent_after_partial_staging_cleanup():
     first = _distribution("win-64", "mssql-python-1.13.0-py312_0.conda")
     second = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
-    api = _api_for([first, second], labels=("staging", "main"))
+    api = _api_for([first, second], labels=(_STAGING, "main"))
     api.distributions[first.basename]["labels"] = ["main"]
 
     _promote(api, [first, second])
@@ -582,11 +585,11 @@ def test_promote_recovers_matching_file_left_on_old_staging_label():
     distribution = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
     api = _api_for([distribution], labels=("main_staging_old",))
 
-    _promote(api, [distribution], staging="main_staging_new")
+    _promote(api, [distribution], staging=_STAGING)
 
     assert api.distributions[distribution.basename]["labels"] == ["main_staging_old", "main"]
     add_labels = [call[1] for call in api.calls if call[0] == "add"]
-    assert add_labels == ["main_staging_new", "main"]
+    assert add_labels == [_STAGING, "main"]
 
 
 def test_promote_accepts_ambiguous_add_failure_when_label_landed():
@@ -603,7 +606,7 @@ def test_promote_accepts_ambiguous_add_failure_when_label_landed():
 def test_promote_accepts_ambiguous_staging_cleanup_when_label_was_removed():
     distribution = _distribution("linux-64", "mssql-python-1.13.0-py313_0.conda")
     api = _api_for([distribution])
-    api.fail_remove_after_apply = ("staging", distribution.basename)
+    api.fail_remove_after_apply = (_STAGING, distribution.basename)
 
     _promote(api, [distribution])
 
@@ -634,9 +637,7 @@ def test_promote_rolls_back_partial_label_promotion(rollback_reply_lost):
     with pytest.raises(RuntimeError, match="rollback of newly added target labels was attempted"):
         _promote(api, [first, second])
 
-    assert all(
-        api.distributions[item.basename]["labels"] == ["staging"] for item in (first, second)
-    )
+    assert all(api.distributions[item.basename]["labels"] == [_STAGING] for item in (first, second))
 
 
 def test_rollback_never_removes_unattempted_or_preexisting_target_labels():
@@ -661,14 +662,14 @@ def test_rollback_never_removes_unattempted_or_preexisting_target_labels():
 
     removed = [call[-1] for call in api.calls if call[:2] == ("remove", "main")]
     assert removed == [failed.basename]
-    assert api.distributions[previous.basename]["labels"] == ["staging", "main"]
-    assert api.distributions[untouched.basename]["labels"] == ["staging"]
+    assert api.distributions[previous.basename]["labels"] == [_STAGING, "main"]
+    assert api.distributions[untouched.basename]["labels"] == [_STAGING]
 
 
 @pytest.mark.parametrize("next_version", ["1.13.0", "1.14.0"])
 def test_retry_after_rollback_preserves_other_staging_labels(next_version):
     distribution = _distribution("win-64", "package.conda")
-    api = _api_for([distribution], labels=("stage_a", "stage_b"))
+    api = _api_for([distribution], labels=(_STAGING, "main_staging_124"))
     original_read = api.distribution
     fail_a_once = [True]
 
@@ -681,14 +682,16 @@ def test_retry_after_rollback_preserves_other_staging_labels(next_version):
 
     api.distribution = fail_target_verification_once
     with pytest.raises(RuntimeError, match="rollback"):
-        _promote(api, [distribution], staging="stage_a")
+        _promote(api, [distribution], staging=_STAGING)
     assert "main" not in api.distributions[distribution.basename]["labels"]
     next_distribution = distribution
     if next_version != "1.13.0":
         next_distribution = _distribution("win-64", "next.conda", version=next_version)
-        api.distributions.update(_api_for([next_distribution], labels=("stage_b",)).distributions)
-    _promote(api, [next_distribution], staging="stage_b", version=next_version)
-    expected = ["stage_a", "main"] if next_distribution is distribution else ["main"]
+        api.distributions.update(
+            _api_for([next_distribution], labels=("main_staging_124",)).distributions
+        )
+    _promote(api, [next_distribution], staging="main_staging_124", version=next_version)
+    expected = [_STAGING, "main"] if next_distribution is distribution else ["main"]
     assert api.distributions[next_distribution.basename]["labels"] == expected
 
 
@@ -735,15 +738,25 @@ def test_same_filename_on_different_platforms_is_not_a_duplicate():
     assert {call[-1] for call in api.calls} == {"win-64/same.conda", "linux-64/same.conda"}
 
 
-@pytest.mark.parametrize(
-    "owner,staging,target",
-    [
-        ("../org", "staging", "main"),
-        ("microsoft", "", "main"),
-        ("microsoft", "staging", "../main"),
-        ("microsoft", "main", "main"),
-    ],
-)
+_INVALID_PUBLICATION_SCOPES = [
+    ("../org", _STAGING, "main"),
+    ("microsoft", "", "main"),
+    ("microsoft", _STAGING, "../main"),
+    ("microsoft", "main", "main"),
+    ("microsoft", "main", "stable"),
+    ("microsoft", "stable", "main"),
+    ("microsoft", "main", _STAGING),
+    ("microsoft", _STAGING, "stable"),
+    ("microsoft", "main_staging_", "main"),
+    ("microsoft", "main_staging_old", "main"),
+    ("microsoft", "main_staging_123_extra", "main"),
+    ("microsoft", "main_staging_123\n", "main"),
+    ("microsoft", "releaseX1_staging_123", "release.1"),
+    ("microsoft", f"{_STAGING}_staging_456", _STAGING),
+]
+
+
+@pytest.mark.parametrize("owner,staging,target", _INVALID_PUBLICATION_SCOPES)
 @pytest.mark.parametrize("operation", [promoter.promote, promoter.cleanup_staging])
 def test_invalid_publication_scope_fails_before_any_remote_read(owner, staging, target, operation):
     distribution = _distribution("win-64", "package.conda")
@@ -787,9 +800,9 @@ def test_failed_upload_cleanup_preserves_public_and_other_staging_labels(
 ):
     first = _distribution("win-64", "same.conda")
     absent = _distribution("linux-64", "same.conda")
-    api = _api_for([first], labels=("staging", "main", "another_build"))
+    api = _api_for([first], labels=(_STAGING, "main", "another_build"))
     if reply_lost:
-        api.fail_remove_after_apply = ("staging", first.basename)
+        api.fail_remove_after_apply = (_STAGING, first.basename)
     original_read = api.distribution
 
     def read(owner, package, version, basename):
@@ -799,11 +812,11 @@ def test_failed_upload_cleanup_preserves_public_and_other_staging_labels(
 
     api.distribution = read
     promoter.cleanup_staging(
-        api, "microsoft", "staging", "main", "1.13.0", [first, absent], verify_attempts=1
+        api, "microsoft", _STAGING, "main", "1.13.0", [first, absent], verify_attempts=1
     )
     assert api.distributions[first.basename]["labels"] == ["main", "another_build"]
     assert [call for call in api.calls if call[0] != "distribution"] == [
-        ("remove", "staging", "microsoft", first.package, first.version, first.basename)
+        ("remove", _STAGING, "microsoft", first.package, first.version, first.basename)
     ]
 
 
@@ -811,7 +824,7 @@ def test_failed_upload_cleanup_preserves_public_and_other_staging_labels(
 def test_cleanup_reports_failures_but_continues_other_verified_files(cleanup_not_found, failure):
     failed = _distribution("win-64", "failed.conda")
     good = _distribution("linux-64", "good.conda")
-    api = _api_for([failed, good], labels=("staging", "main"))
+    api = _api_for([failed, good], labels=(_STAGING, "main"))
     if failure == "checksum":
         api.distributions[failed.basename]["sha256"] = "0" * 64
     elif failure == "identity":
@@ -836,11 +849,33 @@ def test_cleanup_reports_failures_but_continues_other_verified_files(cleanup_not
         api.remove_channel = remove
     with pytest.raises(RuntimeError, match="Staging cleanup incomplete.*failed.conda"):
         promoter.cleanup_staging(
-            api, "microsoft", "staging", "main", "1.13.0", [failed, good], verify_attempts=1
+            api, "microsoft", _STAGING, "main", "1.13.0", [failed, good], verify_attempts=1
         )
-    assert api.distributions[failed.basename]["labels"] == ["staging", "main"]
+    assert api.distributions[failed.basename]["labels"] == [_STAGING, "main"]
     assert api.distributions[good.basename]["labels"] == ["main"]
     assert not any(call[0] == "add" or call[:2] == ("remove", "main") for call in api.calls)
+
+
+@pytest.mark.parametrize("target", ["main", "stable", "release.1"])
+@pytest.mark.parametrize("operation", [promoter.promote, promoter.cleanup_staging])
+def test_generated_staging_scope_recovers_idempotently(cleanup_not_found, target, operation):
+    distribution = _distribution("win-64", "package.conda")
+    staging = f"{target}_staging_900"
+    retained = {"main", "stable", target, f"{target}_staging_901"}
+    api = _api_for([distribution], labels=[staging, *sorted(retained)])
+    for _ in range(2):
+        operation(api, "microsoft", staging, target, "1.13.0", [distribution], verify_attempts=1)
+        assert set(api.distributions[distribution.basename]["labels"]) == retained
+    assert [call for call in api.calls if call[0] != "distribution"] == [
+        (
+            "remove",
+            staging,
+            "microsoft",
+            distribution.package,
+            distribution.version,
+            distribution.basename,
+        )
+    ]
 
 
 @pytest.mark.parametrize("success_on_last_attempt", [True, False])
@@ -984,7 +1019,7 @@ def test_promoter_rejects_normalized_metadata_before_client(tmp_path, monkeypatc
                     "--owner",
                     "microsoft",
                     "--staging-label",
-                    "local",
+                    _STAGING,
                     "--target-label",
                     "main",
                     "--expected-version",
@@ -1028,7 +1063,7 @@ def test_local_preflight_requires_canonical_archive_basename(
         "--owner",
         "microsoft",
         "--staging-label",
-        "local",
+        _STAGING,
         "--target-label",
         "main",
         "--expected-version",
@@ -1130,7 +1165,7 @@ def test_conda_container_shape_rejects_before_publication(tmp_path, monkeypatch,
                 "--owner",
                 "microsoft",
                 "--staging-label",
-                "local",
+                _STAGING,
                 "--target-label",
                 "main",
                 "--expected-version",
@@ -1188,7 +1223,7 @@ def test_local_only_cli_needs_no_token_or_api_client(tmp_path, monkeypatch, caps
                 "--owner",
                 "microsoft",
                 "--staging-label",
-                "local",
+                _STAGING,
                 "--target-label",
                 "main",
                 "--expected-version",
@@ -1202,22 +1237,25 @@ def test_local_only_cli_needs_no_token_or_api_client(tmp_path, monkeypatch, caps
     assert "LOCAL_RELEASE_INPUT_OK" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("cleanup", [False, True])
-def test_mutating_cli_rejects_invalid_scope_before_client_creation(tmp_path, monkeypatch, cleanup):
+@pytest.mark.parametrize("owner,staging,target", _INVALID_PUBLICATION_SCOPES)
+@pytest.mark.parametrize("mode", [[], ["--cleanup-staging"], ["--check-local-only"]])
+def test_cli_rejects_invalid_scope_before_client_creation(
+    tmp_path, monkeypatch, owner, staging, target, mode
+):
     path = _write_release_archive(tmp_path)
     monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
-    with pytest.raises(ValueError, match="Staging and target labels must be different"):
+    with pytest.raises(ValueError):
         promoter.main(
             [
                 "--owner",
-                "microsoft",
+                owner,
                 "--staging-label",
-                "main",
+                staging,
                 "--target-label",
-                "main",
+                target,
                 "--expected-version",
                 "1.13.0",
-                *(["--cleanup-staging"] if cleanup else []),
+                *mode,
                 str(path),
             ]
         )
@@ -1246,7 +1284,7 @@ def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch, cleanup)
                 "--owner",
                 "microsoft",
                 "--staging-label",
-                "staging",
+                _STAGING,
                 "--target-label",
                 "main",
                 "--expected-version",
@@ -1350,7 +1388,7 @@ def test_staging_recovery_accepts_reply_lost_after_server_mutation():
     distribution = _distribution("win-64", "package.conda")
     api = _api_for([distribution], labels=("old_staging",))
     api.fail_add_after_apply = distribution.basename
-    _promote(api, [distribution], staging="new_staging")
+    _promote(api, [distribution], staging=_STAGING)
     assert api.distributions[distribution.basename]["labels"] == ["old_staging", "main"]
 
 
@@ -1364,7 +1402,7 @@ def test_failed_staging_cleanup_preserves_successful_publication():
     api.remove_channel = timeout_before_remove
     with pytest.raises(RuntimeError, match="Failed to remove staging label"):
         _promote(api, [distribution])
-    assert api.distributions[distribution.basename]["labels"] == ["staging", "main"]
+    assert api.distributions[distribution.basename]["labels"] == [_STAGING, "main"]
 
 
 def test_missing_local_archive_and_version_are_rejected(tmp_path):
