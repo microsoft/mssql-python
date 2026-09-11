@@ -3,7 +3,7 @@
 # $work = Join-Path $env:TEMP ([guid]::NewGuid().ToString()); New-Item -ItemType Directory $work | Out-Null
 # $feed = 'https://packagefeedproxy.microsoft.io/pypi/simple/'
 # $target = @('--python-version', '3.12', '--python-platform', 'x86_64-pc-windows-msvc', '--only-binary', ':all:')
-# $hashes = @('--no-config', '--no-cache', '--generate-hashes', '--no-emit-index-url', '--no-header', '--strip-extras')
+# $hashes = @('--no-config', '--no-cache', '--generate-hashes', '--no-emit-index-url', '--no-header', '--no-annotate', '--strip-extras')
 # uv pip compile @hashes @target --default-index $feed --constraint conda\requirements-publish.txt `
 #   --output-file "$work\resolved.txt" conda\requirements-publish.in
 # python -m pip --isolated download --require-hashes --only-binary=:all: --index-url $feed `
