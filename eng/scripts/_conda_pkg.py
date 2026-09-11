@@ -23,7 +23,7 @@ from typing import Any, Iterable, Iterator
 def validate_native_contract(
     members: Iterable[tuple[str, bytes]], index: dict[str, Any]
 ) -> list[str]:
-    """Require a target binding and importable core filename; platform audits check headers.
+    """Require a target binding, core extension and initializer; platform audits check headers.
 
     Wheels may include bindings for several Python minors. The core uses Python's
     normal extension loader, including its stable-ABI suffix. These static checks
@@ -71,6 +71,11 @@ def validate_native_contract(
         else (f"mssql_py_core.cpython-{abi[2]}-{arch}.so", "mssql_py_core.abi3.so")
     )
     errors = []
+    initializer = f"{root}mssql_py_core/__init__.py"
+    if names.count(initializer) != 1:
+        errors.append(
+            f"expected exactly one required {initializer}; found {names.count(initializer)}"
+        )
     if len(bindings) != 1:
         errors.append(
             f"expected exactly one normal cp{abi[2]} native binding; found {len(bindings)}"

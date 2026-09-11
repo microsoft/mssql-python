@@ -199,6 +199,8 @@ package_data = {
     "mssql_py_core": [
         "mssql_py_core.cp*.pyd",
         "mssql_py_core.cp*.so",
+        "mssql_py_core.pyd",
+        "mssql_py_core.abi3.so",
     ],
 }
 

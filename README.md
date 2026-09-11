@@ -83,39 +83,12 @@ conda install -c "<candidate-channel>" -c microsoft -c conda-forge --strict-chan
 conda install -c "<candidate-channel>" -c microsoft -c defaults --override-channels "mssql-python=<candidate-version>"
 ```
 
-**Conda release maintainers:** Planned release tooling is proposed separately in the
-[release-additions PR](https://github.com/microsoft/mssql-python/pull/720), including
-`OneBranchPipelines/conda-release-pipeline.yml` and the publication/provenance validators.
-These native-packaging changes do not provide that workflow or require a particular merge
-order. The workflow described below applies only when that separate tooling is available;
-it does not establish that production setup or publication has occurred.
-Its default is `publishToConda=false`.
-Select the exact completed Conda build and expected package version.
-The pipeline verifies its recorded upstream wheel run, checks the 28-package matrix and
-ELF/PE/Mach-O payloads, and logs archive SHA-256 values and the upload plan without publishing.
-Feature-branch candidates are allowed only for validation; production requires release,
-Conda producer, and wheel sources on `refs/heads/main`. Recipe and wheel commits may differ,
-but each must match its authoritative run record. This is static release readiness, not
-live SQL/TLS, bulk-copy, or Arrow feature certification.
-
-**Production prerequisite (administrator setup, not performed by a dry run):** in the
-`SqlClientDrivers/mssql-python` ADO project, protect the existing **Anaconda Publishing**
-variable group **117** with an enabled native **Exclusive lock** check and a designated
-**Approval** check. Authorize only release definition **2322**, and grant its build identity
-read access to group/check configuration and run-check evidence. Record the installed check
-IDs as non-secret group variables `CONDA_PUBLICATION_LOCK_CHECK_ID` and
-`CONDA_PUBLICATION_APPROVAL_CHECK_ID`; absent or mismatched IDs block publication. Every writer to
-`microsoft/mssql-python` label `main` must use this same protected resource; other credentials
-or pipelines must not bypass it. The proposed workflow's publish-only `CondaRelease` stage references this group
-with `lockBehavior: sequential`, and refuses upload or promotion without matching,
-successful current-stage checks. YAML `lockBehavior` alone does not create the lock.
-The server-enforced stage lock must cover snapshot, upload, promotion, rollback, and cleanup.
-Rollback is compensating, not atomic; a killed process can leave partial labels, which a
-subsequent authorized run must re-verify. Metadata/label API calls use 15-second connect
-and 60-second read timeouts; the publishing job, including CLI uploads, is capped at 60 minutes.
-Until resource setup and a controlled positive
-lock/approval evaluation are verified, production remains blocked; validate-only success
-does not prove or authorize production publication.
+**Conda release status:** Publication tooling and its administrator prerequisites are
+proposed separately in the [release-additions PR](https://github.com/microsoft/mssql-python/pull/720).
+These native-packaging changes do not publish packages or require a particular merge order.
+Static audits and import checks do not certify SQL, certificate-verified TLS, authentication,
+bulk copy, or optional features across the full matrix. Production publication remains gated
+on separate release controls and qualification; validate-only success does not authorize it.
 
 ## Key Features
 ### Supported Platforms

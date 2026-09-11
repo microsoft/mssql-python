@@ -157,6 +157,7 @@ _GOOD_DEPENDS = [
 ]
 _BINDING = "lib/python3.12/site-packages/mssql_python/ddbc_bindings.cp312-x86_64.so"
 _CORE = "lib/python3.12/site-packages/mssql_py_core/mssql_py_core.cpython-312-x86_64-linux-gnu.so"
+_CORE_INIT = "lib/python3.12/site-packages/mssql_py_core/__init__.py"
 _DISTROS_BY_SUBDIR = {
     "linux-64": ("alpine", "debian_ubuntu", "rhel", "suse"),
     "linux-aarch64": ("alpine", "debian_ubuntu", "rhel"),
@@ -201,6 +202,7 @@ def _make_pkg(
         extension_arch = "aarch64" if subdir == "linux-aarch64" else "x86_64"
         if native_payload is None:
             native_payload = {
+                _CORE_INIT: b"from .mssql_py_core import *\n",
                 _BINDING.replace("x86_64", extension_arch): _make_elf64(machine=machine),
                 _CORE.replace("x86_64", extension_arch): _make_elf64(
                     machine=machine, versions=("GLIBC_2.2.5", "GLIBC_2.34")
@@ -268,9 +270,9 @@ def test_audit_passes_with_exact_climb(tmp_path):
     assert audit.audit_package(_make_pkg(tmp_path)) == []
 
 
-@pytest.mark.parametrize("missing", [_BINDING, _CORE])
+@pytest.mark.parametrize("missing", [_BINDING, _CORE, _CORE_INIT])
 def test_full_feature_package_requires_binding_and_core(tmp_path, missing):
-    native = {_BINDING: _make_elf64(), _CORE: _make_elf64()}
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64(), _CORE_INIT: b""}
     del native[missing]
     errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native))
     assert any("exactly one" in error for error in errors)
@@ -278,7 +280,7 @@ def test_full_feature_package_requires_binding_and_core(tmp_path, missing):
 
 @pytest.mark.parametrize("component", [_BINDING, _CORE])
 def test_every_required_extension_checks_elf_arch_not_filename(tmp_path, component):
-    native = {_BINDING: _make_elf64(), _CORE: _make_elf64()}
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64(), _CORE_INIT: b""}
     native[component] = _make_elf64(machine=183)
     errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native))
     assert any(component in error and "does not match" in error for error in errors)
@@ -287,7 +289,7 @@ def test_every_required_extension_checks_elf_arch_not_filename(tmp_path, compone
 @pytest.mark.parametrize("component", [_BINDING, _CORE])
 @pytest.mark.parametrize("wrong_tag", ["311", "312t", "312d"])
 def test_required_extensions_reject_wrong_or_non_normal_abi(tmp_path, component, wrong_tag):
-    native = {_BINDING: _make_elf64(), _CORE: _make_elf64()}
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64(), _CORE_INIT: b""}
     data = native.pop(component)
     native[component.replace("312", wrong_tag)] = data
     assert audit.audit_package(_make_pkg(tmp_path, native_payload=native))
@@ -295,6 +297,7 @@ def test_required_extensions_reject_wrong_or_non_normal_abi(tmp_path, component,
 
 def test_core_abi3_and_extra_normal_bindings_are_supported(tmp_path):
     native = {
+        _CORE_INIT: b"from .mssql_py_core import *\n",
         _BINDING: _make_elf64(),
         _BINDING.replace("312", "310"): _make_elf64(),
         _CORE.replace("cpython-312-x86_64-linux-gnu", "abi3"): _make_elf64(),
@@ -332,6 +335,7 @@ def test_core_symbol_floor_compatible_with_archive_minimum(tmp_path, declared):
 
 def test_symbol_floor_is_read_from_version_needs_not_arbitrary_bytes(tmp_path):
     native = {
+        _CORE_INIT: b"from .mssql_py_core import *\n",
         _BINDING: _make_elf64(),
         _CORE: _make_elf64(versions=("GLIBC_2.34",)) + b"GLIBC_99.99\x00",
     }
@@ -341,6 +345,7 @@ def test_symbol_floor_is_read_from_version_needs_not_arbitrary_bytes(tmp_path):
 def test_auxiliary_native_library_symbol_floor_is_checked(tmp_path):
     extra = "lib/python3.12/site-packages/mssql_py_core.libs/libsupport.so.1"
     native = {
+        _CORE_INIT: b"from .mssql_py_core import *\n",
         _BINDING: _make_elf64(),
         _CORE: _make_elf64(),
         extra: _make_elf64(versions=("GLIBC_2.35",)),
@@ -372,7 +377,7 @@ def test_malformed_required_core_elf_cannot_pass(tmp_path, damage):
         struct.pack_into("<I", core, record + 16 + 12, 0)
     else:
         core[4] = 1
-    native = {_BINDING: _make_elf64(), _CORE: bytes(core)}
+    native = {_BINDING: _make_elf64(), _CORE: bytes(core), _CORE_INIT: b""}
     errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native))
     assert any(_CORE in error and "ELF" in error for error in errors)
 
@@ -619,6 +624,7 @@ def test_audit_allows_musl_variant_without_libltdl(tmp_path):
             ).encode(),
         )
         # glibc debian_ubuntu (complete: NEEDs libltdl/krb5).
+        add(_CORE_INIT, b"from .mssql_py_core import *\n")
         add(_BINDING, _make_elf64())
         add(_CORE, _make_elf64())
         add(

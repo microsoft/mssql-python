@@ -162,6 +162,7 @@ def _make_conda(tmp_path, subdir, payload):
 
 _BINDING = "lib/python3.12/site-packages/mssql_python/ddbc_bindings.cp312-darwin.so"
 _CORE = "lib/python3.12/site-packages/mssql_py_core/mssql_py_core.cpython-312-darwin.so"
+_CORE_INIT = "lib/python3.12/site-packages/mssql_py_core/__init__.py"
 _DRIVER_ROOT = "lib/python3.12/site-packages/mssql_python_odbc/libs/macos"
 _DRIVER_LIBRARIES = (
     "libltdl.7.dylib",
@@ -175,7 +176,11 @@ def _realistic_payload(binding, arm64=None, x86_64=None):
     """Mirror the wheel's two architecture-specific four-library driver directories."""
     arm64 = arm64 or _fake_macho_thin(_ARM64)
     x86_64 = x86_64 or _fake_macho_thin(_X86_64)
-    payload = {_BINDING: binding, _CORE: _fake_macho_fat([_X86_64, _ARM64])}
+    payload = {
+        _BINDING: binding,
+        _CORE: _fake_macho_fat([_X86_64, _ARM64]),
+        _CORE_INIT: b"from .mssql_py_core import *\n",
+    }
     for library in _DRIVER_LIBRARIES:
         payload[f"{_DRIVER_ROOT}/arm64/lib/{library}"] = arm64
         payload[f"{_DRIVER_ROOT}/x86_64/lib/{library}"] = x86_64
@@ -194,11 +199,13 @@ def test_osx_packages_accept_real_split_driver_layout(tmp_path, subdir):
     assert mac.audit_package(p) == []
 
 
-@pytest.mark.parametrize("state", ["missing", "wrong-arch", "wrong-tag", "abi3"])
+@pytest.mark.parametrize("state", ["missing", "missing-init", "wrong-arch", "wrong-tag", "abi3"])
 def test_required_core_contract(tmp_path, state):
     payload = _realistic_payload(_fake_macho_fat([_X86_64, _ARM64]))
     if state == "missing":
         del payload[_CORE]
+    elif state == "missing-init":
+        del payload[_CORE_INIT]
     elif state == "wrong-arch":
         payload[_CORE] = _fake_macho_thin(_X86_64)
     elif state == "wrong-tag":

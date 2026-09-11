@@ -9,7 +9,9 @@ the package subdir. These tests exercise the pure PE parser plus a ``.conda`` ro
 import importlib.util
 import io
 import json
+import shutil
 import struct
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -46,6 +48,7 @@ ape = _load_module()
 
 _ARM64 = 0xAA64
 _AMD64 = 0x8664
+_CORE_INIT = "Lib/site-packages/mssql_py_core/__init__.py"
 
 
 def _fake_pe(machine: int) -> bytes:
@@ -129,6 +132,42 @@ def test_zstd_backend_is_available_for_conda_audit_tests():
     )
 
 
+def test_wheel_retains_normal_and_stable_abi_core_extensions(tmp_path):
+    shutil.copy2(_MODULE_PATH.parents[2] / "setup.py", tmp_path / "setup.py")
+    sources = {
+        "PyPI_Description.md": "Packaging fixture",
+        "mssql_python/__init__.py": "",
+        "mssql_python_odbc/__init__.py": '__version__ = "18.6.2.1"\n',
+        "mssql_py_core/__init__.py": "from .mssql_py_core import *\n",
+    }
+    for relative, content in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    extensions = (
+        "mssql_py_core.cp312-win_arm64.pyd",
+        "mssql_py_core.cpython-312-x86_64-linux-gnu.so",
+        "mssql_py_core.pyd",
+        "mssql_py_core.abi3.so",
+    )
+    for name in extensions:
+        (tmp_path / "mssql_py_core" / name).write_bytes(b"native payload fixture")
+
+    result = subprocess.run(
+        [sys.executable, "setup.py", "--quiet", "bdist_wheel"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    wheels = list((tmp_path / "dist").glob("*.whl"))
+    assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as wheel:
+        for name in extensions:
+            assert wheel.read(f"mssql_py_core/{name}") == b"native payload fixture"
+
+
 def _make_conda(tmp_path, subdir, payload, depends=None):
     """Build a minimal .conda (info-*.tar.zst + pkg-*.tar.zst) with the given payload files."""
     name = "mssql-python-1.13.0-py312_0"
@@ -167,6 +206,7 @@ def test_win_arm64_arm64_binaries_pass(tmp_path):
         tmp_path,
         "win-arm64",
         {
+            _CORE_INIT: b"from .mssql_py_core import *\n",
             "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
             "Lib/site-packages/mssql_py_core/mssql_py_core.cp312-win_arm64.pyd": _fake_pe(_ARM64),
             "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(
@@ -181,7 +221,17 @@ def test_win_arm64_arm64_binaries_pass(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "state", ["valid", "missing", "wrong-arch", "wrong-tag", "abi3", "missing-abi", "wrong-abi"]
+    "state",
+    [
+        "valid",
+        "missing",
+        "missing-init",
+        "wrong-arch",
+        "wrong-tag",
+        "abi3",
+        "missing-abi",
+        "wrong-abi",
+    ],
 )
 def test_required_core_contract(tmp_path, state):
     pin = "python_abi 3.12.* *_cp312"
@@ -191,6 +241,7 @@ def test_required_core_contract(tmp_path, state):
         depends.append(pin if state != "wrong-abi" else "python_abi 3.12.* *_cp313")
     core = "Lib/site-packages/mssql_py_core/mssql_py_core.cp312-win_arm64.pyd"
     payload = {
+        _CORE_INIT: b"from .mssql_py_core import *\n",
         "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
         core: _fake_pe(_ARM64),
         "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(_ARM64),
@@ -198,6 +249,8 @@ def test_required_core_contract(tmp_path, state):
     }
     if state == "missing":
         del payload[core]
+    elif state == "missing-init":
+        del payload[_CORE_INIT]
     elif state == "wrong-arch":
         payload[core] = _fake_pe(_AMD64)
     elif state == "wrong-tag":
