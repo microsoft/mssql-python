@@ -1596,7 +1596,13 @@ void SqlHandle::free() {
         // 2. OS-level cleanup at process termination recovers any remaining resources
         // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
         //    is appropriate since we're already in shutdown sequence
-        if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
+        bool skipDuringShutdown = _type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC;
+#ifdef _WIN32
+        // The static ENV is destroyed during DLL_PROCESS_DETACH, after Python
+        // finalization. Calling ODBC then can access already-torn-down SSPI state.
+        skipDuringShutdown = skipDuringShutdown || _type == SQL_HANDLE_ENV;
+#endif
+        if (pythonShuttingDown && skipDuringShutdown) {
             _handle = nullptr;  // Mark as freed to prevent double-free attempts
             return;
         }
