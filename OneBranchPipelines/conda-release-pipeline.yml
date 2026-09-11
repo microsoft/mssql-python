@@ -15,11 +15,11 @@
 # TEMPLATE by mode: publishToConda=false (dry run / dummy) extends the NonOfficial template
 # (no Production Service-Tree classification required, so a validate-only run passes the
 # inventory-compliance gate); publishToConda=true (real release) extends the Official template
-# (deliberate, gated production publish -- the definition must be classified Production to
-# upload). Manual trigger only; selecting true is not an approval.
-# Before the first live run, administrators must qualify native approvals and exclusive
-# locking on 'Anaconda Publishing' (group 117), pipeline authorization and restricted
-# publishing-credential access for every authorized publisher, including recovery.
+# (validated production publish -- the definition must be classified Production to
+# upload). Review the dry-run output, then explicitly select publishToConda=true.
+# The team must run only one publication or recovery at a time for the same target;
+# there is no automatic concurrency protection. Keep publishing credentials restricted
+# and authorize the pipeline to read the 'Anaconda Publishing' variable group.
 # The OneBranch YAML needs an actual ADO run to fully validate.
 # =========================================================================================
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaRelease
@@ -112,10 +112,7 @@ extends:
     stages:
       - stage: CondaRelease
         displayName: 'Validate & Publish Conda Release'
-        # Resource administrators must configure the native Exclusive lock and approval
-        # checks on group 117. lockBehavior alone does NOT create a lock.
         ${{ if eq(parameters.publishToConda, true) }}:
-          lockBehavior: sequential
           variables:
             - group: 'Anaconda Publishing'
         jobs:
@@ -240,7 +237,7 @@ extends:
 
                       Write-Host "`n====================================="
                       Write-Host "DRY-RUN COMPLETE: no 'anaconda upload' was executed (publishToConda=false)."
-                      Write-Host "Before selecting publishToConda=true, qualify native approvals, exclusive locking, pipeline authorization and publishing-credential access."
+                      Write-Host "Review this dry run, then select publishToConda=true. Run only one publication or recovery at a time for the same target."
                       Write-Host "====================================="
 
           # PRODUCTION publish (releaseJob) -- runs ONLY when publishToConda=true and

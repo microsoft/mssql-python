@@ -1,15 +1,14 @@
 """Validate local inputs and promote or recover exact staged Conda archives.
 
-Run mutations only within the protected native ADO publication lifecycle, using
-restricted publishing credentials. Native approvals, exclusive locking and pipeline
-authorization are deployment prerequisites; this low-level helper does not acquire
-a lock or attest approval. --check-local-only needs neither credentials nor an API client.
+Use restricted publishing credentials and coordinate one publication or recovery at
+a time for the same owner/package/target label. This helper does not prevent concurrent
+writers; overlapping runs can interfere with labels and rollback. --check-local-only
+needs neither credentials nor an API client.
 
 Uploads happen before this helper under a build-unique staging label. This module
 verifies every uploaded distribution against the local artifact, adds the public
 label to the complete set, and removes the staging label only after all target-label
-operations succeed. Publication requires an externally enforced exclusive lock for
-the owner/package/target label, held from before the snapshot through cleanup.
+operations succeed.
 Rollback is compensating, not atomic: only attempted additions absent from the
 initial snapshot are removed. An interrupted invocation resumes from verified labels.
 Local archives must use the metadata-derived canonical basename that the pinned
@@ -17,7 +16,7 @@ upload client sends; a renamed file is rejected before any upload.
 
 Failed uploads/promotions invoke --cleanup-staging for their attempted
 archives. After a hard interruption, run this same option with the original exact
-staging label and retained archives under the protected publication stage. Cleanup
+staging label and retained archives, with no overlapping publisher or recovery. Cleanup
 verifies identity/SHA-256 and removes only that staging label, never public labels
 or files. It is bounded, compensating recovery, not guaranteed cleanup after a kill.
 """

@@ -1,7 +1,6 @@
 # Conda Publish Step Template
 # ============================================================================
-# Native approvals, exclusive locking and restricted credential access must be
-# configured before first use; selecting publishToConda=true is not an approval.
+# Review a dry run before explicitly publishing. Keep publishing credentials restricted.
 # Publishes the consolidated conda packages from the STANDALONE conda-build
 # pipeline (conda-build-pipeline.yml, artifact
 # drop_ConsolidateConda_ConsolidateArtifacts) to an Anaconda.org channel using
@@ -23,8 +22,7 @@
 #
 # The caller MUST:
 #   - run this ONLY after the conda-release-step.yml readiness gate has passed, and
-#   - hold the native Exclusive lock on group 117 for the entire CondaRelease stage,
-#     including snapshot, promotion, compensating rollback and cleanup, and
+#   - coordinate one publication or recovery at a time for the same target, and
 #   - supply ANACONDA_API_TOKEN (variable group 'Anaconda Publishing') to the job.
 # This template never puts the token on the command line (anaconda-client reads it
 # from the env), so it never appears in the logs.
@@ -243,8 +241,8 @@ steps:
         # begin adding the public label. Failed uploads/promotions clean this run's staging
         # label from attempted files. Promotion verifies each mutation and rolls back failures;
         # an interrupted run is idempotent and resumes from server-verified labels. The
-        # staging label distinguishes retries; the stage's protected variable-group
-        # lock, not this label, serializes publication to the shared public label.
+        # staging label distinguishes retries but does not prevent overlapping writers.
+        # The team must coordinate one publication or recovery at a time for this target.
         $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
 
         # Bound stalled writers, not just retry counts. Start the 20-minute upload
@@ -385,7 +383,7 @@ steps:
               if ($LASTEXITCODE -ne 0) { throw "Staging cleanup exited with code $LASTEXITCODE." }
             }
             catch {
-              Write-Warning "Cleanup incomplete: $_. Recover with --cleanup-staging, exact label '$stagingLabel', and the retained attempted archives under the protected publication stage."
+              Write-Warning "Cleanup incomplete: $_. Recover with --cleanup-staging, exact label '$stagingLabel', and the retained attempted archives; ensure no other publication or recovery is running for this target."
             }
           }
           throw $publicationError
