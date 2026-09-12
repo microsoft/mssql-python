@@ -527,8 +527,7 @@ class Connection:
         self._native_uuid = native_uuid
 
         # Check the retry policy type up front, before the connection string is parsed or a
-        # token is acquired, so a wrong value fails fast with no network work. It is kept on
-        # the connection so cursor level retries can later pick it up as their default.
+        # token is acquired, so a wrong value fails fast with no network work.
         if retry_policy is not None and not isinstance(retry_policy, retry.RetryPolicy):
             raise TypeError(
                 "retry_policy must be a RetryPolicy instance or None, "
