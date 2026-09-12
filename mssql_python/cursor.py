@@ -447,13 +447,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns:
             A datetime.date object if parsing is successful, else None.
         """
-        formats = ["%Y-%m-%d"]
-        for fmt in formats:
-            try:
-                return datetime.datetime.strptime(param, fmt).date()
-            except ValueError:
-                continue
-        return None
+        try:
+            return datetime.date.fromisoformat(param)
+        except ValueError:
+            return None
 
     def _parse_datetime(self, param: str) -> Optional[datetime.datetime]:
         """
@@ -465,19 +462,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns:
             A datetime.datetime object if parsing is successful, else None.
         """
-        formats = [
-            "%Y-%m-%dT%H:%M:%S.%f",  # ISO 8601 datetime with fractional seconds
-            "%Y-%m-%dT%H:%M:%S",  # ISO 8601 datetime
-            "%Y-%m-%d %H:%M:%S.%f",  # Datetime with fractional seconds
-            "%Y-%m-%d %H:%M:%S",  # Datetime without fractional seconds
-        ]
-        for fmt in formats:
-            try:
-                return datetime.datetime.strptime(param, fmt)  # Valid datetime
-            except ValueError:
-                continue  # Try next format
-
-        return None  # If all formats fail, return None
+        try:
+            return datetime.datetime.fromisoformat(param)
+        except ValueError:
+            return None
 
     def _parse_time(self, param: str) -> Optional[datetime.time]:
         """
@@ -489,16 +477,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns:
             A datetime.time object if parsing is successful, else None.
         """
-        formats = [
-            "%H:%M:%S",  # Time only
-            "%H:%M:%S.%f",  # Time with fractional seconds
-        ]
-        for fmt in formats:
-            try:
-                return datetime.datetime.strptime(param, fmt).time()
-            except ValueError:
-                continue
-        return None
+        try:
+            return datetime.time.fromisoformat(param)
+        except ValueError:
+            return None
 
     def _get_numeric_data(self, param: decimal.Decimal) -> Any:
         """
