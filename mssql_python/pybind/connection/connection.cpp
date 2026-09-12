@@ -119,14 +119,13 @@ void Connection::disconnect() {
             LOG("Disconnecting from database");
         }
 
-        // CRITICAL FIX: Mark all child statement handles as implicitly freed
-        // When we free the DBC handle below, the ODBC driver will automatically free
-        // all child STMT handles. We need to tell the SqlHandle objects about this
-        // so they don't try to free the handles again during their destruction.
-        
+        // Retain child owners and bound buffers through SQLDisconnect. With the
+        // GIL held, checkError throws on failure before retiring any handles.
+
         // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
         // This protects against concurrent allocStatementHandle() calls or GC finalizers
         size_t originalSize = 0, afterCompactSize = 0, badHandleCount = 0;
+        std::vector<SqlHandlePtr> childHandles;
         {
             std::lock_guard<std::mutex> lock(_childHandlesMutex);
             
@@ -147,11 +146,9 @@ void Connection::disconnect() {
                         ++badHandleCount;
                         continue;  // Skip marking to prevent leak
                     }
-                    handle->markImplicitlyFreed();
+                    childHandles.push_back(std::move(handle));
                 }
             }
-            _childStatementHandles.clear();
-            _allocationsSinceCompaction = 0;
         }  // Release lock before potentially slow SQLDisconnect call
 
         // Log after releasing _childHandlesMutex (#671): LOG()/LOG_ERROR() acquire
@@ -178,14 +175,26 @@ void Connection::disconnect() {
             // Destructor / shutdown path — GIL is not held, call directly.
             ret = SQLDisconnect_ptr(_dbcHandle->get());
         }
-        // In destructor/shutdown paths, suppress errors to avoid
-        // std::terminate() if this throws during stack unwinding.
+        // Surface errors with the GIL held. GIL-less teardown cannot safely
+        // translate errors through Python, so it continues retiring the handles.
         if (hasGil) {
             checkError(ret);
         } else if (!SQL_SUCCEEDED(ret)) {
             // Intentionally no LOG() here: LOG() acquires the GIL internally
             // via py::gil_scoped_acquire, which is unsafe during interpreter
             // shutdown or stack unwinding (can deadlock or call std::terminate).
+        }
+        // Successful SQLDisconnect has already freed its child statements.
+        // GIL-less failure also retires these wrappers as the parent is abandoned;
+        // neither that failure nor dropping the DBC owner proves native deallocation.
+        for (const auto& handle : childHandles) {
+            handle->markImplicitlyFreed();
+            handle->releaseAfterFree();
+        }
+        {
+            std::lock_guard<std::mutex> lock(_childHandlesMutex);
+            _childStatementHandles.clear();
+            _allocationsSinceCompaction = 0;
         }
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();

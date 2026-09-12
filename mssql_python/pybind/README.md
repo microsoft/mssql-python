@@ -2,6 +2,27 @@
 
 This README provides instructions to build the DDBC Bindings for your system and documents the platform-specific dependencies.
 
+## Repeated execute bindings
+
+Each statement owns at most one reusable generation of native input buffers.
+The existing detector and binder still validate and convert every execution.
+Bindings are reused only for the same prepared SQL, parameter count, C/SQL
+types, column size, scale, direction, encoding, and actual buffer byte lengths.
+Inline text/binary and integer, boolean, and floating-point buffers are supported,
+up to 2,100 parameters and 8,000 bytes per text/binary buffer. NULL, DAE, and
+complex C types use the uncached path; decimal overrides converted to text
+can reuse only with matching precision and scale.
+
+Soft cursor resets preserve successful cached bindings. New SQL, incompatible
+metadata or byte lengths, explicit resets, direct/catalog/array execution,
+statement-attribute changes, and errors invalidate reuse. Native storage remains
+owned until ODBC resets the bindings or frees the statement, including error
+paths and parent connection teardown. No Python references are retained in the
+cache, and the existing DB-API `threadsafety=1` contract is unchanged.
+
+`tests/test_037_cached_bindings.py` checks live round trips and actual native
+allocation/bind events through the existing debug logger, without a test-only API.
+
 ## **Key Architecture Handling**
 
 1. **Architecture Normalization** (from `mssql_python/ddbc_bindings.py`):

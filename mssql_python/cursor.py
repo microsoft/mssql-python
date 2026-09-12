@@ -1032,13 +1032,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self.is_stmt_prepared = [False]
 
     def _soft_reset_cursor(self) -> None:
-        """Lightweight reset: close cursor and unbind params without freeing the HSTMT.
+        """Close results without freeing the HSTMT or compatible cached bindings.
 
         Preserves the prepared statement plan on the server so repeated
         executions of the same SQL skip SQLPrepare entirely.
         """
         if self.hstmt:
-            ret = ddbc_bindings.DDBCSQLResetStmt(self.hstmt)
+            ret = ddbc_bindings.DDBCSQLResetStmt(self.hstmt, preserve_bindings=True)
             try:
                 check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
             except Exception:

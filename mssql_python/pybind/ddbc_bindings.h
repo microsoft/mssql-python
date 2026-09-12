@@ -280,6 +280,12 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+// Handle-owned cache of native parameter bindings, defined in
+// param_bind_cache.hpp. SqlHandle only holds a unique_ptr to it and defines
+// every method that touches it out of line, so a forward declaration is enough
+// here and avoids pulling param_detect.hpp into this header (it includes back).
+struct ExecuteBindingCache;
+
 class SqlHandle {
   public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
@@ -297,19 +303,18 @@ class SqlHandle {
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
 
-    // Mark this handle as implicitly freed (freed by parent handle)
-    // This prevents double-free attempts when the ODBC driver automatically
-    // frees child handles (e.g., STMT handles when DBC handle is freed)
-    //
-    // SAFETY CONSTRAINTS:
-    // - ONLY call this on SQL_HANDLE_STMT handles
-    // - ONLY call this when the parent DBC handle is about to be freed
-    // - Calling on other handle types (ENV, DBC, DESC) will cause HANDLE LEAKS
-    // - The ODBC spec only guarantees automatic freeing of STMT handles by DBC parents
-    //
-    // Current usage: Connection::disconnect() marks all tracked STMT handles
-    // before freeing the DBC handle.
+    // Suppress later statement cleanup after parent disconnect. Only use on
+    // SQL_HANDLE_STMT after successful SQLDisconnect, or when abandoning the
+    // parent during GIL-less teardown. Do not use on a recoverable disconnect error.
+    // This marker neither calls ODBC nor proves native deallocation succeeded.
+    // Connection::disconnect() retains statement buffers through SQLDisconnect
+    // and handles their release separately.
     void markImplicitlyFreed();
+    SQLRETURN resetParameterBindings();
+    void releaseAfterFree();
+
+    std::unique_ptr<ExecuteBindingCache> executeBindings;
+    std::u16string preparedQuery;
 
     // GH-610: Per-handle SQLDescribeParam result cache.
     // Keyed by 0-based parameter index. Populated on first NULL param
