@@ -430,19 +430,48 @@ def test_retry_log_lines_name_the_attempt_and_omit_the_connection_string(
         connect(CONN_STR, retry_policy=RetryPolicy(max_attempts=3, jitter=False))
     warnings = [r.getMessage() for r in driver_log.records if r.levelno == logging.WARNING]
     errors = [r.getMessage() for r in driver_log.records if r.levelno == logging.ERROR]
-    assert len(warnings) == 2
+    assert len(warnings) == 3
     assert "attempt 1 of 3" in warnings[0] and "08S01" in warnings[0]
     assert "attempt 2 of 3" in warnings[1] and "2.00 seconds" in warnings[1]
-    # The final failure logs only the one error line _raise_connection_error has always written.
+    # Giving up adds one warning that says how many attempts ran.
+    assert "3 of 3" in warnings[2] and "08S01" in warnings[2] and "not retrying" in warnings[2]
+    # The final failure still logs only the one error line _raise_connection_error has always
+    # written.
     assert len(errors) == 1
     assert "Connection attempt" not in errors[0]
-    retry_lines = [
-        r.getMessage() for r in driver_log.records if "Connection attempt" in r.getMessage()
-    ]
-    assert len(retry_lines) == 2
-    for message in retry_lines:
+    for message in warnings:
         assert "testserver" not in message
         assert "Trusted_Connection" not in message
+
+
+@pytest.mark.parametrize(
+    "second, sqlstate",
+    [
+        pytest.param(LOGIN_FAILURE, "28000", id="permanent_sqlstate"),
+        pytest.param(DRIVER_PREFIX + "Connection handle not allocated", "none", id="no_sqlstate"),
+    ],
+)
+def test_failure_after_a_retry_logs_the_attempt_that_gave_up(
+    monkeypatch, sleeps, driver_log, second, sqlstate
+):
+    messages = [LINK_FAILURE, second]
+
+    def fail(*args):
+        fail.calls += 1
+        raise RuntimeError(messages[fail.calls - 1])
+
+    fail.calls = 0
+    monkeypatch.setattr(mssql_python.connection.ddbc_bindings, "Connection", fail)
+    with pytest.raises(OperationalError):
+        connect(CONN_STR, retry_policy=RetryPolicy(max_attempts=3, jitter=False))
+    assert fail.calls == 2
+    assert sleeps == [1.0]
+    # Only the retry loop's own lines are counted. A Connection left half built by a failed
+    # connect logs a cleanup warning whenever the garbage collector reaches it, which can be now.
+    lines = [r.getMessage() for r in driver_log.records if "attempt" in r.getMessage()]
+    assert len(lines) == 2
+    assert "attempt 1 of 3" in lines[0] and "08S01" in lines[0]
+    assert "attempt 2 of 3" in lines[1] and f"SQLSTATE {sqlstate};" in lines[1]
 
 
 def test_no_policy_adds_no_extra_log_lines(native, driver_log):

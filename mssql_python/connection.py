@@ -492,8 +492,9 @@ class Connection:
                 asks the deferred token factory for a token on each physical connect, so a
                 retried attempt may acquire a fresh one. The login timeout bounds each attempt
                 separately, so the total wall clock time is roughly the attempt timeouts plus
-                the delays. Each retry is logged at warning level through the driver logger,
-                which shows it once ``setup_logging()`` has been called.
+                the delays. Each retry, and the final failure after a retry, is logged at
+                warning level through the driver logger, which shows these lines once
+                ``setup_logging()`` has been called.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
@@ -936,6 +937,15 @@ class Connection:
                     )
                     retry._sleep(delay)  # pylint: disable=protected-access
                     continue
+                # attempt > 1 means at least one retry already happened. Without a policy
+                # max_attempts is 1, so a failure on the first try logs only the usual error line.
+                if attempt > 1:
+                    logger.warning(
+                        "Connection failed on attempt %d of %d with SQLSTATE %s; not retrying",
+                        attempt,
+                        max_attempts,
+                        sqlstate or "none",
+                    )
                 _raise_connection_error(e)
         self.setautocommit(autocommit)
 
