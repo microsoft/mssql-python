@@ -276,6 +276,7 @@ class _ArrowReader:
 # Retry Policy for transient failures at connect() time.
 # Re-exported so the annotated implementation stays the single source of truth.
 from .retry import RetryPolicy as RetryPolicy
+from .connection import TokenProvider
 
 # DB-API 2.0 Connection Object
 # https://www.python.org/dev/peps/pep-0249/#connection-objects
@@ -316,6 +317,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
+        token_provider: Optional[TokenProvider] = None,
         retry_policy: Optional[RetryPolicy] = None,
         **kwargs: Any,
     ) -> None: ...
@@ -362,6 +364,7 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
+    token_provider: Optional[TokenProvider] = None,
     retry_policy: Optional[RetryPolicy] = None,
     **kwargs: Any,
 ) -> Connection: ...
