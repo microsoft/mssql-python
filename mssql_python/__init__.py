@@ -15,7 +15,7 @@ from typing import Optional
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Driver version
-__version__ = "1.14.0"
+__version__ = "1.15.0"
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -179,6 +179,10 @@ from .constants import (  # noqa: F401
     SQL_TYPE_TIMESTAMP,
     SQL_GUID,
     SQL_XML,
+    # SQL Server-specific type constants (pyodbc parity)
+    SQL_SS_TIME2,
+    SQL_SS_XML,
+    SQL_SS_VARIANT,
     # Connection attribute constants
     SQL_ATTR_ACCESS_MODE,
     SQL_ATTR_CONNECTION_TIMEOUT,
@@ -186,6 +190,11 @@ from .constants import (  # noqa: F401
     SQL_ATTR_LOGIN_TIMEOUT,
     SQL_ATTR_PACKET_SIZE,
     SQL_ATTR_TXN_ISOLATION,
+    SQL_TXN_ISOLATION_LEVEL,
+    # Legacy statement options
+    SQL_ROWSET_SIZE,
+    SQL_CONCURRENCY,
+    SQL_ROW_NUMBER,
     # Transaction isolation levels
     SQL_TXN_READ_UNCOMMITTED,
     SQL_TXN_READ_COMMITTED,
@@ -212,9 +221,6 @@ from .constants import (  # noqa: F401
     SQL_IDENTIFIER_CASE,
     SQL_IDENTIFIER_QUOTE_CHAR,
     SQL_SPECIAL_CHARACTERS,
-    SQL_SQL92_ENTRY_SQL,
-    SQL_SQL92_INTERMEDIATE_SQL,
-    SQL_SQL92_FULL_SQL,
     SQL_SUBQUERIES,
     SQL_EXPRESSIONS_IN_ORDERBY,
     SQL_CORRELATION_NAME,
@@ -235,10 +241,10 @@ from .constants import (  # noqa: F401
     SQL_TXN_ISOLATION_OPTION,
     SQL_DEFAULT_TXN_ISOLATION,
     SQL_MULTIPLE_ACTIVE_TXN,
-    SQL_TXN_ISOLATION_LEVEL,
     SQL_NUMERIC_FUNCTIONS,
     SQL_STRING_FUNCTIONS,
     SQL_DATETIME_FUNCTIONS,
+    SQL_TIMEDATE_FUNCTIONS,
     SQL_SYSTEM_FUNCTIONS,
     SQL_CONVERT_FUNCTIONS,
     SQL_LIKE_ESCAPE_CLAUSE,
@@ -280,9 +286,6 @@ from .constants import (  # noqa: F401
     SQL_SCROLL_OPTIONS,
     SQL_SCROLL_CONCURRENCY,
     SQL_FETCH_DIRECTION,
-    SQL_ROWSET_SIZE,
-    SQL_CONCURRENCY,
-    SQL_ROW_NUMBER,
     SQL_STATIC_SENSITIVITY,
     SQL_BATCH_SUPPORT,
     SQL_BATCH_ROW_COUNT,
@@ -305,10 +308,19 @@ from .constants import (  # noqa: F401
     SQL_QUALIFIER_USAGE,
     SQL_TIMEDATE_ADD_INTERVALS,
     SQL_TIMEDATE_DIFF_INTERVALS,
+    # SQLGetInfo return values (not information types)
     SQL_IC_UPPER,
     SQL_IC_LOWER,
     SQL_IC_SENSITIVE,
     SQL_IC_MIXED,
+    SQL_SC_SQL92_ENTRY,
+    SQL_SC_FIPS127_2_TRANSITIONAL,
+    SQL_SC_SQL92_INTERMEDIATE,
+    SQL_SC_SQL92_FULL,
+    # Deprecated legacy values, not SQL conformance flags
+    SQL_SQL92_ENTRY_SQL,
+    SQL_SQL92_INTERMEDIATE_SQL,
+    SQL_SQL92_FULL_SQL,
 )
 
 __all__ = [
@@ -388,6 +400,10 @@ __all__ = [
     "SQL_TYPE_TIMESTAMP",
     "SQL_GUID",
     "SQL_XML",
+    # SQL Server-specific type constants (pyodbc parity)
+    "SQL_SS_TIME2",
+    "SQL_SS_XML",
+    "SQL_SS_VARIANT",
     # Connection attribute constants
     "SQL_ATTR_ACCESS_MODE",
     "SQL_ATTR_CONNECTION_TIMEOUT",
@@ -395,6 +411,11 @@ __all__ = [
     "SQL_ATTR_LOGIN_TIMEOUT",
     "SQL_ATTR_PACKET_SIZE",
     "SQL_ATTR_TXN_ISOLATION",
+    "SQL_TXN_ISOLATION_LEVEL",
+    # Legacy statement options
+    "SQL_ROWSET_SIZE",
+    "SQL_CONCURRENCY",
+    "SQL_ROW_NUMBER",
     # Transaction isolation levels
     "SQL_TXN_READ_UNCOMMITTED",
     "SQL_TXN_READ_COMMITTED",
@@ -421,9 +442,6 @@ __all__ = [
     "SQL_IDENTIFIER_CASE",
     "SQL_IDENTIFIER_QUOTE_CHAR",
     "SQL_SPECIAL_CHARACTERS",
-    "SQL_SQL92_ENTRY_SQL",
-    "SQL_SQL92_INTERMEDIATE_SQL",
-    "SQL_SQL92_FULL_SQL",
     "SQL_SUBQUERIES",
     "SQL_EXPRESSIONS_IN_ORDERBY",
     "SQL_CORRELATION_NAME",
@@ -444,10 +462,10 @@ __all__ = [
     "SQL_TXN_ISOLATION_OPTION",
     "SQL_DEFAULT_TXN_ISOLATION",
     "SQL_MULTIPLE_ACTIVE_TXN",
-    "SQL_TXN_ISOLATION_LEVEL",
     "SQL_NUMERIC_FUNCTIONS",
     "SQL_STRING_FUNCTIONS",
     "SQL_DATETIME_FUNCTIONS",
+    "SQL_TIMEDATE_FUNCTIONS",
     "SQL_SYSTEM_FUNCTIONS",
     "SQL_CONVERT_FUNCTIONS",
     "SQL_LIKE_ESCAPE_CLAUSE",
@@ -489,9 +507,6 @@ __all__ = [
     "SQL_SCROLL_OPTIONS",
     "SQL_SCROLL_CONCURRENCY",
     "SQL_FETCH_DIRECTION",
-    "SQL_ROWSET_SIZE",
-    "SQL_CONCURRENCY",
-    "SQL_ROW_NUMBER",
     "SQL_STATIC_SENSITIVITY",
     "SQL_BATCH_SUPPORT",
     "SQL_BATCH_ROW_COUNT",
@@ -514,10 +529,19 @@ __all__ = [
     "SQL_QUALIFIER_USAGE",
     "SQL_TIMEDATE_ADD_INTERVALS",
     "SQL_TIMEDATE_DIFF_INTERVALS",
+    # SQLGetInfo return values (not information types)
     "SQL_IC_UPPER",
     "SQL_IC_LOWER",
     "SQL_IC_SENSITIVE",
     "SQL_IC_MIXED",
+    "SQL_SC_SQL92_ENTRY",
+    "SQL_SC_FIPS127_2_TRANSITIONAL",
+    "SQL_SC_SQL92_INTERMEDIATE",
+    "SQL_SC_SQL92_FULL",
+    # Deprecated legacy values, not SQL conformance flags
+    "SQL_SQL92_ENTRY_SQL",
+    "SQL_SQL92_INTERMEDIATE_SQL",
+    "SQL_SQL92_FULL_SQL",
     # API level globals
     "apilevel",
     "paramstyle",

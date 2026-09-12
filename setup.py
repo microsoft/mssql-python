@@ -160,12 +160,19 @@ class CustomBdistWheel(bdist_wheel):
 # ---------------------------------------------------------------------------
 
 # Find all packages in the current directory.
+# Exclude profiler/: it's internal development tooling (a standalone benchmark
+# CLI), not part of the shipped driver, and its generic top-level name should
+# not land in users' site-packages. The runtime instrumentation it drives lives
+# inside mssql_python (perf_timer.py, the ddbc_bindings profiling submodule) and
+# is packaged normally.
 # Exclude mssql_python_odbc: it is shipped exclusively by the standalone
 # mssql-python-odbc distribution (see setup_odbc.py) and pulled in via
 # install_requires. Shipping it here too would make two distributions own the
 # same import directory (install-order file overwrites; uninstall of one can
 # remove files the other needs).
-packages = find_packages(exclude=["mssql_python_odbc", "mssql_python_odbc.*"])
+packages = find_packages(
+    exclude=["profiler", "profiler.*", "mssql_python_odbc", "mssql_python_odbc.*"]
+)
 
 # Get platform info using consolidated function
 arch, platform_tag = get_platform_info()
@@ -197,7 +204,7 @@ package_data = {
 
 setup(
     name="mssql-python",
-    version="1.14.0",
+    version="1.15.0",
     description="A Python library for interacting with Microsoft SQL Server",
     long_description=open("PyPI_Description.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
