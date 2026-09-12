@@ -20,7 +20,7 @@ import mssql_python.connection
 import mssql_python.logging
 import mssql_python.retry
 from mssql_python import Connection, RetryPolicy, connect
-from mssql_python.exceptions import OperationalError, ProgrammingError
+from mssql_python.exceptions import InterfaceError, OperationalError, ProgrammingError
 from mssql_python.retry import DEFAULT_RETRIABLE_SQLSTATES
 
 CONN_STR = "Server=testserver;Database=mydb;Trusted_Connection=yes;"
@@ -118,7 +118,7 @@ def test_policy_retries_transient_failure_until_success(native, sleeps):
     assert len(native.calls) == 3
     assert sleeps == [1.0, 2.0]
     assert conn._retry_policy is policy
-    # Every attempt is made with the same connection string, attributes, pool key and factory.
+    # Every attempt is made with exactly the same arguments.
     assert all(call == native.calls[0] for call in native.calls)
 
 
@@ -159,6 +159,22 @@ def test_policy_does_not_retry_error_without_a_sqlstate(native, sleeps, message)
     assert len(native.calls) == 1
     assert sleeps == []
     assert exc_info.value.driver_error == "Connection operation failed"
+
+
+def test_non_runtime_error_from_native_is_not_retried_or_rewrapped(monkeypatch, sleeps):
+    # An exception raised inside the deferred token factory reaches Python as its own type,
+    # not as a RuntimeError, so the retry loop must let it through untouched.
+    def fail(*args):
+        fail.calls += 1
+        raise InterfaceError(driver_error="token factory failed", ddbc_error="")
+
+    fail.calls = 0
+    monkeypatch.setattr(mssql_python.connection.ddbc_bindings, "Connection", fail)
+    with pytest.raises(InterfaceError) as exc_info:
+        connect(CONN_STR, retry_policy=RetryPolicy(max_attempts=3, jitter=False))
+    assert type(exc_info.value) is InterfaceError
+    assert fail.calls == 1
+    assert sleeps == []
 
 
 def test_default_set_is_exactly_the_seven_transient_codes():
@@ -360,6 +376,14 @@ def test_connect_rejects_a_value_that_is_not_a_policy(native, sleeps):
     assert sleeps == []
 
 
+def test_wrong_policy_type_fails_before_a_token_is_acquired(native, sleeps):
+    provider = CountingTokenProvider()
+    with pytest.raises(TypeError):
+        connect("Server=testserver;Database=mydb;", token_provider=provider, retry_policy="nope")
+    assert provider.calls == 0
+    assert native.calls == []
+
+
 def test_connect_passes_the_policy_through_to_the_connection(native):
     policy = RetryPolicy(max_attempts=2)
     conn = connect(CONN_STR, retry_policy=policy)
@@ -378,6 +402,24 @@ def test_token_is_acquired_once_across_attempts(native, sleeps):
     assert len(native.calls) == 3
     assert provider.calls == 1
     assert sleeps == [1.0, 2.0]
+    # Here attrs_before carries the token and the pool key is not empty, so this also shows
+    # that neither changes between attempts.
+    assert all(call == native.calls[0] for call in native.calls)
+
+
+def test_deferred_token_factory_and_pool_key_are_reused_on_every_attempt(native, sleeps):
+    # ActiveDirectoryMsi builds a token factory that the native layer calls on each physical
+    # connect. Building it does no network work, and the fake native never calls it.
+    native.failures = 2
+    connect(
+        "Server=testserver;Database=mydb;Authentication=ActiveDirectoryMsi;",
+        retry_policy=RetryPolicy(max_attempts=3, jitter=False),
+    )
+    assert len(native.calls) == 3
+    assert callable(native.calls[0][4])
+    assert len({id(call[4]) for call in native.calls}) == 1
+    assert native.calls[0][3]
+    assert all(call[3] == native.calls[0][3] for call in native.calls)
 
 
 def test_retry_log_lines_name_the_attempt_and_omit_the_connection_string(
