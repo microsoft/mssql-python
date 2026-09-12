@@ -273,10 +273,10 @@ class _ArrowReader:
         use_internal_transaction: bool = False,
     ) -> Dict[str, Any]: ...
 
-# Retry Policy for transient failures at connect() time.
-# Re-exported so the annotated implementation stays the single source of truth.
+# Types used by the connect() / Connection signatures below, re-exported from the
+# annotated implementations so they stay the single source of truth.
 from .retry import RetryPolicy as RetryPolicy
-from .connection import TokenProvider
+from .connection import TokenProvider as TokenProvider
 
 # DB-API 2.0 Connection Object
 # https://www.python.org/dev/peps/pep-0249/#connection-objects
