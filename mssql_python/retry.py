@@ -106,7 +106,7 @@ class RetryPolicy:
         max_attempts (int): Total number of tries, including the first. 1 means never retry.
         backoff (str): "exponential" doubles the delay after each failed attempt, "fixed"
             waits ``base_delay`` every time.
-        base_delay (float): Delay in seconds before the second attempt.
+        base_delay (float): Delay in seconds before the second attempt, before jitter.
         max_delay (float): Upper bound in seconds for any single delay, jitter included.
         jitter (bool): When True each delay is scaled by a factor drawn uniformly from
             [0, 1), so many clients do not reconnect in lockstep. The delay can be shorter than
@@ -136,8 +136,8 @@ class RetryPolicy:
         Args:
             max_attempts (int): Total number of tries including the first; at least 1.
             backoff (str): "exponential" or "fixed".
-            base_delay (float): Seconds to wait before the second attempt; zero to 86400
-                (one day).
+            base_delay (float): Seconds to wait before the second attempt, before jitter;
+                zero to 86400 (one day).
             max_delay (float): Cap in seconds for every delay; at least ``base_delay`` and at
                 most 86400.
             jitter (bool): Scale each delay down by a random factor in [0, 1), so the wait can
@@ -180,7 +180,7 @@ class RetryPolicy:
 
     @property
     def base_delay(self) -> float:
-        """Delay in seconds before the second attempt."""
+        """Delay in seconds before the second attempt, before jitter."""
         return self._base_delay
 
     @property

@@ -8,6 +8,7 @@ nothing sleeps and every delay sequence is asserted exactly. Neither the db_conn
 cursor fixture is requested, so the file runs with DB_CONNECTION_STRING unset.
 """
 
+import gc
 import logging
 import random
 from types import SimpleNamespace
@@ -86,6 +87,9 @@ def driver_log(caplog):
 
     The driver logger does not propagate, so caplog's handler goes on it directly.
     """
+    # A failed connect() leaves a half built Connection in a reference cycle; if the collector
+    # frees one from an earlier test inside this window, its cleanup warning would be counted.
+    gc.collect()
     with caplog.at_level(logging.WARNING, logger="mssql_python"):
         mssql_python.logging.logger.addHandler(caplog.handler)
         try:
