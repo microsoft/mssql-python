@@ -181,6 +181,29 @@ def test_non_runtime_error_from_native_is_not_retried_or_rewrapped(monkeypatch, 
     assert sleeps == []
 
 
+def test_non_runtime_error_after_a_retry_logs_the_give_up_and_keeps_its_type(
+    monkeypatch, sleeps, driver_log
+):
+    # A deferred token factory can fail with its own exception type on a later attempt.
+    def fail(*args):
+        fail.calls += 1
+        if fail.calls == 1:
+            raise RuntimeError(LINK_FAILURE)
+        raise InterfaceError(driver_error="token factory failed", ddbc_error="")
+
+    fail.calls = 0
+    monkeypatch.setattr(mssql_python.connection.ddbc_bindings, "Connection", fail)
+    with pytest.raises(InterfaceError) as exc_info:
+        connect(CONN_STR, retry_policy=RetryPolicy(max_attempts=3, jitter=False))
+    assert type(exc_info.value) is InterfaceError
+    assert fail.calls == 2
+    assert sleeps == [1.0]
+    lines = [r.getMessage() for r in driver_log.records if "attempt" in r.getMessage()]
+    assert len(lines) == 2
+    assert "attempt 1 of 3" in lines[0] and "08S01" in lines[0]
+    assert "attempt 2 of 3" in lines[1] and "SQLSTATE none;" in lines[1]
+
+
 def test_default_set_is_exactly_the_seven_transient_codes():
     assert DEFAULT_RETRIABLE_SQLSTATES == frozenset(THE_SEVEN)
     assert RetryPolicy().retriable_sqlstates is DEFAULT_RETRIABLE_SQLSTATES

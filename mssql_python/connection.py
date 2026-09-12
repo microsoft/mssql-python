@@ -947,6 +947,18 @@ class Connection:
                         sqlstate or "none",
                     )
                 _raise_connection_error(e)
+            except Exception:  # pylint: disable=broad-exception-caught
+                # Anything other than a native connect error, such as one raised by a deferred
+                # token factory, is never retried and keeps its own type. After a retry the
+                # attempt that gave up is still logged.
+                if attempt > 1:
+                    logger.warning(
+                        "Connection failed on attempt %d of %d with SQLSTATE %s; not retrying",
+                        attempt,
+                        max_attempts,
+                        "none",
+                    )
+                raise
         self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
