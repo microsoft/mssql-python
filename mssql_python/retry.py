@@ -5,7 +5,6 @@ This module defines the RetryPolicy class, which describes how connect() retries
 attempt that fails with a transient error.
 """
 
-import math
 import random
 import time
 from typing import FrozenSet, Iterable, Optional
@@ -29,10 +28,21 @@ DEFAULT_RETRIABLE_SQLSTATES: FrozenSet[str] = frozenset(
 _BACKOFF_STRATEGIES = ("exponential", "fixed")
 _SQLSTATE_LENGTH = 5
 
+# Upper bound for base_delay and max_delay: one day. It keeps every wait well inside the range
+# time.sleep accepts on all supported platforms (about 49.7 days on Windows and about 3.2 years
+# on macOS under Python 3.10), so a policy that validates can never fail inside the retry loop.
+_MAX_DELAY_SECONDS = 86400.0
 
-def _is_finite_number(value: object) -> bool:
-    """Return True for a finite int or float that is not a bool."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+def _is_valid_delay(value: object) -> bool:
+    """Return True for an int or float, not a bool, from zero to ``_MAX_DELAY_SECONDS``.
+
+    NaN and infinity fail the range comparison, and an int too large for a float is compared
+    exactly, so neither needs a separate check.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return 0 <= value <= _MAX_DELAY_SECONDS
 
 
 def _normalize_sqlstates(codes: Optional[Iterable[str]]) -> FrozenSet[str]:
@@ -45,8 +55,8 @@ def _normalize_sqlstates(codes: Optional[Iterable[str]]) -> FrozenSet[str]:
         FrozenSet[str]: The upper cased codes, or ``DEFAULT_RETRIABLE_SQLSTATES`` for None.
 
     Raises:
-        ValueError: If ``codes`` is a single string, or any code is not a string of exactly
-            five characters.
+        ValueError: If ``codes`` is a single string or not iterable, or any code is not a
+            string of exactly five ASCII letters or digits.
     """
     if codes is None:
         return DEFAULT_RETRIABLE_SQLSTATES
@@ -54,12 +64,26 @@ def _normalize_sqlstates(codes: Optional[Iterable[str]]) -> FrozenSet[str]:
         raise ValueError(
             "retriable_sqlstates must be an iterable of SQLSTATE strings, not a single string"
         )
+    # Only iter() sits in the try, so a TypeError raised inside a caller's generator is not
+    # relabelled as a bad setting.
+    try:
+        iterator = iter(codes)
+    except TypeError:
+        raise ValueError(
+            "retriable_sqlstates must be an iterable of SQLSTATE strings, "
+            f"got {type(codes).__name__}"
+        ) from None
     normalized = set()
-    for code in codes:
-        if not isinstance(code, str) or len(code) != _SQLSTATE_LENGTH:
+    for code in iterator:
+        # Checked on the original string: ASCII only means upper() cannot change the length,
+        # and letters or digits are the only characters a driver SQLSTATE is parsed from.
+        if (
+            not isinstance(code, str)
+            or len(code) != _SQLSTATE_LENGTH
+            or not (code.isascii() and code.isalnum())
+        ):
             raise ValueError(
-                f"each SQLSTATE must be a string of exactly {_SQLSTATE_LENGTH} characters, "
-                f"got {code!r}"
+                f"each SQLSTATE must be {_SQLSTATE_LENGTH} ASCII letters or digits, got {code!r}"
             )
         normalized.add(code.upper())
     return frozenset(normalized)
@@ -88,8 +112,9 @@ class RetryPolicy:
             [0, 1), so many clients do not reconnect in lockstep. The delay can be shorter than
             ``base_delay`` and can be zero.
         retriable_sqlstates (frozenset): The SQLSTATE codes that are retried, uppercased and
-            each exactly five characters. Defaults to ``DEFAULT_RETRIABLE_SQLSTATES``; a custom
-            set replaces the default entirely rather than extending it.
+            each exactly five ASCII letters or digits. Defaults to
+            ``DEFAULT_RETRIABLE_SQLSTATES``; a custom set replaces the default entirely rather
+            than extending it.
 
     Example:
         >>> import mssql_python as ms
@@ -111,8 +136,10 @@ class RetryPolicy:
         Args:
             max_attempts (int): Total number of tries including the first; at least 1.
             backoff (str): "exponential" or "fixed".
-            base_delay (float): Seconds to wait before the second attempt; zero or more.
-            max_delay (float): Cap in seconds for every delay; at least ``base_delay``.
+            base_delay (float): Seconds to wait before the second attempt; zero to 86400
+                (one day).
+            max_delay (float): Cap in seconds for every delay; at least ``base_delay`` and at
+                most 86400.
             jitter (bool): Scale each delay down by a random factor in [0, 1), so the wait can
                 be anywhere between zero and the backoff delay.
             retriable_sqlstates (iterable of str, optional): SQLSTATE codes to retry. None
@@ -127,10 +154,10 @@ class RetryPolicy:
             raise ValueError("max_attempts must be an integer of at least 1")
         if backoff not in _BACKOFF_STRATEGIES:
             raise ValueError("backoff must be one of 'exponential' or 'fixed'")
-        if not _is_finite_number(base_delay) or base_delay < 0:
-            raise ValueError("base_delay must be a finite number of zero or more seconds")
-        if not _is_finite_number(max_delay) or max_delay < base_delay:
-            raise ValueError("max_delay must be a finite number of at least base_delay seconds")
+        if not _is_valid_delay(base_delay):
+            raise ValueError("base_delay must be a number of seconds from 0 to 86400")
+        if not _is_valid_delay(max_delay) or max_delay < base_delay:
+            raise ValueError("max_delay must be a number of seconds from base_delay to 86400")
         if not isinstance(jitter, bool):
             raise ValueError("jitter must be True or False")
 
@@ -194,7 +221,7 @@ class RetryPolicy:
 
         Returns:
             float: Seconds to wait, never negative and never above ``max_delay``. With jitter
-                on the value stays strictly below the uncapped delay, so zero is possible.
+                on, the capped delay is scaled by a random factor in [0, 1), so zero is possible.
 
         Raises:
             ValueError: If ``attempt`` is less than 1.

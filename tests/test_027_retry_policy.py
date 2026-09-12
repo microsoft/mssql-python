@@ -9,6 +9,7 @@ cursor fixture is requested, so the file runs with DB_CONNECTION_STRING unset.
 """
 
 import logging
+import random
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -251,14 +252,14 @@ def test_jitter_scales_the_delay_down_and_never_exceeds_the_cap(monkeypatch):
     assert [policy.compute_delay(n) for n in (1, 2, 3, 4)] == [0.5, 1.0, 2.0, 2.5]
 
 
-def test_jitter_keeps_capped_delays_spread_out():
+def test_jitter_keeps_capped_delays_spread_out(monkeypatch):
     # Once backoff reaches max_delay every client is asking for the same number, so the jitter is
     # the only thing keeping them apart. Scaling around the delay used to clamp roughly half of
     # the draws to exactly max_delay.
+    monkeypatch.setattr(mssql_python.retry, "_random", random.Random(682).random)
     policy = RetryPolicy(base_delay=1.0, max_delay=30.0, jitter=True)
     delays = [policy.compute_delay(5000) for _ in range(2000)]
     assert all(0.0 <= d < 30.0 for d in delays)
-    assert not any(d == 30.0 for d in delays)
     # a uniform draw over [0, 30) should not pile up in any one tenth of the range
     buckets = [0] * 10
     for d in delays:
@@ -328,15 +329,26 @@ def test_single_attempt_policy_never_retries(native, sleeps):
         pytest.param({"base_delay": float("nan")}, id="base_delay_nan"),
         pytest.param({"base_delay": 2.0, "max_delay": 1.0}, id="max_delay_below_base"),
         pytest.param({"max_delay": float("inf")}, id="max_delay_infinite"),
+        pytest.param({"base_delay": 10**400}, id="base_delay_huge_int"),
+        pytest.param({"max_delay": 10**400}, id="max_delay_huge_int"),
+        pytest.param({"max_delay": 86400.5}, id="max_delay_above_limit"),
         pytest.param({"jitter": 1}, id="jitter_not_bool"),
         pytest.param({"retriable_sqlstates": ["08S0"]}, id="sqlstate_four_chars"),
         pytest.param({"retriable_sqlstates": "08S01"}, id="sqlstate_bare_string"),
         pytest.param({"retriable_sqlstates": [8001]}, id="sqlstate_not_a_string"),
+        pytest.param({"retriable_sqlstates": 123}, id="sqlstate_not_iterable"),
+        pytest.param({"retriable_sqlstates": ["08-01"]}, id="sqlstate_bad_chars"),
+        pytest.param({"retriable_sqlstates": ["08ßAB"]}, id="sqlstate_non_ascii"),
     ],
 )
 def test_invalid_settings_raise_value_error(kwargs):
     with pytest.raises(ValueError):
         RetryPolicy(**kwargs)
+
+
+def test_delays_up_to_one_day_are_accepted():
+    policy = RetryPolicy(base_delay=86400, max_delay=86400, jitter=False)
+    assert policy.compute_delay(1) == 86400.0
 
 
 def test_connect_rejects_a_value_that_is_not_a_policy(native, sleeps):
