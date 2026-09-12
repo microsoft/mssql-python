@@ -55,6 +55,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   for diagnostics (selected id, package, version, driver path, source, and
   whether it's frozen). This PR
   does not change the default provider or ship any Rust driver binaries.
+- **GH-682:** New optional `RetryPolicy` class and `retry_policy=` parameter on
+  `connect()` / `Connection(...)` that retries a connection attempt failing with
+  a transient SQLSTATE (login and connection timeouts, a lost link, `40001`,
+  `40003`) using exponential or fixed backoff with a delay cap and full jitter
+  (on by default; `jitter=False` gives exact delays). `max_attempts` counts
+  total tries including the first; without a policy
+  `connect()` behaves exactly as before.
 
 ### Changed
 - **GH-769 deprecation policy:** The misplaced `GetInfoConstants` members

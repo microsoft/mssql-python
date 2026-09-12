@@ -273,6 +273,11 @@ class _ArrowReader:
         use_internal_transaction: bool = False,
     ) -> Dict[str, Any]: ...
 
+# Types used by the connect() / Connection signatures below, re-exported from the
+# annotated implementations so they stay the single source of truth.
+from .retry import RetryPolicy as RetryPolicy
+from .connection import TokenProvider as TokenProvider
+
 # DB-API 2.0 Connection Object
 # https://www.python.org/dev/peps/pep-0249/#connection-objects
 class Connection:
@@ -312,6 +317,8 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
+        token_provider: Optional[TokenProvider] = None,
+        retry_policy: Optional[RetryPolicy] = None,
         **kwargs: Any,
     ) -> None: ...
 
@@ -357,6 +364,8 @@ def connect(
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
+    token_provider: Optional[TokenProvider] = None,
+    retry_policy: Optional[RetryPolicy] = None,
     **kwargs: Any,
 ) -> Connection: ...
 
