@@ -3008,7 +3008,7 @@ def test_getinfo_sql_support(db_connection):
         # SQL conformance level
         sql_conformance = db_connection.getinfo(sql_const.SQL_SQL_CONFORMANCE.value)
         print("SQL Conformance = ", sql_conformance)
-        assert sql_conformance is not None, "SQL conformance should not be None"
+        assert type(sql_conformance) is int, "SQL conformance should be an integer"
 
         # Keywords - may return a very long string
         keywords = db_connection.getinfo(sql_const.SQL_KEYWORDS.value)
@@ -3120,40 +3120,24 @@ def test_getinfo_type_consistency(db_connection):
         assert result1 == result2, f"Value inconsistency for info type {info_type}"
 
 
-def test_getinfo_standard_types(db_connection):
+@pytest.mark.parametrize(
+    "info_type,expected_type",
+    [
+        (sql_const.SQL_ACCESSIBLE_TABLES.value, str),
+        (sql_const.SQL_DATA_SOURCE_NAME.value, str),
+        (sql_const.SQL_TABLE_TERM.value, str),
+        (sql_const.SQL_PROCEDURES.value, str),
+        (sql_const.SQL_MAX_IDENTIFIER_LEN.value, int),
+        (sql_const.SQL_OUTER_JOINS.value, str),
+    ],
+)
+def test_getinfo_standard_types(db_connection, info_type, expected_type):
     """Test a representative set of standard ODBC info types."""
 
-    # Dictionary of common info types and their expected value types
-    # Avoid DBMS-specific info types
-    info_types = {
-        sql_const.SQL_ACCESSIBLE_TABLES.value: str,  # "Y" or "N"
-        sql_const.SQL_DATA_SOURCE_NAME.value: str,  # DSN
-        sql_const.SQL_TABLE_TERM.value: str,  # Usually "table"
-        sql_const.SQL_PROCEDURES.value: str,  # "Y" or "N"
-        sql_const.SQL_MAX_IDENTIFIER_LEN.value: int,  # Max identifier length
-        sql_const.SQL_OUTER_JOINS.value: str,  # "Y" or "N"
-    }
-
-    for info_type, expected_type in info_types.items():
-        try:
-            info_value = db_connection.getinfo(info_type)
-            print(info_type, info_value)
-
-            # Skip None values (unsupported by driver)
-            if info_value is None:
-                continue
-
-            # Check type, allowing empty strings for string types
-            if expected_type == str:
-                assert isinstance(info_value, str), f"Info type {info_type} should return a string"
-            elif expected_type == int:
-                assert isinstance(
-                    info_value, int
-                ), f"Info type {info_type} should return an integer"
-
-        except Exception as e:
-            # Log but don't fail - some drivers might not support all info types
-            print(f"Info type {info_type} failed: {e}")
+    info_value = db_connection.getinfo(info_type)
+    assert (
+        type(info_value) is expected_type
+    ), f"Info type {info_type} should return {expected_type.__name__}, got {info_value!r}"
 
 
 def test_getinfo_numeric_limits(db_connection):
