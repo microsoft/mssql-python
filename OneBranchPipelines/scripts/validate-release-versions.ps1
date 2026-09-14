@@ -10,7 +10,7 @@
     dev, alpha, beta, or rc tags. Intended to gate official releases.
 
 .PARAMETER VersionFile
-    Path to a .version file. Defaults to eng/versions/mssql-py-core.version
+    Path to a .version file. Defaults to eng/versions/mssql-python-rs.version
     relative to the repository root.
 
 .EXAMPLE
@@ -18,7 +18,7 @@
     .\eng\scripts\validate-release-versions.ps1
 
     # Explicit path:
-    .\eng\scripts\validate-release-versions.ps1 -VersionFile C:\work\mssql-python\eng\versions\mssql-py-core.version
+    .\OneBranchPipelines\scripts\validate-release-versions.ps1 -VersionFile C:\work\mssql-python\eng\versions\mssql-python-rs.version
 #>
 
 param(
@@ -29,7 +29,7 @@ $ErrorActionPreference = 'Stop'
 
 if (-not $VersionFile) {
     $repoRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
-    $VersionFile = Join-Path $repoRoot 'eng\versions\mssql-py-core.version'
+    $VersionFile = Join-Path $repoRoot 'eng\versions\mssql-python-rs.version'
 }
 
 if (-not (Test-Path $VersionFile)) {

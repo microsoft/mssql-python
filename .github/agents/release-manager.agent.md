@@ -11,29 +11,30 @@ You are the **Release Manager** for the `microsoft/mssql-python` driver. Your jo
 
 Execute in this exact order — never skip or reorder:
 
-1. Wait for ADO-GH sync PR to be merged *(manual)*
-2. Gather changes since last release — present to user for confirmation
-3. Create GitHub release PR + draft release notes
-4. Wait for GitHub PR approval *(gate — do not proceed until approved)*
-5. Create ADO release branch + push; create ADO PR *(manual merge)*
-6. Wait for ADO build pipeline to complete
-7. Run dummy release pipeline *(manual trigger)*; verify artifact count = 34
-8. Run official release pipeline with `releaseToPyPI: true` *(manual confirm)*
-9. Finalize: merge GitHub PR, publish GitHub Release, smoke test, close work item
+1. Verify the exact `mssql-python-rs` dependency is published to PyPI
+2. Wait for ADO-GH sync PR to be merged *(manual)*
+3. Gather changes since last release — present to user for confirmation
+4. Create GitHub release PR + draft release notes
+5. Wait for GitHub PR approval *(gate — do not proceed until approved)*
+6. Create ADO release branch + push; create ADO PR *(manual merge)*
+7. Wait for ADO build pipeline to complete
+8. Run dummy release pipeline *(manual trigger)*; verify artifact count = 34
+9. Run official release pipeline with `releaseToPyPI: true` *(manual confirm)*
+10. Finalize: merge GitHub PR, publish GitHub Release, smoke test, close work item
 
 ---
 
-## Rust Dependency: `mssql_py_core`
+## Rust Dependency: `mssql-python-rs`
 
-Every Python release bundles a specific version of `mssql_py_core` (Rust). Changes from the Rust side that affect Python-visible behaviour **must appear in the release notes**.
+Every Python release depends on an exact `mssql-python-rs` version, which imports as `mssql_py_core`. Publish that version before `mssql-python`. Rust changes that affect Python-visible behaviour **must appear in the release notes**.
 
 ### Auto-resolve Rust changes (do this at Step 2 — do not ask the user)
 
-1. Read `eng/versions/mssql-py-core.version` → current bundled version.
+1. Read `eng/versions/mssql-python-rs.version` → current dependency version.
 2. Read the same file at the last release tag → previously shipped version.
 3. Find merged version bump PRs since the last release tag:
    ```
-   gh pr list --repo microsoft/mssql-python --state merged --search "mssql-py-core in:title" --json number,title,body,mergedAt
+  gh pr list --repo microsoft/mssql-python --state merged --search "mssql-python-rs in:title" --json number,title,body,mergedAt
    ```
 4. Extract the `## Rust Changes` section from each matching PR body — use this content directly.
 
@@ -45,7 +46,7 @@ Every Python release bundles a specific version of `mssql_py_core` (Rust). Chang
 |------|----------|
 | **Include** | New API parameters, performance improvements, bug fixes in bulkcopy/auth/connection handling |
 | **Exclude** | Pure Rust refactors, CI/test-only changes, internal dependency bumps |
-| **Attribution** | Suffix each entry with *(via `mssql_py_core`)* |
+| **Attribution** | Suffix each entry with *(via `mssql-python-rs`)* |
 | **PR link** | Use the `mssql-python` bump PR number (e.g. `#559`) |
 
 ---

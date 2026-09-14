@@ -58,6 +58,12 @@ parameters:
   - name: odbcWheelFilter
     type: string
     default: 'mssql_python_odbc-*win_amd64.whl'
+  - name: rsWheelDir
+    type: string
+    default: '$(Pipeline.Workspace)/rs_wheels'
+  - name: rsWheelFilter
+    type: string
+    default: 'mssql_python_rs-*-cp*-cp*-win_amd64.whl'
   # Repo conda/ recipe root (contains mssql-python/ and mssql-python-odbc/).
   - name: recipeRoot
     type: string
@@ -95,6 +101,8 @@ steps:
         --mssql-wheel-dir "${{ parameters.mssqlWheelDir }}" `
         --odbc-wheel-dir "${{ parameters.odbcWheelDir }}" `
         --odbc-wheel-filter "${{ parameters.odbcWheelFilter }}" `
+        --rs-wheel-dir "${{ parameters.rsWheelDir }}" `
+        --rs-wheel-filter "${{ parameters.rsWheelFilter }}" `
         --recipe-root "${{ parameters.recipeRoot }}" `
         --output-dir "${{ parameters.outputDir }}" `
         --stage-dir "$(ob_outputDirectory)/conda" `

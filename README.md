@@ -22,8 +22,14 @@ The driver is compatible with all the Python versions >= 3.10
 >
 > Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. Creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
 >
+> ### Rust Runtime Distribution
+> Bulk copy and the alternate Rust ODBC provider are supplied by `mssql-python-rs`,
+> which imports as `mssql_py_core`. `mssql-python` depends on the exact compatible
+> runtime version and does not duplicate its native files. Private indexes and
+> `--no-deps` installations must provide that companion distribution separately.
+>
 > ### ODBC Provider Selection (opt-in)
-> `mssql-python` also supports selecting an alternate native ODBC provider before the first connection, via the `mssql_python.native_provider` module property or the `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable (which takes precedence). A conflicting property assignment emits a `RuntimeWarning`. The default, `"msodbcsql18"`, is unchanged; opting into `"mssql-odbc"` requires the `mssql-python-rs` package (which bundles the Rust ODBC driver alongside the Rust TDS core). Call `mssql_python.get_native_provider_info()` to check the selected provider, source, package version, and resolved driver path.
+> `mssql-python` also supports selecting an alternate native ODBC provider before the first connection, via the `mssql_python.native_provider` module property or the `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable (which takes precedence). A conflicting property assignment emits a `RuntimeWarning`. The default, `"msodbcsql18"`, is unchanged; opting into `"mssql-odbc"` uses the Rust driver installed by `mssql-python-rs`. Call `mssql_python.get_native_provider_info()` to check the selected provider, source, package version, and resolved driver path.
 
 ## Installation
  
