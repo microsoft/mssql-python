@@ -8,6 +8,11 @@ import stat
 import sys
 from pathlib import Path
 
+_TRUSTED_DARWIN_ALIASES = {
+    Path("/tmp"): Path("/private/tmp"),
+    Path("/var"): Path("/private/var"),
+}
+
 
 def _is_link_or_junction(path: Path) -> bool:
     if path.is_symlink():
@@ -19,10 +24,21 @@ def _is_link_or_junction(path: Path) -> bool:
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
+def _is_trusted_system_alias(path: Path) -> bool:
+    if sys.platform != "darwin" or path not in _TRUSTED_DARWIN_ALIASES:
+        return False
+    try:
+        return path.resolve(strict=True) == _TRUSTED_DARWIN_ALIASES[path]
+    except OSError:
+        return False
+
+
 def resolve_safe_output_directory(value: str | Path, cwd: Path | None = None) -> Path:
     candidate = Path(os.path.abspath(os.path.expanduser(os.fspath(value))))
     for component in (candidate, *candidate.parents):
-        if _is_link_or_junction(component):
+        if _is_link_or_junction(component) and (
+            component == candidate or not _is_trusted_system_alias(component)
+        ):
             raise ValueError(
                 f"Refusing output directory through a symbolic link or junction: {component}"
             )
