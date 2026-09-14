@@ -1,5 +1,7 @@
 import importlib.util
 import io
+import os
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -112,7 +114,7 @@ def test_rejects_duplicate_wheel_filename(tmp_path, monkeypatch):
         )
 
 
-def test_rejects_filesystem_root_as_output(tmp_path, monkeypatch):
+def test_rejects_filesystem_root_as_output(tmp_path):
     module = _load_downloader()
     version_file = tmp_path / "version"
     version_file.write_text("0.1.0", encoding="ascii")
@@ -126,3 +128,64 @@ def test_rejects_filesystem_root_as_output(tmp_path, monkeypatch):
             transport_file,
             Path(tmp_path.anchor),
         )
+
+
+def test_rejects_working_directory_and_ancestor_as_output(tmp_path, monkeypatch):
+    module = _load_downloader()
+    version_file = tmp_path / "version"
+    version_file.write_text("0.1.0", encoding="ascii")
+    transport_file = tmp_path / "transport-version"
+    transport_file.write_text("0.1.0-dev.1", encoding="ascii")
+    working_directory = tmp_path / "checkout" / "subdirectory"
+    working_directory.mkdir(parents=True)
+    monkeypatch.chdir(working_directory)
+
+    for unsafe in (working_directory, working_directory.parent):
+        with pytest.raises(ValueError, match="current working directory|ancestors"):
+            module.download_wheels(
+                "https://example.test/index.json",
+                version_file,
+                transport_file,
+                unsafe,
+            )
+
+
+def test_rejects_symlink_output_without_deleting_target(tmp_path, monkeypatch):
+    module = _load_downloader()
+    version_file = tmp_path / "version"
+    version_file.write_text("0.1.0", encoding="ascii")
+    transport_file = tmp_path / "transport-version"
+    transport_file.write_text("0.1.0-dev.1", encoding="ascii")
+    target = tmp_path / "unrelated"
+    target.mkdir()
+    marker = target / "keep.txt"
+    marker.write_text("keep", encoding="ascii")
+    output = tmp_path / "output-link"
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(output), str(target)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        output.symlink_to(target, target_is_directory=True)
+
+    content = _package(["wheels/mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl"])
+    _mock_download(monkeypatch, module, content)
+
+    with pytest.raises(ValueError, match="symbolic link|junction"):
+        module.download_wheels(
+            "https://example.test/index.json", version_file, transport_file, output
+        )
+
+    assert marker.read_text(encoding="ascii") == "keep"
+
+
+def test_stress_jobs_resolve_dependency_from_pinned_transport():
+    pipeline = (
+        Path(__file__).parents[1] / "OneBranchPipelines" / "stress-test-pipeline.yml"
+    ).read_text(encoding="utf-8")
+
+    assert pipeline.count("download_mssql_python_rs_wheels.py --output-dir") == 2
+    assert pipeline.count("--find-links=$(Pipeline.Workspace)\\mssql-python-rs-wheels") == 1
+    assert pipeline.count("--find-links=$(Pipeline.Workspace)/mssql-python-rs-wheels") == 1

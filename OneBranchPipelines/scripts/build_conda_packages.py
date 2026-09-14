@@ -89,18 +89,25 @@ def gather_wheels(
     rs_dir: str,
     rs_filter: str,
     links: str,
+    target_subdir: str = "",
+    python_versions: str = "",
 ) -> tuple[str, str, str]:
-    """Copy this platform's mssql-python wheel(s) (excluding the odbc package, whose filename
-    also starts with mssql_python) + this platform's odbc wheel into ONE find-links dir. The
-    dir is CLEARED first so a stale artifact from a reused workdir can never be validated."""
+    """Copy the target platform and requested Python wheels into one find-links directory."""
     if os.path.isdir(links):
         shutil.rmtree(links)
     os.makedirs(links, exist_ok=True)
 
+    requested_tags = {
+        f"cp{version.replace('.', '')}"
+        for version in python_versions.replace(" ", "").split(",")
+        if version
+    }
     mssql = sorted(
         w
         for w in glob.glob(os.path.join(mssql_dir, mssql_glob))
         if not os.path.basename(w).startswith("mssql_python_odbc-")
+        and (not target_subdir or _wheel_matches_target(os.path.basename(w), target_subdir))
+        and (not requested_tags or _wheel_python_tag(os.path.basename(w)) in requested_tags)
     )
     if not mssql:
         _die(f"no mssql-python wheel matching '{mssql_glob}' in {mssql_dir}")
@@ -137,7 +144,11 @@ def gather_wheels(
     odbc = odbc_matches[0]
     shutil.copy2(odbc, links)
 
-    rs_matches = sorted(glob.glob(os.path.join(rs_dir, "**", rs_filter), recursive=True))
+    rs_matches = sorted(
+        wheel
+        for wheel in glob.glob(os.path.join(rs_dir, "**", rs_filter), recursive=True)
+        if not requested_tags or _wheel_python_tag(os.path.basename(wheel)) in requested_tags
+    )
     if not rs_matches:
         _die(f"no mssql-python-rs wheel matching '{rs_filter}' in {rs_dir}")
     rs_versions_by_wheel = {
@@ -167,6 +178,11 @@ def gather_wheels(
             f"mssql-python={sorted(str(tag) for tag in mssql_python_tags)}, "
             f"mssql-python-rs={sorted(str(tag) for tag in rs_python_tags)}"
         )
+    if requested_tags and mssql_python_tags != requested_tags:
+        _die(
+            "mssql-python and mssql-python-rs wheels must cover all requested Python tags: "
+            f"requested={sorted(requested_tags)}, staged={sorted(mssql_python_tags)}"
+        )
     for wheel in rs_matches:
         shutil.copy2(wheel, links)
 
@@ -194,6 +210,22 @@ def _wheel_version(name: str, dist: str) -> str | None:
 def _wheel_python_tag(name: str) -> str | None:
     match = re.search(r"-(cp\d+)-cp\d+-", name)
     return match.group(1) if match else None
+
+
+def _wheel_matches_target(name: str, target_subdir: str) -> bool:
+    platform_tag = name.removesuffix(".whl").rsplit("-", 1)[-1]
+    target_markers = {
+        "win-64": ("win_amd64",),
+        "win-arm64": ("win_arm64",),
+        "osx-64": ("macosx", "x86_64|universal2"),
+        "osx-arm64": ("macosx", "arm64|universal2"),
+        "linux-64": ("manylinux", "x86_64"),
+        "linux-aarch64": ("manylinux", "aarch64"),
+    }
+    markers = target_markers.get(target_subdir)
+    if markers is None:
+        _die(f"unknown Conda target subdir: {target_subdir}")
+    return all(any(option in platform_tag for option in marker.split("|")) for marker in markers)
 
 
 def _required_rs_version(wheel: str) -> str:
@@ -952,6 +984,8 @@ def main(argv: list[str] | None = None) -> int:
         args.rs_wheel_dir,
         args.rs_wheel_filter,
         links,
+        target_subdir=target,
+        python_versions=args.python_versions,
     )
     conda = find_or_install_conda(output_dir)
     _log(f"Using conda: {conda}")

@@ -28,7 +28,7 @@ Execute in this exact order — never skip or reorder:
 
 Every Python release depends on an exact `mssql-python-rs` version, which imports as `mssql_py_core`. Publish that version before `mssql-python`. Rust changes that affect Python-visible behaviour **must appear in the release notes**.
 
-### Auto-resolve Rust changes (do this at Step 2 — do not ask the user)
+### Auto-resolve Rust changes (do this at Step 3 — do not ask the user)
 
 1. Read `eng/versions/mssql-python-rs.version` → current dependency version.
 2. Read the same file at the last release tag → previously shipped version.
@@ -38,7 +38,7 @@ Every Python release depends on an exact `mssql-python-rs` version, which import
    ```
 4. Extract the `## Rust Changes` section from each matching PR body — use this content directly.
 
-**Fallback** (if no `## Rust Changes` section exists): query `mssql-rs` commits between the two `"Bump mssql-py-core to X.X.X"` SHAs, send them to GitHub Models asking which are customer-facing, then ask the user to confirm the AI-generated entries.
+**Fallback** (if no `## Rust Changes` section exists): use the dependency versions from steps 1–2 as `mssql-rs` tags (`v<previous>` and `v<current>`). Before comparing commits, verify that each tag exists and that `mssql-py-core/pyproject.toml` at that tag declares the corresponding version. If either check fails, ask the user for the exact source SHAs. Query commits between the validated tags or confirmed SHAs, send them to GitHub Models asking which are customer-facing, then ask the user to confirm the AI-generated entries.
 
 ### Rules for Rust entries in release notes
 

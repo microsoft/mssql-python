@@ -9,6 +9,7 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
+import mssql_python_build_safety
 from resolve_nuget_feed import resolve
 
 DEFAULT_FEED = (
@@ -34,11 +35,7 @@ def download_wheels(
     distribution_version = _read_version(distribution_version_file)
     transport_version = _read_version(transport_version_file)
 
-    output_dir = output_dir.resolve()
-    if output_dir == Path(output_dir.anchor):
-        raise ValueError(f"Refusing to use a filesystem root as output directory: {output_dir}")
-    if output_dir.exists() and not output_dir.is_dir():
-        raise ValueError(f"Output directory is a file: {output_dir}")
+    output_dir = getattr(mssql_python_build_safety, "resolve_safe_output_directory")(output_dir)
 
     package_base = resolve(feed_url).rstrip("/") + "/"
     normalized_version = transport_version.lower()

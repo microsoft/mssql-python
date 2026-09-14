@@ -97,13 +97,7 @@ download_nupkg() {
     local feed_url="$1"
     local output_dir="$2"
 
-    output_dir=$("$PYTHON" -c "from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())" "$output_dir")
-    if [ "$output_dir" = "/" ]; then
-        echo "ERROR: Refusing to use the filesystem root as output directory"
-        exit 1
-    fi
-    if [ -e "$output_dir" ] && [ ! -d "$output_dir" ]; then
-        echo "ERROR: Output directory is a file: $output_dir"
+    if ! output_dir=$("$PYTHON" "$SCRIPT_DIR/mssql_python_build_safety.py" "$output_dir"); then
         exit 1
     fi
     rm -rf "$output_dir"

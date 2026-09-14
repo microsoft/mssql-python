@@ -406,7 +406,11 @@ def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monk
     mod = _load_orchestrator()
     calls = {}
 
-    monkeypatch.setattr(mod, "gather_wheels", lambda *_args: ("1.2.3", "18.6.2", "0.1.0"))
+    def _gather_wheels(*_args, **kwargs):
+        calls["gather"] = kwargs
+        return "1.2.3", "18.6.2", "0.1.0"
+
+    monkeypatch.setattr(mod, "gather_wheels", _gather_wheels)
     monkeypatch.setattr(mod, "find_or_install_conda", lambda _output_dir: "conda")
     monkeypatch.setattr(mod, "run", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(mod, "create_builder_env", lambda _conda: "conda_builder")
@@ -470,6 +474,7 @@ def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monk
 
     assert result == 0
     assert calls == {
+        "gather": {"target_subdir": "linux-64", "python_versions": ""},
         "build_env": "",
         "build": "linux-64",
         "audit": "linux-64",
@@ -594,6 +599,104 @@ def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path):
         "mssql_python_rs-0.1.0-cp312-cp312-win_amd64.whl",
         "mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl",
     ]
+
+
+def test_gather_wheels_restricts_consolidated_drop_to_target_and_requested_pythons(tmp_path):
+    mod = _load_orchestrator()
+    mssql_dir, odbc_dir, rs_dir, links = _wheel_inputs(
+        tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_arm64.whl"]
+    )
+    for tag in ("cp310", "cp312", "cp313", "cp314"):
+        _write_mssql_wheel(mssql_dir / f"mssql_python-1.2.3-{tag}-{tag}-win_arm64.whl")
+    for tag in ("cp312", "cp313", "cp314"):
+        (rs_dir / f"mssql_python_rs-0.1.0-{tag}-{tag}-win_arm64.whl").write_bytes(b"rs")
+
+    versions = mod.gather_wheels(
+        str(mssql_dir),
+        "mssql_python-*.whl",
+        str(odbc_dir),
+        "*win_arm64.whl",
+        str(rs_dir),
+        "*win_arm64.whl",
+        str(links),
+        target_subdir="win-arm64",
+        python_versions="3.12,3.13,3.14",
+    )
+
+    assert versions == ("1.2.3", "18.6.2", "0.1.0")
+    staged = sorted(path.name for path in links.iterdir())
+    assert not any("cp310" in name or "win_amd64" in name for name in staged)
+    assert {name.split("-")[2] for name in staged if "-cp" in name} == {
+        "cp312",
+        "cp313",
+        "cp314",
+    }
+
+
+def test_gather_wheels_rejects_requested_python_missing_from_both_inputs(tmp_path, capsys):
+    mod = _load_orchestrator()
+    mssql_dir, odbc_dir, rs_dir, links = _wheel_inputs(
+        tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
+    )
+
+    with pytest.raises(SystemExit):
+        mod.gather_wheels(
+            str(mssql_dir),
+            "mssql_python-*.whl",
+            str(odbc_dir),
+            "*win_amd64.whl",
+            str(rs_dir),
+            "*win_amd64.whl",
+            str(links),
+            target_subdir="win-64",
+            python_versions="3.12,3.13",
+        )
+
+    error = capsys.readouterr().err
+    assert "all requested Python tags" in error
+    assert "cp312" in error
+
+
+@pytest.mark.parametrize(
+    ("target", "matching", "nonmatching"),
+    [
+        (
+            "win-64",
+            "mssql_python-1-cp313-cp313-win_amd64.whl",
+            "mssql_python-1-cp313-cp313-win_arm64.whl",
+        ),
+        (
+            "win-arm64",
+            "mssql_python-1-cp313-cp313-win_arm64.whl",
+            "mssql_python-1-cp313-cp313-win_amd64.whl",
+        ),
+        (
+            "osx-64",
+            "mssql_python-1-cp313-cp313-macosx_15_0_x86_64.whl",
+            "mssql_python-1-cp313-cp313-macosx_15_0_arm64.whl",
+        ),
+        (
+            "osx-arm64",
+            "mssql_python-1-cp313-cp313-macosx_15_0_arm64.whl",
+            "mssql_python-1-cp313-cp313-macosx_15_0_x86_64.whl",
+        ),
+        (
+            "linux-64",
+            "mssql_python-1-cp313-cp313-manylinux_2_28_x86_64.whl",
+            "mssql_python-1-cp313-cp313-manylinux_2_28_aarch64.whl",
+        ),
+        (
+            "linux-aarch64",
+            "mssql_python-1-cp313-cp313-manylinux_2_28_aarch64.whl",
+            "mssql_python-1-cp313-cp313-manylinux_2_28_x86_64.whl",
+        ),
+    ],
+)
+def test_wheel_target_filter_covers_every_conda_subdir(target, matching, nonmatching):
+    mod = _load_orchestrator()
+
+    assert mod._wheel_matches_target(matching, target)
+    assert not mod._wheel_matches_target(nonmatching, target)
 
 
 def test_gather_wheels_rejects_mixed_mssql_python_versions(tmp_path, capsys):

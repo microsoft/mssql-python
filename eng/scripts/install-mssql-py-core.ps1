@@ -81,14 +81,8 @@ function Get-PlatformInfo {
 function Get-NupkgFromFeed {
     param([string]$FeedUrl, [string]$OutputDir)
 
-    $resolvedOutput = [System.IO.Path]::GetFullPath($OutputDir).TrimEnd('\', '/')
-    $root = [System.IO.Path]::GetPathRoot($resolvedOutput).TrimEnd('\', '/')
-    if ($resolvedOutput -eq $root) {
-        throw "Refusing to use a filesystem root as OutputDir: $resolvedOutput"
-    }
-    if (Test-Path $resolvedOutput -PathType Leaf) {
-        throw "OutputDir is a file: $resolvedOutput"
-    }
+    $resolvedOutput = & python "$ScriptDir\mssql_python_build_safety.py" $OutputDir
+    if ($LASTEXITCODE -ne 0) { throw "Unsafe OutputDir: $OutputDir" }
     if (Test-Path $resolvedOutput) { Remove-Item $resolvedOutput -Recurse -Force }
     New-Item -ItemType Directory -Path $resolvedOutput -Force | Out-Null
     $script:ResolvedOutputDir = $resolvedOutput
