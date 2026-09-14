@@ -34,13 +34,7 @@ import time
 
 import pytest
 
-from conftest import QEMU
 
-
-@pytest.mark.skipif(
-    QEMU,
-    reason="Subprocess shutdown tests SIGSEGV under QEMU user-mode emulation — not reproducible on native ARM64",
-)
 class TestHandleFreeShutdown:
     """Test SqlHandle::free() behavior for all handle types during Python shutdown."""
 

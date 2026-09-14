@@ -6,6 +6,10 @@ trigger:
     include:
       - main
 
+variables:
+  # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
+  arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
+
 jobs:
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
@@ -1044,8 +1048,12 @@ jobs:
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -1179,7 +1187,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1460,8 +1467,12 @@ jobs:
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -1589,7 +1600,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1903,8 +1913,12 @@ jobs:
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -2043,7 +2057,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
