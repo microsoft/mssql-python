@@ -32,8 +32,6 @@ if not _MODULE_PATH.is_file():
         f"conda source not present ({_MODULE_PATH}); skipping conda release metadata tests",
         allow_module_level=True,
     )
-    assert "(1 files)" in caught.value._cli_message and _STAGING in caught.value._cli_message
-    assert "--cleanup-staging" in caught.value._cli_message
 
 
 def _load_module():
@@ -948,6 +946,8 @@ def test_cleanup_reports_failures_but_continues_other_verified_files(cleanup_not
         promoter.cleanup_staging(
             api, "microsoft", _STAGING, "main", "1.13.0", [failed, good], verify_attempts=1
         )
+    assert "(1 files)" in caught.value._cli_message and _STAGING in caught.value._cli_message
+    assert "--cleanup-staging" in caught.value._cli_message
     assert api.distributions[failed.basename]["labels"] == [_STAGING, "main"]
     assert api.distributions[good.basename]["labels"] == ["main"]
     assert not any(call[0] == "add" or call[:2] == ("remove", "main") for call in api.calls)
