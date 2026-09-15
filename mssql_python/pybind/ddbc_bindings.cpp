@@ -23,6 +23,10 @@
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
+SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
+                             std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
+                             std::vector<std::shared_ptr<void>>& paramBuffers,
+                             const std::string& charEncoding, bool resolveUnknownTypes = true);
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
@@ -227,6 +231,7 @@ SQLExecuteFunc SQLExecute_ptr = nullptr;
 SQLRowCountFunc SQLRowCount_ptr = nullptr;
 SQLGetStmtAttrFunc SQLGetStmtAttr_ptr = nullptr;
 SQLSetDescFieldFunc SQLSetDescField_ptr = nullptr;
+SQLGetDescFieldFunc SQLGetDescField_ptr = nullptr;
 
 // Data retrieval APIs
 SQLFetchFunc SQLFetch_ptr = nullptr;
@@ -448,6 +453,559 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
     }
 }
 
+static bool IsIntegerCType(SQLSMALLINT cType) {
+    return cType == SQL_C_TINYINT || cType == SQL_C_UTINYINT || cType == SQL_C_SHORT ||
+           cType == SQL_C_LONG || cType == SQL_C_SBIGINT;
+}
+
+static bool IsTextSqlType(SQLSMALLINT sqlType) {
+    return sqlType == SQL_VARCHAR || sqlType == SQL_WVARCHAR;
+}
+
+static ParamInfo MergeTableColumnInfo(const py::list& values,
+                                      const std::vector<ParamInfo>& valueInfos,
+                                      size_t columnIndex) {
+    ParamInfo merged;
+    bool hasValue = false;
+    bool integerColumn = false;
+    bool textColumn = false;
+    bool hasInteger = false;
+    int64_t minInteger = 0;
+    int64_t maxInteger = 0;
+    SQLULEN maxSize = 0;
+    SQLULEN maxIntegerDigits = 0;
+    SQLSMALLINT maxScale = 0;
+
+    for (size_t rowIndex = 0; rowIndex < valueInfos.size(); ++rowIndex) {
+        const ParamInfo& current = valueInfos[rowIndex];
+        if (values[rowIndex].is_none()) {
+            continue;
+        }
+        if (current.isTVP) {
+            throw py::type_error("TVP cells cannot contain nested row sequences");
+        }
+
+        const bool currentInteger = IsIntegerCType(current.paramCType);
+        const bool currentText =
+            current.paramCType == SQL_C_WCHAR && IsTextSqlType(current.paramSQLType);
+        if (!hasValue) {
+            merged = current;
+            integerColumn = currentInteger;
+            textColumn = currentText;
+            hasValue = true;
+        } else if (integerColumn && currentInteger) {
+            // Integer widths are merged below from the full observed range.
+        } else if (textColumn && currentText) {
+            if (current.paramSQLType == SQL_WVARCHAR) {
+                merged.paramSQLType = SQL_WVARCHAR;
+            }
+        } else if (merged.paramCType != current.paramCType ||
+                   merged.paramSQLType != current.paramSQLType) {
+            throw py::type_error("TVP column " + std::to_string(columnIndex) +
+                                 " contains incompatible Python types at row " +
+                                 std::to_string(rowIndex));
+        }
+
+        if (currentInteger) {
+            int overflow = 0;
+            int64_t value = PyLong_AsLongLongAndOverflow(values[rowIndex].ptr(), &overflow);
+            if (overflow != 0) {
+                PyErr_Clear();
+                throw py::value_error("TVP integer cell is out of range for SQL BIGINT");
+            }
+            if (PyErr_Occurred())
+                throw py::error_already_set();
+            if (!integerColumn) {
+                throw py::type_error("TVP column " + std::to_string(columnIndex) +
+                                     " contains incompatible Python types at row " +
+                                     std::to_string(rowIndex));
+            }
+            if (!hasInteger) {
+                minInteger = value;
+                maxInteger = value;
+                hasInteger = true;
+            } else {
+                minInteger = std::min(minInteger, value);
+                maxInteger = std::max(maxInteger, value);
+            }
+        } else if (currentText) {
+            SQLULEN size =
+                current.isDAE ? static_cast<SQLULEN>(current.utf16Len) : current.columnSize;
+            maxSize = std::max(maxSize, size);
+        } else if (current.paramCType == SQL_C_BINARY) {
+            Py_ssize_t size = PyObject_Length(values[rowIndex].ptr());
+            if (size < 0)
+                throw py::error_already_set();
+            maxSize = std::max(maxSize, static_cast<SQLULEN>(size));
+        } else if (current.paramCType == SQL_C_NUMERIC) {
+            SQLULEN integerDigits =
+                current.columnSize > static_cast<SQLULEN>(current.decimalDigits)
+                    ? current.columnSize - static_cast<SQLULEN>(current.decimalDigits)
+                    : 0;
+            maxIntegerDigits = std::max(maxIntegerDigits, integerDigits);
+            maxScale = std::max(maxScale, current.decimalDigits);
+        } else {
+            maxSize = std::max(maxSize, current.columnSize);
+            maxScale = std::max(maxScale, current.decimalDigits);
+        }
+    }
+
+    if (!hasValue) {
+        merged.paramCType = SQL_C_DEFAULT;
+        merged.paramSQLType = SQL_VARCHAR;
+        merged.columnSize = 1;
+        merged.decimalDigits = 0;
+        return merged;
+    }
+
+    if (integerColumn) {
+        if (minInteger >= 0 && maxInteger <= UINT8_MAX) {
+            merged.paramCType = SQL_C_UTINYINT;
+            merged.paramSQLType = SQL_TINYINT;
+            merged.columnSize = 3;
+        } else if (minInteger >= INT16_MIN && maxInteger <= INT16_MAX) {
+            merged.paramCType = SQL_C_SHORT;
+            merged.paramSQLType = SQL_SMALLINT;
+            merged.columnSize = 5;
+        } else if (minInteger >= INT32_MIN && maxInteger <= INT32_MAX) {
+            merged.paramCType = SQL_C_LONG;
+            merged.paramSQLType = SQL_INTEGER;
+            merged.columnSize = 10;
+        } else {
+            merged.paramCType = SQL_C_SBIGINT;
+            merged.paramSQLType = SQL_BIGINT;
+            merged.columnSize = 19;
+        }
+        merged.decimalDigits = 0;
+    } else if (textColumn) {
+        merged.columnSize = std::max<SQLULEN>(maxSize, 1);
+        if (merged.paramSQLType == SQL_WVARCHAR && maxSize > MAX_INLINE_CHAR) {
+            merged.paramSQLType = SQL_WLONGVARCHAR;
+        } else if (merged.paramSQLType == SQL_VARCHAR && maxSize > MAX_INLINE_BINARY) {
+            merged.paramSQLType = SQL_LONGVARCHAR;
+        }
+        merged.isDAE = false;
+    } else if (merged.paramCType == SQL_C_BINARY) {
+        merged.columnSize = std::max<SQLULEN>(maxSize, 1);
+        if (maxSize > MAX_INLINE_BINARY) {
+            merged.paramSQLType = SQL_LONGVARBINARY;
+        }
+        merged.isDAE = false;
+    } else if (merged.paramCType == SQL_C_NUMERIC) {
+        merged.decimalDigits = maxScale;
+        merged.columnSize = std::max<SQLULEN>(maxIntegerDigits + maxScale, 1);
+    } else {
+        merged.columnSize = std::max<SQLULEN>(maxSize, 1);
+        merged.decimalDigits = maxScale;
+    }
+
+    return merged;
+}
+
+static bool NormalizeTableDecimalColumn(py::list& values, ParamInfo& info, size_t columnIndex) {
+    bool hasDecimal = false;
+    bool hasOtherValue = false;
+    PyObject* decimalType = PyTypeCache::get_decimal_class();
+    for (const py::handle value : values) {
+        if (value.is_none()) {
+            continue;
+        }
+        int isDecimal = PyObject_IsInstance(value.ptr(), decimalType);
+        if (isDecimal == -1)
+            throw py::error_already_set();
+        hasDecimal = hasDecimal || isDecimal == 1;
+        hasOtherValue = hasOtherValue || isDecimal == 0;
+    }
+    if (!hasDecimal) {
+        return false;
+    }
+    if (hasOtherValue) {
+        throw py::type_error("TVP column " + std::to_string(columnIndex) +
+                             " contains incompatible Python types");
+    }
+
+    py::str formatSpec("f");
+    SQLULEN maxSize = 1;
+    for (size_t rowIndex = 0; rowIndex < values.size(); ++rowIndex) {
+        if (values[rowIndex].is_none()) {
+            continue;
+        }
+        py::object isFinite =
+            steal(PyObject_CallMethod(values[rowIndex].ptr(), "is_finite", nullptr));
+        if (!isFinite)
+            throw py::error_already_set();
+        int finite = PyObject_IsTrue(isFinite.ptr());
+        if (finite == -1)
+            throw py::error_already_set();
+        if (finite == 0) {
+            throw py::value_error("Cannot bind non-finite Decimal (NaN/Infinity) in a TVP");
+        }
+        py::object formatted = steal(PyObject_Format(values[rowIndex].ptr(), formatSpec.ptr()));
+        if (!formatted)
+            throw py::error_already_set();
+        maxSize = std::max(maxSize, static_cast<SQLULEN>(PyUnicode_GET_LENGTH(formatted.ptr())));
+        values[rowIndex] = std::move(formatted);
+    }
+
+    info.paramCType = SQL_C_CHAR;
+    info.paramSQLType = SQL_NUMERIC;
+    info.columnSize = maxSize;
+    info.bufferSize = maxSize;
+    info.decimalDigits = 0;
+    return true;
+}
+
+static std::vector<ParamInfo>
+DetectTableColumnTypes(py::list& columnValues, const std::vector<TvpColumnInfo>& declaredColumns) {
+    std::vector<ParamInfo> columnInfos(columnValues.size());
+    for (size_t columnIndex = 0; columnIndex < columnValues.size(); ++columnIndex) {
+        py::list values = columnValues[columnIndex].cast<py::list>();
+        if ((declaredColumns[columnIndex].sqlType == SQL_DECIMAL ||
+             declaredColumns[columnIndex].sqlType == SQL_NUMERIC) &&
+            NormalizeTableDecimalColumn(values, columnInfos[columnIndex], columnIndex)) {
+            continue;
+        }
+        std::vector<ParamInfo> valueInfos = DetectParamTypes(values.ptr(), Py_None);
+        columnInfos[columnIndex] = MergeTableColumnInfo(values, valueInfos, columnIndex);
+    }
+    return columnInfos;
+}
+
+static SQLRETURN ReadDescriptorString(SQLHDESC descriptor, SQLSMALLINT recordNumber,
+                                      SQLSMALLINT fieldIdentifier, std::u16string& value) {
+    SQLWCHAR buffer[256] = {};
+    SQLINTEGER length = 0;
+    SQLRETURN rc = SQLGetDescField_ptr(descriptor, recordNumber, fieldIdentifier, buffer,
+                                       static_cast<SQLINTEGER>(sizeof(buffer)), &length);
+    if (!SQL_SUCCEEDED(rc)) {
+        return rc;
+    }
+    if (length <= 0) {
+        value.clear();
+        return rc;
+    }
+    size_t codeUnits = std::min(static_cast<size_t>(length) / sizeof(SQLWCHAR),
+                                (sizeof(buffer) / sizeof(buffer[0])) - 1);
+    value = dupeSqlWCharAsUtf16Le(buffer, codeUnits);
+    return rc;
+}
+
+[[noreturn]] static void ThrowTableMetadataError(const SqlHandlePtr& metadataHandle, SQLRETURN rc,
+                                                 const std::string& operation) {
+    ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_STMT, metadataHandle, rc);
+    py::object raiseException =
+        py::module_::import("mssql_python.exceptions").attr("raise_exception");
+    raiseException(error.sqlState, operation + ": " + error.ddbcErrorMsg);
+    throw std::runtime_error(operation);
+}
+
+class TableMetadataScope {
+  public:
+    explicit TableMetadataScope(SQLHANDLE statementHandle) : handle(statementHandle) {}
+    ~TableMetadataScope() {
+        SQLFreeStmt_ptr(handle, SQL_CLOSE);
+        SQLSetStmtAttr_ptr(
+            handle, SQL_SOPT_SS_NAME_SCOPE,
+            reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(SQL_SS_NAME_SCOPE_TABLE)),
+            SQL_IS_INTEGER);
+        SQLSetStmtAttr_ptr(handle, SQL_ATTR_METADATA_ID,
+                           reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(SQL_FALSE)),
+                           SQL_IS_INTEGER);
+    }
+
+  private:
+    SQLHANDLE handle;
+};
+
+static std::vector<TvpColumnInfo> LoadTableColumnMetadata(const SqlHandlePtr& metadataHandle,
+                                                          const std::u16string& catalog,
+                                                          const std::u16string& schema,
+                                                          const std::u16string& typeName) {
+    if (!metadataHandle || !metadataHandle->get()) {
+        throw std::runtime_error("TVP column metadata requires a valid statement handle");
+    }
+
+    SQLHANDLE hMetadataStmt = metadataHandle->get();
+    SQLFreeStmt_ptr(hMetadataStmt, SQL_CLOSE);
+    SQLFreeStmt_ptr(hMetadataStmt, SQL_RESET_PARAMS);
+
+    SQLRETURN rc = SQLSetStmtAttr_ptr(hMetadataStmt, SQL_ATTR_METADATA_ID,
+                                      reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(SQL_TRUE)),
+                                      SQL_IS_INTEGER);
+    if (!SQL_SUCCEEDED(rc)) {
+        ThrowTableMetadataError(metadataHandle, rc, "Failed to enable metadata identifier mode");
+    }
+    TableMetadataScope metadataScope(hMetadataStmt);
+
+    rc = SQLSetStmtAttr_ptr(
+        hMetadataStmt, SQL_SOPT_SS_NAME_SCOPE,
+        reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(SQL_SS_NAME_SCOPE_TABLE_TYPE)),
+        SQL_IS_INTEGER);
+    if (!SQL_SUCCEEDED(rc)) {
+        ThrowTableMetadataError(metadataHandle, rc, "Failed to select table-type metadata scope");
+    }
+    {
+        py::gil_scoped_release release;
+        rc = SQLColumns_ptr(hMetadataStmt,
+                            catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+                            catalog.empty() ? 0 : SQL_NTS,
+                            schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+                            schema.empty() ? 0 : SQL_NTS, reinterpretU16stringAsSqlWChar(typeName),
+                            SQL_NTS, nullptr, 0);
+    }
+    if (!SQL_SUCCEEDED(rc)) {
+        ThrowTableMetadataError(metadataHandle, rc, "Failed to discover TVP columns");
+    }
+
+    std::vector<std::pair<SQLINTEGER, TvpColumnInfo>> orderedColumns;
+    while (true) {
+        {
+            py::gil_scoped_release release;
+            rc = SQLFetch_ptr(hMetadataStmt);
+        }
+        if (rc == SQL_NO_DATA) {
+            break;
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            ThrowTableMetadataError(metadataHandle, rc, "Failed to fetch TVP column metadata");
+        }
+
+        SQLSMALLINT sqlType = SQL_UNKNOWN_TYPE;
+        SQLINTEGER columnSize = 0;
+        SQLSMALLINT decimalDigits = 0;
+        SQLINTEGER ordinal = 0;
+        SQLLEN indicator = 0;
+
+        rc = SQLGetData_ptr(hMetadataStmt, 5, SQL_C_SSHORT, &sqlType, sizeof(sqlType), &indicator);
+        if (SQL_SUCCEEDED(rc)) {
+            rc = SQLGetData_ptr(hMetadataStmt, 7, SQL_C_SLONG, &columnSize, sizeof(columnSize),
+                                &indicator);
+        }
+        if (SQL_SUCCEEDED(rc)) {
+            rc = SQLGetData_ptr(hMetadataStmt, 9, SQL_C_SSHORT, &decimalDigits,
+                                sizeof(decimalDigits), &indicator);
+            if (indicator == SQL_NULL_DATA) {
+                decimalDigits = 0;
+                rc = SQL_SUCCESS;
+            }
+        }
+        if (SQL_SUCCEEDED(rc)) {
+            rc = SQLGetData_ptr(hMetadataStmt, 17, SQL_C_SLONG, &ordinal, sizeof(ordinal),
+                                &indicator);
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            ThrowTableMetadataError(metadataHandle, rc, "Failed to read TVP column metadata");
+        }
+
+        orderedColumns.push_back({
+            ordinal,
+            {sqlType, static_cast<SQLULEN>(std::max<SQLINTEGER>(columnSize, 0)), decimalDigits},
+        });
+    }
+
+    if (orderedColumns.empty()) {
+        throw std::runtime_error("No column metadata was returned for the table type");
+    }
+    std::sort(orderedColumns.begin(), orderedColumns.end(),
+              [](const auto& left, const auto& right) { return left.first < right.first; });
+
+    std::vector<TvpColumnInfo> columns;
+    columns.reserve(orderedColumns.size());
+    for (const auto& entry : orderedColumns) {
+        columns.push_back(entry.second);
+    }
+    return columns;
+}
+
+static SQLRETURN ResolveTableValuedParamTypes(SqlHandle& handle, SQLHANDLE hStmt,
+                                              const SqlHandlePtr& metadataHandle,
+                                              std::vector<ParamInfo>& paramInfos) {
+    for (size_t paramIndex = 0; paramIndex < paramInfos.size(); ++paramIndex) {
+        ParamInfo& info = paramInfos[paramIndex];
+        if (!info.isTVP) {
+            continue;
+        }
+
+        if (handle.tvpCache.find(static_cast<int>(paramIndex)) == handle.tvpCache.end()) {
+            DescribedParamInfo described;
+            SQLSMALLINT nullable;
+            RETCODE rc;
+            {
+                py::gil_scoped_release release;
+                rc = SQLDescribeParam_ptr(hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
+                                          &described.sqlType, &described.columnSize,
+                                          &described.decimalDigits, &nullable);
+            }
+            if (!SQL_SUCCEEDED(rc)) {
+                return rc;
+            }
+            if (described.sqlType != SQL_SS_TABLE) {
+                throw py::type_error(
+                    "Nested row sequences can only be bound to a table-valued parameter");
+            }
+
+            SQLHDESC implementationDescriptor = nullptr;
+            rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_IMP_PARAM_DESC, &implementationDescriptor, 0,
+                                    nullptr);
+            if (!SQL_SUCCEEDED(rc)) {
+                return rc;
+            }
+
+            std::u16string catalog;
+            std::u16string schema;
+            std::u16string typeName;
+            const SQLSMALLINT recordNumber = static_cast<SQLSMALLINT>(paramIndex + 1);
+            rc = ReadDescriptorString(implementationDescriptor, recordNumber,
+                                      SQL_CA_SS_CATALOG_NAME, catalog);
+            if (SQL_SUCCEEDED(rc)) {
+                rc = ReadDescriptorString(implementationDescriptor, recordNumber,
+                                          SQL_CA_SS_SCHEMA_NAME, schema);
+            }
+            if (SQL_SUCCEEDED(rc)) {
+                rc = ReadDescriptorString(implementationDescriptor, recordNumber,
+                                          SQL_CA_SS_TYPE_NAME, typeName);
+            }
+            if (!SQL_SUCCEEDED(rc)) {
+                return rc;
+            }
+            if (typeName.empty()) {
+                throw std::runtime_error("The prepared statement did not expose a TVP type name");
+            }
+            handle.tvpCache[static_cast<int>(paramIndex)] = {
+                catalog,
+                schema,
+                typeName,
+                LoadTableColumnMetadata(metadataHandle, catalog, schema, typeName),
+            };
+        }
+        info.paramSQLType = SQL_SS_TABLE;
+        info.paramCType = SQL_C_BINARY;
+        info.decimalDigits = 0;
+    }
+    return SQL_SUCCESS;
+}
+
+static SQLRETURN BindTableValuedParameter(SqlHandle& handle, SQLHANDLE hStmt, int paramIndex,
+                                          const py::handle& param,
+                                          std::vector<std::shared_ptr<void>>& paramBuffers,
+                                          const std::string& charEncoding) {
+    const py::sequence rows = py::reinterpret_borrow<py::sequence>(param);
+    const SQLSMALLINT recordNumber = static_cast<SQLSMALLINT>(paramIndex + 1);
+
+    size_t columnCount = 0;
+    py::list columnValues;
+    std::vector<ParamInfo> columnInfos;
+    auto metadataEntry = handle.tvpCache.find(paramIndex);
+    if (metadataEntry == handle.tvpCache.end()) {
+        throw std::runtime_error("TVP column metadata was not resolved before binding");
+    }
+    const TvpParamInfo& tableMetadata = metadataEntry->second;
+    const std::vector<TvpColumnInfo>& declaredColumns = tableMetadata.columns;
+    if (!rows.empty()) {
+        const py::handle firstRow = rows[0];
+        if (!PyList_Check(firstRow.ptr()) && !PyTuple_Check(firstRow.ptr())) {
+            throw py::type_error("TVP rows must be list or tuple objects");
+        }
+        columnCount = py::len(firstRow);
+        if (columnCount == 0) {
+            throw py::value_error("TVP rows must contain at least one column");
+        }
+        if (columnCount != declaredColumns.size()) {
+            throw py::value_error("TVP rows contain " + std::to_string(columnCount) +
+                                  " columns; the declared table type requires " +
+                                  std::to_string(declaredColumns.size()));
+        }
+        columnValues = py::list(columnCount);
+        for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
+            columnValues[columnIndex] = py::list();
+        }
+        for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const py::sequence row = py::reinterpret_borrow<py::sequence>(rows[rowIndex]);
+            if (!PyList_Check(row.ptr()) && !PyTuple_Check(row.ptr())) {
+                throw py::type_error("TVP rows must be list or tuple objects");
+            }
+            if (static_cast<size_t>(py::len(row)) != columnCount) {
+                throw py::value_error("TVP rows must all contain the same number of columns");
+            }
+            for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
+                columnValues[columnIndex].cast<py::list>().append(row[columnIndex]);
+            }
+        }
+        columnInfos = DetectTableColumnTypes(columnValues, declaredColumns);
+        for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
+            ParamInfo& inferred = columnInfos[columnIndex];
+            const TvpColumnInfo& declared = declaredColumns[columnIndex];
+            inferred.paramSQLType = declared.sqlType;
+            if (declared.columnSize == 0) {
+                if (declared.sqlType == SQL_WVARCHAR && inferred.columnSize > MAX_INLINE_CHAR) {
+                    inferred.paramSQLType = SQL_WLONGVARCHAR;
+                } else if (declared.sqlType == SQL_VARCHAR &&
+                           inferred.columnSize > MAX_INLINE_BINARY) {
+                    inferred.paramSQLType = SQL_LONGVARCHAR;
+                } else if (declared.sqlType == SQL_VARBINARY &&
+                           inferred.columnSize > MAX_INLINE_BINARY) {
+                    inferred.paramSQLType = SQL_LONGVARBINARY;
+                }
+            }
+            inferred.decimalDigits = declared.decimalDigits;
+            if (inferred.paramCType == SQL_C_DEFAULT || declared.sqlType == SQL_DECIMAL ||
+                declared.sqlType == SQL_NUMERIC) {
+                inferred.columnSize = std::max<SQLULEN>(declared.columnSize, 1);
+            }
+        }
+    }
+
+    auto* typeName = AllocateParamBuffer<std::u16string>(paramBuffers, tableMetadata.typeName);
+    auto* schema = AllocateParamBuffer<std::u16string>(paramBuffers, tableMetadata.schema);
+    auto* rowCount = AllocateParamBuffer<SQLLEN>(paramBuffers);
+    // TVPs overload ColumnSize with row capacity and the indicator with the rows available.
+    *rowCount = rows.empty() ? SQL_DEFAULT_PARAM : static_cast<SQLLEN>(rows.size());
+
+    SQLRETURN rc = SQLBindParameter_ptr(
+        hStmt, static_cast<SQLUSMALLINT>(recordNumber), SQL_PARAM_INPUT, SQL_C_BINARY, SQL_SS_TABLE,
+        static_cast<SQLULEN>(rows.size()), 0, typeName->data(),
+        static_cast<SQLLEN>(typeName->size() * sizeof(SQLWCHAR)), rowCount);
+    if (!SQL_SUCCEEDED(rc)) {
+        return rc;
+    }
+    if (!schema->empty()) {
+        SQLHDESC implementationDescriptor = nullptr;
+        rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_IMP_PARAM_DESC, &implementationDescriptor, 0,
+                                nullptr);
+        if (!SQL_SUCCEEDED(rc)) {
+            return rc;
+        }
+        rc = SQLSetDescField_ptr(implementationDescriptor, recordNumber, SQL_CA_SS_SCHEMA_NAME,
+                                 reinterpretU16stringAsSqlWChar(*schema),
+                                 static_cast<SQLINTEGER>(schema->size() * sizeof(SQLWCHAR)));
+        if (!SQL_SUCCEEDED(rc)) {
+            return rc;
+        }
+    }
+    if (rows.empty()) {
+        return rc;
+    }
+
+    rc = SQLSetStmtAttr_ptr(hStmt, SQL_SOPT_SS_PARAM_FOCUS,
+                            reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(recordNumber)),
+                            SQL_IS_INTEGER);
+    if (!SQL_SUCCEEDED(rc)) {
+        return rc;
+    }
+
+    SQLRETURN bindRc = SQL_ERROR;
+    try {
+        bindRc = BindParameterArray(handle, hStmt, columnValues, columnInfos, rows.size(),
+                                    paramBuffers, charEncoding, false);
+    } catch (...) {
+        SQLSetStmtAttr_ptr(hStmt, SQL_SOPT_SS_PARAM_FOCUS, nullptr, SQL_IS_INTEGER);
+        throw;
+    }
+    const SQLRETURN restoreRc =
+        SQLSetStmtAttr_ptr(hStmt, SQL_SOPT_SS_PARAM_FOCUS, nullptr, SQL_IS_INTEGER);
+    return SQL_SUCCEEDED(bindRc) ? restoreRc : bindRc;
+}
+
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
 // each of them with appropriate arguments
 SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
@@ -472,6 +1030,15 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
         void* dataPtr = nullptr;
         SQLLEN bufferLength = 0;
         SQLLEN* strLenOrIndPtr = nullptr;
+
+        if (paramInfo.isTVP) {
+            RETCODE rc = BindTableValuedParameter(handle, hStmt, paramIndex, param, paramBuffers,
+                                                  charEncoding);
+            if (!SQL_SUCCEEDED(rc)) {
+                return rc;
+            }
+            continue;
+        }
 
         // TODO: Add more data types like money, guid, interval, TVPs etc.
         switch (paramInfo.paramCType) {
@@ -1445,6 +2012,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLRowCount_ptr = GetFunctionPointer<SQLRowCountFunc>(handle, "SQLRowCount");
     SQLGetStmtAttr_ptr = GetFunctionPointer<SQLGetStmtAttrFunc>(handle, "SQLGetStmtAttrW");
     SQLSetDescField_ptr = GetFunctionPointer<SQLSetDescFieldFunc>(handle, "SQLSetDescFieldW");
+    SQLGetDescField_ptr = GetFunctionPointer<SQLGetDescFieldFunc>(handle, "SQLGetDescFieldW");
 
     SQLFetch_ptr = GetFunctionPointer<SQLFetchFunc>(handle, "SQLFetch");
     SQLFetchScroll_ptr = GetFunctionPointer<SQLFetchScrollFunc>(handle, "SQLFetchScroll");
@@ -1477,17 +2045,17 @@ DriverHandle LoadDriverOrThrowException() {
 
     SQLDescribeParam_ptr = GetFunctionPointer<SQLDescribeParamFunc>(handle, "SQLDescribeParam");
 
-    bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
-                   SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
-                   SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
-                   SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
-                   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
-                   SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
-                   SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr && SQLFreeStmt_ptr &&
-                   SQLGetDiagRec_ptr && SQLGetInfo_ptr && SQLParamData_ptr && SQLPutData_ptr &&
-                   SQLTables_ptr && SQLDescribeParam_ptr && SQLGetTypeInfo_ptr &&
-                   SQLProcedures_ptr && SQLForeignKeys_ptr && SQLPrimaryKeys_ptr &&
-                   SQLSpecialColumns_ptr && SQLStatistics_ptr && SQLColumns_ptr;
+    bool success =
+        SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr && SQLSetStmtAttr_ptr &&
+        SQLGetConnectAttr_ptr && SQLDriverConnect_ptr && SQLExecDirect_ptr && SQLPrepare_ptr &&
+        SQLBindParameter_ptr && SQLExecute_ptr && SQLRowCount_ptr && SQLGetStmtAttr_ptr &&
+        SQLSetDescField_ptr && SQLGetDescField_ptr && SQLFetch_ptr && SQLFetchScroll_ptr &&
+        SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr && SQLDescribeCol_ptr &&
+        SQLMoreResults_ptr && SQLColAttribute_ptr && SQLEndTran_ptr && SQLDisconnect_ptr &&
+        SQLFreeHandle_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLGetInfo_ptr &&
+        SQLParamData_ptr && SQLPutData_ptr && SQLTables_ptr && SQLDescribeParam_ptr &&
+        SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr && SQLPrimaryKeys_ptr &&
+        SQLSpecialColumns_ptr && SQLStatistics_ptr && SQLColumns_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -1583,7 +2151,7 @@ void SqlHandle::free() {
     PERF_TIMER("SqlHandle::free");
     if (_handle && SQLFreeHandle_ptr) {
         // GH-610: Clear describe cache to prevent memory leak.
-        describeCache.clear();
+        clearDescribeCache();
 
         // Check if Python is shutting down using centralized helper function
         bool pythonShuttingDown = is_python_finalizing();
@@ -2032,12 +2600,9 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
 // When false and not prepared, throws (matching slow path behavior).
 // ---------------------------------------------------------------------------
 SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
-                              const std::u16string& query,
-                              py::list params,
-                              const py::object& input_sizes,
-                              py::list is_stmt_prepared,
-                              bool use_prepare,
-                              const py::dict& encoding_settings) {
+                          const SqlHandlePtr metadataStatementHandle, const std::u16string& query,
+                          py::list params, const py::object& input_sizes, py::list is_stmt_prepared,
+                          bool use_prepare, const py::dict& encoding_settings) {
     PERF_TIMER("SQLExecute_wrap");
     if (!statementHandle || !statementHandle->get()) {
         return SQL_INVALID_HANDLE;
@@ -2100,6 +2665,10 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             ThrowStdException("Cannot execute unprepared statement");
         }
     }
+
+    rc = ResolveTableValuedParamTypes(*statementHandle, hStmt, metadataStatementHandle, paramInfos);
+    if (!SQL_SUCCEEDED(rc))
+        return rc;
 
     std::vector<std::shared_ptr<void>> paramBuffers;
     rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
@@ -2206,7 +2775,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
                              std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers,
-                             const std::string& charEncoding = "utf-8") {
+                             const std::string& charEncoding, bool resolveUnknownTypes) {
     PERF_TIMER("BindParameterArray");
     LOG("BindParameterArray: Starting column-wise array binding - "
         "param_count=%zu, param_set_size=%zu",
@@ -2216,7 +2785,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
 
     try {
         // GH-627: resolve unknown NULL array param SQL types before binding any param.
-        PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
+        if (resolveUnknownTypes) {
+            PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
+        }
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
             ParamInfo& info = paramInfos[paramIndex];
@@ -2275,36 +2846,39 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     break;
                 }
                 case SQL_C_WCHAR: {
+                    const SQLULEN valueBufferSize =
+                        info.bufferSize > 0 ? info.bufferSize : info.columnSize;
                     LOG("BindParameterArray: Binding SQL_C_WCHAR array - "
                         "param_index=%d, count=%zu, column_size=%zu",
-                        paramIndex, paramSetSize, info.columnSize);
+                        paramIndex, paramSetSize, valueBufferSize);
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers, paramSetSize * (valueBufferSize + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(wcharArray + i * (info.columnSize + 1), 0,
-                                        (info.columnSize + 1) * sizeof(SQLWCHAR));
+                            std::memset(wcharArray + i * (valueBufferSize + 1), 0,
+                                        (valueBufferSize + 1) * sizeof(SQLWCHAR));
                         } else {
                             std::u16string wstr = columnValues[i].cast<std::u16string>();
                             // u16string is already UTF-16, so the
                             // original check is sufficient
-                            if (wstr.length() > info.columnSize) {
+                            if (wstr.length() > valueBufferSize) {
                                 ThrowStdException("Input string exceeds allowed column size "
                                                   "at parameter index " +
                                                   std::to_string(paramIndex));
                             }
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(),
+                            std::memcpy(wcharArray + i * (valueBufferSize + 1), wstr.c_str(),
                                         (wstr.length() + 1) * sizeof(SQLWCHAR));
-                            strLenOrIndArray[i] = SQL_NTS;
+                            strLenOrIndArray[i] =
+                                static_cast<SQLLEN>(wstr.length() * sizeof(SQLWCHAR));
                         }
                     }
                     LOG("BindParameterArray: SQL_C_WCHAR bound - "
                         "param_index=%d",
                         paramIndex);
                     dataPtr = wcharArray;
-                    bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                    bufferLength = (valueBufferSize + 1) * sizeof(SQLWCHAR);
                     break;
                 }
                 case SQL_C_TINYINT:
@@ -2372,17 +2946,19 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                 }
                 case SQL_C_CHAR:
                 case SQL_C_BINARY: {
+                    const SQLULEN valueBufferSize =
+                        info.bufferSize > 0 ? info.bufferSize : info.columnSize;
                     LOG("BindParameterArray: Binding SQL_C_CHAR/BINARY array - "
                         "param_index=%d, count=%zu, column_size=%zu, encoding='%s'",
-                        paramIndex, paramSetSize, info.columnSize, charEncoding.c_str());
+                        paramIndex, paramSetSize, valueBufferSize, charEncoding.c_str());
                     char* charArray = AllocateParamBufferArray<char>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers, paramSetSize * (valueBufferSize + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(charArray + i * (info.columnSize + 1), 0,
-                                        info.columnSize + 1);
+                            std::memset(charArray + i * (valueBufferSize + 1), 0,
+                                        valueBufferSize + 1);
                         } else {
                             std::string encodedStr;
 
@@ -2412,15 +2988,15 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                 encodedStr = columnValues[i].cast<std::string>();
                             }
 
-                            if (encodedStr.size() > info.columnSize) {
+                            if (encodedStr.size() > valueBufferSize) {
                                 LOG("BindParameterArray: String/binary too "
                                     "long - param_index=%d, row=%zu, size=%zu, "
                                     "max=%zu",
-                                    paramIndex, i, encodedStr.size(), info.columnSize);
+                                    paramIndex, i, encodedStr.size(), valueBufferSize);
                                 ThrowStdException("Input exceeds column size at index " +
                                                   std::to_string(i));
                             }
-                            std::memcpy(charArray + i * (info.columnSize + 1), encodedStr.c_str(),
+                            std::memcpy(charArray + i * (valueBufferSize + 1), encodedStr.c_str(),
                                         encodedStr.size());
                             strLenOrIndArray[i] = static_cast<SQLLEN>(encodedStr.size());
                         }
@@ -2429,7 +3005,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = charArray;
-                    bufferLength = info.columnSize + 1;
+                    bufferLength = valueBufferSize + 1;
                     break;
                 }
                 case SQL_C_BIT: {
@@ -6123,8 +6699,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     }, "Disable global connection pooling and close all pools");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap,
-          "DetectParamTypes + BindParameters + SQLExecute all in C++",
-          py::arg("statementHandle"), py::arg("query"), py::arg("params"),
+          "DetectParamTypes + BindParameters + SQLExecute all in C++", py::arg("statementHandle"),
+          py::arg("metadataStatementHandle"), py::arg("query"), py::arg("params"),
           py::arg("inputSizes"), py::arg("isStmtPrepared"), py::arg("usePrepare"),
           py::arg("encodingSettings"));
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",
