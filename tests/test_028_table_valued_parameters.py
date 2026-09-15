@@ -3,6 +3,9 @@ Integration coverage for SQL Server table-valued parameters.
 """
 
 import datetime
+import os
+import subprocess
+import sys
 import uuid
 from decimal import Decimal
 
@@ -17,6 +20,12 @@ from mssql_python import (
     ddbc_bindings,
 )
 from mssql_python.odbc_provider import ProviderManager
+from test_023_ssh_tunnel_gil_release import (
+    WATCHDOG_SECONDS,
+    _parse_server,
+    _replace_server,
+    _start_forwarder,
+)
 
 
 @pytest.fixture
@@ -593,3 +602,119 @@ def test_tvp_shape_and_type_errors_leave_cursor_reusable(
         cursor.execute(sql, (0, rows, ""))
     cursor.execute(sql, (0, [(1, "ok")], ""))
     assert tuple(cursor.fetchone()) == (1, "ok")
+
+
+@pytest.fixture
+def wide_tvp_procedure(cursor, db_connection):
+    suffix = uuid.uuid4().hex
+    type_name = f"pytest_wide_tvp_type_{suffix}"
+    procedure_name = f"pytest_wide_tvp_proc_{suffix}"
+    # Long column names make metadata span multiple network packets.
+    columns = ", ".join(["id int"] + [f"c{i}_{'x' * 100} int" for i in range(1, 1024)])
+    try:
+        cursor.execute(f"CREATE TYPE dbo.[{type_name}] AS TABLE ({columns})")
+        cursor.execute(
+            f"CREATE PROCEDURE dbo.[{procedure_name}] @items dbo.[{type_name}] READONLY AS "
+            "SET NOCOUNT ON; SELECT id FROM @items ORDER BY id"
+        )
+        db_connection.commit()
+        yield procedure_name
+    finally:
+        cursor.execute(f"DROP PROCEDURE IF EXISTS dbo.[{procedure_name}]")
+        cursor.execute(f"DROP TYPE IF EXISTS dbo.[{type_name}]")
+        db_connection.commit()
+
+
+def _run_forwarded_tvp():
+    import mssql_python
+
+    base = os.environ["DB_CONNECTION_STRING"]
+    target = _parse_server(base)
+    assert target is not None, "Could not parse Server=host,port"
+    host, port = _start_forwarder(target)
+    mssql_python.pooling(enabled=False)
+    with mssql_python.connect(_replace_server(base, host, port)) as connection:
+        with connection.cursor() as cursor:
+            sql = f"EXEC dbo.[{os.environ['TVP_GIL_PROCEDURE']}] ?"
+            padding = (None,) * 1023
+            if os.environ["TVP_GIL_METADATA_ERROR"] == "1":
+                import ctypes
+
+                library = ctypes.CDLL(sys.modules["ddbc_bindings"].__file__)
+                slot = ctypes.c_void_p.in_dll(library, "SQLGetData_ptr")
+                original = slot.value
+                get_data_type = ctypes.CFUNCTYPE(
+                    ctypes.c_short,
+                    ctypes.c_void_p,
+                    ctypes.c_ushort,
+                    ctypes.c_short,
+                    ctypes.c_void_p,
+                    ctypes.c_ssize_t,
+                    ctypes.POINTER(ctypes.c_ssize_t),
+                )
+                get_data = get_data_type(original)
+
+                @get_data_type
+                def invalid_metadata_column(handle, column, ctype, value, size, indicator):
+                    # Produce a real driver error before metadata is drained. Do not
+                    # wrap SQLFreeStmt: its original GIL behavior is what we exercise.
+                    slot.value = original
+                    return get_data(handle, 999, ctype, value, size, indicator)
+
+                slot.value = ctypes.cast(invalid_metadata_column, ctypes.c_void_p).value
+                try:
+                    with pytest.raises(ProgrammingError, match="(?i)invalid descriptor index"):
+                        cursor.execute(sql, ([(1,) + padding],))
+                finally:
+                    slot.value = original
+                cursor.execute("SELECT ?", 42)
+                assert [tuple(row) for row in cursor.fetchall()] == [(42,)]
+
+            # No pointer overrides on the normal path, including after error recovery.
+            for ids in ([1, 2], [3], []):
+                cursor.execute(sql, ([(i,) + padding for i in ids],))
+                assert [tuple(row) for row in cursor.fetchall()] == [(i,) for i in ids]
+    print("OK forwarded TVP metadata", flush=True)
+
+
+@pytest.mark.parametrize(
+    "metadata_error",
+    [
+        pytest.param(False, id="metadata-reads"),
+        pytest.param(
+            True,
+            id="metadata-error-cleanup",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Native function-pointer injection is Unix-only"
+            ),
+        ),
+    ],
+)
+def test_tvp_metadata_through_python_forwarder_does_not_deadlock(
+    conn_str, wide_tvp_procedure, metadata_error
+):
+    if not conn_str or _parse_server(conn_str) is None:
+        pytest.skip("Requires DB_CONNECTION_STRING with Server=host,port")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    env["TVP_GIL_PROCEDURE"] = wide_tvp_procedure
+    env["TVP_GIL_METADATA_ERROR"] = str(int(metadata_error))
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from test_028_table_valued_parameters import _run_forwarded_tvp; "
+                "_run_forwarded_tvp()",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=WATCHDOG_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            f"TVP metadata through the Python forwarder deadlocked after {WATCHDOG_SECONDS}s"
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK forwarded TVP metadata" in result.stdout

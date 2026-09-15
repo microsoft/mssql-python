@@ -27,6 +27,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                              std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers,
                              const std::string& charEncoding);
+static bool is_python_finalizing();
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
@@ -626,7 +627,13 @@ class TableMetadataScope {
   public:
     explicit TableMetadataScope(SQLHANDLE statementHandle) : handle(statementHandle) {}
     ~TableMetadataScope() {
-        SQLFreeStmt_ptr(handle, SQL_CLOSE);
+        // Error paths can leave unread metadata; closing it can require network I/O.
+        if (!is_python_finalizing() && PyGILState_Check()) {
+            py::gil_scoped_release release;
+            SQLFreeStmt_ptr(handle, SQL_CLOSE);
+        } else {
+            SQLFreeStmt_ptr(handle, SQL_CLOSE);
+        }
         SQLSetStmtAttr_ptr(
             handle, SQL_SOPT_SS_NAME_SCOPE,
             reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(SQL_SS_NAME_SCOPE_TABLE)),
@@ -649,8 +656,11 @@ static std::vector<DescribedParamInfo> LoadTableColumnMetadata(const SqlHandlePt
     }
 
     SQLHANDLE hMetadataStmt = metadataHandle->get();
-    SQLFreeStmt_ptr(hMetadataStmt, SQL_CLOSE);
-    SQLFreeStmt_ptr(hMetadataStmt, SQL_RESET_PARAMS);
+    {
+        py::gil_scoped_release release;
+        SQLFreeStmt_ptr(hMetadataStmt, SQL_CLOSE);
+        SQLFreeStmt_ptr(hMetadataStmt, SQL_RESET_PARAMS);
+    }
 
     SQLRETURN rc = SQLSetStmtAttr_ptr(hMetadataStmt, SQL_ATTR_METADATA_ID,
                                       reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(SQL_TRUE)),
@@ -698,17 +708,20 @@ static std::vector<DescribedParamInfo> LoadTableColumnMetadata(const SqlHandlePt
         SQLSMALLINT decimalDigits = 0;
         SQLLEN indicator = 0;
 
-        rc = SQLGetData_ptr(hMetadataStmt, 5, SQL_C_SSHORT, &sqlType, sizeof(sqlType), &indicator);
-        if (SQL_SUCCEEDED(rc)) {
-            rc = SQLGetData_ptr(hMetadataStmt, 7, SQL_C_SLONG, &columnSize, sizeof(columnSize),
-                                &indicator);
-        }
-        if (SQL_SUCCEEDED(rc)) {
-            rc = SQLGetData_ptr(hMetadataStmt, 9, SQL_C_SSHORT, &decimalDigits,
-                                sizeof(decimalDigits), &indicator);
-            if (indicator == SQL_NULL_DATA) {
-                decimalDigits = 0;
-                rc = SQL_SUCCESS;
+        {
+            py::gil_scoped_release release;
+            rc = SQLGetData_ptr(hMetadataStmt, 5, SQL_C_SSHORT, &sqlType, sizeof(sqlType), &indicator);
+            if (SQL_SUCCEEDED(rc)) {
+                rc = SQLGetData_ptr(hMetadataStmt, 7, SQL_C_SLONG, &columnSize, sizeof(columnSize),
+                                    &indicator);
+            }
+            if (SQL_SUCCEEDED(rc)) {
+                rc = SQLGetData_ptr(hMetadataStmt, 9, SQL_C_SSHORT, &decimalDigits,
+                                    sizeof(decimalDigits), &indicator);
+                if (indicator == SQL_NULL_DATA) {
+                    decimalDigits = 0;
+                    rc = SQL_SUCCESS;
+                }
             }
         }
         if (!SQL_SUCCEEDED(rc)) {
