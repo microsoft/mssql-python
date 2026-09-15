@@ -26,7 +26,12 @@ def connect(
         autocommit (bool): If True, causes a commit to be performed after each SQL statement.
         attrs_before (dict, optional): A dictionary of connection attributes to set before
                                       connecting.
-        timeout (int): The timeout for the connection attempt, in seconds.
+        timeout (int): Login (connection-attempt) timeout in seconds. 0 (default)
+            uses the driver default. This bounds the login/network handshake (via
+            SQL_ATTR_LOGIN_TIMEOUT), not query execution — it is distinct from the
+            ``Connection.timeout`` property, which is the per-statement query
+            timeout. If both ``timeout`` and ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
+            are supplied, the explicit ``attrs_before`` value takes precedence.
         native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
             uuid.UUID objects (True) or str (False) for this connection.
             - True: UNIQUEIDENTIFIER columns return uuid.UUID objects.

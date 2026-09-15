@@ -1,0 +1,8 @@
+# Keep shell build scripts LF so conda-build works on Linux/macOS agents,
+# regardless of the checkout host's core.autocrlf setting.
+*.sh text eol=lf
+
+# Keep .bat scripts CRLF for Windows conda-build agents, regardless of the checkout
+# host's core.autocrlf. cmd.exe tolerates LF here (no goto/labels), but pinning CRLF
+# removes any doubt on odd checkouts.
+*.bat text eol=crlf

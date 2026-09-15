@@ -2570,21 +2570,129 @@ def test_timeout_setter(db_connection):
 
 
 def test_timeout_from_constructor(conn_str):
-    """Test setting timeout in the connection constructor"""
-    # Create a connection with timeout set
+    """The constructor timeout is the LOGIN timeout (SQL_ATTR_LOGIN_TIMEOUT).
+
+    Regression for GH #725: connect(timeout=N) must be the connection-attempt
+    (login) timeout, not the query timeout. So it is injected into
+    attrs_before as SQL_ATTR_LOGIN_TIMEOUT, and Connection.timeout (the
+    per-statement query timeout) stays at its default of 0.
+    """
     conn = connect(conn_str, timeout=45)
     try:
-        assert conn.timeout == 45, "Timeout should be set to 45 from constructor"
+        login_attr = ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value
+        assert (
+            conn._attrs_before.get(login_attr) == 45
+        ), "Constructor timeout should set SQL_ATTR_LOGIN_TIMEOUT (login timeout)"
+        assert conn.timeout == 0, "Query timeout (Connection.timeout) must stay 0"
 
-        # Create a cursor and verify it inherits the timeout
+        # A quick query must still succeed (login timeout must not become a
+        # query timeout).
         cursor = conn.cursor()
-        # Execute a quick query to ensure the timeout doesn't interfere
         cursor.execute("SELECT 1")
         result = cursor.fetchone()
-        assert result[0] == 1, "Query execution should succeed with timeout set"
+        assert result[0] == 1, "Query execution should succeed with login timeout set"
     finally:
-        # Clean up
         conn.close()
+
+
+def test_constructor_timeout_does_not_become_query_timeout(conn_str):
+    """GH #725: connect(timeout=N) must NOT abort a long-running query.
+
+    A short login timeout should have no effect on a query that runs longer
+    than that timeout, because it only bounds the connection attempt. The
+    constructor timeout must also leave ``Connection.timeout`` (the query
+    timeout) at its 0 default.
+    """
+    conn = connect(conn_str, timeout=3)
+    try:
+        assert conn.timeout == 0, "Constructor timeout must not set the query timeout"
+        cursor = conn.cursor()
+        # WAITFOR runs ~5s, longer than the 3s login timeout. If the login
+        # timeout were (wrongly) applied as a query timeout, this would raise
+        # OperationalError 'Query timeout expired'.
+        start = time.monotonic()
+        cursor.execute("WAITFOR DELAY '00:00:05'; SELECT 1")
+        elapsed = time.monotonic() - start
+        assert cursor.fetchval() == 1, "Long query must complete; login timeout must not abort it"
+        assert elapsed >= 4.0, f"Query returned too early ({elapsed:.2f}s); WAITFOR not honored"
+    finally:
+        conn.close()
+
+
+def test_constructor_timeout_respects_explicit_attrs_before(conn_str):
+    """An explicit attrs_before login timeout wins over the timeout kwarg."""
+    login_attr = ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value
+    conn = connect(conn_str, timeout=45, attrs_before={login_attr: 10})
+    try:
+        assert (
+            conn._attrs_before.get(login_attr) == 10
+        ), "Explicit attrs_before login timeout should take precedence over timeout kwarg"
+        assert conn.timeout == 0, "Query timeout (Connection.timeout) must stay 0"
+    finally:
+        conn.close()
+
+
+def test_constructor_login_timeout_honored_on_unresponsive_server():
+    """GH #725: connect(timeout=N) bounds the login/handshake attempt.
+
+    Uses a local listening socket that accepts the TCP connection but never
+    responds to the TDS prelogin, so the driver blocks in the login handshake
+    until SQL_ATTR_LOGIN_TIMEOUT fires. This is deterministic and independent of
+    external network/firewall behavior (unlike routing to a blackholed IP), so
+    it cannot false-fail on restricted-egress CI.
+    """
+    import socket
+
+    # Listen but never accept()/respond: the kernel completes the TCP handshake
+    # (so connect() succeeds), then the driver waits for a prelogin reply that
+    # never arrives — bounded by the 3s login timeout.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # Loopback-only listener: this is a hermetic test fixture, not runtime or
+        # debug code. The loopback literal is centralized here so the DevSkim
+        # localhost check (DS162092) has a single, clearly-scoped suppression.
+        loopback = "127.0.0.1"  # DevSkim: ignore DS162092
+        listener.bind((loopback, 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        unresponsive = (
+            f"Server={loopback},{port};Database=master;Encrypt=no;TrustServerCertificate=yes;"
+        )
+        start = time.monotonic()
+        with pytest.raises(OperationalError) as exc:
+            connect(unresponsive, timeout=3).close()
+        elapsed = time.monotonic() - start
+        # Assert it is a genuine login-timeout diagnostic, not some other failure
+        # that merely happened to land in the timing window (a parse error,
+        # connection reset, etc.). SQL Server surfaces the login timeout as
+        # OperationalError carrying 'timeout'/'258'/SQLSTATE 'HYT' in the message.
+        msg = str(exc.value).lower()
+        assert (
+            "timeout" in msg or "258" in msg or "hyt" in msg
+        ), f"Expected a login-timeout diagnostic, got: {exc.value}"
+        # Lower bound: the TCP connect succeeds instantly, so any elapsed >= 2s
+        # proves the driver actually waited in the login handshake and the login
+        # timeout (not an immediate failure) ended it.
+        assert elapsed >= 2.0, f"Connect failed in {elapsed:.1f}s; login timeout not exercised"
+        # Upper bound: well under the ~15s driver default, proving the 3s login
+        # timeout was actually applied.
+        assert elapsed < 12, f"Login timeout not honored; connect took {elapsed:.1f}s"
+    finally:
+        listener.close()
+
+
+def test_constructor_timeout_rejects_invalid_values(conn_str):
+    """GH #725: the constructor timeout is validated identically to the
+    Connection.timeout setter (via a single shared validator), so bad input
+    fails fast at connect() instead of silently mis-wiring or crashing later
+    in the native layer. Validation happens before any connection is attempted.
+    """
+    for bad in (-1, -5, -100):
+        with pytest.raises(ValueError, match="Login timeout cannot be negative"):
+            connect(conn_str, timeout=bad)
+    for bad in ("10", 10.5, None, [], {}, True, False):
+        with pytest.raises(TypeError, match="Login timeout must be an integer"):
+            connect(conn_str, timeout=bad)
 
 
 def test_timeout_long_query(db_connection):
@@ -2774,6 +2882,7 @@ def test_getinfo_string_encoding_utf16(db_connection):
         ("SQL_DRIVER_VER", sql_const.SQL_DRIVER_VER.value),
         ("SQL_DRIVER_NAME", sql_const.SQL_DRIVER_NAME.value),
         ("SQL_DRIVER_ODBC_VER", sql_const.SQL_DRIVER_ODBC_VER.value),
+        ("SQL_DATABASE_NAME", sql_const.SQL_DATABASE_NAME.value),
         ("SQL_SERVER_NAME", sql_const.SQL_SERVER_NAME.value),
     ]
 
@@ -2899,7 +3008,7 @@ def test_getinfo_sql_support(db_connection):
         # SQL conformance level
         sql_conformance = db_connection.getinfo(sql_const.SQL_SQL_CONFORMANCE.value)
         print("SQL Conformance = ", sql_conformance)
-        assert sql_conformance is not None, "SQL conformance should not be None"
+        assert type(sql_conformance) is int, "SQL conformance should be an integer"
 
         # Keywords - may return a very long string
         keywords = db_connection.getinfo(sql_const.SQL_KEYWORDS.value)
@@ -3011,40 +3120,24 @@ def test_getinfo_type_consistency(db_connection):
         assert result1 == result2, f"Value inconsistency for info type {info_type}"
 
 
-def test_getinfo_standard_types(db_connection):
+@pytest.mark.parametrize(
+    "info_type,expected_type",
+    [
+        (sql_const.SQL_ACCESSIBLE_TABLES.value, str),
+        (sql_const.SQL_DATA_SOURCE_NAME.value, str),
+        (sql_const.SQL_TABLE_TERM.value, str),
+        (sql_const.SQL_PROCEDURES.value, str),
+        (sql_const.SQL_MAX_IDENTIFIER_LEN.value, int),
+        (sql_const.SQL_OUTER_JOINS.value, str),
+    ],
+)
+def test_getinfo_standard_types(db_connection, info_type, expected_type):
     """Test a representative set of standard ODBC info types."""
 
-    # Dictionary of common info types and their expected value types
-    # Avoid DBMS-specific info types
-    info_types = {
-        sql_const.SQL_ACCESSIBLE_TABLES.value: str,  # "Y" or "N"
-        sql_const.SQL_DATA_SOURCE_NAME.value: str,  # DSN
-        sql_const.SQL_TABLE_TERM.value: str,  # Usually "table"
-        sql_const.SQL_PROCEDURES.value: str,  # "Y" or "N"
-        sql_const.SQL_MAX_IDENTIFIER_LEN.value: int,  # Max identifier length
-        sql_const.SQL_OUTER_JOINS.value: str,  # "Y" or "N"
-    }
-
-    for info_type, expected_type in info_types.items():
-        try:
-            info_value = db_connection.getinfo(info_type)
-            print(info_type, info_value)
-
-            # Skip None values (unsupported by driver)
-            if info_value is None:
-                continue
-
-            # Check type, allowing empty strings for string types
-            if expected_type == str:
-                assert isinstance(info_value, str), f"Info type {info_type} should return a string"
-            elif expected_type == int:
-                assert isinstance(
-                    info_value, int
-                ), f"Info type {info_type} should return an integer"
-
-        except Exception as e:
-            # Log but don't fail - some drivers might not support all info types
-            print(f"Info type {info_type} failed: {e}")
+    info_value = db_connection.getinfo(info_type)
+    assert (
+        type(info_value) is expected_type
+    ), f"Info type {info_type} should return {expected_type.__name__}, got {info_value!r}"
 
 
 def test_getinfo_numeric_limits(db_connection):
@@ -3384,12 +3477,12 @@ def test_connection_searchescape_consistency(db_connection):
 # ==================== SET_ATTR TEST CASES ====================
 
 
-def test_set_attr_constants_access():
-    """Test that only relevant connection attribute constants are accessible.
+def test_constants_access():
+    """Test that only supported constants are accessible.
 
     This test distinguishes between driver-independent (ODBC standard) and
     driver-manager–dependent (may not be supported everywhere) constants.
-    Only ODBC-standard, cross-platform constants should be public API.
+    ODBC-standard and supported SQL Server-specific constants should be public API.
     """
     # ODBC-standard, driver-independent constants (should be public)
     odbc_attr_constants = [
@@ -3408,6 +3501,11 @@ def test_set_attr_constants_access():
         "SQL_MODE_READ_WRITE",
         "SQL_MODE_READ_ONLY",
     ]
+    sql_server_type_constants = {
+        "SQL_SS_TIME2": -154,
+        "SQL_SS_XML": -152,
+        "SQL_SS_VARIANT": -150,
+    }
 
     # Driver-manager–dependent or rarely supported constants (should NOT be public API)
     dm_attr_constants = [
@@ -3428,17 +3526,21 @@ def test_set_attr_constants_access():
         "SQL_CUR_USE_DRIVER",
     ]
     dm_value_constants = ["SQL_CD_TRUE", "SQL_CD_FALSE", "SQL_RESET_CONNECTION_YES"]
+    internal_type_constants = ["SQL_SS_UDT", "SQL_DATETIMEOFFSET"]
 
-    # Check ODBC-standard constants are present and int
-    for const_name in odbc_attr_constants + odbc_value_constants:
-        assert hasattr(
-            mssql_python, const_name
-        ), f"{const_name} should be available (ODBC standard)"
+    # Check supported constants are present and int
+    public_constants = odbc_attr_constants + odbc_value_constants + list(sql_server_type_constants)
+    for const_name in public_constants:
+        assert hasattr(mssql_python, const_name), f"{const_name} should be available"
         const_value = getattr(mssql_python, const_name)
         assert isinstance(const_value, int), f"{const_name} should be an integer"
+        if const_name in sql_server_type_constants:
+            expected_value = sql_server_type_constants[const_name]
+            assert const_value == expected_value, f"{const_name} should equal {expected_value}"
+            assert const_name in mssql_python.__all__, f"{const_name} should be in __all__"
 
-    # Check driver-manager–dependent constants are NOT present
-    for const_name in dm_attr_constants + dm_value_constants:
+    # Check unsupported or intentionally internal constants are NOT present
+    for const_name in dm_attr_constants + dm_value_constants + internal_type_constants:
         assert not hasattr(mssql_python, const_name), f"{const_name} should NOT be public API"
 
 
@@ -4853,93 +4955,26 @@ def test_getinfo_comprehensive_edge_case_coverage(db_connection):
 
 
 def test_timeout_long_running_query_with_small_timeout(conn_str):
-    """Test that a long-running query with small timeout (1-2 seconds) raises timeout error.
+    """GH #725: the ``Connection.timeout`` property IS the per-statement query
+    timeout, so setting it to 2s must abort a 5s WAITFOR with a timeout error.
 
-    This test replicates exactly what test_timeout_bug.py does to ensure consistency.
+    The complementary direction — the constructor ``timeout`` is the LOGIN
+    timeout and must NOT abort a long query — is covered by
+    ``test_constructor_timeout_does_not_become_query_timeout``.
     """
-    import time
-    import mssql_python
-
-    print(f"DEBUG: Connection string: {conn_str}")
-
-    # Test 1: Create connection with timeout parameter (like test_timeout_bug.py)
-    print("DEBUG: [Test 1] Creating connection with timeout=2 seconds")
-    connection = mssql_python.connect(conn_str, timeout=2)
-    print(f"DEBUG: Connection created, timeout property: {connection.timeout}")
-
-    try:
-        cursor = connection.cursor()
-        start_time = time.perf_counter()
-        print("DEBUG: Executing WAITFOR DELAY '00:00:05' (5 seconds)")
-
-        try:
-            cursor.execute("WAITFOR DELAY '00:00:05'")
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: BUG CONFIRMED: Query completed without timeout after {elapsed:.2f}s")
-            pytest.skip(
-                f"Timeout not enforced - query completed in {elapsed:.2f}s (expected ~2s timeout)"
-            )
-        except mssql_python.OperationalError as e:
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: [OK] Query timed out after {elapsed:.2f}s: {e}")
-            assert elapsed < 4.0, f"Timeout took too long: {elapsed:.2f}s"
-            assert "timeout" in str(e).lower(), f"Not a timeout error: {e}"
-        except Exception as e:
-            elapsed = time.perf_counter() - start_time
-            print(
-                f"DEBUG: [OK] Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}"
-            )
-            assert elapsed < 4.0, f"Exception took too long: {elapsed:.2f}s"
-            # Accept any exception that happens quickly as it might be timeout-related
-        finally:
-            cursor.close()
-            connection.close()
-
-    except Exception as e:
-        print(f"DEBUG: Unexpected error in test: {e}")
-        if connection:
-            connection.close()
-        raise
-
-    # Test 2: Set timeout dynamically (like test_timeout_bug.py)
-    print("DEBUG: [Test 2] Setting timeout dynamically via property")
-    connection = mssql_python.connect(conn_str)
-    print(f"DEBUG: Initial timeout: {connection.timeout}")
+    connection = connect(conn_str)
     connection.timeout = 2
-    print(f"DEBUG: After setting: {connection.timeout}")
-
+    assert connection.timeout == 2, "Query timeout should be set via the property"
     try:
         cursor = connection.cursor()
-        start_time = time.perf_counter()
-
-        try:
+        start = time.monotonic()
+        with pytest.raises(OperationalError) as exc:
             cursor.execute("WAITFOR DELAY '00:00:05'")
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: BUG CONFIRMED: Query completed without timeout after {elapsed:.2f}s")
-            # This is the main test - if we get here, timeout is not working
-            assert (
-                False
-            ), f"Timeout should have occurred after ~2s, but query completed in {elapsed:.2f}s"
-        except mssql_python.OperationalError as e:
-            elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: [OK] Query timed out after {elapsed:.2f}s: {e}")
-            assert elapsed < 4.0, f"Timeout took too long: {elapsed:.2f}s"
-            assert "timeout" in str(e).lower(), f"Not a timeout error: {e}"
-        except Exception as e:
-            elapsed = time.perf_counter() - start_time
-            print(
-                f"DEBUG: [OK] Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}"
-            )
-            assert elapsed < 4.0, f"Exception took too long: {elapsed:.2f}s"
-        finally:
-            cursor.close()
-            connection.close()
-
-    except Exception as e:
-        print(f"DEBUG: Unexpected error in dynamic timeout test: {e}")
-        if connection:
-            connection.close()
-        raise
+        elapsed = time.monotonic() - start
+        assert "timeout" in str(exc.value).lower(), f"Not a timeout error: {exc.value}"
+        assert elapsed < 4.0, f"Query timeout should fire at ~2s, but took {elapsed:.2f}s"
+    finally:
+        connection.close()
 
 
 def test_cursor_timeout_single_execute(db_connection):
@@ -5139,7 +5174,7 @@ def test_timeout_edge_cases_and_boundaries(db_connection):
         # Test invalid timeout values (should raise ValueError)
         invalid_values = [-1, -5, -100]
         for invalid_val in invalid_values:
-            with pytest.raises(ValueError, match="Timeout cannot be negative"):
+            with pytest.raises(ValueError, match="Query timeout cannot be negative"):
                 db_connection.timeout = invalid_val
 
         # Test non-integer timeout values (should raise TypeError)
@@ -5147,6 +5182,11 @@ def test_timeout_edge_cases_and_boundaries(db_connection):
         for invalid_type in invalid_types:
             with pytest.raises(TypeError):
                 db_connection.timeout = invalid_type
+
+        # bool is a subclass of int but is not a valid timeout value
+        for bad_bool in [True, False]:
+            with pytest.raises(TypeError, match="Query timeout must be an integer"):
+                db_connection.timeout = bad_bool
 
         print("Successfully tested timeout edge cases and boundaries")
 
