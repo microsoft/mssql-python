@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
-- **GH-319:** Added input table-valued parameter support for stored procedure
+- **AB#48177:** Added input table-valued parameter support for stored procedure
   calls. Pass a materialized list or tuple of rows as one `execute()` parameter,
   including empty tables and positional or named parameters. The Rust ODBC
   provider does not yet support TVPs.
