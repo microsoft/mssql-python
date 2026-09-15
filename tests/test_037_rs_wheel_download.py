@@ -11,6 +11,12 @@ import pytest
 SCRIPTS_DIR = Path(__file__).parents[1] / "eng" / "scripts"
 MODULE_PATH = SCRIPTS_DIR / "download_mssql_python_rs_wheels.py"
 
+if not MODULE_PATH.is_file() or not (Path(__file__).parents[1] / "OneBranchPipelines").is_dir():
+    pytest.skip(
+        "rs wheel download contracts require a complete source checkout",
+        allow_module_level=True,
+    )
+
 
 def _load_downloader():
     sys.path.insert(0, str(SCRIPTS_DIR))
