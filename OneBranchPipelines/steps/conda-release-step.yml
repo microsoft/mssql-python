@@ -118,6 +118,7 @@ steps:
     displayName: '${{ parameters.labelPrefix }}Re-audit exact release artifacts (ELF + PE + Mach-O)'
     inputs:
       targetType: 'inline'
+      workingDirectory: '$(Build.SourcesDirectory)'
       script: |
         $ErrorActionPreference = 'Stop'
         $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
@@ -126,19 +127,23 @@ steps:
           exit 1
         }
 
+        $useModule = Test-Path -LiteralPath "$(Build.SourcesDirectory)/eng/conda_tools/__main__.py" -PathType Leaf
         $audits = @(
-          @{ Name = 'Linux ELF RUNPATH/inventory'; Script = 'audit_bundled_binaries.py' },
-          @{ Name = 'Windows PE machine/inventory'; Script = 'assert_pe_machine.py' },
-          @{ Name = 'macOS Mach-O architecture/inventory'; Script = 'assert_macho_arch.py' }
+          @{ Name = 'Linux ELF RUNPATH/inventory'; Script = 'audit_bundled_binaries.py'; Command = 'elf' },
+          @{ Name = 'Windows PE machine/inventory'; Script = 'assert_pe_machine.py'; Command = 'pe' },
+          @{ Name = 'macOS Mach-O architecture/inventory'; Script = 'assert_macho_arch.py'; Command = 'macho' }
         )
         foreach ($audit in $audits) {
           $script = Join-Path "$(Build.SourcesDirectory)/eng/scripts" $audit.Script
-          if (-not (Test-Path $script)) {
+          $auditArgs = @($script)
+          if ($useModule) {
+            $auditArgs = @('-m', 'eng.conda_tools', $audit.Command)
+          } elseif (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
             Write-Error "$($audit.Name) audit script not found at $script."
             exit 1
           }
           Write-Host "Running $($audit.Name) audit..."
-          python "$script" --root "$root"
+          python @auditArgs --root "$root"
           if ($LASTEXITCODE -ne 0) {
             Write-Error "$($audit.Name) audit FAILED on the exact release artifacts. Refusing to publish."
             exit 1

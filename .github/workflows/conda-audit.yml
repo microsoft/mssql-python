@@ -18,6 +18,7 @@ on:
   pull_request:
     paths:
       - 'conda/**'
+      - 'eng/conda_tools/**'
       - 'eng/scripts/_conda_pkg.py'
       - 'eng/scripts/audit_bundled_binaries.py'
       - 'eng/scripts/assert_macho_arch.py'
@@ -87,12 +88,17 @@ jobs:
           echo "Downloaded:"; ls -1 wheels
 
       - name: Build + audit a linux-64 conda package
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           # One orchestrator runs the same gather + build + masking-immune audit + verify the
           # OneBranch conda leg runs; it derives both wheel versions from the filenames. The
           # find-links dir holds BOTH wheels, so mssql-wheel-dir and odbc-wheel-dir are the same.
-          python OneBranchPipelines/scripts/build_conda_packages.py \
+          tool=(OneBranchPipelines/scripts/build_conda_packages.py)
+          if [[ -f eng/conda_tools/__main__.py ]]; then
+            tool=(-m eng.conda_tools build)
+          fi
+          python "${tool[@]}" \
             --mssql-wheel-dir "$PWD/wheels" \
             --odbc-wheel-dir "$PWD/wheels" \
             --odbc-wheel-filter "mssql_python_odbc-*.whl" \
