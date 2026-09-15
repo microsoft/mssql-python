@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import posixpath
 import re
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
-from .formats import Format
 from .formats.elf import ElfDynamicInfo, ElfFacts
+
+Format = Literal["elf", "pe", "macho"]
 
 # Driver binaries whose RUNPATH must carry the exact $ORIGIN climb.
 _DRIVER_PREFIXES = ("libmsodbcsql-", "libmsodbcsql.")
@@ -32,7 +33,7 @@ _ODBCINST_NEEDED = ("libltdl.so",)
 # ELF e_machine architecture ids (ELF header offset 0x12). The conda subdir is the
 # authority: every vendored driver/manager ELF must match it, so an x86_64 .so
 # mislabeled under a linux-aarch64 package is caught statically (the emulated aarch64
-# leg's runtime probe is best-effort and would not). Linux twin of assert_pe_machine.py.
+# leg's runtime probe is best-effort and would not). Linux twin of the PE audit.
 _EM_X86_64 = 62
 _EM_AARCH64 = 183
 _SUBDIR_MACHINE = {"linux-64": _EM_X86_64, "linux-aarch64": _EM_AARCH64}

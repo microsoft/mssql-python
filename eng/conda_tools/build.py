@@ -162,55 +162,44 @@ def audit_packages(
     target_subdir: str,
     env: dict[str, str],
 ) -> None:
-    eng = os.path.join(os.path.dirname(os.path.abspath(recipe_root)), "eng", "scripts")
-    audit = os.path.join(eng, "audit_bundled_binaries.py")
-    if not os.path.isfile(audit):
-        environment._die(f"RUNPATH audit script not found at {audit}")
-    environment._log(
-        "=== RUNPATH self-containment audit (eng/scripts/audit_bundled_binaries.py) ==="
-    )
+    repo_root = os.path.dirname(os.path.abspath(recipe_root))
+    module = os.path.join(repo_root, "eng", "conda_tools", "__main__.py")
+    if not os.path.isfile(module):
+        environment._die(
+            f"Conda audit module not found at {module}; "
+            "--recipe-root must point to the source checkout's conda directory."
+        )
+    bld = os.path.abspath(bld)
+    command = [conda, "run", "-n", builder, "python", "-m", "eng.conda_tools"]
+    environment._log("=== RUNPATH self-containment audit (eng.conda_tools elf) ===")
     environment.run(
-        [conda, "run", "-n", builder, "python", audit, "--root", bld],
+        command + ["elf", "--root", bld],
         env=env,
+        cwd=repo_root,
         what="RUNPATH self-containment audit",
     )
     # Both Windows packages must retain the core; cross builds also rely on static architecture.
     if target_subdir in ("win-64", "win-arm64"):
-        pe = os.path.join(eng, "assert_pe_machine.py")
-        if not os.path.isfile(pe):
-            environment._die(f"PE machine-type assert script not found at {pe}")
         environment._log(
             f"=== {target_subdir} PE machine-type and required native-component assert ==="
         )
         environment.run(
-            [conda, "run", "-n", builder, "python", pe, "--root", bld, "--subdir", target_subdir],
+            command + ["pe", "--root", bld, "--subdir", target_subdir],
             env=env,
+            cwd=repo_root,
             what=f"{target_subdir} PE machine-type assert",
         )
     # osx legs: verify the universal binding contains the target slice and each thin vendored
     # driver dylib matches its architecture-specific directory. osx-arm64 is cross-built on the
     # Intel agent, so this static pass replaces the runtime import as its architecture check.
     if target_subdir in ("osx-64", "osx-arm64"):
-        macho = os.path.join(eng, "assert_macho_arch.py")
-        if not os.path.isfile(macho):
-            environment._die(f"Mach-O arch assert script not found at {macho}")
         environment._log(
             f"=== {target_subdir} Mach-O assert (binding target slice + driver-tree arches) ==="
         )
         environment.run(
-            [
-                conda,
-                "run",
-                "-n",
-                builder,
-                "python",
-                macho,
-                "--root",
-                bld,
-                "--subdir",
-                target_subdir,
-            ],
+            command + ["macho", "--root", bld, "--subdir", target_subdir],
             env=env,
+            cwd=repo_root,
             what=f"{target_subdir} Mach-O arch-slice assert",
         )
 

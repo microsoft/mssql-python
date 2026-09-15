@@ -1,4 +1,4 @@
-"""Unit tests for the Windows PE machine-type assert (eng/scripts/assert_pe_machine.py).
+"""Unit tests for the Windows PE machine-type assert (eng.conda_tools pe).
 
 The win-arm64 conda package is cross-built on x64 where the arm64 Python can't run, so
 the arch is otherwise trusted from the wheel filename. ``assert_pe_machine`` reads the

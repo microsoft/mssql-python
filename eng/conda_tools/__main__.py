@@ -1,4 +1,4 @@
-"""Legacy command arguments, human-readable audit reports and exit codes."""
+"""Conda build and audit commands, human-readable reports and exit codes."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from . import audit, build
-from .formats import Format
+from .contracts import Format
 
 _ELF_DESCRIPTION = """Masking-immune audit of the vendored Linux ODBC binaries in built conda packages.
 
@@ -20,7 +20,7 @@ out of each built ``.conda`` payload -- via the ``PT_DYNAMIC`` program header th
 
   * each driver/manager ELF's ``e_machine`` MATCHES the package's conda subdir
     (``linux-64`` == x86_64, ``linux-aarch64`` == aarch64), so a wrong-arch or
-    mislabeled ``.so`` is caught statically (the Linux twin of ``assert_pe_machine.py``);
+    mislabeled ``.so`` is caught statically (the Linux twin of the PE audit);
   * ``libmsodbcsql*`` and ``libodbcinst.so.2`` carry the EXACT relative ``$ORIGIN``
     climb that lands on the package-root ``lib`` (== ``$PREFIX/lib``), computed from
     each binary's own location -- not a substring, not "any ``..``". A too-short,
@@ -54,7 +54,7 @@ architecture would otherwise be trusted purely from the wheel filename. A mislab
 or mis-built wheel could therefore ship x64 (.pyd/.dll) binaries inside a win-arm64
 package and nothing would catch it before publish.
 
-This is the Windows twin of eng/scripts/audit_bundled_binaries.py (which audits the
+This is the Windows twin of the ELF audit (which audits the
 Linux ELF payload): it reads the PE COFF Machine field straight out of every
 .pyd/.dll in the built .conda payload and asserts it matches the package's subdir
 (win-arm64 -> ARM64, win-64 -> AMD64). A Windows package missing EITHER the binding
@@ -70,8 +70,7 @@ Intel agent, where the arm64 slice cannot execute, so the build-time runtime imp
 A mislabeled or thin (single-arch) wheel could therefore ship an x86_64-only binary inside an
 osx-arm64 package and nothing would catch it before publish.
 
-This is the macOS twin of eng/scripts/assert_pe_machine.py (Windows PE COFF machine) and
-eng/scripts/audit_bundled_binaries.py (Linux ELF RUNPATH): it reads the Mach-O cputype(s)
+This is the macOS twin of the PE machine and ELF RUNPATH audits: it reads the Mach-O cputype(s)
 straight out of the binding and vendored driver files in the built .conda payload. The binding
 must contain the package's arch slice (osx-arm64 -> arm64, osx-64 -> x86_64). The ODBC wheel
 deliberately bundles separate macos/arm64 and macos/x86_64 driver trees, so each tree is checked
@@ -104,8 +103,7 @@ audits enforce architecture and the runtime import auto-skips. osx-64 runs nativ
 the Intel macOS agent."""
 
 
-def build_main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=_BUILD_DESCRIPTION)
+def _build_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--mssql-wheel-dir", required=True)
     ap.add_argument("--mssql-wheel-glob", default="mssql_python-*.whl")
     ap.add_argument("--odbc-wheel-dir", required=True)
@@ -116,14 +114,9 @@ def build_main(argv: list[str] | None = None) -> int:
     ap.add_argument("--conda-subdir", required=True, help="This leg's subdir (staging + display).")
     ap.add_argument("--conda-target-subdir", default="", help="Cross-target via CONDA_SUBDIR.")
     ap.add_argument("--python-versions", default="")
-    args = ap.parse_args(argv)
-
-    return build.execute(args)
 
 
-def audit_main(kind: Format, argv: list[str] | None = None) -> int:
-    descriptions = {"elf": _ELF_DESCRIPTION, "pe": _PE_DESCRIPTION, "macho": _MACHO_DESCRIPTION}
-    parser = argparse.ArgumentParser(description=descriptions[kind])
+def _audit_arguments(parser: argparse.ArgumentParser, kind: Format) -> None:
     if kind == "elf":
         parser.add_argument("--root", help="Directory to scan recursively for *.conda / *.tar.bz2.")
         parser.add_argument("packages", nargs="*", help="Explicit package paths to audit.")
@@ -135,7 +128,9 @@ def audit_main(kind: Format, argv: list[str] | None = None) -> int:
             default="",
             help=f"Only audit packages of this subdir (e.g. {example}). Empty = all {family}-* packages.",
         )
-    args = parser.parse_args(argv)
+
+
+def _audit(args: argparse.Namespace, kind: Format) -> int:
     paths = audit.discover_packages(args.root, args.packages if kind == "elf" else ())
     if not paths:
         message = (
@@ -179,3 +174,36 @@ def audit_main(kind: Format, argv: list[str] | None = None) -> int:
             f"krb5/libtool/openssl, and vendor no crypto (conda services them)."
         )
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m eng.conda_tools",
+        description="Build or audit Conda packages from the repository root.",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    _build_arguments(
+        commands.add_parser(
+            "build", help="Build and validate packages.", description=_BUILD_DESCRIPTION
+        )
+    )
+    descriptions: dict[Format, str] = {
+        "elf": _ELF_DESCRIPTION,
+        "pe": _PE_DESCRIPTION,
+        "macho": _MACHO_DESCRIPTION,
+    }
+    for kind, description in descriptions.items():
+        _audit_arguments(
+            commands.add_parser(
+                kind, help=f"Audit {kind.upper()} packages.", description=description
+            ),
+            kind,
+        )
+    args = parser.parse_args(argv)
+    if args.command == "build":
+        return build.execute(args)
+    return _audit(args, args.command)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

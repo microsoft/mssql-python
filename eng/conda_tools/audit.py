@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from . import archive, contracts
-from .formats import Format, elf, macho, pe
+from .contracts import Format
+from .formats import elf, macho, pe
 
 
 @dataclass

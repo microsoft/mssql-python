@@ -1,4 +1,4 @@
-"""Unit tests for the masking-immune RUNPATH audit (eng/scripts/audit_bundled_binaries.py).
+"""Unit tests for the masking-immune RUNPATH audit (eng.conda_tools elf).
 
 The audit reads the ELF ``PT_DYNAMIC`` program header of the vendored Linux ODBC
 binaries and asserts the EXACT ``$ORIGIN`` climb to ``$PREFIX/lib``, the effective
@@ -10,6 +10,7 @@ craft minimal ELF64 blobs (with real program headers) + ``.tar.bz2`` conda packa
 import builtins
 import io
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -27,7 +28,7 @@ if not _TOOLS_DIR.is_dir():
         allow_module_level=True,
     )
 
-from eng.conda_tools import archive, audit, contracts
+from eng.conda_tools import archive, audit, build, contracts, environment
 from eng.conda_tools.formats import elf
 
 
@@ -827,36 +828,68 @@ def test_shared_audit_parses_each_member_before_reading_the_next(tmp_path, monke
 
 
 @pytest.mark.parametrize(
-    ("script", "kind", "summary"),
+    ("kind", "summary"),
     [
-        ("audit_bundled_binaries.py", "elf", "all 1 Linux package(s)"),
-        ("assert_pe_machine.py", "pe", "all 1 checked package(s) carry the expected PE"),
-        ("assert_macho_arch.py", "macho", "all 1 checked package(s) satisfy the Mach-O"),
+        ("elf", "all 1 Linux package(s)"),
+        ("pe", "all 1 checked package(s) carry the expected PE"),
+        ("macho", "all 1 checked package(s) satisfy the Mach-O"),
     ],
 )
-def test_legacy_audit_cli_from_neutral_cwd(tmp_path, script, kind, summary):
+def test_audit_module_cli(tmp_path, kind, summary):
     packages = tmp_path / "packages"
     packages.mkdir()
     path = _make_pkg(packages)
-    neutral = tmp_path / "neutral"
-    neutral.mkdir()
-    command = [sys.executable, str(_ROOT / "eng" / "scripts" / script)]
+    command = [sys.executable, "-m", "eng.conda_tools", kind]
     args = ["--root", str(packages)]
     if kind == "elf":
         args.extend([path, path])
-    result = subprocess.run(command + args, cwd=neutral, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command + args, cwd=_ROOT, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert summary in result.stdout
     assert ("SKIP" in result.stdout) is (kind != "elf")
     assert result.stderr == ""
 
     help_result = subprocess.run(
-        command + ["--help"], cwd=neutral, capture_output=True, text=True, timeout=30
+        command + ["--help"], cwd=_ROOT, capture_output=True, text=True, timeout=30
     )
     assert help_result.returncode == 0
     assert "--root" in help_result.stdout
     invalid = subprocess.run(
-        command + ["--unknown"], cwd=neutral, capture_output=True, text=True, timeout=30
+        command + ["--unknown"], cwd=_ROOT, capture_output=True, text=True, timeout=30
     )
     assert invalid.returncode == 2
     assert "usage:" in invalid.stderr
+
+
+def test_build_audit_module_from_neutral_parent_cwd(tmp_path, monkeypatch):
+    packages = tmp_path / "packages with spaces"
+    packages.mkdir()
+    _make_pkg(packages)
+    neutral = tmp_path / "neutral"
+    neutral.mkdir()
+    monkeypatch.chdir(neutral)
+    env = dict(os.environ)
+    calls = []
+
+    def run_audit(command, *, env, cwd, what):
+        assert command[4:8] == ["python", "-m", "eng.conda_tools", "elf"]
+        assert Path(cwd) == _ROOT
+        calls.append(command)
+        result = subprocess.run(
+            [sys.executable, *command[5:]],
+            env=env,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "all 1 Linux package(s)" in result.stdout
+
+    monkeypatch.setattr(environment, "run", run_audit)
+    build.audit_packages(
+        "conda", "builder", str(_ROOT / "conda"), os.path.relpath(packages), "linux-64", env
+    )
+    assert len(calls) == 1
+    assert Path.cwd() == neutral
+    assert env == dict(os.environ)

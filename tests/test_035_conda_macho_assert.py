@@ -1,4 +1,4 @@
-"""Arch-slice tests for eng/scripts/assert_macho_arch.py (the macOS twin of test_030).
+"""Arch-slice tests for eng.conda_tools macho (the macOS twin of test_030).
 
 The osx-arm64 conda package is CROSS-built on an Intel agent where the arm64 slice cannot
 run, so the build-time runtime import is skipped and the package's arch is otherwise trusted

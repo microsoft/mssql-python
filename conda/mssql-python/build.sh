@@ -75,7 +75,7 @@ fi
 # libmsodbcsql* + libodbcinst.so.2 so they resolve THIS env's $PREFIX/lib. Safe to
 # patch -- the Linux .so are malware-scanned, not code-signed (only Windows .dll /
 # macOS .dylib are, and those are never touched). Linux-only: the glob is a no-op on
-# macOS. audit_bundled_binaries.py asserts the same exact climb.
+# macOS. The ELF audit (eng.conda_tools elf) asserts the same exact climb.
 prefix_lib="$PREFIX/lib"
 shopt -s nullglob
 have_linux_payload=0

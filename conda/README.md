@@ -62,9 +62,21 @@ human-readable reporting live in `__main__.py`. Conda provisioning and process
 execution live in `environment.py`; `build.py` sequences wheel selection, building,
 auditing and staging; `verify.py` keeps installed-package probes isolated.
 
-Continue invoking the existing scripts in `eng/scripts` and
-`OneBranchPipelines/scripts/build_conda_packages.py` with their existing arguments.
-These entrypoints require the source checkout, including `eng/conda_tools`; the
-internal tools are not installed in the driver wheel. Static audits do not import
-the driver. Runtime verification remains in separate processes from a neutral
-working directory, with the required core loaded independently before API probes.
+Run the module commands from the **repository root**, followed by the existing
+build or audit arguments:
+
+```text
+python -m eng.conda_tools build --help
+python -m eng.conda_tools elf --root <package-directory>
+python -m eng.conda_tools pe --root <package-directory> --subdir win-arm64
+python -m eng.conda_tools macho --root <package-directory> --subdir osx-arm64
+```
+
+These replace the old standalone audit and build scripts. They require the source
+checkout; the internal tools are not installed in the driver wheel. If Python
+reports `No module named 'eng'`, run from the checkout root rather than an installed
+driver environment. Build callers set the tooling subprocess's working directory
+explicitly, without changing `PYTHONPATH` or the parent working directory.
+Static audits do not import the driver. Runtime verification remains in separate
+processes from a neutral working directory, with the required core loaded
+independently before API probes.

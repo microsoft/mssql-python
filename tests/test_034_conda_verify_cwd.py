@@ -1,4 +1,4 @@
-"""Regression tests for build_conda_packages.py orchestration invariants.
+"""Regression tests for eng.conda_tools build orchestration invariants.
 
 ``verify()`` must run its ``python -c "import mssql_python"`` subprocesses from a NEUTRAL
 working directory. For ``python -c``, ``sys.path[0]`` is ``''`` (the process cwd), so when the
@@ -377,8 +377,9 @@ def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monk
     monkeypatch.setattr(verify, "verify", _verify)
     monkeypatch.setattr(build, "stage", _stage)
 
-    result = cli.build_main(
+    result = cli.main(
         [
+            "build",
             "--mssql-wheel-dir",
             str(tmp_path / "wheels"),
             "--odbc-wheel-dir",
@@ -630,9 +631,7 @@ def test_both_windows_targets_run_native_audit(subdir, monkeypatch):
     calls = []
     monkeypatch.setattr(environment, "run", lambda cmd, **kwargs: calls.append(cmd))
     build.audit_packages("conda", "builder", str(_ROOT / "conda"), "output", subdir, {})
-    pe_calls = [
-        cmd for cmd in calls if any(str(arg).endswith("assert_pe_machine.py") for arg in cmd)
-    ]
+    pe_calls = [cmd for cmd in calls if cmd[4:8] == ["python", "-m", "eng.conda_tools", "pe"]]
     assert len(pe_calls) == 1
     assert pe_calls[0][-2:] == ["--subdir", subdir]
 
@@ -683,5 +682,31 @@ def test_main_routes_effective_target_to_native_audit(subdir, tmp_path, monkeypa
     ]
     if subdir == "win-arm64":
         args += ["--conda-target-subdir", subdir]
-    assert cli.build_main(args) == 0
+    assert cli.main(["build", *args]) == 0
     assert targets == [subdir]
+
+
+def test_build_audit_reports_missing_source_checkout(tmp_path, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(environment, "run", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(SystemExit) as error:
+        build.audit_packages("conda", "builder", str(tmp_path / "conda"), "output", "win-64", {})
+    assert error.value.code == 1
+    assert (
+        "--recipe-root must point to the source checkout's conda directory"
+        in capsys.readouterr().err
+    )
+    assert calls == []
+
+
+def test_build_module_help():
+    result = subprocess.run(
+        [sys.executable, "-m", "eng.conda_tools", "build", "--help"],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--mssql-wheel-dir" in result.stdout
+    assert "--conda-target-subdir" in result.stdout
