@@ -11,7 +11,7 @@ permissions:
 jobs:
   coverage-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 145
+    timeout-minutes: 235
     permissions:
       pull-requests: write
       contents: read
@@ -112,13 +112,13 @@ jobs:
         run: |
           BUILD_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID?api-version=7.1-preview.7"
           ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
-          # Coverage may start after other queued jobs, each with a 90-minute timeout.
-          DEADLINE=$((SECONDS + 120 * 60))
+          # Coverage may queue behind 150-minute benchmark jobs before its own run.
+          DEADLINE=$((SECONDS + 210 * 60))
           COMPLETED_AT=-1
           ARTIFACT_FAILURES=0
           BUILD_FAILURES=0
           COVERAGE_ARTIFACT=""
-          echo "📥 Waiting up to 120 minutes for coverage artifacts for build $BUILD_ID..."
+          echo "📥 Waiting up to 210 minutes for coverage artifacts for build $BUILD_ID..."
 
           while (( SECONDS < DEADLINE )); do
             REQUEST_TIMEOUT=$((DEADLINE - SECONDS))
@@ -178,7 +178,7 @@ jobs:
           done
 
           if [[ -z "$COVERAGE_ARTIFACT" ]]; then
-            echo "❌ Timeout: Coverage report artifact not found within 120 minutes"
+            echo "❌ Timeout: Coverage report artifact not found within 210 minutes"
             exit 1
           fi
 

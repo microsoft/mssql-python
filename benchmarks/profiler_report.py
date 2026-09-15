@@ -88,6 +88,8 @@ def validate(report, build_id=None, head=None, source=None, base=None):
             raise ValueError("Invalid paired sample")
         for side in ("base", "candidate"):
             sample = pair[side]
+            if not isinstance(sample, dict):
+                raise ValueError("Invalid sample")
             env = sample["environment"]
             if not isinstance(env, dict) or set(env) != {
                 "os",
@@ -106,9 +108,14 @@ def validate(report, build_id=None, head=None, source=None, base=None):
             if environment is not None and environment != env:
                 raise ValueError("Environment changed between measurements")
             environment = env
-            if set(sample["scenarios"]) != set(CASES):
+            scenarios = sample["scenarios"]
+            if not isinstance(scenarios, dict):
+                raise ValueError("Invalid scenarios object")
+            if set(scenarios) != set(CASES):
                 raise ValueError("Scenario set incomplete or changed")
-            for name, scenario in sample["scenarios"].items():
+            for name, scenario in scenarios.items():
+                if not isinstance(scenario, dict):
+                    raise ValueError("Invalid scenario")
                 number(scenario["wall_ms"])
                 if scenario["wall_ms"] <= 0:
                     raise ValueError("Zero workload time")
@@ -128,6 +135,8 @@ def validate(report, build_id=None, head=None, source=None, base=None):
                         text(label)
                         if not label.startswith("ddbc::" if layer == "cpp" else "py::"):
                             raise ValueError("Invalid phase prefix")
+                        if not isinstance(counter, dict):
+                            raise ValueError("Invalid phase counter")
                         calls = counter["calls"]
                         if type(calls) is not int or not 1 <= calls <= 100_000_000:
                             raise ValueError("Invalid call count")

@@ -47,7 +47,7 @@ jobs:
 
 - job: pytestonwindows
   displayName: 'Windows x64'
-  timeoutInMinutes: 90
+  timeoutInMinutes: 150
   pool:
     vmImage: 'windows-latest'
   
@@ -401,7 +401,7 @@ jobs:
     displayName: 'Compare profiling builds on SQL Server 2022/2025'
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
-    timeoutInMinutes: 40
+    timeoutInMinutes: 90
     env:
       SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -450,11 +450,9 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
-  # Colima + SQL Server container setup averages ~12.5 min but has a long tail
-  # (setup has been observed at 17-39 min). The ADO default job timeout is 60 min,
-  # which the setup tail plus tests plus the 20-min benchmark step can exceed,
-  # getting the job killed mid-step. Give the job enough headroom for the tail.
-  timeoutInMinutes: 90
+  # Reserve 60 minutes outside the 90-minute benchmark step for Colima/SQL
+  # setup, pytest, fixture restore and artifact publication.
+  timeoutInMinutes: 150
   pool:
     vmImage: 'macos-latest'
 
@@ -683,7 +681,7 @@ jobs:
       python benchmarks/profiler_ci.py --reuse-candidate --leg "macOS-$(sqlVersion)" --output profiler-results
     displayName: 'Compare profiling builds on macOS $(sqlVersion)'
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    timeoutInMinutes: 40
+    timeoutInMinutes: 90
     continueOnError: true
     env:
       SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
@@ -700,7 +698,7 @@ jobs:
 
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
-  timeoutInMinutes: 90
+  timeoutInMinutes: 150
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1011,7 +1009,7 @@ jobs:
     displayName: 'Compare profiling builds in $(distroName) container'
     condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
-    timeoutInMinutes: 40
+    timeoutInMinutes: 90
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 

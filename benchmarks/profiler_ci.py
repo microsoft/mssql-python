@@ -20,8 +20,9 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"[0-9a-f]{40}")
 LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
-# Leave five minutes of the CI step's 40-minute budget for artifact publication.
-BENCHMARK_TIMEOUT = 35 * 60
+# Twelve five-minute passes plus a 15-minute base build and preflight need 76
+# minutes. Leave headroom here and ten more minutes for CI-step dependency setup.
+BENCHMARK_TIMEOUT = 80 * 60
 WORKER_TIMEOUT = 10 * 60
 
 

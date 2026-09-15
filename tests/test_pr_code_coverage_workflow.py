@@ -167,13 +167,13 @@ def test_ignores_old_head_until_exact_build_appears_and_retries_bad_responses(tm
 def test_accepts_late_artifact_after_failed_aggregate_completes(tmp_path):
     result = _poll(
         tmp_path,
-        [EMPTY] * 92 + [ARTIFACT],
-        [_build()] * 91 + [{**_build(), "status": "completed", "result": "failed"}],
+        [EMPTY] * 302 + [ARTIFACT],
+        [_build()] * 301 + [{**_build(), "status": "completed", "result": "failed"}],
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"COVERAGE_ARTIFACT={ARTIFACT_URL}" in result.stdout
     assert "Build completed (failed)" in result.stdout
-    assert int((tmp_path / "elapsed").read_text()) > 45 * 60
+    assert int((tmp_path / "elapsed").read_text()) > 150 * 60
 
 
 @pytest.mark.parametrize("result", ["succeeded", "failed", "canceled"])
@@ -231,7 +231,7 @@ def test_persistent_api_errors_have_finite_retries(tmp_path, failing_api):
     assert int((tmp_path / "elapsed").read_text()) < 180
 
 
-@pytest.mark.parametrize("step,budget", [("build", 15 * 60), ("artifact", 120 * 60)])
+@pytest.mark.parametrize("step,budget", [("build", 15 * 60), ("artifact", 210 * 60)])
 def test_missing_build_or_queued_coverage_obeys_wall_clock_budget(tmp_path, step, budget):
     if step == "build":
         result = _run(
@@ -248,5 +248,5 @@ def test_missing_build_or_queued_coverage_obeys_wall_clock_budget(tmp_path, step
 
 def test_job_budget_leaves_time_for_downloads_and_publishing():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "    timeout-minutes: 145\n" in workflow
+    assert "    timeout-minutes: 235\n" in workflow
     assert "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in workflow

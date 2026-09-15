@@ -19,6 +19,8 @@ from profiler_report import LEGS, MARKER, MAX_BYTES, render, validate
 
 ADO = "https://dev.azure.com/sqlclientdrivers/public/_apis/build"
 REPOSITORY = "microsoft/mssql-python"
+# Allow a 150-minute ADO job plus queueing; the workflow reserves publication time.
+WAIT_MINUTES = 210
 
 
 def allowed_url(url):
@@ -174,12 +176,13 @@ def run(number, head, wait_minutes):
         if build and build["status"] == "completed":
             break
         time.sleep(30)
-    if build is None:
+    if build is None or build.get("status") != "completed":
         publish(
             number,
             head,
             f"{MARKER}\n## Profiler performance report\n"
-            f"No matching ADO run became available for `{head}`. Results are incomplete.",
+            f"No matching ADO run completed within the {wait_minutes}-minute wait for `{head}`. "
+            "Results are incomplete. No regression verdict.",
         )
         return
     build_id = build["id"]
@@ -217,12 +220,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--head", required=True)
-    parser.add_argument("--wait-minutes", type=int, default=95)
+    parser.add_argument("--wait-minutes", type=int, default=WAIT_MINUTES)
     args = parser.parse_args()
     if (
         args.pr <= 0
         or not re.fullmatch(r"[0-9a-f]{40}", args.head)
-        or not 1 <= args.wait_minutes <= 95
+        or not 1 <= args.wait_minutes <= WAIT_MINUTES
     ):
         parser.error("Invalid PR, head SHA or wait limit")
     run(args.pr, args.head, args.wait_minutes)

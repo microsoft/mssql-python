@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -124,6 +125,28 @@ def test_reject_wrong_commit_and_preserve_incomplete_status(report):
     report["pairs"] = []
     reporting.validate(report)
     assert "No regression verdict" in reporting.render([report], "c" * 40, 42)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("pairs", 0, "candidate"),
+        ("pairs", 0, "candidate", "environment"),
+        ("pairs", 0, "candidate", "scenarios"),
+        ("pairs", 0, "candidate", "scenarios", "select"),
+        ("pairs", 0, "candidate", "scenarios", "select", "cpp"),
+        ("pairs", 0, "candidate", "scenarios", "select", "cpp", "ddbc::query"),
+    ],
+)
+@pytest.mark.parametrize("as_list", [False, True])
+def test_reject_non_object_sample_containers(report, path, as_list):
+    parent = report
+    for key in path[:-1]:
+        parent = parent[key]
+    key = path[-1]
+    parent[key] = list(parent[key]) if as_list else None
+    with pytest.raises(ValueError):
+        reporting.validate(report)
 
 
 def zip_data(entries):
@@ -264,7 +287,73 @@ def test_overall_budget_caps_build_and_worker_time(monkeypatch):
     assert controller.remaining(1000, 60) == 60
     with pytest.raises(TimeoutError, match="overall"):
         controller.remaining(100, controller.WORKER_TIMEOUT)
-    assert controller.BENCHMARK_TIMEOUT < 40 * 60
+
+
+def test_full_sample_budget_fits_slow_hosted_workers(report, tmp_path, monkeypatch):
+    # Run 174385 completed workers in 169-285s. Budget twelve five-minute
+    # passes plus the full base-build/preflight allowance, not just measured pairs.
+    clock = [0]
+    measured = []
+    monkeypatch.setattr(controller.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(controller, "resolve_revisions", lambda *a: ("a" * 40, "b" * 40))
+    monkeypatch.setattr(controller, "git", lambda *a: "b" * 40)
+    monkeypatch.setattr(controller, "checkout", lambda *a: None)
+    monkeypatch.setenv("BUILD_BUILDID", "42")
+    monkeypatch.setenv("SYSTEM_PULLREQUEST_SOURCECOMMITID", "c" * 40)
+
+    def build(path, log, timeout):
+        assert timeout >= 900
+        clock[0] += 900
+
+    def preflight(command, **kwargs):
+        assert "--check-build" in command and kwargs["timeout"] == 60
+        clock[0] += 60
+
+    def measure(path, output, scenarios, timeout):
+        assert scenarios is None
+        if timeout < 300:
+            raise subprocess.TimeoutExpired("hosted worker replay", timeout)
+        clock[0] += 300
+        measured.append(output.name)
+        return copy.deepcopy(report["pairs"][0]["base"])
+
+    monkeypatch.setattr(controller, "build", build)
+    monkeypatch.setattr(controller.subprocess, "run", preflight)
+    monkeypatch.setattr(controller, "measure", measure)
+    args = SimpleNamespace(
+        base=None,
+        candidate="HEAD",
+        output=tmp_path,
+        leg=report["leg"],
+        samples=5,
+        warmups=1,
+        reuse_candidate=True,
+        scenarios=None,
+    )
+    controller.run(args)
+    result = reporting.validate(json.loads((tmp_path / "report.json").read_text()))
+    assert result["status"] == "complete" and len(result["pairs"]) == 5
+    assert measured == [
+        f"{side}-{index}.json"
+        for index in range(6)
+        for side in (("base", "candidate") if index % 2 == 0 else ("candidate", "base"))
+    ]
+    assert clock[0] == 76 * 60
+    assert clock[0] < controller.BENCHMARK_TIMEOUT
+
+
+def test_ci_deadlines_include_setup_queueing_and_publication():
+    pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
+    for job in ("pytestonwindows", "PytestOnMacOS", "PytestOnLinux"):
+        section = pipeline.split(f"- job: {job}\n", 1)[1].split("\n- job:", 1)[0]
+        job_minutes = int(re.search(r"^  timeoutInMinutes: (\d+)$", section, re.M)[1])
+        step_minutes = int(re.search(r"^    timeoutInMinutes: (\d+)$", section, re.M)[1])
+        assert step_minutes * 60 >= controller.BENCHMARK_TIMEOUT + 10 * 60
+        assert job_minutes >= step_minutes + 60
+        assert publisher.WAIT_MINUTES >= job_minutes + 60
+    workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
+    workflow_minutes = int(re.search(r"timeout-minutes: (\d+)", workflow)[1])
+    assert workflow_minutes >= publisher.WAIT_MINUTES + 10
 
 
 def test_build_check_rejects_foreign_provider_and_enabled_recording(tmp_path, monkeypatch):
@@ -307,12 +396,26 @@ def test_head_moving_while_listing_comments_prevents_publish(monkeypatch):
     assert reads == 2 and len(calls) == 3
 
 
-@pytest.mark.parametrize("corrupt", [False, True])
+@pytest.mark.parametrize("corrupt", [None, "zip", "scenarios"])
 def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, monkeypatch, corrupt):
     posted = []
+    windows = copy.deepcopy(report)
+    windows["leg"] = "Windows-SQL2022"
+    for pair in windows["pairs"]:
+        for sample in pair.values():
+            sample["environment"]["os"] = "Windows"
+    if corrupt == "scenarios":
+        report["pairs"][0]["candidate"]["scenarios"] = list(reporting.CASES)
+    data = {
+        "Windows-SQL2022": zip_data([("report.json", json.dumps(windows))]),
+        "Linux-SQL2022": (
+            b"invalid ZIP" if corrupt == "zip" else zip_data([("report.json", json.dumps(report))])
+        ),
+    }
     build = dict(
         id=42,
         status="completed",
+        result="failed",
         definition={"id": 2128},
         repository={"id": "microsoft/mssql-python"},
         sourceBranch="refs/pull/123/merge",
@@ -336,26 +439,65 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
             {
                 "value": [
                     {
-                        "name": "profiler-Linux-SQL2022",
-                        "resource": {"downloadUrl": "https://dev.azure.com/artifact"},
+                        "name": "profiler-" + leg,
+                        "resource": {"downloadUrl": "https://dev.azure.com/" + leg},
                     }
+                    for leg in data
                 ]
             }
             if "/artifacts?" in url
             else {"value": [build]}
         ),
     )
-    raw = b"invalid ZIP" if corrupt else zip_data([("report.json", json.dumps(report))])
-    monkeypatch.setattr(publisher, "fetch", lambda *args, **kwargs: raw)
+    monkeypatch.setattr(publisher, "fetch", lambda url, **kw: data[url.rsplit("/", 1)[-1]])
     publisher.run(123, "c" * 40, 1)
     assert len(posted) == 2
     assert posted[0].startswith(reporting.MARKER)
-    assert "Windows-SQL2022: incomplete/unavailable" in posted[1]
+    assert "### Windows-SQL2022" in posted[1]
+    assert "macOS-SQL2022: incomplete/unavailable" in posted[1]
     if corrupt:
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
-        assert "regression signals" not in posted[1]
+        assert "Linux-SQL2022: incomplete/unavailable" in posted[1]
+        assert posted[1].count("20 regression signals") == 1
     else:
-        assert "20 regression signals" in posted[1]
+        assert posted[1].count("20 regression signals") == 2
+
+
+@pytest.mark.parametrize("status", [None, "notStarted", "inProgress"])
+def test_publisher_deadline_finishes_without_reading_unfinished_build_metadata(monkeypatch, status):
+    posted = []
+    clock = [0]
+    build = dict(
+        id=42,
+        status=status,
+        sourceVersion=None,
+        definition={"id": 2128},
+        repository={"id": "microsoft/mssql-python"},
+        sourceBranch="refs/pull/123/merge",
+        triggerInfo={"pr.number": "123", "pr.sourceSha": "c" * 40},
+    )
+
+    def github(path):
+        assert path == "pulls/123", "Unfinished builds must not query merge topology"
+        return {"state": "open", "head": {"sha": "c" * 40}}
+
+    def api(url):
+        assert "/builds?" in url, "Unfinished builds must not query artifacts"
+        return {"value": [] if status is None else [build]}
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(publisher.time, "sleep", sleep)
+    monkeypatch.setattr(publisher, "github", github)
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "publish", lambda number, head, body: posted.append(body))
+    publisher.run(123, "c" * 40, 1)
+    assert clock[0] == 60 and len(posted) == 2
+    assert "Awaiting" in posted[0] and "Awaiting" not in posted[1]
+    assert "1-minute wait" in posted[1] and "incomplete" in posted[1]
+    assert "No regression verdict" in posted[1]
 
 
 def test_artifact_symlink_and_oversized_json_are_rejected():
