@@ -258,7 +258,8 @@ message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 include(FetchContent)
 message(STATUS "Downloading simdutf v8.2.0 source archive with FetchContent")
 set(simdutf_fetchcontent_args
-    URL https://github.com/simdutf/simdutf/archive/refs/tags/v8.2.0.tar.gz
+    # Use the official archive endpoint directly, avoiding the GitHub redirect gateway.
+    URL https://codeload.github.com/simdutf/simdutf/tar.gz/refs/tags/v8.2.0
     URL_HASH SHA256=033a91b1d7d1cb818c1eff49e61faaa1b64a3a530d59ef9efef0195e56bda8b1
 )
 if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")

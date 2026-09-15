@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -169,6 +170,23 @@ def _matrix_item(section, name):
 @pytest.fixture(scope="module")
 def workflow():
     return WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_simdutf_fetch_bypasses_archive_gateway():
+    """The first archive request must not depend on github.com's redirect gateway."""
+    cmake = "\n".join(_active_lines(ROOT / "mssql_python" / "pybind" / "CMakeLists.txt"))
+    fetch_args = _section(cmake, "set(simdutf_fetchcontent_args\n", "\n)")
+    match = re.search(r"^URL (\S+)$", fetch_args, re.MULTILINE)
+    assert match is not None
+    url = urlsplit(match.group(1))
+    assert url.scheme == "https"
+    assert url.netloc == "codeload.github.com"
+    assert url.path == "/simdutf/simdutf/tar.gz/refs/tags/v8.2.0"
+    assert not url.query and not url.fragment
+    assert (
+        "URL_HASH SHA256=033a91b1d7d1cb818c1eff49e61faaa1b64a3a530d59ef9efef0195e56bda8b1"
+        in fetch_args
+    )
 
 
 @pytest.mark.parametrize("stem, expected", DIRECT_REQUIREMENTS.items())
