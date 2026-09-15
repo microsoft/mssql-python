@@ -57,6 +57,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- **GH-769 deprecation policy:** The misplaced `GetInfoConstants` members
+  `SQL_TXN_ISOLATION_LEVEL`, `SQL_CONCURRENCY`, `SQL_ROWSET_SIZE`, `SQL_ROW_NUMBER`,
+  `SQL_IC_UPPER`, `SQL_IC_LOWER`, `SQL_IC_SENSITIVE`, `SQL_IC_MIXED`, and
+  `SQL_SQL92_ENTRY_SQL`, `SQL_SQL92_INTERMEDIATE_SQL`, `SQL_SQL92_FULL_SQL`
+  remain available with their original values throughout **1.x**. Existing enum
+  attribute access, module-level imports, and `get_info_constants()` dictionary
+  lookups remain available. Removal is deferred to **2.0 or later**, only after
+  maintainer approval and an explicit migration notice; this is not a scheduled removal.
+  Deprecation is documented rather than emitting runtime warnings.
+  These names are not information-type names, and passing their integers to
+  `getinfo()` still requests unrelated information. They cannot be rejected by
+  value without also rejecting legitimate information types with the same IDs.
+  For migration, use `SQL_ATTR_TXN_ISOLATION` for the connection attribute;
+  use `ConstantsDDBC` or module-level names for legacy statement options and
+  `SQL_IC_*` response values, not as `getinfo()` requests. To interpret
+  `SQL_SQL_CONFORMANCE`, use `SQL_SC_SQL92_ENTRY` (1),
+  `SQL_SC_FIPS127_2_TRANSITIONAL` (2), `SQL_SC_SQL92_INTERMEDIATE` (4), and
+  `SQL_SC_SQL92_FULL` (8). The deprecated `SQL_SQL92_*_SQL` names retain
+  **127/128/129** solely for compatibility; they are not conformance flags.
+  For information types whose IDs are corrected, previously persisted value-based
+  enum pickles and raw IDs cannot identify their original meaning; rebuild them
+  from the intended information-type names. Name-based enum pickles resolve
+  retained names to their corrected values.
 - Connection strings and string connection parameters that contain a NUL
   (`\x00`) character are now rejected up front with `InterfaceError` instead of
   being silently truncated at the NUL by the underlying driver.
@@ -69,6 +92,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-769:** Corrected 11 `GetInfoConstants` IDs for scalar functions, outer
+  joins, driver handles, cursor attributes, catalog support, and parameter
+  descriptions. Added the ODBC name `SQL_TIMEDATE_FUNCTIONS` as an alias of
+  `SQL_DATETIME_FUNCTIONS` at 52, preserving the existing canonical `.name`.
+  For registered information types,
+  `getinfo()` now uses ODBC return types instead of guessing from the bytes: numeric
+  information is decoded as unsigned integers (including
+  `SQL_SQL_CONFORMANCE`, `SQL_CURSOR_SENSITIVITY`, and
+  `SQL_MAX_IDENTIFIER_LEN`), and character results use the Unicode path.
+  An immutable return-type registry enforces the exact ODBC numeric width,
+  including pointer-sized handles. Wrong-width or truncated numeric payloads
+  raise `DatabaseError` rather than returning a guessed value. Legacy non-byte
+  numeric payloads are not truncated or coerced from bool to int; convertible
+  decimal strings still return integers.
+  Also corrects decoding for the unlisted standard IDs `SQL_DBMS_NAME` (17),
+  `SQL_DBMS_VER` (18), `SQL_XOPEN_CLI_YEAR` (10000), `SQL_ASYNC_MODE` (10021), and
+  `SQL_CREATE_ASSERTION` (127). Other unlisted raw IDs retain their existing behavior.
+  Driver Manager-only handle queries can still be unsupported by the native
+  provider; correcting their IDs does not add Driver Manager support. Native
+  retrieval errors, including timeout and connection-loss errors, continue to be
+  logged and return `None`. Providers may return cached metadata after connection
+  loss: `getinfo()` is not a connection-health check.
 - **GH-740:** A Python `Decimal` whose value falls in the SQL Server MONEY /
   SMALLMONEY range is now bound as `SQL_NUMERIC` with its own precision and scale
   on both `execute()` paths (native detection, and the legacy path reached when
