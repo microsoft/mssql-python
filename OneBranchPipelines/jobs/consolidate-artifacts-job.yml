@@ -125,12 +125,12 @@ jobs:
         displayName: 'Consolidate Windows symbols (optional)'
         continueOnError: true
       
-      # Include mssql-py-core version file for traceability
+      # Include the companion dependency version for release validation.
       - bash: |
           set -e
-          cp $(Build.SourcesDirectory)/eng/versions/mssql-py-core.version $(ob_outputDirectory)/dist/
-          echo "mssql-py-core version: $(cat $(ob_outputDirectory)/dist/mssql-py-core.version)"
-        displayName: 'Include mssql-py-core version'
+          cp $(Build.SourcesDirectory)/eng/versions/mssql-python-rs.version $(ob_outputDirectory)/dist/
+          echo "mssql-python-rs version: $(cat $(ob_outputDirectory)/dist/mssql-python-rs.version)"
+        displayName: 'Include mssql-python-rs version'
       
       # Verify consolidation
       - bash: |
