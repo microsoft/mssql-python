@@ -8,6 +8,7 @@ import re
 import sys
 from http.client import HTTPException
 from typing import Callable
+from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 _REPOSITORY_ID = "eec96f30-ec96-4910-abd6-c45a99a5c29f"
@@ -33,6 +34,56 @@ def _required_env(name: str) -> str:
     if not value:
         raise ValueError(f"Missing required environment variable {name}.")
     return value
+
+
+def read_release_versions(read_source: Callable[[str], str]) -> dict[str, str]:
+    """Read the literals maintained by the existing wheel release process, without imports."""
+    versions = {}
+    for path, field in (
+        ("setup.py", "version"),
+        ("mssql_python/__init__.py", "__version__"),
+        ("mssql_python_odbc/__init__.py", "__version__"),
+    ):
+        matches = re.findall(
+            rf"""(?m)^\s*{field}\s*=\s*['"]([A-Za-z0-9][A-Za-z0-9._-]*)['"]\s*,?\s*(?:#.*)?$""",
+            read_source(path),
+        )
+        if len(matches) != 1:
+            raise ValueError(f"{path} must contain exactly one literal {field} release version.")
+        versions[path] = matches[0]
+    if versions["setup.py"] != versions["mssql_python/__init__.py"]:
+        raise ValueError(
+            "Binding release versions in setup.py and mssql_python/__init__.py differ."
+        )
+    return {
+        "mssql-python": versions["setup.py"],
+        "mssql-python-odbc": versions["mssql_python_odbc/__init__.py"],
+    }
+
+
+def _producer_versions(get_json: Callable[[str], dict], commit: str) -> dict[str, str]:
+    def read_source(path: str) -> str:
+        query = urlencode(
+            {
+                "path": "/" + path,
+                "includeContent": "true",
+                "versionDescriptor.versionType": "commit",
+                "versionDescriptor.version": commit,
+                "$format": "json",
+                "api-version": "7.1",
+            }
+        )
+        item = get_json(f"git/repositories/{_REPOSITORY_ID}/items?{query}")
+        if (
+            item.get("path") != "/" + path
+            or item.get("commitId") != commit
+            or item.get("gitObjectType") != "blob"
+            or not isinstance(item.get("content"), str)
+        ):
+            raise ValueError(f"Missing or mismatched wheel producer source for {path} at {commit}.")
+        return item["content"]
+
+    return read_release_versions(read_source)
 
 
 def _verify_run(build: dict, run: dict, pipeline_id: int, run_id: int) -> dict:
@@ -114,6 +165,7 @@ def verify_provenance(
     return {
         "producer": producer,
         "wheel": wheel,
+        "versions": _producer_versions(get_json, wheel["commit"]),
         "productionEligible": not reasons,
         "productionIneligibilityReasons": reasons,
     }
@@ -155,7 +207,14 @@ def main() -> None:
         release_branch=_required_env("RELEASE_SOURCE_BRANCH"),
         publish=publish == "true",
     )
+    version = result["versions"]["mssql-python"]
+    expected = os.environ.get("MSSQL_PYTHON_VERSION", "")
+    if expected and expected != version:
+        raise ValueError(
+            "mssqlPythonVersion differs from the recorded wheel producer release version."
+        )
     print("VERIFIED_RECORDED_PROVENANCE: " + json.dumps(result, sort_keys=True))
+    print(f"##vso[task.setvariable variable=mssqlPythonVersion;isOutput=true]{version}")
     if publish == "false":
         print("Validate-only: provenance verified; package readiness is gated separately.")
 

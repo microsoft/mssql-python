@@ -39,6 +39,9 @@ on:
       - 'tests/test_035_conda_macho_assert.py'
       - 'tests/test_036_conda_provenance.py'
       - 'requirements.txt'
+      - 'setup.py'
+      - 'mssql_python/__init__.py'
+      - 'mssql_python_odbc/__init__.py'
       - '.github/workflows/conda-audit.yml'
 
 permissions:
@@ -77,14 +80,60 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p wheels
-          # Historical CP311/linux-64 control, not 1.15.0 qualification (not yet on PyPI).
-          # mssql-python 1.14.0 requires exactly mssql-python-odbc 18.6.2.1.
-          cat > wheel-inputs.txt <<'EOF'
-          mssql-python==1.14.0 --hash=sha256:2f1cd90ec569ddce446c4ccf58ab3a6f6872e98fe950fcb223b2dab8992a9395
-          mssql-python-odbc==18.6.2.1 --hash=sha256:b8aad821f3b8637b0e6d4637f4b730ed9897c4665fa99d47e44e97fd1c79c77a
-          EOF
-          python -m pip download --no-deps --only-binary=:all: --require-hashes \
-            -r wheel-inputs.txt -d wheels
+          # Exact maintained release versions and PyPI digests, never an older/latest fallback.
+          python - <<'PY'
+          import email
+          import json
+          import re
+          import runpy
+          import subprocess
+          import sys
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+          from urllib.error import URLError
+
+          read_versions = runpy.run_path("conda/validate_conda_provenance.py")["read_release_versions"]
+          versions = read_versions(lambda path: Path(path).read_text(encoding="utf-8"))
+          requirements = []
+          for name, version in versions.items():
+              try:
+                  with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json", timeout=60) as response:
+                      release = json.load(response)
+              except URLError:
+                  raise SystemExit(f"Cannot fetch published {name}=={version} from PyPI; no fallback is allowed.")
+              hashes = {item["digests"]["sha256"] for item in release["urls"]
+                        if item["packagetype"] == "bdist_wheel" and not item.get("yanked")}
+              if (release["info"]["name"] != name or release["info"]["version"] != version
+                      or not hashes or any(not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in hashes)):
+                  raise SystemExit(f"Invalid published wheel identity or SHA256 for {name}=={version}.")
+              requirements.append(f"{name}=={version} " + " ".join(f"--hash=sha256:{digest}" for digest in sorted(hashes)))
+          Path("wheel-inputs.txt").write_text("\n".join(requirements) + "\n", encoding="utf-8")
+          subprocess.run([sys.executable, "-m", "pip", "--isolated", "download",
+                          "--index-url", "https://pypi.org/simple", "--no-deps", "--only-binary=:all:",
+                          "--require-hashes", "-r", "wheel-inputs.txt", "-d", "wheels"], check=True)
+          wheels = list(Path("wheels").glob("*.whl"))
+          if len(wheels) != len(versions):
+              raise SystemExit("Expected exactly the binding and ODBC wheels.")
+          for name, version in versions.items():
+              selected = [path for path in wheels if path.name.startswith(f"{name.replace('-', '_')}-{version}-")]
+              if len(selected) != 1:
+                  raise SystemExit(f"Missing or ambiguous wheel for {name}=={version}.")
+              with zipfile.ZipFile(selected[0]) as archive:
+                  metadata_files = [path for path in archive.namelist() if path.endswith(".dist-info/METADATA")]
+                  if metadata_files != [f"{name.replace('-', '_')}-{version}.dist-info/METADATA"]:
+                      raise SystemExit(f"Expected one matching root METADATA in {selected[0].name}.")
+                  metadata = email.message_from_bytes(archive.read(metadata_files[0]))
+              names = [re.sub(r"[-_.]+", "-", value).lower() for value in metadata.get_all("Name", [])]
+              if names != [name] or metadata.get_all("Version") != [version]:
+                  raise SystemExit(f"Wheel METADATA disagrees with {name}=={version}.")
+              if name == "mssql-python":
+                  pins = [value.strip() for value in metadata.get_all("Requires-Dist", [])
+                          if re.match(r"(?i)^mssql[-_.]+python[-_.]+odbc(?:[\s(<=>!~;\[]|$)", value.strip())]
+                  exact = rf"==\s*{re.escape(versions['mssql-python-odbc'])}"
+                  if len(pins) != 1 or not re.fullmatch(rf"(?i)mssql[-_.]+python[-_.]+odbc\s*(?:{exact}|\({exact}\))", pins[0]):
+                      raise SystemExit("Binding METADATA must require exactly the selected ODBC wheel version.")
+          PY
           echo "Downloaded:"; ls -1 wheels
 
       - name: Build + audit a linux-64 conda package

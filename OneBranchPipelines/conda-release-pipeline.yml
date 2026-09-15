@@ -44,13 +44,12 @@ parameters:
     default: 'main'
     values:
       - 'main'
-  # The exact mssql-python version being released. When set, the readiness gate
-  # asserts EVERY conda package matches it (not just internal one-version
-  # consistency). Override the release default explicitly; use empty only for a consistency-only dry run.
+  # Automatically resolve the exact version from the recorded wheel producer's source.
+  # An optional override is an additional assertion, never a replacement for that source.
   - name: mssqlPythonVersion
-    displayName: 'Expected mssql-python release version (e.g. 1.15.0)'
+    displayName: 'Optional expected mssql-python version (empty = resolve from wheel producer)'
     type: string
-    default: '1.15.0'
+    default: ''
 
 variables:
   - template: /OneBranchPipelines/variables/common-variables.yml@self
@@ -137,6 +136,7 @@ extends:
                   versionSpec: '3.12'
                   addToPath: true
               - task: PowerShell@2
+                name: Provenance
                 displayName: 'Guard: recorded Conda and upstream wheel run provenance'
                 env:
                   CONDA_BUILD_PIPELINE_ID: $(resources.pipeline.buildPipeline.pipelineID)
@@ -145,6 +145,7 @@ extends:
                   CONDA_BUILD_SOURCE_COMMIT: $(resources.pipeline.buildPipeline.sourceCommit)
                   RELEASE_SOURCE_BRANCH: $(Build.SourceBranch)
                   PUBLISH_TO_CONDA: '${{ parameters.publishToConda }}'
+                  MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
                   SYSTEM_ACCESSTOKEN: $(System.AccessToken)
                   SYSTEM_COLLECTIONURI: $(System.CollectionUri)
                   SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
@@ -158,23 +159,9 @@ extends:
                       exit 1
                     }
 
-              # Publishing must pin the exact version in addition to producer provenance.
-              - ${{ if eq(parameters.publishToConda, true) }}:
-                - task: PowerShell@2
-                  displayName: 'Guard: expected mssql-python version is required to publish'
-                  env:
-                    MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
-                  inputs:
-                    targetType: 'inline'
-                    script: |
-                      if ([string]::IsNullOrWhiteSpace($env:MSSQL_PYTHON_VERSION)) {
-                        Write-Error "publishToConda=true but mssqlPythonVersion is empty. A production publish must pin the exact version (the release-readiness gate then asserts EVERY package matches it). Re-run with mssqlPythonVersion set."
-                        exit 1
-                      }
-                      Write-Host "Publish version pin: $env:MSSQL_PYTHON_VERSION"
               - template: /OneBranchPipelines/steps/conda-release-step.yml@self
                 parameters:
-                  mssqlPythonVersion: '${{ parameters.mssqlPythonVersion }}'
+                  mssqlPythonVersion: '$(Provenance.mssqlPythonVersion)'
 
               # Dry run (publishToConda=false): enumerate every package and print the exact
               # `anaconda upload` plan WITHOUT uploading, so a validate-only run shows precisely
@@ -257,6 +244,7 @@ extends:
                 type: windows
               variables:
                 ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+                mssqlPythonVersion: $[ dependencies.ValidateConda.outputs['Provenance.mssqlPythonVersion'] ]
               steps:
                 - checkout: self
                   fetchDepth: 1
@@ -264,4 +252,4 @@ extends:
                   parameters:
                     condaChannel: '${{ parameters.condaChannel }}'
                     condaLabel: '${{ parameters.condaLabel }}'
-                    mssqlPythonVersion: '${{ parameters.mssqlPythonVersion }}'
+                    mssqlPythonVersion: '$(mssqlPythonVersion)'

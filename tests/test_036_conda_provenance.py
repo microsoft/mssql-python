@@ -6,6 +6,7 @@ import json
 import types
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 
 import pytest
 
@@ -47,18 +48,45 @@ def _records(pipeline, run, commit, branch="refs/heads/main"):
 
 
 @pytest.fixture
-def chain():
+def release_sources():
+    return {
+        "setup.py": "setup(\n    version='1.15.0',\n)\n",
+        "mssql_python/__init__.py": '__version__ = "1.15.0"\n',
+        "mssql_python_odbc/__init__.py": '__version__ = "18.6.2.1"\n',
+    }
+
+
+@pytest.fixture
+def chain(release_sources):
     producer, producer_run = _records(2318, 174195, "a" * 40)
     wheel, wheel_run = _records(2199, 173176, "b" * 40)
     producer_run["resources"]["pipelines"] = {
         "buildPipeline": {"pipeline": {"id": 173176}, "version": "26250.2"}
     }
-    return {
+    records = {
         "build/builds/174195?api-version=7.1": producer,
         "pipelines/2318/runs/174195?api-version=7.1": producer_run,
         "build/builds/173176?api-version=7.1": wheel,
         "pipelines/2199/runs/173176?api-version=7.1": wheel_run,
     }
+    for path, content in release_sources.items():
+        query = urlencode(
+            {
+                "path": "/" + path,
+                "includeContent": "true",
+                "versionDescriptor.versionType": "commit",
+                "versionDescriptor.version": "b" * 40,
+                "$format": "json",
+                "api-version": "7.1",
+            }
+        )
+        records[f"git/repositories/{provenance._REPOSITORY_ID}/items?{query}"] = {
+            "path": "/" + path,
+            "commitId": "b" * 40,
+            "gitObjectType": "blob",
+            "content": content,
+        }
+    return records
 
 
 def _verify(chain, **kwargs):
@@ -84,6 +112,46 @@ def test_exact_recorded_wheel_run_is_verified_not_packaging_mode_or_build_number
         "commit": "b" * 40,
     }
     assert result["producer"]["commit"] == "a" * 40  # Recipe and wheel commits can differ.
+    assert result["versions"] == {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "version=get_version()",
+        "version='1.15.0'\nversion='1.15.0'",
+        "version='1.14.0'",
+        "version='$(unresolved)'",
+        "version='1.15.0' + '.dev1'",
+    ],
+)
+def test_missing_ambiguous_or_different_release_literal_fails(release_sources, content):
+    release_sources["setup.py"] = content
+    with pytest.raises(ValueError, match="release version|release versions"):
+        provenance.read_release_versions(release_sources.__getitem__)
+
+
+def test_release_source_is_read_not_executed(release_sources):
+    release_sources["setup.py"] += "raise AssertionError('must not execute setup.py')\n"
+    assert provenance.read_release_versions(release_sources.__getitem__)["mssql-python"] == "1.15.0"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("path", "/other.py"),
+        ("commitId", "a" * 40),
+        ("commitId", None),
+        ("gitObjectType", "tree"),
+        ("content", None),
+    ],
+)
+def test_version_source_response_must_match_exact_wheel_commit(chain, field, value):
+    item = next(value for key, value in chain.items() if key.startswith("git/repositories/"))
+    item[field] = value
+    with pytest.raises(ValueError, match="wheel producer source"):
+        _verify(chain, publish=False)
 
 
 def test_main_conda_producer_cannot_publish_feature_branch_wheels(chain):
@@ -317,10 +385,30 @@ def provenance_cli_env(monkeypatch, ado_env):
         "CONDA_BUILD_SOURCE_BRANCH": "refs/heads/main",
         "CONDA_BUILD_SOURCE_COMMIT": "a" * 40,
         "RELEASE_SOURCE_BRANCH": "refs/heads/main",
+        "MSSQL_PYTHON_VERSION": "",
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
     return values
+
+
+@pytest.mark.parametrize("expected", ["", "1.15.0", "1.14.0"])
+@pytest.mark.parametrize("publish", ["true", "false"])
+def test_cli_auto_version_and_override_are_producer_bound(
+    monkeypatch, provenance_cli_env, chain, capsys, expected, publish
+):
+    monkeypatch.setenv("MSSQL_PYTHON_VERSION", expected)
+    monkeypatch.setenv("PUBLISH_TO_CONDA", publish)
+    monkeypatch.setattr(provenance, "ado_get_json", chain.__getitem__)
+    assert provenance.cli() == (1 if expected == "1.14.0" else 0)
+    output = capsys.readouterr()
+    if expected == "1.14.0":
+        assert output.out == "" and "differs from the recorded wheel producer" in output.err
+    else:
+        assert (
+            "##vso[task.setvariable variable=mssqlPythonVersion;isOutput=true]1.15.0" in output.out
+        )
+        assert output.err == ""
 
 
 @pytest.mark.parametrize(
