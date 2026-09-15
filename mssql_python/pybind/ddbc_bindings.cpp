@@ -861,7 +861,7 @@ static SQLRETURN BindTableValuedParameter(const SqlHandlePtr& statementHandle, S
                 inferred.paramSQLType = declared.sqlType;
                 inferred.columnSize = std::max<SQLULEN>(declared.columnSize, 1);
                 inferred.decimalDigits = declared.decimalDigits;
-            } else if (declared.columnSize == 0) {
+            } else {
                 if (inferred.paramSQLType == SQL_WVARCHAR && inferred.columnSize > MAX_INLINE_CHAR) {
                     inferred.paramSQLType = SQL_WLONGVARCHAR;
                 } else if (inferred.paramSQLType == SQL_VARCHAR &&

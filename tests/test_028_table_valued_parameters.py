@@ -475,25 +475,26 @@ def test_tvp_source_precision_survives_destination_conversion(
         assert rows == list(enumerate(values))
 
 
-@pytest.mark.parametrize("conversion_tvp", ["nvarchar(3)"], indirect=True)
 @pytest.mark.parametrize(
-    ("value", "message", "driver_error"),
+    ("conversion_tvp", "value", "recovery"),
     [
-        ("x" * 5000, "would be truncated", "Syntax error or access violation"),
-        ("\u0100" * 5000, "Invalid precision value", "Invalid precision or scale value"),
+        ("nvarchar(3)", "x" * 5000, "ok"),
+        ("nvarchar(3)", "\u0100" * 5000, "ok"),
+        ("varchar(8000)", "x" * 8001, "ok"),
+        ("varchar(8000) COLLATE Latin1_General_100_CI_AS", "\u00e9" * 8001, "ok"),
+        ("varbinary(8000)", b"x" * 8001, b"ok"),
     ],
-    ids=["server-conversion-error", "bind-error"],
+    ids=["short-ascii", "short-unicode", "long-ascii", "long-unicode", "long-binary"],
+    indirect=["conversion_tvp"],
 )
-def test_tvp_error_keeps_diagnostics_and_restores_focus(
-    cursor, conversion_tvp, value, message, driver_error
-):
-    with pytest.raises(ProgrammingError, match=message) as raised:
+def test_tvp_destination_limits_leave_cursor_reusable(cursor, conversion_tvp, value, recovery):
+    with pytest.raises(ProgrammingError, match="would be truncated") as raised:
         cursor.execute(conversion_tvp, ([(0, value)],))
-    assert raised.value.driver_error == driver_error
+    assert raised.value.driver_error == "Syntax error or access violation"
     cursor.execute("SELECT ?", 42)
     assert cursor.fetchone()[0] == 42
-    cursor.execute(conversion_tvp, ([(0, "ok")],))
-    assert cursor.fetchone()[0] == "ok"
+    cursor.execute(conversion_tvp, ([(0, recovery)],))
+    assert cursor.fetchone()[0] == recovery
 
 
 @pytest.mark.parametrize("conversion_tvp", ["decimal(38,0)"], indirect=True)
@@ -529,6 +530,17 @@ def test_tvp_integer_widening_and_nulls(cursor, conversion_tvp):
 def test_tvp_source_buffers_cover_every_row(cursor, conversion_tvp, values):
     cursor.execute(conversion_tvp, (list(enumerate(values)),))
     assert [row[0] for row in cursor.fetchall()] == values
+
+
+@pytest.mark.parametrize(
+    "conversion_tvp", ["varchar(8000) COLLATE Latin1_General_100_CI_AS"], indirect=True
+)
+@pytest.mark.parametrize("length", [4000, 4001, 8000])
+def test_tvp_unicode_source_fits_bounded_varchar(cursor, conversion_tvp, length):
+    values = [None, "ascii first", "\u00e9" * length, ""]
+    for ordered in (values, list(reversed(values))):
+        cursor.execute(conversion_tvp, (list(enumerate(ordered)),))
+        assert [row[0] for row in cursor.fetchall()] == ordered
 
 
 def test_tvp_all_null_columns_use_declared_types(cursor, typed_tvp_procedure):
