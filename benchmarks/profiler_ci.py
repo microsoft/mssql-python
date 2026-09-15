@@ -8,7 +8,7 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import subprocess
@@ -45,7 +45,22 @@ def checkout(revision, path):
         subprocess.run(["git", "-C", str(ROOT), "archive", revision], stdout=archive, check=True)
         archive.seek(0)
         with tarfile.open(fileobj=archive) as tar:
-            tar.extractall(path, filter="data")
+            if sys.version_info >= (3, 12):
+                tar.extractall(path, filter="data")
+                return
+            members = tar.getmembers()
+            for member in members:
+                member_path = PurePosixPath(member.name)
+                if (
+                    not member.name
+                    or member_path.is_absolute()
+                    or ".." in member_path.parts
+                    or "\\" in member.name
+                    or re.match(r"^[A-Za-z]:", member.name)
+                    or not (member.isfile() or member.isdir())
+                ):
+                    raise ValueError("Unsafe git archive member")
+            tar.extractall(path, members=members)
 
 
 def build(path, log, timeout=900):

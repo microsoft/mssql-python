@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import zipfile
@@ -225,6 +226,39 @@ def test_revisions_use_exact_first_parent(monkeypatch):
     assert calls[1][-1] == "b" * 40 + "^1^{commit}"
 
 
+@pytest.mark.parametrize("name", ["safe.txt", "../outside.txt", "C:/outside.txt"])
+def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, name):
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        member = tarfile.TarInfo(name)
+        member.size = 4
+        tar.addfile(member, io.BytesIO(b"data"))
+    archive.seek(0)
+
+    class Archive:
+        def __enter__(self):
+            return archive
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(controller.sys, "version_info", (3, 10))
+    monkeypatch.setattr(controller.tempfile, "TemporaryFile", Archive)
+    monkeypatch.setattr(controller.subprocess, "run", lambda *a, **kw: None)
+    if name == "safe.txt":
+        controller.checkout("a" * 40, tmp_path)
+        assert (tmp_path / name).read_bytes() == b"data"
+    else:
+        with pytest.raises(ValueError, match="Unsafe"):
+            controller.checkout("a" * 40, tmp_path)
+        assert not (tmp_path.parent / "outside.txt").exists()
+
+
+def test_report_cases_match_the_executed_workload_registry():
+    _, workloads = controller.load_suite()
+    assert tuple(workloads.registry()) == reporting.CASES
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch, capsys, fail):
     output = tmp_path / "base-0.json"
@@ -347,13 +381,23 @@ def test_ci_deadlines_include_setup_queueing_and_publication():
     for job in ("pytestonwindows", "PytestOnMacOS", "PytestOnLinux"):
         section = pipeline.split(f"- job: {job}\n", 1)[1].split("\n- job:", 1)[0]
         job_minutes = int(re.search(r"^  timeoutInMinutes: (\d+)$", section, re.M)[1])
-        step_minutes = int(re.search(r"^    timeoutInMinutes: (\d+)$", section, re.M)[1])
+        benchmark_step = section.split("python benchmarks/profiler_ci.py --reuse-candidate", 1)[1]
+        step_minutes = int(re.search(r"^    timeoutInMinutes: (\d+)$", benchmark_step, re.M)[1])
         assert step_minutes * 60 >= controller.BENCHMARK_TIMEOUT + 10 * 60
         assert job_minutes >= step_minutes + 60
         assert publisher.WAIT_MINUTES >= job_minutes + 60
     workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
     workflow_minutes = int(re.search(r"timeout-minutes: (\d+)", workflow)[1])
     assert workflow_minutes >= publisher.WAIT_MINUTES + 10
+
+
+def test_linux_profiler_step_does_not_put_database_password_on_command_line():
+    pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
+    benchmark = pipeline.split("# Run performance benchmarks on Ubuntu", 1)[1]
+    benchmark = benchmark.split("displayName: 'Compare profiling builds", 1)[0]
+    assert "-e DB_PASSWORD \\" in benchmark
+    assert "Pwd=$(DB_PASSWORD)" not in benchmark
+    assert "Pwd=$DB_PASSWORD" in benchmark
 
 
 def test_build_check_rejects_foreign_provider_and_enabled_recording(tmp_path, monkeypatch):
@@ -534,7 +578,8 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
     assert windows.split("steps:", 1)[0].count("profilerCheck: 'on'") == 2
     linux = pipeline.split("- job: PytestOnLinux\n", 1)[1].split("\n- job:", 1)[0]
     benchmark = linux.split("# Run performance benchmarks on Ubuntu", 1)[1]
-    assert '-e BUILD_BUILDID="$(Build.BuildId)"' in benchmark
+    assert "-e BUILD_BUILDID \\" in benchmark
+    assert "BUILD_BUILDID: $(Build.BuildId)" in benchmark
     assert "git config --global --add safe.directory /workspace" in benchmark
     assert "apt-get install -y --reinstall libodbcinst2" in benchmark
     assert benchmark.index("apt-get install -y --reinstall libodbcinst2") < benchmark.index(
