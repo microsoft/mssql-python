@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -471,23 +472,49 @@ def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeyp
     assert not any(command[1:3] == ["run", "-n"] for command in calls)
 
 
+def _write_wheel(path, metadata=None, *, metadata_count=1):
+    distribution, version = path.name.split("-")[:2]
+    if metadata is None:
+        metadata = f"Metadata-Version: 2.1\nName: {distribution}\nVersion: {version}\n"
+        if distribution == "mssql_python":
+            metadata += (
+                "Requires-Dist: mssql-python-odbc==18.6.2\n"
+                'Requires-Dist: pyarrow>=14; extra == "pyarrow"\n'
+                "Requires-Dist: mssql-python-odbc-helper>=1\n"
+            )
+    with zipfile.ZipFile(path, "w") as wheel:
+        for _ in range(metadata_count):
+            wheel.writestr(f"{distribution}-{version}.dist-info/METADATA", metadata)
+    return metadata
+
+
 def _wheel_inputs(tmp_path, odbc_names):
     mssql_dir = tmp_path / "mssql"
     odbc_dir = tmp_path / "odbc"
     links = tmp_path / "links"
     mssql_dir.mkdir()
     odbc_dir.mkdir()
-    (mssql_dir / "mssql_python-1.2.3-cp313-cp313-win_amd64.whl").write_bytes(b"mssql")
+    _write_wheel(mssql_dir / "mssql_python-1.2.3-cp313-cp313-win_amd64.whl")
     for name in odbc_names:
-        (odbc_dir / name).write_bytes(b"odbc")
+        _write_wheel(odbc_dir / name)
     return mssql_dir, odbc_dir, links
 
 
-def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path):
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "mssql-python-odbc==18.6.2",
+        "MSSQL_PYTHON_ODBC ( == 18.6.2 )",
+        "mssql.python.odbc ==18.6.2",
+    ],
+)
+def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path, requirement):
     mssql_dir, odbc_dir, links = _wheel_inputs(
         tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
     )
-    (mssql_dir / "mssql_python-1.2.3-cp312-cp312-win_amd64.whl").write_bytes(b"mssql")
+    wheel = mssql_dir / "mssql_python-1.2.3-cp312-cp312-win_amd64.whl"
+    metadata = _write_wheel(wheel).replace("Name: mssql_python", "Name: MSSQL.Python")
+    _write_wheel(wheel, metadata.replace("mssql-python-odbc==18.6.2", requirement))
 
     versions = build.gather_wheels(
         str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
@@ -505,7 +532,7 @@ def test_gather_wheels_rejects_mixed_mssql_python_versions(tmp_path, capsys):
     mssql_dir, odbc_dir, links = _wheel_inputs(
         tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
     )
-    (mssql_dir / "mssql_python-9.9.9-cp312-cp312-win_amd64.whl").write_bytes(b"mssql")
+    _write_wheel(mssql_dir / "mssql_python-9.9.9-cp312-cp312-win_amd64.whl")
 
     with pytest.raises(SystemExit):
         build.gather_wheels(
@@ -525,6 +552,7 @@ def test_gather_wheels_rejects_no_odbc_match(tmp_path):
         build.gather_wheels(
             str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
         )
+    assert not list(links.iterdir())
 
 
 def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
@@ -540,6 +568,95 @@ def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
         build.gather_wheels(
             str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
         )
+    assert not list(links.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("package", "problem"),
+    [
+        ("mssql", "missing-metadata"),
+        ("odbc", "duplicate-metadata"),
+        ("mssql", "missing-name"),
+        ("mssql", "duplicate-name"),
+        ("odbc", "wrong-name"),
+        ("odbc", "missing-version"),
+        ("odbc", "duplicate-version"),
+        ("mssql", "wrong-version"),
+        ("mssql", "bad-zip"),
+    ],
+)
+def test_gather_wheels_rejects_invalid_metadata_before_copy(tmp_path, capsys, package, problem):
+    mssql_dir, odbc_dir, links = _wheel_inputs(
+        tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
+    )
+    wheel = (
+        mssql_dir / "mssql_python-1.2.3-cp312-cp312-win_amd64.whl"
+        if package == "mssql"
+        else next(odbc_dir.glob("*.whl"))
+    )
+    metadata = _write_wheel(wheel)
+    if problem == "missing-metadata":
+        _write_wheel(wheel, metadata_count=0)
+    elif problem == "duplicate-metadata":
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            _write_wheel(wheel, metadata_count=2)
+    elif problem == "bad-zip":
+        wheel.write_bytes(b"not a wheel ZIP")
+    else:
+        field = "Name" if problem.endswith("name") else "Version"
+        line = next(
+            line for line in metadata.splitlines(keepends=True) if line.startswith(field + ":")
+        )
+        replacement = f"{field}: {'unrelated-package' if field == 'Name' else '9.9.9'}\n"
+        if problem.startswith("missing"):
+            replacement = ""
+        elif problem.startswith("duplicate"):
+            replacement = line + line
+        _write_wheel(wheel, metadata.replace(line, replacement))
+
+    with pytest.raises(SystemExit) as error:
+        build.gather_wheels(
+            str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
+        )
+    assert error.value.code == 1
+    assert wheel.name in capsys.readouterr().err
+    assert not list(links.iterdir())
+
+
+@pytest.mark.parametrize(
+    "requirements",
+    [
+        [],
+        ["mssql-python-odbc-helper==18.6.2"],
+        ["mssql-python-odbc==18.6.3"],
+        ["mssql-python-odbc>=18.6.2"],
+        ["mssql-python-odbc==18.6.*"],
+        ["mssql-python-odbc===18.6.2"],
+        ['mssql-python-odbc==18.6.2; python_version >= "3.10"'],
+        ["mssql-python-odbc[extra]==18.6.2"],
+        ["mssql-python-odbc (==18.6.2"],
+        ["mssql-python-odbc==18.6.2", "mssql-python-odbc==18.6.3"],
+        ["mssql-python-odbc==18.6.2,<19"],
+        ["mssql-python-odbc @ https://example.invalid/driver.whl"],
+    ],
+)
+def test_gather_wheels_requires_exact_actual_odbc_pair(tmp_path, capsys, requirements):
+    mssql_dir, odbc_dir, links = _wheel_inputs(
+        tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
+    )
+    wheel = next(mssql_dir.glob("*.whl"))
+    _write_wheel(
+        wheel,
+        "Metadata-Version: 2.1\nName: mssql-python\nVersion: 1.2.3\n"
+        + "".join(f"Requires-Dist: {requirement}\n" for requirement in requirements),
+    )
+    with pytest.raises(SystemExit) as error:
+        build.gather_wheels(
+            str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
+        )
+    assert error.value.code == 1
+    assert "one unconditional exact mssql-python-odbc==18.6.2" in capsys.readouterr().err
+    assert not list(links.iterdir())
 
 
 @pytest.mark.parametrize(

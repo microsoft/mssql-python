@@ -7,6 +7,9 @@ import glob
 import os
 import re
 import shutil
+import zipfile
+from email.parser import BytesParser
+from email.policy import default
 
 from . import environment, verify
 
@@ -18,7 +21,8 @@ def gather_wheels(
 ) -> tuple[str, str]:
     """Copy this platform's mssql-python wheel(s) (excluding the odbc package, whose filename
     also starts with mssql_python) + this platform's odbc wheel into ONE find-links dir. The
-    dir is CLEARED first so a stale artifact from a reused workdir can never be validated."""
+    dir is CLEARED first so a stale artifact from a reused workdir can never be validated.
+    Check METADATA identities and the exact ODBC dependency pair before copying any wheel."""
     if os.path.isdir(links):
         shutil.rmtree(links)
     os.makedirs(links, exist_ok=True)
@@ -48,9 +52,6 @@ def gather_wheels(
         )
     mssql_ver = next(iter(mssql_versions))
 
-    for w in mssql:
-        shutil.copy2(w, links)
-
     odbc_matches = sorted(glob.glob(os.path.join(odbc_dir, "**", odbc_filter), recursive=True))
     if not odbc_matches:
         environment._die(f"no wheel matching '{odbc_filter}' in {odbc_dir}")
@@ -63,19 +64,77 @@ def gather_wheels(
             f"(expected exactly 1): {[os.path.basename(m) for m in odbc_matches]}"
         )
     odbc = odbc_matches[0]
-    shutil.copy2(odbc, links)
-
-    environment._log("find-links wheels:")
-    for f in sorted(os.listdir(links)):
-        environment._log(f"  - {f}")
-
-    # Derive versions from the wheel FILENAMES (single source of truth: the ESRP-signed
-    # wheels), so the conda package version can NEVER drift from the wheel.
     odbc_ver = _wheel_version(os.path.basename(odbc), "mssql_python_odbc")
     if not odbc_ver:
         environment._die(f"could not derive a version from ODBC wheel: {os.path.basename(odbc)}")
+    _wheel_metadata(odbc, "mssql-python-odbc", odbc_ver)
+    for wheel in mssql:
+        requirements = _wheel_metadata(wheel, "mssql-python", mssql_ver)
+        _validate_odbc_pin(wheel, requirements, odbc_ver)
+
+    # Copy only after every selected wheel agrees with its filename and dependency pair.
+    for wheel in [*mssql, odbc]:
+        shutil.copy2(wheel, links)
+    environment._log("find-links wheels:")
+    for name in sorted(os.listdir(links)):
+        environment._log(f"  - {name}")
     environment._log(f"Derived versions -> mssql-python={mssql_ver}  mssql-python-odbc={odbc_ver}")
     return mssql_ver, odbc_ver
+
+
+def _canonical_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _wheel_metadata(path: str, distribution: str, version: str) -> list[str]:
+    """Validate the wheel identity and return its declared dependencies without importing it."""
+    name = os.path.basename(path)
+    try:
+        with zipfile.ZipFile(path) as wheel:
+            entries = [
+                entry
+                for entry in wheel.namelist()
+                if re.fullmatch(r"[^/]+\.dist-info/METADATA", entry)
+            ]
+            if len(entries) != 1:
+                environment._die(f"{name}: expected exactly one .dist-info/METADATA entry.")
+            metadata = BytesParser(policy=default).parsebytes(wheel.read(entries[0]))
+    except (OSError, zipfile.BadZipFile, KeyError, RuntimeError, NotImplementedError) as exc:
+        environment._die(f"{name}: unreadable wheel metadata ({exc}).")
+    for field, expected in (("Name", distribution), ("Version", version)):
+        values = metadata.get_all(field, [])
+        if len(values) != 1 or not str(values[0]).strip():
+            environment._die(f"{name}: expected exactly one nonempty METADATA {field}.")
+        actual = str(values[0]).strip()
+        matches = (
+            _canonical_name(actual) == _canonical_name(expected)
+            if field == "Name"
+            else actual == expected
+        )
+        if not matches:
+            environment._die(
+                f"{name}: METADATA {field} {actual!r} does not match selected wheel {expected!r}."
+            )
+    return [str(value).strip() for value in metadata.get_all("Requires-Dist", [])]
+
+
+def _validate_odbc_pin(path: str, requirements: list[str], version: str) -> None:
+    pins = []
+    for requirement in requirements:
+        name = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
+        if name and _canonical_name(name[0]) == "mssql-python-odbc":
+            pins.append(requirement[name.end() :].strip())
+    match = None
+    if len(pins) == 1:
+        constraint = pins[0]
+        if constraint.startswith("(") and constraint.endswith(")"):
+            constraint = constraint[1:-1].strip()
+        match = re.fullmatch(r"==\s*([0-9][A-Za-z0-9.!+_]*)", constraint)
+    if match is None or match[1] != version:
+        environment._die(
+            f"{os.path.basename(path)}: expected one unconditional exact "
+            f"mssql-python-odbc=={version} requirement; found {pins!r}."
+        )
 
 
 def _wheel_version(name: str, dist: str) -> str | None:
