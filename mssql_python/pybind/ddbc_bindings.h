@@ -291,17 +291,11 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
-struct TvpColumnInfo {
-    SQLSMALLINT sqlType;
-    SQLULEN columnSize;
-    SQLSMALLINT decimalDigits;
-};
-
 struct TvpParamInfo {
     std::u16string catalog;
     std::u16string schema;
     std::u16string typeName;
-    std::vector<TvpColumnInfo> columns;
+    std::vector<DescribedParamInfo> columns;
 };
 
 class SqlHandle {

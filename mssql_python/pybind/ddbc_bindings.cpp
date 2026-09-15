@@ -26,7 +26,7 @@
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
                              std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers,
-                             const std::string& charEncoding, bool resolveUnknownTypes = true);
+                             const std::string& charEncoding);
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
@@ -469,9 +469,6 @@ static ParamInfo MergeTableColumnInfo(const py::list& values,
     bool hasValue = false;
     bool integerColumn = false;
     bool textColumn = false;
-    bool hasInteger = false;
-    int64_t minInteger = 0;
-    int64_t maxInteger = 0;
     SQLULEN maxSize = 0;
     SQLULEN maxIntegerDigits = 0;
     SQLSMALLINT maxScale = 0;
@@ -494,40 +491,20 @@ static ParamInfo MergeTableColumnInfo(const py::list& values,
             textColumn = currentText;
             hasValue = true;
         } else if (integerColumn && currentInteger) {
-            // Integer widths are merged below from the full observed range.
-        } else if (textColumn && currentText) {
-            if (current.paramSQLType == SQL_WVARCHAR) {
-                merged.paramSQLType = SQL_WVARCHAR;
+            // Scalar detection already range-checks integers; retain its widest type.
+            if (current.columnSize > merged.columnSize) {
+                merged = current;
             }
-        } else if (merged.paramCType != current.paramCType ||
-                   merged.paramSQLType != current.paramSQLType) {
+        } else if (!(textColumn && currentText) &&
+                   (merged.paramCType != current.paramCType ||
+                    merged.paramSQLType != current.paramSQLType)) {
             throw py::type_error("TVP column " + std::to_string(columnIndex) +
                                  " contains incompatible Python types at row " +
                                  std::to_string(rowIndex));
         }
 
         if (currentInteger) {
-            int overflow = 0;
-            int64_t value = PyLong_AsLongLongAndOverflow(values[rowIndex].ptr(), &overflow);
-            if (overflow != 0) {
-                PyErr_Clear();
-                throw py::value_error("TVP integer cell is out of range for SQL BIGINT");
-            }
-            if (PyErr_Occurred())
-                throw py::error_already_set();
-            if (!integerColumn) {
-                throw py::type_error("TVP column " + std::to_string(columnIndex) +
-                                     " contains incompatible Python types at row " +
-                                     std::to_string(rowIndex));
-            }
-            if (!hasInteger) {
-                minInteger = value;
-                maxInteger = value;
-                hasInteger = true;
-            } else {
-                minInteger = std::min(minInteger, value);
-                maxInteger = std::max(maxInteger, value);
-            }
+            continue;
         } else if (currentText) {
             SQLULEN size =
                 current.isDAE ? static_cast<SQLULEN>(current.utf16Len) : current.columnSize;
@@ -559,37 +536,11 @@ static ParamInfo MergeTableColumnInfo(const py::list& values,
     }
 
     if (integerColumn) {
-        if (minInteger >= 0 && maxInteger <= UINT8_MAX) {
+        if (merged.paramCType == SQL_C_TINYINT) {
             merged.paramCType = SQL_C_UTINYINT;
-            merged.paramSQLType = SQL_TINYINT;
-            merged.columnSize = 3;
-        } else if (minInteger >= INT16_MIN && maxInteger <= INT16_MAX) {
-            merged.paramCType = SQL_C_SHORT;
-            merged.paramSQLType = SQL_SMALLINT;
-            merged.columnSize = 5;
-        } else if (minInteger >= INT32_MIN && maxInteger <= INT32_MAX) {
-            merged.paramCType = SQL_C_LONG;
-            merged.paramSQLType = SQL_INTEGER;
-            merged.columnSize = 10;
-        } else {
-            merged.paramCType = SQL_C_SBIGINT;
-            merged.paramSQLType = SQL_BIGINT;
-            merged.columnSize = 19;
         }
-        merged.decimalDigits = 0;
-    } else if (textColumn) {
+    } else if (textColumn || merged.paramCType == SQL_C_BINARY) {
         merged.columnSize = std::max<SQLULEN>(maxSize, 1);
-        if (merged.paramSQLType == SQL_WVARCHAR && maxSize > MAX_INLINE_CHAR) {
-            merged.paramSQLType = SQL_WLONGVARCHAR;
-        } else if (merged.paramSQLType == SQL_VARCHAR && maxSize > MAX_INLINE_BINARY) {
-            merged.paramSQLType = SQL_LONGVARCHAR;
-        }
-        merged.isDAE = false;
-    } else if (merged.paramCType == SQL_C_BINARY) {
-        merged.columnSize = std::max<SQLULEN>(maxSize, 1);
-        if (maxSize > MAX_INLINE_BINARY) {
-            merged.paramSQLType = SQL_LONGVARBINARY;
-        }
         merged.isDAE = false;
     } else if (merged.paramCType == SQL_C_NUMERIC) {
         merged.decimalDigits = maxScale;
@@ -656,7 +607,7 @@ static bool NormalizeTableDecimalColumn(py::list& values, ParamInfo& info, size_
 }
 
 static std::vector<ParamInfo>
-DetectTableColumnTypes(py::list& columnValues, const std::vector<TvpColumnInfo>& declaredColumns) {
+DetectTableColumnTypes(py::list& columnValues, const std::vector<DescribedParamInfo>& declaredColumns) {
     std::vector<ParamInfo> columnInfos(columnValues.size());
     for (size_t columnIndex = 0; columnIndex < columnValues.size(); ++columnIndex) {
         py::list values = columnValues[columnIndex].cast<py::list>();
@@ -717,7 +668,7 @@ class TableMetadataScope {
     SQLHANDLE handle;
 };
 
-static std::vector<TvpColumnInfo> LoadTableColumnMetadata(const SqlHandlePtr& metadataHandle,
+static std::vector<DescribedParamInfo> LoadTableColumnMetadata(const SqlHandlePtr& metadataHandle,
                                                           const std::u16string& catalog,
                                                           const std::u16string& schema,
                                                           const std::u16string& typeName) {
@@ -757,7 +708,7 @@ static std::vector<TvpColumnInfo> LoadTableColumnMetadata(const SqlHandlePtr& me
         ThrowTableMetadataError(metadataHandle, rc, "Failed to discover TVP columns");
     }
 
-    std::vector<std::pair<SQLINTEGER, TvpColumnInfo>> orderedColumns;
+    std::vector<DescribedParamInfo> columns;
     while (true) {
         {
             py::gil_scoped_release release;
@@ -773,7 +724,6 @@ static std::vector<TvpColumnInfo> LoadTableColumnMetadata(const SqlHandlePtr& me
         SQLSMALLINT sqlType = SQL_UNKNOWN_TYPE;
         SQLINTEGER columnSize = 0;
         SQLSMALLINT decimalDigits = 0;
-        SQLINTEGER ordinal = 0;
         SQLLEN indicator = 0;
 
         rc = SQLGetData_ptr(hMetadataStmt, 5, SQL_C_SSHORT, &sqlType, sizeof(sqlType), &indicator);
@@ -789,30 +739,17 @@ static std::vector<TvpColumnInfo> LoadTableColumnMetadata(const SqlHandlePtr& me
                 rc = SQL_SUCCESS;
             }
         }
-        if (SQL_SUCCEEDED(rc)) {
-            rc = SQLGetData_ptr(hMetadataStmt, 17, SQL_C_SLONG, &ordinal, sizeof(ordinal),
-                                &indicator);
-        }
         if (!SQL_SUCCEEDED(rc)) {
             ThrowTableMetadataError(metadataHandle, rc, "Failed to read TVP column metadata");
         }
 
-        orderedColumns.push_back({
-            ordinal,
-            {sqlType, static_cast<SQLULEN>(std::max<SQLINTEGER>(columnSize, 0)), decimalDigits},
+        columns.push_back({
+            sqlType, static_cast<SQLULEN>(std::max<SQLINTEGER>(columnSize, 0)), decimalDigits,
         });
     }
 
-    if (orderedColumns.empty()) {
+    if (columns.empty()) {
         throw std::runtime_error("No column metadata was returned for the table type");
-    }
-    std::sort(orderedColumns.begin(), orderedColumns.end(),
-              [](const auto& left, const auto& right) { return left.first < right.first; });
-
-    std::vector<TvpColumnInfo> columns;
-    columns.reserve(orderedColumns.size());
-    for (const auto& entry : orderedColumns) {
-        columns.push_back(entry.second);
     }
     return columns;
 }
@@ -878,9 +815,6 @@ static SQLRETURN ResolveTableValuedParamTypes(SqlHandle& handle, SQLHANDLE hStmt
                 LoadTableColumnMetadata(metadataHandle, catalog, schema, typeName),
             };
         }
-        info.paramSQLType = SQL_SS_TABLE;
-        info.paramCType = SQL_C_BINARY;
-        info.decimalDigits = 0;
     }
     return SQL_SUCCESS;
 }
@@ -900,7 +834,7 @@ static SQLRETURN BindTableValuedParameter(SqlHandle& handle, SQLHANDLE hStmt, in
         throw std::runtime_error("TVP column metadata was not resolved before binding");
     }
     const TvpParamInfo& tableMetadata = metadataEntry->second;
-    const std::vector<TvpColumnInfo>& declaredColumns = tableMetadata.columns;
+    const std::vector<DescribedParamInfo>& declaredColumns = tableMetadata.columns;
     if (!rows.empty()) {
         const py::handle firstRow = rows[0];
         if (!PyList_Check(firstRow.ptr()) && !PyTuple_Check(firstRow.ptr())) {
@@ -934,7 +868,7 @@ static SQLRETURN BindTableValuedParameter(SqlHandle& handle, SQLHANDLE hStmt, in
         columnInfos = DetectTableColumnTypes(columnValues, declaredColumns);
         for (size_t columnIndex = 0; columnIndex < columnCount; ++columnIndex) {
             ParamInfo& inferred = columnInfos[columnIndex];
-            const TvpColumnInfo& declared = declaredColumns[columnIndex];
+            const DescribedParamInfo& declared = declaredColumns[columnIndex];
             inferred.paramSQLType = declared.sqlType;
             if (declared.columnSize == 0) {
                 if (declared.sqlType == SQL_WVARCHAR && inferred.columnSize > MAX_INLINE_CHAR) {
@@ -996,7 +930,7 @@ static SQLRETURN BindTableValuedParameter(SqlHandle& handle, SQLHANDLE hStmt, in
     SQLRETURN bindRc = SQL_ERROR;
     try {
         bindRc = BindParameterArray(handle, hStmt, columnValues, columnInfos, rows.size(),
-                                    paramBuffers, charEncoding, false);
+                                    paramBuffers, charEncoding);
     } catch (...) {
         SQLSetStmtAttr_ptr(hStmt, SQL_SOPT_SS_PARAM_FOCUS, nullptr, SQL_IS_INTEGER);
         throw;
@@ -2775,7 +2709,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
                              std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers,
-                             const std::string& charEncoding, bool resolveUnknownTypes) {
+                             const std::string& charEncoding) {
     PERF_TIMER("BindParameterArray");
     LOG("BindParameterArray: Starting column-wise array binding - "
         "param_count=%zu, param_set_size=%zu",
@@ -2785,9 +2719,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
 
     try {
         // GH-627: resolve unknown NULL array param SQL types before binding any param.
-        if (resolveUnknownTypes) {
-            PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
-        }
+        PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
             ParamInfo& info = paramInfos[paramIndex];
@@ -2846,29 +2778,27 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     break;
                 }
                 case SQL_C_WCHAR: {
-                    const SQLULEN valueBufferSize =
-                        info.bufferSize > 0 ? info.bufferSize : info.columnSize;
                     LOG("BindParameterArray: Binding SQL_C_WCHAR array - "
                         "param_index=%d, count=%zu, column_size=%zu",
-                        paramIndex, paramSetSize, valueBufferSize);
+                        paramIndex, paramSetSize, info.columnSize);
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
-                        tempBuffers, paramSetSize * (valueBufferSize + 1));
+                        tempBuffers, paramSetSize * (info.columnSize + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(wcharArray + i * (valueBufferSize + 1), 0,
-                                        (valueBufferSize + 1) * sizeof(SQLWCHAR));
+                            std::memset(wcharArray + i * (info.columnSize + 1), 0,
+                                        (info.columnSize + 1) * sizeof(SQLWCHAR));
                         } else {
                             std::u16string wstr = columnValues[i].cast<std::u16string>();
                             // u16string is already UTF-16, so the
                             // original check is sufficient
-                            if (wstr.length() > valueBufferSize) {
+                            if (wstr.length() > info.columnSize) {
                                 ThrowStdException("Input string exceeds allowed column size "
                                                   "at parameter index " +
                                                   std::to_string(paramIndex));
                             }
-                            std::memcpy(wcharArray + i * (valueBufferSize + 1), wstr.c_str(),
+                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(),
                                         (wstr.length() + 1) * sizeof(SQLWCHAR));
                             strLenOrIndArray[i] =
                                 static_cast<SQLLEN>(wstr.length() * sizeof(SQLWCHAR));
@@ -2878,7 +2808,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = wcharArray;
-                    bufferLength = (valueBufferSize + 1) * sizeof(SQLWCHAR);
+                    bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
                     break;
                 }
                 case SQL_C_TINYINT:
