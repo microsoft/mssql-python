@@ -1,0 +1,149 @@
+name: Notify Linked GitHub Issues on PR Merge
+
+# When a PR is merged into `main`, post a release-cycle heads-up comment
+# on each GitHub issue referenced in the PR body via the template line:
+#
+#     > GitHub Issue: #<ISSUE_NUMBER>
+#
+# We deliberately do NOT close the GitHub issue here — maintainers close
+# GH issues manually once the fix actually ships in a release. ADO work
+# items, in contrast, are still auto-closed on merge via the native
+# `Fixed AB#<id>` keyword in the PR template (handled by ADO, not this
+# workflow).
+#
+# Uses `pull_request_target` so the token has `issues: write` even for
+# PRs that originate from forks. Safe here: the workflow never checks
+# out PR code — it only reads the event payload and calls GitHub APIs.
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notify-linked-issues:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Comment on linked issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const prTitle = context.payload.pull_request.title;
+            const prBody = context.payload.pull_request.body || '';
+            const baseRef = context.payload.pull_request.base.ref;
+
+            // Sentinel so re-runs of this workflow don't double-comment.
+            const SENTINEL = '<!-- mssql-python-merge-notify -->';
+
+            // Parse issue numbers from the PR template's
+            //   > GitHub Issue: #<N>
+            // line. Anchored to the template wording so unrelated `#123`
+            // mentions elsewhere in the body don't get spammed.
+            //
+            // Tolerated variants:
+            //   GitHub Issue: #149
+            //   GitHub Issue: Closes #149   (legacy template format)
+            //   GitHub Issue: Fixes #149, #150
+            //   github issue:#149
+            const issueRefRegex =
+              /github\s*issue\s*:\s*(?:(?:closes|closed|fixes|fixed|resolves|resolved)\s+)?((?:#\d+(?:\s*,\s*#\d+)*))/gi;
+            const numbers = new Set();
+            let match;
+            while ((match = issueRefRegex.exec(prBody)) !== null) {
+              for (const m of match[1].matchAll(/#(\d+)/g)) {
+                numbers.add(Number(m[1]));
+              }
+            }
+
+            // Don't ever comment on the PR itself (paranoia: PR numbers
+            // and issue numbers share the same namespace).
+            numbers.delete(prNumber);
+
+            const linked = [...numbers];
+            if (linked.length === 0) {
+              core.info(
+                `PR #${prNumber}: no GitHub issue references found in body; nothing to do.`
+              );
+              return;
+            }
+
+            core.info(`PR #${prNumber} references issues: ${linked.join(', ')}`);
+
+            const body =
+              `${SENTINEL}\n` +
+              `🚀 The fix from #${prNumber} ` +
+              `(_${prTitle}_) has been merged into \`${baseRef}\` ` +
+              `and will ship in the next mssql-python release.\n\n` +
+              `This issue will be closed once the release is published — ` +
+              `track [Releases](https://github.com/${context.repo.owner}/${context.repo.repo}/releases) for the announcement. ` +
+              `Thanks for reporting!`;
+
+            const failures = [];
+
+            for (const issueNumber of linked) {
+              try {
+                // Sanity: confirm the target is actually an Issue (not a PR).
+                // GitHub treats both as "issues" in the REST API; we want to
+                // skip if the reference happens to be a PR number.
+                const issue = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+                if (issue.data.pull_request) {
+                  core.info(`#${issueNumber} is a PR, not an issue — skipping.`);
+                  continue;
+                }
+
+                // Idempotency: skip if a previous run already left the
+                // sentinel comment for this PR on this issue.
+                const existing = await github.paginate(
+                  github.rest.issues.listComments,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    per_page: 100,
+                  }
+                );
+                const already = existing.some(
+                  (c) =>
+                    c.body &&
+                    c.body.includes(SENTINEL) &&
+                    c.body.includes(`#${prNumber}`)
+                );
+                if (already) {
+                  core.info(
+                    `Issue #${issueNumber}: notify comment already present, skipping.`
+                  );
+                  continue;
+                }
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  body,
+                });
+                core.info(`Issue #${issueNumber}: posted release-cycle comment.`);
+              } catch (err) {
+                const msg = `Issue #${issueNumber}: failed to comment — ${err.message}`;
+                core.error(msg);
+                failures.push(msg);
+              }
+            }
+
+            if (failures.length > 0) {
+              core.setFailed(
+                `Failed to notify ${failures.length} of ${linked.length} linked issue(s). See logs above.`
+              );
+            }
