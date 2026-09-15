@@ -1008,12 +1008,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             logger.debug("_set_timeout: Setting query timeout=%d seconds", self._timeout)
             try:
                 timeout_value = int(self._timeout)
+                target_handle = statement_handle or self.hstmt
                 ret = ddbc_bindings.DDBCSQLSetStmtAttr(
-                    statement_handle or self.hstmt,
+                    target_handle,
                     ddbc_sql_const.SQL_ATTR_QUERY_TIMEOUT.value,
                     timeout_value,
                 )
-                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, target_handle, ret)
                 logger.debug("Query timeout set to %d seconds", timeout_value)
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.warning("Failed to set query timeout: %s", str(e))

@@ -11,6 +11,7 @@ import pytest
 from mssql_python import (
     DatabaseError,
     NotSupportedError,
+    ProgrammingError,
     SQL_INTEGER,
     SQL_WVARCHAR,
     ddbc_bindings,
@@ -381,3 +382,214 @@ def test_tvp_metadata_handle_inherits_query_timeout(db_connection, tvp_procedure
 
     assert len(timeout_handles) == 2
     assert timeout_handles[0] is not timeout_handles[1]
+
+
+@pytest.fixture
+def conversion_tvp(cursor, db_connection, request):
+    suffix = uuid.uuid4().hex
+    type_name = f"pytest_conversion_type_{suffix}"
+    procedure_name = f"pytest_conversion_proc_{suffix}"
+    try:
+        cursor.execute(
+            f"CREATE TYPE dbo.[{type_name}] AS TABLE (position int, value {request.param} NULL)"
+        )
+        cursor.execute(
+            f"CREATE PROCEDURE dbo.[{procedure_name}] @items dbo.[{type_name}] READONLY AS "
+            "SET NOCOUNT ON; SELECT value FROM @items ORDER BY position"
+        )
+        db_connection.commit()
+        yield f"EXEC dbo.[{procedure_name}] ?"
+    finally:
+        cursor.execute(f"DROP PROCEDURE IF EXISTS dbo.[{procedure_name}]")
+        cursor.execute(f"DROP TYPE IF EXISTS dbo.[{type_name}]")
+        db_connection.commit()
+
+
+@pytest.mark.parametrize(
+    ("conversion_tvp", "values", "expected"),
+    [
+        (
+            "float",
+            [Decimal("1.5"), Decimal("123.45"), None, Decimal("1.50"), Decimal("-0.125")],
+            [1.5, 123.45, None, 1.5, -0.125],
+        ),
+        ("int", [Decimal("1.5"), Decimal("-123.45"), None], [1, -123, None]),
+        ("nvarchar(40)", [Decimal("1.5"), None], ["1.5", None]),
+        (
+            "nvarchar(40)",
+            [Decimal("1.5"), Decimal("123.45"), None, Decimal("-0.125")],
+            ["1.500", "123.450", None, "-0.125"],
+        ),
+        (
+            "decimal(5,2)",
+            [Decimal("1.239"), None, Decimal("-1.235"), Decimal("9.999")],
+            [Decimal("1.24"), None, Decimal("-1.24"), Decimal("10.00")],
+        ),
+        (
+            "decimal(8,2)",
+            ["000000000000000001.23", None, "-0000000000000001.239"],
+            [Decimal("1.23"), None, Decimal("-1.24")],
+        ),
+        (
+            "datetime",
+            [datetime.datetime(2026, 9, 15, 12, 34, 56, 456789), None],
+            [datetime.datetime(2026, 9, 15, 12, 34, 56, 457000), None],
+        ),
+        (
+            "datetime2(3)",
+            [datetime.datetime(2026, 9, 15, 23, 59, 59, 999999), None],
+            [datetime.datetime(2026, 9, 16), None],
+        ),
+        (
+            "time(3)",
+            [datetime.time(12, 34, 56, 456789), None],
+            [datetime.time(12, 34, 56, 457000), None],
+        ),
+        (
+            "datetimeoffset(3)",
+            [
+                datetime.datetime(2026, 9, 15, 23, 59, 59, 999999, tzinfo=datetime.timezone.utc),
+                None,
+            ],
+            [datetime.datetime(2026, 9, 16, tzinfo=datetime.timezone.utc), None],
+        ),
+    ],
+    indirect=["conversion_tvp"],
+)
+def test_tvp_source_precision_survives_destination_conversion(
+    cursor, conversion_tvp, values, expected
+):
+    rows = list(enumerate(values))
+    for _ in range(2):
+        cursor.execute(conversion_tvp, (rows,))
+        assert [row[0] for row in cursor.fetchall()] == expected
+        assert rows == list(enumerate(values))
+
+
+@pytest.mark.parametrize("conversion_tvp", ["nvarchar(3)"], indirect=True)
+@pytest.mark.parametrize(
+    ("value", "message", "driver_error"),
+    [
+        ("x" * 5000, "would be truncated", "Syntax error or access violation"),
+        ("\u0100" * 5000, "Invalid precision value", "Invalid precision or scale value"),
+    ],
+    ids=["server-conversion-error", "bind-error"],
+)
+def test_tvp_error_keeps_diagnostics_and_restores_focus(
+    cursor, conversion_tvp, value, message, driver_error
+):
+    with pytest.raises(ProgrammingError, match=message) as raised:
+        cursor.execute(conversion_tvp, ([(0, value)],))
+    assert raised.value.driver_error == driver_error
+    cursor.execute("SELECT ?", 42)
+    assert cursor.fetchone()[0] == 42
+    cursor.execute(conversion_tvp, ([(0, "ok")],))
+    assert cursor.fetchone()[0] == "ok"
+
+
+@pytest.mark.parametrize("conversion_tvp", ["decimal(38,0)"], indirect=True)
+@pytest.mark.parametrize(
+    "value", [Decimal("NaN"), Decimal("Infinity"), Decimal("1E+39"), Decimal("1E-39")]
+)
+def test_tvp_decimal_validation_matches_scalar(cursor, conversion_tvp, value):
+    with pytest.raises(ValueError):
+        cursor.execute(conversion_tvp, ([(0, value)],))
+    cursor.execute(conversion_tvp, ([(0, Decimal("1E+37")), (1, None)],))
+    assert [row[0] for row in cursor.fetchall()] == [Decimal("1E+37"), None]
+
+
+@pytest.mark.parametrize("conversion_tvp", ["bigint"], indirect=True)
+def test_tvp_integer_widening_and_nulls(cursor, conversion_tvp):
+    edges = [0, 255, -32768, 32767, -(2**31), 2**31 - 1, -(2**63), 2**63 - 1]
+    for ordered in (edges, list(reversed(edges))):
+        values = [None, *ordered, None]
+        cursor.execute(conversion_tvp, (list(enumerate(values)),))
+        assert [row[0] for row in cursor.fetchall()] == values
+
+
+@pytest.mark.parametrize(
+    ("conversion_tvp", "values"),
+    [
+        ("nvarchar(max)", [None, "ascii first", "\U0001f600" * 4001, "a\x00b", ""]),
+        ("nvarchar(max)", ["\U0001f600", "later ascii", None]),
+        ("varchar(max)", [None, "x" * 8001, "a\x00b", ""]),
+        ("varbinary(max)", [b"", None, b"\x00\xff" * 4501, bytearray(b"last")]),
+    ],
+    indirect=["conversion_tvp"],
+)
+def test_tvp_source_buffers_cover_every_row(cursor, conversion_tvp, values):
+    cursor.execute(conversion_tvp, (list(enumerate(values)),))
+    assert [row[0] for row in cursor.fetchall()] == values
+
+
+def test_tvp_all_null_columns_use_declared_types(cursor, typed_tvp_procedure):
+    cursor.execute(f"EXEC dbo.[{typed_tvp_procedure}] ?", ([tuple([None] * 15)],))
+    assert tuple(cursor.fetchone()) == tuple([None] * 15)
+
+
+@pytest.mark.parametrize("conversion_tvp", ["float"], indirect=True)
+def test_tvp_rejects_unrepresentable_common_decimal_precision(cursor, conversion_tvp):
+    with pytest.raises(ValueError, match="precision greater than 38"):
+        cursor.execute(conversion_tvp, ([(0, Decimal("1E+37")), (1, Decimal("0.1"))],))
+    cursor.execute(conversion_tvp, ([(0, Decimal("0.1"))],))
+    assert cursor.fetchone()[0] == 0.1
+
+
+@pytest.mark.parametrize("conversion_tvp", ["decimal(5,2)"], indirect=True)
+def test_tvp_decimal_wire_format_is_independent_of_text_encoding(conn_str, conversion_tvp):
+    from mssql_python import SQL_CHAR, connect
+
+    with connect(conn_str) as connection:
+        connection.setencoding("utf-16le", ctype=SQL_CHAR)
+        with connection.cursor() as encoded_cursor:
+            encoded_cursor.execute(conversion_tvp, ([(0, Decimal("-1.239")), (1, None)],))
+            assert [row[0] for row in encoded_cursor.fetchall()] == [Decimal("-1.24"), None]
+
+
+@pytest.mark.parametrize("conversion_tvp", ["nvarchar(40)"], indirect=True)
+@pytest.mark.parametrize(
+    ("input_sizes", "error", "message"),
+    [
+        (None, RuntimeError, "metadata requires a valid statement handle"),
+        ([(SQL_INTEGER, 10, 0)], TypeError, "setinputsizes cannot override"),
+    ],
+)
+def test_tvp_native_entry_point_validates_metadata_and_overrides(
+    db_connection, conversion_tvp, input_sizes, error, message
+):
+    with db_connection.cursor() as native_cursor:
+        with pytest.raises(error, match=message):
+            ddbc_bindings.DDBCSQLExecute(
+                native_cursor.hstmt,
+                None,
+                conversion_tvp,
+                [[(0, "ok")]],
+                input_sizes,
+                [False],
+                True,
+                {},
+            )
+        native_cursor.execute(conversion_tvp, ([(0, "ok")],))
+        assert native_cursor.fetchone()[0] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("rows", "error", "message"),
+    [
+        ([1], TypeError, "rows must be list or tuple"),
+        ([()], ValueError, "at least one column"),
+        ([(1,)], ValueError, "declared table type requires"),
+        ([(1, "ok"), 2], TypeError, "rows must be list or tuple"),
+        ([(1, [2])], TypeError, "nested row sequences"),
+        ([(1, Decimal("1")), (2, "2")], TypeError, "incompatible Python types"),
+    ],
+)
+def test_tvp_shape_and_type_errors_leave_cursor_reusable(
+    cursor, tvp_procedure, rows, error, message
+):
+    _, procedure_name = tvp_procedure
+    sql = f"EXEC dbo.[{procedure_name}] ?, ?, ?"
+    with pytest.raises(error, match=message):
+        cursor.execute(sql, (0, rows, ""))
+    cursor.execute(sql, (0, [(1, "ok")], ""))
+    assert tuple(cursor.fetchone()) == (1, "ok")
