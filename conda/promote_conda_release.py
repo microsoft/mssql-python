@@ -35,7 +35,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
-from validate_conda_release import _validated_package_identity, read_index_json
+from validate_conda_release import (
+    _validated_package_identity,
+    python_tag_from_index,
+    read_index_json,
+)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -66,6 +70,7 @@ def distribution_from_path(path: str | Path) -> Distribution:
 
     index = read_index_json(str(package_path))
     package, version, subdir, _ = _validated_package_identity(index, str(package_path))
+    python_tag_from_index(index)
     if package != "mssql-python":
         raise ValueError(f"Unexpected package '{package}' in {package_path.name}.")
     if package_path.parent.name != subdir:
@@ -149,7 +154,10 @@ def _verify_with_retry(
         except Exception as exc:  # API metadata can be briefly eventually consistent.
             last_error = exc
             if attempt < attempts:
-                print(f"{description} attempt {attempt} failed: {exc}; retrying...", flush=True)
+                print(
+                    f"{description} attempt {attempt} failed: {type(exc).__name__}; retrying...",
+                    flush=True,
+                )
                 time.sleep(delay_seconds)
     assert last_error is not None
     raise last_error
@@ -186,10 +194,10 @@ def _require_publication(
     distributions: list[Distribution],
 ) -> None:
     if not _IDENTIFIER_RE.fullmatch(owner):
-        raise ValueError(f"Invalid Anaconda owner/channel: {owner!r}")
+        raise ValueError("Invalid Anaconda owner/channel; use letters, digits, '.', '_' or '-'.")
     for label_name, label in (("staging", staging_label), ("target", target_label)):
         if not _IDENTIFIER_RE.fullmatch(label):
-            raise ValueError(f"Invalid {label_name} label: {label!r}")
+            raise ValueError(f"Invalid {label_name} label; use letters, digits, '.', '_' or '-'.")
     if staging_label == target_label:
         raise ValueError("Staging and target labels must be different.")
     if re.fullmatch(r".+_staging_[0-9]+", target_label):
@@ -237,14 +245,19 @@ def _remove_staging_label(
             delay_seconds=delay_seconds,
         )
     except Exception as verification_error:
-        raise RuntimeError(
+        error = RuntimeError(
             f"Failed to remove staging label from '{distribution.basename}': "
             f"remove={cleanup_error}; verify={verification_error}"
-        ) from verification_error
+        )
+        error._cli_message = (
+            f"Failed to remove staging label '{staging_label}' from '{distribution.basename}'"
+            + (f"; target label '{required_target}' must remain." if required_target else ".")
+        )
+        raise error from verification_error
     if cleanup_error is not None:
         print(
             f"Staging cleanup API reported an error but '{distribution.basename}' "
-            f"verified clean: {cleanup_error}",
+            f"verified clean: {type(cleanup_error).__name__}",
             flush=True,
         )
 
@@ -265,6 +278,7 @@ def cleanup_staging(
     from binstar_client.errors import NotFound  # type: ignore[import-not-found]
 
     errors: list[str] = []
+    last_error: Exception | None = None
     for distribution in distributions:
         try:
             try:
@@ -290,8 +304,14 @@ def cleanup_staging(
         except Exception as exc:
             # Continue compensating other attempted uploads, but report every failure.
             errors.append(f"{distribution.basename}: {exc}")
+            last_error = exc
     if errors:
-        raise RuntimeError(f"Staging cleanup incomplete for '{staging_label}': {errors}")
+        error = RuntimeError(f"Staging cleanup incomplete for '{staging_label}': {errors}")
+        error._cli_message = (
+            f"Staging cleanup incomplete for '{staging_label}' ({len(errors)} files); "
+            "rerun --cleanup-staging with the original archives."
+        )
+        raise error from last_error
 
 
 def promote(
@@ -356,7 +376,7 @@ def promote(
             if stage_error is not None:
                 print(
                     f"Staging-label API reported an error but '{distribution.basename}' "
-                    f"verified on '{staging_label}': {stage_error}",
+                    f"verified on '{staging_label}': {type(stage_error).__name__}",
                     flush=True,
                 )
         initial_labels[distribution.basename] = labels
@@ -388,7 +408,7 @@ def promote(
             if add_error is not None:
                 print(
                     f"Target-label API reported an error but '{distribution.basename}' "
-                    f"verified on '{target_label}': {add_error}",
+                    f"verified on '{target_label}': {type(add_error).__name__}",
                     flush=True,
                 )
     except Exception as exc:
@@ -417,7 +437,7 @@ def promote(
                 if remove_error is not None:
                     print(
                         f"Rollback API reported an error but '{distribution.basename}' "
-                        f"verified without '{target_label}': {remove_error}",
+                        f"verified without '{target_label}': {type(remove_error).__name__}",
                         flush=True,
                     )
             except Exception as verification_error:
@@ -426,10 +446,16 @@ def promote(
                     f"verify={verification_error}"
                 )
         detail = f" Rollback errors: {rollback_errors}" if rollback_errors else ""
-        raise RuntimeError(
+        error = RuntimeError(
             f"Promotion failed; rollback of newly added target labels was attempted: "
             f"{exc}.{detail}"
-        ) from exc
+        )
+        error._cli_message = (
+            "Promotion failed; rollback of newly added target labels was attempted "
+            f"({len(rollback_errors)} rollback errors). Recover staging label '{staging_label}' "
+            "with --cleanup-staging and the original archives."
+        )
+        raise error from exc
 
     for distribution in distributions:
         _remove_staging_label(
@@ -495,5 +521,51 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def cli(argv: list[str] | None = None) -> int:
+    """Report expected CLI failures; imported main() retains its raising behavior."""
+    import os
+    from http.client import HTTPException
+    from tarfile import TarError
+    from zipfile import BadZipFile
+
+    try:
+        return main(argv)
+    except (
+        expected := (
+            ValueError,
+            RuntimeError,
+            ImportError,
+            OSError,
+            HTTPException,
+            TarError,
+            BadZipFile,
+            EOFError,
+            getattr(sys.modules.get("binstar_client.errors"), "BinstarError", RuntimeError),
+            getattr(sys.modules.get("zstandard"), "ZstdError", RuntimeError),
+            getattr(sys.modules.get("compression.zstd"), "ZstdError", RuntimeError),
+        )
+    ) as error:
+        # Only already-loaded optional clients are inspected; local-only needs none.
+        cause = error.__cause__
+        while cause is not None:
+            if not isinstance(cause, expected):
+                raise
+            cause = cause.__cause__
+        message = getattr(
+            error, "_cli_message", "Check archive access and Anaconda connectivity/permissions."
+        )
+        if isinstance(error, ImportError):
+            message = "Install dependencies with: python -m pip install --require-hashes -r conda/requirements-publish.txt"
+        elif isinstance(error, ValueError) and not isinstance(error, (OSError, UnicodeError)):
+            message = str(error)
+        for name in ("ANACONDA_API_TOKEN", "BINSTAR_API_TOKEN"):
+            secret = os.environ.get(name)
+            if secret:
+                message = message.replace(secret, "[REDACTED]")
+                message = message.replace(repr(secret)[1:-1], "[REDACTED]")
+        print(f"ERROR: {type(error).__name__}: " + " ".join(message.split()), file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

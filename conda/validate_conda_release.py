@@ -13,6 +13,10 @@ NO separate companion package:
   release version (or, if none supplied, is internally consistent -- one version);
 * build tags, recognized exact/bounded Python requirements, and optional canonical
   normal CPython ABI pins agree on the interpreter minor;
+* all Python requirements jointly admit a stable release in that minor. Supported
+  version syntax is numeric major/minor/patch, a0 bounds, trailing .*, comparisons
+  (=, ==, !=, <, <=, >, >=, ~=), comma AND and pipe OR, plus an optional build pin.
+  Regex, parentheses, epochs, local/dev/post versions and other syntax fail closed.
 * the (required-subdir x Python) matrix is complete -- every required platform
   ships a package for every expected Python, honoring any per-subdir Python
   override (e.g. win-arm64 ships only 3.12-3.14).
@@ -25,11 +29,13 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import operator
 import re
 import sys
 import tarfile
 import zipfile
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 _BINDING_NAME = "mssql-python"
@@ -38,6 +44,15 @@ _PY_TAG_RE = re.compile(r"py(\d)(\d{1,2})")
 _PY_DEP_RE = re.compile(r"python\s+(?:==?)?(\d+)\.(\d+)(?:\.(?:\d+|\*))?(?:\s+\S+)?")
 _PY_RANGE_RE = re.compile(r"python\s+>=\s*(\d+)\.(\d+)(?:\.\d+)?\s*,\s*<\s*(\d+)\.(\d+)(?:\.0a0)?")
 _PY_ABI_RE = re.compile(r"python_abi\s+(\d+)\.(\d+)\.\*\s+\*_cp(\d)(\d{1,2})")
+_PY_BOUND_RE = re.compile(r"(==|!=|<=|>=|~=|=|<|>)?(\d+(?:\.\d+){0,2})(a0)?(\.\*)?")
+_COMPARISONS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
 
 # Some subdirs legitimately ship a REDUCED Python matrix. win-arm64's conda
 # dependencies (cryptography, pyodbc) are published on Anaconda `defaults` only
@@ -148,19 +163,81 @@ def read_index_json(path: str) -> dict:
     raise ValueError(f"{path}: unrecognized conda package extension")
 
 
+@dataclass(frozen=True)
+class _PythonBound:
+    operation: str
+    release: tuple[int, ...]
+    prerelease: bool = False
+
+    def matches(self, candidate: tuple[int, int, int]) -> bool:
+        if self.operation == "*":
+            return True
+        prefix = not self.prerelease and candidate[: len(self.release)] == self.release
+        if self.operation in {"=", "!=prefix"}:
+            return prefix if self.operation == "=" else not prefix
+        bound = (*self.release, *((0,) * (3 - len(self.release))), -int(self.prerelease))
+        if self.operation == "~=":
+            prefix_release = self.release[:-1]
+            return (*candidate, 0) >= bound and candidate[: len(prefix_release)] == prefix_release
+        return _COMPARISONS[self.operation]((*candidate, 0), bound)
+
+
+def _python_requirement(dep: str) -> list[list[_PythonBound]]:
+    """Parse only the documented CPython release-constraint subset, not MatchSpec."""
+    match = re.fullmatch(r"python(?:\s+(.+))?", dep)
+    if not match:
+        raise ValueError(f"Unsupported Python requirement syntax: {dep!r}.")
+    specification = match.group(1) or "*"
+    specification = re.sub(r"\s*(>=|<=|==|!=|~=|=|>|<|,|\|)\s*", r"\1", specification)
+    parts = specification.split()
+    if len(parts) > 2 or (len(parts) == 2 and not re.fullmatch(r"[A-Za-z0-9_.*-]+", parts[1])):
+        raise ValueError(f"Unsupported Python requirement syntax: {dep!r}.")
+    clauses = []
+    for alternative in parts[0].split("|"):
+        bounds = []
+        for atom in alternative.split(","):
+            if atom == "*":
+                bounds.append(_PythonBound("*", ()))
+                continue
+            match = _PY_BOUND_RE.fullmatch(atom)
+            if not match:
+                raise ValueError(f"Unsupported Python requirement syntax: {dep!r}.")
+            operation, version, prerelease, wildcard = match.groups()
+            release = tuple(map(int, version.split(".")))
+            if (prerelease and (len(release) != 3 or wildcard)) or (
+                operation == "~=" and (len(release) < 2 or wildcard)
+            ):
+                raise ValueError(f"Unsupported Python requirement syntax: {dep!r}.")
+            # Conda treats bare trailing .* and = as prefixes, but ==3.12.*
+            # as exact 3.12; !=3.12.* excludes the entire prefix.
+            operation = operation or ("=" if wildcard else "==")
+            if wildcard and operation == "!=":
+                operation = "!=prefix"
+            bounds.append(_PythonBound(operation, release, bool(prerelease)))
+        clauses.append(bounds)
+    return clauses
+
+
 def python_tag_from_index(index: dict) -> str:
     """Extract the ``X.Y`` Python version a package is built for, or ``''``.
 
     Build tokens and every recognized exact/bounded Python requirement must agree.
     Canonical normal CPython ABI pins, when present, must also agree but are not
     required and do not identify a variant by themselves. Broad requirements alone
-    cannot identify a minor; a conventional build token is still sufficient.
+    cannot identify a minor. Every Python requirement must admit a common stable
+    patch release within the identified minor; tags never override an exclusion.
     """
     minors = set()
     abi_minors = set()
+    requirements = []
+    dependencies = index.get("depends", [])
+    if not isinstance(dependencies, list) or not all(isinstance(dep, str) for dep in dependencies):
+        raise ValueError("info/index.json field 'depends' must be a list of dependency strings.")
     for match in _PY_TAG_RE.finditer(str(index.get("build", ""))):
         minors.add(f"{match.group(1)}.{match.group(2)}")
-    for dep in index.get("depends", []) or []:
+    for dep in dependencies:
+        if re.match(r"python(?:\s|$|[<>=!~\[])", dep.strip()):
+            requirements.append(_python_requirement(dep.strip()))
         match = _PY_DEP_RE.fullmatch(str(dep).strip())
         if match:
             minors.add(f"{match.group(1)}.{match.group(2)}")
@@ -178,7 +255,34 @@ def python_tag_from_index(index: dict) -> str:
             f"Conflicting Python minor metadata: build={index.get('build')!r}, "
             f"depends={index.get('depends')!r}."
         )
-    return next(iter(minors), "")
+    minor = next(iter(minors), "")
+    if minor and requirements:
+        major, minor_number = map(int, minor.split("."))
+        major_minor = (major, minor_number)
+        patches = {0}
+        # For the supported comparisons, truth can change only at a named patch
+        # boundary. Its neighbors cover every interval, including the unbounded tail.
+        for clauses in requirements:
+            for bounds in clauses:
+                for bound in bounds:
+                    if len(bound.release) >= 2 and bound.release[:2] == major_minor:
+                        patch = bound.release[2] if len(bound.release) == 3 else 0
+                        patches.update((max(0, patch - 1), patch, patch + 1))
+        if not any(
+            all(
+                any(
+                    all(bound.matches((*major_minor, patch)) for bound in bounds)
+                    for bounds in clauses
+                )
+                for clauses in requirements
+            )
+            for patch in patches
+        ):
+            raise ValueError(
+                f"Conflicting Python requirements exclude all stable Python {minor} releases: "
+                f"{index.get('depends')!r}."
+            )
+    return minor
 
 
 def validate(

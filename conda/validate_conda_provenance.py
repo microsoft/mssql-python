@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+from http.client import HTTPException
 from typing import Callable
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -22,8 +24,15 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def _positive_id(value: object) -> int:
     if not re.fullmatch(r"[1-9][0-9]*", str(value)):
-        raise ValueError(f"Missing or invalid pipeline/run ID: {value!r}")
+        raise ValueError("Missing or invalid pipeline/run ID; expected a positive decimal integer.")
     return int(str(value))
+
+
+def _required_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ValueError(f"Missing required environment variable {name}.")
+    return value
 
 
 def _verify_run(build: dict, run: dict, pipeline_id: int, run_id: int) -> dict:
@@ -112,16 +121,16 @@ def verify_provenance(
 
 def ado_get_json(path: str) -> dict:
     """Read release evidence only from the configured SqlClientDrivers collection."""
-    token = os.environ["SYSTEM_ACCESSTOKEN"]
+    token = _required_env("SYSTEM_ACCESSTOKEN")
     if not token or token.startswith("$("):
         raise ValueError("System.AccessToken is unavailable; provenance cannot be verified.")
-    collection = os.environ["SYSTEM_COLLECTIONURI"].rstrip("/")
+    collection = _required_env("SYSTEM_COLLECTIONURI").rstrip("/")
     if collection.lower() not in {
         "https://dev.azure.com/sqlclientdrivers",
         "https://sqlclientdrivers.visualstudio.com",
     }:
         raise ValueError("Unexpected Azure DevOps collection; refusing to send credentials.")
-    project = os.environ["SYSTEM_TEAMPROJECTID"]
+    project = _required_env("SYSTEM_TEAMPROJECTID")
     if project.lower() != _PROJECT_ID:
         raise ValueError("System.TeamProjectId must identify the mssql-python release project.")
 
@@ -134,16 +143,16 @@ def ado_get_json(path: str) -> dict:
 
 
 def main() -> None:
-    publish = os.environ["PUBLISH_TO_CONDA"].lower()
+    publish = _required_env("PUBLISH_TO_CONDA").lower()
     if publish not in {"true", "false"}:
         raise ValueError("PUBLISH_TO_CONDA must be true or false.")
     result = verify_provenance(
         ado_get_json,
-        producer_pipeline_id=_positive_id(os.environ["CONDA_BUILD_PIPELINE_ID"]),
-        producer_run_id=_positive_id(os.environ["CONDA_BUILD_RUN_ID"]),
-        producer_branch=os.environ["CONDA_BUILD_SOURCE_BRANCH"],
-        producer_commit=os.environ["CONDA_BUILD_SOURCE_COMMIT"],
-        release_branch=os.environ["RELEASE_SOURCE_BRANCH"],
+        producer_pipeline_id=_positive_id(_required_env("CONDA_BUILD_PIPELINE_ID")),
+        producer_run_id=_positive_id(_required_env("CONDA_BUILD_RUN_ID")),
+        producer_branch=_required_env("CONDA_BUILD_SOURCE_BRANCH"),
+        producer_commit=_required_env("CONDA_BUILD_SOURCE_COMMIT"),
+        release_branch=_required_env("RELEASE_SOURCE_BRANCH"),
         publish=publish == "true",
     )
     print("VERIFIED_RECORDED_PROVENANCE: " + json.dumps(result, sort_keys=True))
@@ -151,5 +160,30 @@ def main() -> None:
         print("Validate-only: provenance verified; package readiness is gated separately.")
 
 
+def cli() -> int:
+    """Keep expected CLI failures concise; imported callers still receive exceptions."""
+    expected_errors = (ValueError, RuntimeError, ImportError, OSError, HTTPException)
+    try:
+        main()
+    except expected_errors as error:
+        cause = error.__cause__
+        while cause is not None:
+            if not isinstance(cause, expected_errors):
+                raise
+            cause = cause.__cause__
+        if isinstance(error, ValueError) and not isinstance(
+            error, (json.JSONDecodeError, UnicodeError)
+        ):
+            message = str(error)
+        else:
+            message = "Check provenance configuration, Azure DevOps access and response format."
+        secret = os.environ.get("SYSTEM_ACCESSTOKEN")
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+        print(f"ERROR: {type(error).__name__}: " + " ".join(message.split()), file=sys.stderr)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(cli())

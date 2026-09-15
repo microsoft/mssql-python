@@ -32,11 +32,14 @@ if not _MODULE_PATH.is_file():
         f"conda source not present ({_MODULE_PATH}); skipping conda release metadata tests",
         allow_module_level=True,
     )
+    assert "(1 files)" in caught.value._cli_message and _STAGING in caught.value._cli_message
+    assert "--cleanup-staging" in caught.value._cli_message
 
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("validate_conda_release_under_test", _MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -392,6 +395,100 @@ def test_release_policy_cannot_disable_required_matrix(policy, message):
 )
 def test_python_tag_from_index(index, expected):
     assert vcr.python_tag_from_index(index) == expected
+
+
+_PYTHON_REQUIREMENT_CASES = [
+    ("python >=3.13", False),
+    ("python <3.12", False),
+    ("python >3.12", True),
+    ("python <=3.12", True),
+    ("python <=3.11.99", False),
+    ("python !=3.12", True),
+    ("python !=3.12.*", False),
+    ("python ==3.12.*", True),
+    ("python ==3.12.*,!=3.12", False),
+    ("python =3.12", True),
+    ("python =3.12.2", True),
+    ("python 3.12.*", True),
+    ("python 3.12", True),
+    ("python 3.11.*|3.12.* *_cpython", True),
+    ("python ~=3.12", True),
+    ("python ~=3.12.2", True),
+    ("python ~=3.13", False),
+    ("python >=3.13|<3.12", False),
+    ("python >=3.13|>=3.12.2,<3.13", True),
+    ("python >=3.12.2,<3.12.3", True),
+    ("python >3.12.2,<3.12.3", False),
+    ("python >=3.12.2,!=3.12.2,<3.12.3", False),
+    ("python >=3.12.1000000,<3.13", True),
+    ("python >=3.12.2,<3.13", True),
+    ("python >=3.12,<3.13.0a0", True),
+    ("python >=3.12.0a0,<3.13.0a0", True),
+    ("python >=3.13.0a0", False),
+    ("python =3.12.0a0", False),
+    ("python <3.12.0a0", False),
+    ("python <3.12.1a0,>3.12", False),
+    ("python >=3.12.1a0,<3.12.2", True),
+    ("python >=3.10", True),
+    ("python *", True),
+    ("python", True),
+]
+
+
+@pytest.mark.parametrize("requirement,allowed", _PYTHON_REQUIREMENT_CASES)
+def test_python_requirements_admit_a_stable_patch(requirement, allowed):
+    index = {"build": "py312_0", "depends": [requirement]}
+    if allowed:
+        assert vcr.python_tag_from_index(index) == "3.12"
+    else:
+        with pytest.raises(ValueError, match="Conflicting"):
+            vcr.python_tag_from_index(index)
+
+
+@pytest.mark.parametrize(
+    "requirements,allowed",
+    [
+        (["python >=3.12.2", "python <=3.12.1"], False),
+        (["python 3.12.*", "python !=3.12.*"], False),
+        (["python =3.12", "python !=3.12"], True),
+        (["python >=3.12.2,<3.12.5", "python !=3.12.2,!=3.12.3,!=3.12.4"], False),
+        (["python <3.12.3|>=3.13", "python >=3.12.3,<3.13"], False),
+    ],
+)
+def test_repeated_python_requirements_are_satisfied_jointly(requirements, allowed):
+    index = {"build": "py312_0", "depends": requirements}
+    if allowed:
+        assert vcr.python_tag_from_index(index) == "3.12"
+    else:
+        with pytest.raises(ValueError, match="Conflicting"):
+            vcr.python_tag_from_index(index)
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "python >=3.12,",
+        "python >=3.12||<3.13",
+        "python (>=3.12,<3.13)|3.14.*",
+        "python ^3[.]12.*$",
+        "python >=1!3.12",
+        "python ==3.12.0+local",
+        "python >=3.12.0dev0",
+        "python >=3.12.0post1",
+        "python 3.*.2",
+        "python~=3.12",
+        "python[version='3.12.*']",
+    ],
+)
+def test_unsupported_python_requirements_fail_closed(requirement):
+    with pytest.raises(ValueError, match="Unsupported Python requirement syntax"):
+        vcr.python_tag_from_index({"build": "py312_0", "depends": [requirement]})
+
+
+@pytest.mark.parametrize("dependencies", ["python >=3.13", {"python": ">=3.13"}, [None]])
+def test_malformed_dependencies_cannot_bypass_python_requirements(dependencies):
+    with pytest.raises(ValueError, match="'depends' must be a list"):
+        vcr.python_tag_from_index({"build": "py312_0", "depends": dependencies})
 
 
 def _zstd_available():
@@ -847,7 +944,7 @@ def test_cleanup_reports_failures_but_continues_other_verified_files(cleanup_not
             original_remove(*args, **kwargs)
 
         api.remove_channel = remove
-    with pytest.raises(RuntimeError, match="Staging cleanup incomplete.*failed.conda"):
+    with pytest.raises(RuntimeError, match="Staging cleanup incomplete.*failed.conda") as caught:
         promoter.cleanup_staging(
             api, "microsoft", _STAGING, "main", "1.13.0", [failed, good], verify_attempts=1
         )
@@ -922,8 +1019,13 @@ def test_rollback_failure_is_reported_and_does_not_erase_prior_good_membership()
 
     api.distribution = fail_verification
     api.remove_channel = fail_remove
-    with pytest.raises(RuntimeError, match="Rollback errors.*rollback did not reach server"):
+    with pytest.raises(
+        RuntimeError, match="Rollback errors.*rollback did not reach server"
+    ) as caught:
         _promote(api, [previous, failed])
+    assert "(1 rollback errors)" in caught.value._cli_message
+    assert _STAGING in caught.value._cli_message
+    assert "rollback did not reach server" not in caught.value._cli_message
     assert "main" in api.distributions[previous.basename]["labels"]
     assert "main" in api.distributions[failed.basename]["labels"]
 
@@ -1193,6 +1295,15 @@ def test_conda_container_shape_rejects_before_publication(tmp_path, monkeypatch,
         ("py312_0", ["python >=3.10", "python"], ""),
         ("py312_0", ["python >=3.12,<3.13.0a0", "python_abi 3.12.* *_cp312"], ""),
         ("0", ["python >=3.12", "python"], "no detectable Python tag"),
+        ("py312_0", ["python >=3.13"], "Conflicting"),
+        ("py312_0", ["python <3.12"], "Conflicting"),
+        ("py312_0", ["python >3.12"], ""),
+        ("py312_0", ["python >=3.12.2,<3.13"], ""),
+        ("py312_0", ["python >=3.13|<3.12"], "Conflicting"),
+        ("py312_0", ["python >=3.13|>=3.12.2,<3.13"], ""),
+        ("py312_0", ["python >=3.12.2", "python <=3.12.1"], "Conflicting"),
+        ("py312_0", ["python !=3.12.*"], "Conflicting"),
+        ("py312_0", ["python (>=3.12,<3.13)"], "Unsupported"),
     ],
 )
 def test_metadata_agreement_across_full_archive_matrix(tmp_path, capsys, build, depends, error):
@@ -1210,6 +1321,31 @@ def test_metadata_agreement_across_full_archive_matrix(tmp_path, capsys, build, 
     assert vcr.main(["--root", str(tmp_path), "--mssql-python-version", _MP_VER]) == bool(error)
     output = capsys.readouterr()
     assert error in output.err if error else "metadata-validated" in output.out
+
+
+@pytest.mark.parametrize("requirement,allowed", _PYTHON_REQUIREMENT_CASES)
+def test_promoter_checks_python_constraints_before_client(
+    tmp_path, monkeypatch, requirement, allowed
+):
+    path = _write_release_archive(tmp_path, depends=[requirement])
+    monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
+    args = [
+        "--owner",
+        "microsoft",
+        "--staging-label",
+        _STAGING,
+        "--target-label",
+        "main",
+        "--expected-version",
+        _MP_VER,
+        str(path),
+    ]
+    if allowed:
+        assert promoter.main(["--check-local-only", *args]) == 0
+    else:
+        for mode in ([], ["--check-local-only"], ["--cleanup-staging"]):
+            with pytest.raises(ValueError, match="Conflicting"):
+                promoter.main([*mode, *args])
 
 
 def test_local_only_cli_needs_no_token_or_api_client(tmp_path, monkeypatch, capsys):
@@ -1400,8 +1536,11 @@ def test_failed_staging_cleanup_preserves_successful_publication():
         raise TimeoutError("cleanup did not reach server")
 
     api.remove_channel = timeout_before_remove
-    with pytest.raises(RuntimeError, match="Failed to remove staging label"):
+    with pytest.raises(RuntimeError, match="Failed to remove staging label") as caught:
         _promote(api, [distribution])
+    assert (
+        _STAGING in caught.value._cli_message and "'main' must remain" in caught.value._cli_message
+    )
     assert api.distributions[distribution.basename]["labels"] == [_STAGING, "main"]
 
 
@@ -1436,3 +1575,73 @@ def test_index_member_must_be_unique_regular_file(tmp_path, monkeypatch, extensi
         path.write_bytes(buffer.getvalue())
     with pytest.raises(ValueError, match="exactly one regular info/index.json"):
         vcr.read_index_json(str(path))
+
+
+@pytest.mark.parametrize("problem", ["success", "missing", "policy"])
+def test_promoter_cli_local_preflight(tmp_path, monkeypatch, capsys, problem):
+    path = _write_release_archive(tmp_path)
+    if problem == "missing":
+        path.unlink()
+    monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
+    args = [
+        "--owner",
+        "microsoft",
+        "--staging-label",
+        _STAGING,
+        "--target-label",
+        "main",
+        "--expected-version",
+        "9.9.9" if problem == "policy" else _MP_VER,
+        "--check-local-only",
+        str(path),
+    ]
+    assert promoter.cli(args) == (0 if problem == "success" else 1)
+    output = capsys.readouterr()
+    if problem == "success":
+        assert output.out.startswith("LOCAL_RELEASE_INPUT_OK:") and output.err == ""
+    else:
+        assert output.out == ""
+        assert output.err.startswith("ERROR: ValueError:") and len(output.err.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        ValueError,
+        RuntimeError,
+        ImportError,
+        PermissionError,
+        TimeoutError,
+        tarfile.ReadError,
+        zipfile.BadZipFile,
+        EOFError,
+        KeyError,
+        TypeError,
+        AssertionError,
+        "chained-bug",
+    ],
+)
+def test_promoter_cli_error_boundary(monkeypatch, capsys, error_type):
+    error = (
+        RuntimeError("outer failure")
+        if error_type == "chained-bug"
+        else error_type("failure\nsynthetic-secret")
+    )
+    if error_type == "chained-bug":
+        error.__cause__ = TypeError("unexpected bug")
+
+    def fail(_argv):
+        raise error
+
+    monkeypatch.setenv("ANACONDA_API_TOKEN", "synthetic-secret")
+    monkeypatch.setattr(promoter, "main", fail)
+    with pytest.raises(type(error)):
+        promoter.main([])
+    if error_type in (KeyError, TypeError, AssertionError, "chained-bug"):
+        with pytest.raises(type(error)):
+            promoter.cli([])
+    else:
+        assert promoter.cli([]) == 1
+        output = capsys.readouterr()
+        assert output.err.startswith(f"ERROR: {error_type.__name__}:")
+        assert len(output.err.splitlines()) == 1 and "synthetic-secret" not in output.err

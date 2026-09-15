@@ -5,6 +5,7 @@ import io
 import json
 import types
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -304,4 +305,83 @@ def test_alternative_producer_definition_is_rejected(chain):
             producer_commit="a" * 40,
             release_branch="refs/heads/main",
             publish=False,
+        )
+
+
+@pytest.fixture
+def provenance_cli_env(monkeypatch, ado_env):
+    values = {
+        "PUBLISH_TO_CONDA": "true",
+        "CONDA_BUILD_PIPELINE_ID": "2318",
+        "CONDA_BUILD_RUN_ID": "174195",
+        "CONDA_BUILD_SOURCE_BRANCH": "refs/heads/main",
+        "CONDA_BUILD_SOURCE_COMMIT": "a" * 40,
+        "RELEASE_SOURCE_BRANCH": "refs/heads/main",
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    return values
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "PUBLISH_TO_CONDA",
+        "CONDA_BUILD_PIPELINE_ID",
+        "CONDA_BUILD_RUN_ID",
+        "CONDA_BUILD_SOURCE_BRANCH",
+        "CONDA_BUILD_SOURCE_COMMIT",
+        "RELEASE_SOURCE_BRANCH",
+        "SYSTEM_ACCESSTOKEN",
+        "SYSTEM_COLLECTIONURI",
+        "SYSTEM_TEAMPROJECTID",
+    ],
+)
+def test_provenance_cli_missing_configuration(monkeypatch, provenance_cli_env, capsys, key):
+    monkeypatch.delenv(key)
+    monkeypatch.setattr(provenance, "build_opener", lambda *_: pytest.fail("Unexpected network"))
+    with pytest.raises(ValueError, match=key):
+        provenance.main()
+    assert provenance.cli() == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == f"ERROR: ValueError: Missing required environment variable {key}.\n"
+
+
+@pytest.mark.parametrize("problem", ["success", "dry", "flag", "policy", "http", "json", "bug"])
+def test_provenance_cli_boundary(monkeypatch, provenance_cli_env, chain, capsys, problem):
+    errors = {
+        "http": HTTPError("https://private.invalid", 403, "private server body", {}, None),
+        "json": json.JSONDecodeError("private server body", "synthetic-token", 0),
+        "bug": TypeError("unexpected implementation bug"),
+    }
+
+    def get_json(path):
+        if problem in errors:
+            raise errors[problem]
+        return chain[path]
+
+    monkeypatch.setattr(provenance, "ado_get_json", get_json)
+    if problem in {"dry", "flag"}:
+        monkeypatch.setenv("PUBLISH_TO_CONDA", "false" if problem == "dry" else "invalid")
+    elif problem == "policy":
+        monkeypatch.setenv("RELEASE_SOURCE_BRANCH", "refs/heads/feature")
+    if problem == "bug":
+        with pytest.raises(TypeError):
+            provenance.cli()
+        return
+    success = problem in {"success", "dry"}
+    if not success:
+        with pytest.raises((ValueError, OSError)):
+            provenance.main()
+    assert provenance.cli() == (0 if success else 1)
+    output = capsys.readouterr()
+    if success:
+        assert output.out.startswith("VERIFIED_RECORDED_PROVENANCE:") and output.err == ""
+    else:
+        assert output.out == ""
+        assert output.err.startswith("ERROR:") and len(output.err.splitlines()) == 1
+        assert all(
+            value not in output.err
+            for value in ("private server body", "synthetic-token", "private.invalid")
         )
