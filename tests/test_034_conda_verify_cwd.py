@@ -10,11 +10,11 @@ Python equivalent of the ``cd`` the two deleted shell scripts did before their i
 every verify subprocess inherits the neutral cwd.
 
 The tests also enforce exact-one ODBC wheel selection and blocking win-arm64 environment
-creation. They load the orchestrator as a standalone module (no compiled extension needed)
+creation. They import the internal tooling modules (no compiled extension needed)
 and run under ``--noconftest``.
 """
 
-import importlib.util
+import importlib.machinery
 import os
 import subprocess
 import sys
@@ -23,24 +23,17 @@ from pathlib import Path
 
 import pytest
 
-_ORCH_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "OneBranchPipelines"
-    / "scripts"
-    / "build_conda_packages.py"
-)
+_ROOT = Path(__file__).resolve().parent.parent
+_TOOLS_DIR = _ROOT / "eng" / "conda_tools"
 
-pytestmark = pytest.mark.skipif(
-    not _ORCH_PATH.exists(), reason=f"orchestrator not present ({_ORCH_PATH})"
-)
+if not _TOOLS_DIR.is_dir():
+    pytest.skip(
+        f"Conda tooling source not present ({_TOOLS_DIR}); skipping source-only build tests",
+        allow_module_level=True,
+    )
 
-
-def _load_orchestrator():
-    """Import build_conda_packages.py by path (stdlib-only; no ddbc_bindings needed)."""
-    spec = importlib.util.spec_from_file_location("build_conda_packages_under_test", _ORCH_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+from eng.conda_tools import __main__ as cli
+from eng.conda_tools import build, environment, verify
 
 
 @pytest.mark.parametrize(
@@ -57,10 +50,9 @@ def _load_orchestrator():
 def test_is_emulated_cross_only_classifies_linux_qemu(
     target_subdir, cross_build, host, expected, monkeypatch, capsys
 ):
-    mod = _load_orchestrator()
-    monkeypatch.setattr(mod.platform, "machine", lambda: host)
+    monkeypatch.setattr(verify.platform, "machine", lambda: host)
 
-    assert mod._is_emulated_cross(target_subdir, cross_build) is expected
+    assert verify._is_emulated_cross(target_subdir, cross_build) is expected
     assert ("QEMU" in capsys.readouterr().out) is expected
 
 
@@ -68,7 +60,6 @@ def test_is_emulated_cross_only_classifies_linux_qemu(
 def test_arm_target_execution_skip_requires_cross_build(
     cross_build, should_fail, tmp_path, monkeypatch
 ):
-    mod = _load_orchestrator()
 
     def _fake_run(cmd, *args, **kwargs):
         command = list(cmd)
@@ -79,14 +70,14 @@ def test_arm_target_execution_skip_requires_cross_build(
         )
 
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
 
     if should_fail:
         with pytest.raises(SystemExit):
-            mod._verify_impl(
+            verify._verify_impl(
                 "conda",
                 str(tmp_path / "channel"),
                 str(tmp_path / "recipe"),
@@ -97,7 +88,7 @@ def test_arm_target_execution_skip_requires_cross_build(
                 {},
             )
     else:
-        mod._verify_impl(
+        verify._verify_impl(
             "conda",
             str(tmp_path / "channel"),
             str(tmp_path / "recipe"),
@@ -111,7 +102,6 @@ def test_arm_target_execution_skip_requires_cross_build(
 
 @pytest.mark.parametrize("target_subdir", ["win-arm64", "osx-arm64"])
 def test_non_qemu_cross_driver_probe_failure_is_blocking(target_subdir, tmp_path, monkeypatch):
-    mod = _load_orchestrator()
     probe_calls = []
 
     def _fake_run(cmd, *args, **kwargs):
@@ -121,15 +111,15 @@ def test_non_qemu_cross_driver_probe_failure_is_blocking(target_subdir, tmp_path
             probe_calls.append(command)
         return types.SimpleNamespace(returncode=17 if is_probe else 0, stdout="")
 
-    monkeypatch.setattr(mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(verify.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        mod._verify_impl(
+        verify._verify_impl(
             "conda",
             str(tmp_path / "chan"),
             str(tmp_path),
@@ -145,7 +135,6 @@ def test_non_qemu_cross_driver_probe_failure_is_blocking(target_subdir, tmp_path
 
 
 def _run_reachability_helper_failure(monkeypatch, failing_marker):
-    mod = _load_orchestrator()
 
     def _fake_run(cmd, *args, **kwargs):
         command = " ".join(str(arg) for arg in cmd)
@@ -155,15 +144,15 @@ def _run_reachability_helper_failure(monkeypatch, failing_marker):
             return types.SimpleNamespace(returncode=0, stdout="/tmp/verify-prefix\n")
         return types.SimpleNamespace(returncode=0, stdout="")
 
-    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(verify.sys, "platform", "linux")
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        mod._reachability_gate(
+        verify._reachability_gate(
             "conda",
             "verify_linux_313",
             "3.13",
@@ -188,20 +177,19 @@ def test_reachability_gate_reports_driver_locator_failure(monkeypatch, capsys):
 
 
 def test_reachability_gate_rejects_empty_prefix_output(monkeypatch, capsys):
-    mod = _load_orchestrator()
 
     def _fake_run(_cmd, *args, **kwargs):
         return types.SimpleNamespace(returncode=0, stdout="")
 
-    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(verify.sys, "platform", "linux")
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
 
     with pytest.raises(SystemExit):
-        mod._reachability_gate(
+        verify._reachability_gate(
             "conda",
             "verify_linux_313",
             "3.13",
@@ -212,7 +200,6 @@ def test_reachability_gate_rejects_empty_prefix_output(monkeypatch, capsys):
 
 
 def test_verify_reports_conda_list_failure(monkeypatch, capsys, tmp_path):
-    mod = _load_orchestrator()
 
     def _fake_run(cmd, *args, **kwargs):
         command = list(cmd)
@@ -223,13 +210,13 @@ def test_verify_reports_conda_list_failure(monkeypatch, capsys, tmp_path):
         )
 
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
 
     with pytest.raises(SystemExit):
-        mod._verify_impl(
+        verify._verify_impl(
             "conda",
             str(tmp_path / "channel"),
             str(tmp_path),
@@ -248,7 +235,6 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
     """Capture the cwd at every subprocess call and assert the ``import mssql_python`` probes
     ran from the passed workdir (not the inherited checkout-root cwd), and that the original
     cwd is restored afterward."""
-    mod = _load_orchestrator()
     calls = []
 
     def _fake_run(cmd, *args, **kwargs):
@@ -257,7 +243,7 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
         return types.SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
@@ -266,7 +252,7 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
     workdir.mkdir(parents=True)
     start_cwd = os.getcwd()
 
-    mod.verify(
+    verify.verify(
         "conda",
         str(tmp_path / "chan"),
         str(tmp_path / "recipe"),
@@ -293,8 +279,8 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
             f"repo source tree would shadow the conda-installed package"
         )
     codes = [cmd[-1] for cmd, _ in import_calls]
-    assert codes[0] == mod._core_probe()
-    assert codes.count(mod._core_probe()) == 1
+    assert codes[0] == verify._core_probe()
+    assert codes.count(verify._core_probe()) == 1
     assert "import mssql_python" not in codes[0]
 
 
@@ -303,13 +289,12 @@ def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
     (a failed subprocess -> _die, or any exception) -- otherwise a failing leg would strand the
     process in the build dir and corrupt the later stage() step's relative paths. The happy-path
     test proves the chdir; this proves the restore survives the failure path."""
-    mod = _load_orchestrator()
 
     def _raising_run(cmd, *args, **kwargs):
         raise RuntimeError("boom: subprocess failed")
 
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=_raising_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
@@ -319,7 +304,7 @@ def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
     start_cwd = os.getcwd()
 
     with pytest.raises(RuntimeError):
-        mod.verify(
+        verify.verify(
             "conda",
             str(tmp_path / "chan"),
             str(tmp_path / "recipe"),
@@ -335,14 +320,13 @@ def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
 
 
 def test_make_verify_channel_returns_encoded_file_uri(tmp_path):
-    mod = _load_orchestrator()
     output_dir = tmp_path / "output #1" / "linux-64"
     output_dir.mkdir(parents=True)
     bld = tmp_path / "bld"
     bld.mkdir()
     (bld / "repodata.json").write_text("{}", encoding="ascii")
 
-    channel = mod.make_verify_channel(str(output_dir), str(bld))
+    channel = verify.make_verify_channel(str(output_dir), str(bld))
     channel_path = output_dir.parent / "verifychan_linux_64"
 
     assert channel == channel_path.resolve().as_uri()
@@ -352,14 +336,13 @@ def test_make_verify_channel_returns_encoded_file_uri(tmp_path):
 
 
 def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monkeypatch):
-    mod = _load_orchestrator()
     calls = {}
 
-    monkeypatch.setattr(mod, "gather_wheels", lambda *_args: ("1.2.3", "18.6.2"))
-    monkeypatch.setattr(mod, "find_or_install_conda", lambda _output_dir: "conda")
-    monkeypatch.setattr(mod, "run", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(mod, "create_builder_env", lambda _conda: "conda_builder")
-    monkeypatch.setattr(mod, "detect_pythons", lambda *_args: ["3.13"])
+    monkeypatch.setattr(build, "gather_wheels", lambda *_args: ("1.2.3", "18.6.2"))
+    monkeypatch.setattr(environment, "find_or_install_conda", lambda _output_dir: "conda")
+    monkeypatch.setattr(environment, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(environment, "create_builder_env", lambda _conda: "conda_builder")
+    monkeypatch.setattr(build, "detect_pythons", lambda *_args: ["3.13"])
 
     def _build_env(_mssql_ver, _odbc_ver, _links, cross_target_subdir):
         calls["build_env"] = cross_target_subdir
@@ -387,14 +370,14 @@ def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monk
     def _stage(_bld, _stage_dir, target):
         calls["stage"] = target
 
-    monkeypatch.setattr(mod, "build_env", _build_env)
-    monkeypatch.setattr(mod, "build_packages", _build_packages)
-    monkeypatch.setattr(mod, "audit_packages", _audit_packages)
-    monkeypatch.setattr(mod, "make_verify_channel", lambda *_args: "file:///channel")
-    monkeypatch.setattr(mod, "verify", _verify)
-    monkeypatch.setattr(mod, "stage", _stage)
+    monkeypatch.setattr(environment, "build_env", _build_env)
+    monkeypatch.setattr(build, "build_packages", _build_packages)
+    monkeypatch.setattr(build, "audit_packages", _audit_packages)
+    monkeypatch.setattr(verify, "make_verify_channel", lambda *_args: "file:///channel")
+    monkeypatch.setattr(verify, "verify", _verify)
+    monkeypatch.setattr(build, "stage", _stage)
 
-    result = mod.main(
+    result = cli.build_main(
         [
             "--mssql-wheel-dir",
             str(tmp_path / "wheels"),
@@ -424,30 +407,28 @@ def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monk
 
 
 def test_build_env_clears_ambient_subdir_for_native_build(monkeypatch):
-    mod = _load_orchestrator()
     monkeypatch.setenv("CONDA_SUBDIR", "win-arm64")
 
-    env = mod.build_env("1.2.3", "18.6.2", "wheels", "")
+    env = environment.build_env("1.2.3", "18.6.2", "wheels", "")
 
     assert "CONDA_SUBDIR" not in env
 
 
 def test_build_env_sets_subdir_for_cross_build(monkeypatch):
-    mod = _load_orchestrator()
     monkeypatch.setenv("CONDA_SUBDIR", "win-64")
 
-    env = mod.build_env("1.2.3", "18.6.2", "wheels", "osx-arm64")
+    env = environment.build_env("1.2.3", "18.6.2", "wheels", "osx-arm64")
 
     assert env["CONDA_SUBDIR"] == "osx-arm64"
 
 
 def test_recipe_requires_explicit_wheel_version():
     jinja2 = pytest.importorskip("jinja2", reason="Conda recipe rendering requires Jinja2")
-    recipe = _ORCH_PATH.parents[2] / "conda" / "mssql-python" / "meta.yaml"
+    recipe = _ROOT / "conda" / "mssql-python" / "meta.yaml"
     template = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(
         recipe.read_text(encoding="utf-8")
     )
-    env = _load_orchestrator().build_env("1.2.3", "18.6.2", "wheels", "")
+    env = environment.build_env("1.2.3", "18.6.2", "wheels", "")
     assert 'version: "1.2.3"' in template.render(environ=env)
 
     del env["MSSQL_PYTHON_VERSION"]
@@ -457,7 +438,6 @@ def test_recipe_requires_explicit_wheel_version():
 
 def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeypatch):
     """A successful solve does not prove package extraction/linking succeeds."""
-    mod = _load_orchestrator()
     calls = []
 
     def _fake_run(cmd, *args, **kwargs):
@@ -467,13 +447,13 @@ def test_win_arm64_real_environment_create_failure_is_blocking(tmp_path, monkeyp
         return types.SimpleNamespace(returncode=17 if is_real_create else 0, stdout="")
 
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=_fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        mod._verify_impl(
+        verify._verify_impl(
             "conda",
             str(tmp_path / "chan"),
             str(tmp_path / "recipe"),
@@ -503,13 +483,12 @@ def _wheel_inputs(tmp_path, odbc_names):
 
 
 def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path):
-    mod = _load_orchestrator()
     mssql_dir, odbc_dir, links = _wheel_inputs(
         tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
     )
     (mssql_dir / "mssql_python-1.2.3-cp312-cp312-win_amd64.whl").write_bytes(b"mssql")
 
-    versions = mod.gather_wheels(
+    versions = build.gather_wheels(
         str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
     )
 
@@ -522,14 +501,15 @@ def test_gather_wheels_accepts_exactly_one_odbc_match(tmp_path):
 
 
 def test_gather_wheels_rejects_mixed_mssql_python_versions(tmp_path, capsys):
-    mod = _load_orchestrator()
     mssql_dir, odbc_dir, links = _wheel_inputs(
         tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
     )
     (mssql_dir / "mssql_python-9.9.9-cp312-cp312-win_amd64.whl").write_bytes(b"mssql")
 
     with pytest.raises(SystemExit):
-        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+        build.gather_wheels(
+            str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
+        )
 
     error = capsys.readouterr().err
     assert "inconsistent versions" in error
@@ -538,15 +518,15 @@ def test_gather_wheels_rejects_mixed_mssql_python_versions(tmp_path, capsys):
 
 
 def test_gather_wheels_rejects_no_odbc_match(tmp_path):
-    mod = _load_orchestrator()
     mssql_dir, odbc_dir, links = _wheel_inputs(tmp_path, [])
 
     with pytest.raises(SystemExit):
-        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+        build.gather_wheels(
+            str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
+        )
 
 
 def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
-    mod = _load_orchestrator()
     mssql_dir, odbc_dir, links = _wheel_inputs(
         tmp_path,
         [
@@ -556,7 +536,9 @@ def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
     )
 
     with pytest.raises(SystemExit):
-        mod.gather_wheels(str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links))
+        build.gather_wheels(
+            str(mssql_dir), "mssql_python-*.whl", str(odbc_dir), "*.whl", str(links)
+        )
 
 
 @pytest.mark.parametrize(
@@ -572,7 +554,6 @@ def test_gather_wheels_rejects_multiple_odbc_matches(tmp_path):
 def test_conda_build_uses_only_explicit_channels(
     target_subdir, expected_channels, tmp_path, monkeypatch
 ):
-    mod = _load_orchestrator()
     calls = []
     croot = tmp_path / "croot"
     croot.mkdir()
@@ -581,9 +562,9 @@ def test_conda_build_uses_only_explicit_channels(
     def _capture_run(command, **_kwargs):
         calls.append(list(command))
 
-    monkeypatch.setattr(mod, "run", _capture_run)
+    monkeypatch.setattr(environment, "run", _capture_run)
 
-    mod.build_packages(
+    build.build_packages(
         "conda",
         "conda_builder",
         str(tmp_path / "recipe"),
@@ -605,7 +586,6 @@ def test_conda_build_uses_only_explicit_channels(
 
 @pytest.mark.parametrize("state", ["native", "pure-python", "foreign"])
 def test_core_probe_requires_native_extension_from_installed_prefix(state, tmp_path, monkeypatch):
-    mod = _load_orchestrator()
     prefix = tmp_path / "prefix"
     monkeypatch.setattr(sys, "prefix", str(prefix))
     package = types.ModuleType("mssql_py_core")
@@ -619,41 +599,37 @@ def test_core_probe_requires_native_extension_from_installed_prefix(state, tmp_p
         )
         monkeypatch.setitem(sys.modules, native.__name__, native)
     if state == "native":
-        exec(mod._core_probe(), {})
+        exec(verify._core_probe(), {})
     else:
         with pytest.raises(AssertionError, match="native extension|outside installed prefix"):
-            exec(mod._core_probe(), {})
+            exec(verify._core_probe(), {})
 
 
 def test_core_failure_blocks_api_preload(tmp_path, monkeypatch):
-    mod = _load_orchestrator()
     calls = []
 
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
-        return types.SimpleNamespace(returncode=17 if mod._core_probe() in cmd else 0, stdout="")
+        return types.SimpleNamespace(returncode=17 if verify._core_probe() in cmd else 0, stdout="")
 
     monkeypatch.setattr(
-        mod,
+        environment,
         "subprocess",
         types.SimpleNamespace(run=fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
     )
     with pytest.raises(SystemExit):
-        mod._verify_impl(
+        verify._verify_impl(
             "conda", "channel", str(tmp_path), ["3.12"], "1.14.0", "linux-64", False, {}
         )
-    assert any(mod._core_probe() in cmd for cmd in calls)
+    assert any(verify._core_probe() in cmd for cmd in calls)
     assert not any("BINDING_OK" in str(cmd) for cmd in calls)
 
 
 @pytest.mark.parametrize("subdir", ["win-64", "win-arm64"])
 def test_both_windows_targets_run_native_audit(subdir, monkeypatch):
-    mod = _load_orchestrator()
     calls = []
-    monkeypatch.setattr(mod, "run", lambda cmd, **kwargs: calls.append(cmd))
-    mod.audit_packages(
-        "conda", "builder", str(_ORCH_PATH.parents[2] / "conda"), "output", subdir, {}
-    )
+    monkeypatch.setattr(environment, "run", lambda cmd, **kwargs: calls.append(cmd))
+    build.audit_packages("conda", "builder", str(_ROOT / "conda"), "output", subdir, {})
     pe_calls = [
         cmd for cmd in calls if any(str(arg).endswith("assert_pe_machine.py") for arg in cmd)
     ]
@@ -663,12 +639,11 @@ def test_both_windows_targets_run_native_audit(subdir, monkeypatch):
 
 @pytest.mark.parametrize("inherited", [None, "true"])
 def test_build_does_not_automatically_accept_channel_terms(monkeypatch, inherited):
-    mod = _load_orchestrator()
     if inherited is None:
         monkeypatch.delenv("CONDA_PLUGINS_AUTO_ACCEPT_TOS", raising=False)
     else:
         monkeypatch.setenv("CONDA_PLUGINS_AUTO_ACCEPT_TOS", inherited)
-    assert "CONDA_PLUGINS_AUTO_ACCEPT_TOS" not in mod.build_env(
+    assert "CONDA_PLUGINS_AUTO_ACCEPT_TOS" not in environment.build_env(
         "1.14.0", "18.6.2.1", "wheels", "win-arm64"
     )
     assert os.environ.get("CONDA_PLUGINS_AUTO_ACCEPT_TOS") == inherited
@@ -676,16 +651,20 @@ def test_build_does_not_automatically_accept_channel_terms(monkeypatch, inherite
 
 @pytest.mark.parametrize("subdir", ["win-64", "win-arm64"])
 def test_main_routes_effective_target_to_native_audit(subdir, tmp_path, monkeypatch):
-    mod = _load_orchestrator()
     targets = []
-    monkeypatch.setattr(mod, "gather_wheels", lambda *args: ("1.14.0", "18.6.2.1"))
-    monkeypatch.setattr(mod, "find_or_install_conda", lambda *args: "conda")
-    monkeypatch.setattr(mod, "create_builder_env", lambda *args: "builder")
-    monkeypatch.setattr(mod, "detect_pythons", lambda *args: ["3.12"])
-    monkeypatch.setattr(mod, "make_verify_channel", lambda *args: "channel")
-    for name in ("run", "build_packages", "verify", "stage"):
-        monkeypatch.setattr(mod, name, lambda *args, **kwargs: None)
-    monkeypatch.setattr(mod, "audit_packages", lambda *args: targets.append(args[-2]))
+    monkeypatch.setattr(build, "gather_wheels", lambda *args: ("1.14.0", "18.6.2.1"))
+    monkeypatch.setattr(environment, "find_or_install_conda", lambda *args: "conda")
+    monkeypatch.setattr(environment, "create_builder_env", lambda *args: "builder")
+    monkeypatch.setattr(build, "detect_pythons", lambda *args: ["3.12"])
+    monkeypatch.setattr(verify, "make_verify_channel", lambda *args: "channel")
+    for owner, name in (
+        (environment, "run"),
+        (build, "build_packages"),
+        (verify, "verify"),
+        (build, "stage"),
+    ):
+        monkeypatch.setattr(owner, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(build, "audit_packages", lambda *args: targets.append(args[-2]))
     args = [
         "--mssql-wheel-dir",
         str(tmp_path / "wheels"),
@@ -694,7 +673,7 @@ def test_main_routes_effective_target_to_native_audit(subdir, tmp_path, monkeypa
         "--odbc-wheel-filter",
         "*.whl",
         "--recipe-root",
-        str(_ORCH_PATH.parents[2] / "conda"),
+        str(_ROOT / "conda"),
         "--output-dir",
         str(tmp_path / "out"),
         "--stage-dir",
@@ -704,5 +683,5 @@ def test_main_routes_effective_target_to_native_audit(subdir, tmp_path, monkeypa
     ]
     if subdir == "win-arm64":
         args += ["--conda-target-subdir", subdir]
-    assert mod.main(args) == 0
+    assert cli.build_main(args) == 0
     assert targets == [subdir]

@@ -52,3 +52,19 @@ in a separate release-additions PR, without a required merge order; see the
 [release status and qualification caveats](../README.md#installation).
 Neither this native-packaging change nor validate-only success authorizes production
 publication.
+
+## Maintaining the build tools
+
+The internal `eng/conda_tools` package separates archive I/O (`archive.py`), native
+compatibility policy (`contracts.py`), binary facts (`formats/elf.py`, `pe.py`, and
+`macho.py`), and the shared audit lifecycle (`audit.py`). Command arguments and
+human-readable reporting live in `__main__.py`. Conda provisioning and process
+execution live in `environment.py`; `build.py` sequences wheel selection, building,
+auditing and staging; `verify.py` keeps installed-package probes isolated.
+
+Continue invoking the existing scripts in `eng/scripts` and
+`OneBranchPipelines/scripts/build_conda_packages.py` with their existing arguments.
+These entrypoints require the source checkout, including `eng/conda_tools`; the
+internal tools are not installed in the driver wheel. Static audits do not import
+the driver. Runtime verification remains in separate processes from a neutral
+working directory, with the required core loaded independently before API probes.
