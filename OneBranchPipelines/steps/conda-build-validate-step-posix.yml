@@ -1,8 +1,8 @@
 # Conda Build + Validate Step Template (POSIX / bash)
 # ============================================================================
 # Bash twin of conda-build-validate-step.yml for the macOS and Linux build legs.
-# Repackages THIS leg's mssql-python wheel(s) + the
-# external mssql-python-odbc wheel into conda packages and validates solve+import
+# Repackages the selected producer's binding, ODBC and RS wheels into one Conda
+# package per Python version and validates solve+import
 # where the target Python can execute. Native osx-64/linux-64 run directly;
 # osx-arm64 skips target execution on the Intel host, and linux-aarch64 uses QEMU.
 # musllinux has no conda target.
@@ -17,7 +17,7 @@ parameters:
   # conda subdir this leg targets: 'osx-arm64' or 'linux-64' (display + staging).
   - name: condaSubdir
     type: string
-  # Directory holding the freshly built mssql-python wheel(s) for this platform.
+  # Selected producer's dist/ directory; rs-wheels/ is its sibling in the same artifact.
   - name: mssqlWheelDir
     type: string
     default: '$(Build.SourcesDirectory)/dist'
@@ -36,7 +36,7 @@ parameters:
   # else conda-build's pip install fails with DistributionNotFound.
   - name: odbcWheelFilter
     type: string
-  # Repo conda/ recipe root (contains mssql-python/ and mssql-python-odbc/).
+  # Repo conda/ recipe root (contains the single combined mssql-python/ recipe).
   - name: recipeRoot
     type: string
     default: '$(Build.SourcesDirectory)/conda'

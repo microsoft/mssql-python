@@ -1,11 +1,12 @@
 # =========================================================================================
 # OneBranch STANDALONE Conda Build Pipeline (mssql-python)
 # =========================================================================================
-# Builds the SELF-CONTAINED mssql-python conda package (which vendors the ODBC Driver 18
-# payload -- there is NO separate companion package) for every conda subdir, WITHOUT
+# Builds the SELF-CONTAINED mssql-python conda package (binding + ODBC Driver 18 + RS,
+# with NO separate Conda companion packages) for every conda subdir, WITHOUT
 # rebuilding the wheels. It consumes the wheels already produced by the wheel build
-# pipeline (definition 2199): the mssql-python wheels (drop_Consolidate_ConsolidateArtifacts)
-# and the mssql-python-odbc wheels (drop_ConsolidateOdbc_ConsolidateArtifacts), then
+# pipeline (definition 2199): binding wheels plus source-pinned RS wheels/manifests/receipt
+# (drop_Consolidate_ConsolidateArtifacts) and the mssql-python-odbc wheels
+# (drop_ConsolidateOdbc_ConsolidateArtifacts), then
 # repackages + validates them into conda packages on the matching platform agent.
 #
 # WHY PER-OS (not one job for all OSs): unlike the odbc wheels (a pure data re-tag),
