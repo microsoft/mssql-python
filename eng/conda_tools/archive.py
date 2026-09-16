@@ -116,17 +116,25 @@ def zstd_decompress(raw: bytes) -> bytes:
         raise ValueError(str(exc)) from exc
 
 
+def _conda_component(zf: zipfile.ZipFile, component: str) -> zipfile.ZipInfo:
+    matches = [
+        member
+        for member in zf.infolist()
+        if member.filename.startswith(f"{component}-") and member.filename.endswith(".tar.zst")
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one {component}-*.tar.zst member in .conda archive; "
+            f"found {len(matches)}"
+        )
+    return matches[0]
+
+
 def iter_payload_members(path: str) -> Iterator[tuple[str, bytes]]:
     """Yield ``(member_name, data_bytes)`` for the files in a ``.conda`` / ``.tar.bz2`` payload."""
     if path.endswith(".conda"):
         with zipfile.ZipFile(path) as zf:
-            pkg_name = next(
-                (n for n in zf.namelist() if n.startswith("pkg-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if pkg_name is None:
-                raise ValueError(f"{path}: no pkg-*.tar.zst payload found in .conda archive")
-            blob = zstd_decompress(zf.read(pkg_name))
+            blob = zstd_decompress(zf.read(_conda_component(zf, "pkg")))
         with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
             for m in tf.getmembers():
                 if not m.isfile():
@@ -156,13 +164,7 @@ def read_index(path: str) -> dict[str, Any]:
     """
     if path.endswith(".conda"):
         with zipfile.ZipFile(path) as zf:
-            info_name = next(
-                (n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if info_name is None:
-                raise ValueError("no info-*.tar.zst member (malformed .conda)")
-            blob = zstd_decompress(zf.read(info_name))
+            blob = zstd_decompress(zf.read(_conda_component(zf, "info")))
         with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
             member = tf.extractfile("info/index.json")
             if member is None:

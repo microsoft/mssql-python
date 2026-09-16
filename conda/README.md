@@ -96,6 +96,10 @@ human-readable reporting live in `__main__.py`. Conda provisioning and process
 execution live in `environment.py`; `build.py` sequences wheel selection, building,
 auditing and staging; `verify.py` keeps installed-package probes isolated.
 
+Each `.conda` component reader requires exactly one matching `info-*.tar.zst` or
+`pkg-*.tar.zst` entry. Missing components and additional matches, including duplicate
+ZIP entries with the same name, are rejected before decompression.
+
 Run the module commands from the **repository root**, followed by the existing
 build or audit arguments:
 
