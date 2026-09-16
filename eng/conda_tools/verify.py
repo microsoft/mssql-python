@@ -260,7 +260,12 @@ def _verify_impl(
         environment._log(
             f"=== [py {py}] DB-less driver-load proof (real ODBC driver must load) ==="
         )
-        probe = os.path.join(recipe_root, "driver_load_probe.py")
+        probe = os.path.join(
+            os.path.dirname(os.path.abspath(recipe_root)),
+            "eng",
+            "conda_tools",
+            "driver_load_probe.py",
+        )
         if emulated:
             if environment.run_ok([conda, "run", "-n", name, "python", probe], env=env) != 0:
                 environment._log(

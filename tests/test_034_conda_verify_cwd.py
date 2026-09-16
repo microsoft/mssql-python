@@ -284,6 +284,15 @@ def test_verify_runs_imports_from_neutral_workdir(tmp_path, monkeypatch):
     assert codes[0] == verify._core_probe()
     assert codes.count(verify._core_probe()) == 1
     assert "import mssql_python" not in codes[0]
+    driver_calls = [
+        (cmd, cwd)
+        for cmd, cwd in calls
+        if any(str(arg).endswith("driver_load_probe.py") for arg in cmd)
+    ]
+    assert len(driver_calls) == 1
+    command, cwd = driver_calls[0]
+    assert command[-1] == str(tmp_path / "eng" / "conda_tools" / "driver_load_probe.py")
+    assert os.path.realpath(cwd) == os.path.realpath(str(workdir))
 
 
 def test_verify_restores_cwd_when_the_phase_fails(tmp_path, monkeypatch):
