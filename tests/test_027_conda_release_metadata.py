@@ -631,8 +631,9 @@ def test_stdlib_zstd_data_error_does_not_fall_back(monkeypatch):
     monkeypatch.setitem(sys.modules, "compression", compression)
     monkeypatch.setitem(sys.modules, "zstandard", fallback)
 
-    with pytest.raises(CorruptFrameError, match="corrupt frame"):
+    with pytest.raises(ValueError, match="corrupt frame") as caught:
         archive.decompress_index(b"not zstd")
+    assert isinstance(caught.value.__cause__, CorruptFrameError)
 
 
 def test_zstd_missing_backends_raise_clear_error(monkeypatch):
@@ -1541,6 +1542,93 @@ def test_metadata_cli_reads_real_archive_and_enforces_requested_matrix(tmp_path,
         == 0
     )
     assert "metadata-validated" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("corruption", ["zip", "bzip2", "info-zstd"])
+def test_metadata_cli_reports_corrupt_archives_without_tracebacks(tmp_path, corruption):
+    import subprocess
+
+    if corruption == "info-zstd":
+        path = _write_release_archive(tmp_path, extension=".conda")
+        with zipfile.ZipFile(path) as package:
+            members = [(member.filename, package.read(member)) for member in package.infolist()]
+        with zipfile.ZipFile(path, "w") as package:
+            for name, data in members:
+                package.writestr(
+                    name, b"invalid zstandard frame" if name.startswith("info-") else data
+                )
+    else:
+        extension = ".conda" if corruption == "zip" else ".tar.bz2"
+        (tmp_path / f"broken{extension}").write_bytes(b"invalid archive")
+    with pytest.raises(archive.READ_ERRORS):
+        vcr.collect_packages(str(tmp_path))
+    result = subprocess.run(
+        [sys.executable, "-m", "eng.conda_tools", "validate", "--root", str(tmp_path)],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert result.stderr.startswith("ERROR:")
+    assert len(result.stderr.splitlines()) == 1
+    assert "Traceback" not in result.stderr
+    assert "release-ready" not in result.stdout
+
+
+@pytest.mark.parametrize("boundary", ["collection", "receipt", "installed-inputs"])
+@pytest.mark.parametrize(
+    "error_type", [*archive.READ_ERRORS, PermissionError, TypeError, AssertionError]
+)
+def test_metadata_cli_read_errors_are_controlled_without_hiding_bugs(
+    tmp_path, monkeypatch, capsys, boundary, error_type
+):
+    _write_release_archive(tmp_path)
+    error = error_type("archive read failed")
+    calls = []
+
+    def fail(*_args, **_kwargs):
+        calls.append(boundary)
+        raise error
+
+    if boundary == "collection":
+        monkeypatch.setattr(vcr, "collect_packages", fail)
+    elif boundary == "receipt":
+        receipt = tmp_path / "rs-transport.json"
+        receipt.write_text("{}")
+        original = Path.read_text
+
+        def read(path, *args, **kwargs):
+            if path == receipt:
+                fail()
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read)
+    else:
+        monkeypatch.setattr(vcr.inputs, "validate_installed_inputs", fail)
+    args = [
+        "--root",
+        str(tmp_path),
+        "--required-subdirs",
+        "win-64",
+        "--allowed-subdirs",
+        "win-64",
+        "--pythons",
+        "3.12",
+        "--mssql-python-version",
+        _MP_VER,
+        "--release-versions",
+        json.dumps({"mssql-python": _MP_VER, "mssql-python-odbc": "18.6.2.1"}),
+    ]
+    if error_type in (TypeError, AssertionError):
+        with pytest.raises(error_type, match="archive read failed"):
+            _metadata_main(args)
+    else:
+        assert _metadata_main(args) == 1
+        output = capsys.readouterr()
+        assert output.err == f"ERROR: {error}\n"
+        assert "COMPONENT_INPUT_OK" not in output.out and "release-ready" not in output.out
+    assert calls == [boundary]
 
 
 @pytest.mark.parametrize(

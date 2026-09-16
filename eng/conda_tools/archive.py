@@ -182,7 +182,7 @@ def _zstd_decoder(purpose: str) -> tuple[Callable[[bytes], bytes], type[Exceptio
 
 
 def zstd_decompress(raw: bytes) -> bytes:
-    """Normalize native-audit decoding errors without changing the release-reader contract."""
+    """Normalize native-audit decoding errors."""
     decode, error = _zstd_decoder("payloads")
     try:
         return decode(raw)
@@ -205,8 +205,12 @@ def _conda_component(zf: zipfile.ZipFile, component: str) -> zipfile.ZipInfo:
 
 
 def decompress_index(raw: bytes) -> bytes:
-    decode, _ = _zstd_decoder("metadata")
-    return decode(raw)
+    """Normalize release-index decoding errors without trying another backend."""
+    decode, error = _zstd_decoder("metadata")
+    try:
+        return decode(raw)
+    except error as exc:
+        raise ValueError(str(exc)) from exc
 
 
 @contextmanager

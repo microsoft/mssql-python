@@ -91,12 +91,13 @@ conda install -c "<candidate-channel>" -c microsoft -c conda-forge --strict-chan
 conda install -c "<candidate-channel>" -c microsoft -c defaults --override-channels "mssql-python=<candidate-version>"
 ```
 
-**Conda release status:** Publication tooling and its administrator prerequisites are
-proposed separately in the [release-additions PR](https://github.com/microsoft/mssql-python/pull/720).
-The release additions build on the shared Conda tooling; neither change publishes packages automatically.
+**Conda release status:** Validate-only release and staged publication tooling are included
+in this repository; neither publishes packages automatically. Production publication
+requires separately configured credentials and permissions, single-operator coordination,
+explicit authorization, and release qualification.
 Static audits and import checks do not certify SQL, certificate-verified TLS, authentication,
-bulk copy, or optional features across the full matrix. Production publication remains gated
-on separate release controls and qualification; validate-only success does not authorize it.
+bulk copy, or optional features across the full matrix. Validate-only success does not
+authorize production publication.
 
 ## Key Features
 ### Supported Platforms

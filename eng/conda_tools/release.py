@@ -427,7 +427,7 @@ def execute(args: argparse.Namespace) -> int:
                 else None
             )
             inputs.validate_rs_transport(receipt, versions, args.rs_transport_version)
-    except ValueError as exc:
+    except archive.READ_ERRORS as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     if not packages:
@@ -472,7 +472,7 @@ def execute(args: argparse.Namespace) -> int:
                     versions,
                     receipt,
                 )
-        except ValueError as exc:
+        except archive.READ_ERRORS as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
         print("COMPONENT_INPUT_OK: installed components match verified producer source inputs.")

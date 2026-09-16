@@ -84,6 +84,8 @@ jobs:
         run: |
           set -euo pipefail
           # Exact maintained release versions and PyPI digests, never an older/latest fallback.
+          # Fetch RS only if binding METADATA requires it, using its distribution (not NuGet) pin.
+          # Embedded-core public wheels are historical controls, not current-source RS proof.
           python -m eng.conda_tools fetch-wheels \
             --wheel-dir "$PWD/wheels" --requirements-file "$PWD/wheel-inputs.txt" \
             --python-tag cp311 --conda-subdir linux-64
