@@ -190,6 +190,20 @@ def zstd_decompress(raw: bytes) -> bytes:
         raise ValueError(str(exc)) from exc
 
 
+def _conda_component(zf: zipfile.ZipFile, component: str) -> zipfile.ZipInfo:
+    matches = [
+        member
+        for member in zf.infolist()
+        if member.filename.startswith(f"{component}-") and member.filename.endswith(".tar.zst")
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one {component}-*.tar.zst member in .conda archive; "
+            f"found {len(matches)}"
+        )
+    return matches[0]
+
+
 def decompress_index(raw: bytes) -> bytes:
     decode, _ = _zstd_decoder("metadata")
     return decode(raw)
@@ -198,7 +212,7 @@ def decompress_index(raw: bytes) -> bytes:
 @contextmanager
 def _open_tar(
     path: str,
-    select: Callable[[zipfile.ZipFile], str],
+    select: Callable[[zipfile.ZipFile], str | zipfile.ZipInfo],
     decode: Callable[[bytes], bytes],
 ) -> Iterator[tarfile.TarFile]:
     if path.endswith(".conda"):
@@ -214,16 +228,10 @@ def _open_tar(
 
 
 def iter_payload_members(path: str) -> Iterator[tuple[str, bytes]]:
-    """Yield regular payload members using the native auditors' existing permissive selection."""
+    """Yield regular payload members after unambiguous component selection."""
 
-    def select(container: zipfile.ZipFile) -> str:
-        name = next(
-            (n for n in container.namelist() if n.startswith("pkg-") and n.endswith(".tar.zst")),
-            None,
-        )
-        if name is None:
-            raise ValueError(f"{path}: no pkg-*.tar.zst payload found in .conda archive")
-        return name
+    def select(container: zipfile.ZipFile) -> zipfile.ZipInfo:
+        return _conda_component(container, "pkg")
 
     with _open_tar(path, select, zstd_decompress) as contents:
         for member in contents.getmembers():
@@ -236,14 +244,8 @@ def iter_payload_members(path: str) -> Iterator[tuple[str, bytes]]:
 def read_index(path: str) -> dict[str, Any]:
     """Read native-audit metadata without applying the stricter release-container policy."""
 
-    def select(container: zipfile.ZipFile) -> str:
-        name = next(
-            (n for n in container.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
-            None,
-        )
-        if name is None:
-            raise ValueError("no info-*.tar.zst member (malformed .conda)")
-        return name
+    def select(container: zipfile.ZipFile) -> zipfile.ZipInfo:
+        return _conda_component(container, "info")
 
     if not path.endswith((".conda", ".tar.bz2")):
         raise ValueError("unrecognized conda package extension")

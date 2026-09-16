@@ -136,6 +136,36 @@ def validate_wheel_tags(filename: str, tags: Sequence[str]) -> list[str]:
     return [] if set(tags) == expected else ["WHEEL tags do not match the selected filename"]
 
 
+def binding_wheel_matches_target(
+    filename: str, subdir: str, python_versions: Sequence[str] = ()
+) -> bool:
+    """Select binding filenames before reading metadata; native audits remain authoritative."""
+    if not subdir and not python_versions:
+        return True
+    parts = filename.removesuffix(".whl").rsplit("-", 3)
+    if not filename.endswith(".whl") or len(parts) != 4:
+        raise ValueError(f"invalid binding wheel filename: {filename}")
+    python_tag, _, platforms = parts[1:]
+    if subdir:
+        patterns = {
+            "win-64": r"win_amd64",
+            "win-arm64": r"win_arm64",
+            "linux-64": r"(?:linux|manylinux(?:1|2010|2014|_\d+_\d+))_x86_64",
+            "linux-aarch64": r"(?:linux|manylinux(?:1|2010|2014|_\d+_\d+))_aarch64",
+            "osx-64": r"macosx_\d+_\d+_(?:x86_64|universal2)",
+            "osx-arm64": r"macosx_\d+_\d+_(?:arm64|universal2)",
+        }
+        if subdir not in patterns:
+            raise ValueError(f"unknown binding wheel target: {subdir}")
+        if not any(re.fullmatch(patterns[subdir], platform) for platform in platforms.split(".")):
+            return False
+    if not re.fullmatch(r"cp3\d+", python_tag):
+        raise ValueError(f"invalid binding wheel Python tag: {filename}")
+    return not python_versions or python_tag in {
+        f"cp{version.replace('.', '')}" for version in python_versions
+    }
+
+
 _RS_PLATFORMS = {
     "win-64": "win_amd64",
     "win-arm64": "win_arm64",

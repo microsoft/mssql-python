@@ -29,7 +29,7 @@ if not _TOOLS_DIR.is_dir():
         allow_module_level=True,
     )
 
-from eng.conda_tools import audit
+from eng.conda_tools import archive, audit, contracts
 from eng.conda_tools.formats import pe
 
 _ARM64 = 0xAA64
@@ -162,7 +162,27 @@ def test_binding_wheel_excludes_core_and_requires_source_rs_version(tmp_path):
         assert not any(name.startswith("mssql_py_core/") for name in wheel.namelist())
         metadata = next(name for name in wheel.namelist() if name.endswith(".dist-info/METADATA"))
         rs_version = sources["eng/versions/mssql-python-rs.version"].strip()
-        assert f"Requires-Dist: mssql-python-rs=={rs_version}" in wheel.read(metadata).decode()
+        distribution = archive.parse_distribution_metadata(wheel.read(metadata))
+        assert (
+            contracts.exact_dependency_pin(distribution["requires_dist"], "mssql-python-rs")
+            == rs_version
+        )
+
+
+@pytest.mark.parametrize("spacing", ["", " "], ids=["compact", "setuptools-spaced"])
+def test_binding_rs_requirement_accepts_metadata_spacing(spacing):
+    rs_version = (
+        (_ROOT / "eng/versions/mssql-python-rs.version").read_text(encoding="ascii").strip()
+    )
+    metadata = archive.parse_distribution_metadata(
+        (
+            "Metadata-Version: 2.1\nName: mssql-python\nVersion: 0\n"
+            f"Requires-Dist: mssql-python-rs{spacing}=={rs_version}\n"
+        ).encode()
+    )
+    assert (
+        contracts.exact_dependency_pin(metadata["requires_dist"], "mssql-python-rs") == rs_version
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows recipe requires cmd.exe")
@@ -328,6 +348,43 @@ def test_corrupt_zstd_member_is_an_explicit_audit_violation(tmp_path, member_pre
             package.writestr(name, b"not a zstd frame" if name.startswith(member_prefix) else data)
     result = audit.audit_package(path, "pe")
     assert any("unreadable/malformed package" in error for error in result.violations)
+
+
+@pytest.mark.parametrize("component", ["pkg", "info"])
+@pytest.mark.parametrize("layout", ["single", "missing", "multiple", "duplicate-name"])
+def test_conda_component_cardinality(tmp_path, component, layout):
+    path = _make_conda(tmp_path, "win-arm64", {"sentinel.txt": b"payload"})
+    with zipfile.ZipFile(path) as package:
+        contents = [(member.filename, package.read(member)) for member in package.infolist()]
+    name, data = next(item for item in contents if item[0].startswith(f"{component}-"))
+    with zipfile.ZipFile(path, "w") as package:
+        for member_name, member_data in contents:
+            if layout != "missing" or member_name != name:
+                package.writestr(member_name, member_data)
+        if layout == "multiple":
+            package.writestr(f"{component}-extra.tar.zst", data)
+        elif layout == "duplicate-name":
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                package.writestr(name, data)
+
+    def read_component():
+        if component == "pkg":
+            return list(archive.iter_payload_members(path))
+        return archive.read_index(path)
+
+    if layout == "single":
+        result = read_component()
+        if component == "pkg":
+            assert result == [("sentinel.txt", b"payload")]
+        else:
+            assert result["subdir"] == "win-arm64"
+        return
+    with pytest.raises(ValueError, match="expected exactly one") as error:
+        read_component()
+    assert f"{component}-*.tar.zst" in str(error.value)
+    assert f"found {0 if layout == 'missing' else 2}" in str(error.value)
+    errors = audit.audit_package(path, "pe").violations
+    assert any(f"expected exactly one {component}-*.tar.zst" in message for message in errors)
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
