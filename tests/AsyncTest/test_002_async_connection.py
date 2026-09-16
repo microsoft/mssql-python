@@ -1,5 +1,7 @@
 import pytest
 
+pytest.importorskip("mssql_py_core", exc_type=ImportError)
+
 from mssql_python import ConnectionStringParseError, InterfaceError, NotSupportedError
 from mssql_python.async_query import AsyncConnection, AsyncCursor
 from mssql_python.async_query._connection_context import build_async_connection_context

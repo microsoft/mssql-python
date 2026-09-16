@@ -3,6 +3,8 @@ from uuid import uuid4
 
 import pytest
 
+pytest.importorskip("mssql_py_core", exc_type=ImportError)
+
 from mssql_python import DatabaseError
 from mssql_python.async_query import AsyncCursor
 
