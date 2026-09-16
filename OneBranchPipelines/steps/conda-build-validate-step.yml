@@ -1,9 +1,9 @@
 # Conda Build + Validate Step Template
 # ============================================================================
-# Repackages the prebuilt, ESRP-signed wheels produced by THIS build leg into
-# conda packages, then validates them on the SAME native agent (which already
-# has the matching wheel, the external mssql-python-odbc wheel, and a live
-# SQL Server for pytest). Include this AFTER the wheel is built on a build leg.
+# Repackages the selected producer's binding/ODBC wheels and source-pinned RS payload
+# into one Conda package on the matching platform agent. The standalone Conda pipeline
+# downloads these artifacts before calling this step; it does not rebuild the wheels.
+# Installed-package/core/driver-load probes do not assume a live SQL Server.
 #
 # WHY THIS RUNS PER-PLATFORM (not on a single host like ODBC_BuildAll):
 #   `ODBC_BuildAll` cross-produces every wheel on one host because setup_odbc.py
@@ -42,7 +42,7 @@ parameters:
   - name: condaTargetSubdir
     type: string
     default: ''
-  # Directory holding the freshly built mssql-python wheel (setup.py bdist_wheel).
+  # Selected producer's dist/ directory; rs-wheels/ is its sibling in the same artifact.
   - name: mssqlWheelDir
     type: string
     default: '$(Build.SourcesDirectory)/dist'
@@ -58,7 +58,7 @@ parameters:
   - name: odbcWheelFilter
     type: string
     default: 'mssql_python_odbc-*win_amd64.whl'
-  # Repo conda/ recipe root (contains mssql-python/ and mssql-python-odbc/).
+  # Repo conda/ recipe root (contains the single combined mssql-python/ recipe).
   - name: recipeRoot
     type: string
     default: '$(Build.SourcesDirectory)/conda'

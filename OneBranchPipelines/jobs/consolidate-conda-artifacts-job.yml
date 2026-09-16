@@ -1,7 +1,7 @@
 # Consolidate Conda Artifacts Job Template
-# Collects the per-platform self-contained mssql-python conda packages (which vendor
-# the ODBC payload) that each build leg staged under conda/<subdir>/ and gathers
-# them into a single conda/ tree for the release pipeline to publish.
+# Collects the per-platform combined binding/ODBC/RS packages staged under
+# conda/<subdir>/ and preserves their shared producer RS receipt in the final
+# conda/ tree. Package counts exclude this provenance sidecar.
 #
 # BEST-EFFORT (build pipeline): conda is a downstream repackage of the ESRP-signed
 # wheels and must NEVER block the primary wheel deliverable. An empty set WARNS here;
