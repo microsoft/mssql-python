@@ -1,4 +1,10 @@
-"""Public asynchronous cursor backed directly by mssql-py-core."""
+"""Public asynchronous cursor backed directly by mssql-py-core.
+
+Warning:
+    Async query execution APIs are under active development and are not intended
+    for production use. Their signatures, behavior, error handling, and compatibility
+    may change without notice.
+"""
 
 from typing import Any, Optional
 
@@ -7,7 +13,12 @@ from .exception_translator import translate_py_core_exceptions
 
 
 class AsyncCursor:
-    """Thin Python wrapper over ``mssql_py_core.PyAsyncCursor``."""
+    """Thin Python wrapper over ``mssql_py_core.PyAsyncCursor``.
+
+    Warning:
+        This preview API is under active development and is not intended for production use.
+        Its signatures, behavior, error handling, and compatibility may change without notice.
+    """
 
     def __init__(self, native_cursor: Any) -> None:
         self._native_cursor = native_cursor

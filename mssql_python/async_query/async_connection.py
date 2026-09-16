@@ -1,4 +1,10 @@
-"""Public asynchronous connection backed directly by mssql-py-core."""
+"""Public asynchronous connection backed directly by mssql-py-core.
+
+Warning:
+    Async query execution APIs are under active development and are not intended
+    for production use. Their signatures, behavior, error handling, and compatibility
+    may change without notice.
+"""
 
 from typing import Any, Optional
 
@@ -22,7 +28,12 @@ from .exception_translator import (
 
 
 class AsyncConnection:
-    """Thin Python wrapper over ``mssql_py_core.PyAsyncConnection``."""
+    """Thin Python wrapper over ``mssql_py_core.PyAsyncConnection``.
+
+    Warning:
+        This preview API is under active development and is not intended for production use.
+        Its signatures, behavior, error handling, and compatibility may change without notice.
+    """
 
     Warning = Warning
     Error = Error
