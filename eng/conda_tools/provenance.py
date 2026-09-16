@@ -11,6 +11,8 @@ from typing import Callable
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from .inputs import read_release_versions
+
 _REPOSITORY_ID = "eec96f30-ec96-4910-abd6-c45a99a5c29f"
 _PROJECT_ID = "c6d89619-62de-46a0-8b46-70b92a84d85e"
 _CONDA_PIPELINE_ID = 2318
@@ -34,31 +36,6 @@ def _required_env(name: str) -> str:
     if not value:
         raise ValueError(f"Missing required environment variable {name}.")
     return value
-
-
-def read_release_versions(read_source: Callable[[str], str]) -> dict[str, str]:
-    """Read the literals maintained by the existing wheel release process, without imports."""
-    versions = {}
-    for path, field in (
-        ("setup.py", "version"),
-        ("mssql_python/__init__.py", "__version__"),
-        ("mssql_python_odbc/__init__.py", "__version__"),
-    ):
-        matches = re.findall(
-            rf"""(?m)^\s*{field}\s*=\s*['"]([A-Za-z0-9][A-Za-z0-9._-]*)['"]\s*,?\s*(?:#.*)?$""",
-            read_source(path),
-        )
-        if len(matches) != 1:
-            raise ValueError(f"{path} must contain exactly one literal {field} release version.")
-        versions[path] = matches[0]
-    if versions["setup.py"] != versions["mssql_python/__init__.py"]:
-        raise ValueError(
-            "Binding release versions in setup.py and mssql_python/__init__.py differ."
-        )
-    return {
-        "mssql-python": versions["setup.py"],
-        "mssql-python-odbc": versions["mssql_python_odbc/__init__.py"],
-    }
 
 
 def _producer_versions(get_json: Callable[[str], dict], commit: str) -> dict[str, str]:
@@ -194,7 +171,7 @@ def ado_get_json(path: str) -> dict:
         return json.load(response)
 
 
-def main() -> None:
+def execute() -> None:
     publish = _required_env("PUBLISH_TO_CONDA").lower()
     if publish not in {"true", "false"}:
         raise ValueError("PUBLISH_TO_CONDA must be true or false.")
@@ -223,7 +200,7 @@ def cli() -> int:
     """Keep expected CLI failures concise; imported callers still receive exceptions."""
     expected_errors = (ValueError, RuntimeError, ImportError, OSError, HTTPException)
     try:
-        main()
+        execute()
     except expected_errors as error:
         cause = error.__cause__
         while cause is not None:
@@ -242,7 +219,3 @@ def cli() -> int:
         print(f"ERROR: {type(error).__name__}: " + " ".join(message.split()), file=sys.stderr)
         return 1
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(cli())

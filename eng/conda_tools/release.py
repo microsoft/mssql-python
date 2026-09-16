@@ -27,16 +27,14 @@ Exit code 0 = release-ready; non-zero = a violation was found (blocks publish).
 from __future__ import annotations
 
 import argparse
-import io
-import json
 import operator
 import re
 import sys
-import tarfile
-import zipfile
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import archive
 
 _BINDING_NAME = "mssql-python"
 
@@ -58,109 +56,6 @@ _COMPARISONS = {
 # dependencies (cryptography, pyodbc) are published on Anaconda `defaults` only
 # for Python 3.12+, so 3.10/3.11 cannot be built there -- expect 3.12-3.14 only.
 _DEFAULT_SUBDIR_PYTHONS = "win-arm64=3.12,3.13,3.14"
-
-
-def _require_index_object(index: object, path: str) -> dict:
-    if not isinstance(index, dict):
-        raise ValueError(f"{path}: info/index.json must contain a JSON object")
-    return index
-
-
-def _required_index_string(index: dict, key: str, path: str) -> str:
-    value = index.get(key)
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise ValueError(
-            f"{path}: info/index.json field '{key}' must be a non-empty, trimmed string"
-        )
-    return value
-
-
-def _validated_package_identity(index: dict, path: str) -> tuple[str, str, str, str]:
-    name, version, subdir, build = (
-        _required_index_string(index, key, path) for key in ("name", "version", "subdir", "build")
-    )
-    extension = ".conda" if path.endswith(".conda") else ".tar.bz2"
-    canonical_name = f"{name}-{version}-{build}{extension}"
-    if Path(path).name != canonical_name:
-        raise ValueError(
-            f"{path}: must use canonical basename '{canonical_name}': "
-            "anaconda-client normalizes upload names from metadata."
-        )
-    return name, version, subdir, build
-
-
-def _zstd_decompress(raw: bytes) -> bytes:
-    """Decompress a zstandard blob, preferring the 3.14+ stdlib backend."""
-    try:  # Python 3.14+
-        from compression import zstd  # type: ignore
-    except ImportError:
-        try:
-            import zstandard  # third-party fallback
-        except ImportError as exc:
-            raise RuntimeError(
-                "Unable to import 'zstandard': reading .conda (.tar.zst) metadata requires "
-                "Python 3.14+ with compression.zstd or a working 'zstandard' install "
-                "(pip install zstandard)."
-            ) from exc
-        return zstandard.ZstdDecompressor().decompress(raw)
-    return zstd.decompress(raw)
-
-
-def read_index_json(path: str) -> dict:
-    """Return the parsed ``info/index.json`` from a ``.conda`` / ``.tar.bz2``."""
-    if path.endswith(".conda"):
-        with zipfile.ZipFile(path) as zf:
-            names = zf.namelist()
-            if len(names) != len(set(names)):
-                raise ValueError(f"{path}: duplicate ZIP entries are not allowed")
-            info_names = [
-                name for name in names if name.startswith("info-") and name.endswith(".tar.zst")
-            ]
-            if len(info_names) != 1:
-                raise ValueError(
-                    f"{path}: expected exactly one info-*.tar.zst member; "
-                    f"found {len(info_names)}"
-                )
-            pkg_names = [
-                name for name in names if name.startswith("pkg-") and name.endswith(".tar.zst")
-            ]
-            if len(pkg_names) != 1:
-                raise ValueError(
-                    f"{path}: expected exactly one pkg-*.tar.zst member; found {len(pkg_names)}"
-                )
-            stem = Path(path).stem
-            if set(names) != {"metadata.json", f"info-{stem}.tar.zst", f"pkg-{stem}.tar.zst"}:
-                raise ValueError(f"{path}: expected only canonical metadata.json/info/pkg members")
-            metadata = json.loads(zf.read("metadata.json"))
-            if (
-                not isinstance(metadata, dict)
-                or type(metadata.get("conda_pkg_format_version")) is not int
-                or metadata["conda_pkg_format_version"] != 2
-            ):
-                raise ValueError(f"{path}: metadata.json must declare conda_pkg_format_version 2")
-            info_blob = zf.read(info_names[0])
-        with tarfile.open(fileobj=io.BytesIO(_zstd_decompress(info_blob))) as tf:
-            index_members = [
-                member for member in tf.getmembers() if member.name == "info/index.json"
-            ]
-            if len(index_members) != 1 or not index_members[0].isfile():
-                raise ValueError(f"{path}: expected exactly one regular info/index.json member")
-            member = tf.extractfile(index_members[0])
-            if member is None:
-                raise ValueError(f"{path}: info/index.json is unreadable")
-            return _require_index_object(json.load(member), path)
-    if path.endswith(".tar.bz2"):
-        with tarfile.open(path, "r:bz2") as tf:
-            index_members = [
-                member for member in tf.getmembers() if member.name == "info/index.json"
-            ]
-            if len(index_members) != 1 or not index_members[0].isfile():
-                raise ValueError(f"{path}: expected exactly one regular info/index.json member")
-            member = tf.extractfile(index_members[0])
-            if member is None:
-                raise ValueError(f"{path}: info/index.json is unreadable")
-            return _require_index_object(json.load(member), path)
-    raise ValueError(f"{path}: unrecognized conda package extension")
 
 
 @dataclass(frozen=True)
@@ -233,8 +128,8 @@ def python_tag_from_index(index: dict) -> str:
     dependencies = index.get("depends", [])
     if not isinstance(dependencies, list) or not all(isinstance(dep, str) for dep in dependencies):
         raise ValueError("info/index.json field 'depends' must be a list of dependency strings.")
-    for match in _PY_TAG_RE.finditer(str(index.get("build", ""))):
-        minors.add(f"{match.group(1)}.{match.group(2)}")
+    for build_match in _PY_TAG_RE.finditer(str(index.get("build", ""))):
+        minors.add(f"{build_match.group(1)}.{build_match.group(2)}")
     for dep in dependencies:
         if re.match(r"python(?:\s|$|[<>=!~\[])", dep.strip()):
             requirements.append(_python_requirement(dep.strip()))
@@ -243,9 +138,9 @@ def python_tag_from_index(index: dict) -> str:
             minors.add(f"{match.group(1)}.{match.group(2)}")
         match = _PY_RANGE_RE.fullmatch(str(dep).strip())
         if match:
-            major, minor, upper_major, upper_minor = map(int, match.groups())
-            if (upper_major, upper_minor) == (major, minor + 1):
-                minors.add(f"{major}.{minor}")
+            major, lower_minor, upper_major, upper_minor = map(int, match.groups())
+            if (upper_major, upper_minor) == (major, lower_minor + 1):
+                minors.add(f"{major}.{lower_minor}")
         match = _PY_ABI_RE.fullmatch(str(dep).strip())
         if match:
             abi_minors.add(f"{match.group(1)}.{match.group(2)}")
@@ -431,20 +326,14 @@ def validate(
 
 def collect_packages(root: str) -> list[dict]:
     """Read every ``.conda`` / ``.tar.bz2`` under ``root`` into package dicts."""
-    import glob
-    import os
-
-    paths = sorted(
-        glob.glob(os.path.join(root, "**", "*.conda"), recursive=True)
-        + glob.glob(os.path.join(root, "**", "*.tar.bz2"), recursive=True)
-    )
+    paths = archive.collect(root)
     packages = []
     for path in paths:
-        index = read_index_json(path)
-        name, version, subdir, build = _validated_package_identity(index, path)
+        index = archive.read_release_index(path)
+        name, version, subdir, build = archive._validated_package_identity(index, path)
         packages.append(
             {
-                "folder": os.path.basename(os.path.dirname(path)),
+                "folder": Path(path).parent.name,
                 "subdir": subdir,
                 "name": name,
                 "version": version,
@@ -487,8 +376,7 @@ def _parse_subdir_pythons(value: str) -> dict:
     return result
 
 
-def main(argv: list | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", required=True, help="Root of the consolidated conda tree.")
     parser.add_argument(
         "--required-subdirs",
@@ -505,8 +393,9 @@ def main(argv: list | None = None) -> int:
         help="Per-subdir Python overrides, e.g. 'win-arm64=3.12,3.13,3.14'.",
     )
     parser.add_argument("--mssql-python-version", default=None)
-    args = parser.parse_args(argv)
 
+
+def execute(args: argparse.Namespace) -> int:
     try:
         required_subdirs = _split(args.required_subdirs)
         allowed_subdirs = _split(args.allowed_subdirs)
@@ -550,7 +439,3 @@ def main(argv: list | None = None) -> int:
 
     print("\nOK: metadata-validated conda set is release-ready (subdirs, Python matrix, pairing).")
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -151,9 +151,10 @@ extends:
                   SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
                 inputs:
                   targetType: 'inline'
+                  workingDirectory: '$(Build.SourcesDirectory)'
                   script: |
                     $ErrorActionPreference = 'Stop'
-                    python "$(Build.SourcesDirectory)/conda/validate_conda_provenance.py"
+                    python -m eng.conda_tools provenance
                     if ($LASTEXITCODE -ne 0) {
                       Write-Error "Recorded producer/wheel provenance verification failed."
                       exit 1

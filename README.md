@@ -93,7 +93,7 @@ conda install -c "<candidate-channel>" -c microsoft -c defaults --override-chann
 
 **Conda release status:** Publication tooling and its administrator prerequisites are
 proposed separately in the [release-additions PR](https://github.com/microsoft/mssql-python/pull/720).
-These native-packaging changes do not publish packages or require a particular merge order.
+The release additions build on the shared Conda tooling; neither change publishes packages automatically.
 Static audits and import checks do not certify SQL, certificate-verified TLS, authentication,
 bulk copy, or optional features across the full matrix. Production publication remains gated
 on separate release controls and qualification; validate-only success does not authorize it.

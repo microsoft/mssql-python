@@ -1,6 +1,6 @@
 """Unit tests for the metadata-based conda release gate.
 
-``conda/validate_conda_release.py`` reads each package's authoritative
+``eng.conda_tools.release`` reads each package's authoritative
 ``info/index.json`` and enforces: real-subdir == folder, allowed subdirs, the
 full (subdir x Python) matrix, and exact versions for the self-contained
 ``mssql-python`` package (which vendors the ODBC payload -- no companion). These
@@ -8,6 +8,7 @@ tests exercise the pure ``validate()`` logic with synthetic package records (no
 real ``.conda`` needed) plus one optional round-trip through the metadata reader.
 """
 
+import argparse
 import importlib.util
 import io
 import json
@@ -20,47 +21,28 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parent.parent / "conda" / "validate_conda_release.py"
-_ROOT = _MODULE_PATH.parent.parent
-_PROMOTER_PATH = _ROOT / "conda" / "promote_conda_release.py"
-
-# The conda/ sources are not shipped inside the built wheel, so the installed-wheel
-# test leg copies only tests/ into an isolated dir. Skip the whole module (rather than
-# erroring at collection) when the conda source it exercises is absent.
+_ROOT = Path(__file__).resolve().parent.parent
+_MODULE_PATH = _ROOT / "eng" / "conda_tools" / "release.py"
 if not _MODULE_PATH.is_file():
     pytest.skip(
         f"conda source not present ({_MODULE_PATH}); skipping conda release metadata tests",
         allow_module_level=True,
     )
 
-
-def _load_module():
-    spec = importlib.util.spec_from_file_location("validate_conda_release_under_test", _MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from eng.conda_tools import archive, publication as promoter, release as vcr
+from eng.conda_tools import __main__ as cli
 
 
-vcr = _load_module()
+def _metadata_main(argv):
+    return cli.main(["validate", *argv])
 
 
-def _load_promoter():
-    inserted = str(_PROMOTER_PATH.parent)
-    sys.path.insert(0, inserted)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "promote_conda_release_under_test", _PROMOTER_PATH
-        )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path.remove(inserted)
+def _promoter_main(argv):
+    return promoter.execute(cli.parser().parse_args(["promote", *argv]))
 
 
-promoter = _load_promoter()
+def _promoter_cli(argv):
+    return cli.main(["promote", *argv])
 
 
 _REQUIRED = ["win-64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
@@ -94,6 +76,78 @@ def test_collection_does_not_require_pyyaml(source_present, tmp_path, monkeypatc
         with pytest.raises(pytest.skip.Exception, match="conda source not present"):
             spec.loader.exec_module(module)
     assert yaml_imports == []
+
+
+@pytest.mark.parametrize("command", ["validate", "provenance", "promote"])
+def test_release_module_help_and_unknown_arguments(command):
+    import subprocess
+
+    for argument, expected in (("--help", 0), ("--unknown-option", 2)):
+        result = subprocess.run(
+            [sys.executable, "-m", "eng.conda_tools", command, argument],
+            cwd=_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == expected, result.stdout + result.stderr
+        assert "python -m eng.conda_tools" in result.stdout + result.stderr
+        if argument == "--help":
+            assert f"python -m eng.conda_tools {command}" in result.stdout
+        assert "Traceback" not in result.stderr
+
+
+def test_release_imports_do_not_read_inputs_or_load_runtime_clients():
+    import subprocess
+
+    code = """
+import os, pathlib, subprocess, sys, urllib.request
+before = dict(os.environ), os.getcwd()
+def forbidden(*args, **kwargs):
+    raise AssertionError("import performed an external operation")
+pathlib.Path.read_text = forbidden
+subprocess.run = subprocess.Popen = forbidden
+urllib.request.urlopen = urllib.request.build_opener = forbidden
+from eng.conda_tools import __main__, archive, inputs, provenance, publication, release
+assert before == (dict(os.environ), os.getcwd())
+assert not any(name.split('.')[0] in {'mssql_python', 'mssql_python_odbc', 'mssql_py_core',
+    'binstar_client'} for name in sys.modules)
+print("INERT_RELEASE_IMPORTS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=_ROOT, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "INERT_RELEASE_IMPORTS"
+
+
+def test_present_broken_release_source_is_not_skipped(tmp_path):
+    import os
+    import subprocess
+
+    tools = tmp_path / "eng" / "conda_tools"
+    tools.mkdir(parents=True)
+    for name in ("archive", "publication"):
+        (tools / f"{name}.py").write_text("", encoding="utf-8")
+    (tools / "release.py").write_text(
+        'raise RuntimeError("BROKEN_RELEASE_SOURCE")\n', encoding="utf-8"
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    target = tests / Path(__file__).name
+    target.write_bytes(Path(__file__).read_bytes())
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--noconftest", "--collect-only", "-q", str(target)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "BROKEN_RELEASE_SOURCE" in result.stdout + result.stderr
+    assert "skipped" not in result.stdout
 
 
 def _binding(subdir, py, folder=None, version=_MP_VER):
@@ -505,7 +559,7 @@ def _zstd_available():
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
 def test_read_index_json_roundtrip(tmp_path):
-    got = vcr.read_index_json(str(_write_release_archive(tmp_path, extension=".conda")))
+    got = archive.read_release_index(str(_write_release_archive(tmp_path, extension=".conda")))
     assert got["subdir"] == "win-64"
     assert vcr.python_tag_from_index(got) == "3.12"
 
@@ -515,23 +569,23 @@ def test_read_index_json_rejects_multiple_info_payloads(tmp_path):
     import zipfile
 
     conda_path = tmp_path / "ambiguous.conda"
-    with zipfile.ZipFile(conda_path, "w") as archive:
-        archive.writestr("info-first.tar.zst", b"first")
-        archive.writestr("info-second.tar.zst", b"second")
+    with zipfile.ZipFile(conda_path, "w") as container:
+        container.writestr("info-first.tar.zst", b"first")
+        container.writestr("info-second.tar.zst", b"second")
 
     with pytest.raises(ValueError, match="exactly one info-.*found 2"):
-        vcr.read_index_json(str(conda_path))
+        archive.read_release_index(str(conda_path))
 
 
 def test_index_json_must_be_an_object():
     with pytest.raises(ValueError, match="must contain a JSON object"):
-        vcr._require_index_object([], "package.conda")
+        archive._require_index_object([], "package.conda")
 
 
 @pytest.mark.parametrize("value", [None, 123, "", " 1.13.0", "1.13.0 "])
 def test_required_index_fields_must_be_trimmed_strings(value):
     with pytest.raises(ValueError, match="must be a non-empty, trimmed string"):
-        vcr._required_index_string({"version": value}, "version", "package.conda")
+        archive._required_index_string({"version": value}, "version", "package.conda")
 
 
 def test_stdlib_zstd_data_error_does_not_fall_back(monkeypatch):
@@ -540,7 +594,8 @@ def test_stdlib_zstd_data_error_does_not_fall_back(monkeypatch):
 
     compression = types.ModuleType("compression")
     compression.zstd = types.SimpleNamespace(
-        decompress=lambda _raw: (_ for _ in ()).throw(CorruptFrameError("corrupt frame"))
+        decompress=lambda _raw: (_ for _ in ()).throw(CorruptFrameError("corrupt frame")),
+        ZstdError=CorruptFrameError,
     )
     fallback = types.ModuleType("zstandard")
     fallback.ZstdDecompressor = lambda: (_ for _ in ()).throw(
@@ -550,7 +605,7 @@ def test_stdlib_zstd_data_error_does_not_fall_back(monkeypatch):
     monkeypatch.setitem(sys.modules, "zstandard", fallback)
 
     with pytest.raises(CorruptFrameError, match="corrupt frame"):
-        vcr._zstd_decompress(b"not zstd")
+        archive.decompress_index(b"not zstd")
 
 
 def test_zstd_missing_backends_raise_clear_error(monkeypatch):
@@ -564,7 +619,7 @@ def test_zstd_missing_backends_raise_clear_error(monkeypatch):
     monkeypatch.setattr("builtins.__import__", _missing_backends)
 
     with pytest.raises(RuntimeError, match="reading .conda.*requires"):
-        vcr._zstd_decompress(b"data")
+        archive.decompress_index(b"data")
 
 
 class _FakeAnacondaApi:
@@ -1066,10 +1121,10 @@ def _write_release_archive(
     path = directory / f"{index['name']}-{index['version']}-{index['build']}{extension}"
     data = json.dumps(index).encode()
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w" if extension == ".conda" else "w:bz2") as archive:
+    with tarfile.open(fileobj=buffer, mode="w" if extension == ".conda" else "w:bz2") as contents:
         member = tarfile.TarInfo("info/index.json")
         member.size = len(data)
-        archive.addfile(member, io.BytesIO(data))
+        contents.addfile(member, io.BytesIO(data))
     if extension == ".conda":
         try:
             from compression import zstd
@@ -1116,7 +1171,7 @@ def test_promoter_rejects_normalized_metadata_before_client(tmp_path, monkeypatc
     monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
     for mode in ([], ["--check-local-only"], ["--cleanup-staging"]):
         with pytest.raises(ValueError, match=f"field '{field}'.*trimmed string"):
-            promoter.main(
+            _promoter_main(
                 [
                     "--owner",
                     "microsoft",
@@ -1155,7 +1210,7 @@ def test_local_preflight_requires_canonical_archive_basename(
                     archive.writestr(name, data)
         with pytest.raises(ValueError, match="canonical"):
             vcr.collect_packages(str(tmp_path))
-        assert vcr.main(["--root", str(tmp_path)]) == 1
+        assert _metadata_main(["--root", str(tmp_path)]) == 1
     else:
         assert len(vcr.collect_packages(str(tmp_path))) == 2
     monkeypatch.setattr(
@@ -1175,9 +1230,9 @@ def test_local_preflight_requires_canonical_archive_basename(
     ]
     if renamed:
         with pytest.raises(ValueError, match="canonical"):
-            promoter.main(args)
+            _promoter_main(args)
     else:
-        assert promoter.main(args) == 0
+        assert _promoter_main(args) == 0
         assert {promoter.distribution_from_path(p).basename for p in paths} == {
             f"{subdir}/mssql-python-1.13.0-py312_0{extension}" for subdir in ("win-64", "linux-64")
         }
@@ -1242,7 +1297,7 @@ def test_conda_container_shape_rejects_before_publication(tmp_path, monkeypatch,
             for name, data in entries:
                 archive.writestr(name, data)
     assert (
-        vcr.main(
+        _metadata_main(
             [
                 "--root",
                 str(tmp_path),
@@ -1262,7 +1317,7 @@ def test_conda_container_shape_rejects_before_publication(tmp_path, monkeypatch,
         promoter, "promote", lambda *_args: pytest.fail("invalid archive must not publish")
     )
     with pytest.raises(ValueError):
-        promoter.main(
+        _promoter_main(
             [
                 "--owner",
                 "microsoft",
@@ -1318,7 +1373,9 @@ def test_metadata_agreement_across_full_archive_matrix(tmp_path, capsys, build, 
                 index.update(build=build, depends=depends)
             _write_release_archive(tmp_path, folder=subdir, **index)
     assert len(list(tmp_path.rglob("*.tar.bz2"))) == 28
-    assert vcr.main(["--root", str(tmp_path), "--mssql-python-version", _MP_VER]) == bool(error)
+    assert _metadata_main(["--root", str(tmp_path), "--mssql-python-version", _MP_VER]) == bool(
+        error
+    )
     output = capsys.readouterr()
     assert error in output.err if error else "metadata-validated" in output.out
 
@@ -1341,11 +1398,11 @@ def test_promoter_checks_python_constraints_before_client(
         str(path),
     ]
     if allowed:
-        assert promoter.main(["--check-local-only", *args]) == 0
+        assert _promoter_main(["--check-local-only", *args]) == 0
     else:
         for mode in ([], ["--check-local-only"], ["--cleanup-staging"]):
             with pytest.raises(ValueError, match="Conflicting"):
-                promoter.main([*mode, *args])
+                _promoter_main([*mode, *args])
 
 
 def test_local_only_cli_needs_no_token_or_api_client(tmp_path, monkeypatch, capsys):
@@ -1354,7 +1411,7 @@ def test_local_only_cli_needs_no_token_or_api_client(tmp_path, monkeypatch, caps
     monkeypatch.delenv("SYSTEM_ACCESSTOKEN", raising=False)
     monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
     assert (
-        promoter.main(
+        _promoter_main(
             [
                 "--owner",
                 "microsoft",
@@ -1381,7 +1438,7 @@ def test_cli_rejects_invalid_scope_before_client_creation(
     path = _write_release_archive(tmp_path)
     monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
     with pytest.raises(ValueError):
-        promoter.main(
+        _promoter_main(
             [
                 "--owner",
                 owner,
@@ -1415,7 +1472,7 @@ def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch, cleanup)
         lambda api, *_args: api.session.request("GET", "https://api.anaconda.org/example"),
     )
     assert (
-        promoter.main(
+        _promoter_main(
             [
                 "--owner",
                 "microsoft",
@@ -1437,10 +1494,10 @@ def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch, cleanup)
 @pytest.mark.parametrize("build", ["py312_0", "0"])
 def test_metadata_cli_reads_real_archive_and_enforces_requested_matrix(tmp_path, capsys, build):
     _write_release_archive(tmp_path, build=build)
-    assert vcr.main(["--root", str(tmp_path), "--mssql-python-version", "1.13.0"]) == 1
+    assert _metadata_main(["--root", str(tmp_path), "--mssql-python-version", "1.13.0"]) == 1
     assert "MISSING" in capsys.readouterr().err
     assert (
-        vcr.main(
+        _metadata_main(
             [
                 "--root",
                 str(tmp_path),
@@ -1480,7 +1537,7 @@ def test_metadata_cli_enforces_full_default_release_policy(
 ):
     packages = _healthy_set() + [_binding("win-arm64", py) for py in _PYTHONS[2:]]
     monkeypatch.setattr(vcr, "collect_packages", lambda _root: packages[:count])
-    assert vcr.main(["--root", str(tmp_path), *policy]) == (1 if message else 0)
+    assert _metadata_main(["--root", str(tmp_path), *policy]) == (1 if message else 0)
     output = capsys.readouterr()
     assert message in output.err if message else "metadata-validated" in output.out
 
@@ -1500,7 +1557,7 @@ def test_metadata_cli_rejects_empty_policy_entries(
 ):
     packages = _healthy_set() + [_binding("win-arm64", py) for py in _PYTHONS[2:]]
     monkeypatch.setattr(vcr, "collect_packages", lambda _root: packages)
-    assert vcr.main(["--root", str(tmp_path), option, empty_entry.format(value=value)]) == 1
+    assert _metadata_main(["--root", str(tmp_path), option, empty_entry.format(value=value)]) == 1
     assert "must not be empty" in capsys.readouterr().err
 
 
@@ -1513,10 +1570,10 @@ def test_metadata_cli_rejects_distinct_builds_in_one_matrix_cell(tmp_path, capsy
                 build=f"py{py.replace('.', '')}_0",
                 depends=[f"python {py}.*"],
             )
-    assert vcr.main(["--root", str(tmp_path)]) == 0
+    assert _metadata_main(["--root", str(tmp_path)]) == 0
     _write_release_archive(tmp_path, build="py312_1")
     assert len(list(tmp_path.rglob("*.tar.bz2"))) == 29
-    assert vcr.main(["--root", str(tmp_path)]) == 1
+    assert _metadata_main(["--root", str(tmp_path)]) == 1
     assert "DUPLICATE" in capsys.readouterr().err
 
 
@@ -1557,24 +1614,24 @@ def test_index_member_must_be_unique_regular_file(tmp_path, monkeypatch, extensi
     import zipfile
 
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w" if extension == ".conda" else "w:bz2") as archive:
+    with tarfile.open(fileobj=buffer, mode="w" if extension == ".conda" else "w:bz2") as contents:
         for _ in range(2 if index_kind == "duplicate" else 1):
             member = tarfile.TarInfo("other.json" if index_kind == "missing" else "info/index.json")
             if index_kind == "symlink":
                 member.type = tarfile.SYMTYPE
                 member.linkname = "../../outside.json"
-            archive.addfile(member)
+            contents.addfile(member)
     path = tmp_path / ("package" + extension)
     if extension == ".conda":
-        with zipfile.ZipFile(path, "w") as archive:
-            archive.writestr("metadata.json", json.dumps({"conda_pkg_format_version": 2}))
-            archive.writestr("info-package.tar.zst", buffer.getvalue())
-            archive.writestr("pkg-package.tar.zst", b"not read by the metadata reader")
-        monkeypatch.setattr(vcr, "_zstd_decompress", lambda raw: raw)
+        with zipfile.ZipFile(path, "w") as container:
+            container.writestr("metadata.json", json.dumps({"conda_pkg_format_version": 2}))
+            container.writestr("info-package.tar.zst", buffer.getvalue())
+            container.writestr("pkg-package.tar.zst", b"not read by the metadata reader")
+        monkeypatch.setattr(archive, "decompress_index", lambda raw: raw)
     else:
         path.write_bytes(buffer.getvalue())
     with pytest.raises(ValueError, match="exactly one regular info/index.json"):
-        vcr.read_index_json(str(path))
+        archive.read_release_index(str(path))
 
 
 @pytest.mark.parametrize("problem", ["success", "missing", "policy"])
@@ -1595,7 +1652,7 @@ def test_promoter_cli_local_preflight(tmp_path, monkeypatch, capsys, problem):
         "--check-local-only",
         str(path),
     ]
-    assert promoter.cli(args) == (0 if problem == "success" else 1)
+    assert _promoter_cli(args) == (0 if problem == "success" else 1)
     output = capsys.readouterr()
     if problem == "success":
         assert output.out.startswith("LOCAL_RELEASE_INPUT_OK:") and output.err == ""
@@ -1634,14 +1691,14 @@ def test_promoter_cli_error_boundary(monkeypatch, capsys, error_type):
         raise error
 
     monkeypatch.setenv("ANACONDA_API_TOKEN", "synthetic-secret")
-    monkeypatch.setattr(promoter, "main", fail)
+    monkeypatch.setattr(promoter, "execute", fail)
     with pytest.raises(type(error)):
-        promoter.main([])
+        promoter.execute(argparse.Namespace())
     if error_type in (KeyError, TypeError, AssertionError, "chained-bug"):
         with pytest.raises(type(error)):
-            promoter.cli([])
+            promoter.cli(argparse.Namespace())
     else:
-        assert promoter.cli([]) == 1
+        assert promoter.cli(argparse.Namespace()) == 1
         output = capsys.readouterr()
         assert output.err.startswith(f"ERROR: {error_type.__name__}:")
         assert len(output.err.splitlines()) == 1 and "synthetic-secret" not in output.err

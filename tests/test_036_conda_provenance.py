@@ -1,6 +1,5 @@
 """Source-only tests of the authoritative Azure DevOps release provenance chain."""
 
-import importlib.util
 import io
 import json
 import types
@@ -10,12 +9,11 @@ from urllib.parse import urlencode
 
 import pytest
 
-_PATH = Path(__file__).resolve().parent.parent / "conda" / "validate_conda_provenance.py"
+_PATH = Path(__file__).resolve().parent.parent / "eng" / "conda_tools" / "provenance.py"
 if not _PATH.is_file():
     pytest.skip("Conda release sources are not shipped in wheels.", allow_module_level=True)
-_SPEC = importlib.util.spec_from_file_location("conda_provenance", _PATH)
-provenance = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(provenance)
+
+from eng.conda_tools import inputs, provenance
 
 
 def _records(pipeline, run, commit, branch="refs/heads/main"):
@@ -129,12 +127,12 @@ def test_exact_recorded_wheel_run_is_verified_not_packaging_mode_or_build_number
 def test_missing_ambiguous_or_different_release_literal_fails(release_sources, content):
     release_sources["setup.py"] = content
     with pytest.raises(ValueError, match="release version|release versions"):
-        provenance.read_release_versions(release_sources.__getitem__)
+        inputs.read_release_versions(release_sources.__getitem__)
 
 
 def test_release_source_is_read_not_executed(release_sources):
     release_sources["setup.py"] += "raise AssertionError('must not execute setup.py')\n"
-    assert provenance.read_release_versions(release_sources.__getitem__)["mssql-python"] == "1.15.0"
+    assert inputs.read_release_versions(release_sources.__getitem__)["mssql-python"] == "1.15.0"
 
 
 @pytest.mark.parametrize(
@@ -350,7 +348,7 @@ def test_provenance_cli_executes_same_chain_in_both_modes(monkeypatch, chain, ca
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(provenance, "ado_get_json", chain.__getitem__)
-    provenance.main()
+    provenance.execute()
     output = capsys.readouterr().out
     result = json.loads(output.splitlines()[0].split(": ", 1)[1])
     assert result["wheel"]["run"] == 173176
@@ -360,7 +358,7 @@ def test_provenance_cli_executes_same_chain_in_both_modes(monkeypatch, chain, ca
 def test_invalid_publish_flag_is_not_treated_as_dry_run(monkeypatch):
     monkeypatch.setenv("PUBLISH_TO_CONDA", "perhaps")
     with pytest.raises(ValueError, match="true or false"):
-        provenance.main()
+        provenance.execute()
 
 
 def test_alternative_producer_definition_is_rejected(chain):
@@ -429,7 +427,7 @@ def test_provenance_cli_missing_configuration(monkeypatch, provenance_cli_env, c
     monkeypatch.delenv(key)
     monkeypatch.setattr(provenance, "build_opener", lambda *_: pytest.fail("Unexpected network"))
     with pytest.raises(ValueError, match=key):
-        provenance.main()
+        provenance.execute()
     assert provenance.cli() == 1
     output = capsys.readouterr()
     assert output.out == ""
@@ -461,7 +459,7 @@ def test_provenance_cli_boundary(monkeypatch, provenance_cli_env, chain, capsys,
     success = problem in {"success", "dry"}
     if not success:
         with pytest.raises((ValueError, OSError)):
-            provenance.main()
+            provenance.execute()
     assert provenance.cli() == (0 if success else 1)
     output = capsys.readouterr()
     if success:

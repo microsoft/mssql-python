@@ -4,7 +4,7 @@
 # The OneBranch conda-build pipeline is `trigger: none` / `pr: none`, so its blocking
 # audit never runs on a PR. This lightweight GitHub Actions job builds ONE real
 # linux-64 conda package from the SHIPPED PyPI wheels and runs
-# eng/scripts/audit_bundled_binaries.py on it, so a regression in the $ORIGIN climb,
+# python -m eng.conda_tools elf on it, so a regression in the $ORIGIN climb,
 # the declared conda deps (krb5/libtool/openssl), or the expected DT_NEEDED set fails
 # the PR automatically -- the full-agent runtime masking cannot hide it.
 #
@@ -19,14 +19,14 @@ on:
     paths:
       - 'conda/**'
       - 'eng/conda_tools/**'
-      - 'eng/scripts/_conda_pkg.py'
-      - 'eng/scripts/audit_bundled_binaries.py'
-      - 'eng/scripts/assert_macho_arch.py'
-      - 'eng/scripts/assert_pe_machine.py'
-      - 'OneBranchPipelines/scripts/build_conda_packages.py'
+      - 'eng/scripts/download_mssql_python_rs_wheels.py'
+      - 'eng/scripts/resolve_nuget_feed.py'
+      - 'eng/scripts/mssql_python_build_safety.py'
+      - 'eng/versions/mssql-python-rs*.version'
       - 'OneBranchPipelines/conda-build-pipeline.yml'
       - 'OneBranchPipelines/steps/conda-build-validate-step*.yml'
       - 'OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml'
+      - 'OneBranchPipelines/jobs/consolidate-artifacts-job.yml'
       - 'OneBranchPipelines/variables/*.yml'
       - 'OneBranchPipelines/conda-release-pipeline.yml'
       - 'OneBranchPipelines/steps/conda-release-step.yml'
@@ -38,6 +38,7 @@ on:
       - 'tests/test_034_conda_verify_cwd.py'
       - 'tests/test_035_conda_macho_assert.py'
       - 'tests/test_036_conda_provenance.py'
+      - 'tests/test_037_rs_wheel_download.py'
       - 'requirements.txt'
       - 'setup.py'
       - 'mssql_python/__init__.py'
@@ -74,6 +75,7 @@ jobs:
                            tests/test_034_conda_verify_cwd.py \
                            tests/test_035_conda_macho_assert.py \
                            tests/test_036_conda_provenance.py \
+                           tests/test_037_rs_wheel_download.py \
                            tests/test_027_conda_release_metadata.py -q
 
       - name: Fetch the shipped linux wheels from PyPI
@@ -85,7 +87,6 @@ jobs:
           import email
           import json
           import re
-          import runpy
           import subprocess
           import sys
           import urllib.request
@@ -93,7 +94,7 @@ jobs:
           from pathlib import Path
           from urllib.error import URLError
 
-          read_versions = runpy.run_path("conda/validate_conda_provenance.py")["read_release_versions"]
+          from eng.conda_tools.inputs import read_release_versions as read_versions
           versions = read_versions(lambda path: Path(path).read_text(encoding="utf-8"))
           requirements = []
           for name, version in versions.items():
@@ -143,11 +144,7 @@ jobs:
           # One orchestrator runs the same gather + build + masking-immune audit + verify the
           # OneBranch conda leg runs; it derives both wheel versions from the filenames. The
           # find-links dir holds BOTH wheels, so mssql-wheel-dir and odbc-wheel-dir are the same.
-          tool=(OneBranchPipelines/scripts/build_conda_packages.py)
-          if [[ -f eng/conda_tools/__main__.py ]]; then
-            tool=(-m eng.conda_tools build)
-          fi
-          python "${tool[@]}" \
+          python -m eng.conda_tools build \
             --mssql-wheel-dir "$PWD/wheels" \
             --odbc-wheel-dir "$PWD/wheels" \
             --odbc-wheel-filter "mssql_python_odbc-*.whl" \

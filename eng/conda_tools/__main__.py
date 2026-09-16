@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import audit, build
+from . import audit, build, provenance, publication, release
 from .contracts import Format
 
 _ELF_DESCRIPTION = """Masking-immune audit of the vendored Linux ODBC binaries in built conda packages.
@@ -182,7 +182,7 @@ def _audit(args: argparse.Namespace, kind: Format) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m eng.conda_tools",
         description="Build or audit Conda packages from the repository root.",
@@ -205,7 +205,30 @@ def main(argv: list[str] | None = None) -> int:
             ),
             kind,
         )
-    args = parser.parse_args(argv)
+    release.add_arguments(
+        commands.add_parser(
+            "validate", help="Validate release metadata.", description=release.__doc__
+        )
+    )
+    publication.add_arguments(
+        commands.add_parser(
+            "promote", help="Promote or recover staged archives.", description=publication.__doc__
+        )
+    )
+    commands.add_parser(
+        "provenance", help="Verify recorded producer sources.", description=provenance.__doc__
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    if args.command == "validate":
+        return release.execute(args)
+    if args.command == "promote":
+        return publication.cli(args)
+    if args.command == "provenance":
+        return provenance.cli()
     if args.command == "build":
         return build.execute(args)
     return _audit(args, args.command)

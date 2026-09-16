@@ -150,6 +150,7 @@ steps:
       PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
     inputs:
       targetType: 'inline'
+      workingDirectory: '$(Build.SourcesDirectory)'
       script: |
         $ErrorActionPreference = 'Stop'
 
@@ -200,12 +201,12 @@ steps:
         $root = "$(Build.SourcesDirectory)/conda-artifacts/conda"
         # Revalidate every archive from THIS job's fresh download. The metadata
         # gate owns package identity, platform/Python policy and exact-version checks.
-        $metadataGate = "$(Build.SourcesDirectory)/conda/validate_conda_release.py"
+        $metadataGate = "$(Build.SourcesDirectory)/eng/conda_tools/release.py"
         if (-not (Test-Path $metadataGate)) {
           Write-Error "Conda release metadata gate not found at $metadataGate."
           exit 1
         }
-        python "$metadataGate" `
+        python -m eng.conda_tools validate `
           --root "$root" `
           --required-subdirs "$env:REQUIRED_SUBDIRS" `
           --allowed-subdirs "$env:ALLOWED_SUBDIRS" `
@@ -216,7 +217,7 @@ steps:
           exit 1
         }
 
-        $promoter = "$(Build.SourcesDirectory)/conda/promote_conda_release.py"
+        $promoter = "$(Build.SourcesDirectory)/eng/conda_tools/publication.py"
         if (-not (Test-Path $promoter)) {
           Write-Error "Conda promotion helper not found at $promoter."
           exit 1
@@ -225,7 +226,7 @@ steps:
         $pkgs = @(Get-ChildItem -Path $root -Recurse -File -Include *.conda, *.tar.bz2 | Sort-Object FullName)
         $packagePaths = @($pkgs | ForEach-Object { $_.FullName })
         $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
-        python "$promoter" `
+        python -m eng.conda_tools promote `
           --owner "$env:CONDA_CHANNEL" `
           --staging-label "$stagingLabel" `
           --target-label "$env:CONDA_LABEL" `
@@ -353,7 +354,7 @@ steps:
             Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)")
           }
 
-          python "$promoter" `
+          python -m eng.conda_tools promote `
             --owner "$env:CONDA_CHANNEL" `
             --staging-label "$stagingLabel" `
             --target-label "$env:CONDA_LABEL" `
@@ -372,7 +373,7 @@ steps:
           $attemptedPaths = @($uploadState.AttemptedPaths.ToArray())
           if ($attemptedPaths.Count -gt 0) {
             try {
-              python "$promoter" `
+              python -m eng.conda_tools promote `
                 --owner "$env:CONDA_CHANNEL" `
                 --staging-label "$stagingLabel" `
                 --target-label "$env:CONDA_LABEL" `

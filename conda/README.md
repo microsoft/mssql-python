@@ -89,6 +89,11 @@ compatibility policy (`contracts.py`), binary facts (`formats/elf.py`, `pe.py`, 
 human-readable reporting live in `__main__.py`. Conda provisioning and process
 execution live in `environment.py`; `build.py` sequences wheel selection, building,
 auditing and staging; `verify.py` keeps installed-package probes isolated.
+Release matrix and Python-admissibility policy live in `release.py`, recorded
+Azure DevOps source checks in `provenance.py`, maintained version reads in
+`inputs.py`, and staged publication/recovery in `publication.py`. Both release
+and native auditing use `archive.py`; release validation retains its stricter
+container and index rules rather than weakening them to the generic audit policy.
 
 Run the module commands from the **repository root**, followed by the existing
 build or audit arguments:
@@ -98,9 +103,12 @@ python -m eng.conda_tools build --help
 python -m eng.conda_tools elf --root <package-directory>
 python -m eng.conda_tools pe --root <package-directory> --subdir win-arm64
 python -m eng.conda_tools macho --root <package-directory> --subdir osx-arm64
+python -m eng.conda_tools validate --root <package-directory>
+python -m eng.conda_tools provenance
+python -m eng.conda_tools promote --help
 ```
 
-These replace the old standalone audit and build scripts. They require the source
+These replace the old standalone audit, build, and release scripts. They require the source
 checkout; the internal tools are not installed in the driver wheel. If Python
 reports `No module named 'eng'`, run from the checkout root rather than an installed
 driver environment. Build callers set the tooling subprocess's working directory
@@ -108,3 +116,10 @@ explicitly, without changing `PYTHONPATH` or the parent working directory.
 Static audits do not import the driver. Runtime verification remains in separate
 processes from a neutral working directory, with the required core loaded
 independently before API probes.
+
+`provenance` uses the existing release pipeline environment and read-only job-token
+access. `promote --check-local-only` needs neither a publishing token nor an
+Anaconda client; actual publication and recovery retain their existing restricted
+credential and single-operator prerequisites. Module placement is not a new
+authorization boundary. The PowerShell upload process deadlines, attempted-file
+tracking, process-tree termination, and dry-run plan remain in their pipeline tasks.

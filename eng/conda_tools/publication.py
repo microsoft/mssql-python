@@ -26,7 +26,6 @@ or files. It is bounded, compensating recovery, not guaranteed cleanup after a k
 from __future__ import annotations
 
 import argparse
-import hashlib
 import re
 import sys
 import time
@@ -35,11 +34,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
-from validate_conda_release import (
-    _validated_package_identity,
-    python_tag_from_index,
-    read_index_json,
-)
+from eng.scripts.download_mssql_python_rs_wheels import file_sha256
+
+from .archive import _validated_package_identity, read_release_index
+from .release import python_tag_from_index
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -55,20 +53,12 @@ class Distribution:
     sha256: str
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def distribution_from_path(path: str | Path) -> Distribution:
     package_path = Path(path).resolve()
     if not package_path.is_file():
         raise ValueError(f"Conda package does not exist: {package_path}")
 
-    index = read_index_json(str(package_path))
+    index = read_release_index(str(package_path))
     package, version, subdir, _ = _validated_package_identity(index, str(package_path))
     python_tag_from_index(index)
     if package != "mssql-python":
@@ -84,7 +74,7 @@ def distribution_from_path(path: str | Path) -> Distribution:
         package=package,
         version=version,
         basename=f"{subdir}/{package_path.name}",
-        sha256=_sha256(package_path),
+        sha256=file_sha256(package_path),
     )
 
 
@@ -249,9 +239,11 @@ def _remove_staging_label(
             f"Failed to remove staging label from '{distribution.basename}': "
             f"remove={cleanup_error}; verify={verification_error}"
         )
-        error._cli_message = (
+        setattr(
+            error,
+            "_cli_message",
             f"Failed to remove staging label '{staging_label}' from '{distribution.basename}'"
-            + (f"; target label '{required_target}' must remain." if required_target else ".")
+            + (f"; target label '{required_target}' must remain." if required_target else "."),
         )
         raise error from verification_error
     if cleanup_error is not None:
@@ -307,9 +299,11 @@ def cleanup_staging(
             last_error = exc
     if errors:
         error = RuntimeError(f"Staging cleanup incomplete for '{staging_label}': {errors}")
-        error._cli_message = (
+        setattr(
+            error,
+            "_cli_message",
             f"Staging cleanup incomplete for '{staging_label}' ({len(errors)} files); "
-            "rerun --cleanup-staging with the original archives."
+            "rerun --cleanup-staging with the original archives.",
         )
         raise error from last_error
 
@@ -450,10 +444,12 @@ def promote(
             f"Promotion failed; rollback of newly added target labels was attempted: "
             f"{exc}.{detail}"
         )
-        error._cli_message = (
+        setattr(
+            error,
+            "_cli_message",
             "Promotion failed; rollback of newly added target labels was attempted "
             f"({len(rollback_errors)} rollback errors). Recover staging label '{staging_label}' "
-            "with --cleanup-staging and the original archives."
+            "with --cleanup-staging and the original archives.",
         )
         raise error from exc
 
@@ -470,8 +466,7 @@ def promote(
         )
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--owner", required=True)
     parser.add_argument("--staging-label", required=True)
     parser.add_argument("--target-label", required=True)
@@ -484,8 +479,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Recover attempted uploads: verify exact files and remove only this staging label.",
     )
     parser.add_argument("packages", nargs="+")
-    args = parser.parse_args(argv)
 
+
+def execute(args: argparse.Namespace) -> int:
     distributions = [distribution_from_path(path) for path in args.packages]
     _require_publication(
         args.owner, args.staging_label, args.target_label, args.expected_version, distributions
@@ -521,17 +517,15 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def cli(argv: list[str] | None = None) -> int:
-    """Report expected CLI failures; imported main() retains its raising behavior."""
+def cli(args: argparse.Namespace) -> int:
+    """Report expected CLI failures; imported execute() retains its raising behavior."""
     import os
     from http.client import HTTPException
     from tarfile import TarError
     from zipfile import BadZipFile
 
-    try:
-        return main(argv)
-    except (
-        expected := (
+    def expected_errors() -> tuple[type[Exception], ...]:
+        return (
             ValueError,
             RuntimeError,
             ImportError,
@@ -544,11 +538,14 @@ def cli(argv: list[str] | None = None) -> int:
             getattr(sys.modules.get("zstandard"), "ZstdError", RuntimeError),
             getattr(sys.modules.get("compression.zstd"), "ZstdError", RuntimeError),
         )
-    ) as error:
+
+    try:
+        return execute(args)
+    except expected_errors() as error:
         # Only already-loaded optional clients are inspected; local-only needs none.
         cause = error.__cause__
         while cause is not None:
-            if not isinstance(cause, expected):
+            if not isinstance(cause, expected_errors()):
                 raise
             cause = cause.__cause__
         message = getattr(
@@ -565,7 +562,3 @@ def cli(argv: list[str] | None = None) -> int:
                 message = message.replace(repr(secret)[1:-1], "[REDACTED]")
         print(f"ERROR: {type(error).__name__}: " + " ".join(message.split()), file=sys.stderr)
         return 1
-
-
-if __name__ == "__main__":
-    sys.exit(cli())

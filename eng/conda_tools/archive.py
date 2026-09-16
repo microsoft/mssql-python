@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import csv
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -12,7 +13,7 @@ import zipfile
 from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
-from typing import Any, Iterator, TypedDict
+from typing import Any, Callable, Iterator, TypedDict
 
 READ_ERRORS = (
     OSError,
@@ -93,89 +94,129 @@ def read_wheel_metadata(path: str | Path) -> WheelMetadata:
         }
 
 
-def zstd_decompress(raw: bytes) -> bytes:
-    """Decompress a zstandard blob, preferring the 3.14+ stdlib backend."""
-    try:  # Python 3.14+
+def collect(root: str) -> list[str]:
+    return sorted(
+        glob.glob(os.path.join(root, "**", "*.conda"), recursive=True)
+        + glob.glob(os.path.join(root, "**", "*.tar.bz2"), recursive=True)
+    )
+
+
+def _require_index_object(index: object, path: str) -> dict:
+    if not isinstance(index, dict):
+        raise ValueError(f"{path}: info/index.json must contain a JSON object")
+    return index
+
+
+def _required_index_string(index: dict, key: str, path: str) -> str:
+    value = index.get(key)
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(
+            f"{path}: info/index.json field '{key}' must be a non-empty, trimmed string"
+        )
+    return value
+
+
+def _validated_package_identity(index: dict, path: str) -> tuple[str, str, str, str]:
+    name, version, subdir, build = (
+        _required_index_string(index, key, path) for key in ("name", "version", "subdir", "build")
+    )
+    extension = ".conda" if path.endswith(".conda") else ".tar.bz2"
+    canonical_name = f"{name}-{version}-{build}{extension}"
+    if Path(path).name != canonical_name:
+        raise ValueError(
+            f"{path}: must use canonical basename '{canonical_name}': "
+            "anaconda-client normalizes upload names from metadata."
+        )
+    return name, version, subdir, build
+
+
+def _zstd_decoder(purpose: str) -> tuple[Callable[[bytes], bytes], type[Exception]]:
+    try:
         from compression import zstd  # type: ignore
     except ImportError:
         try:
-            import zstandard  # third-party fallback
+            import zstandard
         except ImportError as exc:
             raise RuntimeError(
-                "Unable to import 'zstandard': reading .conda (.tar.zst) payloads requires "
+                f"Unable to import 'zstandard': reading .conda (.tar.zst) {purpose} requires "
                 "Python 3.14+ with compression.zstd or a working 'zstandard' install "
                 "(pip install zstandard)."
             ) from exc
-        try:
-            return zstandard.ZstdDecompressor().decompress(raw)
-        except zstandard.ZstdError as exc:
-            raise ValueError(str(exc)) from exc
+        return zstandard.ZstdDecompressor().decompress, zstandard.ZstdError
+    return zstd.decompress, zstd.ZstdError
+
+
+def zstd_decompress(raw: bytes) -> bytes:
+    """Normalize native-audit decoding errors without changing the release-reader contract."""
+    decode, error = _zstd_decoder("payloads")
     try:
-        return zstd.decompress(raw)
-    except zstd.ZstdError as exc:
+        return decode(raw)
+    except error as exc:
         raise ValueError(str(exc)) from exc
 
 
-def iter_payload_members(path: str) -> Iterator[tuple[str, bytes]]:
-    """Yield ``(member_name, data_bytes)`` for the files in a ``.conda`` / ``.tar.bz2`` payload."""
+def decompress_index(raw: bytes) -> bytes:
+    decode, _ = _zstd_decoder("metadata")
+    return decode(raw)
+
+
+@contextmanager
+def _open_tar(
+    path: str,
+    select: Callable[[zipfile.ZipFile], str],
+    decode: Callable[[bytes], bytes],
+) -> Iterator[tarfile.TarFile]:
     if path.endswith(".conda"):
-        with zipfile.ZipFile(path) as zf:
-            pkg_name = next(
-                (n for n in zf.namelist() if n.startswith("pkg-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if pkg_name is None:
-                raise ValueError(f"{path}: no pkg-*.tar.zst payload found in .conda archive")
-            blob = zstd_decompress(zf.read(pkg_name))
-        with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
-            for m in tf.getmembers():
-                if not m.isfile():
-                    continue
-                f = tf.extractfile(m)
-                if f is not None:
-                    yield m.name, f.read()
+        with zipfile.ZipFile(path) as container:
+            blob = decode(container.read(select(container)))
+        with tarfile.open(fileobj=io.BytesIO(blob)) as contents:
+            yield contents
     elif path.endswith(".tar.bz2"):
-        with tarfile.open(path, "r:bz2") as tf:
-            for m in tf.getmembers():
-                if not m.isfile():
-                    continue
-                f = tf.extractfile(m)
-                if f is not None:
-                    yield m.name, f.read()
+        with tarfile.open(path, "r:bz2") as contents:
+            yield contents
     else:
-        # Fail CLOSED like read_index -- a caller that gets an unexpected extension must NOT
-        # receive a silently-empty iterator (a truncated/renamed package would slip through).
         raise ValueError(f"{path}: unrecognized conda package extension")
 
 
-def read_index(path: str) -> dict[str, Any]:
-    """Return the package's ``info/index.json`` as a dict.
+def iter_payload_members(path: str) -> Iterator[tuple[str, bytes]]:
+    """Yield regular payload members using the native auditors' existing permissive selection."""
 
-    RAISES on a malformed/unreadable package -- callers must NOT swallow this into a
-    silent "non-Linux/non-Windows, skip" (a truncated package would then slip through).
-    """
-    if path.endswith(".conda"):
-        with zipfile.ZipFile(path) as zf:
-            info_name = next(
-                (n for n in zf.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
-                None,
-            )
-            if info_name is None:
-                raise ValueError("no info-*.tar.zst member (malformed .conda)")
-            blob = zstd_decompress(zf.read(info_name))
-        with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
-            member = tf.extractfile("info/index.json")
-            if member is None:
-                raise ValueError("info/index.json missing")
-            index = json.load(member)
-    elif path.endswith(".tar.bz2"):
-        with tarfile.open(path, "r:bz2") as tf:
-            member = tf.extractfile("info/index.json")
-            if member is None:
-                raise ValueError("info/index.json missing")
-            index = json.load(member)
-    else:
+    def select(container: zipfile.ZipFile) -> str:
+        name = next(
+            (n for n in container.namelist() if n.startswith("pkg-") and n.endswith(".tar.zst")),
+            None,
+        )
+        if name is None:
+            raise ValueError(f"{path}: no pkg-*.tar.zst payload found in .conda archive")
+        return name
+
+    with _open_tar(path, select, zstd_decompress) as contents:
+        for member in contents.getmembers():
+            if member.isfile():
+                source = contents.extractfile(member)
+                if source is not None:
+                    yield member.name, source.read()
+
+
+def read_index(path: str) -> dict[str, Any]:
+    """Read native-audit metadata without applying the stricter release-container policy."""
+
+    def select(container: zipfile.ZipFile) -> str:
+        name = next(
+            (n for n in container.namelist() if n.startswith("info-") and n.endswith(".tar.zst")),
+            None,
+        )
+        if name is None:
+            raise ValueError("no info-*.tar.zst member (malformed .conda)")
+        return name
+
+    if not path.endswith((".conda", ".tar.bz2")):
         raise ValueError("unrecognized conda package extension")
+    with _open_tar(path, select, zstd_decompress) as contents:
+        member = contents.extractfile("info/index.json")
+        if member is None:
+            raise ValueError("info/index.json missing")
+        index = json.load(member)
     if not isinstance(index, dict):
         raise ValueError("info/index.json must be an object")
     depends = index.get("depends", [])
@@ -184,8 +225,40 @@ def read_index(path: str) -> dict[str, Any]:
     return index
 
 
-def collect(root: str) -> list[str]:
-    return sorted(
-        glob.glob(os.path.join(root, "**", "*.conda"), recursive=True)
-        + glob.glob(os.path.join(root, "**", "*.tar.bz2"), recursive=True)
-    )
+def read_release_index(path: str) -> dict:
+    """Require the canonical three-member container and one regular, object-valued index."""
+
+    def select(container: zipfile.ZipFile) -> str:
+        names = container.namelist()
+        if len(names) != len(set(names)):
+            raise ValueError(f"{path}: duplicate ZIP entries are not allowed")
+        info_names = [n for n in names if n.startswith("info-") and n.endswith(".tar.zst")]
+        if len(info_names) != 1:
+            raise ValueError(
+                f"{path}: expected exactly one info-*.tar.zst member; found {len(info_names)}"
+            )
+        pkg_names = [n for n in names if n.startswith("pkg-") and n.endswith(".tar.zst")]
+        if len(pkg_names) != 1:
+            raise ValueError(
+                f"{path}: expected exactly one pkg-*.tar.zst member; found {len(pkg_names)}"
+            )
+        stem = Path(path).stem
+        if set(names) != {"metadata.json", f"info-{stem}.tar.zst", f"pkg-{stem}.tar.zst"}:
+            raise ValueError(f"{path}: expected only canonical metadata.json/info/pkg members")
+        metadata = json.loads(container.read("metadata.json"))
+        if (
+            not isinstance(metadata, dict)
+            or type(metadata.get("conda_pkg_format_version")) is not int
+            or metadata["conda_pkg_format_version"] != 2
+        ):
+            raise ValueError(f"{path}: metadata.json must declare conda_pkg_format_version 2")
+        return info_names[0]
+
+    with _open_tar(path, select, decompress_index) as contents:
+        members = [member for member in contents.getmembers() if member.name == "info/index.json"]
+        if len(members) != 1 or not members[0].isfile():
+            raise ValueError(f"{path}: expected exactly one regular info/index.json member")
+        source = contents.extractfile(members[0])
+        if source is None:
+            raise ValueError(f"{path}: info/index.json is unreadable")
+        return _require_index_object(json.load(source), path)
