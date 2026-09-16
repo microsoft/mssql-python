@@ -4,13 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import shutil
 import urllib.request
 import zipfile
+from xml.etree import ElementTree
 from pathlib import Path, PurePosixPath
 
-import mssql_python_build_safety
-from resolve_nuget_feed import resolve
+if __package__:
+    from . import mssql_python_build_safety
+    from .resolve_nuget_feed import resolve
+else:
+    import mssql_python_build_safety
+    from resolve_nuget_feed import resolve
 
 DEFAULT_FEED = (
     "https://pkgs.dev.azure.com/sqlclientdrivers/public/"
@@ -24,6 +31,14 @@ def _read_version(version_file: Path) -> str:
     if not version:
         raise ValueError(f"Version file is empty: {version_file}")
     return version
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def download_wheels(
@@ -56,11 +71,22 @@ def download_wheels(
     seen: set[str] = set()
     expected_prefix = f"mssql_python_rs-{distribution_version}-"
     with zipfile.ZipFile(package_path) as package:
+        nuspecs = [name for name in package.namelist() if name.endswith(".nuspec")]
+        if len(nuspecs) != 1:
+            raise ValueError("RS transport must contain exactly one Nuspec")
+        metadata = ElementTree.fromstring(package.read(nuspecs[0])).find("{*}metadata")
+        if (
+            metadata is None
+            or metadata.findtext("{*}id") != PACKAGE_ID
+            or metadata.findtext("{*}version", "").lower() != normalized_version
+        ):
+            raise ValueError("RS transport Nuspec identity does not match the pinned package")
+        description = metadata.findtext("{*}description", "")
         for entry in package.infolist():
             path = PurePosixPath(entry.filename)
             if len(path.parts) != 2 or path.parts[0] != "wheels" or path.suffix != ".whl":
                 continue
-            if not path.name.startswith(expected_prefix):
+            if not path.name.startswith(expected_prefix) or "\\" in path.name:
                 raise ValueError(
                     "Unexpected wheel name for mssql-python-rs "
                     f"{distribution_version}: {path.name}"
@@ -73,9 +99,21 @@ def download_wheels(
                 shutil.copyfileobj(source, target)
             staged.append(destination)
 
-    package_path.unlink()
     if not staged:
         raise ValueError(f"No mssql-python-rs {distribution_version} wheels found in {package_url}")
+    receipt = {
+        "distribution_version": distribution_version,
+        "transport_version": transport_version,
+        "feed_url": feed_url,
+        "package_id": PACKAGE_ID,
+        "package_sha256": file_sha256(package_path),
+        "nuspec_description": description,
+        "wheel_sha256": {path.name: file_sha256(path) for path in sorted(staged)},
+    }
+    (output_dir / "transport.json").write_text(
+        json.dumps(receipt, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    package_path.unlink()
     return sorted(staged)
 
 
