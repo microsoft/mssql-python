@@ -1,4 +1,5 @@
 import pytest
+
 mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python import OperationalError, setup_logging

@@ -1,6 +1,7 @@
 from typing import Any, cast
 
 import pytest
+
 mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python import exceptions as public_exceptions
