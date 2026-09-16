@@ -26,6 +26,7 @@ or files. It is bounded, compensating recovery, not guaranteed cleanup after a k
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -493,9 +494,13 @@ def execute(args: argparse.Namespace) -> int:
         )
         return 0
 
+    token = os.environ.get("ANACONDA_API_TOKEN")
+    if not token or not token.strip():
+        raise ValueError("ANACONDA_API_TOKEN is required for publication or staging recovery.")
+
     from binstar_client.utils import get_server_api  # type: ignore[import-not-found]
 
-    api = get_server_api(config={"url": _ANACONDA_API_URL, "ssl_verify": True})
+    api = get_server_api(token=token, config={"url": _ANACONDA_API_URL, "ssl_verify": True})
     # anaconda-client 1.14.1 does not set timeouts on its metadata/label requests.
     api.session.request = partial(api.session.request, timeout=(15, 60))
     operation = cleanup_staging if args.cleanup_staging else promote
@@ -519,7 +524,6 @@ def execute(args: argparse.Namespace) -> int:
 
 def cli(args: argparse.Namespace) -> int:
     """Report expected CLI failures; imported execute() retains its raising behavior."""
-    import os
     from http.client import HTTPException
     from tarfile import TarError
     from zipfile import BadZipFile

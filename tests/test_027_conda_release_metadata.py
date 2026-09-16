@@ -1436,6 +1436,7 @@ def test_promoter_checks_python_constraints_before_client(
 def test_local_only_cli_needs_no_token_or_api_client(tmp_path, monkeypatch, capsys):
     path = _write_release_archive(tmp_path)
     monkeypatch.delenv("ANACONDA_API_TOKEN", raising=False)
+    monkeypatch.setenv("BINSTAR_API_TOKEN", "synthetic-other-token")
     monkeypatch.delenv("SYSTEM_ACCESSTOKEN", raising=False)
     monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
     assert (
@@ -1483,15 +1484,27 @@ def test_cli_rejects_invalid_scope_before_client_creation(
 
 
 @pytest.mark.parametrize("cleanup", [False, True])
-def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch, cleanup):
+@pytest.mark.parametrize("other_token", [None, "", "synthetic-other-token"])
+def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch, cleanup, other_token):
     path = _write_release_archive(tmp_path)
     requests = []
+    clients = []
+    monkeypatch.setenv("ANACONDA_API_TOKEN", "synthetic-reviewed-token")
+    if other_token is None:
+        monkeypatch.delenv("BINSTAR_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("BINSTAR_API_TOKEN", other_token)
     api = types.SimpleNamespace(
         session=types.SimpleNamespace(request=lambda *args, **kwargs: requests.append(kwargs))
     )
     client = types.ModuleType("binstar_client")
     utils = types.ModuleType("binstar_client.utils")
-    utils.get_server_api = lambda **_kwargs: api
+
+    def get_server_api(**kwargs):
+        clients.append(kwargs)
+        return api
+
+    utils.get_server_api = get_server_api
     monkeypatch.setitem(sys.modules, "binstar_client", client)
     monkeypatch.setitem(sys.modules, "binstar_client.utils", utils)
     monkeypatch.setattr(
@@ -1517,6 +1530,104 @@ def test_promotion_cli_uses_bounded_api_requests(tmp_path, monkeypatch, cleanup)
         == 0
     )
     assert requests == [{"timeout": (15, 60)}]
+    assert clients == [
+        {
+            "token": "synthetic-reviewed-token",
+            "config": {"url": "https://api.anaconda.org", "ssl_verify": True},
+        }
+    ]
+
+
+@pytest.mark.parametrize("cleanup", [False, True])
+@pytest.mark.parametrize("token", [None, "", " \t "])
+def test_publisher_requires_explicit_token_before_client_import(
+    tmp_path, monkeypatch, capsys, cleanup, token
+):
+    path = _write_release_archive(tmp_path)
+    if token is None:
+        monkeypatch.delenv("ANACONDA_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("ANACONDA_API_TOKEN", token)
+    monkeypatch.setenv("BINSTAR_API_TOKEN", "synthetic-other-token")
+    monkeypatch.setitem(sys.modules, "binstar_client.utils", None)
+    assert (
+        _promoter_cli(
+            [
+                "--owner",
+                "microsoft",
+                "--staging-label",
+                _STAGING,
+                "--target-label",
+                "main",
+                "--expected-version",
+                _MP_VER,
+                *(["--cleanup-staging"] if cleanup else []),
+                str(path),
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == (
+        "ERROR: ValueError: ANACONDA_API_TOKEN is required for publication or staging recovery.\n"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Publishing task runs on Windows")
+@pytest.mark.parametrize("token", [None, "", " \t ", "synthetic-reviewed-token"])
+@pytest.mark.parametrize("other_token", [None, "", "synthetic-other-token"])
+def test_upload_task_uses_only_reviewed_token(tmp_path, token, other_token):
+    import os
+    import shutil
+    import subprocess
+    import textwrap
+
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    assert shell is not None, "The Windows publishing task requires PowerShell"
+    template = (_ROOT / "OneBranchPipelines" / "steps" / "conda-publish-step.yml").read_text()
+    start = template.index("        if ([string]::IsNullOrWhiteSpace($env:ANACONDA_API_TOKEN))")
+    end = template.index("        if ([string]::IsNullOrWhiteSpace($env:BINSTAR_CONFIG_DIR))")
+    guard = textwrap.dedent(template[start:end])
+    probe = tmp_path / "inspect_environment.py"
+    probe.write_text(
+        "import os\n"
+        'assert "BINSTAR_API_TOKEN" not in os.environ\n'
+        'assert os.environ["ANACONDA_API_TOKEN"] == "synthetic-reviewed-token"\n'
+        'print("PUBLISHER_TOKEN_OK")\n',
+        encoding="utf-8",
+    )
+    env = dict(os.environ, TEST_PUBLISHER_PYTHON=sys.executable, TEST_PUBLISHER_PROBE=str(probe))
+    for name, value in (("ANACONDA_API_TOKEN", token), ("BINSTAR_API_TOKEN", other_token)):
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
+    result = subprocess.run(
+        [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$ErrorActionPreference = 'Stop'\n" + guard + """
+$process = Start-Process -FilePath $env:TEST_PUBLISHER_PYTHON `
+    -ArgumentList ('"' + $env:TEST_PUBLISHER_PROBE + '"') -NoNewWindow -PassThru
+$null = $process.Handle
+$process.WaitForExit()
+exit $process.ExitCode
+""",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == (0 if token and token.strip() else 1), result.stderr
+    if token and token.strip():
+        assert result.stdout.strip() == "PUBLISHER_TOKEN_OK"
+    else:
+        assert "ANACONDA_API_TOKEN is not set" in result.stderr
+        assert "PUBLISHER_TOKEN_OK" not in result.stdout
 
 
 @pytest.mark.parametrize("build", ["py312_0", "0"])

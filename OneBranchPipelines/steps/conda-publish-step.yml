@@ -140,9 +140,9 @@ steps:
   - task: PowerShell@2
     displayName: '${{ parameters.labelPrefix }}Publish conda packages to anaconda.org/${{ parameters.condaChannel }}'
     env:
-      # anaconda-client reads ANACONDA_API_TOKEN automatically, so the token is
-      # never passed on the command line and never appears in the logs. Supplied by
-      # the caller from the 'Anaconda Publishing' variable group.
+      # The API receives this token explicitly; the CLI inherits it after the
+      # competing BINSTAR_API_TOKEN is removed below. Keep it off command lines.
+      # Supplied by the caller from the 'Anaconda Publishing' variable group.
       ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
       ANACONDA_CLIENT_FORCE_STANDALONE: '1'
       BINSTAR_CONFIG_DIR: '$(Agent.TempDirectory)/anaconda-client-$(Build.BuildId)'
@@ -191,6 +191,8 @@ steps:
           Write-Error "ANACONDA_API_TOKEN is not set. Add the 'Anaconda Publishing' variable group to the job."
           exit 1
         }
+        # Remove the key: even an empty BINSTAR token overrides ANACONDA in the pinned client.
+        [Environment]::SetEnvironmentVariable('BINSTAR_API_TOKEN', $null, 'Process')
 
         if ([string]::IsNullOrWhiteSpace($env:BINSTAR_CONFIG_DIR)) {
           Write-Error "BINSTAR_CONFIG_DIR is empty; refusing to use ambient Anaconda client configuration."

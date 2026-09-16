@@ -139,6 +139,10 @@ Anaconda client; actual publication and recovery retain their existing restricte
 credential and single-operator prerequisites. Module placement is not a new
 authorization boundary. The PowerShell upload process deadlines, attempted-file
 tracking, process-tree termination, and dry-run plan remain in their pipeline tasks.
+Network publication and recovery require an explicit nonblank `ANACONDA_API_TOKEN`,
+not an ambient or cached login. The publishing task removes `BINSTAR_API_TOKEN`
+only from its process and children so the CLI uploader uses the same reviewed credential.
+User/machine environment settings and saved credentials are not modified.
 
 Only trusted, reviewed release revisions may be queued, including validate-only feature
 branches: their YAML and Python run with `System.AccessToken`. YAML provenance checks
