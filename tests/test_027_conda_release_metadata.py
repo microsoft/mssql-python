@@ -1580,6 +1580,42 @@ def test_publisher_requires_explicit_token_before_client_import(
     )
 
 
+def test_publication_lock_covers_the_complete_release_stage():
+    pipeline = (_ROOT / "OneBranchPipelines" / "conda-release-pipeline.yml").read_text()
+    stage = pipeline.split("      - stage: CondaRelease\n", 1)[1]
+    configuration, jobs = stage.split("        jobs:\n", 1)
+    assert (
+        "        ${{ if eq(parameters.publishToConda, true) }}:\n"
+        "          lockBehavior: sequential\n"
+        "          variables:\n"
+        "            - group: 'Anaconda Publishing'\n"
+    ) in configuration
+    assert pipeline.count("lockBehavior:") == 1
+    assert pipeline.count("- group: 'Anaconda Publishing'") == 1
+    assert "- job: ValidateConda" in jobs
+    assert "- job: PublishConda" in jobs
+
+
+def test_dry_release_excludes_the_complete_publication_job():
+    pipeline = (_ROOT / "OneBranchPipelines" / "conda-release-pipeline.yml").read_text()
+    assert "    default: false  # Safety: default to a validate-only dry run." in pipeline
+    guarded_job = pipeline.split(
+        "          - ${{ if eq(parameters.publishToConda, true) }}:\n"
+        "            - job: PublishConda\n",
+        1,
+    )[1]
+    assert "              dependsOn: ValidateConda\n" in guarded_job
+    assert "                type: releaseJob\n                isProduction: true\n" in guarded_job
+    template = "/OneBranchPipelines/steps/conda-publish-step.yml@self"
+    assert pipeline.count(template) == 1
+    assert template in guarded_job
+    publisher = (_ROOT / "OneBranchPipelines" / "steps" / "conda-publish-step.yml").read_text()
+    assert "Invoke-Anaconda @('upload'" in publisher
+    assert "python -m eng.conda_tools promote `" in publisher
+    assert "--cleanup-staging `" in publisher
+    assert "\nstages:" not in publisher and "\njobs:" not in publisher
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Publishing task runs on Windows")
 @pytest.mark.parametrize("token", [None, "", " \t ", "synthetic-reviewed-token"])
 @pytest.mark.parametrize("other_token", [None, "", "synthetic-other-token"])

@@ -172,8 +172,8 @@ independently before API probes.
 
 `provenance` uses the existing release pipeline environment and read-only job-token
 access. `promote --check-local-only` needs neither a publishing token nor an
-Anaconda client; actual publication and recovery retain their existing restricted
-credential and single-operator prerequisites. Module placement is not a new
+Anaconda client; actual publication and recovery require restricted credentials and
+the shared protected release stage described below. Module placement is not a new
 authorization boundary. The PowerShell upload process deadlines, attempted-file
 tracking, process-tree termination, and dry-run plan remain in their pipeline tasks.
 Network publication and recovery require an explicit nonblank `ANACONDA_API_TOKEN`,
@@ -205,6 +205,26 @@ the resource-side control: editable YAML could bypass either. These external che
 are not installed by this repository; production must remain unapproved until the
 resource owner verifies their configuration and enforcement. Branch control does
 not provide the separate exclusive publication lock.
+
+### Publication serialization
+
+The resource owner must also enable the native **Exclusive lock** check on the same
+`Anaconda Publishing` variable group. Production selects `lockBehavior: sequential`
+on the enclosing `CondaRelease` stage; this setting orders waiting runs but does not
+create the external check. The lock spans validation, staged uploads, the initial
+label snapshot, promotion, rollback and staging cleanup until the stage ends.
+All publishers and recovery paths for `microsoft/mssql-python` must consume that
+same resource, across versions and target labels; separate groups would not serialize
+them. Keep the group and lock behavior absent from validate-only runs.
+
+Recover by rerunning the original protected release stage with its original artifact
+inputs, preserving the build-specific staging label and reacquiring the shared lock.
+Do not run mutating `promote` or `--cleanup-staging` commands outside that protected
+stage: the Python helpers do not acquire an ADO resource lock themselves.
+After uncertain writer termination, first confirm the writer has stopped; a native
+lock does not terminate orphaned processes or repair interrupted remote operations.
+Inspect check configuration and compiled stage wiring separately from run-time lock
+acquisition; configuration readback alone is not evidence that a run holds the lock.
 
 The release pipeline resolves AUTO from the **recorded upstream wheel commit**, not
 the release checkout or a latest-version lookup. It cross-checks binding setup/runtime

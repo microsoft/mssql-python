@@ -22,7 +22,8 @@
 #
 # The caller MUST:
 #   - run this ONLY after the conda-release-step.yml readiness gate has passed, and
-#   - coordinate one publication or recovery at a time for the same target, and
+#   - keep the entire step in a stage consuming the shared publishing variable group
+#     with its administrator-configured native Exclusive lock check, and
 #   - supply ANACONDA_API_TOKEN (variable group 'Anaconda Publishing') to the job.
 # This template never puts the token on the command line (anaconda-client reads it
 # from the env), so it never appears in the logs.
@@ -255,7 +256,8 @@ steps:
         # label from attempted files. Promotion verifies each mutation and rolls back failures;
         # an interrupted run is idempotent and resumes from server-verified labels. The
         # staging label distinguishes retries but does not prevent overlapping writers.
-        # The team must coordinate one publication or recovery at a time for this target.
+        # The caller's protected stage keeps the shared native lock through upload,
+        # promotion's snapshot/rollback, and the compensating cleanup below.
         # Bound stalled writers, not just retry counts. Start the 20-minute upload
         # budget at the first attempt; reserve termination time within that budget.
         # Preparation and compensating cleanup have separate costs: this is not a

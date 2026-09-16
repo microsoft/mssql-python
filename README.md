@@ -93,8 +93,8 @@ conda install -c "<candidate-channel>" -c microsoft -c defaults --override-chann
 
 **Conda release status:** Validate-only release and staged publication tooling are included
 in this repository; neither publishes packages automatically. Production publication
-requires separately configured credentials and permissions, single-operator coordination,
-explicit authorization, and release qualification.
+requires separately configured credentials, permissions and shared publishing-resource
+checks, explicit authorization, and release qualification.
 Static audits and import checks do not certify SQL, certificate-verified TLS, authentication,
 bulk copy, or optional features across the full matrix. Validate-only success does not
 authorize production publication.

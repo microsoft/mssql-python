@@ -17,9 +17,9 @@
 # inventory-compliance gate); publishToConda=true (real release) extends the Official template
 # (validated production publish -- the definition must be classified Production to
 # upload). Review the dry-run output, then explicitly select publishToConda=true.
-# The team must run only one publication or recovery at a time for the same target;
-# there is no automatic concurrency protection. Keep publishing credentials restricted
-# and authorize the pipeline to read the 'Anaconda Publishing' variable group.
+# An administrator must enable the native Exclusive lock check on 'Anaconda Publishing'.
+# The production stage uses that shared resource throughout publication and recovery.
+# Keep its credentials, pipeline authorizations and other checks restricted.
 # The OneBranch YAML needs an actual ADO run to fully validate.
 # =========================================================================================
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaRelease
@@ -112,6 +112,7 @@ extends:
       - stage: CondaRelease
         displayName: 'Validate & Publish Conda Release'
         ${{ if eq(parameters.publishToConda, true) }}:
+          lockBehavior: sequential
           variables:
             - group: 'Anaconda Publishing'
         jobs:
@@ -227,7 +228,7 @@ extends:
 
                       Write-Host "`n====================================="
                       Write-Host "DRY-RUN COMPLETE: no 'anaconda upload' was executed (publishToConda=false)."
-                      Write-Host "Review this dry run, then select publishToConda=true. Run only one publication or recovery at a time for the same target."
+                      Write-Host "Review this dry run and verify the shared publishing-resource checks before selecting publishToConda=true."
                       Write-Host "====================================="
 
           # PRODUCTION publish (releaseJob) -- runs ONLY when publishToConda=true and
