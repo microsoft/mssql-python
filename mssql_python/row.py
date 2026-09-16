@@ -7,6 +7,7 @@ from a cursor fetch operation.
 
 import decimal
 import uuid as _uuid
+from collections.abc import Mapping
 from typing import Any
 from mssql_python.logging import logger
 
@@ -16,9 +17,10 @@ class Row:
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
     and attribute access to column values.
 
-    Row supports dict-like access via keys(), values(), items(), and to_dict().
-    However, iteration (for x in row) yields values, not keys — consistent with
-    pyodbc.Row and sqlite3.Row. Use row.keys() to iterate column names.
+    For dict-like access, use the read-only ``row._mapping`` view (a
+    ``collections.abc.Mapping`` of column name -> value). Iterating the Row itself
+    (for x in row) yields values, not keys — consistent with pyodbc.Row and
+    sqlite3.Row; iterate ``row._mapping`` to get column names.
 
     Column attribute access behavior depends on the global 'lowercase' setting:
     - When enabled: Case-insensitive attribute access
@@ -26,10 +28,13 @@ class Row:
 
     Example:
         row = cursor.fetchone()
-        print(row[0])              # Access by index
-        print(row.column_name)     # Access by column name
-        print(row.to_dict())       # Convert to dict
-        for value in row:          # Iterates values, not keys
+        print(row[0])                  # Access by index
+        print(row.column_name)         # Access by column name
+        print(dict(row._mapping))      # Convert to a plain dict
+        print(row._mapping["col"])     # Access a value by column name via the mapping
+        for name in row._mapping:      # Iterate column names
+            print(name, row._mapping[name])
+        for value in row:              # Iterating the Row yields values, not keys
             print(value)
     """
 
@@ -41,6 +46,7 @@ class Row:
         converter_map=None,
         uuid_str_indices=None,
         column_map_lower=None,
+        column_names=None,
     ):
         """
         Initialize a Row object with values and pre-built column map.
@@ -55,6 +61,11 @@ class Row:
             column_map_lower: Pre-built lowercase column map for O(1) case-insensitive
                 lookups. Built once per result set in the cursor when lowercase is enabled;
                 None when lowercase is off (the default). Shared across all rows.
+            column_names: Canonical, order- and duplicate-preserving column names for
+                the result set, snapshotted once by the cursor and shared by reference
+                across all rows. Backs ``row._mapping``. None for rows built without a
+                cursor snapshot; ``_mapping_keys()`` then reconstructs names from
+                ``column_map``.
         """
         # Apply output converters if available using pre-computed converter map
         if converter_map:
@@ -80,7 +91,11 @@ class Row:
         # Lowercase map is pre-built once per result set in the cursor and shared
         # across all rows. None when lowercase is off (the default) — zero cost.
         self._column_map_lower = column_map_lower
-        self._column_names = None  # Lazy-computed on first access via _get_column_names()
+        # Canonical column names for this row's result set, snapshotted once by the
+        # cursor (order- and duplicate-preserving) and shared by reference across every
+        # row. None only for rows built without a cursor snapshot (e.g. some direct or
+        # test constructions); _mapping_keys() then reconstructs names from _column_map.
+        self._column_names = column_names
 
     def _stringify_uuids(self, indices):
         """
@@ -217,40 +232,32 @@ class Row:
 
         raise AttributeError(f"Row has no attribute '{name}'")
 
-    def _get_column_names(self) -> tuple:
-        """Lazy-compute and cache deduplicated column names on first access."""
+    @property
+    def _mapping(self) -> "RowMapping":
+        """Read-only dict-like view (column name -> value) over this row.
+
+        Returns a ``collections.abc.Mapping``; use ``dict(row._mapping)`` for a plain
+        dict, ``row._mapping.items()`` for name/value pairs, and ``iter(row._mapping)``
+        for column names. Names are order-preserving and de-duplicated (last column
+        wins for a repeated name, matching subscript and attribute access).
+        """
+        return RowMapping(self)
+
+    def _mapping_keys(self) -> tuple:
+        """Canonical, order-preserving column names backing ``_mapping``.
+
+        Prefers the names snapshotted once by the cursor for the result set. When a
+        row was built without that snapshot, reconstructs names from ``_column_map``
+        (one name per column index); returns ``()`` when neither is available.
+        """
         if self._column_names is not None:
             return self._column_names
-
-        if self._cursor and hasattr(self._cursor, "description") and self._cursor.description:
-            column_names = tuple(desc[0] for desc in self._cursor.description)
-        elif self._column_map:
+        if self._column_map:
             idx_to_name: dict = {}
             for name, idx in self._column_map.items():
-                if idx not in idx_to_name:
-                    idx_to_name[idx] = name
-            column_names = tuple(idx_to_name[i] for i in sorted(idx_to_name))
-        else:
-            column_names = ()
-
-        self._column_names = column_names
-        return column_names
-
-    def keys(self) -> tuple:
-        """Return column names, like dict.keys()."""
-        return self._get_column_names()
-
-    def values(self) -> tuple:
-        """Return column values as a tuple, like dict.values()."""
-        return tuple(self._values)
-
-    def items(self) -> list:
-        """Return (column_name, value) pairs, like dict.items()."""
-        return list(zip(self._get_column_names(), self._values))
-
-    def to_dict(self) -> dict:
-        """Return the row as a plain dict mapping column names to values."""
-        return dict(zip(self._get_column_names(), self._values))
+                idx_to_name.setdefault(idx, name)
+            return tuple(idx_to_name[i] for i in sorted(idx_to_name))
+        return ()
 
     def __eq__(self, other: Any) -> bool:
         """
@@ -296,3 +303,39 @@ class Row:
     def __repr__(self) -> str:
         """Return a detailed string representation for debugging"""
         return repr(tuple(self._values))
+
+
+class RowMapping(Mapping):
+    """Read-only ``Mapping`` view over a :class:`Row` (column name -> value).
+
+    Created via :attr:`Row._mapping`. Keys are the row's column names, order-
+    preserving and de-duplicated (last column wins for a repeated name, matching
+    ``row[name]`` / ``row.name``). The view reflects the row it wraps and copies
+    no values.
+    """
+
+    __slots__ = ("_row",)
+
+    def __init__(self, row: "Row") -> None:
+        self._row = row
+
+    def __getitem__(self, key: str) -> Any:
+        if isinstance(key, str):
+            try:
+                return self._row[key]
+            except KeyError:
+                raise KeyError(key) from None
+        raise KeyError(key)
+
+    def __iter__(self):
+        seen = set()
+        for name in self._row._mapping_keys():
+            if name not in seen:
+                seen.add(name)
+                yield name
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+    def __repr__(self) -> str:
+        return f"RowMapping({dict(self)!r})"

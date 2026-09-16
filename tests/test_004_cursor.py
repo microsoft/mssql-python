@@ -3445,8 +3445,8 @@ def test_row_string_key_indexing(cursor, db_connection):
             pass
 
 
-def test_row_to_dict(cursor, db_connection):
-    """Test Row.to_dict() returns a plain dict from a real cursor row."""
+def test_row_mapping_to_dict(cursor, db_connection):
+    """Test dict(row._mapping) returns a plain dict from a real cursor row."""
     try:
         cursor.execute(
             "CREATE TABLE #pytest_row_todict (id INT PRIMARY KEY, name VARCHAR(50), price FLOAT)"
@@ -3459,7 +3459,7 @@ def test_row_to_dict(cursor, db_connection):
         cursor.execute("SELECT * FROM #pytest_row_todict")
         row = cursor.fetchone()
 
-        d = row.to_dict()
+        d = dict(row._mapping)
         assert isinstance(d, dict)
         assert d["id"] == 1
         assert d["name"] == "Widget"
@@ -3467,7 +3467,7 @@ def test_row_to_dict(cursor, db_connection):
         assert len(d) == len(row)
 
     except Exception as e:
-        pytest.fail(f"Row to_dict test failed: {e}")
+        pytest.fail(f"Row _mapping to-dict test failed: {e}")
     finally:
         try:
             cursor.execute("DROP TABLE IF EXISTS #pytest_row_todict")
@@ -3476,8 +3476,8 @@ def test_row_to_dict(cursor, db_connection):
             pass
 
 
-def test_row_keys_values_items(cursor, db_connection):
-    """Test Row.keys(), values(), items() from a real cursor row."""
+def test_row_mapping_keys_values_items(cursor, db_connection):
+    """Test row._mapping keys/values/items from a real cursor row."""
     try:
         cursor.execute("CREATE TABLE #pytest_row_kvi (id INT PRIMARY KEY, name VARCHAR(50))")
         db_connection.commit()
@@ -3488,31 +3488,34 @@ def test_row_keys_values_items(cursor, db_connection):
         cursor.execute("SELECT * FROM #pytest_row_kvi")
         row = cursor.fetchone()
 
+        mapping = row._mapping
+
         # keys() returns column names matching description
-        keys = list(row.keys())
+        keys = list(mapping.keys())
         assert len(keys) == 2
         assert keys == [desc[0] for desc in cursor.description]
 
         # values() matches positional access
-        vals = list(row.values())
+        vals = list(mapping.values())
         assert vals == [row[0], row[1]]
 
         # items() returns (name, value) pairs
-        items = row.items()
+        items = list(mapping.items())
         assert len(items) == 2
         assert items[0] == (keys[0], row[0])
         assert items[1] == (keys[1], row[1])
 
-        # items() is reusable (not one-shot iterator)
-        assert list(items) == list(items)
+        # The mapping is a repeatable view, not a one-shot iterator
+        assert list(mapping.items()) == list(mapping.items())
 
         # len consistency
         assert len(keys) == len(row)
         assert len(vals) == len(row)
         assert len(items) == len(row)
+        assert len(mapping) == len(row)
 
     except Exception as e:
-        pytest.fail(f"Row keys/values/items test failed: {e}")
+        pytest.fail(f"Row _mapping keys/values/items test failed: {e}")
     finally:
         try:
             cursor.execute("DROP TABLE IF EXISTS #pytest_row_kvi")
@@ -3521,11 +3524,11 @@ def test_row_keys_values_items(cursor, db_connection):
             pass
 
 
-def test_row_dict_no_duplicate_keys(cursor, db_connection):
-    """Test that dict-like methods don't produce duplicate keys from cursor rows.
+def test_row_mapping_no_duplicate_keys(cursor, db_connection):
+    """Test that row._mapping doesn't produce duplicate keys from cursor rows.
 
-    The cursor may inject lowercase aliases into _column_map, but keys(),
-    items(), and to_dict() must return exactly N entries with original casing.
+    The cursor may inject lowercase aliases into _column_map, but the mapping
+    must expose exactly N entries with original casing.
     """
     try:
         cursor.execute("CREATE TABLE #pytest_row_nodup (ProductID INT, MixedCase VARCHAR(20))")
@@ -3537,18 +3540,20 @@ def test_row_dict_no_duplicate_keys(cursor, db_connection):
         cursor.execute("SELECT * FROM #pytest_row_nodup")
         row = cursor.fetchone()
 
-        keys = list(row.keys())
-        items = row.items()
-        d = row.to_dict()
+        mapping = row._mapping
+        keys = list(mapping.keys())
+        items = list(mapping.items())
+        d = dict(mapping)
 
-        # Exactly 2 columns, no duplicates
+        # Exactly 2 columns, no duplicates, original casing preserved
         assert len(keys) == 2
         assert len(items) == 2
         assert len(d) == 2
         assert len(keys) == len(row)
+        assert keys == ["ProductID", "MixedCase"]
 
     except Exception as e:
-        pytest.fail(f"Row dict no-duplicate-keys test failed: {e}")
+        pytest.fail(f"Row _mapping no-duplicate-keys test failed: {e}")
     finally:
         try:
             cursor.execute("DROP TABLE IF EXISTS #pytest_row_nodup")
@@ -3619,30 +3624,33 @@ def test_row_case_sensitive_access(cursor, db_connection):
             pass
 
 
-def test_row_none_column_map():
-    """Test Row edge case with column_map=None (covers _column_names=() branch)."""
+def test_row_mapping_none_column_map():
+    """Test row._mapping edge case with column_map=None (empty mapping)."""
     from mssql_python.row import Row
 
     row = Row([], None, cursor=None)
-    assert list(row.keys()) == []
-    assert list(row.values()) == []
-    assert list(row.items()) == []
-    assert row.to_dict() == {}
+    mapping = row._mapping
+    assert list(mapping.keys()) == []
+    assert list(mapping.values()) == []
+    assert list(mapping.items()) == []
+    assert dict(mapping) == {}
+    assert len(mapping) == 0
 
 
-def test_row_dict_dedup_fallback():
-    """Test dict-like methods deduplicate _column_map when cursor is None."""
+def test_row_mapping_dedup_fallback():
+    """Test row._mapping reconstructs names from _column_map when cursor is None."""
     from mssql_python.row import Row
 
     column_map = {"ProductID": 0, "Name": 1}
     row = Row([1, "foo"], column_map, cursor=None)
 
-    assert list(row.keys()) == ["ProductID", "Name"]
-    assert row.to_dict() == {"ProductID": 1, "Name": "foo"}
+    mapping = row._mapping
+    assert list(mapping.keys()) == ["ProductID", "Name"]
+    assert dict(mapping) == {"ProductID": 1, "Name": "foo"}
 
 
-def test_row_items_is_reusable(cursor, db_connection):
-    """Test items() returns a reusable list, not a one-shot iterator."""
+def test_row_mapping_is_reusable(cursor, db_connection):
+    """Test row._mapping is a repeatable view, not a one-shot iterator."""
     try:
         cursor.execute("CREATE TABLE #pytest_row_reuse (id INT, name VARCHAR(50))")
         db_connection.commit()
@@ -3652,9 +3660,9 @@ def test_row_items_is_reusable(cursor, db_connection):
         cursor.execute("SELECT * FROM #pytest_row_reuse")
         row = cursor.fetchone()
 
-        items = row.items()
-        first = list(items)
-        second = list(items)
+        mapping = row._mapping
+        first = list(mapping.items())
+        second = list(mapping.items())
         assert first == second
         assert len(first) > 0
     finally:
@@ -3663,6 +3671,254 @@ def test_row_items_is_reusable(cursor, db_connection):
             db_connection.commit()
         except Exception:
             pass
+
+
+def test_row_mapping_stable_after_cursor_reuse(cursor, db_connection):
+    """row._mapping reflects the row's own result set, not a later reused query.
+
+    Regression: an already-fetched row must not pick up column names from a
+    subsequent, differently-shaped query executed on the same cursor.
+    """
+    cursor.execute("SELECT 1 AS alpha, 2 AS beta")
+    row_a = cursor.fetchone()
+
+    # Reuse the same cursor for a different-shaped query.
+    cursor.execute("SELECT 10 AS gamma")
+    cursor.fetchone()
+
+    # row_a's mapping must still describe the FIRST result set.
+    assert list(row_a._mapping.keys()) == ["alpha", "beta"]
+    assert dict(row_a._mapping) == {"alpha": 1, "beta": 2}
+
+
+def test_row_mapping_column_named_mapping(cursor, db_connection):
+    """A column literally named '_mapping' is reachable via subscript/the view.
+
+    row._mapping is a property, so it always returns the mapping view; the column
+    value is reached with row['_mapping'] (and via the view itself).
+    """
+    from mssql_python.row import RowMapping
+
+    cursor.execute("SELECT 7 AS _mapping")
+    row = cursor.fetchone()
+
+    # The property still returns the mapping view, not the column value.
+    assert isinstance(row._mapping, RowMapping)
+    # The column value is reachable by subscript and through the view.
+    assert row["_mapping"] == 7
+    assert row._mapping["_mapping"] == 7
+
+
+def test_row_mapping_getitem_get_contains(cursor, db_connection):
+    """RowMapping supports __getitem__, get(), and 'in' with dict semantics."""
+    cursor.execute("SELECT 1 AS id, 'Alice' AS name")
+    row = cursor.fetchone()
+    mapping = row._mapping
+
+    # __getitem__ for a present string key
+    assert mapping["id"] == 1
+    assert mapping["name"] == "Alice"
+
+    # __getitem__ for a missing string key raises KeyError (not IndexError/TypeError)
+    with pytest.raises(KeyError):
+        mapping["missing"]
+
+    # __getitem__ for a non-string key raises KeyError (the mapping is name-keyed)
+    with pytest.raises(KeyError):
+        mapping[0]
+    with pytest.raises(KeyError):
+        mapping[None]
+
+    # get() returns the value or the default
+    assert mapping.get("id") == 1
+    assert mapping.get("missing") is None
+    assert mapping.get("missing", "fallback") == "fallback"
+
+    # 'in' membership: only existing string names are members
+    assert "id" in mapping
+    assert "missing" not in mapping
+    assert 0 not in mapping
+
+
+def test_row_mapping_repr_and_equality(cursor, db_connection):
+    """RowMapping compares equal to an equivalent dict and has a dict-like repr."""
+    cursor.execute("SELECT 1 AS id, 'Bob' AS name")
+    row = cursor.fetchone()
+    mapping = row._mapping
+
+    # Equality against a plain dict and another mapping (Mapping.__eq__).
+    assert mapping == {"id": 1, "name": "Bob"}
+    assert mapping == dict(mapping)
+    assert mapping != {"id": 1, "name": "DIFFERENT"}
+    assert mapping != {"id": 1}
+
+    # repr round-trips through the underlying dict representation.
+    assert repr(mapping) == f"RowMapping({dict(mapping)!r})"
+
+    # The property returns a fresh view each access, but views compare equal.
+    assert row._mapping is not row._mapping
+    assert row._mapping == row._mapping
+
+
+def test_row_mapping_is_read_only(cursor, db_connection):
+    """RowMapping is a read-only view: no item assignment or deletion."""
+    cursor.execute("SELECT 1 AS id")
+    row = cursor.fetchone()
+    mapping = row._mapping
+
+    with pytest.raises(TypeError):
+        mapping["id"] = 99
+    with pytest.raises(TypeError):
+        del mapping["id"]
+
+
+def test_row_mapping_duplicate_column_names(cursor, db_connection):
+    """Duplicate column labels collapse last-wins by name; values stay positional.
+
+    Design §6.4: a mapping holds one entry per name (last column wins), but every
+    value remains reachable via positional indexing.
+    """
+    cursor.execute("SELECT 1 AS dup, 2 AS dup")
+    row = cursor.fetchone()
+
+    # The name view is de-duplicated; the last column wins for the value.
+    assert list(row._mapping) == ["dup"]
+    assert dict(row._mapping) == {"dup": 2}
+    assert len(row._mapping) == 1
+
+    # Both values are still reachable positionally.
+    assert len(row) == 2
+    assert row[0] == 1
+    assert row[1] == 2
+
+
+def test_row_mapping_from_fetchall_and_fetchmany(cursor, db_connection):
+    """Rows from fetchall() and fetchmany() carry a correct _mapping.
+
+    Exercises the canonical-name snapshot on all three fetch paths, not just
+    fetchone().
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_map_many (id INT, name VARCHAR(20))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_map_many VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+        db_connection.commit()
+
+        # fetchall: every row maps correctly.
+        cursor.execute("SELECT id, name FROM #pytest_row_map_many ORDER BY id")
+        rows = cursor.fetchall()
+        assert [dict(r._mapping) for r in rows] == [
+            {"id": 1, "name": "a"},
+            {"id": 2, "name": "b"},
+            {"id": 3, "name": "c"},
+        ]
+        for r in rows:
+            assert list(r._mapping.keys()) == ["id", "name"]
+
+        # fetchmany: the first batch maps correctly.
+        cursor.execute("SELECT id, name FROM #pytest_row_map_many ORDER BY id")
+        batch = cursor.fetchmany(2)
+        assert [dict(r._mapping) for r in batch] == [
+            {"id": 1, "name": "a"},
+            {"id": 2, "name": "b"},
+        ]
+        for r in batch:
+            assert list(r._mapping.keys()) == ["id", "name"]
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_map_many")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_mapping_reflects_converted_values(cursor, db_connection):
+    """_mapping values equal the positional (already type-converted) values.
+
+    Design §7: decimal, GUID, datetime, unicode and NULL flow through the row's
+    normal conversion; the mapping copies nothing and must reflect them exactly.
+    """
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_map_types ("
+            "amount DECIMAL(10,2), guid UNIQUEIDENTIFIER, "
+            "ts DATETIME2, note NVARCHAR(50), maybe INT)"
+        )
+        db_connection.commit()
+        cursor.execute(
+            "INSERT INTO #pytest_row_map_types VALUES "
+            "(123.45, '6F9619FF-8B86-D011-B42D-00CF4FC964FF', "
+            "'2024-01-02T03:04:05', N'café', NULL)"
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT amount, guid, ts, note, maybe FROM #pytest_row_map_types")
+        row = cursor.fetchone()
+        mapping = row._mapping
+
+        # Mapping values are identical to positional (post-conversion) values.
+        assert list(mapping.values()) == [row[0], row[1], row[2], row[3], row[4]]
+
+        # Spot-check that converted types are preserved, not stringified by the view.
+        assert isinstance(mapping["amount"], decimal.Decimal)
+        assert mapping["amount"] == decimal.Decimal("123.45")
+        assert mapping["note"] == "café"
+        assert mapping["maybe"] is None  # SQL NULL -> None
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_map_types")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_mapping_output_converter_reflected(db_connection):
+    """A registered output converter is reflected in _mapping values.
+
+    Design §7: output converters run at row construction, so the mapping must
+    expose the converted value, identical to positional access.
+    """
+    from mssql_python.constants import ConstantsDDBC
+
+    cursor = db_connection.cursor()
+    try:
+        db_connection.add_output_converter(
+            ConstantsDDBC.SQL_WVARCHAR.value,
+            lambda raw: "CONV:" + raw.decode("utf-16-le"),
+        )
+        cursor.execute("SELECT CAST(N'hello' AS NVARCHAR(20)) AS greeting")
+        row = cursor.fetchone()
+
+        assert row[0] == "CONV:hello"
+        assert row._mapping["greeting"] == "CONV:hello"
+        assert dict(row._mapping) == {"greeting": "CONV:hello"}
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_row_mapping_lowercase_setting(db_connection):
+    """With lowercase=True, _mapping keys are lowercased (design §6.4).
+
+    lowercase is captured per result set at execute time, so a result fetched
+    under lowercase=True yields lowercased mapping keys.
+    """
+    original = mssql_python.lowercase
+    cursor = None
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        cursor.execute("SELECT 1 AS MixedCase, 2 AS UPPER")
+        row = cursor.fetchone()
+
+        assert list(row._mapping.keys()) == ["mixedcase", "upper"]
+        assert dict(row._mapping) == {"mixedcase": 1, "upper": 2}
+        assert row._mapping["mixedcase"] == 1
+        assert row._mapping["upper"] == 2
+    finally:
+        mssql_python.lowercase = original
+        if cursor is not None:
+            cursor.close()
 
 
 def test_row_comparison_with_list(cursor, db_connection):
