@@ -108,3 +108,16 @@ explicitly, without changing `PYTHONPATH` or the parent working directory.
 Static audits do not import the driver. Runtime verification remains in separate
 processes from a neutral working directory, with the required core loaded
 independently before API probes.
+
+The driver-load probe's sole implementation is
+`eng/conda_tools/driver_load_probe.py`. It separates native connection execution,
+pure outcome classification and command reporting with typed interfaces.
+Verification runs that file by absolute path with the target environment's Python.
+Its standard-library-only bootstrap does not require `eng` to be installed there,
+so the tooling namespace does not weaken installed-package isolation.
+
+The files remaining under `conda/` are the conventional recipe entrypoints,
+metadata, documentation and line-ending configuration. Shared NuGet transport,
+feed-resolution and output-safety utilities remain under `eng/scripts` because
+non-Conda native build/development workflows also use them; Conda reuses those
+implementations rather than keeping private copies.
