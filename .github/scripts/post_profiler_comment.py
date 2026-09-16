@@ -15,8 +15,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "benchmarks"))
-from profiler_report import LEGS, MARKER, MAX_BYTES, render, validate
+from profiler_report import LEGS, MARKER, MAX_BYTES, render, suite_hash, suite_paths, validate
 
+ROOT = Path(__file__).resolve().parents[2]
 ADO = "https://dev.azure.com/sqlclientdrivers/public/_apis/build"
 REPOSITORY = "microsoft/mssql-python"
 # Allow a 160-minute ADO job plus queueing; the workflow reserves publication time.
@@ -150,6 +151,26 @@ def find_build(builds, number, head):
     )
 
 
+def suite_blobs(commit):
+    tree_sha = commit.get("tree", {}).get("sha")
+    if not re.fullmatch(r"[0-9a-f]{40}", tree_sha or ""):
+        raise ValueError("Invalid commit tree")
+    tree = github(f"git/trees/{tree_sha}?recursive=1")
+    if tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
+        raise ValueError("Incomplete commit tree")
+    expected = {path.relative_to(ROOT).as_posix() for path in suite_paths(ROOT)}
+    blobs = {
+        entry.get("path"): entry.get("sha")
+        for entry in tree["tree"]
+        if entry.get("type") == "blob" and entry.get("path") in expected
+    }
+    if set(blobs) != expected or any(
+        not re.fullmatch(r"[0-9a-f]{40}", sha or "") for sha in blobs.values()
+    ):
+        raise ValueError("Benchmark suite missing from commit tree")
+    return blobs
+
+
 def run(number, head, wait_minutes):
     publish(
         number,
@@ -173,10 +194,10 @@ def run(number, head, wait_minutes):
             }
         )
         build = find_build(api(f"{ADO}/builds?{query}")["value"], number, head)
-        if build and build["status"] == "completed":
+        if build and build["status"] == "completed" and build.get("result") != "canceled":
             break
         time.sleep(30)
-    if build is None or build.get("status") != "completed":
+    if build is None or build.get("status") != "completed" or build.get("result") == "canceled":
         publish(
             number,
             head,
@@ -194,6 +215,7 @@ def run(number, head, wait_minutes):
     if len(commit["parents"]) != 2 or commit["parents"][1]["sha"] != head:
         raise ValueError("ADO merge does not match current PR head")
     base = commit["parents"][0]["sha"]
+    suite_unchanged = suite_blobs(commit) == suite_blobs(github(f"git/commits/{base}"))
     artifacts = api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1")["value"]
     reports, issues = [], []
     for leg in LEGS:
@@ -210,9 +232,9 @@ def run(number, head, wait_minutes):
         except (ValueError, KeyError, TypeError, URLError, zipfile.BadZipFile):
             # Invalid data is visibly incomplete, never converted to a success verdict.
             issues.append(leg + " (invalid artifact)")
-    if len({r["suite_hash"] for r in reports}) > 1:
+    if not suite_unchanged or any(report["suite_hash"] != suite_hash(ROOT) for report in reports):
         reports = []
-        issues.append("workload versions differ across legs")
+        issues.append("workload version differs from trusted base")
     publish(number, head, render(reports, head, build_id, issues))
 
 

@@ -3,7 +3,6 @@
 import argparse
 import contextlib
 import faulthandler
-import hashlib
 import importlib.util
 import io
 import json
@@ -16,6 +15,8 @@ import sys
 import tarfile
 import tempfile
 import time
+
+from profiler_report import suite_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -197,14 +198,6 @@ def run(args):
     args.output.mkdir(parents=True, exist_ok=True)
     report_path = args.output / "report.json"
     report_path.unlink(missing_ok=True)
-    suite = hashlib.sha256()
-    for file in [
-        Path(__file__),
-        ROOT / "benchmarks/profiler_workloads.py",
-        *sorted((ROOT / "profiler").glob("*.py")),
-    ]:
-        suite.update(file.name.encode())
-        suite.update(file.read_bytes().replace(b"\r\n", b"\n"))
     head = os.environ.get("SYSTEM_PULLREQUEST_SOURCECOMMITID", candidate)
     if not SHA.fullmatch(head):
         head = candidate
@@ -216,7 +209,7 @@ def run(args):
         source_commit=candidate,
         head_commit=head,
         build_id=int(os.environ.get("BUILD_BUILDID", "0")),
-        suite_hash=suite.hexdigest(),
+        suite_hash=suite_hash(ROOT),
         samples=args.samples,
         warmups=args.warmups,
         pairs=[],

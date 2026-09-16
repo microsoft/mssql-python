@@ -28,9 +28,10 @@ def load(name, path):
 
 
 reporting = load("profiler_report", "benchmarks/profiler_report.py")
-controller = load("profiler_ci", "benchmarks/profiler_ci.py")
 sys.modules["profiler_report"] = reporting
+controller = load("profiler_ci", "benchmarks/profiler_ci.py")
 publisher = load("post_profiler_comment", ".github/scripts/post_profiler_comment.py")
+extractor = load("extract_coverage_artifact", ".github/scripts/extract_coverage_artifact.py")
 
 
 @pytest.fixture
@@ -158,6 +159,57 @@ def zip_data(entries):
     return out.getvalue()
 
 
+@pytest.mark.parametrize(
+    "kind,member,data",
+    [
+        ("html", "Code Coverage Report_1/index.html", b"<html>coverage</html>"),
+        ("xml", "unified-coverage/coverage.xml", b"<coverage />"),
+    ],
+)
+def test_coverage_artifact_reader_copies_only_expected_report(tmp_path, kind, member, data):
+    archive = tmp_path / "coverage.zip"
+    archive.write_bytes(
+        zip_data(
+            [
+                (".github/actions/post-coverage-comment/action.yml", "malicious"),
+                ("../outside.txt", "escape"),
+                (member, data),
+            ]
+        )
+    )
+    output = tmp_path / f"report.{kind}"
+    extractor.copy_report(archive, output, kind)
+    assert output.read_bytes() == data
+    assert not (tmp_path.parent / "outside.txt").exists()
+    assert not (tmp_path / ".github").exists()
+
+
+def test_coverage_artifact_reader_accepts_only_identical_duplicate_reports(tmp_path):
+    archive = tmp_path / "coverage.zip"
+    output = tmp_path / "coverage.xml"
+    archive.write_bytes(
+        zip_data(
+            [
+                ("first/coverage.xml", "<coverage />"),
+                ("second/coverage.xml", "<coverage />"),
+            ]
+        )
+    )
+    extractor.copy_report(archive, output, "xml")
+    assert output.read_text() == "<coverage />"
+
+    archive.write_bytes(
+        zip_data(
+            [
+                ("first/coverage.xml", "<coverage />"),
+                ("second/coverage.xml", "<different />"),
+            ]
+        )
+    )
+    with pytest.raises(ValueError, match="Conflicting"):
+        extractor.copy_report(archive, output, "xml")
+
+
 def test_artifact_read_never_extracts_paths(report):
     raw = json.dumps(report)
     assert (
@@ -257,6 +309,24 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
+    assert ROOT / "benchmarks/profiler_report.py" in reporting.suite_paths(ROOT)
+    assert ROOT / "eng/pipelines/pr-validation-pipeline.yml" in reporting.suite_paths(ROOT)
+
+
+def test_suite_blobs_require_complete_authenticated_tree(monkeypatch):
+    expected = [path.relative_to(ROOT).as_posix() for path in reporting.suite_paths(ROOT)]
+    tree = {
+        "truncated": False,
+        "tree": [
+            {"path": path, "type": "blob", "sha": f"{index + 1:040x}"}
+            for index, path in enumerate(expected)
+        ],
+    }
+    monkeypatch.setattr(publisher, "github", lambda path: tree)
+    assert set(publisher.suite_blobs({"tree": {"sha": "a" * 40}})) == set(expected)
+    tree["tree"].pop()
+    with pytest.raises(ValueError, match="missing"):
+        publisher.suite_blobs({"tree": {"sha": "a" * 40}})
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -446,7 +516,7 @@ def test_head_moving_while_listing_comments_prevents_publish(monkeypatch):
     assert reads == 2 and len(calls) == 3
 
 
-@pytest.mark.parametrize("corrupt", [None, "zip", "scenarios"])
+@pytest.mark.parametrize("corrupt", [None, "zip", "scenarios", "suite", "source"])
 def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, monkeypatch, corrupt):
     posted = []
     windows = copy.deepcopy(report)
@@ -456,6 +526,8 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
             sample["environment"]["os"] = "Windows"
     if corrupt == "scenarios":
         report["pairs"][0]["candidate"]["scenarios"] = list(reporting.CASES)
+    elif corrupt == "suite":
+        report["suite_hash"] = "e" * 64
     data = {
         "Windows-SQL2022": zip_data([("report.json", json.dumps(windows))]),
         "Linux-SQL2022": (
@@ -473,6 +545,13 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
         triggerInfo={"pr.number": "123", "pr.sourceSha": "c" * 40},
     )
     monkeypatch.setattr(publisher, "publish", lambda number, head, body: posted.append(body))
+    monkeypatch.setattr(publisher, "suite_hash", lambda root: "d" * 64)
+    suite_versions = iter(({"suite": "source"}, {"suite": "base"}))
+    monkeypatch.setattr(
+        publisher,
+        "suite_blobs",
+        lambda commit: next(suite_versions) if corrupt == "source" else {"suite": "same"},
+    )
     monkeypatch.setattr(
         publisher,
         "github",
@@ -503,14 +582,58 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     publisher.run(123, "c" * 40, 1)
     assert len(posted) == 2
     assert posted[0].startswith(reporting.MARKER)
-    assert "### Windows-SQL2022" in posted[1]
     assert "macOS-SQL2022: incomplete/unavailable" in posted[1]
-    if corrupt:
+    if corrupt in ("suite", "source"):
+        assert "workload version differs from trusted base" in posted[1]
+        assert "regression signals" not in posted[1]
+    elif corrupt:
+        assert "### Windows-SQL2022" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
         assert "Linux-SQL2022: incomplete/unavailable" in posted[1]
         assert posted[1].count("20 regression signals") == 1
     else:
+        assert "### Windows-SQL2022" in posted[1]
         assert posted[1].count("20 regression signals") == 2
+
+
+def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report, monkeypatch):
+    canceled = dict(
+        id=41,
+        status="completed",
+        result="canceled",
+        definition={"id": 2128},
+        repository={"id": "microsoft/mssql-python"},
+        sourceBranch="refs/pull/123/merge",
+        sourceVersion="b" * 40,
+        triggerInfo={"pr.number": "123", "pr.sourceSha": "c" * 40},
+    )
+    replacement = {**canceled, "id": 42, "result": "failed"}
+    builds = iter(([canceled], [replacement]))
+    posted = []
+    clock = [0]
+
+    def api(url):
+        return {"value": next(builds)} if "/builds?" in url else {"value": []}
+
+    def github(path):
+        return (
+            {"state": "open", "head": {"sha": "c" * 40}}
+            if path.startswith("pulls/")
+            else {"parents": [{"sha": "a" * 40}, {"sha": "c" * 40}]}
+        )
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", github)
+    monkeypatch.setattr(publisher, "publish", lambda number, head, body: posted.append(body))
+    monkeypatch.setattr(publisher, "suite_blobs", lambda commit: {"suite": "same"})
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 1)
+    assert clock[0] == 30
+    assert len(posted) == 2
+    assert "buildId=42" in posted[1]
 
 
 @pytest.mark.parametrize("status", [None, "notStarted", "inProgress"])
@@ -601,6 +724,9 @@ def test_comment_workflow_executes_only_trusted_base_code():
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in workflow
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
+    coverage = (ROOT / ".github/workflows/pr-code-coverage.yml").read_text(encoding="utf-8")
+    assert coverage.count("extract_coverage_artifact.py") == 2
+    assert "unzip -o" not in coverage
     assert (
         "head.ref" not in workflow
         and "head.sha }}" not in workflow.split("ref:", 1)[1].split("persist", 1)[0]

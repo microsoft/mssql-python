@@ -1,6 +1,7 @@
 """Validate bounded profiler data and render an advisory, per-platform comparison."""
 
 import argparse
+import hashlib
 import html
 import json
 import math
@@ -35,6 +36,25 @@ MAX_BYTES = 8 * 1024 * 1024
 MARKER = "<!-- mssql-python-profiler-ci -->"
 THRESHOLD = 0.20
 MIN_DELTA_MS = 1.0
+
+
+def suite_paths(root):
+    root = Path(root)
+    return [
+        root / "eng/pipelines/pr-validation-pipeline.yml",
+        root / "benchmarks/profiler_ci.py",
+        root / "benchmarks/profiler_report.py",
+        root / "benchmarks/profiler_workloads.py",
+        *sorted((root / "profiler").glob("*.py")),
+    ]
+
+
+def suite_hash(root):
+    digest = hashlib.sha256()
+    for file in suite_paths(root):
+        digest.update(file.name.encode())
+        digest.update(file.read_bytes().replace(b"\r\n", b"\n"))
+    return digest.hexdigest()
 
 
 def number(value, maximum=1e12):

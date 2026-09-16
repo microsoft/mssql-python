@@ -233,16 +233,12 @@ jobs:
               exit 1
             fi
 
-            if ! unzip -o -q coverage-report.zip; then
-              echo "❌ Failed to extract coverage artifacts"
-              echo "Trying to extract with verbose output for debugging..."
-              unzip -l coverage-report.zip || echo "Failed to list archive contents"
+            INDEX_FILE="$RUNNER_TEMP/coverage-index.html"
+            if ! python .github/scripts/extract_coverage_artifact.py html coverage-report.zip "$INDEX_FILE"; then
+              echo "❌ Failed to read the coverage HTML artifact"
               exit 1
             fi
-            
-            # Find the main index.html file
-            INDEX_FILE=$(find . -name "index.html" -path "*/Code Coverage Report*" | head -1)
-            
+
             if [[ -f "$INDEX_FILE" ]]; then
               echo "🔍 Parsing coverage data from $INDEX_FILE..."
               
@@ -309,8 +305,6 @@ jobs:
               echo "✅ Coverage data extracted successfully"
             else
               echo "❌ Could not find index.html in coverage report"
-              echo "Available files in the coverage report:"
-              find . -name "*.html" | head -10 || echo "No HTML files found"
               exit 1
             fi
           else
@@ -356,37 +350,12 @@ jobs:
               exit 1
             fi
             
-            if ! unzip -o -q coverage-artifacts.zip; then
-              echo "❌ Failed to extract coverage artifacts"
-              echo "Trying to extract with verbose output for debugging..."
-              unzip -l coverage-artifacts.zip || echo "Failed to list archive contents"
+            COVERAGE_XML="$RUNNER_TEMP/coverage.xml"
+            if ! python .github/scripts/extract_coverage_artifact.py xml coverage-artifacts.zip "$COVERAGE_XML"; then
+              echo "❌ Failed to read the coverage XML artifact"
               exit 1
             fi
-            
-            echo "🔍 Looking for coverage XML files in extracted artifacts..."
-            find . -name "*.xml" -type f | head -10
-            
-            # Look for the main coverage.xml file in unified-coverage directory or any coverage XML
-            if [[ -f "unified-coverage/coverage.xml" ]]; then
-              echo "✅ Found unified coverage file at unified-coverage/coverage.xml"
-              cp "unified-coverage/coverage.xml" ./coverage.xml
-            elif [[ -f "coverage.xml" ]]; then
-              echo "✅ Found coverage.xml in root directory"
-              # Already in the right place
-            else
-              # Try to find any coverage XML file
-              COVERAGE_FILE=$(find . -name "*coverage*.xml" -type f | head -1)
-              if [[ -n "$COVERAGE_FILE" ]]; then
-                echo "✅ Found coverage file: $COVERAGE_FILE"
-                cp "$COVERAGE_FILE" ./coverage.xml
-              else
-                echo "❌ No coverage XML file found in artifacts"
-                echo "Available files:"
-                find . -name "*.xml" -type f
-                exit 1
-              fi
-            fi
-            
+            cp "$COVERAGE_XML" ./coverage.xml
             echo "✅ Coverage XML file is ready at ./coverage.xml"
             ls -la ./coverage.xml
           else
