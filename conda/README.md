@@ -188,6 +188,24 @@ must restrict pipeline editing/queueing and source access, minimize the job iden
 permissions, and separately protect publishing credentials. A dry run omits the publishing
 credential group; it is not token-free execution.
 
+Before authorizing production use of `Anaconda Publishing`, its resource owner must
+configure an ADO [Branch control check](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/approvals?view=azure-devops#branch-control)
+on that variable group in **Pipelines > Library > Approvals and checks**:
+allow only `refs/heads/main`, require branch protection, and fail when protection
+cannot be verified. This resource-side check applies to every consuming stage and
+pipeline, including the branches of linked producer runs; feature-branch publication
+must fail before the stage receives the publishing credential. Preserve existing
+permissions and approvals, and restrict permission to administer or bypass the check.
+Do not grant broader pipeline access as part of configuring it.
+
+The existing `publishToConda` condition omits this group for validate-only runs, so
+trusted feature-branch validation remains separate from credentialed publication.
+Neither a checkout-local branch check nor a secondary pinned checkout can replace
+the resource-side control: editable YAML could bypass either. These external checks
+are not installed by this repository; production must remain unapproved until the
+resource owner verifies their configuration and enforcement. Branch control does
+not provide the separate exclusive publication lock.
+
 The release pipeline resolves AUTO from the **recorded upstream wheel commit**, not
 the release checkout or a latest-version lookup. It cross-checks binding setup/runtime
 versions and reads ODBC and, when explicitly required by that source, RS distribution
