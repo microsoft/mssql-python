@@ -92,7 +92,12 @@ def _download_published(
 
 
 def _published_wheel(
-    wheel_dir: Path, name: str, version: str, hashes: dict[str, str]
+    wheel_dir: Path,
+    name: str,
+    version: str,
+    hashes: dict[str, str],
+    python_tag: str,
+    subdir: str,
 ) -> archive.WheelMetadata:
     selected = list(wheel_dir.glob(f"{name.replace('-', '_')}-{version}-*.whl"))
     if len(selected) != 1:
@@ -103,6 +108,19 @@ def _published_wheel(
     metadata = archive.read_wheel_metadata(path)
     violations = contracts.validate_distribution_identity(metadata, name, version)
     violations.extend(contracts.validate_wheel_tags(path.name, metadata["tags"]))
+    violations.extend(contracts.validate_wheel_core_ownership(metadata))
+    if name == "mssql-python":
+        matches = contracts.binding_wheel_matches_target(
+            path.name, subdir, [python_tag.removeprefix("cp")]
+        )
+    elif name == "mssql-python-odbc":
+        matches = contracts.odbc_wheel_matches_target(path.name, subdir)
+    else:
+        matches = contracts.rs_wheel_matches_target(path.name, python_tag, subdir)
+    if not matches:
+        violations.append(
+            f"Published {name} wheel does not match the requested {python_tag} {subdir} target."
+        )
     expected = f"{name.replace('-', '_')}-{version}.dist-info/METADATA"
     if [member for member in metadata["members"] if member.endswith(".dist-info/METADATA")] != [
         expected
@@ -126,24 +144,33 @@ def fetch_wheels(
     the current source's separate-RS contract. Recorded producer inputs do not use
     this public-profile selection.
     """
+    if not re.fullmatch(r"cp3\d+", python_tag):
+        raise ValueError(f"Expected a normal CPython target tag, not {python_tag!r}.")
     wheel_dir.mkdir(parents=True, exist_ok=True)
     versions = {name: source_versions[name] for name in ("mssql-python", "mssql-python-odbc")}
     requirements: list[str] = []
     hashes = _download_published(versions, requirements, wheel_dir, requirements_file)
     binding = _published_wheel(
-        wheel_dir, "mssql-python", versions["mssql-python"], hashes["mssql-python"]
+        wheel_dir,
+        "mssql-python",
+        versions["mssql-python"],
+        hashes["mssql-python"],
+        python_tag,
+        subdir,
     )
-    odbc = _published_wheel(
-        wheel_dir, "mssql-python-odbc", versions["mssql-python-odbc"], hashes["mssql-python-odbc"]
+    _published_wheel(
+        wheel_dir,
+        "mssql-python-odbc",
+        versions["mssql-python-odbc"],
+        hashes["mssql-python-odbc"],
+        python_tag,
+        subdir,
     )
     if (
         contracts.exact_dependency_pin(binding["requires_dist"], "mssql-python-odbc")
         != versions["mssql-python-odbc"]
     ):
         raise ValueError("Binding METADATA must require exactly the selected ODBC wheel version.")
-    if any(name.startswith("mssql_py_core/") for name in odbc["members"]):
-        raise ValueError("The ODBC distribution must not own mssql_py_core.")
-
     rs_version = contracts.binding_rs_version(
         binding, binding["members"], binding["record_members"]
     )
@@ -161,10 +188,9 @@ def fetch_wheels(
                 {"mssql-python-rs": rs_version}, requirements, wheel_dir, requirements_file
             )
         )
-        rs = _published_wheel(wheel_dir, "mssql-python-rs", rs_version, hashes["mssql-python-rs"])
-        selected = next(wheel_dir.glob(f"mssql_python_rs-{rs_version}-*.whl"))
-        if not contracts.rs_wheel_matches_target(selected.name, python_tag, subdir):
-            raise ValueError("Published RS wheel does not match the required Conda target.")
+        rs = _published_wheel(
+            wheel_dir, "mssql-python-rs", rs_version, hashes["mssql-python-rs"], python_tag, subdir
+        )
         violations = contracts.validate_rs_ownership(
             rs, rs["members"], rs["record_members"], rs_version, python_tag, subdir
         )
@@ -227,10 +253,14 @@ def validate_installed_inputs(
     )
     if rs_version != versions.get("mssql-python-rs"):
         raise ValueError(f"{path}: installed binding RS profile differs from producer source")
-    if contracts.owned_core_members(
-        metadata["mssql-python-odbc"][1], metadata["mssql-python-odbc"][2]
-    ):
-        raise ValueError(f"{path}: ODBC distribution must not own mssql_py_core")
+    errors = contracts.validate_core_ownership(
+        names,
+        {name: component[2] for name, component in metadata.items()},
+        "mssql-python-rs" if rs_version is not None else "mssql-python",
+        root=root,
+    )
+    if errors:
+        raise ValueError(f"{path}: " + "; ".join(errors))
     if rs_version is None:
         errors = contracts.validate_core_layout(
             contracts.owned_core_members(present, owned), python_tag, subdir
@@ -256,8 +286,16 @@ def validate_installed_inputs(
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--wheel-dir", type=Path, required=True)
     parser.add_argument("--requirements-file", type=Path, required=True)
-    parser.add_argument("--python-tag", required=True)
-    parser.add_argument("--conda-subdir", required=True)
+    parser.add_argument(
+        "--python-tag",
+        required=True,
+        help="Expected normal CPython tag (e.g. cp311), not a pip cross-target override.",
+    )
+    parser.add_argument(
+        "--conda-subdir",
+        required=True,
+        help="Expected native Conda subdir; pip downloads for the executing interpreter/host.",
+    )
 
 
 def fetch_cli(args: argparse.Namespace) -> int:

@@ -718,12 +718,70 @@ def _rs_inputs(tmp_path, platform="win_amd64", python_tags=("cp313",)):
     return code, odbc, links, rs
 
 
+@pytest.mark.parametrize("with_rs", [False, True])
+@pytest.mark.parametrize("recorded", [False, True])
+@pytest.mark.parametrize(
+    "member",
+    [
+        "mssql_py_core/__init__.py",
+        "mssql_py_core/unrecorded.py",
+        "./mssql_py_core/__init__.py",
+        "mssql_py_core\\__init__.py",
+        "MSSQL_PY_CORE/__init__.py",
+        "mssql_python_odbc-18.6.2.data/platlib/mssql_py_core/__init__.py",
+        "mssql_python_odbc-18.6.2.data/purelib/mssql_py_core/__init__.py",
+    ],
+)
+def test_odbc_core_payload_is_rejected_before_staging(tmp_path, capsys, with_rs, recorded, member):
+    if with_rs:
+        code, odbc, links, rs = _rs_inputs(tmp_path)
+    else:
+        code, odbc, links = _wheel_inputs(
+            tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"]
+        )
+        rs = None
+    _write_wheel(
+        next(odbc.glob("*.whl")),
+        payload={member: b"# benign cross-owner fixture\n"},
+        record_members=None if recorded else [],
+    )
+    with pytest.raises(SystemExit) as error:
+        build.gather_wheels(
+            str(code),
+            "*.whl",
+            str(odbc),
+            "*.whl",
+            str(links),
+            str(rs) if rs else None,
+            None,
+            "win-64",
+            "3.13",
+        )
+    assert error.value.code == 1
+    assert "mssql_py_core" in capsys.readouterr().err
+    assert not list(links.iterdir())
+
+
+def test_gather_rejects_wrong_target_odbc_even_with_a_broad_filter(tmp_path, capsys):
+    code, odbc, links, rs = _rs_inputs(tmp_path)
+    next(odbc.glob("*.whl")).unlink()
+    _write_wheel(odbc / "mssql_python_odbc-18.6.2-py3-none-win_arm64.whl")
+    with pytest.raises(SystemExit) as error:
+        build.gather_wheels(
+            str(code), "*.whl", str(odbc), "*.whl", str(links), str(rs), None, "win-64", "3.13"
+        )
+    assert error.value.code == 1
+    assert "target" in capsys.readouterr().err
+    assert not list(links.iterdir())
+
+
 @pytest.mark.parametrize(
     ("platform", "subdir", "matches"),
     [
         ("win_amd64", "win-64", True),
         ("win_arm64", "win-arm64", True),
         ("win_amd64", "win-arm64", False),
+        ("any", "win-64", False),
         ("manylinux_2_28_x86_64", "linux-64", True),
         ("manylinux_2_34_aarch64", "linux-aarch64", True),
         ("manylinux2014_x86_64.manylinux_2_28_x86_64", "linux-64", True),
@@ -735,13 +793,24 @@ def _rs_inputs(tmp_path, platform="win_amd64", python_tags=("cp313",)):
         ("macosx_15_0_x86_64", "osx-arm64", False),
     ],
 )
-def test_binding_selection_uses_target_platform_tags(platform, subdir, matches):
+def test_wheel_selection_uses_target_platform_tags(platform, subdir, matches):
     wheel = f"mssql_python-1.2.3-cp313-cp313-{platform}.whl"
     assert contracts.binding_wheel_matches_target(wheel, subdir, ["3.13"]) is matches
     assert not contracts.binding_wheel_matches_target(wheel, subdir, ["3.12"])
+    odbc = f"mssql_python_odbc-18.6.2-py3-none-{platform}.whl"
+    assert contracts.odbc_wheel_matches_target(odbc, subdir) is matches
 
 
-@pytest.mark.parametrize("state", ["valid", "missing-rs", "mismatched-rs"])
+@pytest.mark.parametrize("abi", ["cp312", "cp313t", "abi3", "none"])
+def test_binding_selection_requires_the_requested_normal_abi(abi):
+    wheel = f"mssql_python-1.2.3-cp313-{abi}-win_amd64.whl"
+    assert not contracts.binding_wheel_matches_target(wheel, "win-64", ["3.12"])
+    assert not contracts.binding_wheel_matches_target(wheel, "win-64", ["3.13"])
+
+
+@pytest.mark.parametrize(
+    "state", ["valid", "missing-rs", "mismatched-rs", "odbc-core", "odbc-target"]
+)
 def test_build_filters_consolidated_bindings_before_rs_resolution(
     tmp_path, monkeypatch, capsys, state
 ):
@@ -750,6 +819,7 @@ def test_build_filters_consolidated_bindings_before_rs_resolution(
     for suffix in (
         "1.2.3-cp310-cp310-win_arm64",
         "1.2.3-cp311-cp311-win_arm64",
+        "1.2.3-cp313-cp313t-win_arm64",
         "1.2.3-cp313-cp313-win_amd64",
         "9.9.9-cp313-cp313-manylinux_2_28_x86_64",
     ):
@@ -759,6 +829,15 @@ def test_build_filters_consolidated_bindings_before_rs_resolution(
         selected_rs.unlink()
     elif state == "mismatched-rs":
         _write_wheel(selected_rs, "Name: mssql-python-rs\nVersion: 0.2.0\n")
+    elif state == "odbc-core":
+        _write_wheel(
+            next(odbc.glob("*.whl")),
+            payload={"mssql_py_core/__init__.py": b""},
+            record_members=[],
+        )
+    elif state == "odbc-target":
+        next(odbc.glob("*.whl")).unlink()
+        _write_wheel(odbc / "mssql_python_odbc-18.6.2-py3-none-win_amd64.whl")
     bootstrap_calls = []
 
     def stop_before_conda(output_dir):
@@ -797,7 +876,12 @@ def test_build_filters_consolidated_bindings_before_rs_resolution(
         assert error.value.code == 1
         assert bootstrap_calls == []
         assert not list(links.iterdir())
-        expected = "cp313 win-arm64; found []" if state == "missing-rs" else "METADATA Version"
+        expected = {
+            "missing-rs": "cp313 win-arm64; found []",
+            "mismatched-rs": "METADATA Version",
+            "odbc-core": "mssql_py_core",
+            "odbc-target": "ODBC wheel does not match target",
+        }[state]
         assert expected in capsys.readouterr().err
         return
     assert str(error.value) == "input selection completed"

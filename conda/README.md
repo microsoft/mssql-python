@@ -11,6 +11,10 @@ effective target platform and `--python-versions` (or auto-detects versions from
 target-compatible bindings). Other Python/platform inputs are ignored before metadata
 and RS dependency checks. Selected inputs still require matching versions, ownership,
 tags and native compatibility; missing required RS wheels remain fatal.
+The builder validates raw wheel core ownership before staging or recipe extraction,
+including unrecorded files and wheel spread-path/case aliases. ODBC never supplies
+`mssql_py_core`; the selected RS provider (or historical binding) must own every core
+file in RECORD. Direct recipe callers must use these validated wheel inputs.
 
 Direct recipe builds must set `MSSQL_PYTHON_VERSION` to the exact selected code-wheel
 version before rendering/building. The shared orchestrator derives and supplies it
@@ -81,8 +85,8 @@ running again. Automatic acceptance, including an inherited
 `CONDA_PLUGINS_AUTO_ACCEPT_TOS` opt-in, remains disabled.
 
 Run this existing build workflow only in a disposable isolated installation: shared-environment
-ownership hardening is outside this change. Publication/provenance tooling is proposed
-in a separate release-additions PR that follows this native/tooling foundation; see the
+ownership hardening is outside this change. Publication/provenance tooling is included
+alongside this native/tooling foundation; see the
 [release status and qualification caveats](../README.md#installation).
 Neither this native-packaging change nor validate-only success authorizes production
 publication.
@@ -136,6 +140,13 @@ credential and single-operator prerequisites. Module placement is not a new
 authorization boundary. The PowerShell upload process deadlines, attempted-file
 tracking, process-tree termination, and dry-run plan remain in their pipeline tasks.
 
+Only trusted, reviewed release revisions may be queued, including validate-only feature
+branches: their YAML and Python run with `System.AccessToken`. YAML provenance checks
+cannot sandbox an untrusted queued revision or protect that token from it. Administrators
+must restrict pipeline editing/queueing and source access, minimize the job identity's
+permissions, and separately protect publishing credentials. A dry run omits the publishing
+credential group; it is not token-free execution.
+
 The release pipeline resolves AUTO from the **recorded upstream wheel commit**, not
 the release checkout or a latest-version lookup. It cross-checks binding setup/runtime
 versions and reads ODBC and, when explicitly required by that source, RS distribution
@@ -154,9 +165,16 @@ the binding's exact dependency pins, and the selected RS filename/WHEEL tags aga
 `rs-transport.json`. Raw wheel/transport hashes remain input evidence; relocated
 installed native files are checked by the native audits, not falsely compared with raw
 wheel hashes. No numeric RS build ID is inferred from a transport-version suffix.
+Release and native auditing also check all installed core paths, not only RECORD-filtered
+members. This detects unowned or cross-owned additions; it cannot recover file origin
+after an overwrite of an already owned path, which is why the raw pre-extraction gate
+is required.
 
 `fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
-downloads, and actual wheel metadata/ownership. An authentic published embedded-core
+downloads, and actual wheel metadata/ownership. Pip selects for its executing interpreter;
+the requested Python/platform must match the binding, ODBC and selected RS wheel tags
+before the command accepts the inputs. These arguments validate the download, rather
+than enabling cross-target pip resolution. An authentic published embedded-core
 binding is explicitly reported as a **historical published packaging control, not
 current-source RS qualification**. An RS-dependent published binding requires its exact
 provider and source pin; unavailable releases, malformed declarations, or mismatches

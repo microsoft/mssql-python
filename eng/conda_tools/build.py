@@ -113,6 +113,10 @@ def gather_wheels(
             if not source_rs:
                 raise ValueError(f"empty RS source version assertion: {rs_version_file}")
         _checked_metadata(odbc, "mssql-python-odbc", odbc_ver)
+        if target_subdir and not contracts.odbc_wheel_matches_target(
+            os.path.basename(odbc), target_subdir
+        ):
+            raise ValueError(f"{odbc}: ODBC wheel does not match target {target_subdir}")
         for wheel in mssql:
             metadata = _checked_metadata(wheel, "mssql-python", mssql_ver)
             try:
@@ -208,6 +212,7 @@ def _checked_metadata(path: str, distribution: str, version: str) -> archive.Whe
         metadata = archive.read_wheel_metadata(path)
         errors = contracts.validate_distribution_identity(metadata, distribution, version)
         errors.extend(contracts.validate_wheel_tags(Path(path).name, metadata["tags"]))
+        errors.extend(contracts.validate_wheel_core_ownership(metadata))
         if errors:
             raise ValueError("; ".join(errors))
         return metadata

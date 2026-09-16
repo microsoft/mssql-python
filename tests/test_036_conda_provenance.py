@@ -121,7 +121,15 @@ def _source_dependencies(sources, dependencies):
         "rs-binding-owns-core",
         "rs-provider-unowned",
         "rs-target-mismatch",
+        "rs-binding-target-mismatch",
+        "rs-binding-python-mismatch",
+        "rs-binding-abi-mismatch",
+        "rs-odbc-target-mismatch",
+        "rs-provider-extra-unowned",
+        "legacy-extra-unowned",
         "odbc-owns-core",
+        "odbc-core-data",
+        "odbc-core-case",
         "changed-wheel-hash",
         "wheel-tag-mismatch",
     ],
@@ -169,12 +177,38 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
             files["other-0.dist-info/METADATA"] = metadata.encode()
         if name == "mssql-python-odbc" and problem == "odbc-owns-core":
             files["mssql_py_core/unrecorded.py"] = b""
+        elif name == "mssql-python-odbc" and problem == "odbc-core-data":
+            files[f"mssql_python_odbc-{version}.data/platlib/mssql_py_core/__init__.py"] = b""
+        elif name == "mssql-python-odbc" and problem == "odbc-core-case":
+            files["MSSQL_PY_CORE/__init__.py"] = b""
+        if (name == "mssql-python" and problem == "legacy-extra-unowned") or (
+            name == "mssql-python-rs" and problem == "rs-provider-extra-unowned"
+        ):
+            files["mssql_py_core/unrecorded.py"] = b""
         if name == "mssql-python-rs" and problem == "rs-provider-unowned":
             record = next(path for path in files if path.endswith("/RECORD"))
             files[record] = b""
         tag = "py3-none-win_amd64" if name == "mssql-python-odbc" else "cp313-cp313-win_amd64"
         if name == "mssql-python-rs" and problem == "rs-target-mismatch":
             tag = tag.replace("313", "312")
+            files[next(path for path in files if path.endswith("/WHEEL"))] = (
+                f"Tag: {tag}\n".encode()
+            )
+        if name == "mssql-python" and problem in {
+            "rs-binding-target-mismatch",
+            "rs-binding-python-mismatch",
+            "rs-binding-abi-mismatch",
+        }:
+            tag = {
+                "rs-binding-target-mismatch": "cp313-cp313-win_arm64",
+                "rs-binding-python-mismatch": "cp312-cp312-win_amd64",
+                "rs-binding-abi-mismatch": "cp313-cp313t-win_amd64",
+            }[problem]
+            files[next(path for path in files if path.endswith("/WHEEL"))] = (
+                f"Tag: {tag}\n".encode()
+            )
+        if name == "mssql-python-odbc" and problem == "rs-odbc-target-mismatch":
+            tag = "py3-none-win_arm64"
             files[next(path for path in files if path.endswith("/WHEEL"))] = (
                 f"Tag: {tag}\n".encode()
             )
@@ -272,6 +306,14 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
         "wrong-root",
         "duplicate-metadata",
         "unowned-core",
+        "unrecorded-core",
+        "legacy-unrecorded-core",
+        "odbc-recorded-core",
+        "binding-recorded-core",
+        "core-path-alias",
+        "core-root-alias",
+        "rs-extra-owned",
+        "rs-pyc-owned",
         "missing-core",
         "missing-private-driver",
         "missing-receipt",
@@ -286,7 +328,7 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
     ],
 )
 def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem):
-    with_rs = problem not in {"legacy", "new-source-legacy"}
+    with_rs = problem not in {"legacy", "new-source-legacy", "legacy-unrecorded-core"}
     versions = {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
     if with_rs:
         versions["mssql-python-rs"] = "0.2.0"
@@ -325,6 +367,25 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem)
         files["other-0.dist-info/METADATA"] = files[binding_key]
     elif problem == "unowned-core":
         files[rs_prefix + "RECORD"] = b""
+    elif problem in {"unrecorded-core", "legacy-unrecorded-core"}:
+        files["mssql_py_core/unrecorded.py"] = b""
+    elif problem in {"odbc-recorded-core", "binding-recorded-core"}:
+        owner = (
+            "mssql_python_odbc-18.6.2.1"
+            if problem == "odbc-recorded-core"
+            else "mssql_python-1.15.0"
+        )
+        files[f"{owner}.dist-info/RECORD"] += b"mssql_py_core/__init__.py,,\n"
+    elif problem == "core-path-alias":
+        files["MSSQL_PY_CORE/__init__.py"] = b""
+    elif problem in {"rs-extra-owned", "rs-pyc-owned"}:
+        member = (
+            "mssql_py_core/extra.py"
+            if problem == "rs-extra-owned"
+            else "mssql_py_core/__pycache__/__init__.cpython-313.pyc"
+        )
+        files[member] = b""
+        files[rs_prefix + "RECORD"] += f"{member},,\n".encode()
     elif problem == "missing-core":
         files.pop("mssql_py_core/__init__.py")
     elif problem == "missing-private-driver":
@@ -357,6 +418,8 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem)
     ]
     if problem == "duplicate-payload":
         members.append(members[-1])
+    elif problem == "core-root-alias":
+        members.append(("LIB/SITE-PACKAGES/mssql_py_core/unrecorded.py", b""))
     with tarfile.open(package, "w:bz2") as contents:
         for name, data in members:
             entry = tarfile.TarInfo(name)
@@ -391,7 +454,9 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem)
             "--release-versions",
         ]
     )
-    assert result == (0 if problem in {"legacy", "rs"} else 1), capsys.readouterr()
+    assert result == (
+        0 if problem in {"legacy", "rs", "rs-extra-owned", "rs-pyc-owned"} else 1
+    ), capsys.readouterr()
 
 
 @pytest.mark.parametrize("with_rs", [False, True])

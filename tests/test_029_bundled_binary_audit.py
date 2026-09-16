@@ -227,6 +227,11 @@ def _make_pkg(
         "wrong-arch",
         "unowned-core",
         "wrong-rs-version",
+        "unrecorded-extra",
+        "odbc-cross-owned",
+        "binding-cross-owned",
+        "core-alias",
+        "owned-bytecode",
     ],
 )
 def test_rs_private_libraries_keep_separate_ownership_and_runtime_contract(tmp_path, state):
@@ -266,8 +271,26 @@ def test_rs_private_libraries_keep_separate_ownership_and_runtime_contract(tmp_p
     ).encode()
     if state == "missing-private-library":
         del payload[private]
+    elif state in {"unrecorded-extra", "owned-bytecode"}:
+        relative = (
+            "mssql_py_core/unrecorded.py"
+            if state == "unrecorded-extra"
+            else "mssql_py_core/__pycache__/__init__.cpython-312.pyc"
+        )
+        payload[root + relative] = b""
+        if state == "owned-bytecode":
+            payload[rs_info + "RECORD"] += f"{relative},,\n".encode()
+    elif state == "core-alias":
+        payload[root + "MSSQL_PY_CORE/__init__.py"] = b""
+    elif state in {"odbc-cross-owned", "binding-cross-owned"}:
+        owner = binding_info
+        if state == "odbc-cross-owned":
+            owner = root + "mssql_python_odbc-18.6.2.dist-info/"
+            payload[owner + "METADATA"] = b"Name: mssql-python-odbc\nVersion: 18.6.2\n"
+            payload[owner + "RECORD"] = b""
+        payload[owner + "RECORD"] += b"mssql_py_core/__init__.py,,\n"
     result = audit.audit_package(_make_pkg(tmp_path, native_payload=payload), "elf")
-    if state == "valid":
+    if state in {"valid", "owned-bytecode"}:
         assert result.violations == []
     else:
         assert result.violations
@@ -275,6 +298,8 @@ def test_rs_private_libraries_keep_separate_ownership_and_runtime_contract(tmp_p
             assert any("OpenSSL 1.1" in error for error in result.violations)
         elif state == "missing-runpath":
             assert any("RUNPATH" in error for error in result.violations)
+        elif state in {"unrecorded-extra", "odbc-cross-owned", "binding-cross-owned", "core-alias"}:
+            assert any("mssql_py_core" in error for error in result.violations)
 
 
 # --- low-level parser -------------------------------------------------------

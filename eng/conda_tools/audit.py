@@ -46,17 +46,17 @@ def _validate_payload(
         macho_members = [(name, macho.macho_arches(data)) for name, data in members()]
 
     metadata = {}
-    for facts, present, owned, _ in archive.installed_metadata(names, metadata_files):
+    for facts, present, owned, prefix in archive.installed_metadata(names, metadata_files):
         distribution = contracts.canonical_distribution_name(facts["name"])
         if distribution in metadata:
             raise ValueError(f"duplicate installed metadata for {distribution}")
-        metadata[distribution] = facts, present, owned
+        metadata[distribution] = facts, present, owned, prefix
 
     rs_required = "mssql-python-rs" in metadata
     if rs_required and "mssql-python" not in metadata:
         raise ValueError("RS distribution is missing its binding distribution metadata")
     if "mssql-python" in metadata:
-        binding, files, owned = metadata["mssql-python"]
+        binding, files, owned, prefix = metadata["mssql-python"]
         rs_version = contracts.binding_rs_version(binding, files, owned)
         if rs_version is None and rs_required:
             raise ValueError(
@@ -67,7 +67,7 @@ def _validate_payload(
                 raise ValueError(
                     f"binding requires mssql-python-rs=={rs_version}, but its metadata is missing"
                 )
-            rs, files, owned = metadata["mssql-python-rs"]
+            rs, files, owned, _ = metadata["mssql-python-rs"]
             abi = [dep for dep in index.get("depends", []) if dep.split()[:1] == ["python_abi"]]
             python_tag = abi[0].rsplit("_", 1)[-1] if len(abi) == 1 else ""
             errors = contracts.validate_rs_ownership(
@@ -75,6 +75,15 @@ def _validate_payload(
             )
             if errors:
                 raise ValueError("; ".join(errors))
+        root = prefix.rsplit("/", 2)[0] + "/"
+        errors = contracts.validate_core_ownership(
+            names,
+            {name: component[2] for name, component in metadata.items()},
+            "mssql-python-rs" if rs_version is not None else "mssql-python",
+            root=root,
+        )
+        if errors:
+            raise ValueError("; ".join(errors))
     if kind == "elf":
         return contracts.validate_elf(base, index, elf_members, rs_required)
     if kind == "pe":
