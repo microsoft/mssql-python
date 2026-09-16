@@ -136,6 +136,12 @@ def _source_dependencies(sources, dependencies):
         "odbc-core-case",
         "changed-wheel-hash",
         "wheel-tag-mismatch",
+        *(
+            f"{profile}{member}-alias-{spelling}"
+            for profile in ("", "rs-")
+            for member in ("record", "wheel")
+            for spelling in ("dist-info-case", "name-case", "backslash", "nested")
+        ),
     ],
 )
 def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
@@ -231,11 +237,23 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
             )
         if problem == "wheel-tag-mismatch":
             files[next(path for path in files if path.endswith("/WHEEL"))] = b"Tag: wrong\n"
+        if "-alias-" in problem:
+            field, _, spelling = problem.removeprefix("rs-").split("-", 2)
+            original = next(path for path in files if path.endswith(".dist-info/" + field.upper()))
+            alias = {
+                "dist-info-case": original.replace(".dist-info", ".DIST-INFO"),
+                "name-case": original.rsplit("/", 1)[0] + "/" + field,
+                "backslash": original.replace("/", "\\"),
+                "nested": "extra/" + original,
+            }[spelling]
+            files[alias] = files[original]
         filename = f"{name.replace('-', '_')}-{version}-{tag}.whl"
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as wheel:
             for path, data in files.items():
-                wheel.writestr(path, data)
+                entry = zipfile.ZipInfo()
+                entry.filename = path
+                wheel.writestr(entry, data)
         wheels[name] = filename, buffer.getvalue()
     calls = []
 
@@ -342,10 +360,26 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
         "duplicate-payload",
         "missing-version-env",
         "mismatched-binding-override",
+        *(
+            f"{profile}-{member}-alias-{spelling}"
+            for profile in ("legacy", "rs")
+            for member in ("metadata", "record", "wheel")
+            for spelling in (
+                "dist-info-case",
+                "name-case",
+                "prefix-case",
+                "backslash",
+                "dot",
+                "parent",
+                "nested",
+                "dist-info-case-first",
+                "backslash-first",
+            )
+        ),
     ],
 )
 def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem):
-    with_rs = problem not in {"legacy", "new-source-legacy", "legacy-unrecorded-core"}
+    with_rs = problem not in {"legacy", "new-source-legacy"} and not problem.startswith("legacy-")
     versions = {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
     if with_rs:
         versions["mssql-python-rs"] = "0.2.0"
@@ -367,7 +401,23 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem)
     }
     if with_rs:
         files[rs_prefix + "conda-wheel-source.txt"] = (selected + "\n").encode()
-    if problem == "missing-provider":
+    if "-alias-" in problem:
+        _, member, _, spelling = problem.split("-", 3)
+        first = spelling.endswith("-first")
+        spelling = spelling.removesuffix("-first")
+        original = "mssql_python-1.15.0.dist-info/" + member.upper()
+        alias = {
+            "dist-info-case": original.replace(".dist-info", ".DIST-INFO"),
+            "name-case": original.rsplit("/", 1)[0] + "/" + member,
+            "prefix-case": original.replace("mssql_python-", "MSSQL_PYTHON-"),
+            "backslash": original.replace("/", "\\"),
+            "dot": "./" + original,
+            "parent": "extra/../" + original,
+            "nested": "extra/" + original,
+        }[spelling]
+        data = files[original].replace(b"1.15.0", b"9.9.9").replace(b"cp313", b"cp310")
+        files = {alias: data, **files} if first else {**files, alias: data}
+    elif problem == "missing-provider":
         files = {key: value for key, value in files.items() if not key.startswith(rs_prefix)}
     elif problem in {"wrong-odbc-pin", "wrong-rs-pin", "wrong-binding-version"}:
         old = {

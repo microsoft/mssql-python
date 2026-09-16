@@ -19,6 +19,39 @@ Public and staged wheels also require one canonical root METADATA member, with n
 extra nested or aliased metadata. Package audits require binding metadata and exactly
 one RECORD for each installed distribution; missing or duplicate ownership records fail.
 Low-level binary-format parsers remain independent of package metadata.
+These checks inspect all actual METADATA/RECORD/WHEEL candidates before accepting
+installed ownership, including case, backslash and normalized-path aliases that a
+canonical-only metadata collector would omit. Aliased or orphan entries are rejected,
+not normalized into an accepted package.
+
+Archive readers stream ZIP components through the selected zstandard backend (or
+stream legacy `.tar.bz2` files) instead of materializing complete TAR components.
+Individual files still return bounded byte buffers for the native parsers. Fixed
+limits fail explicitly; there is no command-line or environment override:
+
+| Processing budget | Limit |
+| --- | --- |
+| Archive file / ZIP component bytes | 256 MiB |
+| ZIP central-directory read / ZIP entries | 1 MiB / 10,000 |
+| Expanded TAR stream, including padding | 1 GiB |
+| Cumulative TAR member bytes | 512 MiB |
+| Individual member / metadata member bytes | 128 MiB / 8 MiB |
+| Cumulative TAR metadata / TAR headers | 64 MiB / 10,000 |
+| Zstandard decoder window / frames per component | 64 MiB / 10,000 |
+
+Checks apply before member allocation and while consuming 64 KiB chunks, including
+frames without a declared expanded size. The third-party zstandard reader also
+receives a bounded frame-structure pass because its streaming API alone accepts
+truncated frame endings. ZIP envelopes must use stored or deflate compression;
+sparse TAR extensions are rejected before sparse-map processing. Wheel metadata
+reads share the ZIP and metadata budgets. These are package-reader limits, not a
+claim that NuGet transport downloads or total process memory have the same bounds.
+
+The GitHub audit job installs its complete Linux x64 / CPython 3.11 test-tool closure
+from `requirements-audit.txt` with `--require-hashes --only-binary=:all:`.
+`requirements-audit.in` records the reviewed direct pins and regeneration commands.
+This audit-only lock is separate from the Windows publisher lock; it does not pin
+the hosted runner image or every input to the later Conda build.
 
 Direct recipe builds must set `MSSQL_PYTHON_VERSION` to the exact selected code-wheel
 version before rendering/building. The shared orchestrator derives and supplies it

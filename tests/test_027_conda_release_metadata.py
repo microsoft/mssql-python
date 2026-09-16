@@ -584,6 +584,16 @@ def _zstd_available():
             return False
 
 
+def _compress_zstd(data):
+    try:
+        from compression import zstd
+    except ImportError:
+        import zstandard
+
+        return zstandard.ZstdCompressor().compress(data)
+    return zstd.compress(data)
+
+
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
 def test_read_index_json_roundtrip(tmp_path):
     got = archive.read_release_index(str(_write_release_archive(tmp_path, extension=".conda")))
@@ -621,7 +631,10 @@ def test_stdlib_zstd_data_error_does_not_fall_back(monkeypatch):
 
     compression = types.ModuleType("compression")
     compression.zstd = types.SimpleNamespace(
-        decompress=lambda _raw: (_ for _ in ()).throw(CorruptFrameError("corrupt frame")),
+        ZstdFile=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CorruptFrameError("corrupt frame")
+        ),
+        DecompressionParameter=types.SimpleNamespace(window_log_max=100),
         ZstdError=CorruptFrameError,
     )
     fallback = types.ModuleType("zstandard")
@@ -1154,14 +1167,7 @@ def _write_release_archive(
         member.size = len(data)
         contents.addfile(member, io.BytesIO(data))
     if extension == ".conda":
-        try:
-            from compression import zstd
-        except ImportError:
-            import zstandard
-
-            compress = zstandard.ZstdCompressor().compress
-        else:
-            compress = zstd.compress
+        compress = _compress_zstd
         payload_tar = io.BytesIO()
         with tarfile.open(fileobj=payload_tar, mode="w") as archive:
             member = tarfile.TarInfo("payload-marker.txt")
@@ -1851,9 +1857,8 @@ def test_index_member_must_be_unique_regular_file(tmp_path, monkeypatch, extensi
     if extension == ".conda":
         with zipfile.ZipFile(path, "w") as container:
             container.writestr("metadata.json", json.dumps({"conda_pkg_format_version": 2}))
-            container.writestr("info-package.tar.zst", buffer.getvalue())
+            container.writestr("info-package.tar.zst", _compress_zstd(buffer.getvalue()))
             container.writestr("pkg-package.tar.zst", b"not read by the metadata reader")
-        monkeypatch.setattr(archive, "decompress_index", lambda raw: raw)
     else:
         path.write_bytes(buffer.getvalue())
     with pytest.raises(ValueError, match="exactly one regular info/index.json"):

@@ -416,8 +416,10 @@ def test_win_arm64_binaries_require_binding_metadata(tmp_path, metadata_state):
     errors = audit.audit_package(_make_conda(tmp_path, "win-arm64", payload), "pe").violations
     if metadata_state == "valid":
         assert errors == []
-    else:
+    elif metadata_state == "missing":
         assert any("binding" in error and "metadata" in error.lower() for error in errors)
+    else:
+        assert any("Noncanonical installed METADATA" in error for error in errors)
 
 
 @pytest.mark.parametrize(

@@ -39,6 +39,7 @@ on:
       - 'tests/test_035_conda_macho_assert.py'
       - 'tests/test_036_conda_provenance.py'
       - 'tests/test_037_rs_wheel_download.py'
+      - 'tests/test_038_conda_archive_limits.py'
       - 'requirements.txt'
       - 'setup.py'
       - 'mssql_python/__init__.py'
@@ -63,7 +64,7 @@ jobs:
 
       - name: Unit-test the audit + release validator
         run: |
-          python -m pip install --quiet --only-binary=:all: pytest "zstandard==0.23.0"
+          python -m pip install --quiet --require-hashes --only-binary=:all: -r conda/requirements-audit.txt
           # --noconftest: tests/conftest.py imports mssql_python (the native ddbc_bindings
           # extension), which is NOT built in this repackage-only gate. test_027/test_029
           # are pure conda validator/audit tests using only built-in fixtures, so skip
@@ -76,6 +77,7 @@ jobs:
                            tests/test_035_conda_macho_assert.py \
                            tests/test_036_conda_provenance.py \
                            tests/test_037_rs_wheel_download.py \
+                           tests/test_038_conda_archive_limits.py \
                            tests/test_027_conda_release_metadata.py -q
 
       - name: Fetch the shipped linux wheels from PyPI

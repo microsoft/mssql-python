@@ -7,7 +7,8 @@ import posixpath
 import re
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
-from .archive import DistributionMetadata, WheelMetadata
+from .archive import DistributionMetadata, WheelMetadata, metadata_members
+from .archive import canonical_distribution_name as canonical_distribution_name
 from .formats.elf import ElfDynamicInfo, ElfFacts
 
 Format = Literal["elf", "pe", "macho"]
@@ -98,10 +99,6 @@ _REQUIRED_DRIVER_LIBRARIES = frozenset(
 )
 
 
-def canonical_distribution_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
 def validate_distribution_identity(
     metadata: DistributionMetadata, distribution: str, version: str
 ) -> list[str]:
@@ -127,11 +124,7 @@ def validate_wheel_metadata_members(
 ) -> list[str]:
     distribution = canonical_distribution_name(distribution).replace("-", "_")
     expected = f"{distribution}-{version}.dist-info/METADATA"
-    entries = [
-        member
-        for member in members
-        if posixpath.normpath(member.replace("\\", "/")).casefold().endswith(".dist-info/metadata")
-    ]
+    entries = metadata_members(members, "METADATA")
     return [] if entries == [expected] else [f"Expected one matching root METADATA at {expected}."]
 
 
