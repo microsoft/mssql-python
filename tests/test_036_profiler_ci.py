@@ -660,7 +660,18 @@ def test_base_moving_while_listing_comments_prevents_publish(monkeypatch):
 
 @pytest.mark.parametrize(
     "corrupt",
-    [None, "zip", "scenarios", "suite", "source", "base", "provenance", "recursion", "delayed"],
+    [
+        None,
+        "zip",
+        "timeout",
+        "scenarios",
+        "suite",
+        "source",
+        "base",
+        "provenance",
+        "recursion",
+        "delayed",
+    ],
 )
 def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, monkeypatch, corrupt):
     posted = []
@@ -702,7 +713,17 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
         }
         for leg in data
     ]
-    artifact_responses = iter(([], artifacts) if corrupt == "delayed" else (artifacts,))
+    artifact_responses = [[], artifacts] if corrupt == "delayed" else [artifacts]
+    clock = [0]
+
+    def api(url):
+        if "/artifacts?" not in url:
+            return {"value": [build]}
+        response = (
+            artifact_responses.pop(0) if len(artifact_responses) > 1 else artifact_responses[0]
+        )
+        return {"value": response}
+
     monkeypatch.setattr(
         publisher, "publish", lambda number, head, body, base=None: posted.append(body)
     )
@@ -718,15 +739,19 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
         "github",
         pr_topology(base="e" * 40, merge_base="a" * 40) if corrupt == "base" else pr_topology(),
     )
+    monkeypatch.setattr(publisher, "api", api)
+
+    def fetch(url, **kwargs):
+        leg = url.rsplit("/", 1)[-1]
+        if corrupt == "timeout" and leg == "Linux-SQL2022":
+            raise TimeoutError("timed out")
+        return data[leg]
+
+    monkeypatch.setattr(publisher, "fetch", fetch)
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
-        publisher,
-        "api",
-        lambda url: (
-            {"value": next(artifact_responses)} if "/artifacts?" in url else {"value": [build]}
-        ),
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
     )
-    monkeypatch.setattr(publisher, "fetch", lambda url, **kw: data[url.rsplit("/", 1)[-1]])
-    monkeypatch.setattr(publisher.time, "sleep", lambda seconds: None)
     publisher.run(123, "c" * 40, 1)
     assert len(posted) == 2
     assert posted[0].startswith(reporting.MARKER)
@@ -737,7 +762,7 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     if corrupt in ("suite", "source"):
         assert "workload version differs from trusted base" in posted[1]
         assert "consistent slowdown signals" not in posted[1]
-    elif corrupt in ("zip", "scenarios", "recursion"):
+    elif corrupt in ("zip", "timeout", "scenarios", "recursion"):
         assert "### Windows / SQL Server 2022" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
         assert "| Linux / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
@@ -843,6 +868,10 @@ def test_publisher_retries_malformed_pr_and_artifact_responses(monkeypatch):
         publisher.artifact_items({"value": [None]})
     with pytest.raises(ValueError, match="build list"):
         publisher.build_items({"value": [{}]})
+    malformed = ado_build()
+    malformed["repository"]["id"] = None
+    with pytest.raises(ValueError, match="build list"):
+        publisher.build_items({"value": [malformed]})
 
 
 def test_artifact_symlink_and_oversized_json_are_rejected():

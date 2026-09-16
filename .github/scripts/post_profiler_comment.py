@@ -160,6 +160,7 @@ def find_build(builds, number, head):
             if isinstance(build, dict)
             and isinstance(build.get("definition"), dict)
             and isinstance(build.get("repository"), dict)
+            and isinstance(build["repository"].get("id"), str)
             and isinstance(build.get("triggerInfo"), dict)
             and build.get("definition", {}).get("id") == 2128
             and build.get("repository", {}).get("id", "").lower() == REPOSITORY
@@ -179,6 +180,7 @@ def build_items(response):
         and isinstance(build.get("status"), str)
         and isinstance(build.get("definition"), dict)
         and isinstance(build.get("repository"), dict)
+        and isinstance(build["repository"].get("id"), str)
         and isinstance(build.get("triggerInfo"), dict)
         and isinstance(build.get("sourceBranch"), str)
         for build in items
@@ -328,7 +330,7 @@ def run(number, head, wait_minutes):
         try:
             artifacts = artifact_items(api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1"))
             failures = 0
-            if any(item.get("name", "").startswith("profiler-") for item in artifacts):
+            if {"profiler-" + leg for leg in LEGS} <= {item["name"] for item in artifacts}:
                 break
         except (ValueError, KeyError, TypeError, URLError, TimeoutError):
             failures += 1
@@ -351,7 +353,15 @@ def run(number, head, wait_minutes):
             if report["leg"] != leg:
                 raise ValueError("Artifact leg mismatch")
             reports.append(report)
-        except (ValueError, KeyError, TypeError, RecursionError, URLError, zipfile.BadZipFile):
+        except (
+            ValueError,
+            KeyError,
+            TypeError,
+            RecursionError,
+            TimeoutError,
+            URLError,
+            zipfile.BadZipFile,
+        ):
             # Invalid data is visibly incomplete, never converted to a success verdict.
             issues.append(leg + " (invalid artifact)")
     if not suite_unchanged or any(report["suite_hash"] != suite_hash(ROOT) for report in reports):
