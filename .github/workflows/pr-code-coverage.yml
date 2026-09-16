@@ -135,10 +135,6 @@ jobs:
                 [.value[]? | select(.name | test("Code Coverage Report")) |
                   .resource.downloadUrl | select(type == "string" and length > 0)] |
                 .[0] // empty' <<< "$ARTIFACTS_RESPONSE")
-              if [[ -n "$COVERAGE_ARTIFACT" ]]; then
-                echo "✅ Found coverage artifact!"
-                break
-              fi
             else
               ARTIFACT_FAILURES=$((ARTIFACT_FAILURES + 1))
               echo "⚠️ Artifacts API HTTP/JSON error ($ARTIFACT_FAILURES/5)"
@@ -186,6 +182,7 @@ jobs:
                   COMPLETED_AT=-1
                   ARTIFACT_FAILURES=0
                   BUILD_FAILURES=0
+                  COVERAGE_ARTIFACT=""
                   echo "Selected ADO run was canceled; continuing with replacement build $BUILD_ID"
                   continue
                 fi
@@ -195,6 +192,10 @@ jobs:
                 if (( SLEEP_SECONDS > 30 )); then SLEEP_SECONDS=30; fi
                 if (( SLEEP_SECONDS > 0 )); then sleep "$SLEEP_SECONDS"; fi
                 continue
+              fi
+              if [[ -n "$COVERAGE_ARTIFACT" ]]; then
+                echo "✅ Found coverage artifact!"
+                break
               fi
               if [[ "$STATUS" == "completed" ]] && (( COMPLETED_AT < 0 )); then
                 COMPLETED_AT=$SECONDS
@@ -227,7 +228,8 @@ jobs:
           if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" && "$COVERAGE_ARTIFACT" != "empty" ]]; then
             echo "📊 Downloading coverage report..."
             if ! curl -L "$COVERAGE_ARTIFACT" -o coverage-report.zip --fail --silent --show-error \
-              --connect-timeout 10 --max-time 60 --retry 2 --retry-delay 5 --retry-max-time 180; then
+              --connect-timeout 10 --max-time 60 --max-filesize 268435456 \
+              --retry 2 --retry-delay 5 --retry-max-time 180; then
               echo "❌ Failed to download coverage report from Azure DevOps"
               echo "This indicates the coverage artifacts may not be available or accessible"
               exit 1
@@ -345,7 +347,8 @@ jobs:
           if [[ -n "$COVERAGE_XML_ARTIFACT" && "$COVERAGE_XML_ARTIFACT" != "null" && "$COVERAGE_XML_ARTIFACT" != "empty" ]]; then
             echo "📊 Downloading coverage artifact from: $COVERAGE_XML_ARTIFACT"
             if ! curl -L "$COVERAGE_XML_ARTIFACT" -o coverage-artifacts.zip --fail --silent --show-error \
-              --connect-timeout 10 --max-time 60 --retry 2 --retry-delay 5 --retry-max-time 180; then
+              --connect-timeout 10 --max-time 60 --max-filesize 268435456 \
+              --retry 2 --retry-delay 5 --retry-max-time 180; then
               echo "❌ Failed to download coverage artifacts"
               exit 1
             fi

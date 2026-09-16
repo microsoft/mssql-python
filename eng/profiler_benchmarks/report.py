@@ -10,32 +10,6 @@ import re
 import statistics
 
 LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
-CASES = (
-    "connect",
-    "select",
-    "insert",
-    "executemany",
-    "fetchall",
-    "fetchone",
-    "fetchmany",
-    "commit_rollback",
-    "arrow",
-    "insertmanyvalues",
-    "fetchmany_100",
-    "fetchmany_10000",
-    "prepared_qmark",
-    "prepared_named",
-    "legacy_insertmany",
-    "setinputsizes",
-    "join_aggregation",
-    "large_fetch",
-    "fetch_1_2m",
-    "cte",
-)
-MAX_BYTES = 8 * 1024 * 1024
-MARKER = "<!-- mssql-python-profiler-ci -->"
-THRESHOLD = 0.20
-MIN_DELTA_MS = 1.0
 TASK_NAMES = {
     "connect": "Connection opening",
     "select": "SELECT queries",
@@ -58,6 +32,11 @@ TASK_NAMES = {
     "fetch_1_2m": "1.2-million-row fetching",
     "cte": "Common table expression queries",
 }
+CASES = tuple(TASK_NAMES)
+MAX_BYTES = 8 * 1024 * 1024
+MARKER = "<!-- mssql-python-profiler-ci -->"
+THRESHOLD = 0.20
+MIN_DELTA_MS = 1.0
 
 
 def suite_paths(root):

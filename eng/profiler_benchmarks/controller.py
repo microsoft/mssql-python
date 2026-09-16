@@ -16,12 +16,11 @@ import tarfile
 import tempfile
 import time
 
-from .report import suite_hash
+from .report import LEGS, suite_hash
 from . import workloads
 
 ROOT = Path(__file__).resolve().parents[2]
 SHA = re.compile(r"[0-9a-f]{40}")
-LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
 # Twelve six-minute passes plus a 15-minute base build and preflight need 88
 # minutes. Local runs build both revisions and receive another 15 minutes.
 BENCHMARK_TIMEOUT = 90 * 60

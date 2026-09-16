@@ -34,11 +34,14 @@ def select(archive, kind):
             candidates.append((0, member))
         elif kind == "xml" and path.suffix.lower() == ".xml":
             name = path.name.lower()
-            priority = (
-                0
-                if str(path).endswith("unified-coverage/coverage.xml")
-                else (1 if name == "coverage.xml" else 2 if "coverage" in name else 3)
-            )
+            if str(path).endswith("unified-coverage/coverage.xml"):
+                priority = 0
+            elif name == "coverage.xml":
+                priority = 1
+            elif "coverage" in name:
+                priority = 2
+            else:
+                continue
             candidates.append((priority, member))
 
     if not candidates:
@@ -49,6 +52,8 @@ def select(archive, kind):
 
 
 def copy_report(archive_path, output, kind):
+    if Path(archive_path).stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ValueError("Coverage archive exceeds size limit")
     with zipfile.ZipFile(archive_path) as archive:
         selected = select(archive, kind)
         data = archive.read(selected[0])

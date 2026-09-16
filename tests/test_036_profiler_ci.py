@@ -11,6 +11,7 @@ import sys
 import tarfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from urllib.error import URLError
 import zipfile
 
 import pytest
@@ -32,6 +33,29 @@ def load(name, path):
 
 publisher = load("post_profiler_comment", ".github/scripts/post_profiler_comment.py")
 extractor = load("extract_coverage_artifact", ".github/scripts/extract_coverage_artifact.py")
+
+
+def ado_build(**values):
+    build = dict(
+        id=42,
+        status="completed",
+        result="failed",
+        definition={"id": 2128},
+        repository={"id": "microsoft/mssql-python"},
+        sourceBranch="refs/pull/123/merge",
+        sourceVersion="b" * 40,
+        triggerInfo={"pr.number": "123", "pr.sourceSha": "c" * 40},
+    )
+    build.update(values)
+    return build
+
+
+def pr_topology(head="c" * 40, base="a" * 40, merge_base=None):
+    return lambda path: (
+        {"state": "open", "head": {"sha": head}, "base": {"sha": base}}
+        if path.startswith("pulls/")
+        else {"parents": [{"sha": merge_base or base}, {"sha": head}]}
+    )
 
 
 @pytest.fixture
@@ -256,30 +280,36 @@ def test_coverage_artifact_reader_copies_only_expected_report(tmp_path, kind, me
     assert not (tmp_path / ".github").exists()
 
 
-def test_coverage_artifact_reader_accepts_only_identical_duplicate_reports(tmp_path):
+@pytest.mark.parametrize("second,valid", [("<coverage />", True), ("<different />", False)])
+def test_coverage_artifact_reader_accepts_only_identical_duplicate_reports(tmp_path, second, valid):
     archive = tmp_path / "coverage.zip"
     output = tmp_path / "coverage.xml"
     archive.write_bytes(
         zip_data(
             [
                 ("first/coverage.xml", "<coverage />"),
-                ("second/coverage.xml", "<coverage />"),
+                ("second/coverage.xml", second),
             ]
         )
     )
-    extractor.copy_report(archive, output, "xml")
-    assert output.read_text() == "<coverage />"
-
-    archive.write_bytes(
-        zip_data(
-            [
-                ("first/coverage.xml", "<coverage />"),
-                ("second/coverage.xml", "<different />"),
-            ]
-        )
-    )
-    with pytest.raises(ValueError, match="Conflicting"):
+    if valid:
         extractor.copy_report(archive, output, "xml")
+        assert output.read_text() == "<coverage />"
+    else:
+        with pytest.raises(ValueError, match="Conflicting"):
+            extractor.copy_report(archive, output, "xml")
+
+
+def test_coverage_artifact_reader_rejects_oversized_or_unrelated_archives(tmp_path):
+    archive = tmp_path / "coverage.zip"
+    archive.write_bytes(zip_data([("test-results.xml", "<tests />")]))
+    with pytest.raises(ValueError, match="No coverage xml"):
+        extractor.copy_report(archive, tmp_path / "coverage.xml", "xml")
+    with archive.open("wb") as stream:
+        stream.seek(extractor.MAX_ARCHIVE_BYTES)
+        stream.write(b"x")
+    with pytest.raises(ValueError, match="archive exceeds"):
+        extractor.copy_report(archive, tmp_path / "coverage.xml", "xml")
 
 
 def test_artifact_read_never_extracts_paths(report):
@@ -312,13 +342,7 @@ def test_untrusted_labels_cannot_inject_links_mentions_or_markdown():
 
 
 def test_build_selection_requires_exact_pr_head():
-    build = dict(
-        id=42,
-        definition={"id": 2128},
-        repository={"id": "microsoft/mssql-python"},
-        sourceBranch="refs/pull/123/merge",
-        triggerInfo={"pr.number": "123", "pr.sourceSha": "c" * 40},
-    )
+    build = ado_build()
     assert publisher.find_build([build], 123, "c" * 40) is build
     for key in ("pr.number", "pr.sourceSha"):
         bad = copy.deepcopy(build)
@@ -400,6 +424,26 @@ def test_suite_blobs_require_complete_authenticated_tree(monkeypatch):
     tree["tree"].pop()
     with pytest.raises(ValueError, match="missing"):
         publisher.suite_blobs({"tree": {"sha": "a" * 40}})
+
+
+def test_publisher_finishes_unavailable_when_checked_suite_file_moves(monkeypatch):
+    posted = []
+    build = ado_build()
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(publisher, "api", lambda url: {"value": [build]})
+    monkeypatch.setattr(
+        publisher,
+        "suite_blobs",
+        MagicMock(side_effect=ValueError("Benchmark suite missing from commit tree")),
+    )
+    publisher.run(123, "c" * 40, 1)
+    assert len(posted) == 2
+    assert "Performance assessment pending" in posted[0]
+    assert "Performance could not be assessed" in posted[1]
+    assert "required file changed" in posted[1]
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -592,7 +636,32 @@ def test_head_moving_while_listing_comments_prevents_publish(monkeypatch):
     assert reads == 2 and len(calls) == 3
 
 
-@pytest.mark.parametrize("corrupt", [None, "zip", "scenarios", "suite", "source"])
+def test_base_moving_while_listing_comments_prevents_publish(monkeypatch):
+    calls = []
+    reads = 0
+
+    def api(path, **kwargs):
+        nonlocal reads
+        calls.append((path, kwargs))
+        assert not kwargs, "No write allowed after base moved"
+        if path.startswith("pulls/"):
+            reads += 1
+            return {
+                "state": "open",
+                "head": {"sha": "head"},
+                "base": {"sha": "base" if reads == 1 else "new-base"},
+            }
+        return []
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", "data", "base")
+    assert reads == 2 and len(calls) == 3
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [None, "zip", "scenarios", "suite", "source", "base", "provenance", "recursion", "delayed"],
+)
 def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, monkeypatch, corrupt):
     posted = []
     windows = copy.deepcopy(report)
@@ -607,20 +676,36 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     data = {
         "Windows-SQL2022": zip_data([("report.json", json.dumps(windows))]),
         "Linux-SQL2022": (
-            b"invalid ZIP" if corrupt == "zip" else zip_data([("report.json", json.dumps(report))])
+            b"invalid ZIP"
+            if corrupt == "zip"
+            else zip_data(
+                [
+                    (
+                        "report.json",
+                        (
+                            "[" * 2000 + "0" + "]" * 2000
+                            if corrupt == "recursion"
+                            else json.dumps(report)
+                        ),
+                    )
+                ]
+            )
         ),
     }
-    build = dict(
-        id=42,
-        status="completed",
-        result="failed",
-        definition={"id": 2128},
-        repository={"id": "microsoft/mssql-python"},
-        sourceBranch="refs/pull/123/merge",
-        sourceVersion="b" * 40,
-        triggerInfo={"pr.number": "123", "pr.sourceSha": "c" * 40},
+    build = ado_build()
+    if corrupt == "provenance":
+        del build["sourceVersion"]
+    artifacts = [
+        {
+            "name": "profiler-" + leg,
+            "resource": {"downloadUrl": "https://dev.azure.com/" + leg},
+        }
+        for leg in data
+    ]
+    artifact_responses = iter(([], artifacts) if corrupt == "delayed" else (artifacts,))
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
     )
-    monkeypatch.setattr(publisher, "publish", lambda number, head, body: posted.append(body))
     monkeypatch.setattr(publisher, "suite_hash", lambda root: "d" * 64)
     suite_versions = iter(({"suite": "source"}, {"suite": "base"}))
     monkeypatch.setattr(
@@ -631,38 +716,28 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     monkeypatch.setattr(
         publisher,
         "github",
-        lambda path: (
-            {"state": "open", "head": {"sha": "c" * 40}}
-            if path.startswith("pulls/")
-            else {"parents": [{"sha": "a" * 40}, {"sha": "c" * 40}]}
-        ),
+        pr_topology(base="e" * 40, merge_base="a" * 40) if corrupt == "base" else pr_topology(),
     )
     monkeypatch.setattr(
         publisher,
         "api",
         lambda url: (
-            {
-                "value": [
-                    {
-                        "name": "profiler-" + leg,
-                        "resource": {"downloadUrl": "https://dev.azure.com/" + leg},
-                    }
-                    for leg in data
-                ]
-            }
-            if "/artifacts?" in url
-            else {"value": [build]}
+            {"value": next(artifact_responses)} if "/artifacts?" in url else {"value": [build]}
         ),
     )
     monkeypatch.setattr(publisher, "fetch", lambda url, **kw: data[url.rsplit("/", 1)[-1]])
+    monkeypatch.setattr(publisher.time, "sleep", lambda seconds: None)
     publisher.run(123, "c" * 40, 1)
     assert len(posted) == 2
     assert posted[0].startswith(reporting.MARKER)
+    if corrupt in ("base", "provenance"):
+        assert "Build provenance validation failed" in posted[1]
+        return
     assert "| macOS / SQL Server 2022 | No result available" in posted[1]
     if corrupt in ("suite", "source"):
         assert "workload version differs from trusted base" in posted[1]
         assert "consistent slowdown signals" not in posted[1]
-    elif corrupt:
+    elif corrupt in ("zip", "scenarios", "recursion"):
         assert "### Windows / SQL Server 2022" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
         assert "| Linux / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
@@ -673,16 +748,7 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
 
 
 def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report, monkeypatch):
-    canceled = dict(
-        id=41,
-        status="completed",
-        result="canceled",
-        definition={"id": 2128},
-        repository={"id": "microsoft/mssql-python"},
-        sourceBranch="refs/pull/123/merge",
-        sourceVersion="b" * 40,
-        triggerInfo={"pr.number": "123", "pr.sourceSha": "c" * 40},
-    )
+    canceled = ado_build(id=41, result="canceled")
     replacement = {**canceled, "id": 42, "result": "failed"}
     builds = iter(([canceled], [replacement]))
     posted = []
@@ -691,23 +757,18 @@ def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report
     def api(url):
         return {"value": next(builds)} if "/builds?" in url else {"value": []}
 
-    def github(path):
-        return (
-            {"state": "open", "head": {"sha": "c" * 40}}
-            if path.startswith("pulls/")
-            else {"parents": [{"sha": "a" * 40}, {"sha": "c" * 40}]}
-        )
-
     monkeypatch.setattr(publisher, "api", api)
-    monkeypatch.setattr(publisher, "github", github)
-    monkeypatch.setattr(publisher, "publish", lambda number, head, body: posted.append(body))
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
     monkeypatch.setattr(publisher, "suite_blobs", lambda commit: {"suite": "same"})
     monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
     )
     publisher.run(123, "c" * 40, 1)
-    assert clock[0] == 30
+    assert clock[0] == 150
     assert len(posted) == 2
     assert "buildId=42" in posted[1]
 
@@ -716,19 +777,11 @@ def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report
 def test_publisher_deadline_finishes_without_reading_unfinished_build_metadata(monkeypatch, status):
     posted = []
     clock = [0]
-    build = dict(
-        id=42,
-        status=status,
-        sourceVersion=None,
-        definition={"id": 2128},
-        repository={"id": "microsoft/mssql-python"},
-        sourceBranch="refs/pull/123/merge",
-        triggerInfo={"pr.number": "123", "pr.sourceSha": "c" * 40},
-    )
+    build = ado_build(status=status, sourceVersion=None)
 
     def github(path):
         assert path == "pulls/123", "Unfinished builds must not query merge topology"
-        return {"state": "open", "head": {"sha": "c" * 40}}
+        return {"state": "open", "head": {"sha": "c" * 40}, "base": {"sha": "a" * 40}}
 
     def api(url):
         assert "/builds?" in url, "Unfinished builds must not query artifacts"
@@ -741,13 +794,55 @@ def test_publisher_deadline_finishes_without_reading_unfinished_build_metadata(m
     monkeypatch.setattr(publisher.time, "sleep", sleep)
     monkeypatch.setattr(publisher, "github", github)
     monkeypatch.setattr(publisher, "api", api)
-    monkeypatch.setattr(publisher, "publish", lambda number, head, body: posted.append(body))
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
     publisher.run(123, "c" * 40, 1)
     assert clock[0] == 60 and len(posted) == 2
     assert "Performance assessment pending" in posted[0]
     assert "Performance assessment pending" not in posted[1]
     assert "1-minute wait" in posted[1]
     assert "Performance could not be assessed" in posted[1]
+
+
+def test_publisher_retries_transient_polling_failures_before_finalizing(monkeypatch):
+    posted = []
+    clock = [0]
+    responses = iter((URLError("temporary"), ValueError("bad JSON"), {"value": []}))
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(publisher, "api", lambda url: next(responses))
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 1)
+    assert clock[0] == 60
+    assert len(posted) == 2
+    assert "Performance could not be assessed" in posted[1]
+
+
+def test_publisher_retries_malformed_pr_and_artifact_responses(monkeypatch):
+    posted = []
+    clock = [0]
+    prs = iter(({}, pr_topology()("pulls/123")))
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(publisher, "github", lambda path: next(prs))
+    monkeypatch.setattr(publisher, "api", lambda url: {"value": []})
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 1)
+    assert len(posted) == 2 and "Performance could not be assessed" in posted[1]
+    with pytest.raises(ValueError, match="artifact list"):
+        publisher.artifact_items({"value": [None]})
+    with pytest.raises(ValueError, match="build list"):
+        publisher.build_items({"value": [{}]})
 
 
 def test_artifact_symlink_and_oversized_json_are_rejected():
@@ -803,6 +898,7 @@ def test_comment_workflow_executes_only_trusted_base_code():
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
     coverage = (ROOT / ".github/workflows/pr-code-coverage.yml").read_text(encoding="utf-8")
     assert coverage.count("extract_coverage_artifact.py") == 2
+    assert coverage.count("--max-filesize 268435456") == 2
     assert "unzip -o" not in coverage
     assert (
         "head.ref" not in workflow

@@ -28,6 +28,7 @@ from eng.profiler_benchmarks.report import (
 ROOT = Path(__file__).resolve().parents[2]
 ADO = "https://dev.azure.com/sqlclientdrivers/public/_apis/build"
 REPOSITORY = "microsoft/mssql-python"
+HEADER = f"{MARKER}\n## PR Performance Report\n\n"
 # Allow a 160-minute ADO job plus queueing; the workflow reserves publication time.
 WAIT_MINUTES = 220
 
@@ -114,9 +115,16 @@ def artifact_report(raw):
         return json.loads(archive.read(member).decode("utf-8"))
 
 
-def publish(pr_number, head, body):
-    pr = github(f"pulls/{pr_number}")
-    if pr["state"] != "open" or pr["head"]["sha"] != head:
+def publish(pr_number, head, body, base=None):
+    def current():
+        pr = github(f"pulls/{pr_number}")
+        return (
+            pr["state"] == "open"
+            and pr["head"]["sha"] == head
+            and (base is None or pr["base"]["sha"] == base)
+        )
+
+    if not current():
         print("Not publishing stale performance results")
         return
     page = 1
@@ -135,11 +143,11 @@ def publish(pr_number, head, body):
             break
         page += 1
     if comment:
-        if github(f"pulls/{pr_number}")["head"]["sha"] != head:
+        if not current():
             return
         github(f"issues/comments/{comment['id']}", method="PATCH", data={"body": body})
     else:
-        if github(f"pulls/{pr_number}")["head"]["sha"] != head:
+        if not current():
             return
         github(f"issues/{pr_number}/comments", method="POST", data={"body": body})
 
@@ -149,7 +157,11 @@ def find_build(builds, number, head):
         (
             build
             for build in builds
-            if build.get("definition", {}).get("id") == 2128
+            if isinstance(build, dict)
+            and isinstance(build.get("definition"), dict)
+            and isinstance(build.get("repository"), dict)
+            and isinstance(build.get("triggerInfo"), dict)
+            and build.get("definition", {}).get("id") == 2128
             and build.get("repository", {}).get("id", "").lower() == REPOSITORY
             and build.get("sourceBranch") == f"refs/pull/{number}/merge"
             and build.get("triggerInfo", {}).get("pr.sourceSha") == head
@@ -157,6 +169,22 @@ def find_build(builds, number, head):
         ),
         None,
     )
+
+
+def build_items(response):
+    items = response.get("value") if isinstance(response, dict) else None
+    if not isinstance(items, list) or not all(
+        isinstance(build, dict)
+        and isinstance(build.get("id"), int)
+        and isinstance(build.get("status"), str)
+        and isinstance(build.get("definition"), dict)
+        and isinstance(build.get("repository"), dict)
+        and isinstance(build.get("triggerInfo"), dict)
+        and isinstance(build.get("sourceBranch"), str)
+        for build in items
+    ):
+        raise ValueError("Invalid build list")
+    return items
 
 
 def suite_blobs(commit):
@@ -179,54 +207,138 @@ def suite_blobs(commit):
     return blobs
 
 
+def artifact_items(response):
+    items = response.get("value") if isinstance(response, dict) else None
+    if not isinstance(items, list) or not all(
+        isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("resource"), dict)
+        for item in items
+    ):
+        raise ValueError("Invalid artifact list")
+    return items
+
+
+def unavailable(number, head, reason, base=None):
+    publish(
+        number,
+        head,
+        HEADER + "**Performance could not be assessed.**\n\n" + reason + " No result is available.",
+        base,
+    )
+
+
 def run(number, head, wait_minutes):
     publish(
         number,
         head,
-        f"{MARKER}\n## PR Performance Report\n\n"
-        "**Performance assessment pending.**\n\n"
-        f"Waiting for the matching performance run for head `{head}`.",
+        HEADER
+        + "**Performance assessment pending.**\n\n"
+        + f"Waiting for the matching performance run for head `{head}`.",
     )
     deadline = time.monotonic() + wait_minutes * 60
     build = None
+    pr_base = None
+    failures = 0
     while time.monotonic() < deadline:
-        pr = github(f"pulls/{number}")
-        if pr["state"] != "open" or pr["head"]["sha"] != head:
-            return
-        query = urlencode(
-            {
-                "definitions": 2128,
-                "branchName": f"refs/pull/{number}/merge",
-                "queryOrder": "queueTimeDescending",
-                "$top": 50,
-                "api-version": "7.1",
-            }
-        )
-        build = find_build(api(f"{ADO}/builds?{query}")["value"], number, head)
-        if build and build["status"] == "completed" and build.get("result") != "canceled":
+        try:
+            pr = github(f"pulls/{number}")
+            if (
+                not isinstance(pr, dict)
+                or not isinstance(pr.get("state"), str)
+                or not isinstance(pr.get("head"), dict)
+                or not isinstance(pr.get("base"), dict)
+            ):
+                raise ValueError
+            current_head = pr["head"].get("sha")
+            current_base = pr["base"].get("sha")
+            pr_base = current_base
+            query = urlencode(
+                {
+                    "definitions": 2128,
+                    "branchName": f"refs/pull/{number}/merge",
+                    "queryOrder": "queueTimeDescending",
+                    "$top": 50,
+                    "api-version": "7.1",
+                }
+            )
+            build = find_build(build_items(api(f"{ADO}/builds?{query}")), number, head)
+            if pr["state"] != "open" or current_head != head:
+                return
+            complete = (
+                build is not None
+                and build.get("status") == "completed"
+                and build.get("result") != "canceled"
+            )
+        except (ValueError, KeyError, TypeError, URLError, TimeoutError):
+            failures += 1
+            if failures >= 5:
+                unavailable(number, head, "Performance data services failed repeatedly.", pr_base)
+                return
+            time.sleep(30)
+            continue
+        failures = 0
+        if complete:
             break
         time.sleep(30)
     if build is None or build.get("status") != "completed" or build.get("result") == "canceled":
-        publish(
+        unavailable(
             number,
             head,
-            f"{MARKER}\n## PR Performance Report\n\n"
-            "**Performance could not be assessed.**\n\n"
             f"No matching performance run completed within the {wait_minutes}-minute wait "
-            f"for `{head}`. No result is available.",
+            f"for `{head}`.",
+            pr_base,
         )
         return
     build_id = build["id"]
-    source = build["sourceVersion"]
-    if type(build_id) is not int or build_id <= 0 or not re.fullmatch(r"[0-9a-f]{40}", source):
-        raise ValueError("Invalid ADO build identity")
-    # Authenticate the merge topology through GitHub, not the artifact's claims.
-    commit = github(f"git/commits/{source}")
-    if len(commit["parents"]) != 2 or commit["parents"][1]["sha"] != head:
-        raise ValueError("ADO merge does not match current PR head")
-    base = commit["parents"][0]["sha"]
-    suite_unchanged = suite_blobs(commit) == suite_blobs(github(f"git/commits/{base}"))
-    artifacts = api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1")["value"]
+    source = build.get("sourceVersion")
+    try:
+        if (
+            type(build_id) is not int
+            or build_id <= 0
+            or not re.fullmatch(r"[0-9a-f]{40}", source)
+            or not re.fullmatch(r"[0-9a-f]{40}", pr_base or "")
+        ):
+            raise ValueError
+        # Authenticate both sides of the merge through the current GitHub PR.
+        commit = github(f"git/commits/{source}")
+        if len(commit["parents"]) != 2 or [parent["sha"] for parent in commit["parents"]] != [
+            pr_base,
+            head,
+        ]:
+            raise ValueError
+        base = pr_base
+    except (ValueError, KeyError, TypeError, URLError, TimeoutError):
+        unavailable(number, head, "Build provenance validation failed.", pr_base)
+        return
+    try:
+        suite_unchanged = suite_blobs(commit) == suite_blobs(github(f"git/commits/{base}"))
+    except (ValueError, KeyError, TypeError, URLError, TimeoutError):
+        unavailable(
+            number,
+            head,
+            "Benchmark suite validation failed because a required file changed.",
+            pr_base,
+        )
+        return
+    artifact_deadline = time.monotonic() + 120
+    artifacts = None
+    failures = 0
+    while time.monotonic() < artifact_deadline:
+        try:
+            artifacts = artifact_items(api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1"))
+            failures = 0
+            if any(item.get("name", "").startswith("profiler-") for item in artifacts):
+                break
+        except (ValueError, KeyError, TypeError, URLError, TimeoutError):
+            failures += 1
+            if failures >= 5:
+                artifacts = None
+                break
+        time.sleep(30)
+    if artifacts is None:
+        unavailable(number, head, "Performance artifacts remained unavailable.", pr_base)
+        return
     reports, issues = [], []
     for leg in LEGS:
         matching = [item for item in artifacts if item["name"] == "profiler-" + leg]
@@ -239,13 +351,13 @@ def run(number, head, wait_minutes):
             if report["leg"] != leg:
                 raise ValueError("Artifact leg mismatch")
             reports.append(report)
-        except (ValueError, KeyError, TypeError, URLError, zipfile.BadZipFile):
+        except (ValueError, KeyError, TypeError, RecursionError, URLError, zipfile.BadZipFile):
             # Invalid data is visibly incomplete, never converted to a success verdict.
             issues.append(leg + " (invalid artifact)")
     if not suite_unchanged or any(report["suite_hash"] != suite_hash(ROOT) for report in reports):
         reports = []
         issues.append("workload version differs from trusted base")
-    publish(number, head, render(reports, head, build_id, issues))
+    publish(number, head, render(reports, head, build_id, issues), base)
 
 
 if __name__ == "__main__":
