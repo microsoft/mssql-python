@@ -20,10 +20,11 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"[0-9a-f]{40}")
 LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
-# Twelve five-minute passes plus a 15-minute base build and preflight need 76
-# minutes. Leave headroom here and ten more minutes for CI-step dependency setup.
-BENCHMARK_TIMEOUT = 80 * 60
-WORKER_TIMEOUT = 10 * 60
+# Twelve six-minute passes plus a 15-minute base build and preflight need 88
+# minutes. Local runs build both revisions and receive another 15 minutes.
+BENCHMARK_TIMEOUT = 90 * 60
+LOCAL_BENCHMARK_TIMEOUT = 105 * 60
+WORKER_TIMEOUT = 6 * 60
 
 
 def git(*args):
@@ -221,7 +222,8 @@ def run(args):
         pairs=[],
     )
     report_path.write_text(json.dumps(report), encoding="utf-8")
-    deadline = time.monotonic() + BENCHMARK_TIMEOUT
+    timeout = BENCHMARK_TIMEOUT if args.reuse_candidate else LOCAL_BENCHMARK_TIMEOUT
+    deadline = time.monotonic() + timeout
     # CI reuses the profiling build already exercised by pytest. The base always
     # has its own checkout and process. Local runs can build both sides instead.
     with tempfile.TemporaryDirectory(prefix="profiler-ci-") as directory:
@@ -256,7 +258,8 @@ def run(args):
             if sample >= args.warmups:
                 report["pairs"].append(pair)
                 report_path.write_text(json.dumps(report, allow_nan=False), encoding="utf-8")
-    report["status"] = "complete"
+    if args.scenarios is None:
+        report["status"] = "complete"
     report_path.write_text(json.dumps(report, allow_nan=False), encoding="utf-8")
     print(f"Paired profiler report: {report_path}", flush=True)
 

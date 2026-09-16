@@ -41,11 +41,12 @@ fresh interpreter. Five measured
 pairs follow one discarded warmup pair, alternating base/PR order. A local subset is
 available through `--scenarios`; it is not accepted as a complete CI report.
 
-Each worker has a ten-minute limit for the entire workload suite, with a shared
-80-minute build/measurement budget inside the CI step's 90-minute limit. This fits
-all twelve passes at five minutes each, a 15-minute base build and a one-minute
-preflight, with headroom. The 150-minute jobs also allow for setup, pytest and
-artifact publication. These are upper bounds, not mandatory wait times.
+Each worker has a six-minute limit for the entire workload suite, with a shared
+90-minute build/measurement budget inside the CI step's 100-minute limit. This fits
+all twelve permitted worker limits, a 15-minute base build and a one-minute
+preflight, with headroom. Local runs receive 105 minutes because they build both
+revisions. The 160-minute CI jobs also allow for setup, pytest and artifact
+publication. These are upper bounds, not mandatory wait times.
 Worker logs identify each starting/completed scenario and emit stack traces every minute.
 Per-worker JSON checkpoints retain finished scenarios and identify the active one
 if the process fails or is killed. Partial workers never count as measured pairs;
@@ -73,12 +74,12 @@ not as a clean performance verdict. As a new base-branch reporting workflow, it
 starts reporting automatically after this infrastructure has merged; it does not
 grant fork-authored workflow code write credentials.
 
-The publisher waits up to 210 minutes for the matching ADO run to complete,
-including queueing, inside a 220-minute workflow. A still-queued or running build
+The publisher waits up to 220 minutes for the matching ADO run to complete,
+including queueing, inside a 230-minute workflow. A still-queued or running build
 at that deadline produces a final incomplete comment, not a lingering `Awaiting`
 message. A malformed report invalidates only its own leg; valid legs still render.
-Coverage polling also allows 210 minutes for its artifact, plus 15 minutes for
-build discovery and ten for processing/publication in its 235-minute workflow.
+Coverage polling also allows 220 minutes for its artifact, plus 15 minutes for
+build discovery and ten for processing/publication in its 245-minute workflow.
 
 The first main comparison after introduction may lack profiling support on its
 parent; that run is incomplete rather than falling back to an uninstrumented base.

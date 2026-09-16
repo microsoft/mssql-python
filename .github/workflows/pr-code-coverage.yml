@@ -11,7 +11,7 @@ permissions:
 jobs:
   coverage-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 235
+    timeout-minutes: 245
     permissions:
       pull-requests: write
       contents: read
@@ -91,6 +91,8 @@ jobs:
               echo "🔗 Build URL: $WEB_URL"
               echo "ADO_URL=$WEB_URL" >> "$GITHUB_ENV"
               echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+              echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
+              echo "PR_HEAD_SHA=$PR_HEAD_SHA" >> "$GITHUB_ENV"
 
               # A failed matrix leg does not invalidate a successful coverage artifact.
               echo "🚀 Build found, proceeding to poll for coverage artifacts..."
@@ -112,13 +114,15 @@ jobs:
         run: |
           BUILD_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID?api-version=7.1-preview.7"
           ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
-          # Coverage may queue behind 150-minute benchmark jobs before its own run.
-          DEADLINE=$((SECONDS + 210 * 60))
+          BUILDS_URL="https://dev.azure.com/sqlclientdrivers/public/_apis/build/builds?definitions=2128&branchName=refs%2Fpull%2F${PR_NUMBER}%2Fmerge&queryOrder=queueTimeDescending&%24top=100&api-version=7.1-preview.7"
+          PR_BRANCH="refs/pull/$PR_NUMBER/merge"
+          # Coverage may queue behind 160-minute benchmark jobs before its own run.
+          DEADLINE=$((SECONDS + 220 * 60))
           COMPLETED_AT=-1
           ARTIFACT_FAILURES=0
           BUILD_FAILURES=0
           COVERAGE_ARTIFACT=""
-          echo "📥 Waiting up to 210 minutes for coverage artifacts for build $BUILD_ID..."
+          echo "📥 Waiting up to 220 minutes for coverage artifacts for build $BUILD_ID..."
 
           while (( SECONDS < DEADLINE )); do
             REQUEST_TIMEOUT=$((DEADLINE - SECONDS))
@@ -154,6 +158,44 @@ jobs:
               BUILD_FAILURES=0
               STATUS=$(jq -r '.status' <<< "$BUILD_RESPONSE")
               RESULT=$(jq -r '.result // "unknown"' <<< "$BUILD_RESPONSE")
+              if [[ "$STATUS" == "completed" && "$RESULT" == "canceled" ]]; then
+                if REPLACEMENTS=$(curl --fail --silent --show-error --connect-timeout 10 --max-time "$REQUEST_TIMEOUT" "$BUILDS_URL") &&
+                  REPLACEMENT=$(jq -ce --arg PR "$PR_NUMBER" --arg SHA "$PR_HEAD_SHA" \
+                    --arg BRANCH "$PR_BRANCH" --arg ID "$BUILD_ID" '
+                    [.value[]? | select(
+                      .definition.id == 2128 and .sourceBranch == $BRANCH and
+                      (.triggerInfo["pr.number"] | tostring) == $PR and
+                      .triggerInfo["pr.sourceSha"] == $SHA and
+                      .id > ($ID | tonumber) and
+                      (.status != "completed" or .result != "canceled")
+                    )] | .[0]' <<< "$REPLACEMENTS"); then
+                  BUILD_ID=$(jq -r '.id' <<< "$REPLACEMENT")
+                  [[ "$BUILD_ID" =~ ^[0-9]+$ ]] || {
+                    echo "Invalid replacement Azure DevOps build ID"
+                    exit 1
+                  }
+                  BUILD_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID?api-version=7.1-preview.7"
+                  ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
+                  ADO_URL=$(jq -r '._links.web.href // empty' <<< "$REPLACEMENT")
+                  if [[ -z "$ADO_URL" || ${#ADO_URL} -gt 500 || "$ADO_URL" == *$'\n'* || "$ADO_URL" == *$'\r'* ]]; then
+                    echo "Invalid replacement Azure DevOps build URL"
+                    exit 1
+                  fi
+                  echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+                  echo "ADO_URL=$ADO_URL" >> "$GITHUB_ENV"
+                  COMPLETED_AT=-1
+                  ARTIFACT_FAILURES=0
+                  BUILD_FAILURES=0
+                  echo "Selected ADO run was canceled; continuing with replacement build $BUILD_ID"
+                  continue
+                fi
+                ARTIFACT_FAILURES=0
+                echo "Canceled build $BUILD_ID has no replacement yet..."
+                SLEEP_SECONDS=$((DEADLINE - SECONDS))
+                if (( SLEEP_SECONDS > 30 )); then SLEEP_SECONDS=30; fi
+                if (( SLEEP_SECONDS > 0 )); then sleep "$SLEEP_SECONDS"; fi
+                continue
+              fi
               if [[ "$STATUS" == "completed" ]] && (( COMPLETED_AT < 0 )); then
                 COMPLETED_AT=$SECONDS
                 echo "Build completed ($RESULT); allowing 2 minutes for artifact propagation..."
@@ -178,7 +220,7 @@ jobs:
           done
 
           if [[ -z "$COVERAGE_ARTIFACT" ]]; then
-            echo "❌ Timeout: Coverage report artifact not found within 210 minutes"
+            echo "❌ Timeout: Coverage report artifact not found within 220 minutes"
             exit 1
           fi
 

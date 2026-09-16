@@ -51,7 +51,7 @@ jobs:
 
 - job: pytestonwindows
   displayName: 'Windows x64'
-  timeoutInMinutes: 150
+  timeoutInMinutes: 160
   pool:
     vmImage: 'windows-latest'
   
@@ -405,7 +405,7 @@ jobs:
     displayName: 'Compare profiling builds on SQL Server 2022/2025'
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
-    timeoutInMinutes: 90
+    timeoutInMinutes: 100
     env:
       SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -454,9 +454,9 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
-  # Reserve 60 minutes outside the 90-minute benchmark step for Colima/SQL
+  # Reserve 60 minutes outside the 100-minute benchmark step for Colima/SQL
   # setup, pytest, fixture restore and artifact publication.
-  timeoutInMinutes: 150
+  timeoutInMinutes: 160
   pool:
     vmImage: 'macos-latest'
 
@@ -657,7 +657,7 @@ jobs:
       python benchmarks/profiler_ci.py --reuse-candidate --leg "macOS-$(sqlVersion)" --output profiler-results
     displayName: 'Compare profiling builds on macOS $(sqlVersion)'
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    timeoutInMinutes: 90
+    timeoutInMinutes: 100
     continueOnError: true
     env:
       SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
@@ -683,7 +683,7 @@ jobs:
 
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
-  timeoutInMinutes: 150
+  timeoutInMinutes: 160
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -952,7 +952,7 @@ jobs:
     displayName: 'Compare profiling builds in $(distroName) container'
     condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
-    timeoutInMinutes: 90
+    timeoutInMinutes: 100
     env:
       DB_PASSWORD: $(DB_PASSWORD)
       BUILD_BUILDID: $(Build.BuildId)

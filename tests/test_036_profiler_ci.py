@@ -323,7 +323,10 @@ def test_overall_budget_caps_build_and_worker_time(monkeypatch):
         controller.remaining(100, controller.WORKER_TIMEOUT)
 
 
-def test_full_sample_budget_fits_slow_hosted_workers(report, tmp_path, monkeypatch):
+@pytest.mark.parametrize("scenarios,status", [(None, "complete"), (["select"], "incomplete")])
+def test_full_sample_budget_fits_slow_hosted_workers(
+    report, tmp_path, monkeypatch, scenarios, status
+):
     # Run 174385 completed workers in 169-285s. Budget twelve five-minute
     # passes plus the full base-build/preflight allowance, not just measured pairs.
     clock = [0]
@@ -344,7 +347,7 @@ def test_full_sample_budget_fits_slow_hosted_workers(report, tmp_path, monkeypat
         clock[0] += 60
 
     def measure(path, output, scenarios, timeout):
-        assert scenarios is None
+        assert scenarios == args.scenarios
         if timeout < 300:
             raise subprocess.TimeoutExpired("hosted worker replay", timeout)
         clock[0] += 300
@@ -362,11 +365,11 @@ def test_full_sample_budget_fits_slow_hosted_workers(report, tmp_path, monkeypat
         samples=5,
         warmups=1,
         reuse_candidate=True,
-        scenarios=None,
+        scenarios=scenarios,
     )
     controller.run(args)
     result = reporting.validate(json.loads((tmp_path / "report.json").read_text()))
-    assert result["status"] == "complete" and len(result["pairs"]) == 5
+    assert result["status"] == status and len(result["pairs"]) == 5
     assert measured == [
         f"{side}-{index}.json"
         for index in range(6)
@@ -389,6 +392,9 @@ def test_ci_deadlines_include_setup_queueing_and_publication():
     workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
     workflow_minutes = int(re.search(r"timeout-minutes: (\d+)", workflow)[1])
     assert workflow_minutes >= publisher.WAIT_MINUTES + 10
+    assert controller.LOCAL_BENCHMARK_TIMEOUT >= (
+        2 * 15 * 60 + 2 * (5 + 1) * controller.WORKER_TIMEOUT
+    )
 
 
 def test_linux_profiler_step_does_not_put_database_password_on_command_line():
@@ -593,6 +599,8 @@ def test_comment_workflow_executes_only_trusted_base_code():
     assert "pull_request_target:" in workflow
     assert "ref: ${{ github.event.pull_request.base.sha }}" in workflow
     assert "persist-credentials: false" in workflow
+    assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in workflow
+    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
     assert (
         "head.ref" not in workflow
         and "head.sha }}" not in workflow.split("ref:", 1)[1].split("persist", 1)[0]

@@ -50,7 +50,7 @@ def _script(step):
     return textwrap.dedent(section.split("        run: |\n", 1)[1])
 
 
-def _run(tmp_path, script, fixtures):
+def _run(tmp_path, script, fixtures, clock_scale=1):
     for kind, responses in fixtures.items():
         (tmp_path / f"{kind}.count").write_text(str(len(responses)), encoding="utf-8")
         (tmp_path / f"{kind}.next").write_text("0", encoding="utf-8")
@@ -65,7 +65,7 @@ SECONDS=0
 trap 'printf "%s\n" "$SECONDS" > "$FIXTURE_DIR/elapsed"' EXIT
 sleep() {
   printf "%s\n" "$1" >> "$FIXTURE_DIR/sleeps"
-  SECONDS=$((SECONDS + $1))
+  SECONDS=$((SECONDS + $1 * CLOCK_SCALE))
 }
 curl() {
   local url="${@: -1}" kind index count code
@@ -73,7 +73,7 @@ curl() {
   case "$url" in
     *"/artifacts?"*) kind=artifacts ;;
     *"/builds?"*) kind=builds ;;
-    *"/builds/174262?"*) kind=build ;;
+    *"/builds/"*"?api-version="*) kind=build ;;
     *) echo "Unexpected URL: $url" >&2; return 99 ;;
   esac
   if [[ ! -f "$FIXTURE_DIR/$kind.count" ]]; then
@@ -96,6 +96,7 @@ curl() {
         "PR_NUMBER": "779",
         "PR_HEAD_SHA": SHA,
         "BUILD_ID": "174262",
+        "CLOCK_SCALE": str(clock_scale),
     }
     result = subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", prefix + script],
@@ -117,12 +118,17 @@ curl() {
     return result
 
 
-def _poll(tmp_path, artifacts, builds):
+def _poll(tmp_path, artifacts, builds, replacements=(EMPTY,), clock_scale=1):
     script = _script("Download and parse coverage report")
     # Only execute discovery; downloaded report contents are never executed by these tests.
     script = script.split('\nif [[ -n "$COVERAGE_ARTIFACT" &&', 1)[0]
     script += '\nprintf "COVERAGE_ARTIFACT=%s\\n" "$COVERAGE_ARTIFACT"\n'
-    return _run(tmp_path, script, {"artifacts": artifacts, "build": builds})
+    return _run(
+        tmp_path,
+        script,
+        {"artifacts": artifacts, "build": builds, "builds": replacements},
+        clock_scale,
+    )
 
 
 def test_selects_exact_head_pr_branch_and_definition_even_when_build_failed(tmp_path):
@@ -167,8 +173,9 @@ def test_ignores_old_head_until_exact_build_appears_and_retries_bad_responses(tm
 def test_accepts_late_artifact_after_failed_aggregate_completes(tmp_path):
     result = _poll(
         tmp_path,
-        [EMPTY] * 302 + [ARTIFACT],
-        [_build()] * 301 + [{**_build(), "status": "completed", "result": "failed"}],
+        [EMPTY] * 32 + [ARTIFACT],
+        [_build()] * 31 + [{**_build(), "status": "completed", "result": "failed"}],
+        clock_scale=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"COVERAGE_ARTIFACT={ARTIFACT_URL}" in result.stdout
@@ -176,7 +183,7 @@ def test_accepts_late_artifact_after_failed_aggregate_completes(tmp_path):
     assert int((tmp_path / "elapsed").read_text()) > 150 * 60
 
 
-@pytest.mark.parametrize("result", ["succeeded", "failed", "canceled"])
+@pytest.mark.parametrize("result", ["succeeded", "failed"])
 def test_completed_without_artifact_stops_after_short_grace(tmp_path, result):
     completed = {**_build(), "status": "completed", "result": result}
     run = _poll(tmp_path, [EMPTY], [completed])
@@ -185,11 +192,36 @@ def test_completed_without_artifact_stops_after_short_grace(tmp_path, result):
     assert 120 <= int((tmp_path / "elapsed").read_text()) < 180
 
 
+def test_canceled_without_replacement_obeys_wall_clock_budget(tmp_path):
+    canceled = {**_build(), "status": "completed", "result": "canceled"}
+    run = _poll(tmp_path, [(22, "not found")], [canceled], clock_scale=10)
+    assert run.returncode != 0
+    assert "has no replacement yet" in run.stdout
+    assert "Timeout:" in run.stdout
+    assert 220 * 60 <= int((tmp_path / "elapsed").read_text()) < 225 * 60
+
+
 def test_immediately_available_artifact_needs_no_lifecycle_request(tmp_path):
     result = _poll(tmp_path, [ARTIFACT], [])
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"COVERAGE_ARTIFACT={ARTIFACT_URL}" in result.stdout
     assert (tmp_path / "build.next").read_text() == "0"
+
+
+def test_switches_from_canceled_run_to_newer_exact_head_build(tmp_path):
+    older = {**_build(174000), "status": "completed", "result": "succeeded"}
+    replacement = _build(175449)
+    result = _poll(
+        tmp_path,
+        [(22, "not found"), ARTIFACT],
+        [{**_build(), "status": "completed", "result": "canceled"}, replacement],
+        [{"value": [older, replacement]}],
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "continuing with replacement build 175449" in result.stdout
+    exported = (tmp_path / "github-env").read_text(encoding="utf-8")
+    assert "BUILD_ID=175449\n" in exported
+    assert "buildId=175449\n" in exported
 
 
 def test_artifact_and_lifecycle_http_json_errors_are_retried(tmp_path):
@@ -231,7 +263,7 @@ def test_persistent_api_errors_have_finite_retries(tmp_path, failing_api):
     assert int((tmp_path / "elapsed").read_text()) < 180
 
 
-@pytest.mark.parametrize("step,budget", [("build", 15 * 60), ("artifact", 210 * 60)])
+@pytest.mark.parametrize("step,budget", [("build", 15 * 60), ("artifact", 220 * 60)])
 def test_missing_build_or_queued_coverage_obeys_wall_clock_budget(tmp_path, step, budget):
     if step == "build":
         result = _run(
@@ -240,13 +272,18 @@ def test_missing_build_or_queued_coverage_obeys_wall_clock_budget(tmp_path, step
             {"builds": [{"value": [_build(174261, sha="b" * 40)]}]},
         )
     else:
-        result = _poll(tmp_path, [EMPTY], [{**_build(), "status": "notStarted"}])
+        result = _poll(
+            tmp_path,
+            [EMPTY],
+            [{**_build(), "status": "notStarted"}],
+            clock_scale=10,
+        )
     assert result.returncode != 0
     assert "Timeout:" in result.stdout
-    assert budget <= int((tmp_path / "elapsed").read_text()) < budget + 30
+    assert budget <= int((tmp_path / "elapsed").read_text()) < budget + 300
 
 
 def test_job_budget_leaves_time_for_downloads_and_publishing():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "    timeout-minutes: 235\n" in workflow
+    assert "    timeout-minutes: 245\n" in workflow
     assert "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in workflow

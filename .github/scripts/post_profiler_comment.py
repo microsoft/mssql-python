@@ -19,8 +19,8 @@ from profiler_report import LEGS, MARKER, MAX_BYTES, render, validate
 
 ADO = "https://dev.azure.com/sqlclientdrivers/public/_apis/build"
 REPOSITORY = "microsoft/mssql-python"
-# Allow a 150-minute ADO job plus queueing; the workflow reserves publication time.
-WAIT_MINUTES = 210
+# Allow a 160-minute ADO job plus queueing; the workflow reserves publication time.
+WAIT_MINUTES = 220
 
 
 def allowed_url(url):
