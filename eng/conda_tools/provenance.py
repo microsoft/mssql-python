@@ -38,7 +38,7 @@ def _required_env(name: str) -> str:
     return value
 
 
-def _producer_versions(get_json: Callable[[str], dict], commit: str) -> dict[str, str]:
+def _producer_inputs(get_json: Callable[[str], dict], commit: str) -> dict:
     def read_source(path: str) -> str:
         query = urlencode(
             {
@@ -60,7 +60,15 @@ def _producer_versions(get_json: Callable[[str], dict], commit: str) -> dict[str
             raise ValueError(f"Missing or mismatched wheel producer source for {path} at {commit}.")
         return item["content"]
 
-    return read_release_versions(read_source)
+    versions = read_release_versions(read_source)
+    result = {"versions": versions, "rsTransportVersion": ""}
+    if "mssql-python-rs" in versions:
+        path = "eng/versions/mssql-python-rs-nuget.version"
+        transport_version = read_source(path).strip()
+        if not re.fullmatch(r"[0-9][A-Za-z0-9.+_-]*", transport_version):
+            raise ValueError(f"{path} must contain one RS transport version.")
+        result["rsTransportVersion"] = transport_version
+    return result
 
 
 def _verify_run(build: dict, run: dict, pipeline_id: int, run_id: int) -> dict:
@@ -142,7 +150,7 @@ def verify_provenance(
     return {
         "producer": producer,
         "wheel": wheel,
-        "versions": _producer_versions(get_json, wheel["commit"]),
+        **_producer_inputs(get_json, wheel["commit"]),
         "productionEligible": not reasons,
         "productionIneligibilityReasons": reasons,
     }
@@ -192,6 +200,10 @@ def execute() -> None:
         )
     print("VERIFIED_RECORDED_PROVENANCE: " + json.dumps(result, sort_keys=True))
     print(f"##vso[task.setvariable variable=mssqlPythonVersion;isOutput=true]{version}")
+    versions = json.dumps(result["versions"], sort_keys=True)
+    print(f"##vso[task.setvariable variable=releaseVersions;isOutput=true]{versions}")
+    transport = result["rsTransportVersion"]
+    print(f"##vso[task.setvariable variable=rsTransportVersion;isOutput=true]{transport}")
     if publish == "false":
         print("Validate-only: provenance verified; package readiness is gated separately.")
 

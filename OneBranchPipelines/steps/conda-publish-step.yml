@@ -45,6 +45,12 @@ parameters:
   - name: mssqlPythonVersion
     type: string
     default: ''
+  - name: releaseVersions
+    type: string
+    default: ''
+  - name: rsTransportVersion
+    type: string
+    default: ''
   # Comma-separated subdirs a complete release MUST contain (full PyPI parity minus
   # musllinux, which has no conda subdir). win-arm64 IS included -- the build enforces
   # its --dry-run solve + PE-arch assert, so a missing/broken win-arm64 blocks the
@@ -145,6 +151,8 @@ steps:
       CONDA_CHANNEL: '${{ parameters.condaChannel }}'
       CONDA_LABEL: '${{ parameters.condaLabel }}'
       MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
+      RELEASE_VERSIONS: '${{ parameters.releaseVersions }}'
+      RS_TRANSPORT_VERSION: '${{ parameters.rsTransportVersion }}'
       REQUIRED_SUBDIRS: '${{ parameters.requiredSubdirs }}'
       ALLOWED_SUBDIRS: '${{ parameters.allowedSubdirs }}'
       PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
@@ -207,6 +215,7 @@ steps:
           exit 1
         }
         python -m eng.conda_tools validate `
+          --release-versions `
           --root "$root" `
           --required-subdirs "$env:REQUIRED_SUBDIRS" `
           --allowed-subdirs "$env:ALLOWED_SUBDIRS" `

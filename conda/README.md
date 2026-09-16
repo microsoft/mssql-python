@@ -90,8 +90,8 @@ human-readable reporting live in `__main__.py`. Conda provisioning and process
 execution live in `environment.py`; `build.py` sequences wheel selection, building,
 auditing and staging; `verify.py` keeps installed-package probes isolated.
 Release matrix and Python-admissibility policy live in `release.py`, recorded
-Azure DevOps source checks in `provenance.py`, maintained version reads in
-`inputs.py`, and staged publication/recovery in `publication.py`. Both release
+Azure DevOps source checks in `provenance.py`, source-bound component inputs and
+public wheel fetching in `inputs.py`, and staged publication/recovery in `publication.py`. Both release
 and native auditing use `archive.py`; release validation retains its stricter
 container and index rules rather than weakening them to the generic audit policy.
 
@@ -106,6 +106,7 @@ python -m eng.conda_tools macho --root <package-directory> --subdir osx-arm64
 python -m eng.conda_tools validate --root <package-directory>
 python -m eng.conda_tools provenance
 python -m eng.conda_tools promote --help
+python -m eng.conda_tools fetch-wheels --help
 ```
 
 These replace the old standalone audit, build, and release scripts. They require the source
@@ -123,3 +124,31 @@ Anaconda client; actual publication and recovery retain their existing restricte
 credential and single-operator prerequisites. Module placement is not a new
 authorization boundary. The PowerShell upload process deadlines, attempted-file
 tracking, process-tree termination, and dry-run plan remain in their pipeline tasks.
+
+The release pipeline resolves AUTO from the **recorded upstream wheel commit**, not
+the release checkout or a latest-version lookup. It cross-checks binding setup/runtime
+versions and reads ODBC and, when explicitly required by that source, RS distribution
+versions. RS's NuGet transport pin is separate. Missing or ambiguous source declarations
+fail rather than select a historical profile. A supplied binding version is only an
+assertion against this resolved version.
+
+Both readiness and the credentialed job use `validate --release-versions` to read the
+verified `RELEASE_VERSIONS` JSON from the environment; `RS_TRANSPORT_VERSION` supplies
+the separate transport assertion. This avoids passing JSON quoting or empty arguments
+through Windows PowerShell. Explicit JSON may also follow `--release-versions` in
+source-only controls. With this flag, absent versions fail closed. Without it, `validate`
+remains the metadata/matrix-only inspection command and makes no source-input claim.
+The source-bound gate checks each installed component's METADATA and RECORD ownership,
+the binding's exact dependency pins, and the selected RS filename/WHEEL tags against
+`rs-transport.json`. Raw wheel/transport hashes remain input evidence; relocated
+installed native files are checked by the native audits, not falsely compared with raw
+wheel hashes. No numeric RS build ID is inferred from a transport-version suffix.
+
+`fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
+downloads, and actual wheel metadata/ownership. An authentic published embedded-core
+binding is explicitly reported as a **historical published packaging control, not
+current-source RS qualification**. An RS-dependent published binding requires its exact
+provider and source pin; unavailable releases, malformed declarations, or mismatches
+fail with no older-version or TLS fallback. Public availability does not gate the
+recorded ADO artifact path. Neither a public input check nor static archive checks
+establish installed SQL/runtime qualification.

@@ -191,25 +191,17 @@ def _checked_metadata(path: str, distribution: str, version: str) -> archive.Whe
 
 
 def _select_rs_wheel(directory: str | None, version: str, python_tag: str, subdir: str) -> str:
-    platforms = {
-        "win-64": "win_amd64",
-        "win-arm64": "win_arm64",
-        "osx-64": "macosx_15_0_universal2",
-        "osx-arm64": "macosx_15_0_universal2",
-        "linux-64": "manylinux_2_34_x86_64",
-        "linux-aarch64": "manylinux_2_34_aarch64",
-    }
-    if not directory or subdir not in platforms or not re.fullmatch(r"cp3\d+", python_tag):
+    if (
+        not directory
+        or subdir not in contracts._RS_PLATFORMS
+        or not re.fullmatch(r"cp3\d+", python_tag)
+    ):
         raise ValueError(
             "an RS-dependent binding requires --rs-wheel-dir and a normal CPython target"
         )
     matches = []
     for path in sorted(Path(directory).glob(f"mssql_python_rs-{version}-*.whl")):
-        py, abi, platform = path.stem.rsplit("-", 3)[1:]
-        compatible_python = py == python_tag and abi == python_tag
-        if abi == "abi3" and re.fullmatch(r"cp3\d+", py):
-            compatible_python = int(py[2:]) <= int(python_tag[2:])
-        if compatible_python and platforms[subdir] in platform.split("."):
+        if contracts.rs_wheel_matches_target(path.name, python_tag, subdir):
             matches.append(str(path))
     if len(matches) != 1:
         raise ValueError(

@@ -85,13 +85,48 @@ def read_wheel_metadata(path: str | Path) -> WheelMetadata:
             if names.count(prefix + member) != 1:
                 raise ValueError(f"expected exactly one {prefix}{member} entry")
         records = parse_record_members(wheel.read(prefix + "RECORD"))
-        tags = BytesParser(policy=default).parsebytes(wheel.read(prefix + "WHEEL"))
         return {
             **metadata,
             "members": [entry.filename for entry in wheel.infolist() if not entry.is_dir()],
             "record_members": records,
-            "tags": [str(tag).strip() for tag in tags.get_all("Tag", [])],
+            "tags": parse_wheel_tags(wheel.read(prefix + "WHEEL")),
         }
+
+
+def parse_wheel_tags(data: bytes) -> list[str]:
+    tags = BytesParser(policy=default).parsebytes(data)
+    return [str(tag).strip() for tag in tags.get_all("Tag", [])]
+
+
+def installed_metadata(
+    names: list[str], files: dict[str, bytes]
+) -> Iterator[tuple[DistributionMetadata, list[str], list[str], str]]:
+    """Yield facts, present RECORD-owned paths, RECORD paths and dist-info prefix.
+
+    Installed distributions share site-packages. A binding must not inherit its
+    separate provider's ownership just because those files are present beside it.
+    """
+    record_files = {
+        path: parse_record_members(data)
+        for path, data in files.items()
+        if path.endswith(".dist-info/RECORD")
+    }
+    for member, data in files.items():
+        if not member.endswith(".dist-info/METADATA"):
+            continue
+        if names.count(member) != 1:
+            raise ValueError(f"duplicate installed metadata: {member}")
+        facts = parse_distribution_metadata(data)
+        root = member.rsplit("/", 2)[0] + "/"
+        prefix = member[: -len("METADATA")]
+        records = record_files.get(prefix + "RECORD", [])
+        owned = set(records)
+        present = [
+            name[len(root) :]
+            for name in names
+            if name.startswith(root) and name[len(root) :] in owned
+        ]
+        yield facts, present, records, prefix
 
 
 def collect(root: str) -> list[str]:

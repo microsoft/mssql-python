@@ -71,6 +71,12 @@ parameters:
   - name: mssqlPythonVersion
     type: string
     default: ''
+  - name: releaseVersions
+    type: string
+    default: ''
+  - name: rsTransportVersion
+    type: string
+    default: ''
   # The audit dependency hash targets CPython 3.12 / Windows x64, like the publisher.
   - name: pythonVersion
     type: string
@@ -153,6 +159,8 @@ steps:
       ALLOWED_SUBDIRS: '${{ parameters.allowedSubdirs }}'
       PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
       MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
+      RELEASE_VERSIONS: '${{ parameters.releaseVersions }}'
+      RS_TRANSPORT_VERSION: '${{ parameters.rsTransportVersion }}'
     inputs:
       targetType: 'inline'
       workingDirectory: '$(Build.SourcesDirectory)'
@@ -187,7 +195,7 @@ steps:
           $gateArgs += @('--mssql-python-version', $env:MSSQL_PYTHON_VERSION.Trim())
         }
 
-        python -m eng.conda_tools validate @gateArgs
+        python -m eng.conda_tools validate @gateArgs --release-versions
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Conda release readiness FAILED. Refusing to proceed with an incomplete/mis-labeled/mis-paired conda set."
           exit 1

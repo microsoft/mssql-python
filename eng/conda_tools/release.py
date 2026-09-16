@@ -27,6 +27,8 @@ Exit code 0 = release-ready; non-zero = a violation was found (blocks publish).
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import operator
 import re
 import sys
@@ -34,7 +36,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import archive
+from . import archive, inputs
 
 _BINDING_NAME = "mssql-python"
 
@@ -393,6 +395,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Per-subdir Python overrides, e.g. 'win-arm64=3.12,3.13,3.14'.",
     )
     parser.add_argument("--mssql-python-version", default=None)
+    parser.add_argument(
+        "--release-versions",
+        nargs="?",
+        const=os.environ.get("RELEASE_VERSIONS", ""),
+        default=None,
+        help="Exact component version JSON; without a value, read RELEASE_VERSIONS.",
+    )
+    parser.add_argument(
+        "--rs-transport-version", default=os.environ.get("RS_TRANSPORT_VERSION", "")
+    )
 
 
 def execute(args: argparse.Namespace) -> int:
@@ -402,6 +414,19 @@ def execute(args: argparse.Namespace) -> int:
         expected_pythons = _split(args.pythons)
         subdir_pythons = _parse_subdir_pythons(args.subdir_pythons)
         packages = collect_packages(args.root)
+        if args.release_versions is not None:
+            versions = inputs.parse_release_versions(args.release_versions)
+            if args.mssql_python_version != versions["mssql-python"]:
+                raise ValueError(
+                    "Binding release version differs from verified component versions."
+                )
+            receipt_path = Path(args.root) / "rs-transport.json"
+            receipt = (
+                json.loads(receipt_path.read_text(encoding="utf-8"))
+                if receipt_path.exists()
+                else None
+            )
+            inputs.validate_rs_transport(receipt, versions, args.rs_transport_version)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -437,5 +462,19 @@ def execute(args: argparse.Namespace) -> int:
             print(f"  - {e}", file=sys.stderr)
         return 1
 
+    if args.release_versions is not None:
+        try:
+            for package in packages:
+                inputs.validate_installed_inputs(
+                    package["path"],
+                    "cp" + package["python"].replace(".", ""),
+                    package["subdir"],
+                    versions,
+                    receipt,
+                )
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print("COMPONENT_INPUT_OK: installed components match verified producer source inputs.")
     print("\nOK: metadata-validated conda set is release-ready (subdirs, Python matrix, pairing).")
     return 0

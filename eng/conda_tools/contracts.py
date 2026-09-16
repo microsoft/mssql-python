@@ -136,6 +136,28 @@ def validate_wheel_tags(filename: str, tags: Sequence[str]) -> list[str]:
     return [] if set(tags) == expected else ["WHEEL tags do not match the selected filename"]
 
 
+_RS_PLATFORMS = {
+    "win-64": "win_amd64",
+    "win-arm64": "win_arm64",
+    "osx-64": "macosx_15_0_universal2",
+    "osx-arm64": "macosx_15_0_universal2",
+    "linux-64": "manylinux_2_34_x86_64",
+    "linux-aarch64": "manylinux_2_34_aarch64",
+}
+
+
+def rs_wheel_matches_target(filename: str, python_tag: str, subdir: str) -> bool:
+    """Use the build's exact normal-CPython/abi3 and platform selection for RS inputs."""
+    parts = filename.removesuffix(".whl").rsplit("-", 3)
+    if not filename.endswith(".whl") or len(parts) != 4 or not re.fullmatch(r"cp3\d+", python_tag):
+        return False
+    py, abi, platform = parts[1:]
+    compatible_python = py == python_tag and abi == python_tag
+    if abi == "abi3" and re.fullmatch(r"cp3\d+", py):
+        compatible_python = int(py[2:]) <= int(python_tag[2:])
+    return compatible_python and _RS_PLATFORMS.get(subdir) in platform.split(".")
+
+
 def exact_dependency_pin(requirements: Iterable[str], distribution: str) -> str | None:
     """Only an absent declaration returns None; malformed declarations always fail."""
     distribution = canonical_distribution_name(distribution)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import audit, build, provenance, publication, release
+from . import audit, build, inputs, provenance, publication, release
 from .contracts import Format
 
 _ELF_DESCRIPTION = """Masking-immune audit of the vendored Linux ODBC binaries in built conda packages.
@@ -218,6 +218,11 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "provenance", help="Verify recorded producer sources.", description=provenance.__doc__
     )
+    inputs.add_arguments(
+        commands.add_parser(
+            "fetch-wheels", help="Fetch and verify exact public wheel audit inputs."
+        )
+    )
     return parser
 
 
@@ -229,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         return publication.cli(args)
     if args.command == "provenance":
         return provenance.cli()
+    if args.command == "fetch-wheels":
+        return inputs.fetch_cli(args)
     if args.command == "build":
         return build.execute(args)
     return _audit(args, args.command)

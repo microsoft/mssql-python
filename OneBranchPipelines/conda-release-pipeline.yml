@@ -163,6 +163,8 @@ extends:
               - template: /OneBranchPipelines/steps/conda-release-step.yml@self
                 parameters:
                   mssqlPythonVersion: '$(Provenance.mssqlPythonVersion)'
+                  releaseVersions: '$(Provenance.releaseVersions)'
+                  rsTransportVersion: '$(Provenance.rsTransportVersion)'
 
               # Dry run (publishToConda=false): enumerate every package and print the exact
               # `anaconda upload` plan WITHOUT uploading, so a validate-only run shows precisely
@@ -246,6 +248,8 @@ extends:
               variables:
                 ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
                 mssqlPythonVersion: $[ dependencies.ValidateConda.outputs['Provenance.mssqlPythonVersion'] ]
+                releaseVersions: $[ dependencies.ValidateConda.outputs['Provenance.releaseVersions'] ]
+                rsTransportVersion: $[ dependencies.ValidateConda.outputs['Provenance.rsTransportVersion'] ]
               steps:
                 - checkout: self
                   fetchDepth: 1
@@ -254,3 +258,5 @@ extends:
                     condaChannel: '${{ parameters.condaChannel }}'
                     condaLabel: '${{ parameters.condaLabel }}'
                     mssqlPythonVersion: '$(mssqlPythonVersion)'
+                    releaseVersions: '$(releaseVersions)'
+                    rsTransportVersion: '$(rsTransportVersion)'

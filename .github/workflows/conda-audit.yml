@@ -79,72 +79,31 @@ jobs:
                            tests/test_027_conda_release_metadata.py -q
 
       - name: Fetch the shipped linux wheels from PyPI
+        id: public-wheels
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          mkdir -p wheels
           # Exact maintained release versions and PyPI digests, never an older/latest fallback.
-          python - <<'PY'
-          import email
-          import json
-          import re
-          import subprocess
-          import sys
-          import urllib.request
-          import zipfile
-          from pathlib import Path
-          from urllib.error import URLError
-
-          from eng.conda_tools.inputs import read_release_versions as read_versions
-          versions = read_versions(lambda path: Path(path).read_text(encoding="utf-8"))
-          requirements = []
-          for name, version in versions.items():
-              try:
-                  with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json", timeout=60) as response:
-                      release = json.load(response)
-              except URLError:
-                  raise SystemExit(f"Cannot fetch published {name}=={version} from PyPI; no fallback is allowed.")
-              hashes = {item["digests"]["sha256"] for item in release["urls"]
-                        if item["packagetype"] == "bdist_wheel" and not item.get("yanked")}
-              if (release["info"]["name"] != name or release["info"]["version"] != version
-                      or not hashes or any(not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in hashes)):
-                  raise SystemExit(f"Invalid published wheel identity or SHA256 for {name}=={version}.")
-              requirements.append(f"{name}=={version} " + " ".join(f"--hash=sha256:{digest}" for digest in sorted(hashes)))
-          Path("wheel-inputs.txt").write_text("\n".join(requirements) + "\n", encoding="utf-8")
-          subprocess.run([sys.executable, "-m", "pip", "--isolated", "download",
-                          "--index-url", "https://pypi.org/simple", "--no-deps", "--only-binary=:all:",
-                          "--require-hashes", "-r", "wheel-inputs.txt", "-d", "wheels"], check=True)
-          wheels = list(Path("wheels").glob("*.whl"))
-          if len(wheels) != len(versions):
-              raise SystemExit("Expected exactly the binding and ODBC wheels.")
-          for name, version in versions.items():
-              selected = [path for path in wheels if path.name.startswith(f"{name.replace('-', '_')}-{version}-")]
-              if len(selected) != 1:
-                  raise SystemExit(f"Missing or ambiguous wheel for {name}=={version}.")
-              with zipfile.ZipFile(selected[0]) as archive:
-                  metadata_files = [path for path in archive.namelist() if path.endswith(".dist-info/METADATA")]
-                  if metadata_files != [f"{name.replace('-', '_')}-{version}.dist-info/METADATA"]:
-                      raise SystemExit(f"Expected one matching root METADATA in {selected[0].name}.")
-                  metadata = email.message_from_bytes(archive.read(metadata_files[0]))
-              names = [re.sub(r"[-_.]+", "-", value).lower() for value in metadata.get_all("Name", [])]
-              if names != [name] or metadata.get_all("Version") != [version]:
-                  raise SystemExit(f"Wheel METADATA disagrees with {name}=={version}.")
-              if name == "mssql-python":
-                  pins = [value.strip() for value in metadata.get_all("Requires-Dist", [])
-                          if re.match(r"(?i)^mssql[-_.]+python[-_.]+odbc(?:[\s(<=>!~;\[]|$)", value.strip())]
-                  exact = rf"==\s*{re.escape(versions['mssql-python-odbc'])}"
-                  if len(pins) != 1 or not re.fullmatch(rf"(?i)mssql[-_.]+python[-_.]+odbc\s*(?:{exact}|\({exact}\))", pins[0]):
-                      raise SystemExit("Binding METADATA must require exactly the selected ODBC wheel version.")
-          PY
+          python -m eng.conda_tools fetch-wheels \
+            --wheel-dir "$PWD/wheels" --requirements-file "$PWD/wheel-inputs.txt" \
+            --python-tag cp311 --conda-subdir linux-64
           echo "Downloaded:"; ls -1 wheels
 
       - name: Build + audit a linux-64 conda package
         working-directory: ${{ github.workspace }}
+        env:
+          RS_REQUIRED: ${{ steps.public-wheels.outputs.rsRequired }}
         run: |
           set -euo pipefail
-          # One orchestrator runs the same gather + build + masking-immune audit + verify the
-          # OneBranch conda leg runs; it derives both wheel versions from the filenames. The
-          # find-links dir holds BOTH wheels, so mssql-wheel-dir and odbc-wheel-dir are the same.
+          # The verified public dependency/ownership facts select the actual input set.
+          rsArgs=()
+          if [[ "$RS_REQUIRED" == "true" ]]; then
+            rsArgs=(--rs-wheel-dir "$PWD/wheels" --rs-version-file "$PWD/eng/versions/mssql-python-rs.version")
+          elif [[ "$RS_REQUIRED" != "false" ]]; then
+            echo "Missing verified public wheel profile"; exit 1
+          fi
           python -m eng.conda_tools build \
+            "${rsArgs[@]}" \
             --mssql-wheel-dir "$PWD/wheels" \
             --odbc-wheel-dir "$PWD/wheels" \
             --odbc-wheel-filter "mssql_python_odbc-*.whl" \
