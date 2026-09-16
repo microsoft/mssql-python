@@ -92,6 +92,18 @@ jobs:
             found=1
           done < <(find "$(Pipeline.Workspace)/all-artifacts" -type f \( -name 'mssql-python*.conda' -o -name 'mssql-python*.tar.bz2' \))
 
+          receipt="$(ob_outputDirectory)/conda/rs-transport.json"
+          while IFS= read -r source; do
+            if [ -f "$receipt" ]; then
+              cmp -s "$source" "$receipt" || {
+                echo "ERROR: Conda legs disagree on their selected RS transport receipt." >&2
+                exit 1
+              }
+            else
+              cp "$source" "$receipt"
+            fi
+          done < <(find "$(Pipeline.Workspace)/all-artifacts" -type f -name 'rs-transport.json')
+
           echo ""
           echo "Consolidated conda tree:"
           find "$(ob_outputDirectory)/conda" -type f | sort

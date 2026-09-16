@@ -71,6 +71,11 @@ parameters:
 steps:
   - bash: |
       set -euo pipefail
+      rs_dir="$(dirname "${{ parameters.mssqlWheelDir }}")/rs-wheels"
+      [ -f "$rs_dir/transport.json" ] || {
+        echo "ERROR: selected wheel producer artifact is missing its RS transport receipt." >&2
+        exit 1
+      }
 
       # One module command does gather + build + audit + verify + stage
       # for EVERY leg (Windows/macOS/Linux) -- the two build scripts collapsed into one. The two
@@ -81,6 +86,8 @@ steps:
         --mssql-wheel-glob "${{ parameters.mssqlWheelGlob }}" \
         --odbc-wheel-dir "${{ parameters.odbcWheelDir }}" \
         --odbc-wheel-filter "${{ parameters.odbcWheelFilter }}" \
+        --rs-wheel-dir "$rs_dir" \
+        --rs-version-file "${{ parameters.mssqlWheelDir }}/mssql-python-rs.version" \
         --recipe-root "${{ parameters.recipeRoot }}" \
         --output-dir "${{ parameters.outputDir }}" \
         --stage-dir "$(ob_outputDirectory)/conda" \

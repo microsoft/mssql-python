@@ -77,6 +77,10 @@ parameters:
 steps:
   - powershell: |
       $ErrorActionPreference = 'Stop'
+      $rsDir = Join-Path (Split-Path "${{ parameters.mssqlWheelDir }}" -Parent) 'rs-wheels'
+      if (-not (Test-Path (Join-Path $rsDir 'transport.json') -PathType Leaf)) {
+        throw 'Selected wheel producer artifact is missing its RS transport receipt.'
+      }
 
       # One module command does gather + build + audit + verify + stage
       # for EVERY leg -- the two build scripts collapsed into one. The caller value-inputs come
@@ -90,6 +94,8 @@ steps:
         --mssql-wheel-dir "${{ parameters.mssqlWheelDir }}" `
         --odbc-wheel-dir "${{ parameters.odbcWheelDir }}" `
         --odbc-wheel-filter "${{ parameters.odbcWheelFilter }}" `
+        --rs-wheel-dir "$rsDir" `
+        --rs-version-file "${{ parameters.mssqlWheelDir }}/mssql-python-rs.version" `
         --recipe-root "${{ parameters.recipeRoot }}" `
         --output-dir "${{ parameters.outputDir }}" `
         --stage-dir "$(ob_outputDirectory)/conda" `
