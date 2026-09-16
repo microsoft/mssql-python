@@ -26,11 +26,11 @@ def build_async_connection_context(connection_str: str, timeout: int) -> dict[st
     if not any(params.get(key) for key in ("server", "addr", "address")):
         raise ValueError("SERVER parameter is required in connection string")
 
-    authentication = params.get("authentication", "").strip().lower()
-    if authentication and authentication != "sqlpassword":
+    authentication = params.get("authentication", "").strip()
+    if authentication and authentication.lower() != "sqlpassword":
         raise NotSupportedError(
-            "Async Entra authentication is not supported yet",
-            "Use SQL authentication or Trusted_Connection for async queries",
+            f"Authentication mode '{authentication}' is not supported for async queries",
+            "Use Authentication=SqlPassword or Trusted_Connection for async queries",
         )
 
     context = connstr_to_pycore_params(params, strict=True)

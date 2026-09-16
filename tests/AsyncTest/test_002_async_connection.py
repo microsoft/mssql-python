@@ -36,12 +36,12 @@ async def test_connect_defaults_autocommit_to_false(async_connection_string):
 
 def test_sql_password_authentication_is_forwarded_to_py_core():
     context = build_async_connection_context(
-        "Server=test-server.example.invalid;Authentication=SqlPassword;UID=user;PWD=password",
+        "Server=localhost;Authentication=SqlPassword;UID=user;PWD=password",
         0,
     )
 
     assert context == {
-        "server": "test-server.example.invalid",
+        "server": "localhost",
         "authentication": "SqlPassword",
         "user_name": "user",
         "password": "password",
@@ -229,9 +229,23 @@ def test_bcp_conversion_does_not_fall_through_invalid_first_synonym():
 
 
 def test_async_connection_rejects_entra_authentication():
-    with pytest.raises(NotSupportedError, match="Async Entra authentication is not supported"):
+    with pytest.raises(
+        NotSupportedError,
+        match="Authentication mode 'ActiveDirectoryDefault' is not supported",
+    ):
         build_async_connection_context(
             "Server=test-server.example.invalid;Authentication=ActiveDirectoryDefault",
+            0,
+        )
+
+
+def test_async_connection_reports_invalid_authentication_mode():
+    with pytest.raises(
+        NotSupportedError,
+        match="Authentication mode 'TypoMode' is not supported",
+    ):
+        build_async_connection_context(
+            "Server=test-server.example.invalid;Authentication=TypoMode",
             0,
         )
 

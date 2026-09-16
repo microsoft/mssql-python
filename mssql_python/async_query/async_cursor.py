@@ -30,6 +30,9 @@ class AsyncCursor:
         use_prepare: bool = True,
         reset_cursor: bool = True,
     ) -> "AsyncCursor":
+        if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
+            parameters = tuple(parameters[0])
+
         logger.debug("AsyncCursor.execute: starting")
         with translate_py_core_exceptions():
             await self._native_cursor.execute(

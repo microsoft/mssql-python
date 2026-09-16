@@ -31,6 +31,23 @@ async def test_execute_returns_public_cursor_and_binds_parameters(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parameters", ((1, 2), [1, 2]))
+@pytest.mark.parametrize("use_prepare", (True, False))
+async def test_execute_accepts_single_parameter_sequence(
+    async_cursor,
+    parameters,
+    use_prepare,
+):
+    await async_cursor.execute(
+        "SELECT CAST(? AS INT), CAST(? AS INT)",
+        parameters,
+        use_prepare=use_prepare,
+    )
+
+    assert await async_cursor.fetchone() == (1, 2)
+
+
+@pytest.mark.asyncio
 async def test_executemany_returns_public_cursor_and_inserts_rows(async_connection):
     cursor = async_connection.cursor()
     rows = [(1, "one"), (2, "two")]

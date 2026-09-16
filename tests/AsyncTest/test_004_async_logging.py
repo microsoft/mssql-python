@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
@@ -6,6 +8,20 @@ from mssql_python import OperationalError, setup_logging
 from mssql_python.async_query import AsyncConnection
 from mssql_python.async_query import exception_translator
 from mssql_python.logging import logger
+
+
+@pytest.fixture(autouse=True)
+def cleanup_async_logger():
+    yield
+
+    for handler in logger.handlers:
+        handler.close()
+        logger.removeHandler(handler)
+    logger._logger.setLevel(logging.CRITICAL)
+    logger._cached_level = logging.CRITICAL
+    logger._is_debug_enabled = False
+    logger._handlers_initialized = False
+    logger._custom_log_path = None
 
 
 def read_log(log_path):

@@ -10,7 +10,8 @@ def load_py_core() -> ModuleType:
         py_core = import_module("mssql_py_core")
     except ImportError as exc:
         raise ImportError(
-            "Async query support requires the bundled mssql_py_core extension."
+            "Async query support requires the mssql-python-rs dependency "
+            "that provides mssql_py_core."
         ) from exc
 
     required_types = ("PyAsyncConnection", "PyAsyncCursor")
