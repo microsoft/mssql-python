@@ -78,7 +78,9 @@ def test_collection_does_not_require_pyyaml(source_present, tmp_path, monkeypatc
     assert yaml_imports == []
 
 
-@pytest.mark.parametrize("command", ["validate", "provenance", "promote"])
+@pytest.mark.parametrize(
+    "command", ["validate", "provenance", "promote", "fetch-wheels", "probe-driver"]
+)
 def test_release_module_help_and_unknown_arguments(command):
     import subprocess
 
@@ -95,6 +97,31 @@ def test_release_module_help_and_unknown_arguments(command):
         if argument == "--help":
             assert f"python -m eng.conda_tools {command}" in result.stdout
         assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_probe_driver_route_preserves_leaf_reporting_and_exit(monkeypatch, capsys, failed):
+    from eng.conda_tools import driver_load_probe
+    from eng.conda_tools.__main__ import main
+
+    before = Path.cwd()
+    calls = []
+
+    def probe():
+        calls.append(Path.cwd())
+        if failed:
+            raise SystemExit("controlled probe failure")
+        print("DRIVER_LOADED (controlled probe)")
+
+    monkeypatch.setattr(driver_load_probe, "main", probe)
+    if failed:
+        with pytest.raises(SystemExit, match="controlled probe failure"):
+            main(["probe-driver"])
+    else:
+        assert main(["probe-driver"]) == 0
+        assert capsys.readouterr().out == "DRIVER_LOADED (controlled probe)\n"
+    assert calls == [before]
+    assert Path.cwd() == before
 
 
 def test_release_imports_do_not_read_inputs_or_load_runtime_clients():

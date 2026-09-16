@@ -223,6 +223,7 @@ def parser() -> argparse.ArgumentParser:
             "fetch-wheels", help="Fetch and verify exact public wheel audit inputs."
         )
     )
+    commands.add_parser("probe-driver", help="Run the driver-load diagnostic in this interpreter.")
     return parser
 
 
@@ -236,6 +237,11 @@ def main(argv: list[str] | None = None) -> int:
         return provenance.cli()
     if args.command == "fetch-wheels":
         return inputs.fetch_cli(args)
+    if args.command == "probe-driver":
+        from . import driver_load_probe
+
+        driver_load_probe.main()
+        return 0
     if args.command == "build":
         return build.execute(args)
     return _audit(args, args.command)

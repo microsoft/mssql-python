@@ -107,6 +107,7 @@ python -m eng.conda_tools validate --root <package-directory>
 python -m eng.conda_tools provenance
 python -m eng.conda_tools promote --help
 python -m eng.conda_tools fetch-wheels --help
+python -m eng.conda_tools probe-driver
 ```
 
 These replace the old standalone audit, build, and release scripts. They require the source
@@ -159,6 +160,8 @@ pure outcome classification and command reporting with typed interfaces.
 Verification runs that file by absolute path with the target environment's Python.
 Its standard-library-only bootstrap does not require `eng` to be installed there,
 so the tooling namespace does not weaken installed-package isolation.
+The `probe-driver` module command is a convenience diagnostic in the calling
+interpreter, not a substitute for this neutral-directory installed-package check.
 
 The files remaining under `conda/` are the conventional recipe entrypoints,
 metadata, documentation and line-ending configuration. Shared NuGet transport,
