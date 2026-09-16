@@ -530,13 +530,14 @@ def _write_wheel(
     return metadata
 
 
-def _wheel_inputs(tmp_path, odbc_names):
+def _wheel_inputs(tmp_path, odbc_names, binding_tags=("cp313-cp313-win_amd64",)):
     mssql_dir = tmp_path / "mssql"
     odbc_dir = tmp_path / "odbc"
     links = tmp_path / "links"
     mssql_dir.mkdir()
     odbc_dir.mkdir()
-    _write_wheel(mssql_dir / "mssql_python-1.2.3-cp313-cp313-win_amd64.whl")
+    for tag in binding_tags:
+        _write_wheel(mssql_dir / f"mssql_python-1.2.3-{tag}.whl")
     for name in odbc_names:
         _write_wheel(odbc_dir / name)
     return mssql_dir, odbc_dir, links
@@ -701,20 +702,163 @@ def test_gather_wheels_requires_exact_actual_odbc_pair(tmp_path, capsys, require
     assert not list(links.iterdir())
 
 
-def _rs_inputs(tmp_path):
-    code, odbc, links = _wheel_inputs(tmp_path, ["mssql_python_odbc-18.6.2-py3-none-win_amd64.whl"])
-    binding = next(code.glob("*.whl"))
-    metadata = _write_wheel(binding) + "Requires-Dist: mssql-python-rs==0.1.0\n"
-    _write_wheel(binding, metadata, payload={})
+def _rs_inputs(tmp_path, platform="win_amd64", python_tags=("cp313",)):
+    code, odbc, links = _wheel_inputs(
+        tmp_path,
+        [f"mssql_python_odbc-18.6.2-py3-none-{platform}.whl"],
+        [f"{tag}-{tag}-{platform}" for tag in python_tags],
+    )
+    for binding in code.glob("*.whl"):
+        metadata = _write_wheel(binding) + "Requires-Dist: mssql-python-rs==0.1.0\n"
+        _write_wheel(binding, metadata, payload={})
     rs = tmp_path / "rs"
     rs.mkdir()
-    _write_wheel(rs / "mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl")
+    for tag in python_tags:
+        _write_wheel(rs / f"mssql_python_rs-0.1.0-{tag}-{tag}-{platform}.whl")
     return code, odbc, links, rs
+
+
+@pytest.mark.parametrize(
+    ("platform", "subdir", "matches"),
+    [
+        ("win_amd64", "win-64", True),
+        ("win_arm64", "win-arm64", True),
+        ("win_amd64", "win-arm64", False),
+        ("manylinux_2_28_x86_64", "linux-64", True),
+        ("manylinux_2_34_aarch64", "linux-aarch64", True),
+        ("manylinux2014_x86_64.manylinux_2_28_x86_64", "linux-64", True),
+        ("manylinux_2_28_x86_64", "linux-aarch64", False),
+        ("musllinux_1_2_x86_64", "linux-64", False),
+        ("macosx_12_0_universal2", "osx-64", True),
+        ("macosx_12_0_universal2", "osx-arm64", True),
+        ("macosx_15_0_arm64", "osx-arm64", True),
+        ("macosx_15_0_x86_64", "osx-arm64", False),
+    ],
+)
+def test_binding_selection_uses_target_platform_tags(platform, subdir, matches):
+    wheel = f"mssql_python-1.2.3-cp313-cp313-{platform}.whl"
+    assert contracts.binding_wheel_matches_target(wheel, subdir, ["3.13"]) is matches
+    assert not contracts.binding_wheel_matches_target(wheel, subdir, ["3.12"])
+
+
+@pytest.mark.parametrize("state", ["valid", "missing-rs", "mismatched-rs"])
+def test_build_filters_consolidated_bindings_before_rs_resolution(
+    tmp_path, monkeypatch, capsys, state
+):
+    tags = ("cp312", "cp313", "cp314")
+    code, odbc, _, rs = _rs_inputs(tmp_path, "win_arm64", tags)
+    for suffix in (
+        "1.2.3-cp310-cp310-win_arm64",
+        "1.2.3-cp311-cp311-win_arm64",
+        "1.2.3-cp313-cp313-win_amd64",
+        "9.9.9-cp313-cp313-manylinux_2_28_x86_64",
+    ):
+        _write_wheel(code / f"mssql_python-{suffix}.whl", "irrelevant metadata", payload={})
+    selected_rs = rs / "mssql_python_rs-0.1.0-cp313-cp313-win_arm64.whl"
+    if state == "missing-rs":
+        selected_rs.unlink()
+    elif state == "mismatched-rs":
+        _write_wheel(selected_rs, "Name: mssql-python-rs\nVersion: 0.2.0\n")
+    bootstrap_calls = []
+
+    def stop_before_conda(output_dir):
+        bootstrap_calls.append(output_dir)
+        raise RuntimeError("input selection completed")
+
+    monkeypatch.setattr(environment, "find_or_install_conda", stop_before_conda)
+    with pytest.raises(RuntimeError if state == "valid" else SystemExit) as error:
+        cli.main(
+            [
+                "build",
+                "--mssql-wheel-dir",
+                str(code),
+                "--odbc-wheel-dir",
+                str(odbc),
+                "--odbc-wheel-filter",
+                "*.whl",
+                "--rs-wheel-dir",
+                str(rs),
+                "--recipe-root",
+                str(_ROOT / "conda"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--stage-dir",
+                str(tmp_path / "stage"),
+                "--conda-subdir",
+                "win-64",
+                "--conda-target-subdir",
+                "win-arm64",
+                "--python-versions",
+                "3.12, 3.13,3.14",
+            ]
+        )
+    links = tmp_path / "out" / "win-64" / "wheels"
+    if state != "valid":
+        assert error.value.code == 1
+        assert bootstrap_calls == []
+        assert not list(links.iterdir())
+        expected = "cp313 win-arm64; found []" if state == "missing-rs" else "METADATA Version"
+        assert expected in capsys.readouterr().err
+        return
+    assert str(error.value) == "input selection completed"
+    assert bootstrap_calls == [str(tmp_path / "out" / "win-64")]
+    assert {wheel.name for wheel in links.glob("mssql_python-*.whl")} == {
+        f"mssql_python-1.2.3-{tag}-{tag}-win_arm64.whl" for tag in tags
+    }
+    assert {wheel.name for wheel in links.glob("mssql_python_rs-*.whl")} == {
+        f"mssql_python_rs-0.1.0-{tag}-{tag}-win_arm64.whl" for tag in tags
+    }
+    for tag in tags:
+        assert (links / f"rs-wheel-{tag}.txt").read_text().strip() == (
+            f"mssql_python_rs-0.1.0-{tag}-{tag}-win_arm64.whl"
+        )
+    assert not (links / "rs-wheel-cp310.txt").exists()
+    assert build.detect_pythons(str(links), "") == ["3.12", "3.13", "3.14"]
+
+
+@pytest.mark.parametrize(("subdir", "python_versions"), [("win-arm64", "3.13"), ("win-64", "3.12")])
+def test_binding_selection_fails_when_no_requested_inputs_match(
+    tmp_path, capsys, subdir, python_versions
+):
+    code, odbc, links, rs = _rs_inputs(tmp_path)
+    with pytest.raises(SystemExit) as error:
+        build.gather_wheels(
+            str(code),
+            "*.whl",
+            str(odbc),
+            "*.whl",
+            str(links),
+            str(rs),
+            None,
+            subdir,
+            python_versions,
+        )
+    assert error.value.code == 1
+    assert "no mssql-python wheels match target" in capsys.readouterr().err
+    assert not list(links.iterdir())
+
+
+def test_binding_selection_reports_malformed_candidate(tmp_path, capsys):
+    assert not contracts.binding_wheel_matches_target(
+        "mssql_python-1.2.3-cp313invalid-cp313-win_arm64.whl", "win-64", ["3.13"]
+    )
+    code, odbc, links, rs = _rs_inputs(tmp_path)
+    (code / "mssql_python-1.2.3-cp313invalid-cp313-win_amd64.whl").write_bytes(b"invalid wheel")
+    with pytest.raises(SystemExit) as error:
+        build.gather_wheels(
+            str(code), "*.whl", str(odbc), "*.whl", str(links), str(rs), None, "win-64", "3.13"
+        )
+    assert error.value.code == 1
+    assert "invalid binding wheel Python tag" in capsys.readouterr().err
+    assert not list(links.iterdir())
 
 
 @pytest.mark.parametrize("abi3", [False, True])
 def test_gather_selects_real_target_and_preserves_whole_rs_wheel(tmp_path, abi3):
     code, odbc, links, rs = _rs_inputs(tmp_path)
+    _write_wheel(
+        code / "mssql_python-9.9.9-cp310-cp310-win_arm64.whl", "foreign metadata", payload={}
+    )
     selected = next(rs.glob("*.whl"))
     if abi3:
         with zipfile.ZipFile(selected) as wheel:
@@ -739,6 +883,7 @@ def test_gather_selects_real_target_and_preserves_whole_rs_wheel(tmp_path, abi3)
     assert (links / selected.name).read_bytes() == selected.read_bytes()
     assert list(links.glob("mssql_python_rs-*.whl")) == [links / selected.name]
     assert (links / "rs-wheel-cp313.txt").read_text().strip() == selected.name
+    assert build.detect_pythons(str(links), "") == ["3.13"]
     env = environment.build_env(*result[:2], str(links), "win-arm64", result[2])
     assert env["MSSQL_RS_VERSION"] == "0.1.0"
     assert env["CONDA_SUBDIR"] == "win-arm64"
@@ -823,9 +968,10 @@ def test_rs_inputs_fail_before_any_wheel_is_staged(tmp_path, state):
     _write_wheel(wheel, metadata, payload=payload, **options)
     if state == "missing-wheel":
         wheel.unlink()
+    requested = "3.12,3.13" if state == "mixed-profiles" else "3.13"
     with pytest.raises(SystemExit) as error:
         build.gather_wheels(
-            str(code), "*.whl", str(odbc), "*.whl", str(links), str(rs), None, "win-64"
+            str(code), "*.whl", str(odbc), "*.whl", str(links), str(rs), None, "win-64", requested
         )
     assert error.value.code == 1
     assert not list(links.iterdir())

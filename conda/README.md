@@ -6,6 +6,12 @@ its private native libraries; the binding wheel must not own them. Pip installs
 `mssql-python-odbc` and `mssql-python-rs` as separate companion distributions.
 Neither installation requires a separately installed ODBC driver or driver manager.
 
+For consolidated wheel artifacts, the builder first selects bindings matching the
+effective target platform and `--python-versions` (or auto-detects versions from
+target-compatible bindings). Other Python/platform inputs are ignored before metadata
+and RS dependency checks. Selected inputs still require matching versions, ownership,
+tags and native compatibility; missing required RS wheels remain fatal.
+
 Direct recipe builds must set `MSSQL_PYTHON_VERSION` to the exact selected code-wheel
 version before rendering/building. The shared orchestrator derives and supplies it
 automatically; omitted input fails recipe rendering instead of choosing a release.

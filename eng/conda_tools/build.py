@@ -28,10 +28,12 @@ def gather_wheels(
     rs_dir: str | None = None,
     rs_version_file: str | None = None,
     target_subdir: str = "",
+    python_versions: str = "",
 ) -> tuple[str, str, str | None]:
     """Copy this platform's mssql-python wheel(s) (excluding the odbc package, whose filename
     also starts with mssql_python) + this platform's odbc wheel into ONE find-links dir. The
     dir is CLEARED first so a stale artifact from a reused workdir can never be validated.
+    Filter binding targets and Python versions before reading metadata or resolving RS inputs.
     Check METADATA identities and the exact ODBC dependency pair before copying any wheel."""
     if os.path.isdir(links):
         shutil.rmtree(links)
@@ -44,6 +46,29 @@ def gather_wheels(
     )
     if not mssql:
         environment._die(f"no mssql-python wheel matching '{mssql_glob}' in {mssql_dir}")
+
+    requested_pythons = [
+        version.strip() for version in python_versions.split(",") if version.strip()
+    ]
+    selected_bindings = []
+    try:
+        for wheel in mssql:
+            if contracts.binding_wheel_matches_target(
+                os.path.basename(wheel), target_subdir, requested_pythons
+            ):
+                selected_bindings.append(wheel)
+            else:
+                environment._log(
+                    f"skip binding outside target/Python selection: {os.path.basename(wheel)}"
+                )
+    except ValueError as exc:
+        environment._die(f"invalid binding wheel selection: {exc}")
+    mssql = selected_bindings
+    if not mssql:
+        environment._die(
+            f"no mssql-python wheels match target {target_subdir or '(any)'} "
+            f"and Python versions {python_versions or '(auto-detect)'} in {mssql_dir}"
+        )
 
     mssql_versions_by_wheel = {
         os.path.basename(w): _wheel_version(os.path.basename(w), "mssql_python") for w in mssql
@@ -399,9 +424,8 @@ def execute(args: argparse.Namespace) -> int:
         environment._die(
             f"--conda-target-subdir '{args.conda_target_subdir}' is not a known conda subdir"
         )
-    if args.python_versions and not re.fullmatch(
-        r"\d+\.\d+(,\d+\.\d+)*", args.python_versions.replace(" ", "")
-    ):
+    python_versions = args.python_versions.replace(" ", "")
+    if python_versions and not re.fullmatch(r"\d+\.\d+(,\d+\.\d+)*", python_versions):
         environment._die(f"--python-versions '{args.python_versions}' must be comma-separated X.Y")
 
     # verify() os.chdir's to the per-leg build dir, so a RELATIVE --recipe-root would resolve the
@@ -430,7 +454,7 @@ def execute(args: argparse.Namespace) -> int:
     environment._log(f"stageDir           : {args.stage_dir}")
     environment._log(f"condaSubdir        : {args.conda_subdir}")
     environment._log(f"condaTargetSubdir  : {args.conda_target_subdir or '(native)'}")
-    environment._log(f"pythonVersions     : {args.python_versions or '(auto-detect)'}")
+    environment._log(f"pythonVersions     : {python_versions or '(auto-detect)'}")
     environment._log("============================================================")
 
     mssql_ver, odbc_ver, rs_ver = gather_wheels(
@@ -442,12 +466,13 @@ def execute(args: argparse.Namespace) -> int:
         args.rs_wheel_dir,
         args.rs_version_file,
         target,
+        python_versions,
     )
     conda = environment.find_or_install_conda(output_dir)
     environment._log(f"Using conda: {conda}")
     environment.run([conda, "--version"], what="conda --version")
     builder = environment.create_builder_env(conda)
-    pyvers = detect_pythons(links, args.python_versions)
+    pyvers = detect_pythons(links, python_versions)
     cross_build = bool(args.conda_target_subdir)
     env = environment.build_env(mssql_ver, odbc_ver, links, args.conda_target_subdir, rs_ver)
 
