@@ -23,6 +23,7 @@ DIRECT_REQUIREMENTS = {
         "pybind11",
         "pyodbc",
         "pytest",
+        "pytest-asyncio",
         "setuptools",
         "wheel",
         "zstandard",
