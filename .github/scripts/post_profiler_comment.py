@@ -14,8 +14,16 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import zipfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "benchmarks"))
-from profiler_report import LEGS, MARKER, MAX_BYTES, render, suite_hash, suite_paths, validate
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from eng.profiler_benchmarks.report import (
+    LEGS,
+    MARKER,
+    MAX_BYTES,
+    render,
+    suite_hash,
+    suite_paths,
+    validate,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 ADO = "https://dev.azure.com/sqlclientdrivers/public/_apis/build"
@@ -175,8 +183,9 @@ def run(number, head, wait_minutes):
     publish(
         number,
         head,
-        f"{MARKER}\n## Profiler performance report\n"
-        f"Awaiting paired ADO measurements for head `{head}`. No regression verdict yet.",
+        f"{MARKER}\n## PR Performance Report\n\n"
+        "**Performance assessment pending.**\n\n"
+        f"Waiting for the matching performance run for head `{head}`.",
     )
     deadline = time.monotonic() + wait_minutes * 60
     build = None
@@ -201,9 +210,10 @@ def run(number, head, wait_minutes):
         publish(
             number,
             head,
-            f"{MARKER}\n## Profiler performance report\n"
-            f"No matching ADO run completed within the {wait_minutes}-minute wait for `{head}`. "
-            "Results are incomplete. No regression verdict.",
+            f"{MARKER}\n## PR Performance Report\n\n"
+            "**Performance could not be assessed.**\n\n"
+            f"No matching performance run completed within the {wait_minutes}-minute wait "
+            f"for `{head}`. No result is available.",
         )
         return
     build_id = build["id"]

@@ -1,4 +1,4 @@
-"""Fixed workloads shared by the base and candidate profiler builds."""
+"""Fixed workloads shared by the base and candidate profiler benchmark builds."""
 
 from functools import partial
 import time

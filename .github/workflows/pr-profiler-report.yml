@@ -1,4 +1,4 @@
-name: PR Profiler Report
+name: PR Performance Report
 
 # Privileged reporting only. No PR checkout, builds, or artifact execution here.
 on:

@@ -36,15 +36,38 @@ MAX_BYTES = 8 * 1024 * 1024
 MARKER = "<!-- mssql-python-profiler-ci -->"
 THRESHOLD = 0.20
 MIN_DELTA_MS = 1.0
+TASK_NAMES = {
+    "connect": "Connection opening",
+    "select": "SELECT queries",
+    "insert": "Row insertion",
+    "executemany": "Executemany inserts",
+    "fetchall": "Fetch-all queries",
+    "fetchone": "Row-by-row fetching",
+    "fetchmany": "Batched row fetching",
+    "commit_rollback": "Transaction commit and rollback",
+    "arrow": "Arrow row fetching",
+    "insertmanyvalues": "100,000-row insertion",
+    "fetchmany_100": "Row fetching in batches of 100",
+    "fetchmany_10000": "Row fetching in batches of 10,000",
+    "prepared_qmark": "Repeated positional queries",
+    "prepared_named": "Repeated named-parameter queries",
+    "legacy_insertmany": "Legacy 100,000-row insertion",
+    "setinputsizes": "Insertion with explicit input sizes",
+    "join_aggregation": "Joined aggregation queries",
+    "large_fetch": "Large joined-result fetching",
+    "fetch_1_2m": "1.2-million-row fetching",
+    "cte": "Common table expression queries",
+}
 
 
 def suite_paths(root):
     root = Path(root)
     return [
         root / "eng/pipelines/pr-validation-pipeline.yml",
-        root / "benchmarks/profiler_ci.py",
-        root / "benchmarks/profiler_report.py",
-        root / "benchmarks/profiler_workloads.py",
+        root / "eng/profiler_benchmarks/__init__.py",
+        root / "eng/profiler_benchmarks/controller.py",
+        root / "eng/profiler_benchmarks/report.py",
+        root / "eng/profiler_benchmarks/workloads.py",
         *sorted((root / "profiler").glob("*.py")),
     ]
 
@@ -225,69 +248,224 @@ def escape(value):
     return value
 
 
+def environment_name(leg):
+    operating_system, sql = leg.split("-")
+    return f"{operating_system} / SQL Server {sql.removeprefix('SQL')}"
+
+
+def issue_reason(leg, issues):
+    prefix = leg + " ("
+    for issue in issues:
+        if issue.startswith(prefix) and issue.endswith(")"):
+            return issue[len(prefix) : -1]
+    global_issues = [issue for issue in issues if not any(issue.startswith(x + " (") for x in LEGS)]
+    return global_issues[0] if global_issues else "incomplete benchmark"
+
+
 def render(reports, head, build_id, issues=()):
     url = f"https://dev.azure.com/sqlclientdrivers/public/_build/results?buildId={build_id}"
-    lines = [
-        MARKER,
-        "## Profiler performance report",
-        f"Head `{head}` | [ADO build {build_id}]({url})",
-        "",
-        "Advisory base vs PR-merge comparison. Both revisions are profiling-enabled, "
-        "measured on the same agent/database with alternating order and discarded warmups.",
-        "Flags require >20% paired median slowdown, >=1 ms added time, and 80% of pairs agreeing. "
-        "These are signals to investigate, not production-wheel latency guarantees.",
-        "",
-    ]
     by_leg = {r["leg"]: r for r in reports}
+    completed = {
+        leg: (report, comparisons(report))
+        for leg in LEGS
+        if (report := by_leg.get(leg)) is not None and report["status"] == "complete"
+    }
+    regressions = [
+        (leg, row)
+        for leg, (_, rows) in completed.items()
+        for row in rows
+        if row["status"] == "regression"
+    ]
+    noisy = [
+        (leg, row)
+        for leg, (_, rows) in completed.items()
+        for row in rows
+        if row["status"] == "noisy"
+    ]
+    missing = len(LEGS) - len(completed)
+
+    if len(regressions) == 1:
+        leg, row = regressions[0]
+        opening = (
+            f"This PR consistently slows {TASK_NAMES[row['name']].lower()} on "
+            f"{environment_name(leg)} by {row['change_pct']:.1f}%."
+        )
+    elif regressions:
+        tasks = len({row["name"] for _, row in regressions})
+        environments = len({leg for leg, _ in regressions})
+        opening = (
+            f"This PR has {len(regressions)} consistent slowdown signals across "
+            f"{tasks} database tasks and {environments} environments."
+        )
+    elif noisy:
+        if len(noisy) == 1:
+            leg, row = noisy[0]
+            opening = (
+                f"{TASK_NAMES[row['name']]} was slower on {environment_name(leg)}, "
+                "but the repeated comparisons were inconsistent."
+            )
+        else:
+            tasks = len({row["name"] for _, row in noisy})
+            environments = len({leg for leg, _ in noisy})
+            opening = (
+                f"No consistent slowdowns detected. {len(noisy)} inconsistent comparisons "
+                f"need review across {tasks} database tasks and {environments} environments."
+            )
+    elif not completed:
+        opening = (
+            "Performance could not be assessed because no environment produced a complete result."
+        )
+    elif not missing:
+        opening = f"No consistent slowdowns detected across all {len(LEGS)} environments."
+    else:
+        completed_label = "environment" if len(completed) == 1 else "environments"
+        missing_label = "environment" if missing == 1 else "environments"
+        opening = (
+            f"No consistent slowdowns in the {len(completed)} completed {completed_label}. "
+            f"No result is available for {missing} {missing_label}."
+        )
+
+    lines = [MARKER, "## PR Performance Report", "", f"**{opening}**", ""]
+    highlighted = regressions or noisy
+    if highlighted:
+        if not regressions:
+            lines += ["Inconsistent slowdowns to review:", ""]
+        lines += [
+            "| Environment | Affected task | Before | After | Change |",
+            "|---|---|---:|---:|---:|",
+        ]
+        for leg, row in highlighted:
+            lines.append(
+                f"| {environment_name(leg)} | {TASK_NAMES[row['name']]} | "
+                f"{row['base_ms']:.3f} ms | {row['candidate_ms']:.3f} ms | "
+                f"{row['change_pct']:+.1f}% |"
+            )
+        lines.append("")
+    if regressions:
+        lines.append(
+            "The largest recorded phase increases for these tasks are shown below. "
+            "Phase timings are supporting evidence, not root-cause proof."
+        )
+        if noisy:
+            lines.append(
+                f"{len(noisy)} additional inconsistent slowdown"
+                f"{'s' if len(noisy) != 1 else ''} also need review."
+            )
+        lines.append("")
+
+    lines += [
+        f"**Coverage:** {len(completed)} of {len(LEGS)} environments completed. "
+        "Advisory result; does not block merging.",
+        "",
+        "| Environment | Status |",
+        "|---|---|",
+    ]
     for leg in LEGS:
         report = by_leg.get(leg)
-        if report is None or report["status"] != "complete":
-            lines.append(f"**{leg}: incomplete/unavailable. No regression verdict.**")
+        status = (
+            "Completed"
+            if leg in completed
+            else f"No result available ({escape(issue_reason(leg, issues))})"
+        )
+        lines.append(f"| {environment_name(leg)} | {status} |")
+
+    lines += [
+        "",
+        "<details>",
+        "<summary>Affected phases and call counts</summary>",
+        "",
+        "Phase times are inclusive diagnostics and must not be added together. "
+        "They identify where measured time changed, not why it changed.",
+    ]
+    diagnostics = 0
+    for leg, (_, rows) in completed.items():
+        relevant = [row for row in rows if row["status"] != "ok" or row["counts"]]
+        if not relevant:
             continue
-        rows = comparisons(report)
-        env = report["pairs"][0]["base"]["environment"]
-        flags = [r for r in rows if r["status"] == "regression"]
-        noisy = sum(r["status"] == "noisy" for r in rows)
+        lines += ["", f"### {environment_name(leg)}"]
+        for row in relevant:
+            diagnostics += 1
+            phases = "; ".join(f"{escape(label)} +{delta:.3f} ms" for delta, label in row["phases"])
+            counts = "; ".join(escape(label) for label in row["counts"])
+            detail = phases or "no positive phase delta"
+            if counts:
+                detail += f". Call changes: {counts}"
+            lines.append(f"**{TASK_NAMES[row['name']]}:** {detail}.")
+    if not diagnostics:
+        lines += ["", "No affected phases or call-count changes were recorded."]
+    lines += [
+        "",
+        "</details>",
+        "",
+        "<details>",
+        "<summary>All database tasks and timings</summary>",
+    ]
+
+    for leg, (report, rows) in completed.items():
         lines += [
             "",
-            f"### {leg}",
-            f"Base `{report['base_commit'][:12]}` -> merge `{report['source_commit'][:12]}`; "
-            f"Python {escape(env['python'])}, {escape(env['architecture'])}, "
-            f"SQL {escape(env['sql_version'])}; {report['samples']} pairs.",
-            f"**{len(flags)} regression signals, {noisy} noisy comparisons.**",
-            "<details><summary>All scenarios and phase diagnostics</summary>",
-            "",
-            "| Scenario | Base ms | PR ms | Paired change | Result |",
+            f"### {environment_name(leg)}",
+            "| Database task | Before | After | Paired change | Result |",
             "|---|---:|---:|---:|---|",
         ]
         for row in rows:
+            result = {
+                "regression": "consistent slowdown",
+                "noisy": "inconsistent slowdown",
+                "ok": "no signal",
+            }[row["status"]]
             lines.append(
-                f"| {row['name']} | {row['base_ms']:.3f} | {row['candidate_ms']:.3f} | "
-                f"{row['change_pct']:+.1f}% | {row['status']} |"
+                f"| {TASK_NAMES[row['name']]} | {row['base_ms']:.3f} ms | "
+                f"{row['candidate_ms']:.3f} ms | {row['change_pct']:+.1f}% | {result} |"
             )
-        for row in rows:
-            if row["status"] != "ok" or row["counts"]:
-                detail = "; ".join(
-                    f"{escape(label)} +{delta:.3f} ms" for delta, label in row["phases"]
-                )
-                counts = "; ".join(escape(label) for label in row["counts"])
-                lines.append(
-                    f"\n**{row['name']}**: {detail or 'no positive phase delta'}."
-                    + (f" Call changes: {counts}." if counts else "")
-                )
-        lines += [
-            "",
-            "Phase times are inclusive diagnostics, not additive wall-clock components.",
-            "</details>",
-        ]
-    if issues:
-        lines += [
-            "",
-            "Some artifacts were missing or rejected: " + ", ".join(escape(x) for x in issues),
-        ]
     lines += [
         "",
-        "Raw samples and build logs are attached to the ADO run as `profiler-*` artifacts.",
+        "</details>",
+        "",
+        "<details>",
+        "<summary>Build, commits and measurement details</summary>",
+        "",
+    ]
+    lines += [
+        f"[ADO build {build_id}]({url})",
+        "",
+        f"PR head: `{head}`",
+    ]
+    if completed:
+        first = next(iter(completed.values()))[0]
+        lines += [
+            f"Base: `{first['base_commit']}`",
+            f"Measured merge: `{first['source_commit']}`",
+            "",
+        ]
+        for leg, (report, _) in completed.items():
+            env = report["pairs"][0]["base"]["environment"]
+            lines.append(
+                f"- {environment_name(leg)}: Python {escape(env['python'])}, "
+                f"{escape(env['architecture'])}, SQL {escape(env['sql_version'])}; "
+                f"{report['samples']} paired comparisons and {report['warmups']} warmup."
+            )
+    lines += [
+        "",
+        "A consistent slowdown requires more than 20% median paired slowdown, at least "
+        "1 ms between the median runtimes, and at least 80% of pairs exceeding the "
+        "relative threshold. An inconsistent slowdown crosses the first two thresholds "
+        "without enough pair agreement.",
+        "",
+        "The displayed change is the median of paired before-and-after ratios. It is not "
+        "recalculated from the two displayed median runtimes.",
+    ]
+    if issues:
+        lines += ["", "Unavailable or rejected data: " + ", ".join(escape(x) for x in issues)]
+    lines += [
+        "",
+        "Both revisions use profiling-enabled builds on the same agent and database, "
+        "with alternating order and discarded warmups. Results are diagnostic and do "
+        "not represent production-wheel latency.",
+        "",
+        "Raw samples and logs are attached to the ADO run as `profiler-*` artifacts.",
+        "",
+        "</details>",
     ]
     body = "\n".join(lines)
     if len(body) > 60000:

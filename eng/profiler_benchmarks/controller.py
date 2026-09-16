@@ -16,9 +16,10 @@ import tarfile
 import tempfile
 import time
 
-from profiler_report import suite_hash
+from .report import suite_hash
+from . import workloads
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SHA = re.compile(r"[0-9a-f]{40}")
 LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
 # Twelve six-minute passes plus a 15-minute base build and preflight need 88
@@ -109,7 +110,6 @@ def load_suite():
     sys.modules["profiler"] = module
     spec.loader.exec_module(module)
     import profiler.core as core
-    import profiler_workloads as workloads
 
     return core, workloads
 
@@ -171,7 +171,8 @@ def measure(path, output, scenarios, timeout=WORKER_TIMEOUT):
     command = [
         sys.executable,
         "-u",
-        str(Path(__file__).resolve()),
+        "-m",
+        "eng.profiler_benchmarks.controller",
         "--worker",
         "--source-root",
         str(path),
@@ -189,7 +190,7 @@ def measure(path, output, scenarios, timeout=WORKER_TIMEOUT):
 def remaining(deadline, limit):
     seconds = deadline - time.monotonic()
     if seconds <= 0:
-        raise TimeoutError("Profiler CI exhausted its overall build/measurement budget")
+        raise TimeoutError("Profiler benchmarks exhausted their overall build/measurement budget")
     return min(seconds, limit)
 
 
@@ -227,7 +228,13 @@ def run(args):
                     raise ValueError("--reuse-candidate requires candidate to be checkout HEAD")
                 paths[side] = ROOT
                 subprocess.run(
-                    [sys.executable, str(Path(__file__).resolve()), "--check-build", "on"],
+                    [
+                        sys.executable,
+                        "-m",
+                        "eng.profiler_benchmarks.controller",
+                        "--check-build",
+                        "on",
+                    ],
                     check=True,
                     timeout=remaining(deadline, 60),
                 )

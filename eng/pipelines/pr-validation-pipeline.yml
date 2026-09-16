@@ -248,7 +248,7 @@ jobs:
     env:
       ENABLE_PROFILING: $(profilerBuild)
 
-  - script: python benchmarks/profiler_ci.py --check-build $(profilerCheck)
+  - script: python -m eng.profiler_benchmarks.controller --check-build $(profilerCheck)
     displayName: 'Verify native configuration and recording OFF before pytest'
 
   - template: steps/install-mssql-py-core.yml
@@ -400,7 +400,7 @@ jobs:
         exit 1
       }
       
-      python benchmarks/profiler_ci.py --reuse-candidate --leg "Windows-$(sqlVersion)" --output profiler-results
+      python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "Windows-$(sqlVersion)" --output profiler-results
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Compare profiling builds on SQL Server 2022/2025'
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
@@ -567,7 +567,7 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: python benchmarks/profiler_ci.py --check-build on
+  - script: python -m eng.profiler_benchmarks.controller --check-build on
     displayName: 'Verify native configuration and recording OFF before pytest'
 
   - template: steps/install-mssql-py-core.yml
@@ -654,7 +654,7 @@ jobs:
       # Newer Homebrew refuses to load formulae from third-party taps unless the tap is trusted
       brew trust microsoft/mssql-release || echo "brew trust failed; attempting install anyway"
       HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18
-      python benchmarks/profiler_ci.py --reuse-candidate --leg "macOS-$(sqlVersion)" --output profiler-results
+      python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "macOS-$(sqlVersion)" --output profiler-results
     displayName: 'Compare profiling builds on macOS $(sqlVersion)'
     condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     timeoutInMinutes: 100
@@ -825,7 +825,7 @@ jobs:
         chmod +x build.sh
         ./build.sh
         cd ../..
-        python benchmarks/profiler_ci.py --check-build $PROFILER_CHECK
+        python -m eng.profiler_benchmarks.controller --check-build $PROFILER_CHECK
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
 
@@ -944,7 +944,7 @@ jobs:
           ACCEPT_EULA=Y apt-get install -y --no-install-recommends git unixodbc unixodbc-dev libodbc2 libodbcinst2 odbcinst msodbcsql18
           git config --global --add safe.directory /workspace
           odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
-          python benchmarks/profiler_ci.py --reuse-candidate --leg Linux-SQL2022 --output profiler-results
+          python -m eng.profiler_benchmarks.controller --reuse-candidate --leg Linux-SQL2022 --output profiler-results
         '
       else
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"

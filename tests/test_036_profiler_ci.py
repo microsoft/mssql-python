@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if not (ROOT / ".github/scripts/post_profiler_comment.py").is_file():
     pytest.skip("CI reporting tools are not installed in driver wheels", allow_module_level=True)
 
+from eng.profiler_benchmarks import controller
+from eng.profiler_benchmarks import report as reporting
+
 
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, ROOT / path)
@@ -27,9 +30,6 @@ def load(name, path):
     return module
 
 
-reporting = load("profiler_report", "benchmarks/profiler_report.py")
-sys.modules["profiler_report"] = reporting
-controller = load("profiler_ci", "benchmarks/profiler_ci.py")
 publisher = load("post_profiler_comment", ".github/scripts/post_profiler_comment.py")
 extractor = load("extract_coverage_artifact", ".github/scripts/extract_coverage_artifact.py")
 
@@ -72,8 +72,12 @@ def test_consistent_slowdown_is_advisory_regression(report):
         row["status"] == "regression" and row["change_pct"] == pytest.approx(30) for row in rows
     )
     body = reporting.render([report], "c" * 40, 42)
-    assert "20 regression signals" in body
-    assert "incomplete/unavailable" in body  # missing platforms never read as green
+    assert "20 consistent slowdown signals" in body
+    assert "| Linux / SQL Server 2022 | Connection opening |" in body
+    assert "| macOS / SQL Server 2022 | No result available" in body
+    assert body.index("consistent slowdown signals") < body.index(
+        "<summary>Build, commits and measurement details</summary>"
+    )
 
 
 def test_noisy_slowdown_and_submillisecond_change_are_not_regressions(report):
@@ -126,7 +130,75 @@ def test_reject_wrong_commit_and_preserve_incomplete_status(report):
     report["status"] = "incomplete"
     report["pairs"] = []
     reporting.validate(report)
-    assert "No regression verdict" in reporting.render([report], "c" * 40, 42)
+    assert "Performance could not be assessed" in reporting.render([report], "c" * 40, 42)
+
+
+def set_leg(report, leg):
+    report = copy.deepcopy(report)
+    report["leg"] = leg
+    operating_system, sql = leg.split("-")
+    for pair in report["pairs"]:
+        for sample in pair.values():
+            sample["environment"]["os"] = {"macOS": "Darwin"}.get(
+                operating_system, operating_system
+            )
+            sample["environment"]["sql_version"] = "16.0" if sql == "SQL2022" else "17.0"
+    return report
+
+
+def clear_slowdowns(report):
+    for pair in report["pairs"]:
+        for name in reporting.CASES:
+            pair["candidate"]["scenarios"][name]["wall_ms"] = pair["base"]["scenarios"][name][
+                "wall_ms"
+            ]
+    return report
+
+
+def test_impact_summary_handles_single_inconsistent_and_complete_clean_results(report):
+    clean = clear_slowdowns(copy.deepcopy(report))
+    for pair, scale in zip(clean["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
+        pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
+    noisy = reporting.render([clean], "c" * 40, 42)
+    assert (
+        "**Row-by-row fetching was slower on Linux / SQL Server 2022, "
+        "but the repeated comparisons were inconsistent.**"
+    ) in noisy
+    assert "Inconsistent slowdowns to review:" in noisy
+
+    complete = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
+    clean_body = reporting.render(complete, "c" * 40, 42)
+    assert "**No consistent slowdowns detected across all 5 environments.**" in clean_body
+    assert "**Coverage:** 5 of 5 environments completed." in clean_body
+
+
+def test_impact_summary_handles_single_regression_partial_and_no_results(report):
+    single = clear_slowdowns(copy.deepcopy(report))
+    for pair in single["pairs"]:
+        pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
+    body = reporting.render([single], "c" * 40, 42)
+    assert (
+        "**This PR consistently slows row-by-row fetching on Linux / SQL Server 2022 " "by 30.0%.**"
+    ) in body
+    assert "<summary>Affected phases and call counts</summary>" in body
+    assert "<summary>All database tasks and timings</summary>" in body
+    assert "<summary>Build, commits and measurement details</summary>" in body
+    assert "median of paired before-and-after ratios" in body
+
+    partial = reporting.render(
+        [clear_slowdowns(copy.deepcopy(report))],
+        "c" * 40,
+        42,
+        ["Windows-SQL2022 (missing)"],
+    )
+    assert "No consistent slowdowns in the 1 completed environment." in partial
+    assert "No result is available for 4 environments." in partial
+    assert "| Windows / SQL Server 2022 | No result available (missing) |" in partial
+    assert "pending" not in partial.lower()
+
+    unavailable = reporting.render([], "c" * 40, 42, ["Linux-SQL2022 (invalid artifact)"])
+    assert "Performance could not be assessed" in unavailable
+    assert "No consistent slowdowns" not in unavailable
 
 
 @pytest.mark.parametrize(
@@ -309,7 +381,8 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert ROOT / "benchmarks/profiler_report.py" in reporting.suite_paths(ROOT)
+    assert ROOT / "eng/profiler_benchmarks/__init__.py" in reporting.suite_paths(ROOT)
+    assert ROOT / "eng/profiler_benchmarks/report.py" in reporting.suite_paths(ROOT)
     assert ROOT / "eng/pipelines/pr-validation-pipeline.yml" in reporting.suite_paths(ROOT)
 
 
@@ -413,6 +486,7 @@ def test_full_sample_budget_fits_slow_hosted_workers(
         clock[0] += 900
 
     def preflight(command, **kwargs):
+        assert command[1:3] == ["-m", "eng.profiler_benchmarks.controller"]
         assert "--check-build" in command and kwargs["timeout"] == 60
         clock[0] += 60
 
@@ -454,7 +528,9 @@ def test_ci_deadlines_include_setup_queueing_and_publication():
     for job in ("pytestonwindows", "PytestOnMacOS", "PytestOnLinux"):
         section = pipeline.split(f"- job: {job}\n", 1)[1].split("\n- job:", 1)[0]
         job_minutes = int(re.search(r"^  timeoutInMinutes: (\d+)$", section, re.M)[1])
-        benchmark_step = section.split("python benchmarks/profiler_ci.py --reuse-candidate", 1)[1]
+        benchmark_step = section.split(
+            "python -m eng.profiler_benchmarks.controller --reuse-candidate", 1
+        )[1]
         step_minutes = int(re.search(r"^    timeoutInMinutes: (\d+)$", benchmark_step, re.M)[1])
         assert step_minutes * 60 >= controller.BENCHMARK_TIMEOUT + 10 * 60
         assert job_minutes >= step_minutes + 60
@@ -582,18 +658,18 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     publisher.run(123, "c" * 40, 1)
     assert len(posted) == 2
     assert posted[0].startswith(reporting.MARKER)
-    assert "macOS-SQL2022: incomplete/unavailable" in posted[1]
+    assert "| macOS / SQL Server 2022 | No result available" in posted[1]
     if corrupt in ("suite", "source"):
         assert "workload version differs from trusted base" in posted[1]
-        assert "regression signals" not in posted[1]
+        assert "consistent slowdown signals" not in posted[1]
     elif corrupt:
-        assert "### Windows-SQL2022" in posted[1]
+        assert "### Windows / SQL Server 2022" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
-        assert "Linux-SQL2022: incomplete/unavailable" in posted[1]
-        assert posted[1].count("20 regression signals") == 1
+        assert "| Linux / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
+        assert posted[1].count("20 consistent slowdown signals") == 1
     else:
-        assert "### Windows-SQL2022" in posted[1]
-        assert posted[1].count("20 regression signals") == 2
+        assert "### Windows / SQL Server 2022" in posted[1]
+        assert posted[1].count("40 consistent slowdown signals") == 1
 
 
 def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report, monkeypatch):
@@ -668,9 +744,10 @@ def test_publisher_deadline_finishes_without_reading_unfinished_build_metadata(m
     monkeypatch.setattr(publisher, "publish", lambda number, head, body: posted.append(body))
     publisher.run(123, "c" * 40, 1)
     assert clock[0] == 60 and len(posted) == 2
-    assert "Awaiting" in posted[0] and "Awaiting" not in posted[1]
-    assert "1-minute wait" in posted[1] and "incomplete" in posted[1]
-    assert "No regression verdict" in posted[1]
+    assert "Performance assessment pending" in posted[0]
+    assert "Performance assessment pending" not in posted[1]
+    assert "1-minute wait" in posted[1]
+    assert "Performance could not be assessed" in posted[1]
 
 
 def test_artifact_symlink_and_oversized_json_are_rejected():
@@ -695,7 +772,7 @@ def test_report_leg_must_match_measured_environment(report, environment):
 def test_ci_reuses_profiling_builds_without_changing_release_defaults():
     pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
     assert "benchmarks/perf-benchmarking.py" not in pipeline
-    assert pipeline.count("python benchmarks/profiler_ci.py --reuse-candidate") == 3
+    assert pipeline.count("python -m eng.profiler_benchmarks.controller --reuse-candidate") == 3
     assert "profilerBuild: '0'" in pipeline  # LocalDB still exercises the normal build
     assert "ddbc_bindings-profiling-SQL2022" in pipeline
     assert "ddbc_bindings-profiling-SQL2025" in pipeline
