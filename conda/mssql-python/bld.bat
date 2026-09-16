@@ -13,9 +13,13 @@ REM whether the host Python can execute -- a native win-arm64 host runs its own 
 REM still needs the win_arm64 payload. conda-build sets target_platform; CONDA_SUBDIR is
 REM the same value. This is the single source for both the code-wheel and ODBC driver arch.
 set "ODBC_ARCH=win_amd64"
+set "CORE_ARCH=x64"
 set "TGT_PLATFORM=%target_platform%"
 if not defined TGT_PLATFORM set "TGT_PLATFORM=%CONDA_SUBDIR%"
-if /i "%TGT_PLATFORM%"=="win-arm64" set "ODBC_ARCH=win_arm64"
+if /i "%TGT_PLATFORM%"=="win-arm64" (
+  set "ODBC_ARCH=win_arm64"
+  set "CORE_ARCH=arm64"
+)
 
 REM Native leg: the host Python runs, so pip installs the matching wheel. Cross leg: the
 REM target Python can't run on this agent (e.g. win_arm64 built on x64), so extract the
@@ -42,6 +46,25 @@ if errorlevel 1 (
 ) else (
   "%PYTHON%" -m pip install --no-deps --no-index --find-links "%WHEELS_DIR%" %PKG_NAME%==%PKG_VERSION% -vv
   if errorlevel 1 exit /b 1
+)
+
+REM gather_wheels records the validated per-Python selection, including abi3 wheels.
+REM Extract the entire RS wheel for both native and cross legs, before the core guards.
+if defined MSSQL_RS_VERSION (
+  set "RS_WHL="
+  if exist "%WHEELS_DIR%\rs-wheel-cp%CONDA_PY%.txt" set /p "RS_WHL="<"%WHEELS_DIR%\rs-wheel-cp%CONDA_PY%.txt"
+  if not defined RS_WHL (
+    echo ERROR: missing validated RS wheel selection for cp%CONDA_PY%.
+    exit /b 1
+  )
+  tar -xf "%WHEELS_DIR%\!RS_WHL!" -C "%SP%"
+  if errorlevel 1 exit /b 1
+  copy /y "%WHEELS_DIR%\rs-wheel-cp%CONDA_PY%.txt" "%SP%\mssql_python_rs-%MSSQL_RS_VERSION%.dist-info\conda-wheel-source.txt" >nul
+  if errorlevel 1 exit /b 1
+  if not exist "%SP%\mssql_py_core\libs\windows\!CORE_ARCH!\mssqlodbc.dll" (
+    echo ERROR: required RS private !CORE_ARCH! runtime library is missing.
+    exit /b 1
+  )
 )
 
 REM Both install paths require bulk copy. The PE audit still checks actual architecture.

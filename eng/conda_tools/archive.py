@@ -1,92 +1,96 @@
-"""Shared ``.conda`` / ``.tar.bz2`` payload readers for the conda binary-audit scripts.
-
-``audit_bundled_binaries.py`` (Linux ELF RUNPATH) and ``assert_pe_machine.py`` (Windows
-PE machine) both need to (a) zstd-decompress a ``.conda`` member, (b) iterate the package
-payload files, and (c) read ``info/index.json``. Keeping that extraction in ONE place stops
-the two validators from drifting as they grow (pylint R0801).
-
-This is a plain sibling module: both scripts are invoked as ``python <path>/<script>.py``,
-so their own directory (``eng/scripts``) is on ``sys.path`` and ``import _conda_pkg`` resolves
-here; the unit tests that load the scripts by path insert that directory too.
-"""
+"""Conda archive discovery, payload I/O and structural metadata validation."""
 
 from __future__ import annotations
 
+import glob
+import csv
 import io
 import json
-import re
+import os
 import tarfile
 import zipfile
-from typing import Any, Iterable, Iterator
+from email.parser import BytesParser
+from email.policy import default
+from pathlib import Path
+from typing import Any, Iterator, TypedDict
+
+READ_ERRORS = (
+    OSError,
+    ValueError,
+    KeyError,
+    EOFError,
+    RuntimeError,
+    tarfile.TarError,
+    zipfile.BadZipFile,
+)
 
 
-def validate_native_contract(
-    members: Iterable[tuple[str, bytes]], index: dict[str, Any]
-) -> list[str]:
-    """Require a target binding, core extension and initializer; platform audits check headers.
+class DistributionMetadata(TypedDict):
+    name: str
+    version: str
+    requires_dist: list[str]
 
-    Wheels may include bindings for several Python minors. The core uses Python's
-    normal extension loader, including its stable-ABI suffix. These static checks
-    do not replace native import/feature qualification.
-    """
-    pins = [
-        d
-        for d in index.get("depends", [])
-        if isinstance(d, str) and d.split()[:1] == ["python_abi"]
-    ]
-    abi = re.fullmatch(r"python_abi (3\.\d+)\.\* \*_cp(3\d+)", pins[0]) if len(pins) == 1 else None
-    if abi is None or abi[1].replace(".", "") != abi[2]:
-        return ["expected a matching normal CPython python_abi pin"]
-    subdir = index["subdir"]
-    windows = subdir.startswith("win-")
-    suffix = "pyd" if windows else "so"
-    prefix = "Lib" if windows else f"lib/python{abi[1]}"
-    root = f"{prefix}/site-packages/"
-    names = [name.replace("\\", "/") for name, _ in members]
-    bindings = [
-        name
-        for name in names
-        if re.fullmatch(
-            rf"{re.escape(root)}mssql_python/ddbc_bindings\.cp{abi[2]}-[^/]+\.{suffix}", name
-        )
-    ]
-    cores = [
-        name
-        for name in names
-        if re.fullmatch(
-            rf"{re.escape(root)}mssql_py_core/mssql_py_core(?:\.[^/]+)?\.{suffix}", name
-        )
-    ]
-    arch = {
-        "win-64": "win_amd64",
-        "win-arm64": "win_arm64",
-        "linux-64": "x86_64-linux-gnu",
-        "linux-aarch64": "aarch64-linux-gnu",
-        "osx-64": "darwin",
-        "osx-arm64": "darwin",
-    }[subdir]
-    core_names = (
-        (f"mssql_py_core.cp{abi[2]}-{arch}.pyd", "mssql_py_core.pyd")
-        if windows
-        else (f"mssql_py_core.cpython-{abi[2]}-{arch}.so", "mssql_py_core.abi3.so")
-    )
-    errors = []
-    initializer = f"{root}mssql_py_core/__init__.py"
-    if names.count(initializer) != 1:
-        errors.append(
-            f"expected exactly one required {initializer}; found {names.count(initializer)}"
-        )
-    if len(bindings) != 1:
-        errors.append(
-            f"expected exactly one normal cp{abi[2]} native binding; found {len(bindings)}"
-        )
-    if len(cores) != 1:
-        errors.append(
-            f"expected exactly one required mssql_py_core native extension; found {len(cores)}"
-        )
-    elif cores[0].rsplit("/", 1)[-1] not in core_names:
-        errors.append(f"{cores[0]}: mssql_py_core is incompatible with normal cp{abi[2]} {subdir}")
-    return errors
+
+class WheelMetadata(DistributionMetadata):
+    members: list[str]
+    record_members: list[str]
+    tags: list[str]
+
+
+def parse_distribution_metadata(data: bytes) -> DistributionMetadata:
+    """Read installed or wheel METADATA without applying dependency policy."""
+    metadata = BytesParser(policy=default).parsebytes(data)
+    if metadata.defects:
+        raise ValueError(f"malformed METADATA: {metadata.defects}")
+    values = {}
+    for field in ("Name", "Version"):
+        entries = metadata.get_all(field, [])
+        if len(entries) != 1 or not str(entries[0]).strip():
+            raise ValueError(f"expected exactly one nonempty METADATA {field}.")
+        values[field] = str(entries[0]).strip()
+    return {
+        "name": values["Name"],
+        "version": values["Version"],
+        "requires_dist": [str(value).strip() for value in metadata.get_all("Requires-Dist", [])],
+    }
+
+
+def parse_record_members(data: bytes) -> list[str]:
+    """Read RECORD ownership paths; installed native hashes may change during relocation."""
+    try:
+        rows = list(csv.reader(io.StringIO(data.decode("utf-8")), strict=True))
+    except csv.Error as exc:
+        raise ValueError(f"malformed RECORD: {exc}") from exc
+    if any(len(row) != 3 or not row[0] for row in rows):
+        raise ValueError("RECORD must contain three-column rows with nonempty member paths")
+    names = [row[0] for row in rows]
+    if len(names) != len(set(names)):
+        raise ValueError("RECORD contains duplicate member paths")
+    return names
+
+
+def read_wheel_metadata(path: str | Path) -> WheelMetadata:
+    """Return metadata, actual members, declared ownership and wheel tags as facts."""
+    with zipfile.ZipFile(path) as wheel:
+        names = wheel.namelist()
+        entries = [
+            name for name in names if name.count("/") == 1 and name.endswith(".dist-info/METADATA")
+        ]
+        if len(entries) != 1:
+            raise ValueError("expected exactly one .dist-info/METADATA entry.")
+        metadata = parse_distribution_metadata(wheel.read(entries[0]))
+        prefix = entries[0][: -len("METADATA")]
+        for member in ("RECORD", "WHEEL"):
+            if names.count(prefix + member) != 1:
+                raise ValueError(f"expected exactly one {prefix}{member} entry")
+        records = parse_record_members(wheel.read(prefix + "RECORD"))
+        tags = BytesParser(policy=default).parsebytes(wheel.read(prefix + "WHEEL"))
+        return {
+            **metadata,
+            "members": [entry.filename for entry in wheel.infolist() if not entry.is_dir()],
+            "record_members": records,
+            "tags": [str(tag).strip() for tag in tags.get_all("Tag", [])],
+        }
 
 
 def zstd_decompress(raw: bytes) -> bytes:
@@ -102,8 +106,14 @@ def zstd_decompress(raw: bytes) -> bytes:
                 "Python 3.14+ with compression.zstd or a working 'zstandard' install "
                 "(pip install zstandard)."
             ) from exc
-        return zstandard.ZstdDecompressor().decompress(raw)
-    return zstd.decompress(raw)
+        try:
+            return zstandard.ZstdDecompressor().decompress(raw)
+        except zstandard.ZstdError as exc:
+            raise ValueError(str(exc)) from exc
+    try:
+        return zstd.decompress(raw)
+    except zstd.ZstdError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def iter_payload_members(path: str) -> Iterator[tuple[str, bytes]]:
@@ -172,3 +182,10 @@ def read_index(path: str) -> dict[str, Any]:
     if not isinstance(depends, list) or any(not isinstance(dep, str) for dep in depends):
         raise ValueError("info/index.json depends must be a list of dependency strings")
     return index
+
+
+def collect(root: str) -> list[str]:
+    return sorted(
+        glob.glob(os.path.join(root, "**", "*.conda"), recursive=True)
+        + glob.glob(os.path.join(root, "**", "*.tar.bz2"), recursive=True)
+    )

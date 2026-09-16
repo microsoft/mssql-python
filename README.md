@@ -24,8 +24,14 @@ The driver is compatible with all the Python versions >= 3.10
 >
 > The **temporary Conda candidate** instead combines the code and ODBC payload in one `mssql-python` Conda package. It does not require a separately installed Conda ODBC package. This is not an announcement of public channel availability or release qualification; see the [Conda installation, migration, and readiness guide](conda/README.md).
 >
+> ### Rust Runtime Distribution
+> Bulk copy and the alternate Rust ODBC provider are supplied by `mssql-python-rs`,
+> which imports as `mssql_py_core`. `mssql-python` depends on the exact compatible
+> runtime version and does not duplicate its native files. Private indexes and
+> `--no-deps` installations must provide that companion distribution separately.
+>
 > ### ODBC Provider Selection (opt-in)
-> `mssql-python` also supports selecting an alternate native ODBC provider before the first connection, via the `mssql_python.native_provider` module property or the `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable (which takes precedence). A conflicting property assignment emits a `RuntimeWarning`. The default, `"msodbcsql18"`, is unchanged; opting into `"mssql-odbc"` requires the `mssql-python-rs` package (which bundles the Rust ODBC driver alongside the Rust TDS core). Call `mssql_python.get_native_provider_info()` to check the selected provider, source, package version, and resolved driver path.
+> `mssql-python` also supports selecting an alternate native ODBC provider before the first connection, via the `mssql_python.native_provider` module property or the `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable (which takes precedence). A conflicting property assignment emits a `RuntimeWarning`. The default, `"msodbcsql18"`, is unchanged; opting into `"mssql-odbc"` uses the Rust driver installed by `mssql-python-rs`. Call `mssql_python.get_native_provider_info()` to check the selected provider, source, package version, and resolved driver path.
 
 ## Installation
 
@@ -68,7 +74,9 @@ pip install mssql-python
 
 **Conda candidate:** Obtain the exact candidate channel and version from its owner;
 these changes do not publish packages to the public `microsoft` channel. The candidate
-includes the ODBC Driver 18 payload and required bulk-copy core. Linux requires
+combines the binding, ODBC Driver 18 and required RS bulk-copy core into one package,
+while preserving each native provider's private libraries. Historical embedded-core
+inputs are distinguished by their metadata and ownership, not version strings. Linux requires
 **glibc >=2.34** for that complete payload; `krb5`, OpenSSL, and `libltdl` resolve from
 `conda-forge`, so the system package steps above are not required. Windows uses SChannel.
 On macOS, encrypted connections still require system OpenSSL from Homebrew
