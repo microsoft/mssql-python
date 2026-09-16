@@ -1,4 +1,8 @@
+import pytest
+
 from mssql_python.async_query._native import load_py_core
+
+pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 
 def test_load_py_core_uses_direct_native_dependency():
