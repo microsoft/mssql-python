@@ -29,7 +29,7 @@ if not _TOOLS_DIR.is_dir():
         allow_module_level=True,
     )
 
-from eng.conda_tools import audit
+from eng.conda_tools import archive, audit, contracts
 from eng.conda_tools.formats import pe
 
 _ARM64 = 0xAA64
@@ -162,7 +162,27 @@ def test_binding_wheel_excludes_core_and_requires_source_rs_version(tmp_path):
         assert not any(name.startswith("mssql_py_core/") for name in wheel.namelist())
         metadata = next(name for name in wheel.namelist() if name.endswith(".dist-info/METADATA"))
         rs_version = sources["eng/versions/mssql-python-rs.version"].strip()
-        assert f"Requires-Dist: mssql-python-rs=={rs_version}" in wheel.read(metadata).decode()
+        distribution = archive.parse_distribution_metadata(wheel.read(metadata))
+        assert (
+            contracts.exact_dependency_pin(distribution["requires_dist"], "mssql-python-rs")
+            == rs_version
+        )
+
+
+@pytest.mark.parametrize("spacing", ["", " "], ids=["compact", "setuptools-spaced"])
+def test_binding_rs_requirement_accepts_metadata_spacing(spacing):
+    rs_version = (
+        (_ROOT / "eng/versions/mssql-python-rs.version").read_text(encoding="ascii").strip()
+    )
+    metadata = archive.parse_distribution_metadata(
+        (
+            "Metadata-Version: 2.1\nName: mssql-python\nVersion: 0\n"
+            f"Requires-Dist: mssql-python-rs{spacing}=={rs_version}\n"
+        ).encode()
+    )
+    assert (
+        contracts.exact_dependency_pin(metadata["requires_dist"], "mssql-python-rs") == rs_version
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows recipe requires cmd.exe")
