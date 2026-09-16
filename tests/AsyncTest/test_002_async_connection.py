@@ -79,6 +79,82 @@ def test_async_connection_rejects_invalid_numeric_option():
         )
 
 
+@pytest.mark.parametrize(
+    ("option", "value", "expected_range"),
+    (
+        ("ConnectRetryCount", -1, "0 and 255"),
+        ("ConnectRetryCount", 256, "0 and 255"),
+        ("ConnectRetryInterval", -1, "1 and 60"),
+        ("ConnectRetryInterval", 0, "1 and 60"),
+        ("ConnectRetryInterval", 61, "1 and 60"),
+    ),
+)
+def test_async_connection_rejects_retry_options_outside_sync_ranges(
+    option,
+    value,
+    expected_range,
+):
+    with pytest.raises(ValueError, match=expected_range):
+        build_async_connection_context(
+            f"Server=test-server.example.invalid;{option}={value}",
+            0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "context_key"),
+    (
+        ("ConnectRetryCount", 0, "connect_retry_count"),
+        ("ConnectRetryCount", 255, "connect_retry_count"),
+        ("ConnectRetryInterval", 1, "connect_retry_interval"),
+        ("ConnectRetryInterval", 60, "connect_retry_interval"),
+    ),
+)
+def test_async_connection_accepts_retry_option_boundaries(option, value, context_key):
+    context = build_async_connection_context(
+        f"Server=test-server.example.invalid;{option}={value}",
+        0,
+    )
+
+    assert context[context_key] == value
+
+
+def test_async_connection_converts_keep_alive_seconds_to_milliseconds():
+    context = build_async_connection_context(
+        "Server=test-server.example.invalid;KeepAlive=30;KeepAliveInterval=1",
+        0,
+    )
+
+    assert context["keep_alive"] == 30_000
+    assert context["keep_alive_interval"] == 1_000
+
+
+@pytest.mark.parametrize(
+    ("option", "context_key"),
+    (
+        ("KeepAlive", "keep_alive"),
+        ("KeepAliveInterval", "keep_alive_interval"),
+    ),
+)
+def test_async_connection_saturates_keep_alive_milliseconds(option, context_key):
+    context = build_async_connection_context(
+        f"Server=test-server.example.invalid;{option}={2**32 - 1}",
+        0,
+    )
+
+    assert context[context_key] == 2**32 - 1
+
+
+@pytest.mark.parametrize("option", ("KeepAlive", "KeepAliveInterval"))
+@pytest.mark.parametrize("value", (-1, 2**32))
+def test_async_connection_rejects_keep_alive_outside_unsigned_integer_range(option, value):
+    with pytest.raises(ValueError, match="0 and 4294967295"):
+        build_async_connection_context(
+            f"Server=test-server.example.invalid;{option}={value}",
+            0,
+        )
+
+
 def test_async_connection_rejects_embedded_nul_with_interface_error():
     with pytest.raises(InterfaceError) as exc_info:
         build_async_connection_context(
@@ -122,11 +198,21 @@ def test_existing_pycore_conversion_remains_permissive_for_bcp():
         {
             "server": "test-server.example.invalid",
             "packetsize": "invalid",
+            "connectretrycount": "256",
+            "connectretryinterval": "0",
+            "keepalive": "30",
+            "keepaliveinterval": "1",
             "unsupported": "ignored",
         }
     )
 
-    assert context == {"server": "test-server.example.invalid"}
+    assert context == {
+        "server": "test-server.example.invalid",
+        "connect_retry_count": 256,
+        "connect_retry_interval": 0,
+        "keep_alive": 30_000,
+        "keep_alive_interval": 1_000,
+    }
 
 
 def test_bcp_conversion_does_not_fall_through_invalid_first_synonym():

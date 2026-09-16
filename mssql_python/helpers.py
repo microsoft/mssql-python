@@ -285,6 +285,20 @@ _PYCORE_INTEGER_KEYS = {
     "keep_alive_interval",
 }
 
+_PYCORE_STRICT_INTEGER_RANGES = {
+    "connect_retry_count": (0, 255),
+    "connect_retry_interval": (1, 60),
+    "keep_alive": (0, 2**32 - 1),
+    "keep_alive_interval": (0, 2**32 - 1),
+}
+
+_PYCORE_SECONDS_TO_MILLISECONDS_KEYS = {
+    "keep_alive",
+    "keep_alive_interval",
+}
+
+_PYCORE_UINT32_MAX = 2**32 - 1
+
 
 def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
     """Translate parsed ODBC connection-string parameters for mssql-py-core.
@@ -324,12 +338,26 @@ def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
         if pycore_key in _PYCORE_INTEGER_KEYS:
             # Numeric params (timeouts, packet size, etc.) — skip on bad input
             try:
-                pycore_params[pycore_key] = int(raw_value)
+                value = int(raw_value)
             except (ValueError, TypeError):
                 if strict:
                     raise ValueError(
                         f"Connection parameter '{connstr_key}' must be an integer"
                     ) from None
+                continue
+
+            if strict and pycore_key in _PYCORE_STRICT_INTEGER_RANGES:
+                minimum, maximum = _PYCORE_STRICT_INTEGER_RANGES[pycore_key]
+                if not minimum <= value <= maximum:
+                    raise ValueError(
+                        f"Connection parameter '{connstr_key}' must be between "
+                        f"{minimum} and {maximum}"
+                    )
+
+            if pycore_key in _PYCORE_SECONDS_TO_MILLISECONDS_KEYS:
+                value = min(value * 1000, _PYCORE_UINT32_MAX)
+
+            pycore_params[pycore_key] = value
         else:
             # String params (server, database, encryption, etc.) — pass through
             pycore_params[pycore_key] = raw_value
