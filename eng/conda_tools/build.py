@@ -211,6 +211,9 @@ def _checked_metadata(path: str, distribution: str, version: str) -> archive.Whe
     try:
         metadata = archive.read_wheel_metadata(path)
         errors = contracts.validate_distribution_identity(metadata, distribution, version)
+        errors.extend(
+            contracts.validate_wheel_metadata_members(metadata["members"], distribution, version)
+        )
         errors.extend(contracts.validate_wheel_tags(Path(path).name, metadata["tags"]))
         errors.extend(contracts.validate_wheel_core_ownership(metadata))
         if errors:

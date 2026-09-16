@@ -122,6 +122,19 @@ def validate_distribution_identity(
     return errors
 
 
+def validate_wheel_metadata_members(
+    members: Iterable[str], distribution: str, version: str
+) -> list[str]:
+    distribution = canonical_distribution_name(distribution).replace("-", "_")
+    expected = f"{distribution}-{version}.dist-info/METADATA"
+    entries = [
+        member
+        for member in members
+        if posixpath.normpath(member.replace("\\", "/")).casefold().endswith(".dist-info/metadata")
+    ]
+    return [] if entries == [expected] else [f"Expected one matching root METADATA at {expected}."]
+
+
 def validate_wheel_tags(filename: str, tags: Sequence[str]) -> list[str]:
     parts = filename.removesuffix(".whl").rsplit("-", 3)
     if not filename.endswith(".whl") or len(parts) != 4:

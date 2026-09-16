@@ -53,42 +53,45 @@ def _validate_payload(
         metadata[distribution] = facts, present, owned, prefix
 
     rs_required = "mssql-python-rs" in metadata
-    if rs_required and "mssql-python" not in metadata:
-        raise ValueError("RS distribution is missing its binding distribution metadata")
-    if "mssql-python" in metadata:
-        binding, files, owned, prefix = metadata["mssql-python"]
-        rs_version = contracts.binding_rs_version(binding, files, owned)
-        if rs_version is None and rs_required:
+    if kind == "elf":
+        errors, details = contracts.validate_elf(base, index, elf_members, rs_required)
+    elif kind == "pe":
+        errors, details = contracts.validate_pe(base, index, pe_members)
+    else:
+        errors, details = contracts.validate_macho(base, index, macho_members)
+    if errors:
+        return errors, details
+    if "mssql-python" not in metadata:
+        raise ValueError("Package is missing its binding distribution metadata")
+    binding, files, owned, prefix = metadata["mssql-python"]
+    rs_version = contracts.binding_rs_version(binding, files, owned)
+    if rs_version is None and rs_required:
+        raise ValueError(
+            "historical embedded-core binding must not be combined with an RS distribution"
+        )
+    if rs_version is not None:
+        if not rs_required:
             raise ValueError(
-                "historical embedded-core binding must not be combined with an RS distribution"
+                f"binding requires mssql-python-rs=={rs_version}, but its metadata is missing"
             )
-        if rs_version is not None:
-            if not rs_required:
-                raise ValueError(
-                    f"binding requires mssql-python-rs=={rs_version}, but its metadata is missing"
-                )
-            rs, files, owned, _ = metadata["mssql-python-rs"]
-            abi = [dep for dep in index.get("depends", []) if dep.split()[:1] == ["python_abi"]]
-            python_tag = abi[0].rsplit("_", 1)[-1] if len(abi) == 1 else ""
-            errors = contracts.validate_rs_ownership(
-                rs, files, owned, rs_version, python_tag, index["subdir"]
-            )
-            if errors:
-                raise ValueError("; ".join(errors))
-        root = prefix.rsplit("/", 2)[0] + "/"
-        errors = contracts.validate_core_ownership(
-            names,
-            {name: component[2] for name, component in metadata.items()},
-            "mssql-python-rs" if rs_version is not None else "mssql-python",
-            root=root,
+        rs, files, owned, _ = metadata["mssql-python-rs"]
+        abi = [dep for dep in index.get("depends", []) if dep.split()[:1] == ["python_abi"]]
+        python_tag = abi[0].rsplit("_", 1)[-1] if len(abi) == 1 else ""
+        errors = contracts.validate_rs_ownership(
+            rs, files, owned, rs_version, python_tag, index["subdir"]
         )
         if errors:
             raise ValueError("; ".join(errors))
-    if kind == "elf":
-        return contracts.validate_elf(base, index, elf_members, rs_required)
-    if kind == "pe":
-        return contracts.validate_pe(base, index, pe_members)
-    return contracts.validate_macho(base, index, macho_members)
+    root = prefix.rsplit("/", 2)[0] + "/"
+    errors = contracts.validate_core_ownership(
+        names,
+        {name: component[2] for name, component in metadata.items()},
+        "mssql-python-rs" if rs_version is not None else "mssql-python",
+        root=root,
+    )
+    if errors:
+        raise ValueError("; ".join(errors))
+    return [], details
 
 
 def audit_packages(paths: Iterable[str], kind: Format, subdir: str = "") -> AuditResult:

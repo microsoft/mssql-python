@@ -119,7 +119,10 @@ def installed_metadata(
         facts = parse_distribution_metadata(data)
         root = member.rsplit("/", 2)[0] + "/"
         prefix = member[: -len("METADATA")]
-        records = record_files.get(prefix + "RECORD", [])
+        record = prefix + "RECORD"
+        if names.count(record) != 1 or record not in record_files:
+            raise ValueError(f"expected exactly one installed RECORD entry: {record}")
+        records = record_files[record]
         owned = set(records)
         present = [
             name[len(root) :]

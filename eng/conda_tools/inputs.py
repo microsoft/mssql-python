@@ -107,6 +107,7 @@ def _published_wheel(
         raise ValueError(f"Downloaded wheel SHA256 disagrees with published {path.name}.")
     metadata = archive.read_wheel_metadata(path)
     violations = contracts.validate_distribution_identity(metadata, name, version)
+    violations.extend(contracts.validate_wheel_metadata_members(metadata["members"], name, version))
     violations.extend(contracts.validate_wheel_tags(path.name, metadata["tags"]))
     violations.extend(contracts.validate_wheel_core_ownership(metadata))
     if name == "mssql-python":
@@ -121,11 +122,6 @@ def _published_wheel(
         violations.append(
             f"Published {name} wheel does not match the requested {python_tag} {subdir} target."
         )
-    expected = f"{name.replace('-', '_')}-{version}.dist-info/METADATA"
-    if [member for member in metadata["members"] if member.endswith(".dist-info/METADATA")] != [
-        expected
-    ]:
-        violations.append(f"Expected one matching root METADATA in {path.name}.")
     if violations:
         raise ValueError("; ".join(violations))
     return metadata

@@ -112,6 +112,10 @@ def _source_dependencies(sources, dependencies):
         "duplicate-name",
         "nested-metadata",
         "duplicate-metadata",
+        "extra-nested-metadata",
+        "extra-dot-metadata",
+        "extra-case-metadata",
+        "extra-backslash-metadata",
         "extra-wheel",
         "valid-rs",
         "new-source-legacy",
@@ -175,6 +179,19 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
             files["nested/" + key] = files.pop(key)
         elif problem == "duplicate-metadata":
             files["other-0.dist-info/METADATA"] = metadata.encode()
+        elif problem in {
+            "extra-nested-metadata",
+            "extra-dot-metadata",
+            "extra-case-metadata",
+            "extra-backslash-metadata",
+        }:
+            extra = {
+                "extra-nested-metadata": "nested/" + key,
+                "extra-dot-metadata": "./" + key,
+                "extra-case-metadata": key.lower(),
+                "extra-backslash-metadata": "nested\\" + key.replace("/", "\\"),
+            }[problem]
+            files[extra] = metadata.encode()
         if name == "mssql-python-odbc" and problem == "odbc-owns-core":
             files["mssql_py_core/unrecorded.py"] = b""
         elif name == "mssql-python-odbc" and problem == "odbc-core-data":

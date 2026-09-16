@@ -187,6 +187,14 @@ def _make_pkg(
                     machine=machine, versions=("GLIBC_2.2.5", "GLIBC_2.34")
                 ),
             }
+        native_payload = dict(native_payload)
+        root = "lib/python3.12/site-packages/"
+        if not any(name.endswith(".dist-info/METADATA") for name in native_payload):
+            prefix = root + "mssql_python-1.13.0.dist-info/"
+            native_payload[prefix + "METADATA"] = b"Name: mssql-python\nVersion: 1.13.0\n"
+            native_payload[prefix + "RECORD"] = "".join(
+                f"{name.removeprefix(root)},,\n" for name in [*native_payload, prefix + "RECORD"]
+            ).encode()
         for name, data in native_payload.items():
             add(name, data)
         selected_distros = distros or _DISTROS_BY_SUBDIR.get(subdir, ("debian_ubuntu",))
@@ -215,6 +223,54 @@ def _make_pkg(
             if vendored:
                 add(f"{libdir}/{vendored}", b"\x7fELF fake-vendored")
     return str(p)
+
+
+@pytest.mark.parametrize("entry_point", ["reader", "audit"])
+@pytest.mark.parametrize(
+    "layout", ["valid", "missing", "duplicate-good-last", "duplicate-bad-last"]
+)
+def test_installed_record_cardinality(tmp_path, entry_point, layout):
+    path = _make_pkg(tmp_path)
+    with tarfile.open(path, "r:bz2") as source:
+        members = [(item.name, source.extractfile(item).read()) for item in source.getmembers()]
+    root = "lib/python3.12/site-packages/"
+    prefix = root + "mssql_python_odbc-18.6.2.1.dist-info/"
+    members.append((prefix + "METADATA", b"Name: mssql-python-odbc\nVersion: 18.6.2.1\n"))
+    good = "".join(
+        f"{name.removeprefix(root)},,\n"
+        for name, _ in members
+        if name.startswith(root + "mssql_python_odbc")
+    ).encode()
+    bad = good + b"mssql_py_core/__init__.py,,\n"
+    if layout == "valid":
+        records = [good]
+    elif layout == "missing":
+        records = []
+    else:
+        records = [bad, good] if layout == "duplicate-good-last" else [good, bad]
+    members.extend((prefix + "RECORD", record) for record in records)
+    with tarfile.open(path, "w:bz2") as target:
+        for name, data in members:
+            item = tarfile.TarInfo(name)
+            item.size = len(data)
+            target.addfile(item, io.BytesIO(data))
+    if entry_point == "audit":
+        errors = audit.audit_package(path, "elf").violations
+        if layout == "valid":
+            assert errors == []
+        else:
+            assert any("exactly one" in error and "RECORD" in error for error in errors)
+        return
+    from eng.conda_tools import archive
+
+    payload = list(archive.iter_payload_members(path))
+    names = [name for name, _ in payload]
+    files = {name: data for name, data in payload if ".dist-info/" in name}
+    if layout == "valid":
+        assert len(list(archive.installed_metadata(names, files))) == 2
+    else:
+        with pytest.raises(ValueError, match="exactly one.*RECORD"):
+            list(archive.installed_metadata(names, files))
 
 
 @pytest.mark.parametrize(
@@ -705,6 +761,16 @@ def test_audit_allows_musl_variant_without_libltdl(tmp_path):
         add(_CORE_INIT, b"from .mssql_py_core import *\n")
         add(_BINDING, _make_elf64())
         add(_CORE, _make_elf64())
+        root = "lib/python3.12/site-packages/"
+        prefix = root + "mssql_python-1.13.0.dist-info/"
+        add(prefix + "METADATA", b"Name: mssql-python\nVersion: 1.13.0\n")
+        add(
+            prefix + "RECORD",
+            "".join(
+                f"{name.removeprefix(root)},,\n"
+                for name in (_CORE_INIT, _BINDING, _CORE, prefix + "METADATA", prefix + "RECORD")
+            ).encode(),
+        )
         add(
             f"{_LIBDIR}/libmsodbcsql-18.6.so.2.1", _make_elf64(_GOOD_RUNPATH, needed=_DRIVER_NEEDED)
         )

@@ -775,6 +775,54 @@ def test_gather_rejects_wrong_target_odbc_even_with_a_broad_filter(tmp_path, cap
     assert not list(links.iterdir())
 
 
+@pytest.mark.parametrize("component", ["binding", "odbc", "rs"])
+@pytest.mark.parametrize(
+    "layout", ["valid", "extra-root", "nested", "dot", "backslash", "case", "wrong-directory"]
+)
+def test_gather_requires_canonical_metadata_before_staging(tmp_path, capsys, component, layout):
+    code, odbc, links, rs = _rs_inputs(tmp_path)
+    wheel = next({"binding": code, "odbc": odbc, "rs": rs}[component].glob("*.whl"))
+    with zipfile.ZipFile(wheel) as source:
+        members = [(item.filename, source.read(item)) for item in source.infolist()]
+    original = next(name for name, _ in members if name.endswith(".dist-info/METADATA"))
+    if layout == "wrong-directory":
+        prefix = original.removesuffix("METADATA")
+        members = [
+            (name.replace(prefix, "unexpected-0.dist-info/", 1), data) for name, data in members
+        ]
+    elif layout != "valid":
+        extra = {
+            "extra-root": "unexpected-0.dist-info/METADATA",
+            "nested": "nested/unexpected-0.dist-info/METADATA",
+            "dot": "./" + original,
+            "backslash": "nested\\" + original.replace("/", "\\"),
+            "case": original.lower(),
+        }[layout]
+        members.append((extra, b"Name: unexpected\nVersion: 0\n"))
+    with zipfile.ZipFile(wheel, "w") as target:
+        for name, data in members:
+            target.writestr(name, data)
+    arguments = (
+        str(code),
+        "*.whl",
+        str(odbc),
+        "*.whl",
+        str(links),
+        str(rs),
+        None,
+        "win-64",
+        "3.13",
+    )
+    if layout == "valid":
+        assert build.gather_wheels(*arguments) == ("1.2.3", "18.6.2", "0.1.0")
+    else:
+        with pytest.raises(SystemExit) as error:
+            build.gather_wheels(*arguments)
+        assert error.value.code == 1
+        assert "METADATA" in capsys.readouterr().err
+        assert not list(links.iterdir())
+
+
 @pytest.mark.parametrize(
     ("platform", "subdir", "matches"),
     [

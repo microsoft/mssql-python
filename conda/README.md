@@ -15,6 +15,10 @@ The builder validates raw wheel core ownership before staging or recipe extracti
 including unrecorded files and wheel spread-path/case aliases. ODBC never supplies
 `mssql_py_core`; the selected RS provider (or historical binding) must own every core
 file in RECORD. Direct recipe callers must use these validated wheel inputs.
+Public and staged wheels also require one canonical root METADATA member, with no
+extra nested or aliased metadata. Package audits require binding metadata and exactly
+one RECORD for each installed distribution; missing or duplicate ownership records fail.
+Low-level binary-format parsers remain independent of package metadata.
 
 Direct recipe builds must set `MSSQL_PYTHON_VERSION` to the exact selected code-wheel
 version before rendering/building. The shared orchestrator derives and supplies it
