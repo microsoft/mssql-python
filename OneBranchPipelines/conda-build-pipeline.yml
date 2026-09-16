@@ -306,7 +306,7 @@ extends:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
               # The live Encrypt=yes TLS gate is NOT run in the build pipeline: it needs a
               # reachable SQL Server + a secret connection string (release/integration infra),
-              # and the masking-immune static RUNPATH audit (audit_bundled_binaries.py) already
+              # and the masking-immune static RUNPATH audit (eng.conda_tools elf) already
               # guards the OpenSSL layout here. It moves to the release pipeline, where the
               # secret is always present so the gate is unconditional -- no queue-time toggle.
               # The minimal-base ldd reachability gate stays opt-in because it is only VALID on

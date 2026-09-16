@@ -22,7 +22,7 @@
 #   TOTAL (PyPI parity minus musllinux)                                      = 28
 # win-arm64 is cross-built for py3.12-3.14 only (py3.10/3.11 have no win-arm64 deps
 # on Anaconda defaults); its runtime import is skipped on the x64 host, so its arch
-# is enforced by the PE-machine assert (assert_pe_machine.py). musllinux (no conda
+# is enforced by the PE audit (eng.conda_tools pe). musllinux (no conda
 # musl subdir) is intentionally NOT conda-built. This job is BEST-EFFORT and never
 # hard-fails on a short set; the release pipeline's conda-release-step enforces the
 # hard gate (required subdirs present + complete Python matrix) before publish.
