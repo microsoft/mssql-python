@@ -118,7 +118,7 @@ def test_zstd_backend_is_available_for_conda_audit_tests():
     )
 
 
-def test_wheel_retains_normal_and_stable_abi_core_extensions(tmp_path):
+def test_binding_wheel_excludes_core_and_requires_source_rs_version(tmp_path):
     pytest.importorskip("setuptools", reason="Wheel archive regression requires setuptools")
     pytest.importorskip("wheel", reason="Wheel archive regression requires the wheel build backend")
     shutil.copy2(_ROOT / "setup.py", tmp_path / "setup.py")
@@ -127,6 +127,9 @@ def test_wheel_retains_normal_and_stable_abi_core_extensions(tmp_path):
         "mssql_python/__init__.py": "",
         "mssql_python_odbc/__init__.py": '__version__ = "18.6.2.1"\n',
         "mssql_py_core/__init__.py": "from .mssql_py_core import *\n",
+        "eng/versions/mssql-python-rs.version": (
+            _ROOT / "eng/versions/mssql-python-rs.version"
+        ).read_text(encoding="ascii"),
     }
     for relative, content in sources.items():
         path = tmp_path / relative
@@ -156,14 +159,24 @@ def test_wheel_retains_normal_and_stable_abi_core_extensions(tmp_path):
     assert len(wheels) == 1
     with zipfile.ZipFile(wheels[0]) as wheel:
         assert not any(name.startswith("eng/") for name in wheel.namelist())
-        for name in extensions:
-            assert wheel.read(f"mssql_py_core/{name}") == b"native payload fixture"
+        assert not any(name.startswith("mssql_py_core/") for name in wheel.namelist())
+        metadata = next(name for name in wheel.namelist() if name.endswith(".dist-info/METADATA"))
+        rs_version = sources["eng/versions/mssql-python-rs.version"].strip()
+        assert f"Requires-Dist: mssql-python-rs=={rs_version}" in wheel.read(metadata).decode()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows recipe requires cmd.exe")
 @pytest.mark.parametrize("cross_build", [False, True])
-@pytest.mark.parametrize("state", ["valid", "missing", "missing-init", "wrong-tag", "abi3"])
-def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, state):
+@pytest.mark.parametrize(
+    ("rs_owned", "state"),
+    [
+        (rs_owned, state)
+        for rs_owned in (False, True)
+        for state in ("valid", "missing", "missing-init", "wrong-tag", "abi3")
+    ]
+    + [(True, "missing-private-library")],
+)
+def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, rs_owned, state):
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     prefix = tmp_path / "prefix"
@@ -186,9 +199,30 @@ def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_buil
         payload[core.replace(f".cp{tag}-", ".cp999-")] = payload.pop(core)
     elif state == "abi3":
         payload["mssql_py_core/mssql_py_core.pyd"] = payload.pop(core)
+    if rs_owned:
+        rs_payload = {
+            name: payload.pop(name) for name in list(payload) if name.startswith("mssql_py_core/")
+        }
+        if state != "missing-private-library":
+            private_arch = "arm64" if arch == "win_arm64" else "x64"
+            rs_payload[f"mssql_py_core/libs/windows/{private_arch}/mssqlodbc.dll"] = _fake_pe(
+                machine
+            )
+        rs_info = "mssql_python_rs-0.1.0.dist-info"
+        rs_payload[f"{rs_info}/METADATA"] = b"Name: mssql-python-rs\nVersion: 0.1.0\n"
+        rs_payload[f"{rs_info}/WHEEL"] = (
+            f"Wheel-Version: 1.0\nTag: cp{tag}-cp{tag}-{arch}\n".encode()
+        )
+        rs_payload[f"{rs_info}/RECORD"] = "\n".join(f"{name},," for name in rs_payload).encode()
+        rs_name = f"mssql_python_rs-0.1.0-cp{tag}-cp{tag}-{arch}.whl"
+        with zipfile.ZipFile(wheels / rs_name, "w") as wheel:
+            for name, data in rs_payload.items():
+                wheel.writestr(name, data)
+        (wheels / f"rs-wheel-cp{tag}.txt").write_text(rs_name + "\n", newline="\n")
     dist_info = "mssql_python-1.13.0.dist-info"
     payload[f"{dist_info}/METADATA"] = (
         b"Metadata-Version: 2.1\nName: mssql-python\nVersion: 1.13.0\n"
+        + (b"Requires-Dist: mssql-python-rs==0.1.0\n" if rs_owned else b"")
     )
     payload[f"{dist_info}/WHEEL"] = (
         f"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: cp{tag}-cp{tag}-{arch}\n".encode()
@@ -209,6 +243,7 @@ def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_buil
         target_platform="win-arm64" if arch == "win_arm64" else "win-64",
         WHEELS_DIR=str(wheels),
         MSSQL_ODBC_VERSION="18.6.2.1",
+        MSSQL_RS_VERSION="0.1.0" if rs_owned else "",
         PIP_TARGET=str(site_packages),
         PIP_CONFIG_FILE=os.devnull,
         PIP_USER="0",
@@ -229,9 +264,18 @@ def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_buil
     if state in ("valid", "abi3"):
         assert result.returncode == 0, output
         assert (site_packages / "mssql_python_odbc/__init__.py").is_file()
+        if rs_owned:
+            assert (site_packages / "mssql_python_rs-0.1.0.dist-info/RECORD").is_file()
+            assert (
+                site_packages / "mssql_python_rs-0.1.0.dist-info/conda-wheel-source.txt"
+            ).read_text().strip() == rs_name
     else:
         assert result.returncode != 0, output
-        assert "ERROR: required mssql_py_core" in output
+        assert (
+            "ERROR: required RS private"
+            if state == "missing-private-library"
+            else "ERROR: required mssql_py_core"
+        ) in output
 
 
 def _make_conda(tmp_path, subdir, payload, depends=("python_abi 3.12.* *_cp312",)):

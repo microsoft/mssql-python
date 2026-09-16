@@ -4,21 +4,31 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 import shutil
 import zipfile
-from email.parser import BytesParser
-from email.policy import default
+from pathlib import Path
 
-from . import environment, verify
+from eng.scripts.download_mssql_python_rs_wheels import file_sha256
+
+from . import archive, contracts, environment, verify
+from .formats import elf, macho, pe
 
 _KNOWN_SUBDIRS = ("win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64")
 
 
 def gather_wheels(
-    mssql_dir: str, mssql_glob: str, odbc_dir: str, odbc_filter: str, links: str
-) -> tuple[str, str]:
+    mssql_dir: str,
+    mssql_glob: str,
+    odbc_dir: str,
+    odbc_filter: str,
+    links: str,
+    rs_dir: str | None = None,
+    rs_version_file: str | None = None,
+    target_subdir: str = "",
+) -> tuple[str, str, str | None]:
     """Copy this platform's mssql-python wheel(s) (excluding the odbc package, whose filename
     also starts with mssql_python) + this platform's odbc wheel into ONE find-links dir. The
     dir is CLEARED first so a stale artifact from a reused workdir can never be validated.
@@ -67,74 +77,167 @@ def gather_wheels(
     odbc_ver = _wheel_version(os.path.basename(odbc), "mssql_python_odbc")
     if not odbc_ver:
         environment._die(f"could not derive a version from ODBC wheel: {os.path.basename(odbc)}")
-    _wheel_metadata(odbc, "mssql-python-odbc", odbc_ver)
-    for wheel in mssql:
-        requirements = _wheel_metadata(wheel, "mssql-python", mssql_ver)
-        _validate_odbc_pin(wheel, requirements, odbc_ver)
+    rs: set[str] = set()
+    rs_metadata: dict[str, archive.WheelMetadata] = {}
+    rs_selected: dict[str, str] = {}
+    rs_versions: set[str | None] = set()
+    try:
+        source_rs = None
+        if rs_version_file is not None:
+            source_rs = Path(rs_version_file).read_text(encoding="ascii").strip()
+            if not source_rs:
+                raise ValueError(f"empty RS source version assertion: {rs_version_file}")
+        _checked_metadata(odbc, "mssql-python-odbc", odbc_ver)
+        for wheel in mssql:
+            metadata = _checked_metadata(wheel, "mssql-python", mssql_ver)
+            try:
+                pin = contracts.exact_dependency_pin(metadata["requires_dist"], "mssql-python-odbc")
+            except ValueError as exc:
+                raise ValueError(
+                    f"{wheel}: expected one unconditional exact mssql-python-odbc=={odbc_ver}; "
+                    f"{exc}"
+                ) from exc
+            if pin != odbc_ver:
+                raise ValueError(
+                    f"{wheel}: expected one unconditional exact mssql-python-odbc=={odbc_ver}; "
+                    f"found {pin!r}"
+                )
+            version = contracts.binding_rs_version(
+                metadata, metadata["members"], metadata["record_members"], source_rs
+            )
+            rs_versions.add(version)
+            if version is not None:
+                python_tag = os.path.basename(wheel).rsplit("-", 3)[1]
+                selected = _select_rs_wheel(rs_dir, version, python_tag, target_subdir)
+                if selected not in rs:
+                    rs_metadata[selected] = _check_rs_wheel(
+                        selected, version, python_tag, target_subdir
+                    )
+                    rs.add(selected)
+                else:
+                    facts = rs_metadata[selected]
+                    errors = contracts.validate_rs_ownership(
+                        facts,
+                        facts["members"],
+                        facts["record_members"],
+                        version,
+                        python_tag,
+                        target_subdir,
+                    )
+                    if errors:
+                        raise ValueError("; ".join(errors))
+                rs_selected[python_tag] = os.path.basename(selected)
+        if len(rs_versions) != 1:
+            raise ValueError(f"binding wheels mix incompatible RS profiles/versions: {rs_versions}")
+        rs_ver = next(iter(rs_versions))
+        if rs_dir:
+            if rs_ver is None:
+                raise ValueError(
+                    "RS wheel inputs must not be added to a historical embedded-core binding"
+                )
+            receipt_path = Path(rs_dir, "transport.json")
+            if receipt_path.exists():
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                if not isinstance(receipt, dict) or not isinstance(
+                    receipt.get("wheel_sha256"), dict
+                ):
+                    raise ValueError("RS transport receipt must contain a wheel_sha256 mapping")
+                if receipt.get("distribution_version") != rs_ver:
+                    raise ValueError("RS transport receipt disagrees with the binding dependency")
+                if rs_version_file is not None:
+                    pin_file = Path(rs_version_file).with_name("mssql-python-rs-nuget.version")
+                    transport = pin_file.read_text(encoding="ascii").strip()
+                    if not transport or receipt.get("transport_version") != transport:
+                        raise ValueError(
+                            "RS transport receipt disagrees with the producer transport pin"
+                        )
+                for wheel in rs:
+                    if receipt["wheel_sha256"].get(Path(wheel).name) != file_sha256(Path(wheel)):
+                        raise ValueError(
+                            f"RS wheel differs from its producer transport receipt: {wheel}"
+                        )
+    except archive.READ_ERRORS as exc:
+        environment._die(f"invalid wheel inputs: {exc}")
 
     # Copy only after every selected wheel agrees with its filename and dependency pair.
-    for wheel in [*mssql, odbc]:
+    for wheel in [*mssql, odbc, *sorted(rs)]:
         shutil.copy2(wheel, links)
+    for python_tag, filename in rs_selected.items():
+        Path(links, f"rs-wheel-{python_tag}.txt").write_text(
+            filename + "\n", encoding="utf-8", newline="\n"
+        )
     environment._log("find-links wheels:")
     for name in sorted(os.listdir(links)):
         environment._log(f"  - {name}")
     environment._log(f"Derived versions -> mssql-python={mssql_ver}  mssql-python-odbc={odbc_ver}")
-    return mssql_ver, odbc_ver
+    environment._log(
+        f"RS component: mssql-python-rs=={rs_ver}"
+        if rs_ver is not None
+        else "Historical embedded-core profile; NOT current-source RS qualification."
+    )
+    return mssql_ver, odbc_ver, rs_ver
 
 
-def _canonical_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _wheel_metadata(path: str, distribution: str, version: str) -> list[str]:
-    """Validate the wheel identity and return its declared dependencies without importing it."""
-    name = os.path.basename(path)
+def _checked_metadata(path: str, distribution: str, version: str) -> archive.WheelMetadata:
     try:
-        with zipfile.ZipFile(path) as wheel:
-            entries = [
-                entry
-                for entry in wheel.namelist()
-                if re.fullmatch(r"[^/]+\.dist-info/METADATA", entry)
-            ]
-            if len(entries) != 1:
-                environment._die(f"{name}: expected exactly one .dist-info/METADATA entry.")
-            metadata = BytesParser(policy=default).parsebytes(wheel.read(entries[0]))
-    except (OSError, zipfile.BadZipFile, KeyError, RuntimeError, NotImplementedError) as exc:
-        environment._die(f"{name}: unreadable wheel metadata ({exc}).")
-    for field, expected in (("Name", distribution), ("Version", version)):
-        values = metadata.get_all(field, [])
-        if len(values) != 1 or not str(values[0]).strip():
-            environment._die(f"{name}: expected exactly one nonempty METADATA {field}.")
-        actual = str(values[0]).strip()
-        matches = (
-            _canonical_name(actual) == _canonical_name(expected)
-            if field == "Name"
-            else actual == expected
-        )
-        if not matches:
-            environment._die(
-                f"{name}: METADATA {field} {actual!r} does not match selected wheel {expected!r}."
-            )
-    return [str(value).strip() for value in metadata.get_all("Requires-Dist", [])]
+        metadata = archive.read_wheel_metadata(path)
+        errors = contracts.validate_distribution_identity(metadata, distribution, version)
+        errors.extend(contracts.validate_wheel_tags(Path(path).name, metadata["tags"]))
+        if errors:
+            raise ValueError("; ".join(errors))
+        return metadata
+    except archive.READ_ERRORS as exc:
+        raise ValueError(f"{os.path.basename(path)}: {exc}") from exc
 
 
-def _validate_odbc_pin(path: str, requirements: list[str], version: str) -> None:
-    pins = []
-    for requirement in requirements:
-        name = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
-        if name and _canonical_name(name[0]) == "mssql-python-odbc":
-            pins.append(requirement[name.end() :].strip())
-    match = None
-    if len(pins) == 1:
-        constraint = pins[0]
-        if constraint.startswith("(") and constraint.endswith(")"):
-            constraint = constraint[1:-1].strip()
-        match = re.fullmatch(r"==\s*([0-9][A-Za-z0-9.!+_]*)", constraint)
-    if match is None or match[1] != version:
-        environment._die(
-            f"{os.path.basename(path)}: expected one unconditional exact "
-            f"mssql-python-odbc=={version} requirement; found {pins!r}."
+def _select_rs_wheel(directory: str | None, version: str, python_tag: str, subdir: str) -> str:
+    platforms = {
+        "win-64": "win_amd64",
+        "win-arm64": "win_arm64",
+        "osx-64": "macosx_15_0_universal2",
+        "osx-arm64": "macosx_15_0_universal2",
+        "linux-64": "manylinux_2_34_x86_64",
+        "linux-aarch64": "manylinux_2_34_aarch64",
+    }
+    if not directory or subdir not in platforms or not re.fullmatch(r"cp3\d+", python_tag):
+        raise ValueError(
+            "an RS-dependent binding requires --rs-wheel-dir and a normal CPython target"
         )
+    matches = []
+    for path in sorted(Path(directory).glob(f"mssql_python_rs-{version}-*.whl")):
+        py, abi, platform = path.stem.rsplit("-", 3)[1:]
+        compatible_python = py == python_tag and abi == python_tag
+        if abi == "abi3" and re.fullmatch(r"cp3\d+", py):
+            compatible_python = int(py[2:]) <= int(python_tag[2:])
+        if compatible_python and platforms[subdir] in platform.split("."):
+            matches.append(str(path))
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one mssql-python-rs=={version} wheel for {python_tag} {subdir}; "
+            f"found {matches}"
+        )
+    return matches[0]
+
+
+def _check_rs_wheel(path: str, version: str, python_tag: str, subdir: str) -> archive.WheelMetadata:
+    metadata = _checked_metadata(path, "mssql-python-rs", version)
+    errors = contracts.validate_rs_ownership(
+        metadata, metadata["members"], metadata["record_members"], version, python_tag, subdir
+    )
+    with zipfile.ZipFile(path) as wheel:
+        for name in metadata["members"]:
+            if not name.endswith((".pyd", ".dll", ".so", ".dylib")):
+                continue
+            data = wheel.read(name)
+            if subdir.startswith("win-"):
+                errors.extend(contracts.validate_rs_binary(name, subdir, pe.pe_machine(data)))
+            elif subdir.startswith("osx-"):
+                errors.extend(contracts.validate_rs_binary(name, subdir, macho.macho_arches(data)))
+            else:
+                errors.extend(contracts.validate_rs_binary(name, subdir, elf.parse(data)))
+    if errors:
+        raise ValueError(f"{os.path.basename(path)}: {'; '.join(errors)}")
+    return metadata
 
 
 def _wheel_version(name: str, dist: str) -> str | None:
@@ -330,12 +433,15 @@ def execute(args: argparse.Namespace) -> int:
     environment._log(f"pythonVersions     : {args.python_versions or '(auto-detect)'}")
     environment._log("============================================================")
 
-    mssql_ver, odbc_ver = gather_wheels(
+    mssql_ver, odbc_ver, rs_ver = gather_wheels(
         args.mssql_wheel_dir,
         args.mssql_wheel_glob,
         args.odbc_wheel_dir,
         args.odbc_wheel_filter,
         links,
+        args.rs_wheel_dir,
+        args.rs_version_file,
+        target,
     )
     conda = environment.find_or_install_conda(output_dir)
     environment._log(f"Using conda: {conda}")
@@ -343,7 +449,7 @@ def execute(args: argparse.Namespace) -> int:
     builder = environment.create_builder_env(conda)
     pyvers = detect_pythons(links, args.python_versions)
     cross_build = bool(args.conda_target_subdir)
-    env = environment.build_env(mssql_ver, odbc_ver, links, args.conda_target_subdir)
+    env = environment.build_env(mssql_ver, odbc_ver, links, args.conda_target_subdir, rs_ver)
 
     build_packages(conda, builder, args.recipe_root, pyvers, bld, target, env)
     audit_packages(conda, builder, args.recipe_root, bld, target, env)
@@ -352,6 +458,10 @@ def execute(args: argparse.Namespace) -> int:
         conda, chan, args.recipe_root, pyvers, mssql_ver, target, cross_build, env, output_dir
     )
     stage(bld, args.stage_dir, target)
+    if rs_ver is not None and args.rs_wheel_dir:
+        receipt = Path(args.rs_wheel_dir, "transport.json")
+        if receipt.is_file():
+            shutil.copy2(receipt, Path(args.stage_dir, "rs-transport.json"))
 
     environment._log("CONDA_BUILD_OK")
     return 0

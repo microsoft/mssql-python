@@ -169,7 +169,7 @@ def create_builder_env(conda: str) -> str:
 
 
 def build_env(
-    mssql_ver: str, odbc_ver: str, links: str, cross_target_subdir: str
+    mssql_ver: str, odbc_ver: str, links: str, cross_target_subdir: str, rs_ver: str | None = None
 ) -> dict[str, str]:
     """The environment consumed by the recipe (jinja + build.sh/bld.bat) and by conda-build."""
     env = dict(os.environ)
@@ -177,6 +177,7 @@ def build_env(
     env["WHEELS_DIR"] = links
     env["MSSQL_PYTHON_VERSION"] = mssql_ver
     env["MSSQL_ODBC_VERSION"] = odbc_ver
+    env["MSSQL_RS_VERSION"] = rs_ver or ""
     if cross_target_subdir:
         # conda-build AND the verify `conda create` honor CONDA_SUBDIR -> the packages are
         # stamped for the target subdir and the import check runs the target Python where the

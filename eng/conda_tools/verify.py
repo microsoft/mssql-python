@@ -60,8 +60,8 @@ def _import_probe(mod_name: str, ok_label: str) -> str:
     )
 
 
-def _core_probe() -> str:
-    return (
+def _core_probe(rs_version: str | None = None) -> str:
+    probe = (
         _import_probe("mssql_py_core", "CORE_PACKAGE_OK") + ";import importlib.machinery;"
         "exts=[v for k,v in list(sys.modules.items()) "
         "if (k=='mssql_py_core' or k.startswith('mssql_py_core.')) "
@@ -71,6 +71,15 @@ def _core_probe() -> str:
         "for v in exts),'core native extension loaded outside installed prefix';"
         "print('CORE_NATIVE_OK',*[v.__file__ for v in exts])"
     )
+    if rs_version is not None:
+        probe += (
+            ";import importlib.metadata as metadata;dist=metadata.distribution('mssql-python-rs');"
+            f"assert dist.version=={rs_version!r},'installed RS distribution version mismatch';"
+            "assert os.path.normcase(os.path.abspath(dist.locate_file(''))).startswith(pref+os.sep),"
+            "'RS distribution metadata is outside installed prefix';"
+            "print('RS_VERSION_OK',dist.version)"
+        )
+    return probe
 
 
 def verify(
@@ -206,7 +215,15 @@ def _verify_impl(
 
         # A separate process prevents API/driver preloads from masking core load failures.
         environment.run(
-            [conda, "run", "-n", name, "python", "-c", _core_probe()],
+            [
+                conda,
+                "run",
+                "-n",
+                name,
+                "python",
+                "-c",
+                _core_probe(env.get("MSSQL_RS_VERSION") or None),
+            ],
             env=env,
             what=f"independent required mssql_py_core load (py {py})",
         )

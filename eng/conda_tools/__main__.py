@@ -108,6 +108,12 @@ def _build_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--mssql-wheel-glob", default="mssql_python-*.whl")
     ap.add_argument("--odbc-wheel-dir", required=True)
     ap.add_argument("--odbc-wheel-filter", required=True)
+    ap.add_argument(
+        "--rs-wheel-dir", help="Actual RS wheel inputs; required by RS-dependent bindings."
+    )
+    ap.add_argument(
+        "--rs-version-file", help="Assert the RS distribution version from the selected source."
+    )
     ap.add_argument("--recipe-root", required=True)
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--stage-dir", required=True)

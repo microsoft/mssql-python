@@ -74,7 +74,9 @@ pip install mssql-python
 
 **Conda candidate:** Obtain the exact candidate channel and version from its owner;
 these changes do not publish packages to the public `microsoft` channel. The candidate
-includes the ODBC Driver 18 payload and required bulk-copy core. Linux requires
+combines the binding, ODBC Driver 18 and required RS bulk-copy core into one package,
+while preserving each native provider's private libraries. Historical embedded-core
+inputs are distinguished by their metadata and ownership, not version strings. Linux requires
 **glibc >=2.34** for that complete payload; `krb5`, OpenSSL, and `libltdl` resolve from
 `conda-forge`, so the system package steps above are not required. Windows uses SChannel.
 On macOS, encrypted connections still require system OpenSSL from Homebrew

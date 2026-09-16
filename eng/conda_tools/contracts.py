@@ -7,6 +7,7 @@ import posixpath
 import re
 from typing import Any, Iterable, Literal, Sequence
 
+from .archive import DistributionMetadata
 from .formats.elf import ElfDynamicInfo, ElfFacts
 
 Format = Literal["elf", "pe", "macho"]
@@ -97,6 +98,204 @@ _REQUIRED_DRIVER_LIBRARIES = frozenset(
 )
 
 
+def canonical_distribution_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def validate_distribution_identity(
+    metadata: DistributionMetadata, distribution: str, version: str
+) -> list[str]:
+    errors = []
+    for field, actual, expected in (
+        ("Name", metadata["name"], distribution),
+        ("Version", metadata["version"], version),
+    ):
+        matches = (
+            canonical_distribution_name(actual) == canonical_distribution_name(expected)
+            if field == "Name"
+            else actual == expected
+        )
+        if not matches:
+            errors.append(
+                f"METADATA {field} {actual!r} does not match selected wheel {expected!r}."
+            )
+    return errors
+
+
+def validate_wheel_tags(filename: str, tags: Sequence[str]) -> list[str]:
+    parts = filename.removesuffix(".whl").rsplit("-", 3)
+    if not filename.endswith(".whl") or len(parts) != 4:
+        return [f"invalid wheel filename: {filename}"]
+    python_tag, abi, platform = parts[1:]
+    expected = {
+        f"{p}-{a}-{plat}"
+        for p in python_tag.split(".")
+        for a in abi.split(".")
+        for plat in platform.split(".")
+    }
+    return [] if set(tags) == expected else ["WHEEL tags do not match the selected filename"]
+
+
+def exact_dependency_pin(requirements: Iterable[str], distribution: str) -> str | None:
+    """Only an absent declaration returns None; malformed declarations always fail."""
+    distribution = canonical_distribution_name(distribution)
+    pins = []
+    for requirement in requirements:
+        name = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
+        if name and canonical_distribution_name(name[0]) == distribution:
+            pins.append(requirement[name.end() :].strip())
+    if not pins:
+        return None
+    match = None
+    if len(pins) == 1:
+        constraint = pins[0]
+        if constraint.startswith("(") and constraint.endswith(")"):
+            constraint = constraint[1:-1].strip()
+        match = re.fullmatch(r"==\s*([0-9][A-Za-z0-9.!+_]*)", constraint)
+    if match is None:
+        raise ValueError(
+            f"expected one unconditional exact {distribution} requirement; found {pins!r}."
+        )
+    return match[1]
+
+
+def owned_core_members(members: Iterable[str], records: Iterable[str]) -> list[str]:
+    """Core ownership requires a file to be both declared in RECORD and actually present."""
+    actual = set(members)
+    return [name for name in records if name in actual and name.startswith("mssql_py_core/")]
+
+
+def binding_rs_version(
+    metadata: DistributionMetadata,
+    members: Iterable[str],
+    records: Iterable[str],
+    expected_rs_version: str | None = None,
+) -> str | None:
+    """Classify a binding using its exclusive wheel members or RECORD-owned installed files."""
+    names = list(members)
+    version = exact_dependency_pin(metadata["requires_dist"], "mssql-python-rs")
+    if expected_rs_version is not None and version != expected_rs_version:
+        raise ValueError(
+            f"binding RS dependency {version!r} does not match producer source "
+            f"mssql-python-rs=={expected_rs_version}"
+        )
+    if version is not None:
+        if any(name.startswith("mssql_py_core/") for name in names):
+            raise ValueError("RS-dependent binding wheel must not own mssql_py_core")
+    else:
+        core = owned_core_members(names, records)
+        if "mssql_py_core/__init__.py" not in core or not any(
+            re.fullmatch(r"mssql_py_core/mssql_py_core(?:\.[^/]+)?\.(?:so|pyd)", name)
+            for name in core
+        ):
+            raise ValueError(
+                "binding without an RS dependency must own a present core initializer and "
+                "native extension in both payload and RECORD; not a valid historical profile"
+            )
+    return version
+
+
+def rs_private_libraries(subdir: str) -> tuple[str, ...]:
+    if subdir.startswith("win-"):
+        return (f"mssql_py_core/libs/windows/{_PE_DRIVER_DIR[subdir]}/mssqlodbc.dll",)
+    if subdir.startswith("osx-"):
+        return tuple(
+            f"mssql_py_core/libs/macos/{arch}/lib/mssqlodbc.dylib" for arch in ("arm64", "x86_64")
+        )
+    arch = {"linux-64": "x86_64", "linux-aarch64": "arm64"}[subdir]
+    return (f"mssql_py_core/libs/linux/glibc/{arch}/lib/mssqlodbc.so",)
+
+
+def validate_core_layout(
+    names: Iterable[str], python_tag: str, subdir: str, root: str = ""
+) -> list[str]:
+    """Check wheel-relative core layout; native fact validators separately check its bytes."""
+    names = list(names)
+    windows = subdir.startswith("win-")
+    suffix = "pyd" if windows else "so"
+    cores = [
+        name
+        for name in names
+        if re.fullmatch(
+            rf"{re.escape(root)}mssql_py_core/mssql_py_core(?:\.[^/]+)?\.{suffix}", name
+        )
+    ]
+    arch = {
+        "win-64": "win_amd64",
+        "win-arm64": "win_arm64",
+        "linux-64": "x86_64-linux-gnu",
+        "linux-aarch64": "aarch64-linux-gnu",
+        "osx-64": "darwin",
+        "osx-arm64": "darwin",
+    }[subdir]
+    core_names = (
+        (f"mssql_py_core.{python_tag}-{arch}.pyd", "mssql_py_core.pyd")
+        if windows
+        else (f"mssql_py_core.cpython-{python_tag[2:]}-{arch}.so", "mssql_py_core.abi3.so")
+    )
+    errors = []
+    initializer = f"{root}mssql_py_core/__init__.py"
+    if names.count(initializer) != 1:
+        errors.append(
+            f"expected exactly one required {initializer}; found {names.count(initializer)}"
+        )
+    if len(cores) != 1:
+        errors.append(
+            f"expected exactly one required mssql_py_core native extension; found {len(cores)}"
+        )
+    elif cores[0].rsplit("/", 1)[-1] not in core_names:
+        errors.append(
+            f"{cores[0]}: mssql_py_core is incompatible with normal {python_tag} {subdir}"
+        )
+    return errors
+
+
+def validate_rs_binary(
+    name: str, subdir: str, facts: ElfFacts | int | set[str] | None
+) -> list[str]:
+    """Check an RS wheel's parsed native facts before staging a cross-target input."""
+    if subdir.startswith("win-"):
+        if facts != _PE_SUBDIR_MACHINE[subdir]:
+            return [f"{name}: RS PE header does not match {subdir}"]
+    elif subdir.startswith("osx-"):
+        expected = "arm64" if "/arm64/" in name else "x86_64" if "/x86_64/" in name else None
+        required = {expected} if expected else {"arm64", "x86_64"}
+        if not isinstance(facts, set) or not required <= facts:
+            return [f"{name}: RS Mach-O header lacks required slices {sorted(required)}"]
+    elif (
+        not isinstance(facts, ElfFacts)
+        or not facts.header
+        or not facts.elf64_le
+        or facts.machine != _SUBDIR_MACHINE[subdir]
+        or facts.error
+        or facts.dynamic is None
+    ):
+        return [f"{name}: invalid or wrong-architecture RS ELF for {subdir}"]
+    else:
+        if any(version > (2, 34) for version in facts.dynamic["glibc_required"]):
+            return [f"{name}: RS ELF requires a glibc newer than 2.34"]
+        if {"libssl.so.1.1", "libcrypto.so.1.1"} & set(facts.dynamic["needed"]):
+            return [f"{name}: RS ELF requires OpenSSL 1.1, incompatible with openssl >=3,<4"]
+    return []
+
+
+def validate_rs_ownership(
+    metadata: DistributionMetadata,
+    members: Iterable[str],
+    records: Iterable[str],
+    version: str,
+    python_tag: str,
+    subdir: str,
+) -> list[str]:
+    owned = owned_core_members(members, records)
+    errors = validate_distribution_identity(metadata, "mssql-python-rs", version)
+    errors.extend(validate_core_layout(owned, python_tag, subdir))
+    for name in rs_private_libraries(subdir):
+        if name not in owned:
+            errors.append(f"RS package is missing owned private runtime library {name}")
+    return errors
+
+
 def validate_native_contract(names: Iterable[str], index: dict[str, Any]) -> list[str]:
     """Require a target binding, core extension and initializer; platform audits check headers.
 
@@ -125,42 +324,11 @@ def validate_native_contract(names: Iterable[str], index: dict[str, Any]) -> lis
             rf"{re.escape(root)}mssql_python/ddbc_bindings\.cp{abi[2]}-[^/]+\.{suffix}", name
         )
     ]
-    cores = [
-        name
-        for name in names
-        if re.fullmatch(
-            rf"{re.escape(root)}mssql_py_core/mssql_py_core(?:\.[^/]+)?\.{suffix}", name
-        )
-    ]
-    arch = {
-        "win-64": "win_amd64",
-        "win-arm64": "win_arm64",
-        "linux-64": "x86_64-linux-gnu",
-        "linux-aarch64": "aarch64-linux-gnu",
-        "osx-64": "darwin",
-        "osx-arm64": "darwin",
-    }[subdir]
-    core_names = (
-        (f"mssql_py_core.cp{abi[2]}-{arch}.pyd", "mssql_py_core.pyd")
-        if windows
-        else (f"mssql_py_core.cpython-{abi[2]}-{arch}.so", "mssql_py_core.abi3.so")
-    )
-    errors = []
-    initializer = f"{root}mssql_py_core/__init__.py"
-    if names.count(initializer) != 1:
-        errors.append(
-            f"expected exactly one required {initializer}; found {names.count(initializer)}"
-        )
+    errors = validate_core_layout(names, f"cp{abi[2]}", subdir, root)
     if len(bindings) != 1:
         errors.append(
             f"expected exactly one normal cp{abi[2]} native binding; found {len(bindings)}"
         )
-    if len(cores) != 1:
-        errors.append(
-            f"expected exactly one required mssql_py_core native extension; found {len(cores)}"
-        )
-    elif cores[0].rsplit("/", 1)[-1] not in core_names:
-        errors.append(f"{cores[0]}: mssql_py_core is incompatible with normal cp{abi[2]} {subdir}")
     return errors
 
 
@@ -238,7 +406,10 @@ def _openssl_range_ok(constraint: str) -> bool:
 
 
 def validate_elf(
-    base_name: str, index: dict[str, Any], members: Sequence[tuple[str, ElfFacts]]
+    base_name: str,
+    index: dict[str, Any],
+    members: Sequence[tuple[str, ElfFacts]],
+    rs_required: bool = False,
 ) -> tuple[list[str], list[str]]:
     subdir = index["subdir"]
     expected_machine = _SUBDIR_MACHINE[subdir]
@@ -286,7 +457,7 @@ def validate_elf(
         norm = "/" + name
         member_dir = posixpath.dirname(name)
         # Track every driver lib dir (mssql_python_odbc/libs/linux/<distro>/<arch>/lib).
-        if "/libs/linux/" in norm and member_dir.endswith("/lib"):
+        if "/mssql_python_odbc/libs/linux/" in norm and member_dir.endswith("/lib"):
             lib_dirs.add(member_dir)
             relative = norm.split("/libs/linux/", 1)[1]
             parts = relative.split("/")
@@ -340,7 +511,10 @@ def validate_elf(
                         f"{name}: requires GLIBC_{'.'.join(map(str, required))} but archive "
                         f"declares __glibc >={'.'.join(map(str, glibc_floor))}."
                     )
-        if not (is_driver or is_inst):
+        is_rs = rs_required and "/mssql_py_core/" in norm and base.endswith(".so")
+        if is_rs:
+            errors.extend(validate_rs_binary(name, subdir, fact))
+        if not (is_driver or is_inst or is_rs):
             continue
         raw_runpath = effective_runpath(dyn)
         entries = _entries(raw_runpath)
@@ -543,8 +717,10 @@ def validate_macho(
             required_arch = expected
         elif "/mssql_py_core/" in low and low.endswith(".so"):
             required_arch = expected
-        elif "/mssql_python_odbc/libs/macos/" in low and low.endswith(".dylib"):
-            relative = low.split("/mssql_python_odbc/libs/macos/", 1)[1]
+        elif any(
+            f"/{package}/libs/macos/" in low for package in ("mssql_python_odbc", "mssql_py_core")
+        ) and low.endswith(".dylib"):
+            relative = low.split("/libs/macos/", 1)[1]
             parts = relative.split("/")
             driver_dir = parts[0]
             required_arch = _MACHO_DRIVER_DIR_ARCH.get(driver_dir)
@@ -552,7 +728,11 @@ def validate_macho(
                 errors.append(f"{name}: unrecognized macOS driver architecture directory.")
                 continue
             is_runtime_location = len(parts) == 3 and parts[1] == "lib"
-            if required_arch == expected and is_runtime_location:
+            if (
+                "/mssql_python_odbc/libs/macos/" in low
+                and required_arch == expected
+                and is_runtime_location
+            ):
                 target_driver_libraries.add(base_low)
         else:
             continue

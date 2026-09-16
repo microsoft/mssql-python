@@ -217,6 +217,66 @@ def _make_pkg(
     return str(p)
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        "valid",
+        "missing-private-library",
+        "openssl-1.1",
+        "missing-runpath",
+        "wrong-arch",
+        "unowned-core",
+        "wrong-rs-version",
+    ],
+)
+def test_rs_private_libraries_keep_separate_ownership_and_runtime_contract(tmp_path, state):
+    root = "lib/python3.12/site-packages/"
+    private = root + "mssql_py_core/libs/linux/glibc/x86_64/lib/mssqlodbc.so"
+    payload = {
+        _BINDING: _make_elf64(),
+        _CORE_INIT: b"from .mssql_py_core import *\n",
+    }
+    for name in (_CORE, private):
+        payload[name] = _make_elf64(
+            runpath=(
+                None
+                if state == "missing-runpath" and name == private
+                else "$ORIGIN:" + contracts.expected_climb_entry(name)
+            ),
+            needed=(
+                ("libssl.so.1.1", "libcrypto.so.1.1")
+                if state == "openssl-1.1"
+                else ("libssl.so.3", "libcrypto.so.3")
+            ),
+            versions=("GLIBC_2.28" if state == "openssl-1.1" else "GLIBC_2.34",),
+            machine=183 if state == "wrong-arch" and name == private else 62,
+        )
+    binding_info = root + "mssql_python-1.13.0.dist-info/"
+    rs_info = root + "mssql_python_rs-0.1.0.dist-info/"
+    payload[binding_info + "METADATA"] = (
+        b"Name: mssql-python\nVersion: 1.13.0\nRequires-Dist: mssql-python-rs==0.1.0\n"
+    )
+    payload[binding_info + "RECORD"] = f"{_BINDING.removeprefix(root)},,\n".encode()
+    version = "0.2.0" if state == "wrong-rs-version" else "0.1.0"
+    payload[rs_info + "METADATA"] = f"Name: mssql-python-rs\nVersion: {version}\n".encode()
+    payload[rs_info + "RECORD"] = "".join(
+        f"{name.removeprefix(root)},,\n"
+        for name in (_CORE, _CORE_INIT, private)
+        if not (state == "unowned-core" and name == _CORE)
+    ).encode()
+    if state == "missing-private-library":
+        del payload[private]
+    result = audit.audit_package(_make_pkg(tmp_path, native_payload=payload), "elf")
+    if state == "valid":
+        assert result.violations == []
+    else:
+        assert result.violations
+        if state == "openssl-1.1":
+            assert any("OpenSSL 1.1" in error for error in result.violations)
+        elif state == "missing-runpath":
+            assert any("RUNPATH" in error for error in result.violations)
+
+
 # --- low-level parser -------------------------------------------------------
 
 

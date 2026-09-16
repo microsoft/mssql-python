@@ -184,8 +184,16 @@ def _realistic_payload(binding, arm64=None, x86_64=None):
 
 
 @pytest.mark.parametrize("cross_build", [False, True])
-@pytest.mark.parametrize("state", ["valid", "missing", "missing-init", "wrong-tag", "abi3"])
-def test_unix_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, state):
+@pytest.mark.parametrize(
+    ("rs_owned", "state"),
+    [
+        (rs_owned, state)
+        for rs_owned in (False, True)
+        for state in ("valid", "missing", "missing-init", "wrong-tag", "abi3")
+    ]
+    + [(True, "missing-private-library")],
+)
+def test_unix_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, rs_owned, state):
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("Direct Unix recipe execution requires bash")
@@ -211,17 +219,40 @@ def test_unix_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, 
     odbc_tag = "py3-none-macosx_15_0_universal2" if cross_build else "py3-none-any"
     with zipfile.ZipFile(wheels / f"mssql_python-1.13.0-{code_tag}.whl", "w") as wheel:
         for name, data in payload.items():
-            if "/mssql_python_odbc/" not in name:
+            if "/mssql_python_odbc/" not in name and not (rs_owned and "/mssql_py_core/" in name):
                 wheel.writestr(name.removeprefix("lib/python3.12/site-packages/"), data)
         wheel.writestr(
             "mssql_python-1.13.0.dist-info/METADATA",
-            "Metadata-Version: 2.1\nName: mssql-python\nVersion: 1.13.0\n",
+            "Metadata-Version: 2.1\nName: mssql-python\nVersion: 1.13.0\n"
+            + ("Requires-Dist: mssql-python-rs==0.1.0\n" if rs_owned else ""),
         )
         wheel.writestr(
             "mssql_python-1.13.0.dist-info/WHEEL",
             f"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: {code_tag}\n",
         )
         wheel.writestr("mssql_python-1.13.0.dist-info/RECORD", "")
+    if rs_owned:
+        rs_name = f"mssql_python_rs-0.1.0-{code_tag}.whl"
+        with zipfile.ZipFile(wheels / rs_name, "w") as wheel:
+            for name, data in payload.items():
+                if "/mssql_py_core/" in name:
+                    wheel.writestr(name.removeprefix("lib/python3.12/site-packages/"), data)
+            for arch, machine in (("arm64", _ARM64), ("x86_64", _X86_64)):
+                if state != "missing-private-library":
+                    wheel.writestr(
+                        f"mssql_py_core/libs/macos/{arch}/lib/mssqlodbc.dylib",
+                        _fake_macho_thin(machine),
+                    )
+            wheel.writestr(
+                "mssql_python_rs-0.1.0.dist-info/METADATA",
+                "Name: mssql-python-rs\nVersion: 0.1.0\n",
+            )
+            wheel.writestr(
+                "mssql_python_rs-0.1.0.dist-info/WHEEL",
+                f"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: {code_tag}\n",
+            )
+            wheel.writestr("mssql_python_rs-0.1.0.dist-info/RECORD", "")
+        (wheels / "rs-wheel-cp312.txt").write_text(rs_name + "\n", newline="\n")
     with zipfile.ZipFile(wheels / f"mssql_python_odbc-18.6.2.1-{odbc_tag}.whl", "w") as wheel:
         wheel.writestr("mssql_python_odbc/__init__.py", "")
         wheel.writestr(
@@ -250,6 +281,8 @@ def test_unix_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, 
             SP_DIR=site_packages.as_posix(),
             PREFIX=(tmp_path / "prefix").as_posix(),
             MSSQL_ODBC_VERSION="18.6.2.1",
+            MSSQL_RS_VERSION="0.1.0" if rs_owned else "",
+            target_platform="osx-arm64" if cross_build else "osx-64",
             PIP_TARGET=str(site_packages),
             PIP_CONFIG_FILE=os.devnull,
             PIP_USER="0",
@@ -262,9 +295,18 @@ def test_unix_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, 
     if state in ("valid", "abi3"):
         assert result.returncode == 0, output
         assert (site_packages / "mssql_python_odbc/__init__.py").is_file()
+        if rs_owned:
+            assert (site_packages / "mssql_python_rs-0.1.0.dist-info/RECORD").is_file()
+            assert (
+                site_packages / "mssql_python_rs-0.1.0.dist-info/conda-wheel-source.txt"
+            ).read_text().strip() == rs_name
     else:
         assert result.returncode != 0, output
-        assert "ERROR: required mssql_py_core" in output
+        assert (
+            "ERROR: required RS private"
+            if state == "missing-private-library"
+            else "ERROR: required mssql_py_core"
+        ) in output
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
