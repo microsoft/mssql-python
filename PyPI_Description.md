@@ -35,22 +35,23 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.13.0
+## What's new in v1.15.0
 
 ### Enhancements
 
-- **ODBC Driver Now Ships Exclusively via `mssql-python-odbc`** - The `libs/` fallback introduced in v1.12.0 has been removed. `mssql-python` now hard-depends on `mssql-python-odbc==18.6.2.1`; `pip install mssql-python` still Just Works and transparently pulls the driver package. Wheels are smaller and driver binaries are managed independently (#693).
-- **Apache Arrow Bulk Copy** - New `Cursor.bulkcopy_arrow(table_name, source)` method for high-performance bulk loading from `pyarrow.Table`, `RecordBatch`, or any object exposing the Arrow C Data Interface, avoiding Python row materialization. The classic `bulkcopy()` now raises `TypeError` for Arrow inputs and steers users to the new method (#665).
-- **`token_provider=` Parameter for Azure Identity** - `connect()` now accepts a `token_provider` object with a `.get_token(scope)` method, enabling `DefaultAzureCredential`, `AzureCliCredential`, `ManagedIdentityCredential`, and any custom credential from `azure-identity`. Bulk copy re-acquires a fresh token per operation. Mutually exclusive with `Authentication=` in the connection string (#603).
-- **Identity-Aware Connection Pooling with Token-Expiry Refresh** - The pool now keys on the security context (connection string + identity discriminator) so a connection authenticated as user A can never be handed to user B. Token acquisition is deferred to pool misses, and pooled connections whose token is within 5 minutes of expiry are refreshed automatically (#660).
+- **Faster parameterized queries with `setinputsizes()`** - Queries that declare parameter types up front now execute measurably faster (up to ~50%), especially repeated `execute()` workloads. No code changes needed (#736).
+- **`memoryview` Support in `Binary()`** - `Binary()` now accepts `memoryview` objects in addition to existing bytes-like inputs (#741).
+- **Module-Level SQL Server Type Constants** - SQL Server-specific type constants are now available directly from the `mssql_python` module for simpler API access (#764).
 
 ### Bug Fixes
 
-- **Silent Zero-Row `executemany` Batches on Late NULLs** - Fixed numeric array parameter binding paths (`TINYINT` / `SMALLINT` / `INT` / `FLOAT`) that left indicator slots uninitialized when a NULL appeared partway through the batch, causing the batch to insert zero rows without raising (#702, issue #670).
-- **`SQL_WVARCHAR` Output Converter Applied to Non-String Columns** - The legacy `SQL_WVARCHAR` catch-all no longer runs against `INT` / `DECIMAL` / `DATE` columns. Registering a single `SQL_WVARCHAR` converter used to mangle every non-string column value; the fallback is now gated on `str`/`bytes` mapped types, matching `Row._apply_output_converters` (#692, issue #691).
-- **Integer-Keyed Output Converters Now Fire** - `Connection.add_output_converter(SQL_DECIMAL, ...)` and any other integer ODBC SQL type code as a key now dispatch correctly. Previously the converter dictionary was keyed only by Python type, so integer-keyed registrations were silently stored but never invoked, diverging from `pyodbc` and from the driver's own documentation. Integer keys take precedence over Python-type keys, and `SQL_DECIMAL` vs `SQL_NUMERIC` are dispatched distinctly (#690, issue #684).
-- **`RecordBatchReader.Close()` for Arrow Result Sets** - `Cursor.arrow_reader()` now returns a wrapped reader whose `.close()` stops fetching, releases the server-side cursor, resets cursor state, and leaves the parent cursor usable. Supports idempotent close and context-manager usage (#644, issue #643).
-- **`AttributeError` on Partially-Initialized `Cursor` Cleanup** - `Cursor.__init__` now sets `self.closed = False` and `self.hstmt = None` before any code that can raise, `close()` defends with `getattr(self, "closed", True)`, and `__del__` uses the correct `sys.is_finalizing()` guard, so half-constructed cursors no longer emit unraisable exceptions during garbage collection (#646, issue #642).
+- **Concurrent Logging No Longer Deadlocks** - Logging now avoids GIL and mutex lock-order inversions during concurrent multithreaded use (#678).
+- **Correct Rust Core in Windows ARM64 Wheels** - Windows ARM64 wheels now vendor the matching `mssql_py_core` binary, restoring installation and bulk-copy compatibility (#737).
+- **Reliable Package-Local DLL Loading on Windows** - Bundled driver and authentication DLLs are resolved from package-local directories for more reliable deployment (#735).
+- **Consistent Decimal Parameter Binding** - `Decimal` values are now bound as `SQL_NUMERIC` regardless of their value, preventing inconsistent parameter typing (#742).
+- **ODBC 3.x Parameter Types** - Parameter binding now uses ODBC 3.x types instead of obsolete ODBC 2.x types for improved standards compatibility (#758).
+- **Database Name Metadata Is Decoded** - `Connection.getinfo(SQL_DATABASE_NAME)` now returns correctly decoded text (#771).
+- **Mixed Cursor Cleanup No Longer Crashes at Shutdown** - Cleanup for connections with mixed cursor states no longer causes a process-shutdown crash (#772).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

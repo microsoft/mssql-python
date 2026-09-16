@@ -85,7 +85,7 @@ def test_no_segfault_on_gc(conn_str):
     # Properly escape the connection string for embedding in code
     escaped_conn_str = conn_str.replace("\\", "\\\\").replace('"', '\\"')
     code = f"""
-from mssql_python import connect
+from mssql_python import Cursor, connect
 conn = connect("{escaped_conn_str}")
 cursors = [conn.cursor() for _ in range(5)]
 for cur in cursors:
@@ -574,8 +574,9 @@ def test_cursor_operations_after_close_raise_errors(conn_str):
 def test_mixed_cursor_cleanup_scenarios(conn_str, tmp_path):
     """Test various mixed cleanup scenarios in one script"""
     code = f"""
-from mssql_python import connect
-from mssql_python.exceptions import ProgrammingError
+import gc
+
+from mssql_python import Cursor, connect
 
 # Test 1: Normal cursor close
 conn1 = connect(\"\"\"{conn_str}\"\"\")
@@ -592,7 +593,23 @@ print("PASS: Double close does not raise error")
 cursor2 = conn1.cursor()
 cursor2.execute("SELECT 2")
 cursor2.fetchall()
-# Don't close cursor2, let __del__ handle it
+cursor2_id = id(cursor2)
+cursor2_close_calls = []
+original_close = Cursor.close
+
+def tracking_close(cursor):
+    cursor2_close_calls.append(id(cursor))
+    return original_close(cursor)
+
+Cursor.close = tracking_close
+try:
+    del cursor2
+    gc.collect()
+finally:
+    Cursor.close = original_close
+assert cursor2_id in cursor2_close_calls
+assert len(conn1._cursors) == 0
+print("PASS: Cursor __del__ cleaned up cursor")
 
 # Test 4: Connection close cleans up cursors
 conn2 = connect(\"\"\"{conn_str}\"\"\")
@@ -611,6 +628,8 @@ print("PASS: Connection close cleaned up cursors")
 
 # Clean up
 conn1.close()
+del cursor1, cursor3, cursor4, conn1, conn2
+gc.collect()
 print("All tests passed")
 """
 
@@ -622,6 +641,7 @@ print("All tests passed")
 
     assert result.returncode == 0, f"Script failed: {result.stderr}"
     assert "PASS: Double close does not raise error" in result.stdout
+    assert "PASS: Cursor __del__ cleaned up cursor" in result.stdout
     assert "PASS: Connection close cleaned up cursors" in result.stdout
     assert "All tests passed" in result.stdout
     # Should not have error logs

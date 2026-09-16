@@ -40,7 +40,7 @@ def resolve(feed_url: str) -> str:
     downloading .nupkg files by convention:
         {base}/{id}/{version}/{id}.{version}.nupkg
 
-    We need this base URL because we download the mssql-py-core-wheels
+    We need this base URL because we download the mssql-python-rs-wheels
     nupkg directly via HTTP rather than using the NuGet CLI.
     """
     parsed = urllib.parse.urlparse(feed_url)

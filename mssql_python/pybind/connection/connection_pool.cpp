@@ -10,6 +10,7 @@
 
 // Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 
 // Refresh threshold for expiry-aware checkout: a pooled connection whose access
 // token expires within this many seconds is discarded and reopened with a fresh
@@ -58,6 +59,7 @@ ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
                                                     const py::dict& attrs_before,
                                                     const py::object& token_factory) {
+    PERF_TIMER("ConnectionPool::acquire");
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
     bool needs_connect = false;
@@ -107,7 +109,11 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             if (_pool.empty()) {
                 // No more candidates — try to reserve a slot for a new connection.
                 if (_current_size < _max_size) {
-                    valid_conn = std::make_shared<Connection>(connStr, true);
+                    // Reserve the slot here but construct the Connection outside
+                    // _mutex (Phase 3): the Connection constructor allocates ODBC
+                    // handles and emits log records that acquire the GIL, and
+                    // holding _mutex across a GIL acquisition deadlocks a thread
+                    // that holds the GIL and is waiting on _mutex (#671).
                     ++_current_size;
                     needs_connect = true;
                     break;
@@ -232,7 +238,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
         if (have_pending_token) {
             std::lock_guard<std::mutex> lock(_mutex);
             if (_current_size < _max_size) {
-                valid_conn = std::make_shared<Connection>(connStr, true);
+                // Reserve the slot here but construct the Connection outside
+                // _mutex (Phase 3): the constructor emits GIL-acquiring log
+                // records, and holding _mutex across a GIL acquisition
+                // deadlocks a thread that holds the GIL and waits on _mutex (#671).
                 ++_current_size;
                 needs_connect = true;
                 break;
@@ -245,9 +254,13 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
         }
     }
 
-    // Phase 3: Connect the new connection outside the mutex.
+    // Phase 3: Construct and connect the new connection outside the mutex.
     if (needs_connect) {
         try {
+            // Construct the Connection outside _mutex (#671): the constructor
+            // allocates ODBC handles and emits log records that acquire the GIL,
+            // so it must not run while _mutex is held.
+            valid_conn = std::make_shared<Connection>(connStr, true);
             if (have_pending_token) {
                 // Reopen with the fresh token captured during expiry-aware
                 // checkout (the previous connection's token had rotated).
@@ -270,7 +283,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 valid_conn->connect(attrs_before);
             }
         } catch (...) {
-            // Connect failed — release the reserved slot
+            // Construct/connect failed — release the reserved slot
             {
                 std::lock_guard<std::mutex> lock(_mutex);
                 if (_current_size > 0) --_current_size;
@@ -291,6 +304,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
 }
 
 void ConnectionPool::release(std::shared_ptr<Connection> conn) {
+    PERF_TIMER("ConnectionPool::release");
     bool should_disconnect = false;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -347,6 +361,7 @@ bool ConnectionPool::canEvict() {
 }
 
 void ConnectionPool::close() {
+    PERF_TIMER("ConnectionPool::close");
     std::vector<std::shared_ptr<Connection>> to_close;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -374,10 +389,12 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
                                                                      const py::dict& attrs_before,
                                                                      const std::u16string& pool_key,
                                                                      const py::object& token_factory) {
+    PERF_TIMER("ConnectionPoolManager::acquireConnection");
     // Key the pool by pool_key when provided (identity-aware),
     // else fall back to the connection string (legacy behavior).
     const std::u16string& key = pool_key.empty() ? connStr : pool_key;
     std::shared_ptr<ConnectionPool> pool;
+    bool created = false;
     std::vector<std::shared_ptr<ConnectionPool>> evicted;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
@@ -429,10 +446,16 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
         }
         auto& pool_ref = _pools[key];
         if (!pool_ref) {
-            LOG("Creating new connection pool");
             pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+            created = true;
         }
         pool = pool_ref;
+    }
+    // Log after releasing _manager_mutex (#671): LOG() acquires the GIL, and
+    // holding a native mutex across a GIL acquisition deadlocks a thread that
+    // holds the GIL and is waiting on the same mutex.
+    if (created) {
+        LOG("Creating new connection pool");
     }
     // Close evicted pools outside _manager_mutex: close() disconnects ODBC
     // handles (releasing the GIL), which must never run while holding

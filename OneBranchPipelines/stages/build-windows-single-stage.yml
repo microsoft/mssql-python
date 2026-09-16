@@ -155,8 +155,7 @@ stages:
           - powershell: |
               $ErrorActionPreference = "Stop"
               Write-Host "Installing Python dependencies..."
-              python -m pip install --upgrade pip
-              python -m pip install setuptools wheel pybind11 pytest psutil pyodbc
+              python -m pip install --require-hashes -r eng/requirements-build-windows.txt
               Write-Host "Dependencies installed successfully"
             displayName: 'Install Python dependencies'
           
@@ -290,15 +289,16 @@ stages:
                 pattern: 'ddbc_bindings.cp$(shortPyVer)-$(pydArch).pyd'
           
           # =========================
-          # MSSQL_PY_CORE INSTALLATION
+          # MSSQL-PYTHON-RS INSTALLATION
           # =========================
-          # Extract mssql_py_core from NuGet into repo root BEFORE testing
-          # Required for bulkcopy tests which use mssql_py_core native bindings
+          # Install the separately owned runtime before bulk-copy tests.
           - task: PowerShell@2
-            displayName: 'Install mssql_py_core from NuGet'
+            displayName: 'Install mssql-python-rs'
             inputs:
               targetType: 'filePath'
               filePath: '$(Build.SourcesDirectory)\eng\scripts\install-mssql-py-core.ps1'
+              # Cross-compiled arm64 wheels do not install a runtime into the x64 host.
+              arguments: '-TargetArch $(targetArch)'
           
           # =========================
           # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
@@ -390,7 +390,6 @@ stages:
           # Build Python wheel package from source distribution
           # ARCHITECTURE environment variable controls target platform tagging
           - script: |
-              python -m pip install --upgrade pip wheel setuptools
               set ARCHITECTURE=$(targetArch)
               python setup.py bdist_wheel
             displayName: 'Build wheel package'
@@ -405,8 +404,6 @@ stages:
           - ${{ if eq(parameters.signWindowsBinaries, true) }}:
             - pwsh: |
                 $ErrorActionPreference = 'Stop'
-
-                python -m pip install --upgrade wheel | Out-Null
 
                 $verifyRoot = Join-Path "$(Agent.TempDirectory)" "wheel-sign-verify"
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $verifyRoot

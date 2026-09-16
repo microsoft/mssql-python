@@ -16,6 +16,7 @@
 
 // Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
@@ -47,6 +48,7 @@ static SqlHandlePtr getEnvHandle() {
 //-------------------------------------------------------------------------------------------------
 Connection::Connection(const std::u16string& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
+    PERF_TIMER("Connection::Connection");
     allocateDbcHandle();
 }
 
@@ -56,15 +58,24 @@ Connection::~Connection() {
 
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
-    auto _envHandle = getEnvHandle();
+    PERF_TIMER("Connection::allocateDbcHandle");
+    // Fetch/initialize the shared env handle without holding the GIL (#671):
+    // its first-time initialization runs under a C++ static-init guard and
+    // emits log records; a thread waiting on that guard while holding the GIL
+    // would deadlock the initializing thread that needs the GIL to log.
+    auto envHandle = [&] {
+        py::gil_scoped_release gil_release;
+        return getEnvHandle();
+    }();
     SQLHANDLE dbc = nullptr;
     LOG("Allocating SQL Connection Handle");
-    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
+    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, envHandle->get(), &dbc);
     checkError(ret);
     _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
 }
 
 void Connection::connect(const py::dict& attrs_before) {
+    PERF_TIMER("Connection::connect");
     LOG("Connecting to database");
     // Apply access token before connect
     if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
@@ -82,6 +93,7 @@ void Connection::connect(const py::dict& attrs_before) {
         // and SQL Server authentication — all pure I/O that doesn't need the GIL.
         // This allows other Python threads to run concurrently.
         py::gil_scoped_release release;
+        PERF_TIMER("Connection::connect::SQLDriverConnect_call");
         ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
                                    0, nullptr, SQL_DRIVER_NOPROMPT);
     }
@@ -90,13 +102,22 @@ void Connection::connect(const py::dict& attrs_before) {
 }
 
 void Connection::disconnect() {
+    PERF_TIMER("Connection::disconnect");
+    // Determine GIL state once, up front. disconnect() runs both from
+    // pybind11-bound methods (GIL held) and from GIL-less destructor / shutdown
+    // paths: Connection::~Connection() dropping the last shared_ptr, or teardown
+    // running after the interpreter has been finalized. Every LOG()/LOG_ERROR()
+    // below is gated on hasGil because LOG() acquires the GIL internally via
+    // py::gil_scoped_acquire, which is unsafe when the GIL is not held — it can
+    // hang or std::terminate during interpreter shutdown / stack unwinding.
+    // Py_IsInitialized() is checked first: after Py_Finalize() the interpreter is
+    // gone and PyGILState_Check() is unreliable, so treat "not initialized" as
+    // "no GIL" and skip all Python calls. (#671 follow-up)
+    bool hasGil = Py_IsInitialized() != 0 && PyGILState_Check() != 0;
     if (_dbcHandle) {
-        LOG("Disconnecting from database");
-
-        // Check if we hold the GIL so we can conditionally release it.
-        // The GIL is held when called from pybind11-bound methods but may NOT
-        // be held in destructor paths (C++ shared_ptr ref-count drop, shutdown).
-        bool hasGil = PyGILState_Check() != 0;
+        if (hasGil) {
+            LOG("Disconnecting from database");
+        }
 
         // CRITICAL FIX: Mark all child statement handles as implicitly freed
         // When we free the DBC handle below, the ODBC driver will automatically free
@@ -105,30 +126,25 @@ void Connection::disconnect() {
         
         // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
         // This protects against concurrent allocStatementHandle() calls or GC finalizers
+        size_t originalSize = 0, afterCompactSize = 0, badHandleCount = 0;
         {
             std::lock_guard<std::mutex> lock(_childHandlesMutex);
             
             // First compact: remove expired weak_ptrs (they're already destroyed)
-            size_t originalSize = _childStatementHandles.size();
+            originalSize = _childStatementHandles.size();
             _childStatementHandles.erase(
                 std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
                                [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
                 _childStatementHandles.end());
-            
-            LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
-                originalSize, _childStatementHandles.size(),
-                originalSize - _childStatementHandles.size());
-            
-            LOG("Marking %zu child statement handles as implicitly freed",
-                _childStatementHandles.size());
+            afterCompactSize = _childStatementHandles.size();
+
             for (auto& weakHandle : _childStatementHandles) {
                 if (auto handle = weakHandle.lock()) {
                     // SAFETY ASSERTION: Only STMT handles should be in this vector
                     // This is guaranteed by allocStatementHandle() which only creates STMT handles
                     // If this assertion fails, it indicates a serious bug in handle tracking
                     if (handle->type() != SQL_HANDLE_STMT) {
-                        LOG_ERROR("CRITICAL: Non-STMT handle (type=%d) found in _childStatementHandles. "
-                                  "This will cause a handle leak!", handle->type());
+                        ++badHandleCount;
                         continue;  // Skip marking to prevent leak
                     }
                     handle->markImplicitlyFreed();
@@ -137,6 +153,19 @@ void Connection::disconnect() {
             _childStatementHandles.clear();
             _allocationsSinceCompaction = 0;
         }  // Release lock before potentially slow SQLDisconnect call
+
+        // Log after releasing _childHandlesMutex (#671): LOG()/LOG_ERROR() acquire
+        // the GIL and must not run while a native mutex is held. Also gated on
+        // hasGil so the GIL-less destructor / shutdown path never tries to log.
+        if (hasGil) {
+            LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
+                originalSize, afterCompactSize, originalSize - afterCompactSize);
+            LOG("Marking %zu child statement handles as implicitly freed", afterCompactSize);
+            if (badHandleCount > 0) {
+                LOG_ERROR("CRITICAL: %zu non-STMT handle(s) found in _childStatementHandles. "
+                          "This will cause a handle leak!", badHandleCount);
+            }
+        }
 
         SQLRETURN ret;
         if (hasGil) {
@@ -160,7 +189,7 @@ void Connection::disconnect() {
         }
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
-    } else {
+    } else if (hasGil) {
         LOG("No connection handle to disconnect");
     }
 }
@@ -184,6 +213,7 @@ void Connection::checkError(SQLRETURN ret) const {
 }
 
 void Connection::commit() {
+    PERF_TIMER("Connection::commit");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -199,6 +229,7 @@ void Connection::commit() {
 }
 
 void Connection::rollback() {
+    PERF_TIMER("Connection::rollback");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -214,6 +245,7 @@ void Connection::rollback() {
 }
 
 void Connection::setAutocommit(bool enable) {
+    PERF_TIMER("Connection::setAutocommit");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -252,6 +284,7 @@ bool Connection::getAutocommit() const {
 }
 
 SqlHandlePtr Connection::allocStatementHandle() {
+    PERF_TIMER("Connection::allocStatementHandle");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -265,6 +298,8 @@ SqlHandlePtr Connection::allocStatementHandle() {
     // THREAD-SAFETY: Lock mutex before modifying _childStatementHandles
     // This protects against concurrent disconnect() or allocStatementHandle() calls,
     // or GC finalizers running from different threads
+    bool compacted = false;
+    size_t compactBefore = 0, compactAfter = 0;
     {
         std::lock_guard<std::mutex> lock(_childHandlesMutex);
         
@@ -277,17 +312,23 @@ SqlHandlePtr Connection::allocStatementHandle() {
         // This keeps allocation fast (O(1) amortized) while preventing unbounded growth
         // disconnect() also compacts, so this is just for long-lived connections with many cursors
         if (_allocationsSinceCompaction >= COMPACTION_INTERVAL) {
-            size_t originalSize = _childStatementHandles.size();
+            compactBefore = _childStatementHandles.size();
             _childStatementHandles.erase(
                 std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
                                [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
                 _childStatementHandles.end());
+            compactAfter = _childStatementHandles.size();
             _allocationsSinceCompaction = 0;
-            LOG("Periodic compaction: %zu -> %zu handles (removed %zu expired)",
-                originalSize, _childStatementHandles.size(),
-                originalSize - _childStatementHandles.size());
+            compacted = true;
         }
     }  // Release lock
+
+    // Log after releasing _childHandlesMutex (#671): LOG() acquires the GIL and
+    // must not run while a native mutex is held.
+    if (compacted) {
+        LOG("Periodic compaction: %zu -> %zu handles (removed %zu expired)",
+            compactBefore, compactAfter, compactBefore - compactAfter);
+    }
 
     return stmtHandle;
 }
@@ -587,6 +628,7 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
                                    const py::dict& attrsBefore, const std::u16string& poolKey,
                                    const py::object& tokenFactory)
     : _usePool(usePool), _connStr(connStr), _poolKey(poolKey.empty() ? connStr : poolKey) {
+    PERF_TIMER("ConnectionHandle::ConnectionHandle");
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
                                                                        _poolKey, tokenFactory);
@@ -622,6 +664,7 @@ ConnectionHandle::~ConnectionHandle() {
 }
 
 void ConnectionHandle::close() {
+    PERF_TIMER("ConnectionHandle::close");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -634,6 +677,7 @@ void ConnectionHandle::close() {
 }
 
 void ConnectionHandle::commit() {
+    PERF_TIMER("ConnectionHandle::commit");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -641,6 +685,7 @@ void ConnectionHandle::commit() {
 }
 
 void ConnectionHandle::rollback() {
+    PERF_TIMER("ConnectionHandle::rollback");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -648,6 +693,7 @@ void ConnectionHandle::rollback() {
 }
 
 void ConnectionHandle::setAutocommit(bool enabled) {
+    PERF_TIMER("ConnectionHandle::setAutocommit");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -662,6 +708,7 @@ bool ConnectionHandle::getAutocommit() const {
 }
 
 SqlHandlePtr ConnectionHandle::allocStatementHandle() {
+    PERF_TIMER("ConnectionHandle::allocStatementHandle");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -726,6 +773,7 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
 }
 
 py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
+    PERF_TIMER("ConnectionHandle::getInfo");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -733,6 +781,7 @@ py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
 }
 
 void ConnectionHandle::setAttr(int attribute, py::object value) {
+    PERF_TIMER("ConnectionHandle::setAttr");
     if (!_conn) {
         ThrowStdException("Connection not established");
     }

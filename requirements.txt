@@ -1,10 +1,12 @@
 # Testing dependencies
 pytest
 pytest-cov
+zstandard
 coverage
 unittest-xml-reporting
 psutil
 pyarrow
+polars
 
 # Runtime dependencies needed for tests
 azure-identity

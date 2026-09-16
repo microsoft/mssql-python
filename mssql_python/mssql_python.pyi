@@ -30,6 +30,7 @@ threadsafety: int  # 1
 # Module Settings - Properties that can be get/set at module level
 lowercase: bool  # Controls column name case behavior
 native_uuid: bool  # Controls UUID type handling
+native_provider: Optional[str]  # Selects the native ODBC provider ('msodbcsql18' or 'mssql-odbc')
 
 # Settings Class
 class Settings:
@@ -43,6 +44,7 @@ def get_settings() -> Settings: ...
 def setDecimalSeparator(separator: str) -> None: ...
 def getDecimalSeparator() -> str: ...
 def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) -> None: ...
+def get_native_provider_info() -> Dict[str, object]: ...
 def get_info_constants() -> Dict[str, int]: ...
 
 # Logging Functions
@@ -92,7 +94,7 @@ def Timestamp(
 def DateFromTicks(ticks: int) -> datetime.date: ...
 def TimeFromTicks(ticks: int) -> datetime.time: ...
 def TimestampFromTicks(ticks: int) -> datetime.datetime: ...
-def Binary(value: Union[str, bytes, bytearray]) -> bytes: ...
+def Binary(value: Union[str, bytes, bytearray, memoryview]) -> bytes: ...
 
 # DB-API 2.0 Exception Hierarchy
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -381,6 +383,10 @@ SQL_LONGVARBINARY: int
 SQL_DATE: int
 SQL_TIME: int
 SQL_TIMESTAMP: int
+# SQL Server-specific type constants (pyodbc parity)
+SQL_SS_TIME2: int
+SQL_SS_XML: int
+SQL_SS_VARIANT: int
 SQL_WMETADATA: int
 
 # Connection Attribute Constants
@@ -390,6 +396,12 @@ SQL_ATTR_CURRENT_CATALOG: int
 SQL_ATTR_LOGIN_TIMEOUT: int
 SQL_ATTR_PACKET_SIZE: int
 SQL_ATTR_TXN_ISOLATION: int
+SQL_TXN_ISOLATION_LEVEL: int
+
+# Legacy Statement Options (not information types)
+SQL_CONCURRENCY: int
+SQL_ROWSET_SIZE: int
+SQL_ROW_NUMBER: int
 
 # Transaction Isolation Level Constants
 SQL_TXN_READ_UNCOMMITTED: int
@@ -405,6 +417,9 @@ SQL_MODE_READ_ONLY: int
 SQL_DRIVER_NAME: int
 SQL_DRIVER_VER: int
 SQL_DRIVER_ODBC_VER: int
+SQL_DRIVER_HLIB: int
+SQL_DRIVER_HENV: int
+SQL_DRIVER_HDBC: int
 SQL_DATA_SOURCE_NAME: int
 SQL_DATABASE_NAME: int
 SQL_SERVER_NAME: int
@@ -422,8 +437,32 @@ SQL_DEFAULT_TXN_ISOLATION: int
 SQL_NUMERIC_FUNCTIONS: int
 SQL_STRING_FUNCTIONS: int
 SQL_DATETIME_FUNCTIONS: int
+SQL_TIMEDATE_FUNCTIONS: int
+SQL_SYSTEM_FUNCTIONS: int
 SQL_MAX_COLUMN_NAME_LEN: int
 SQL_MAX_TABLE_NAME_LEN: int
 SQL_MAX_SCHEMA_NAME_LEN: int
 SQL_MAX_CATALOG_NAME_LEN: int
 SQL_MAX_IDENTIFIER_LEN: int
+SQL_CATALOG_NAME: int
+SQL_DESCRIBE_PARAMETER: int
+SQL_STATIC_CURSOR_ATTRIBUTES1: int
+SQL_STATIC_CURSOR_ATTRIBUTES2: int
+SQL_KEYSET_CURSOR_ATTRIBUTES1: int
+SQL_KEYSET_CURSOR_ATTRIBUTES2: int
+SQL_OJ_CAPABILITIES: int
+
+# SQLGetInfo Return Values (not information types)
+SQL_IC_UPPER: int
+SQL_IC_LOWER: int
+SQL_IC_SENSITIVE: int
+SQL_IC_MIXED: int
+SQL_SC_SQL92_ENTRY: int
+SQL_SC_FIPS127_2_TRANSITIONAL: int
+SQL_SC_SQL92_INTERMEDIATE: int
+SQL_SC_SQL92_FULL: int
+
+# Deprecated legacy values (127/128/129), not SQL conformance flags
+SQL_SQL92_ENTRY_SQL: int
+SQL_SQL92_INTERMEDIATE_SQL: int
+SQL_SQL92_FULL_SQL: int
