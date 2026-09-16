@@ -1,8 +1,8 @@
-import importlib.util
+import hashlib
 import io
+import json
 import os
 import subprocess
-import sys
 import zipfile
 from pathlib import Path
 
@@ -18,20 +18,18 @@ if not MODULE_PATH.is_file() or not (Path(__file__).parents[1] / "OneBranchPipel
     )
 
 
-def _load_downloader():
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        spec = importlib.util.spec_from_file_location("rs_wheel_downloader_under_test", MODULE_PATH)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path.remove(str(SCRIPTS_DIR))
+from eng.scripts import download_mssql_python_rs_wheels as downloader
 
 
-def _package(entries):
+def _package(entries, transport_version="0.1.0-dev.1"):
     package = io.BytesIO()
     with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr(
+            "mssql-python-rs-wheels.nuspec",
+            "<package><metadata><id>mssql-python-rs-wheels</id>"
+            f"<version>{transport_version}</version>"
+            "<description>RS transport fixture</description></metadata></package>",
+        )
         for name in entries:
             archive.writestr(name, name.encode("ascii"))
     package.seek(0)
@@ -51,7 +49,7 @@ def _mock_download(monkeypatch, module, content, package_base="https://example.t
 
 
 def test_downloads_only_matching_wheels_and_clears_stale_output(tmp_path, monkeypatch):
-    module = _load_downloader()
+    module = downloader
     version_file = tmp_path / "version"
     version_file.write_text("0.1.0\n", encoding="ascii")
     transport_file = tmp_path / "transport-version"
@@ -63,7 +61,8 @@ def test_downloads_only_matching_wheels_and_clears_stale_output(tmp_path, monkey
         [
             "wheels/mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl",
             "symbols/debug.pdb",
-        ]
+        ],
+        "0.1.0-dev.20260914.174990",
     )
     requested = _mock_download(monkeypatch, module, content, "https://example.test/flat")
 
@@ -72,7 +71,17 @@ def test_downloads_only_matching_wheels_and_clears_stale_output(tmp_path, monkey
     )
 
     assert [wheel.name for wheel in wheels] == ["mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl"]
-    assert sorted(path.name for path in output.iterdir()) == [wheels[0].name]
+    assert sorted(path.name for path in output.iterdir()) == [wheels[0].name, "transport.json"]
+    receipt = json.loads((output / "transport.json").read_text())
+    assert receipt == {
+        "distribution_version": "0.1.0",
+        "transport_version": "0.1.0-dev.20260914.174990",
+        "feed_url": "https://example.test/index.json",
+        "package_id": "mssql-python-rs-wheels",
+        "package_sha256": hashlib.sha256(content).hexdigest(),
+        "nuspec_description": "RS transport fixture",
+        "wheel_sha256": {wheels[0].name: hashlib.sha256(wheels[0].read_bytes()).hexdigest()},
+    }
     assert requested == [
         (
             "https://example.test/flat/mssql-python-rs-wheels/0.1.0-dev.20260914.174990/"
@@ -83,7 +92,7 @@ def test_downloads_only_matching_wheels_and_clears_stale_output(tmp_path, monkey
 
 
 def test_rejects_wheel_with_unexpected_version(tmp_path, monkeypatch):
-    module = _load_downloader()
+    module = downloader
     version_file = tmp_path / "version"
     version_file.write_text("0.1.0", encoding="ascii")
     transport_file = tmp_path / "transport-version"
@@ -101,7 +110,7 @@ def test_rejects_wheel_with_unexpected_version(tmp_path, monkeypatch):
 
 
 def test_rejects_duplicate_wheel_filename(tmp_path, monkeypatch):
-    module = _load_downloader()
+    module = downloader
     version_file = tmp_path / "version"
     version_file.write_text("0.1.0", encoding="ascii")
     transport_file = tmp_path / "transport-version"
@@ -121,7 +130,7 @@ def test_rejects_duplicate_wheel_filename(tmp_path, monkeypatch):
 
 
 def test_rejects_filesystem_root_as_output(tmp_path):
-    module = _load_downloader()
+    module = downloader
     version_file = tmp_path / "version"
     version_file.write_text("0.1.0", encoding="ascii")
     transport_file = tmp_path / "transport-version"
@@ -137,7 +146,7 @@ def test_rejects_filesystem_root_as_output(tmp_path):
 
 
 def test_rejects_working_directory_and_ancestor_as_output(tmp_path, monkeypatch):
-    module = _load_downloader()
+    module = downloader
     version_file = tmp_path / "version"
     version_file.write_text("0.1.0", encoding="ascii")
     transport_file = tmp_path / "transport-version"
@@ -157,7 +166,7 @@ def test_rejects_working_directory_and_ancestor_as_output(tmp_path, monkeypatch)
 
 
 def test_rejects_symlink_output_without_deleting_target(tmp_path, monkeypatch):
-    module = _load_downloader()
+    module = downloader
     version_file = tmp_path / "version"
     version_file.write_text("0.1.0", encoding="ascii")
     transport_file = tmp_path / "transport-version"
