@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pr-code-coverage-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   coverage-report:
     runs-on: ubuntu-latest

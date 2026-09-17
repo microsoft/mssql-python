@@ -21,6 +21,7 @@ REPOSITORY = "microsoft/mssql-python"
 HEADER = f"{reporting.MARKER}\n## PR Performance Report\n\n"
 # Allow a 160-minute ADO job plus queueing; the workflow reserves publication time.
 WAIT_MINUTES = 220
+COMPLETED_RESULTS = {"succeeded", "partiallySucceeded", "failed"}
 
 
 def allowed_url(url):
@@ -226,10 +227,22 @@ def run(number, head, wait_minutes):
             build = find_build(build_items(api(f"{ADO}/builds?{query}")), number, head)
             if pr["state"] != "open" or current_head != head:
                 return
+            if (
+                build is not None
+                and build.get("status") == "completed"
+                and build.get("result") not in COMPLETED_RESULTS | {"canceled"}
+            ):
+                unavailable(
+                    number,
+                    head,
+                    "Performance run completed with an unsupported result.",
+                    pr_base,
+                )
+                return
             complete = (
                 build is not None
                 and build.get("status") == "completed"
-                and build.get("result") != "canceled"
+                and build.get("result") in COMPLETED_RESULTS
             )
         except (ValueError, KeyError, TypeError, URLError, TimeoutError):
             failures += 1
@@ -242,7 +255,11 @@ def run(number, head, wait_minutes):
         if complete:
             break
         time.sleep(30)
-    if build is None or build.get("status") != "completed" or build.get("result") == "canceled":
+    if (
+        build is None
+        or build.get("status") != "completed"
+        or build.get("result") not in COMPLETED_RESULTS
+    ):
         unavailable(
             number,
             head,

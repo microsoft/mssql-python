@@ -293,5 +293,10 @@ def test_missing_build_or_queued_coverage_obeys_wall_clock_budget(tmp_path, step
 
 def test_job_budget_leaves_time_for_downloads_and_publishing():
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert (
+        "concurrency:\n"
+        "  group: pr-code-coverage-${{ github.event.pull_request.number }}\n"
+        "  cancel-in-progress: true\n"
+    ) in workflow
     assert "    timeout-minutes: 245\n" in workflow
     assert "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in workflow

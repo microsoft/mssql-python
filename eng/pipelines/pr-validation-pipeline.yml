@@ -60,20 +60,17 @@ jobs:
       SQLServer2022:
         sqlVersion: 'SQL2022'
         pythonVersion: '3.13'
-        profilerBuild: '1'
-        profilerCheck: 'on'
-        bindingArtifact: 'ddbc_bindings-profiling-SQL2022'
+        profilerBuild: '0'
+        bindingArtifact: 'ddbc_bindings'
       SQLServer2025:
         sqlVersion: 'SQL2025'
         pythonVersion: '3.14'
-        profilerBuild: '1'
-        profilerCheck: 'on'
-        bindingArtifact: 'ddbc_bindings-profiling-SQL2025'
+        profilerBuild: '0'
+        bindingArtifact: 'ddbc_bindings'
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
         profilerBuild: '0'
-        profilerCheck: 'off'
         bindingArtifact: 'ddbc_bindings'
 
   steps:
@@ -85,6 +82,12 @@ jobs:
       addToPath: true
       githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python $(pythonVersion)'
+
+  - powershell: |
+      Write-Host "##vso[task.setvariable variable=profilerBuild]1"
+      Write-Host "##vso[task.setvariable variable=bindingArtifact]ddbc_bindings-profiling-$(sqlVersion)"
+    displayName: 'Configure PR profiling build'
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['sqlVersion'], 'LocalDB'))
 
   - script: |
       python -m pip install --upgrade pip
@@ -254,8 +257,9 @@ jobs:
     env:
       ENABLE_PROFILING: $(profilerBuild)
 
-  - script: python -m eng.profiler_benchmarks.controller --check-build $(profilerCheck)
+  - script: python -m eng.profiler_benchmarks.controller --check-build on
     displayName: 'Verify native configuration and recording OFF before pytest'
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['sqlVersion'], 'LocalDB'))
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -560,7 +564,11 @@ jobs:
       pip install -r requirements.txt
 
       echo "Building pybind bindings (.so) (overlapped with container setup)..."
-      ( cd mssql_python/pybind && ENABLE_PROFILING=1 ./build.sh )
+      PROFILER_BUILD=0
+      if [ "$(Build.Reason)" = "PullRequest" ]; then
+        PROFILER_BUILD=1
+      fi
+      ( cd mssql_python/pybind && ENABLE_PROFILING="$PROFILER_BUILD" ./build.sh )
 
       echo "Waiting for container setup (Colima + SQL Server) to finish..."
       SQL_STATUS=0
@@ -575,6 +583,7 @@ jobs:
 
   - script: python -m eng.profiler_benchmarks.controller --check-build on
     displayName: 'Verify native configuration and recording OFF before pytest'
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -819,10 +828,8 @@ jobs:
   - script: |
       # Build pybind bindings in the container
       PROFILER_BUILD=0
-      PROFILER_CHECK=off
-      if [ "$(distroName)" = "Ubuntu" ]; then
+      if [ "$(Build.Reason)" = "PullRequest" ] && [ "$(distroName)" = "Ubuntu" ]; then
         PROFILER_BUILD=1
-        PROFILER_CHECK=on
       fi
       docker exec -e ENABLE_PROFILING="$PROFILER_BUILD" test-container-$(distroName) bash -c "
         set -e
@@ -830,9 +837,15 @@ jobs:
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
-        cd ../..
-        python -m eng.profiler_benchmarks.controller --check-build $PROFILER_CHECK
       "
+      if [ "$PROFILER_BUILD" = "1" ]; then
+        docker exec test-container-$(distroName) bash -c "
+          set -e
+          source /opt/venv/bin/activate
+          cd /workspace
+          python -m eng.profiler_benchmarks.controller --check-build on
+        "
+      fi
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
 
   - template: steps/install-mssql-py-core.yml

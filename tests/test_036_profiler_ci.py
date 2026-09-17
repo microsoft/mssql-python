@@ -1081,6 +1081,25 @@ def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report
     assert "buildId=42" in posted[1]
 
 
+@pytest.mark.parametrize("result", [None, "unknown"])
+def test_publisher_rejects_unsupported_completed_results(monkeypatch, result):
+    posted = []
+    build = ado_build(result=result)
+
+    def api(url):
+        assert "/builds?" in url, "Unsupported builds must not query artifacts"
+        return {"value": [build]}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    publisher.run(123, "c" * 40, 1)
+    assert len(posted) == 2
+    assert "unsupported result" in posted[1]
+
+
 @pytest.mark.parametrize("status", [None, "notStarted", "inProgress"])
 def test_publisher_deadline_finishes_without_reading_unfinished_build_metadata(monkeypatch, status):
     posted = []
@@ -1223,16 +1242,29 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
         "eq(variables['Build.Reason'], 'PullRequest')" in condition
         for condition in profiler_conditions
     )
-    assert "profilerBuild: '0'" in pipeline  # LocalDB still exercises the normal build
-    assert "ddbc_bindings-profiling-SQL2022" in pipeline
-    assert "ddbc_bindings-profiling-SQL2025" in pipeline
-    assert "ENABLE_PROFILING=1 ./build.sh" in pipeline
+    assert pipeline.count("profilerBuild: '0'") == 3
+    assert pipeline.count("bindingArtifact: 'ddbc_bindings'") == 3
     for release in (ROOT / "OneBranchPipelines").rglob("*.yml"):
         assert "ENABLE_PROFILING" not in release.read_text(encoding="utf-8")
     windows = pipeline.split("- job: pytestonwindows\n", 1)[1].split("\n- job:", 1)[0]
-    assert "profilerCheck: 'off'" in windows.split("LocalDB_Python314:", 1)[1].split("steps:", 1)[0]
-    assert windows.split("steps:", 1)[0].count("profilerCheck: 'on'") == 2
+    assert "##vso[task.setvariable variable=profilerBuild]1" in windows
+    assert (
+        "##vso[task.setvariable variable=bindingArtifact]" "ddbc_bindings-profiling-$(sqlVersion)"
+    ) in windows
+    assert (
+        "condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), "
+        "ne(variables['sqlVersion'], 'LocalDB'))"
+    ) in windows
+    macos = pipeline.split("- job: PytestOnMacOS\n", 1)[1].split("\n- job:", 1)[0]
+    assert 'if [ "$(Build.Reason)" = "PullRequest" ]; then' in macos
+    assert 'ENABLE_PROFILING="$PROFILER_BUILD" ./build.sh' in macos
+    assert "condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))" in macos
     linux = pipeline.split("- job: PytestOnLinux\n", 1)[1].split("\n- job:", 1)[0]
+    assert (
+        'if [ "$(Build.Reason)" = "PullRequest" ] && [ "$(distroName)" = "Ubuntu" ]; then' in linux
+    )
+    assert 'if [ "$PROFILER_BUILD" = "1" ]; then' in linux
+    assert "python -m eng.profiler_benchmarks.controller --check-build on" in linux
     benchmark = linux.split("# Run performance benchmarks on Ubuntu", 1)[1]
     assert "-e BUILD_BUILDID \\" in benchmark
     assert "BUILD_BUILDID: $(Build.BuildId)" in benchmark
