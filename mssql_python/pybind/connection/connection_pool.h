@@ -41,6 +41,16 @@ class ConnectionPool {
     // dropped by the manager to reclaim memory (lazy eviction).
     bool canEvict();
 
+    // Test accessors for pool generation and current size
+    size_t current_size() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
+        return _current_size;
+    }
+    uint64_t generation() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
+        return _generation;
+    }
+
   private:
     size_t _max_size;        // Maximum number of connections allowed
     int _idle_timeout_secs;  // Idle time before connections are stale

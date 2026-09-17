@@ -987,24 +987,25 @@ def test_pooling_state_consistency(conn_str):
 def test_pool_size_accounting_race_on_close_interleave(conn_str):
     """Regression test for GH-746: connection pool size accounting drift on close race.
 
-    When a connection-open failure races close_pooling() (or pool close),
-    the failed thread's decrement must not cancel a newer generation's
-    reservation. With max_size=1, if Thread A's open failure wrongly
-    decrements the counter after Thread B reserved the slot under the new
-    generation, Thread C would be allowed to connect, exceeding max_size.
-    The generation counter guarantees that Thread A's cleanup only decrements
-    if the pool generation still matches its reservation.
+    When a connection-open failure races pool close(), the failed thread's
+    decrement must not cancel a newer generation's reservation on that pool.
+    With max_size=1, if Thread A's open failure wrongly decrements the counter
+    after Thread B reserved the slot under the new generation, Thread C would
+    be allowed to connect, exceeding max_size. The generation counter guarantees
+    that Thread A's cleanup only decrements if the pool generation still matches
+    its reservation.
 
-    Run in a subprocess so pooling(max_size=1) is the effective configuration.
+    Uses _TestConnectionPool to ensure Thread A, Thread B, and Thread C all
+    operate deterministically against the exact same pool instance.
     """
     _run_in_subprocess(
         """
-        import os, threading
+        import threading
         from mssql_python import ddbc_bindings
 
-        ddbc_bindings.enable_pooling(1, 600)
-        base_conn = os.environ.get("DB_CONNECTION_STRING") or "SERVER=dummy_test_746;"
-        pool_key = base_conn + "\\x00mssql_test_746_race"
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        assert pool.current_size == 0
+        assert pool.generation == 0
 
         in_factory_a = threading.Event()
         release_factory_a = threading.Event()
@@ -1018,17 +1019,20 @@ def test_pool_size_accounting_race_on_close_interleave(conn_str):
 
         def run_a():
             try:
-                ddbc_bindings.Connection(base_conn, True, {}, pool_key, factory_a)
+                pool.acquire("SERVER=dummy_test_746;", factory_a)
             except Exception as exc:
                 t_a_error.append(exc)
 
         t_a = threading.Thread(target=run_a)
         t_a.start()
         assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+        assert pool.current_size == 1
 
-        # Thread A has reserved the slot. Now close_pooling() resets the pool
+        # Thread A has reserved the slot. Now pool.close() resets the pool
         # and increments the pool generation counter.
-        ddbc_bindings.close_pooling()
+        pool.close()
+        assert pool.current_size == 0
+        assert pool.generation == 1
 
         # Thread B initiates acquire and reserves the freed slot under the new generation.
         in_factory_b = threading.Event()
@@ -1043,26 +1047,33 @@ def test_pool_size_accounting_race_on_close_interleave(conn_str):
 
         def run_b():
             try:
-                ddbc_bindings.Connection(base_conn, True, {}, pool_key, factory_b)
+                pool.acquire("SERVER=dummy_test_746;", factory_b)
             except Exception as exc:
                 t_b_error.append(exc)
 
         t_b = threading.Thread(target=run_b)
         t_b.start()
         assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+        assert pool.current_size == 1
 
         # Thread A now raises its error. With the generation counter fix, its cleanup
-        # detects that the pool generation changed and does NOT decrement _current_size.
+        # detects that the pool generation changed (0 != 1) and does NOT decrement current_size.
+        # On buggy code without the fix, Thread A's cleanup would decrement current_size back to 0.
         release_factory_a.set()
         t_a.join(timeout=5.0)
         assert len(t_a_error) == 1 and "simulated open failure A" in str(t_a_error[0])
 
-        # Thread C now attempts to acquire on the same pool key.
+        # Under the generation fix, current_size MUST still be 1 (Thread B's reservation is preserved).
+        assert pool.current_size == 1, (
+            f"Expected pool.current_size to be 1, but got {pool.current_size} (drift occurred!)"
+        )
+
+        # Thread C now attempts to acquire on the same pool.
         # Since max_size=1 and Thread B is still reserving the slot, Thread C must fail
         # with 'pool size limit reached'.
         thread_c_rejected = False
         try:
-            ddbc_bindings.Connection(base_conn, True, {}, pool_key, lambda: {})
+            pool.acquire("SERVER=dummy_test_746;", lambda: {})
         except RuntimeError as exc:
             if "pool size limit reached" in str(exc):
                 thread_c_rejected = True
@@ -1073,7 +1084,8 @@ def test_pool_size_accounting_race_on_close_interleave(conn_str):
         release_factory_b.set()
         t_b.join(timeout=5.0)
         assert len(t_b_error) == 1 and "simulated open failure B" in str(t_b_error[0])
-        ddbc_bindings.close_pooling()
+        assert pool.current_size == 0
+        pool.close()
         """,
         conn_str,
     )

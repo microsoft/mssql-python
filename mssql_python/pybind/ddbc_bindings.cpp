@@ -20,6 +20,7 @@
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
@@ -6121,6 +6122,20 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         manager.setAccepting(false);
         manager.closePools();
     }, "Disable global connection pooling and close all pools");
+    // Internal test seam: allows deterministic unit testing of ConnectionPool
+    // concurrency and generation tracking (#746).
+    py::class_<ConnectionPool, std::shared_ptr<ConnectionPool>>(m, "_TestConnectionPool")
+        .def(py::init<size_t, int>(), py::arg("max_size") = 1, py::arg("idle_timeout_secs") = 600)
+        .def(
+            "acquire",
+            [](ConnectionPool& pool, const std::u16string& connStr,
+               const py::object& token_factory) {
+                pool.acquire(connStr, py::dict(), token_factory);
+            },
+            py::arg("conn_str"), py::arg("token_factory") = py::none())
+        .def("close", &ConnectionPool::close)
+        .def_property_readonly("current_size", &ConnectionPool::current_size)
+        .def_property_readonly("generation", &ConnectionPool::generation);
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap,
           "DetectParamTypes + BindParameters + SQLExecute all in C++",
