@@ -7,7 +7,11 @@ This directory contains benchmark scripts for testing the performance of various
 ### 1. `bench_mssql.py` - Richbench Framework Benchmarks
 Comprehensive benchmarks using the richbench framework for detailed performance analysis.
 
-### 2. Profiler benchmark comparisons
+### 2. `perf-benchmarking.py` - Real-World Query Benchmarks
+
+Direct `pyodbc` and `mssql_python` comparisons against AdventureWorks2022.
+
+### 3. Profiler benchmark comparisons
 
 Profiler benchmarks are engineering infrastructure, separate from these standalone
 scripts and from the runtime profiler. See

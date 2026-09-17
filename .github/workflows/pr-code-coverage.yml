@@ -174,11 +174,7 @@ jobs:
                   }
                   BUILD_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID?api-version=7.1-preview.7"
                   ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
-                  ADO_URL=$(jq -r '._links.web.href // empty' <<< "$REPLACEMENT")
-                  if [[ -z "$ADO_URL" || ${#ADO_URL} -gt 500 || "$ADO_URL" == *$'\n'* || "$ADO_URL" == *$'\r'* ]]; then
-                    echo "Invalid replacement Azure DevOps build URL"
-                    exit 1
-                  fi
+                  ADO_URL="https://dev.azure.com/sqlclientdrivers/public/_build/results?buildId=$BUILD_ID"
                   echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
                   echo "ADO_URL=$ADO_URL" >> "$GITHUB_ENV"
                   COMPLETED_AT=-1

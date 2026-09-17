@@ -22,7 +22,9 @@ def select(archive, kind):
     for member in members:
         path = PurePosixPath(member.filename)
         if (
-            path.is_absolute()
+            member.is_dir()
+            or stat.S_ISDIR(member.external_attr >> 16)
+            or path.is_absolute()
             or ".." in path.parts
             or "\\" in member.filename
             or member.flag_bits & 1

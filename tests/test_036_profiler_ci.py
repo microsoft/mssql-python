@@ -176,6 +176,19 @@ def test_reject_invalid_or_incomparable_data(report, case):
         reporting.validate(report)
 
 
+@pytest.mark.parametrize("field", ["environment", "scenarios", "cpp", "calls"])
+def test_missing_report_fields_are_normalized_to_value_error(report, field):
+    sample = report["pairs"][0]["base"]
+    if field in ("environment", "scenarios"):
+        del sample[field]
+    elif field == "cpp":
+        del sample["scenarios"]["select"][field]
+    else:
+        del sample["scenarios"]["select"]["cpp"]["ddbc::query"][field]
+    with pytest.raises(ValueError, match="Missing performance report field"):
+        reporting.validate(report)
+
+
 def test_reject_wrong_commit_and_preserve_incomplete_status(report):
     with pytest.raises(ValueError, match="provenance"):
         reporting.validate(report, head="e" * 40)
@@ -417,6 +430,15 @@ def test_coverage_artifact_reader_rejects_oversized_or_unrelated_archives(tmp_pa
         stream.seek(extractor.MAX_ARCHIVE_BYTES)
         stream.write(b"x")
     with pytest.raises(ValueError, match="archive exceeds"):
+        extractor.copy_report(archive, tmp_path / "coverage.xml", "xml")
+    archive.write_bytes(zip_data([("coverage.xml/", b"")]))
+    with pytest.raises(ValueError, match="No coverage xml"):
+        extractor.copy_report(archive, tmp_path / "coverage.xml", "xml")
+    directory = zipfile.ZipInfo("coverage.xml")
+    directory.create_system = 3
+    directory.external_attr = 0o40755 << 16
+    archive.write_bytes(zip_data([(directory, b"")]))
+    with pytest.raises(ValueError, match="No coverage xml"):
         extractor.copy_report(archive, tmp_path / "coverage.xml", "xml")
 
 
@@ -1155,6 +1177,14 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
     assert "libodbc1 " not in benchmark and "odbcinst1debian2" not in benchmark
 
 
+def test_profiler_documentation_preserves_standalone_benchmarks_and_failed_build_contract():
+    benchmarks = (ROOT / "benchmarks/README.md").read_text(encoding="utf-8")
+    assert "perf-benchmarking.py" in benchmarks
+    assert "Profiler benchmark comparisons" in benchmarks
+    contract = (ROOT / "eng/profiler_benchmarks/README.md").read_text(encoding="utf-8")
+    assert "failed aggregate build can still publish" in contract
+
+
 def test_comment_workflow_executes_only_trusted_base_code():
     workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
     assert "pull_request_target:" in workflow
@@ -1170,6 +1200,11 @@ def test_comment_workflow_executes_only_trusted_base_code():
     assert '-o "$COVERAGE_XML_ARCHIVE"' in coverage
     assert "-o coverage-report.zip" not in coverage
     assert "-o coverage-artifacts.zip" not in coverage
+    assert coverage.count("._links.web.href") == 1
+    assert (
+        'ADO_URL="https://dev.azure.com/sqlclientdrivers/public/_build/results?buildId=$BUILD_ID"'
+        in coverage
+    )
     assert 'cp "$COVERAGE_XML"' not in coverage
     assert 'diff-cover "$COVERAGE_XML"' in coverage
     assert "COVERAGE_XML: ${{ runner.temp }}/coverage.xml" in coverage

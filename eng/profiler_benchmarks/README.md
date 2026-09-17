@@ -30,7 +30,8 @@ Partial results never produce a verdict.
 Five environments publish raw samples: Windows and macOS on SQL Server 2022/2025,
 and Ubuntu on SQL Server 2022. The privileged publisher runs trusted base code,
 authenticates benchmark producers, validates bounded artifacts, and ignores stale
-heads. Missing, malformed, canceled, or failed results remain unavailable.
+heads. A failed aggregate build can still publish when its authenticated artifacts
+validate. Missing, malformed, canceled, incomplete, or invalid data remains unavailable.
 
 The publisher waits up to 220 minutes inside a 230-minute workflow. The first main
 comparison after introduction may be incomplete because its parent lacks this

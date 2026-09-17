@@ -148,6 +148,13 @@ def text(value, limit=160):
 
 
 def validate(report, build_id=None, head=None, source=None, base=None, suite=None):
+    try:
+        return _validate(report, build_id, head, source, base, suite)
+    except KeyError as error:
+        raise ValueError(f"Missing performance report field: {error.args[0]}") from error
+
+
+def _validate(report, build_id=None, head=None, source=None, base=None, suite=None):
     if not isinstance(report, dict) or report.get("schema_version") != 1:
         raise ValueError("Unsupported report schema")
     if report.get("leg") not in LEGS or report.get("status") not in ("complete", "incomplete"):
