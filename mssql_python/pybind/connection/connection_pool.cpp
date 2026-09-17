@@ -102,6 +102,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
     py::dict pending_attrs;
     long long pending_expiry = 0;
     bool have_pending_token = false;
+    uint64_t reservation_generation = 0;
     while (true) {
         std::shared_ptr<Connection> candidate;
         {
@@ -115,6 +116,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     // holding _mutex across a GIL acquisition deadlocks a thread
                     // that holds the GIL and is waiting on _mutex (#671).
                     ++_current_size;
+                    reservation_generation = _generation;
                     needs_connect = true;
                     break;
                 }
@@ -243,6 +245,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 // records, and holding _mutex across a GIL acquisition
                 // deadlocks a thread that holds the GIL and waits on _mutex (#671).
                 ++_current_size;
+                reservation_generation = _generation;
                 needs_connect = true;
                 break;
             }
@@ -283,10 +286,16 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 valid_conn->connect(attrs_before);
             }
         } catch (...) {
-            // Construct/connect failed — release the reserved slot
+            // Construct/connect failed — release the reserved slot only if the pool
+            // has not been reset in the meantime (#746). If close() ran while we were
+            // connecting outside the lock, close() already set _current_size = 0 and
+            // bumped _generation; decrementing here would cancel another thread's
+            // newer reservation instead of our own.
             {
                 std::lock_guard<std::mutex> lock(_mutex);
-                if (_current_size > 0) --_current_size;
+                if (_generation == reservation_generation && _current_size > 0) {
+                    --_current_size;
+                }
             }
             throw;
         }
@@ -370,6 +379,7 @@ void ConnectionPool::close() {
             _pool.pop_front();
         }
         _current_size = 0;
+        ++_generation;
     }
     for (auto& conn : to_close) {
         try {

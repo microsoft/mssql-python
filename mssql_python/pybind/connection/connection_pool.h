@@ -45,6 +45,7 @@ class ConnectionPool {
     size_t _max_size;        // Maximum number of connections allowed
     int _idle_timeout_secs;  // Idle time before connections are stale
     size_t _current_size = 0;
+    uint64_t _generation = 0;  // Pool reset generation for reservation attribution (#746)
     std::deque<std::shared_ptr<Connection>> _pool;  // Available connections
     std::mutex _mutex;                              // Mutex for thread-safe access
 };

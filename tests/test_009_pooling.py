@@ -39,7 +39,10 @@ def _run_in_subprocess(body: str, conn_str: str) -> None:
     is fine).
     """
     env = os.environ.copy()
-    env["DB_CONNECTION_STRING"] = conn_str
+    if conn_str:
+        env["DB_CONNECTION_STRING"] = conn_str
+    else:
+        env.pop("DB_CONNECTION_STRING", None)
     proc = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(body)],
         env=env,
@@ -979,6 +982,101 @@ def test_pooling_state_consistency(conn_str):
     assert PoolingManager.is_initialized(), "Should remain initialized after disable call"
 
     print("Pooling state consistency verified")
+
+
+def test_pool_size_accounting_race_on_close_interleave(conn_str):
+    """Regression test for GH-746: connection pool size accounting drift on close race.
+
+    When a connection-open failure races close_pooling() (or pool close),
+    the failed thread's decrement must not cancel a newer generation's
+    reservation. With max_size=1, if Thread A's open failure wrongly
+    decrements the counter after Thread B reserved the slot under the new
+    generation, Thread C would be allowed to connect, exceeding max_size.
+    The generation counter guarantees that Thread A's cleanup only decrements
+    if the pool generation still matches its reservation.
+
+    Run in a subprocess so pooling(max_size=1) is the effective configuration.
+    """
+    _run_in_subprocess(
+        """
+        import os, threading
+        from mssql_python import ddbc_bindings
+
+        ddbc_bindings.enable_pooling(1, 600)
+        base_conn = os.environ.get("DB_CONNECTION_STRING") or "SERVER=dummy_test_746;"
+        pool_key = base_conn + "\\x00mssql_test_746_race"
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+
+        def factory_a():
+            in_factory_a.set()
+            assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            raise RuntimeError("simulated open failure A")
+
+        t_a_error = []
+
+        def run_a():
+            try:
+                ddbc_bindings.Connection(base_conn, True, {}, pool_key, factory_a)
+            except Exception as exc:
+                t_a_error.append(exc)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+
+        # Thread A has reserved the slot. Now close_pooling() resets the pool
+        # and increments the pool generation counter.
+        ddbc_bindings.close_pooling()
+
+        # Thread B initiates acquire and reserves the freed slot under the new generation.
+        in_factory_b = threading.Event()
+        release_factory_b = threading.Event()
+
+        def factory_b():
+            in_factory_b.set()
+            assert release_factory_b.wait(timeout=5.0), "Timed out waiting to release factory B"
+            raise RuntimeError("simulated open failure B")
+
+        t_b_error = []
+
+        def run_b():
+            try:
+                ddbc_bindings.Connection(base_conn, True, {}, pool_key, factory_b)
+            except Exception as exc:
+                t_b_error.append(exc)
+
+        t_b = threading.Thread(target=run_b)
+        t_b.start()
+        assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+
+        # Thread A now raises its error. With the generation counter fix, its cleanup
+        # detects that the pool generation changed and does NOT decrement _current_size.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+        assert len(t_a_error) == 1 and "simulated open failure A" in str(t_a_error[0])
+
+        # Thread C now attempts to acquire on the same pool key.
+        # Since max_size=1 and Thread B is still reserving the slot, Thread C must fail
+        # with 'pool size limit reached'.
+        thread_c_rejected = False
+        try:
+            ddbc_bindings.Connection(base_conn, True, {}, pool_key, lambda: {})
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                thread_c_rejected = True
+
+        assert thread_c_rejected, "Thread C should have been rejected due to pool capacity limit"
+
+        # Clean up Thread B
+        release_factory_b.set()
+        t_b.join(timeout=5.0)
+        assert len(t_b_error) == 1 and "simulated open failure B" in str(t_b_error[0])
+        ddbc_bindings.close_pooling()
+        """,
+        conn_str,
+    )
 
 
 # =============================================================================
