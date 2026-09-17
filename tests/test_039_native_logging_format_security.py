@@ -54,6 +54,7 @@ def test_logger_bridge_enables_compile_time_format_checks():
     cmake = _CMAKE.read_text(encoding="utf-8")
 
     assert "__attribute__((format(printf, format_index, first_argument)))" in header
+    assert "DevSkim: ignore DS154189" in header
     assert "MSSQL_PRINTF_FORMAT(4, 5)" in header
     assert "MSSQL_PRINTF_FORMAT(1, 0)" in header
     assert 'CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"' in cmake

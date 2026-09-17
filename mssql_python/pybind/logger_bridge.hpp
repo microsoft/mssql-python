@@ -27,7 +27,7 @@ namespace logging {
 
 #if defined(__GNUC__) || defined(__clang__)
 #define MSSQL_PRINTF_FORMAT(format_index, first_argument) \
-    __attribute__((format(printf, format_index, first_argument)))
+    __attribute__((format(printf, format_index, first_argument)))  // DevSkim: ignore DS154189
 #else
 #define MSSQL_PRINTF_FORMAT(format_index, first_argument)
 #endif
