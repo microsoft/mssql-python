@@ -51,6 +51,13 @@ class ConnectionPool {
         return _generation;
     }
 
+    // Test helper to inject a candidate connection for race testing
+    void inject_candidate(std::shared_ptr<Connection> conn) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _pool.push_back(conn);
+        ++_current_size;
+    }
+
   private:
     size_t _max_size;        // Maximum number of connections allowed
     int _idle_timeout_secs;  // Idle time before connections are stale

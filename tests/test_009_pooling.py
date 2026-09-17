@@ -1091,6 +1091,103 @@ def test_pool_size_accounting_race_on_close_interleave(conn_str):
     )
 
 
+def test_pool_size_accounting_race_on_candidate_validation_close_interleave(conn_str):
+    """Regression test for GH-746: candidate validation failure racing pool close().
+
+    When a candidate popped from the pool fails validation (e.g. dead socket or
+    token rotation failure) while racing a pool close(), the popped candidate's
+    cleanup must not decrement a reservation created under the new pool generation.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        # Inject an expired candidate into the idle pool
+        pool.inject_candidate("SERVER=dummy_test_746;", 1)
+        assert pool.current_size == 1
+        assert pool.generation == 0
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+
+        def factory_a():
+            in_factory_a.set()
+            assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            raise RuntimeError("simulated token rotation validation failure")
+
+        t_a_error = []
+
+        def run_a():
+            try:
+                pool.acquire("SERVER=dummy_test_746;", factory_a)
+            except Exception as exc:
+                t_a_error.append(exc)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+
+        # Thread A popped the candidate (generation 0) and is validating it in factory_a.
+        # Now pool.close() clears idle connections, resets current_size=0, and bumps generation=1.
+        pool.close()
+        assert pool.current_size == 0
+        assert pool.generation == 1
+
+        # Thread B reserves the freed slot under generation 1.
+        in_factory_b = threading.Event()
+        release_factory_b = threading.Event()
+
+        def factory_b():
+            in_factory_b.set()
+            assert release_factory_b.wait(timeout=5.0), "Timed out waiting to release factory B"
+            raise RuntimeError("simulated open failure B")
+
+        t_b_error = []
+
+        def run_b():
+            try:
+                pool.acquire("SERVER=dummy_test_746;", factory_b)
+            except Exception as exc:
+                t_b_error.append(exc)
+
+        t_b = threading.Thread(target=run_b)
+        t_b.start()
+        assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+        assert pool.current_size == 1
+
+        # Thread A finishes factory_a (which raises an error / fails validation).
+        # Thread A's cleanup detects that the candidate was from generation 0 != 1,
+        # so it does NOT decrement current_size!
+        # On unpatched code, Thread A would decrement current_size to 0.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+
+        # Verify Thread B's reservation was not cancelled
+        assert pool.current_size == 1, (
+            f"Expected pool.current_size to be 1, but got {pool.current_size} (drift occurred!)"
+        )
+
+        # Thread C must be rejected because max_size=1 and Thread B holds the slot
+        thread_c_rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                thread_c_rejected = True
+
+        assert thread_c_rejected, "Thread C should have been rejected due to pool capacity limit"
+
+        release_factory_b.set()
+        t_b.join(timeout=5.0)
+        assert pool.current_size == 0
+        pool.close()
+        """,
+        conn_str,
+    )
+
+
 # =============================================================================
 # Native token-factory (lazy token acquisition) integration tests
 # =============================================================================

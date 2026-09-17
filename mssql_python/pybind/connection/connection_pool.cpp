@@ -105,6 +105,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
     uint64_t reservation_generation = 0;
     while (true) {
         std::shared_ptr<Connection> candidate;
+        uint64_t candidate_generation = 0;
         {
             std::unique_lock<std::mutex> lock(_mutex);
             if (_pool.empty()) {
@@ -129,6 +130,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             }
             candidate = _pool.front();
             _pool.pop_front();
+            candidate_generation = _generation;
         }
 
         // Validate the candidate outside the mutex.
@@ -206,7 +208,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                                 [&](const std::shared_ptr<Connection>& sibling) {
                                     if (sibling->currentAccessToken() == stale_token) {
                                         to_disconnect.push_back(sibling);
-                                        if (_current_size > 0) --_current_size;
+                                        if (_generation == candidate_generation &&
+                                            _current_size > 0) {
+                                            --_current_size;
+                                        }
                                         return true;
                                     }
                                     return false;
@@ -227,11 +232,13 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
         }
 
         // Candidate is dead, reset failed, or its token rotated — mark for
-        // disconnect and decrement the pool size.
+        // disconnect and decrement the pool size if the pool generation still matches (#746).
         to_disconnect.push_back(candidate);
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            if (_current_size > 0) --_current_size;
+            if (_generation == candidate_generation && _current_size > 0) {
+                --_current_size;
+            }
         }
 
         // If a rotated token was captured, reserve a slot and reopen with it
@@ -315,8 +322,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
 void ConnectionPool::release(std::shared_ptr<Connection> conn) {
     PERF_TIMER("ConnectionPool::release");
     bool should_disconnect = false;
+    uint64_t release_generation = 0;
     {
         std::lock_guard<std::mutex> lock(_mutex);
+        release_generation = _generation;
         if (_pool.size() < _max_size) {
             conn->updateLastUsed();
             _pool.push_back(conn);
@@ -333,8 +342,9 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
             LOG("ConnectionPool::release: disconnect failed: %s", ex.what());
         }
         std::lock_guard<std::mutex> lock(_mutex);
-        if (_current_size > 0)
+        if (_generation == release_generation && _current_size > 0) {
             --_current_size;
+        }
     }
 }
 
