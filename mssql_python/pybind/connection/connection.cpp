@@ -113,7 +113,7 @@ void Connection::connect(const py::dict& attrs_before) {
     updateLastUsed();
 }
 
-void Connection::disconnect() {
+void Connection::disconnect(bool rollbackBeforeDisconnect) {
     PERF_TIMER("Connection::disconnect");
     // Determine GIL state once, up front. disconnect() runs both from
     // pybind11-bound methods (GIL held) and from GIL-less destructor / shutdown
@@ -131,62 +131,69 @@ void Connection::disconnect() {
             LOG("Disconnecting from database");
         }
 
-        // Keep wrappers alive while SQLDisconnect frees their native handles.
-        // Otherwise another thread's GC could free a statement again before we
-        // mark it as implicitly freed. On failure, keep the handles usable.
         std::vector<SqlHandlePtr> childHandles;
         size_t originalSize = 0, afterCompactSize = 0, badHandleCount = 0;
-        {
-            std::lock_guard<std::mutex> lock(_childHandlesMutex);
-            
-            // First compact: remove expired weak_ptrs (they're already destroyed)
-            originalSize = _childStatementHandles.size();
-            _childStatementHandles.erase(
-                std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
-                               [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
-                _childStatementHandles.end());
-            afterCompactSize = _childStatementHandles.size();
-
-            for (auto& weakHandle : _childStatementHandles) {
-                if (auto handle = weakHandle.lock()) {
-                    // SAFETY ASSERTION: Only STMT handles should be in this vector
-                    // This is guaranteed by allocStatementHandle() which only creates STMT handles
-                    // If this assertion fails, it indicates a serious bug in handle tracking
-                    if (handle->type() != SQL_HANDLE_STMT) {
-                        ++badHandleCount;
-                        continue;  // Skip marking to prevent leak
+        auto disconnectNative = [&]() {
+            // Serialize explicit child free() calls as well as destruction.
+            // This lock must be released before reacquiring the GIL or logging.
+            std::lock_guard<std::mutex> cleanupLock(_cleanupState->mutex);
+            {
+                std::lock_guard<std::mutex> lock(_childHandlesMutex);
+                originalSize = _childStatementHandles.size();
+                _childStatementHandles.erase(
+                    std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
+                                   [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
+                    _childStatementHandles.end());
+                afterCompactSize = _childStatementHandles.size();
+                childHandles.reserve(afterCompactSize);
+                for (auto& weakHandle : _childStatementHandles) {
+                    if (auto handle = weakHandle.lock()) {
+                        if (handle->type() != SQL_HANDLE_STMT) {
+                            ++badHandleCount;
+                            continue;
+                        }
+                        childHandles.push_back(std::move(handle));
                     }
-                    childHandles.push_back(std::move(handle));
                 }
             }
-        }
+            if (rollbackBeforeDisconnect) {
+                // Explicit SQL transactions need manual mode for SQLEndTran.
+                // Never turn autocommit on here: that could commit abandoned work.
+                SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                                     reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0);
+                SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+            }
+            SQLRETURN result = SQLDisconnect_ptr(_dbcHandle->get());
+            if (SQL_SUCCEEDED(result)) {
+                // Also cover children whose weak_ptr expired as their destructor
+                // began waiting for this gate: they cannot appear in the snapshot.
+                _cleanupState->disconnected = true;
+                std::lock_guard<std::mutex> lock(_childHandlesMutex);
+                for (const auto& handle : childHandles) {
+                    handle->markImplicitlyFreed();
+                }
+                _childStatementHandles.clear();
+                _allocationsSinceCompaction = 0;
+            }
+            return result;
+        };
 
         SQLRETURN ret;
         if (hasGil) {
             py::gil_scoped_release release;
-            ret = SQLDisconnect_ptr(_dbcHandle->get());
+            ret = disconnectNative();
         } else {
-            ret = SQLDisconnect_ptr(_dbcHandle->get());
+            ret = disconnectNative();
         }
         if (!SQL_SUCCEEDED(ret)) {
             if (hasGil) {
                 checkError(ret);
             } else {
-                std::fprintf(stderr, "mssql-python: native disconnect failed (SQLRETURN %d)\n",
-                             static_cast<int>(ret));
+                std::fputs("mssql-python: native disconnect failed\n", stderr);
             }
             // Keep ownership and child-handle tracking intact for a cleanup retry.
             return;
         }
-        {
-            std::lock_guard<std::mutex> lock(_childHandlesMutex);
-            for (const auto& handle : childHandles) {
-                handle->markImplicitlyFreed();
-            }
-            _childStatementHandles.clear();
-            _allocationsSinceCompaction = 0;
-        }
-
         // Log after releasing _childHandlesMutex (#671): LOG()/LOG_ERROR() acquire
         // the GIL and must not run while a native mutex is held. Also gated on
         // hasGil so the GIL-less destructor / shutdown path never tries to log.
@@ -216,22 +223,13 @@ void Connection::disconnectNoThrow() noexcept {
         if (!_dbcHandle) {
             return;
         }
-        auto cleanup = [this]() {
-            // SQLEndTran only rolls back explicit SQL transactions after entering
-            // manual-commit mode. Never turn autocommit on here: that could commit.
-            SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
-                                 reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0);
-            SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
-            // Attempt disconnect even if rollback failed (e.g. a dead connection).
-            disconnect();
-        };
         // disconnect() already supports GIL-less cleanup. Drop the GIL once so
         // neither its diagnostics nor handle destruction can enter Python.
         if (PyGILState_Check()) {
             py::gil_scoped_release release;
-            cleanup();
+            disconnect(true);
         } else {
-            cleanup();
+            disconnect(true);
         }
     } catch (...) {
         std::fputs("mssql-python: unexpected failure during native connection cleanup\n", stderr);
@@ -348,7 +346,8 @@ SqlHandlePtr Connection::allocStatementHandle() {
     SQLHANDLE stmt = nullptr;
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
     checkError(ret);
-    auto stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
+    auto stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT),
+                                                stmt, _cleanupState);
 
     // THREAD-SAFETY: Lock mutex before modifying _childStatementHandles
     // This protects against concurrent disconnect() or allocStatementHandle() calls,

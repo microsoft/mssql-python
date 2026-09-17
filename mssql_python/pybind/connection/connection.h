@@ -38,7 +38,7 @@ class Connection {
     void connect(const py::dict& attrs_before = py::dict());
 
     // Disconnect and free the connection handle.
-    void disconnect();
+    void disconnect(bool rollbackBeforeDisconnect = false);
 
     // Roll back and disconnect without Python callbacks or escaping exceptions.
     void disconnectNoThrow() noexcept;
@@ -136,6 +136,9 @@ class Connection {
     // Prevents data races between allocStatementHandle() and disconnect(),
     // or concurrent GC finalizers running from different threads
     mutable std::mutex _childHandlesMutex;
+    // Child wrappers retain this gate even after the Connection is destroyed.
+    const std::shared_ptr<ConnectionCleanupState> _cleanupState =
+        std::make_shared<ConnectionCleanupState>();
 };
 
 class ConnectionPool;

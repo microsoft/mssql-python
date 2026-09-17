@@ -280,13 +280,20 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+struct ConnectionCleanupState {
+    std::mutex mutex;
+    bool disconnected = false;  // Protected by mutex, shared with every child.
+};
+
 class SqlHandle {
   public:
-    SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
+    SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
+              std::shared_ptr<ConnectionCleanupState> cleanupState = nullptr);
     ~SqlHandle();
     SQLHANDLE get() const;
     SQLSMALLINT type() const;
     void free();
+    SQLRETURN freeHandle();
     void close_cursor();
     // Cancel an in-progress statement (SQLCancel). Safe to call from a
     // thread other than the one running the fetch — this is the *only*
@@ -320,9 +327,12 @@ class SqlHandle {
     void clearDescribeCache() { describeCache.clear(); }
 
   private:
+    // The caller must release the GIL before waiting for native cleanup.
+    std::unique_lock<std::mutex> lockForCleanup() const;
     SQLSMALLINT _type;
     SQLHANDLE _handle;
     bool _implicitly_freed = false;  // Tracks if handle was freed by parent
+    std::shared_ptr<ConnectionCleanupState> _cleanupState;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 

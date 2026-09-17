@@ -98,7 +98,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   mode before being parked. This prevents an empty transaction from remaining
   visible on an idle SQL Server session after `Connection.close()`. Abandoned
   native connections also roll back pending work before disconnecting during
-  normal object destruction.
+  normal object destruction. Statement-handle cleanup is synchronized with
+  disconnect, including cleanup invoked by cursor finalizers.
 - **GH-769:** Corrected 11 `GetInfoConstants` IDs for scalar functions, outer
   joins, driver handles, cursor attributes, catalog support, and parameter
   descriptions. Added the ODBC name `SQL_TIMEDATE_FUNCTIONS` as an alias of

@@ -1276,6 +1276,246 @@ def test_native_disconnect_with_concurrent_child_gc(conn_str, explicit_close):
     )
 
 
+@pytest.mark.parametrize("explicit_close", [False, True])
+def test_cursor_cyclic_finalizer_with_concurrent_native_disconnect(conn_str, explicit_close):
+    """Exercise real Cursor.close/free after cyclic GC removes its WeakSet entry.
+
+    The Python finalizer/WeakSet ordering is coordinated; overlap inside the
+    native cleanup calls is stress coverage, not a deterministic race trigger.
+    """
+    _run_in_subprocess(
+        f"explicit_close = {explicit_close!r}\n" + textwrap.dedent("""
+            import gc
+            import os
+            import threading
+            import weakref
+
+            import mssql_python
+            from mssql_python import connect, ddbc_bindings as ddbc, pooling
+
+            iterations = 50
+            collect_barrier = threading.Barrier(2, timeout=10)
+            cleanup_barrier = threading.Barrier(2, timeout=10)
+            free_entered = threading.Event()
+            errors = []
+
+            class FinalizerStatement:
+                # Only coordinate entry: Cursor.__del__/close and native free
+                # still run their real implementations, with a real SQL handle.
+                def __init__(self, statement):
+                    self.statement = statement
+                    self.calls = 0
+                    self.completed = False
+
+                def free(self):
+                    self.calls += 1
+                    free_entered.set()
+                    try:
+                        cleanup_barrier.wait()
+                        assert self.statement.free() is None
+                        self.completed = True
+                    except Exception as exc:
+                        errors.append(f"Cursor finalizer: {exc!r}")
+                        raise
+
+            def collect_children():
+                try:
+                    for _ in range(iterations):
+                        collect_barrier.wait()
+                        gc.collect()
+                        collect_barrier.wait()
+                except Exception as exc:
+                    errors.append(f"GC worker: {exc!r}")
+                    collect_barrier.abort()
+                    cleanup_barrier.abort()
+                    free_entered.set()
+
+            pooling(enabled=False)
+            gc.disable()
+            collector = threading.Thread(target=collect_children, daemon=True)
+            collector.start()
+            connection = None
+            native = None
+            try:
+                for _ in range(iterations):
+                    free_entered.clear()
+                    connection = connect(os.environ["DB_CONNECTION_STRING"], autocommit=True)
+                    cursor = connection.cursor()
+                    assert cursor.execute("SELECT 1").fetchall()[0][0] == 1
+                    finalizer_statement = FinalizerStatement(cursor.hstmt)
+                    cursor.hstmt = finalizer_statement
+                    cursor.cycle = cursor
+                    cursor_ref = weakref.ref(cursor)
+                    del cursor
+
+                    collect_barrier.wait()
+                    assert free_entered.wait(10), "Cursor finalizer did not enter free"
+                    assert not errors, errors
+                    assert cursor_ref() is None, "GC did not clear the cursor weakref"
+                    assert not connection._cursors, "Connection.close would still see the cursor"
+
+                    if not explicit_close:
+                        # The cursor retains its Python connection. Detach only
+                        # the native owner to exercise its destructor fallback.
+                        native = connection._conn
+                        connection._conn = None
+                        connection._closed = True
+                        mssql_python._active_connections.discard(connection)
+
+                    cleanup_barrier.wait()
+                    if explicit_close:
+                        connection.close()
+                    else:
+                        native = None
+                    collect_barrier.wait()
+
+                    assert finalizer_statement.calls == 1
+                    assert finalizer_statement.completed, errors
+                    assert not errors, errors
+                    assert finalizer_statement.statement.free() is None
+                    assert ddbc.DDBCSQLFreeHandle(3, finalizer_statement.statement) == -2
+                    assert connection.closed
+                    connection = None
+                collector.join(timeout=10)
+                assert not collector.is_alive(), "GC worker did not exit"
+            finally:
+                collect_barrier.abort()
+                cleanup_barrier.abort()
+                collector.join(timeout=10)
+                if connection is not None:
+                    connection.close()
+                native = None
+                gc.enable()
+            assert not collector.is_alive(), "GC worker did not exit"
+            assert not errors, errors
+            gc.collect()
+            """),
+        conn_str,
+    )
+
+
+def test_failed_native_disconnect_preserves_child_statement(conn_str):
+    """SQLSTATE 25000 must not irreversibly invalidate a live child handle."""
+    _run_in_subprocess(
+        """
+        import os
+        import uuid
+
+        from mssql_python import connect, ddbc_bindings as ddbc, pooling
+
+        pooling(enabled=False)
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+        table = "pytest_disconnect_failure_" + uuid.uuid4().hex
+        observer = connect(conn_str, autocommit=True)
+        observer_cursor = observer.cursor()
+        native = None
+        statement = None
+        created = False
+        try:
+            observer_cursor.execute("SET LOCK_TIMEOUT 1000")
+            observer_cursor.execute(f"CREATE TABLE {table} (id INT)")
+            created = True
+            native = ddbc.Connection(conn_str, False)
+            native.set_autocommit(False)
+            statement = native.alloc_statement_handle()
+            assert ddbc.DDBCSQLExecDirect(statement, f"INSERT INTO {table} VALUES (1)") in (0, 1)
+
+            try:
+                native.close()
+            except RuntimeError as exc:
+                assert "25000" in str(exc), f"Unexpected disconnect failure: {exc}"
+            else:
+                raise AssertionError("Native disconnect accepted an uncommitted INSERT")
+
+            assert ddbc.DDBCSQLExecDirect(
+                statement, f"SELECT COUNT(*), @@TRANCOUNT FROM {table}"
+            ) in (0, 1)
+            row = []
+            assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
+            assert row[0] == 1 and row[1] > 0, row
+            statement._close_cursor()
+            native.rollback()
+
+            assert ddbc.DDBCSQLExecDirect(statement, f"SELECT COUNT(*) FROM {table}") in (0, 1)
+            row = []
+            assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
+            assert row == [0], "Failed disconnect committed the pending INSERT"
+            statement._close_cursor()
+            native.rollback()
+            native.close()
+            native = None
+
+            # Disconnect already freed the ODBC statement. The raw entry point
+            # must consume the wrapper's implicit-free state, not the stale pointer.
+            assert ddbc.DDBCSQLFreeHandle(3, statement) in (0, 1)
+            assert ddbc.DDBCSQLFreeHandle(3, statement) == -2
+            assert statement.free() is None
+            assert statement.free() is None
+            observer_cursor.execute(f"SELECT COUNT(*) FROM {table} WITH (READCOMMITTEDLOCK)")
+            assert observer_cursor.fetchone()[0] == 0
+        finally:
+            try:
+                if native is not None:
+                    try:
+                        native.rollback()
+                    finally:
+                        native.close()
+                if statement is not None:
+                    statement.free()
+            finally:
+                try:
+                    if created:
+                        observer_cursor.execute(f"DROP TABLE {table}")
+                finally:
+                    observer_cursor.close()
+                    observer.close()
+        """,
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("free_api", ["method", "raw"])
+def test_native_statement_free_entrypoints_are_idempotent(conn_str, free_api):
+    """Raw SQLRETURN and public None-returning free share one ownership state."""
+    _run_in_subprocess(
+        f"free_api = {free_api!r}\n" + textwrap.dedent("""
+            import os
+
+            from mssql_python import ddbc_bindings as ddbc
+
+            native = ddbc.Connection(os.environ["DB_CONNECTION_STRING"], False)
+            native.set_autocommit(True)
+            statement = native.alloc_statement_handle()
+            sibling = native.alloc_statement_handle()
+            try:
+                assert ddbc.DDBCSQLExecDirect(statement, "SELECT 1") in (0, 1)
+                if free_api == "raw":
+                    assert ddbc.DDBCSQLFreeHandle(3, statement) in (0, 1)
+                else:
+                    assert statement.free() is None
+                assert ddbc.DDBCSQLFreeHandle(3, statement) == -2
+                assert statement.free() is None
+                assert statement.free() is None
+
+                assert ddbc.DDBCSQLExecDirect(sibling, "SELECT 42") in (0, 1)
+                row = []
+                assert ddbc.DDBCSQLFetchOne(sibling, row) in (0, 1)
+                assert row == [42]
+                native.close()
+                native = None
+                assert ddbc.DDBCSQLFreeHandle(3, sibling) in (0, 1)
+                assert ddbc.DDBCSQLFreeHandle(3, sibling) == -2
+                assert sibling.free() is None
+            finally:
+                statement.free()
+                sibling.free()
+                if native is not None:
+                    native.close()
+            """),
+        conn_str,
+    )
+
+
 def test_pool_recovery_after_failed_connection(conn_str):
     """Test that the pool recovers after a failed connection attempt."""
     pooling(max_size=1, idle_timeout=30)

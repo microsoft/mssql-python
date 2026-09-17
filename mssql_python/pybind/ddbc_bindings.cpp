@@ -1540,12 +1540,21 @@ void DriverLoader::loadDriver() {
 }
 
 // SqlHandle definition
-SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle) {}
+SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
+                     std::shared_ptr<ConnectionCleanupState> cleanupState)
+    : _type(type), _handle(rawHandle), _cleanupState(std::move(cleanupState)) {}
 
 SqlHandle::~SqlHandle() {
     if (_handle) {
         free();
     }
+}
+
+std::unique_lock<std::mutex> SqlHandle::lockForCleanup() const {
+    if (_cleanupState) {
+        return std::unique_lock<std::mutex>(_cleanupState->mutex);
+    }
+    return {};
 }
 
 SQLHANDLE SqlHandle::get() const {
@@ -1580,82 +1589,71 @@ void SqlHandle::markImplicitlyFreed() {
  * If you need destruction logs, use explicit close() methods instead.
  */
 void SqlHandle::free() {
+    freeHandle();
+}
+
+SQLRETURN SqlHandle::freeHandle() {
     PERF_TIMER("SqlHandle::free");
-    if (_handle && SQLFreeHandle_ptr) {
-        // GH-610: Clear describe cache to prevent memory leak.
-        describeCache.clear();
-
-        // Check if Python is shutting down using centralized helper function
-        bool pythonShuttingDown = is_python_finalizing();
-
-        // RESOURCE LEAK MITIGATION:
-        // When handles are skipped during shutdown, they are not freed, which could
-        // cause resource leaks. However, this is mitigated by:
-        // 1. Python-side atexit cleanup (in __init__.py) that explicitly closes all
-        //    connections before shutdown, ensuring handles are freed in correct order
-        // 2. OS-level cleanup at process termination recovers any remaining resources
-        // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
-        //    is appropriate since we're already in shutdown sequence
-        bool skipDuringShutdown = _type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC;
+    bool pythonShuttingDown = is_python_finalizing();
+    bool skipDuringShutdown = _type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC;
 #ifdef _WIN32
-        // The static ENV is destroyed during DLL_PROCESS_DETACH, after Python
-        // finalization. Calling ODBC then can access already-torn-down SSPI state.
-        skipDuringShutdown = skipDuringShutdown || _type == SQL_HANDLE_ENV;
+    // The static ENV is destroyed during DLL_PROCESS_DETACH, after Python
+    // finalization. Calling ODBC then can access already-torn-down SSPI state.
+    skipDuringShutdown = skipDuringShutdown || _type == SQL_HANDLE_ENV;
 #endif
-        if (pythonShuttingDown && skipDuringShutdown) {
-            _handle = nullptr;  // Mark as freed to prevent double-free attempts
-            return;
-        }
-
-        // CRITICAL FIX: Check if handle was already implicitly freed by parent handle
-        // When Connection::disconnect() frees the DBC handle, the ODBC driver automatically
-        // frees all child STMT handles. We track this state to avoid double-free attempts.
-        // This approach avoids calling ODBC functions on potentially-freed handles, which
-        // would cause use-after-free errors.
-        if (_implicitly_freed) {
-            _handle = nullptr;  // Just clear the pointer, don't call ODBC functions
-            return;
-        }
-
-        // Handle is valid and not implicitly freed, proceed with normal freeing.
-        // Release the GIL during the blocking ODBC call (SQLFreeHandle on a STMT
-        // with an open server-side cursor, or on a DBC, performs network I/O).
-        // This is critical when the connection is reached through an in-process
-        // Python TCP forwarder (e.g. paramiko + sshtunnel) - the forwarder
-        // thread needs the GIL to push bytes, so holding it here deadlocks
-        // (issue #565). Only release the GIL if it is actually held AND the
-        // interpreter is not finalizing - gil_scoped_release is unsafe during
-        // shutdown even if PyGILState_Check() reports the GIL as held.
-        if (!pythonShuttingDown && PyGILState_Check()) {
-            py::gil_scoped_release release;
-            SQLFreeHandle_ptr(_type, _handle);
-        } else {
-            SQLFreeHandle_ptr(_type, _handle);
-        }
+    if (pythonShuttingDown && skipDuringShutdown) {
+        // Do not wait for another thread's ODBC cleanup during finalization.
+        // Process teardown owns any resources not released by atexit cleanup.
         _handle = nullptr;
+        return SQL_SUCCESS;
     }
+
+    auto freeNative = [this]() -> SQLRETURN {
+        auto cleanupLock = lockForCleanup();
+        if (!_handle || !SQLFreeHandle_ptr) {
+            return SQL_INVALID_HANDLE;
+        }
+        describeCache.clear();
+        if (_implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
+            _handle = nullptr;
+            return SQL_SUCCESS;
+        }
+        SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
+        if (SQL_SUCCEEDED(ret)) {
+            _handle = nullptr;
+        }
+        return ret;
+    };
+    // The same gate is held through SQLDisconnect and child invalidation.
+    // Release the GIL before waiting, and unlock before reacquiring it.
+    if (!pythonShuttingDown && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        return freeNative();
+    }
+    return freeNative();
 }
 
 void SqlHandle::close_cursor() {
-    if (_type != SQL_HANDLE_STMT || !_handle) {
+    if (is_python_finalizing()) {
         return;
     }
-    if (_implicitly_freed) {
-        return;
-    }
-    if (!SQLFreeStmt_ptr) {
-        ThrowStdException("SQLFreeStmt function not loaded");
-    }
-    // Release the GIL during the blocking SQLFreeStmt(SQL_CLOSE) network
-    // round-trip; see issue #565 (in-process forwarder deadlock).
-    // Skip GIL release when the GIL isn't held or the interpreter is
-    // finalizing - gil_scoped_release is unsafe in shutdown.
+    auto closeNative = [this]() -> SQLRETURN {
+        auto cleanupLock = lockForCleanup();
+        if (_type != SQL_HANDLE_STMT || !_handle || _implicitly_freed ||
+            (_cleanupState && _cleanupState->disconnected)) {
+            return SQL_SUCCESS;
+        }
+        if (!SQLFreeStmt_ptr) {
+            ThrowStdException("SQLFreeStmt function not loaded");
+        }
+        return SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+    };
     SQLRETURN ret;
-    if (!is_python_finalizing() && PyGILState_Check()) {
+    if (PyGILState_Check()) {
         py::gil_scoped_release release;
-        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+        ret = closeNative();
     } else {
-        ret = SQLFreeStmt_ptr(_handle, SQL_CLOSE);
+        ret = closeNative();
     }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
         ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
@@ -1663,44 +1661,25 @@ void SqlHandle::close_cursor() {
 }
 
 void SqlHandle::cancel() {
-    // SQLCancel is intentionally lenient: it is a no-op on non-STMT handles,
-    // already-freed handles, or if the driver does not expose it. This lets
-    // _ArrowReader.close() call it unconditionally without coordinating with
-    // the fetch thread. The GIL is released so a blocked fetch thread can
-    // observe the cancel and return.
-    //
-    // Cross-thread invariant (why no mutex is needed):
-    //   The only cross-thread pattern this driver blesses is exactly the one
-    //   ODBC blesses: cancel() may be called from a thread *other than* the
-    //   fetch thread to unblock an in-flight SQLFetch/SQLExecute on the same
-    //   HSTMT. Per the ODBC spec, SQLCancel (with the SQLGetDiagRec/Field
-    //   family) is the only entry point safe to call across threads on the
-    //   same statement handle. All other operations on a Cursor/SqlHandle
-    //   are single-owner: per DB API 2.0 and the Cursor thread-safety note
-    //   in cursor.py, callers must not share a Cursor for its lifecycle
-    //   operations (execute/fetch/close/free) across threads. Under that
-    //   contract, free() / close_cursor() / SQLFreeHandle can never be in
-    //   flight on this handle concurrently with cancel(), so the read of
-    //   _handle above and the SQLCancel_ptr(h) call below cannot race a
-    //   free() that clears _handle.
-    //
-    //   A std::mutex here would only close the cancel()-vs-free() window;
-    //   it would NOT close the (equally real) free()-vs-fetch window
-    //   without also locking every fetch — which would serialize network
-    //   I/O and defeat the whole point of cross-thread cancel. The right
-    //   place to defend against a misuse (Cursor shared across threads for
-    //   close vs. reader-cancel) is at the Python Cursor layer, not here.
-    if (_type != SQL_HANDLE_STMT || !_handle || _implicitly_freed) {
+    if (is_python_finalizing()) {
         return;
     }
-    if (!SQLCancel_ptr) {
-        return;
-    }
-    SQLHANDLE h = _handle;
+    // Fetch/execute do not take this cleanup gate, so cross-thread cancellation
+    // can still interrupt them. Reader finalizers must not cancel a freed handle.
+    auto cancelNative = [this]() -> SQLRETURN {
+        auto cleanupLock = lockForCleanup();
+        if (_type != SQL_HANDLE_STMT || !_handle || _implicitly_freed || !SQLCancel_ptr ||
+            (_cleanupState && _cleanupState->disconnected)) {
+            return SQL_SUCCESS;
+        }
+        return SQLCancel_ptr(_handle);
+    };
     SQLRETURN ret;
-    {
+    if (PyGILState_Check()) {
         py::gil_scoped_release release;
-        ret = SQLCancel_ptr(h);
+        ret = cancelNative();
+    } else {
+        ret = cancelNative();
     }
     // SQLCancel may return SQL_SUCCESS_WITH_INFO when there was nothing to
     // cancel; that is fine. We only throw on hard failure.
@@ -5962,25 +5941,16 @@ SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     LOG("SQLFreeHandle_wrap: Free SQL handle type=%d", HandleType);
     // Guard against a null/None handle being passed from Python - dereferencing
     // Handle->get() on a null shared_ptr would segfault.
-    if (!Handle || !Handle->get()) {
+    if (!Handle || HandleType != Handle->type()) {
         return SQL_INVALID_HANDLE;
     }
-    if (!SQLAllocHandle_ptr) {
+    if (!SQLFreeHandle_ptr) {
         LOG("SQLFreeHandle_wrap: Function pointer not initialized. Loading the "
             "driver.");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    // Release the GIL during the blocking SQLFreeHandle network round-trip
-    // (see issue #565 - in-process Python TCP forwarder deadlock).
-    // Skip GIL release in shutdown paths where it would crash.
-    SQLRETURN ret;
-    if (!is_python_finalizing() && PyGILState_Check()) {
-        py::gil_scoped_release release;
-        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
-    } else {
-        ret = SQLFreeHandle_ptr(HandleType, Handle->get());
-    }
+    SQLRETURN ret = Handle->freeHandle();
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLFreeHandle_wrap: SQLFreeHandle failed with error code - %d", ret);
         return ret;
