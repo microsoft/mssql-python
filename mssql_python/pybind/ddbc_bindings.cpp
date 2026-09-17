@@ -6095,6 +6095,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              "Internal: cancel an in-progress statement (SQLCancel). "
              "Safe to call from another thread; no-op if unsupported or idle.");
 
+    m.def("_diagnostic_query_timeout", [](SqlHandlePtr stmt) {
+        if (!stmt || !stmt->get() || !SQLGetStmtAttr_ptr) {
+            throw std::runtime_error("Cannot inspect query timeout on an unavailable statement");
+        }
+        SQLULEN value = 0;
+        SQLRETURN ret = SQLGetStmtAttr_ptr(
+            stmt->get(), SQL_ATTR_QUERY_TIMEOUT, &value, sizeof(value), nullptr);
+        return py::make_tuple(ret, value);
+    });
+
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::u16string&, bool, const py::dict&, const std::u16string&,
                       const py::object&>(),
