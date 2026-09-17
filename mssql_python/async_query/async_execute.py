@@ -26,7 +26,12 @@ async def execute(
     if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
         parameters = tuple(parameters[0])
 
-    logger.debug("AsyncCursor.execute: starting")
+    logger.debug(
+        "AsyncCursor.execute: starting; param_count=%d; use_prepare=%s; reset_cursor=%s",
+        len(parameters),
+        use_prepare,
+        reset_cursor,
+    )
     with translate_py_core_exceptions():
         await _get_py_core_async_cursor(cursor).execute(
             operation,
@@ -34,7 +39,13 @@ async def execute(
             use_prepare=use_prepare,
             reset_cursor=reset_cursor,
         )
-    logger.debug("AsyncCursor.execute: completed")
+    description = cursor.description
+    logger.debug(
+        "AsyncCursor.execute: completed; rowcount=%d; column_count=%d; has_result_set=%s",
+        cursor.rowcount,
+        len(description) if description is not None else 0,
+        description is not None,
+    )
     return cursor
 
 
@@ -44,12 +55,12 @@ async def executemany(
     seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
 ) -> None:
     """Execute a statement for every parameter row using the py-core async cursor."""
-    _ = len(seq_of_parameters)
+    batch_count = len(seq_of_parameters)
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
-    logger.debug("AsyncCursor.executemany: starting")
+    logger.debug("AsyncCursor.executemany: starting; batch_count=%d", batch_count)
     with translate_py_core_exceptions():
         await _get_py_core_async_cursor(cursor).executemany(
             operation,
             seq_of_parameters,
         )
-    logger.debug("AsyncCursor.executemany: completed")
+    logger.debug("AsyncCursor.executemany: completed; rowcount=%d", cursor.rowcount)

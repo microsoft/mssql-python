@@ -58,17 +58,24 @@ class AsyncConnection:
         python_logger: Optional[Any] = None,
     ) -> "AsyncConnection":
         """Establish an asynchronous connection from an ODBC connection string."""
+        logger_bridge = python_logger
+        if logger_bridge is None and logger.is_debug_enabled:
+            logger_bridge = logger
         logger.debug(
-            "AsyncConnection.connect: starting; autocommit=%s; custom_logger=%s",
+            "AsyncConnection.connect: starting; autocommit=%s; logger_source=%s",
             autocommit,
-            python_logger is not None,
+            (
+                "custom"
+                if python_logger is not None
+                else "mssql_python" if logger_bridge is not None else "disabled"
+            ),
         )
         with translate_py_core_exceptions():
             client_context_dict = build_async_connection_context(connection_str, timeout)
             py_core = load_py_core()
             py_core_async_connection = await py_core.PyAsyncConnection.connect(
                 client_context_dict,
-                python_logger=python_logger,
+                python_logger=logger_bridge,
                 autocommit=autocommit,
             )
         logger.debug("AsyncConnection.connect: connected")

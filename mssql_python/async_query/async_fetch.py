@@ -42,22 +42,31 @@ async def fetchone(cursor: "AsyncCursor") -> Row | None:
     logger.debug("AsyncCursor.fetchone: starting")
     with translate_py_core_exceptions():
         row = await _get_py_core_async_cursor(cursor).fetchone()
-    logger.debug("AsyncCursor.fetchone: completed")
     cursor._record_fetch(row is not None, row is None)  # pyright: ignore[reportPrivateUsage]
+    logger.debug(
+        "AsyncCursor.fetchone: completed; row_found=%s; rowcount=%d",
+        row is not None,
+        cursor.rowcount,
+    )
     return None if row is None else _wrap_row(cursor, row)
 
 
 async def fetchmany(cursor: "AsyncCursor", size: int | None = None) -> list[Row]:
     """Fetch up to size rows, using cursor arraysize when size is omitted."""
-    logger.debug("AsyncCursor.fetchmany: starting")
+    requested_size = cursor.arraysize if size is None else size
+    logger.debug("AsyncCursor.fetchmany: starting; requested_size=%s", requested_size)
     with translate_py_core_exceptions():
         if size is None:
             rows = await _get_py_core_async_cursor(cursor).fetchmany()
         else:
             rows = await _get_py_core_async_cursor(cursor).fetchmany(size)
-    logger.debug("AsyncCursor.fetchmany: completed")
     if size is None or size > 0:
         cursor._record_fetch(len(rows), not rows)  # pyright: ignore[reportPrivateUsage]
+    logger.debug(
+        "AsyncCursor.fetchmany: completed; row_count=%d; rowcount=%d",
+        len(rows),
+        cursor.rowcount,
+    )
     return [_wrap_row(cursor, row) for row in rows]
 
 
@@ -66,6 +75,10 @@ async def fetchall(cursor: "AsyncCursor") -> list[Row]:
     logger.debug("AsyncCursor.fetchall: starting")
     with translate_py_core_exceptions():
         rows = await _get_py_core_async_cursor(cursor).fetchall()
-    logger.debug("AsyncCursor.fetchall: completed")
     cursor._record_fetch(len(rows), not rows)  # pyright: ignore[reportPrivateUsage]
+    logger.debug(
+        "AsyncCursor.fetchall: completed; row_count=%d; rowcount=%d",
+        len(rows),
+        cursor.rowcount,
+    )
     return [_wrap_row(cursor, row) for row in rows]

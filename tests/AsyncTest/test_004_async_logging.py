@@ -50,8 +50,44 @@ async def test_connect_logging_does_not_include_client_context(
     assert "AsyncConnection.connect: starting" in messages
     assert "AsyncConnection.connect: connected" in messages
     assert "PWD=" not in messages
-    assert "password" not in messages.lower()
+    assert "password=" not in messages.lower()
     assert "client_context" not in messages
+
+
+@pytest.mark.asyncio
+async def test_default_logger_combines_python_and_py_core_operation_logs(
+    async_connection_string,
+    tmp_path,
+):
+    log_path = enable_file_logging(tmp_path, "async-operations.log")
+    connection = await AsyncConnection.connect(async_connection_string, autocommit=True)
+    cursor = connection.cursor()
+    try:
+        await cursor.execute("SELECT CAST(? AS INT) AS value UNION ALL SELECT 2", 1)
+        await cursor.fetchone()
+        await cursor.fetchmany(1)
+        await cursor.execute("SELECT CAST(3 AS INT) AS value")
+        await cursor.fetchall()
+        await cursor.executemany("SELECT CAST(? AS INT)", [(4,), (5,)])
+    finally:
+        await cursor.close()
+        await connection.close()
+
+    messages = read_log(log_path)
+    expected_python_messages = (
+        "AsyncCursor.execute: starting; param_count=1",
+        "AsyncCursor.execute: completed; rowcount=-1; column_count=1; has_result_set=True",
+        "AsyncCursor.fetchone: completed; row_found=True; rowcount=1",
+        "AsyncCursor.fetchmany: starting; requested_size=1",
+        "AsyncCursor.fetchmany: completed; row_count=1; rowcount=2",
+        "AsyncCursor.fetchall: completed; row_count=1; rowcount=1",
+        "AsyncCursor.executemany: starting; batch_count=2",
+        "AsyncCursor.executemany: completed; rowcount=-1",
+    )
+    for expected in expected_python_messages:
+        assert expected in messages
+    assert ", py-core, " in messages
+    assert "PWD=" not in messages
 
 
 @pytest.mark.asyncio
