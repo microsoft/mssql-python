@@ -1414,48 +1414,112 @@ def test_pool_release_from_stale_generation_does_not_pollute_pool(conn_str):
         conn_1 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
         assert conn_1 is not None
         assert pool.current_size == 1
+        assert pool.checked_out == 1
         assert pool.generation == 0
 
-        # 2. Pool is closed while conn_1 is still checked out
+        # 2. Pool is closed while conn_1 is still checked out.
+        # Reserved capacity is retained for checked-out connections so the
+        # max_size cap is not exceeded while conn_1 is live (#746).
         pool.close()
-        assert pool.current_size == 0
-        assert pool.generation == 1
-
-        # 3. Acquire conn_2 under generation 1 (consumes the 1 slot of max_size=1)
-        conn_2 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
-        assert conn_2 is not None
         assert pool.current_size == 1
+        assert pool.checked_out == 1
         assert pool.generation == 1
 
-        # 4. Release conn_1 (from generation 0).
-        # The pool origin check ensures conn_1 is NOT added to the idle pool
-        # and current_size of generation 1 is NOT decremented.
-        pool.release(conn_1)
-        assert pool.current_size == 1, (
-            f"Expected pool.current_size to stay 1, but got {pool.current_size}"
-        )
-
-        # 5. Since conn_2 is still checked out and max_size=1, acquire must be rejected
+        # 3. An acquire under generation 1 must be rejected while conn_1 is still checked out,
+        # preserving the max_size=1 invariant across pool.close() (#746).
         rejected = False
         try:
             pool.acquire("SERVER=dummy_test_746;", lambda: {})
         except RuntimeError as exc:
             if "pool size limit reached" in str(exc):
                 rejected = True
-        assert rejected, "A new acquire must be rejected when max_size=1 capacity is occupied"
+        assert rejected, "A new acquire must be rejected while conn_1 is still checked out"
 
-        # 6. Release conn_2 (matches generation 1). It returns to the pool.
+        # 4. Release conn_1 (from generation 0).
+        # It belongs to this pool but its generation is stale. It is disconnected,
+        # and the retained checked-out capacity is released: current_size drops to 0.
+        pool.release(conn_1)
+        assert pool.current_size == 0
+        assert pool.checked_out == 0
+
+        # 5. Now that capacity has freed up, acquire conn_2 under generation 1 succeeds
+        conn_2 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_2 is not None
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.generation == 1
+
+        # 6. Release conn_2 (matches generation 1). It returns to the pool idle deque.
         pool.release(conn_2)
         assert pool.current_size == 1
+        assert pool.checked_out == 0
 
         # 7. Next acquire reuses conn_2 from the pool
         conn_3 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
         assert conn_3 is not None
         assert pool.current_size == 1
+        assert pool.checked_out == 1
 
         pool.release(conn_3)
+        assert pool.checked_out == 0
         pool.close()
         assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_release_after_pool_recreation(conn_str):
+    """Releasing a connection to a newly recreated pool must not corrupt the new pool's size.
+
+    Verifies that monotonic pool IDs prevent address-reuse (ABA) corruption:
+    even if pool_2 were to be allocated at the same memory address as pool_1,
+    releasing conn_1 (from pool_1) to pool_2 will not match pool_2's monotonic pool ID.
+    Therefore, pool_2's current_size is not erroneously decremented or corrupted (#746).
+    """
+    _run_in_subprocess(
+        """
+        from mssql_python import ddbc_bindings
+
+        pool_1 = ddbc_bindings._TestConnectionPool(1, 600)
+        pool_1.set_mock_mode(True)
+        assert pool_1.pool_id > 0
+
+        # Acquire conn_1 from pool_1
+        conn_1 = pool_1.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_1 is not None
+        assert pool_1.current_size == 1
+        assert pool_1.checked_out == 1
+
+        # Create pool_2 with its own distinct monotonic pool_id
+        pool_2 = ddbc_bindings._TestConnectionPool(1, 600)
+        pool_2.set_mock_mode(True)
+        assert pool_2.pool_id > pool_1.pool_id
+        assert pool_2.current_size == 0
+        assert pool_2.checked_out == 0
+
+        # Release conn_1 into pool_2 (wrong pool ID)
+        pool_2.release(conn_1)
+        # pool_2 must not adopt conn_1 or decrement its size: stays 0
+        assert pool_2.current_size == 0
+        assert pool_2.checked_out == 0
+
+        # pool_2 can acquire normally
+        conn_2 = pool_2.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_2 is not None
+        assert pool_2.current_size == 1
+        assert pool_2.checked_out == 1
+
+        # Releasing conn_1 again to pool_2 does not corrupt pool_2's active connection
+        pool_2.release(conn_1)
+        assert pool_2.current_size == 1
+        assert pool_2.checked_out == 1
+
+        # Cleanly release conn_2
+        pool_2.release(conn_2)
+        assert pool_2.checked_out == 0
+        pool_2.close()
+        assert pool_2.current_size == 0
         """,
         conn_str,
     )

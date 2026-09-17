@@ -6138,7 +6138,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("close", &ConnectionPool::close)
         .def("set_mock_mode", &ConnectionPool::set_mock_mode, py::arg("enable") = true)
         .def_property_readonly("current_size", &ConnectionPool::current_size)
+        .def_property_readonly("checked_out", &ConnectionPool::checked_out)
         .def_property_readonly("generation", &ConnectionPool::generation)
+        .def_property_readonly("pool_id", &ConnectionPool::pool_id)
         .def(
             "inject_candidate",
             [](ConnectionPool& pool, const std::u16string& connStr, long long expiry, bool mock) {
@@ -6150,7 +6152,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                     conn->setTokenExpiry(expiry);
                 }
                 conn->updateLastUsed();
-                conn->setPoolOrigin(&pool, pool.generation());
+                conn->setPoolOrigin(pool.pool_id(), pool.generation());
                 pool.inject_candidate(conn);
             },
             py::arg("conn_str"), py::arg("expiry") = 0, py::arg("mock") = false);

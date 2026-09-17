@@ -51,10 +51,15 @@ static std::string extractAccessToken(const py::dict& attrs) {
     return std::string();
 }
 
+// Process-wide monotonic counter for pool IDs to prevent ABA address-reuse (#746)
+static std::atomic<uint64_t> s_next_pool_id{1};
+
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
     : _max_size(max_size),
       _idle_timeout_secs(idle_timeout_secs),
-      _current_size(0) {}
+      _current_size(0),
+      _checked_out(0),
+      _pool_id(s_next_pool_id.fetch_add(1)) {}
 
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
                                                     const py::dict& attrs_before,
@@ -173,21 +178,22 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                             const std::string stale_token = candidate->currentAccessToken();
                             if (!stale_token.empty()) {
                                 std::lock_guard<std::mutex> lock(_mutex);
-                                _pool.erase(
-                                    std::remove_if(
-                                        _pool.begin(), _pool.end(),
-                                        [&](const std::shared_ptr<Connection>& sibling) {
-                                            if (sibling->currentAccessToken() == stale_token) {
-                                                to_disconnect.push_back(sibling);
-                                                if (_generation == candidate_generation &&
-                                                    _current_size > 0) {
-                                                    --_current_size;
+                                if (_generation == candidate_generation) {
+                                    _pool.erase(
+                                        std::remove_if(
+                                            _pool.begin(), _pool.end(),
+                                            [&](const std::shared_ptr<Connection>& sibling) {
+                                                if (sibling->currentAccessToken() == stale_token) {
+                                                    to_disconnect.push_back(sibling);
+                                                    if (_current_size > 0) {
+                                                        --_current_size;
+                                                    }
+                                                    return true;
                                                 }
-                                                return true;
-                                            }
-                                            return false;
-                                        }),
-                                    _pool.end());
+                                                return false;
+                                            }),
+                                        _pool.end());
+                                }
                             }
                         }
                     }
@@ -204,8 +210,9 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     std::lock_guard<std::mutex> lock(_mutex);
                     if (_generation == candidate_generation) {
                         candidate->updateLastUsed();
-                        candidate->setPoolOrigin(this, _generation);
+                        candidate->setPoolOrigin(_pool_id, _generation);
                         valid_conn = candidate;
+                        ++_checked_out;
                         gen_valid = true;
                     }
                 }
@@ -293,8 +300,9 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     std::lock_guard<std::mutex> lock(_mutex);
                     if (_generation == reservation_generation) {
                         new_conn->updateLastUsed();
-                        new_conn->setPoolOrigin(this, _generation);
+                        new_conn->setPoolOrigin(_pool_id, _generation);
                         valid_conn = new_conn;
+                        ++_checked_out;
                         gen_valid = true;
                     }
                 }
@@ -307,7 +315,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             } catch (...) {
                 // Construct/connect failed — release the reserved slot only if the pool
                 // has not been reset in the meantime (#746). If close() ran while we were
-                // connecting outside the lock, close() already set _current_size = 0 and
+                // connecting outside the lock, close() already set _current_size = _checked_out and
                 // bumped _generation; decrementing here would cancel another thread's
                 // newer reservation instead of our own.
                 {
@@ -338,14 +346,27 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
         return;
     }
     bool should_disconnect = false;
-    bool gen_matches = false;
-    uint64_t conn_gen = conn->originGeneration();
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        gen_matches = conn->matchesPoolOrigin(this, _generation);
-        if (gen_matches && _pool.size() < _max_size) {
-            conn->updateLastUsed();
-            _pool.push_back(conn);
+        if (conn->originPoolId() == _pool_id) {
+            bool generation_matches = (conn->originGeneration() == _generation);
+            if (generation_matches && _pool.size() < _max_size) {
+                conn->updateLastUsed();
+                _pool.push_back(conn);
+                if (_checked_out > 0) {
+                    --_checked_out;
+                }
+                conn->setPoolOrigin(0, 0);
+            } else {
+                should_disconnect = true;
+                if (_checked_out > 0) {
+                    --_checked_out;
+                }
+                if (_current_size > 0) {
+                    --_current_size;
+                }
+                conn->setPoolOrigin(0, 0);
+            }
         } else {
             should_disconnect = true;
         }
@@ -358,12 +379,6 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
         } catch (const std::exception& ex) {
             LOG("ConnectionPool::release: disconnect failed: %s", ex.what());
         }
-        if (gen_matches) {
-            std::lock_guard<std::mutex> lock(_mutex);
-            if (_generation == conn_gen && _current_size > 0) {
-                --_current_size;
-            }
-        }
     }
 }
 
@@ -372,8 +387,9 @@ bool ConnectionPool::canEvict() {
     // Never evict while any connection is checked out or in-flight. Reserved
     // capacity (_current_size) beyond what is sitting idle in _pool means a
     // caller still holds one, so the pool must stay.
-    size_t checked_out = (_current_size > _pool.size()) ? (_current_size - _pool.size()) : 0;
-    if (checked_out > 0) {
+    size_t in_flight_or_checked_out =
+        (_current_size > _pool.size()) ? (_current_size - _pool.size()) : 0;
+    if (in_flight_or_checked_out > 0 || _checked_out > 0) {
         return false;
     }
     // Nothing checked out and the pool is empty: safe to drop immediately.
@@ -407,7 +423,9 @@ void ConnectionPool::close() {
             to_close.push_back(_pool.front());
             _pool.pop_front();
         }
-        _current_size = 0;
+        // Retain reserved capacity for checked-out connections so a new acquire
+        // cannot exceed _max_size while old connections are still live (#746).
+        _current_size = _checked_out;
         ++_generation;
     }
     for (auto& conn : to_close) {
