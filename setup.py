@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -7,6 +8,50 @@ from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _read_mssql_python_rs_version() -> str:
+    version_file = PROJECT_ROOT / "eng" / "versions" / "mssql-python-rs.version"
+    version = version_file.read_text(encoding="utf-8").strip()
+    if not version:
+        raise SystemExit(f"Version file is empty: {version_file}")
+    return version
+
+
+def _read_odbc_version() -> str:
+    """Return the ``mssql-python-odbc`` version -- the single source of truth for
+    the ODBC dependency pin.
+
+    Primary source is ``mssql_python_odbc/__init__.py`` in the checkout (the same
+    ``__version__`` ``setup_odbc.py`` uses for the wheel version and the
+    ``pr-validation`` pipeline reads for the driver version), parsed by regex
+    without importing the package.
+
+    Fallback: the multi-platform build pipeline deletes the committed
+    ``mssql_python_odbc/`` directory before building the mssql-python wheel (so
+    pytest resolves the driver from the installed wheel, not the checkout). In
+    that window the ``mssql-python-odbc`` wheel is already pip-installed, so read
+    the version from its installed metadata -- which itself came from the same
+    ``__init__.py``. Either way it is one version, one place.
+    """
+    init_file = PROJECT_ROOT / "mssql_python_odbc" / "__init__.py"
+    if init_file.is_file():
+        text = init_file.read_text(encoding="utf-8")
+        match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if match:
+            return match.group(1)
+
+    # The checkout copy is absent (removed by the wheel-build stage); fall back to
+    # the already-installed mssql-python-odbc package metadata.
+    from importlib.metadata import version, PackageNotFoundError
+
+    try:
+        return version("mssql-python-odbc")
+    except PackageNotFoundError:
+        raise SystemExit(
+            "Could not determine the mssql-python-odbc version: neither "
+            f"{init_file} exists nor is the mssql-python-odbc package installed."
+        )
 
 
 # Custom distribution to force platform-specific wheel
@@ -47,57 +92,17 @@ def get_platform_info():
         libc_name, _ = platform.libc_ver()
         is_musl = libc_name == "" or "musl" in libc_name.lower()
 
+        # Allow explicit override via MANYLINUX_TAG env var (defaults to manylinux_2_28)
+        manylinux_tag = os.environ.get("MANYLINUX_TAG", "manylinux_2_28")
+
         if target_arch == "x86_64":
-            return "x86_64", "musllinux_1_2_x86_64" if is_musl else "manylinux_2_34_x86_64"
+            return "x86_64", f"musllinux_1_2_x86_64" if is_musl else f"{manylinux_tag}_x86_64"
         elif target_arch in ["aarch64", "arm64"]:
-            return "aarch64", "musllinux_1_2_aarch64" if is_musl else "manylinux_2_34_aarch64"
+            return "aarch64", f"musllinux_1_2_aarch64" if is_musl else f"{manylinux_tag}_aarch64"
         else:
             raise OSError(
                 f"Unsupported architecture '{target_arch}' for Linux; expected 'x86_64' or 'aarch64'."
             )
-
-
-# ---------------------------------------------------------------------------
-# mssql_py_core validation
-# ---------------------------------------------------------------------------
-def validate_mssql_py_core():
-    """Validate that mssql_py_core has been extracted into the project root.
-
-    Expects ``<project_root>/mssql_py_core/`` to contain:
-      - ``__init__.py``
-      - At least one native extension (``.pyd`` on Windows, ``.so`` on Linux/macOS)
-
-    The extraction is performed by ``eng/scripts/install-mssql-py-core.ps1``
-    (Windows) or ``eng/scripts/install-mssql-py-core.sh`` (Linux/macOS)
-    and must be run before ``setup.py bdist_wheel``.
-
-    Raises SystemExit if mssql_py_core is missing or invalid.
-    """
-    core_dir = PROJECT_ROOT / "mssql_py_core"
-
-    if not core_dir.is_dir():
-        sys.exit(
-            "ERROR: mssql_py_core/ directory not found in project root. "
-            "Run eng/scripts/install-mssql-py-core to extract it before building."
-        )
-
-    # Check for __init__.py
-    if not (core_dir / "__init__.py").is_file():
-        sys.exit("ERROR: mssql_py_core/__init__.py not found.")
-
-    # Check for native extension (.pyd on Windows, .so on Linux/macOS)
-    ext = ".pyd" if sys.platform.startswith("win") else ".so"
-    native_files = list(core_dir.glob(f"mssql_py_core*{ext}"))
-    if not native_files:
-        sys.exit(
-            f"ERROR: No mssql_py_core native extension ({ext}) found "
-            f"in mssql_py_core/. Run eng/scripts/install-mssql-py-core to extract it."
-        )
-
-    for f in native_files:
-        print(f"  Found mssql_py_core native extension: {f.name}")
-
-    print("mssql_py_core validation: OK")
 
 
 class CustomBdistWheel(bdist_wheel):
@@ -110,48 +115,34 @@ class CustomBdistWheel(bdist_wheel):
         self.plat_name = platform_tag
         print(f"Setting wheel platform tag to: {self.plat_name} (arch: {arch})")
 
-    def run(self):
-        validate_mssql_py_core()
-        bdist_wheel.run(self)
-
 
 # ---------------------------------------------------------------------------
 # Package discovery
 # ---------------------------------------------------------------------------
 
-# Find all packages in the current directory
-packages = find_packages()
+# Find all packages in the current directory.
+# Exclude profiler/: it's internal development tooling (a standalone benchmark
+# CLI), not part of the shipped driver, and its generic top-level name should
+# not land in users' site-packages. The runtime instrumentation it drives lives
+# inside mssql_python (perf_timer.py, the ddbc_bindings profiling submodule) and
+# is packaged normally.
+# Exclude packages owned by the standalone mssql-python-odbc and
+# mssql-python-rs distributions. Shipping them here too would make multiple
+# distributions own the same import directories.
+packages = find_packages(
+    exclude=[
+        "profiler",
+        "profiler.*",
+        "mssql_py_core",
+        "mssql_py_core.*",
+        "mssql_python_odbc",
+        "mssql_python_odbc.*",
+    ]
+)
 
 # Get platform info using consolidated function
 arch, platform_tag = get_platform_info()
 print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
-
-# mssql_py_core is validated inside CustomBdistWheel.run() so that editable
-# installs (pip install -e .) and other setup.py commands are not blocked.
-if (PROJECT_ROOT / "mssql_py_core").is_dir():
-    packages.append("mssql_py_core")
-
-# Add platform-specific packages
-if sys.platform.startswith("win"):
-    packages.extend(
-        [
-            f"mssql_python.libs.windows.{arch}",
-            f"mssql_python.libs.windows.{arch}.1033",
-            f"mssql_python.libs.windows.{arch}.vcredist",
-        ]
-    )
-elif sys.platform.startswith("darwin"):
-    packages.extend(
-        [
-            f"mssql_python.libs.macos",
-        ]
-    )
-elif sys.platform.startswith("linux"):
-    packages.extend(
-        [
-            f"mssql_python.libs.linux",
-        ]
-    )
 
 # ---------------------------------------------------------------------------
 # package_data – binaries to include in the wheel
@@ -161,19 +152,16 @@ package_data = {
         "py.typed",
         "ddbc_bindings.cp*.pyd",
         "ddbc_bindings.cp*.so",
-        "libs/*",
-        "libs/**/*",
+        # msvcp140.dll (VC++ runtime) is copied next to the compiled extension by
+        # build.bat; the ODBC driver binaries themselves ship only in the
+        # standalone mssql-python-odbc package (see setup_odbc.py).
         "*.dll",
-    ],
-    "mssql_py_core": [
-        "mssql_py_core.cp*.pyd",
-        "mssql_py_core.cp*.so",
     ],
 }
 
 setup(
     name="mssql-python",
-    version="1.6.0",
+    version="1.15.0",
     description="A Python library for interacting with Microsoft SQL Server",
     long_description=open("PyPI_Description.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
@@ -188,6 +176,11 @@ setup(
     # Add dependencies
     install_requires=[
         "azure-identity>=1.12.0",  # Azure authentication library
+        # ODBC Driver 18 binaries (standalone package). The pin is derived from
+        # mssql_python_odbc.__version__ (single source of truth) so it can never
+        # drift from the published mssql-python-odbc package.
+        f"mssql-python-odbc=={_read_odbc_version()}",
+        f"mssql-python-rs=={_read_mssql_python_rs_version()}",
     ],
     extras_require={
         "pyarrow": ["pyarrow>=14.0.0"],
@@ -202,10 +195,6 @@ setup(
     distclass=BinaryDistribution,
     exclude_package_data={
         "": ["*.yml", "*.yaml"],  # Exclude YML files
-        "mssql_python": [
-            "libs/*/vcredist/*",
-            "libs/*/vcredist/**/*",  # Exclude vcredist directories, added here since `'libs/*' is already included`
-        ],
     },
     # Register custom commands
     cmdclass={

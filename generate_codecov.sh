@@ -38,7 +38,19 @@ echo "==================================="
 
 # Cleanup old coverage
 rm -f .coverage coverage.xml python-coverage.info cpp-coverage.info total.info
-rm -rf htmlcov unified-coverage
+rm -f default.profraw default.profdata
+rm -rf htmlcov unified-coverage profraw
+
+# Capture one raw profile *per process* so subprocess-based tests count too.
+# Several pooling tests (idle eviction, pool-full, orphan return) must run in a
+# fresh interpreter because the C++ pool config is locked in via std::call_once;
+# they spawn `python -c` workers. With a fixed LLVM_PROFILE_FILE every process
+# writes the same default.profraw and the last writer (the main pytest process)
+# clobbers the workers, dropping their C++ coverage entirely. Using %p (PID) and
+# %m (binary signature) gives each instrumented process its own file, which we
+# merge below. Subprocess workers inherit this env var (os.environ.copy()).
+mkdir -p "$(pwd)/profraw"
+export LLVM_PROFILE_FILE="$(pwd)/profraw/default-%p-%m.profraw"
 
 # Run pytest with Python coverage (XML + HTML output)
 python -m pytest -v \
@@ -57,13 +69,22 @@ echo "==================================="
 echo "[STEP 3] Processing C++ coverage (Clang/LLVM)"
 echo "==================================="
 
-# Merge raw profile data from pybind runs
-if [ ! -f default.profraw ]; then
-    echo "[ERROR] default.profraw not found. Did you build with -fprofile-instr-generate?"
+# Merge raw profile data from every instrumented process (main pytest run plus
+# any `python -c` subprocess workers). Each wrote its own profraw/*.profraw via
+# the LLVM_PROFILE_FILE pattern set in STEP 2.
+shopt -s nullglob
+PROFRAW_FILES=(profraw/*.profraw)
+# Fallback: pick up a legacy single default.profraw if one exists in CWD.
+if [ -f default.profraw ]; then
+    PROFRAW_FILES+=(default.profraw)
+fi
+if [ ${#PROFRAW_FILES[@]} -eq 0 ]; then
+    echo "[ERROR] No .profraw files found. Did you build with -fprofile-instr-generate?"
     exit 1
 fi
 
-llvm-profdata merge -sparse default.profraw -o default.profdata
+echo "[INFO] Merging ${#PROFRAW_FILES[@]} raw profile file(s)"
+llvm-profdata merge -sparse "${PROFRAW_FILES[@]}" -o default.profdata
 
 # Find the pybind .so file (Linux build)
 PYBIND_SO=$(find mssql_python -name "*.so" | head -n 1)
@@ -74,32 +95,42 @@ fi
 
 echo "[INFO] Using pybind module: $PYBIND_SO"
 
-# Export C++ coverage, excluding Python headers, pybind11, and system includes
+# Export C++ coverage, excluding Python headers, pybind11, system includes, and vendored deps
 llvm-cov export "$PYBIND_SO" \
   -instr-profile=default.profdata \
-  -ignore-filename-regex='(python3\.[0-9]+|cpython|pybind11|/usr/include/|/usr/lib/)' \
+  -ignore-filename-regex='(python3\.[0-9]+|cpython|pybind11|/usr/include/|/usr/lib/|build/_deps/)' \
   --skip-functions \
   -format=lcov > cpp-coverage.info
 
-# Note: LCOV exclusion markers (LCOV_EXCL_LINE) should be added to source code
-# to exclude LOG() statements from coverage. However, for automated exclusion
-# of all LOG lines without modifying source code, we can use geninfo's --omit-lines
-# feature during the merge step (see below).
+# Note: LCOV exclusion markers (LCOV_EXCL_LINE) are processed below
 
 echo "==================================="
 echo "[STEP 4] Merging Python + C++ coverage"
 echo "==================================="
 
-# Merge LCOV reports (ignore inconsistencies in Python LCOV export)
-echo "[ACTION] Merging Python and C++ coverage"
-lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
+# Merge LCOV reports and filter LOG statements using --omit-lines
+# The --omit-lines option excludes lines matching the regex from coverage
+# Since we joined multi-line LOGs during build, they're now on single lines
+echo "[ACTION] Merging Python and C++ coverage with LOG exclusion"
+lcov -a python-coverage.info -a cpp-coverage.info -o total-unfiltered.info \
+  --omit-lines '\bLOG[A-Z_]*\s*\(' \
   --ignore-errors inconsistent,corrupt
+
+echo "[INFO] Coverage merged with LOG statements excluded"
+
+# Defense-in-depth: drop any vendored third-party sources pulled in via CMake
+# FetchContent (e.g. simdutf). The llvm-cov ignore-filename-regex above is the
+# primary filter; this catches anything that slips through future deps.
+echo "[ACTION] Removing vendored third-party sources from merged coverage"
+lcov --remove total-unfiltered.info '*/build/_deps/*' -o total.info \
+  --ignore-errors inconsistent,unused
 
 # Normalize paths so everything starts from mssql_python/
 echo "[ACTION] Normalizing paths in LCOV report"
 sed -i "s|$(pwd)/||g" total.info
 
 # Generate full HTML report
+echo "[ACTION] Generating HTML coverage report"
 genhtml total.info \
   --output-directory unified-coverage \
   --quiet \
@@ -107,3 +138,18 @@ genhtml total.info \
 
 # Generate Cobertura XML (for Azure DevOps Code Coverage tab)
 lcov_cobertura total.info --output coverage.xml
+
+echo "==================================="
+echo "[STEP 5] Cleanup"
+echo "==================================="
+
+# Restore original source files if they were backed up during coverage build
+BACKUP_FILE="mssql_python/pybind/.source_backup_coverage.tar.gz"
+if [ -f "$BACKUP_FILE" ]; then
+    echo "[ACTION] Restoring original source files from backup"
+    (cd mssql_python/pybind && tar -xzf .source_backup_coverage.tar.gz)
+    rm -f "$BACKUP_FILE"
+    echo "[INFO] Original source files restored"
+fi
+
+echo "[INFO] Coverage report generation complete"

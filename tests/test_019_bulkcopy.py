@@ -3,12 +3,20 @@
 
 """Basic integration tests for bulkcopy via the mssql_python driver."""
 
+import time
+
 import pytest
 
-# Skip the entire module when mssql_py_core can't be loaded at runtime
-# (e.g. manylinux_2_28 build containers where glibc is too old for the .so).
+# Skip the entire module when mssql_py_core can't be loaded (e.g. it's not
+# installed, or its native extension fails to load in some build containers).
+# exc_type=ImportError is required because pytest 9.1 changed importorskip's
+# default to only skip on ModuleNotFoundError, so a module that is found but
+# fails to import its native extension would otherwise be raised as a collection
+# error instead of being skipped. The skip reason is left to pytest so it
+# reports the actual underlying import error.
 mssql_py_core = pytest.importorskip(
-    "mssql_py_core", reason="mssql_py_core not loadable (glibc too old?)"
+    "mssql_py_core",
+    exc_type=ImportError,
 )
 
 
@@ -305,3 +313,279 @@ def test_bulkcopy_with_server_synonyms(conn_str):
         cursor.close()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------
+# GH-482: Regression tests for bulkcopy Row acceptance
+# ---------------------------------------------------------
+
+
+def test_bulkcopy_fetchmany_row_objects(cursor):
+    """Regression test: fetchmany() Row objects piped directly into bulkcopy (GH-482).
+
+    This is the primary use case from the customer report — table-to-table
+    copy where fetchmany returns Row objects that bulkcopy must accept.
+    """
+    source_table = "mssql_python_bcp_row_src"
+    target_table = "mssql_python_bcp_row_tgt"
+
+    try:
+        # Setup source table with data
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"CREATE TABLE {source_table} (id INT, name NVARCHAR(50), val FLOAT)")
+        cursor.connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {source_table} VALUES (?, ?, ?)",
+            [(1, "Alice", 10.5), (2, "Bob", 20.75), (3, "Charlie", 30.25)],
+        )
+        cursor.connection.commit()
+
+        # Setup empty target table
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.execute(f"CREATE TABLE {target_table} (id INT, name NVARCHAR(50), val FLOAT)")
+        cursor.connection.commit()
+
+        # Fetch Row objects from source
+        cursor.execute(f"SELECT id, name, val FROM {source_table} ORDER BY id")
+        rows = cursor.fetchmany(100)  # Returns list[Row]
+        assert len(rows) == 3
+
+        # Pipe Row objects directly into bulkcopy — this is the GH-482 fix
+        result = cursor.bulkcopy(target_table, rows, timeout=60)
+        assert result["rows_copied"] == 3
+
+        # Verify data landed correctly
+        cursor.execute(f"SELECT id, name, val FROM {target_table} ORDER BY id")
+        target_rows = cursor.fetchall()
+        assert len(target_rows) == 3
+        assert target_rows[0][0] == 1 and target_rows[0][1] == "Alice"
+        assert target_rows[1][0] == 2 and target_rows[1][1] == "Bob"
+        assert target_rows[2][0] == 3 and target_rows[2][1] == "Charlie"
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_fetchall_row_objects(cursor):
+    """Regression test: fetchall() Row objects piped directly into bulkcopy (GH-482)."""
+    source_table = "mssql_python_bcp_fetchall_src"
+    target_table = "mssql_python_bcp_fetchall_tgt"
+
+    try:
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"CREATE TABLE {source_table} (id INT, txt VARCHAR(20))")
+        cursor.connection.commit()
+
+        cursor.executemany(
+            f"INSERT INTO {source_table} VALUES (?, ?)",
+            [(1, "row1"), (2, "row2")],
+        )
+        cursor.connection.commit()
+
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.execute(f"CREATE TABLE {target_table} (id INT, txt VARCHAR(20))")
+        cursor.connection.commit()
+
+        # fetchall returns list[Row]
+        cursor.execute(f"SELECT id, txt FROM {source_table} ORDER BY id")
+        rows = cursor.fetchall()
+
+        result = cursor.bulkcopy(target_table, rows, timeout=60)
+        assert result["rows_copied"] == 2
+
+        cursor.execute(f"SELECT id, txt FROM {target_table} ORDER BY id")
+        target_rows = cursor.fetchall()
+        assert len(target_rows) == 2
+        assert target_rows[0][1] == "row1"
+        assert target_rows[1][1] == "row2"
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{source_table}', 'U') IS NOT NULL DROP TABLE {source_table}")
+        cursor.execute(f"IF OBJECT_ID('{target_table}', 'U') IS NOT NULL DROP TABLE {target_table}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_rejects_list_rows(cursor):
+    """Regression test: list rows are rejected since Rust only accepts PyTuple (GH-482)."""
+    table_name = "mssql_python_bcp_list_reject"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT)")
+        cursor.connection.commit()
+
+        # list rows should raise TypeError — Rust rejects PyList
+        with pytest.raises(TypeError, match="tuples or Row objects"):
+            cursor.bulkcopy(table_name, [[1], [2], [3]], timeout=60)
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_tuple_passthrough(cursor):
+    """Regression test: tuple rows still work as before (GH-482 doesn't break existing)."""
+    table_name = "mssql_python_bcp_tuple_pass"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name VARCHAR(20))")
+        cursor.connection.commit()
+
+        data = [(1, "Alice"), (2, "Bob")]
+        result = cursor.bulkcopy(table_name, data, timeout=60)
+        assert result["rows_copied"] == 2
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_accepts_timeout_zero(cursor):
+    """GH-697: timeout=0 means no timeout per the BCP spec, so it must not be rejected."""
+    table_name = "mssql_python_bcp_timeout_zero"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name VARCHAR(20))")
+        cursor.connection.commit()
+
+        result = cursor.bulkcopy(table_name, [(1, "Alice"), (2, "Bob")], timeout=0)
+        assert result["rows_copied"] == 2
+
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 2
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_timeout_zero_disables_the_timeout(cursor):
+    """GH-697: a copy that times out at timeout=1 completes at timeout=0.
+
+    The source paces itself with sleeps so the copy always outlives a 1 second
+    timeout regardless of machine speed. Same source both times, so the only
+    variable is the timeout value.
+    """
+    table_name = "mssql_python_bcp_timeout_zero_behaviour"
+
+    def slow_rows():
+        for i in range(30):
+            time.sleep(0.1)  # 3s total, comfortably past the 1s timeout
+            yield (i, f"row{i}")
+
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name NVARCHAR(50))")
+        cursor.connection.commit()
+
+        # baseline: the timeout is real and fires on this source
+        with pytest.raises(Exception, match="(?i)timeout"):
+            cursor.bulkcopy(table_name, slow_rows(), timeout=1)
+
+        cursor.execute(f"DELETE FROM {table_name}")
+        cursor.connection.commit()
+
+        # same source, timeout disabled: runs to completion
+        result = cursor.bulkcopy(table_name, slow_rows(), timeout=0)
+        assert result["rows_copied"] == 30
+
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 30
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_rejects_invalid_timeouts(cursor):
+    """GH-697: negatives and bools stay rejected. Validation fires before any DB work."""
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=-1)
+
+    with pytest.raises(TypeError, match="timeout must be a non-negative integer"):
+        cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=1.5)
+
+    # bool is an int subclass, so False would otherwise slip through as 0
+    # and silently disable the timeout.
+    for flag in (False, True):
+        with pytest.raises(TypeError, match="timeout must be a non-negative integer"):
+            cursor.bulkcopy("mssql_python_bcp_unused", [(1,)], timeout=flag)
+
+
+def test_bulkcopy_empty_iterator(cursor):
+    """Regression test: empty iterator doesn't crash (GH-482)."""
+    table_name = "mssql_python_bcp_empty"
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id INT)")
+        cursor.connection.commit()
+
+        result = cursor.bulkcopy(table_name, [], timeout=60)
+        assert result["rows_copied"] == 0
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.connection.commit()
+
+
+def test_bulkcopy_udt_geometry(cursor):
+    """GH-667: bulk copy into a CLR UDT column.
+
+    Custom (user-defined) CLR UDTs require a deployed assembly, so this test uses
+    the built-in ``geometry`` CLR UDT, which travels the identical TDS ``0xF0``
+    wire path. Before the fix, bulk copy of any UDT column failed with
+    ``Unsupported TDS type for bulk copy: 0xF0``; the fix streams UDTs as
+    ``varbinary(max)`` (their ``IBinarySerialize`` form).
+
+    The test seeds a ``geometry`` column, reads the serialized UDT bytes back,
+    bulk copies them into a second ``geometry`` column, and verifies a byte-exact
+    round-trip (including a NULL).
+    """
+    src = "mssql_python_bcp_udt_src"
+    dst = "mssql_python_bcp_udt_dst"
+
+    def _read(table):
+        cursor.execute(f"SELECT id, g FROM {table} ORDER BY id")
+        return [(r[0], bytes(r[1]) if r[1] is not None else None) for r in cursor.fetchall()]
+
+    try:
+        # Seed a geometry (built-in CLR UDT) source table via T-SQL.
+        cursor.execute(f"IF OBJECT_ID('{src}', 'U') IS NOT NULL DROP TABLE {src}")
+        cursor.execute(f"CREATE TABLE {src} (id INT NOT NULL, g geometry NULL)")
+        cursor.execute(
+            f"INSERT INTO {src} (id, g) VALUES "
+            "(1, geometry::STGeomFromText('POINT(1 2)', 0)), "
+            "(2, geometry::STGeomFromText('LINESTRING(0 0, 10 10, 20 25)', 0)), "
+            "(3, NULL), "
+            "(4, geometry::STGeomFromText('POLYGON((0 0, 0 5, 5 5, 5 0, 0 0))', 0))"
+        )
+        cursor.connection.commit()
+
+        # Read the serialized UDT bytes back (unaffected by the fix).
+        source_rows = _read(src)
+        assert len(source_rows) == 4
+        assert sum(1 for _, g in source_rows if g is not None) == 3
+        assert any(g is None for _, g in source_rows)
+
+        # Destination geometry table.
+        cursor.execute(f"IF OBJECT_ID('{dst}', 'U') IS NOT NULL DROP TABLE {dst}")
+        cursor.execute(f"CREATE TABLE {dst} (id INT NOT NULL, g geometry NULL)")
+        cursor.connection.commit()
+
+        # Bulk copy the UDT bytes into the geometry column. Requires the GH-667
+        # fix in the bundled mssql_py_core (both the varbinary(max) wire mapping
+        # and the bytes->UDT value-coercion). Pre-fix this failed with
+        # "Unsupported TDS type for bulk copy: 0xF0" / a bad varbinary(-1) type /
+        # a "target SQL type is Udt" coercion error.
+        result = cursor.bulkcopy(dst, source_rows, timeout=60)
+        assert result["rows_copied"] == 4
+
+        # Verify byte-exact round-trip, including the NULL row.
+        assert _read(dst) == source_rows
+
+    finally:
+        cursor.execute(f"IF OBJECT_ID('{src}', 'U') IS NOT NULL DROP TABLE {src}")
+        cursor.execute(f"IF OBJECT_ID('{dst}', 'U') IS NOT NULL DROP TABLE {dst}")
+        cursor.connection.commit()

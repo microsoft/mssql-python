@@ -62,10 +62,22 @@ class PoolingManager:
                 max_size,
                 idle_timeout,
             )
+            # enable_pooling() only configures the connection-pool manager; it
+            # does not load the native driver, so it must not resolve/freeze
+            # the ODBC provider (an explicit pooling() before selecting a
+            # provider would otherwise lock in the default prematurely).
             ddbc_bindings.enable_pooling(max_size, idle_timeout)
             cls._config["max_size"] = max_size
             cls._config["idle_timeout"] = idle_timeout
             cls._enabled = True
+            # Re-arm the disable guard: enable_pooling() calls setAccepting(true)
+            # on the native manager, so the Python state must mirror that a
+            # fresh disable() is once again required to disarm it. Without this
+            # reset, an enable -> disable -> enable -> disable sequence would
+            # leave _pools_closed True after the first disable, causing the
+            # second disable to skip disable_pooling() and desync from the
+            # native manager (which is still accepting).
+            cls._pools_closed = False
             cls._initialized = True
             logger.info("PoolingManager.enable: Connection pooling enabled successfully")
 
@@ -83,7 +95,7 @@ class PoolingManager:
                 cls._enabled and not cls._pools_closed
             ):  # Only cleanup if enabled and not already closed
                 logger.info("PoolingManager.disable: Closing connection pools")
-                ddbc_bindings.close_pooling()
+                ddbc_bindings.disable_pooling()
                 logger.info("PoolingManager.disable: Connection pools closed successfully")
             else:
                 logger.debug("PoolingManager.disable: Pooling already disabled or closed")

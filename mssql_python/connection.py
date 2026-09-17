@@ -14,7 +14,10 @@ Resource Management:
 import weakref
 import re
 import codecs
-from typing import Any, Dict, Optional, Union, List, Tuple, Callable, TYPE_CHECKING
+import warnings
+import struct
+from types import MappingProxyType
+from typing import Any, Dict, Optional, Union, List, Tuple, Callable, Protocol, TYPE_CHECKING
 import threading
 
 import mssql_python
@@ -27,6 +30,7 @@ from mssql_python.connection_string_parser import sanitize_connection_string
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
+from mssql_python.odbc_provider import ProviderManager
 from mssql_python.exceptions import (
     Warning,  # pylint: disable=redefined-builtin
     Error,
@@ -38,24 +42,208 @@ from mssql_python.exceptions import (
     InternalError,
     ProgrammingError,
     NotSupportedError,
+    sqlstate_to_exception,
 )
-from mssql_python.auth import extract_auth_type, process_connection_string
+from mssql_python.auth import (
+    extract_auth_type,
+    process_auth_parameters,
+    remove_sensitive_params,
+    get_auth_token_info,
+    compute_identity_key,
+    compute_token_identity,
+)
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
-from mssql_python.constants import _RESERVED_PARAMETERS
+from mssql_python.constants import (
+    _RESERVED_PARAMETERS,
+    _KEY_AUTHENTICATION,
+    _KEY_UID,
+    _KEY_PWD,
+    _KEY_TRUSTED_CONNECTION,
+    _AuthInternal,
+)
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
 
+
+class TokenProvider(Protocol):
+    """Structural type for the ``token_provider`` parameter.
+
+    Any object exposing a ``get_token(scope)`` method that returns an object
+    with a ``.token`` attribute (the raw JWT string) satisfies this protocol.
+    It is intentionally broader than ``azure.core.credentials.TokenCredential``
+    -- whose ``get_token`` requires the ``(*scopes, **kwargs)`` shape -- so that
+    a minimal ``get_token(scope)`` implementation (for example, a thin wrapper
+    around a token obtained from Microsoft Fabric's ``mssparkutils``) is
+    accepted by static type checkers, matching the documented contract. Every
+    ``azure-identity`` credential (``DefaultAzureCredential``,
+    ``AzureCliCredential``, ...) also conforms.
+    """
+
+    def get_token(self, scope: str) -> Any:
+        """Return an object with a ``.token`` attribute for ``scope``."""
+        ...
+
+
 # Add SQL_WMETADATA constant for metadata decoding configuration
 SQL_WMETADATA: int = -99  # Special flag for column name decoding
-# Threshold to determine if an info type is string-based
-INFO_TYPE_STRING_THRESHOLD: int = 10000
+INFO_TYPE_STRING_THRESHOLD: int = 10000  # Legacy fallback for unlisted information types
+
+# ODBC integers have fixed widths and native byte order; handles are pointer-sized.
+_SQLUSMALLINT = struct.Struct("=H")
+_SQLUINTEGER = struct.Struct("=I")
+_SQLPOINTER = struct.Struct("P")
+
+# SQLGetInfoW return types. Only type information is shared, never connection metadata.
+_GETINFO_RETURN_TYPES = MappingProxyType(
+    {
+        GetInfoConstants.SQL_DATA_SOURCE_NAME.value: str,
+        GetInfoConstants.SQL_DATABASE_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_VER.value: str,
+        GetInfoConstants.SQL_SERVER_NAME.value: str,
+        GetInfoConstants.SQL_USER_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_ODBC_VER.value: str,
+        GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value: str,
+        GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value: str,
+        GetInfoConstants.SQL_CATALOG_TERM.value: str,
+        GetInfoConstants.SQL_SCHEMA_TERM.value: str,
+        GetInfoConstants.SQL_TABLE_TERM.value: str,
+        GetInfoConstants.SQL_KEYWORDS.value: str,
+        GetInfoConstants.SQL_PROCEDURE_TERM.value: str,
+        GetInfoConstants.SQL_SPECIAL_CHARACTERS.value: str,
+        GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value: str,
+        GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value: str,
+        GetInfoConstants.SQL_ACCESSIBLE_TABLES.value: str,
+        GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value: str,
+        GetInfoConstants.SQL_EXPRESSIONS_IN_ORDERBY.value: str,
+        GetInfoConstants.SQL_LIKE_ESCAPE_CLAUSE.value: str,
+        GetInfoConstants.SQL_MULTIPLE_ACTIVE_TXN.value: str,
+        GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value: str,
+        GetInfoConstants.SQL_PROCEDURES.value: str,
+        GetInfoConstants.SQL_CATALOG_NAME.value: str,
+        GetInfoConstants.SQL_COLUMN_ALIAS.value: str,
+        GetInfoConstants.SQL_DESCRIBE_PARAMETER.value: str,
+        GetInfoConstants.SQL_ORDER_BY_COLUMNS_IN_SELECT.value: str,
+        GetInfoConstants.SQL_OUTER_JOINS.value: str,
+        GetInfoConstants.SQL_MULT_RESULT_SETS.value: str,
+        GetInfoConstants.SQL_DRIVER_HLIB.value: _SQLPOINTER,
+        GetInfoConstants.SQL_DRIVER_HENV.value: _SQLPOINTER,
+        GetInfoConstants.SQL_DRIVER_HDBC.value: _SQLPOINTER,
+        GetInfoConstants.SQL_SQL_CONFORMANCE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_IDENTIFIER_CASE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_SUBQUERIES.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CORRELATION_NAME.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CATALOG_USAGE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCHEMA_USAGE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TXN_CAPABLE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_TXN_ISOLATION_OPTION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STRING_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SYSTEM_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CONVERT_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_STATEMENT_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_CHAR_LITERAL_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_BINARY_LITERAL_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_TABLE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_SELECT.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_GROUP_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_ORDER_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_INDEX.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_TABLES_IN_SELECT.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_CONCURRENT_ACTIVITIES.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_DRIVER_CONNECTIONS.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_ROW_SIZE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_USER_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_GETDATA_EXTENSIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CURSOR_COMMIT_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CURSOR_ROLLBACK_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CURSOR_SENSITIVITY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BOOKMARK_PERSISTENCE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DYNAMIC_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DYNAMIC_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_KEYSET_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_KEYSET_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCROLL_OPTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCROLL_CONCURRENCY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FETCH_DIRECTION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_SENSITIVITY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BATCH_SUPPORT.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BATCH_ROW_COUNT.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_PARAM_ARRAY_ROW_COUNTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_PARAM_ARRAY_SELECTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_POSITIONED_STATEMENTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_GROUP_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_OJ_CAPABILITIES.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_QUOTED_IDENTIFIER_CASE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CONCAT_NULL_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_NULL_COLLATION.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_ALTER_TABLE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_UNION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DDL_INDEX.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_ADD_INTERVALS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_DIFF_INTERVALS.value: _SQLUINTEGER,
+        # Standard information types not currently exposed by GetInfoConstants.
+        17: str,  # SQL_DBMS_NAME
+        18: str,  # SQL_DBMS_VER
+        10000: str,  # SQL_XOPEN_CLI_YEAR
+        10021: _SQLUINTEGER,  # SQL_ASYNC_MODE
+        127: _SQLUINTEGER,  # SQL_CREATE_ASSERTION
+    }
+)
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
 # Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
 UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
+
+_SQLSTATE_RE = re.compile(r"^SQLSTATE:([A-Z0-9]{0,5}):(.*)", re.DOTALL)
+
+
+def _raise_connection_error(e: RuntimeError) -> None:
+    """Map a RuntimeError from the C++ pybind layer to the correct DB-API 2.0 exception.
+
+    Connection::checkError() throws "SQLSTATE:XXXXX:<odbc_message>" so the SQLSTATE
+    can be mapped via sqlstate_to_exception(), consistent with cursor-level error handling.
+    """
+    error_msg = str(e)
+    match = _SQLSTATE_RE.match(error_msg)
+    if match:
+        sqlstate, ddbc_error = match.group(1), match.group(2)
+        # Handle malformed SQLSTATE prefix (empty or invalid code)
+        if not sqlstate or len(sqlstate) != 5:
+            logger.error("Connection error (malformed SQLSTATE): %s", ddbc_error)
+            raise OperationalError(
+                driver_error="Connection operation failed",
+                ddbc_error=ddbc_error,
+            ) from None
+        exc = sqlstate_to_exception(sqlstate, ddbc_error)
+        if exc is None:
+            logger.error("Unknown SQLSTATE %s, raising DatabaseError", sqlstate)
+            raise DatabaseError(
+                driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
+                ddbc_error=ddbc_error,
+            ) from None
+        logger.error("Connection error (SQLSTATE %s): %s", sqlstate, ddbc_error)
+        raise exc from None
+    # Fallback: no SQLSTATE prefix — e.g. "Connection handle not allocated"
+    logger.error("Connection error: %s", error_msg)
+    raise OperationalError(
+        driver_error="Connection operation failed",
+        ddbc_error=error_msg,
+    ) from None
 
 
 def _validate_utf16_wchar_compatibility(
@@ -92,10 +280,10 @@ def _validate_utf16_wchar_compatibility(
 
         # Generate context-appropriate error messages
         if "ctype" in context:
-            driver_error = f"SQL_WCHAR ctype only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR ctype only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR ctype"
         else:
-            driver_error = f"SQL_WCHAR only supports UTF-16 encodings"
+            driver_error = "SQL_WCHAR only supports UTF-16 encodings"
             ddbc_context = "SQL_WCHAR"
 
         raise ProgrammingError(
@@ -204,6 +392,7 @@ class Connection:
         attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
         timeout: int = 0,
         native_uuid: Optional[bool] = None,
+        token_provider: Optional["TokenProvider"] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -219,16 +408,67 @@ class Connection:
                                           Use this for attributes that must be set before
                                           connecting, such as SQL_ATTR_LOGIN_TIMEOUT,
                                           SQL_ATTR_ODBC_CURSORS, and SQL_ATTR_PACKET_SIZE.
-            timeout (int): Login timeout in seconds. 0 means no timeout.
+            timeout (int): Login (connection-attempt) timeout in seconds. 0 (default)
+                means the driver default is used. This sets SQL_ATTR_LOGIN_TIMEOUT
+                before connecting and bounds the login/network connection attempt.
+                (Microsoft Entra ID token acquisition happens before the ODBC
+                connect and is not covered by this attribute.) It is distinct from
+                the ``Connection.timeout`` property, which is the per-statement
+                query timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
+                takes precedence over this value. (pyodbc migration note: pyodbc
+                lets a positive ``timeout=`` override ``attrs_before``; here the
+                explicit ``attrs_before`` entry wins.)
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
+            token_provider (object, optional): Advanced token provider for Microsoft Entra ID
+                authentication. Must expose a callable ``.get_token(scope)`` method that returns
+                an object with a ``.token`` attribute.
+
+                This parameter is mutually exclusive with ``Authentication=`` in the connection
+                string and with ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]``; supplying more than
+                one token source raises ``InterfaceError`` at connect time.
+
+                If ``UID``/``PWD``/``Trusted_Connection`` are also present in the connection
+                string they are ignored (access-token auth wins) and a warning is emitted.
+
+                .. note::
+                    The token scope is fixed to the Azure **commercial** cloud
+                    (``https://database.windows.net/.default``). Sovereign clouds (Azure US
+                    Government, Azure China, Azure Germany) are **out of scope** for this
+                    parameter — a token acquired for a different audience is rejected by SQL
+                    Server at login. For sovereign clouds, acquire the token yourself and pass
+                    it via ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`` instead.
+
+                .. note::
+                    Connection pooling is enabled for access-token connections
+                    (``token_provider=``, built-in ``Authentication=ActiveDirectory*``, or a raw
+                    ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]``). The native pool key is
+                    identity-aware — the sanitized connection string plus a per-identity suffix
+                    (``msi:``/``acct:``/``tok:``) — so different principals sharing the same
+                    server/database land in distinct pool buckets and are never handed each
+                    other's authenticated connection, while same-identity reuse still benefits
+                    from pooling.
+
+                .. note::
+                    Token lifecycle limitations: the access token is a *pre-connect* ODBC
+                    attribute, so it cannot be refreshed on a live connection. Long-lived
+                    connections must be recycled by the application once the token nears expiry,
+                    and Continuous Access Evaluation (CAE) claims challenges are not handled.
+                    These require native driver support and are tracked as follow-up work.
+                    Interactive credentials (e.g. ``InteractiveBrowserCredential``) block
+                    ``connect()`` until the user completes sign-in; prefer non-interactive
+                    credentials in server contexts.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
             None
 
         Raises:
+            InterfaceError: If ``token_provider`` is misused (combined with another token
+                source, or lacking a valid ``.get_token`` method), or the credential returns
+                no valid token.
+            OperationalError: If acquiring a token from ``token_provider`` fails.
             ValueError: If the connection string is invalid or connection fails.
 
         This method sets up the initial state for the connection object,
@@ -250,8 +490,29 @@ class Connection:
             raise ValueError("native_uuid must be a boolean value or None")
         self._native_uuid = native_uuid
 
-        self.connection_str = self._construct_connection_string(connection_str, **kwargs)
-        self._attrs_before = attrs_before or {}
+        self.connection_str, parsed_params = self._construct_connection_string(
+            connection_str, **kwargs
+        )
+        # Shallow-copy so we never mutate the caller's dict (e.g. when the
+        # token_provider path injects SQL_COPT_SS_ACCESS_TOKEN). Mutating the
+        # caller's object would leak the access token into user state and break
+        # re-using the same attrs_before dict across multiple connections.
+        self._attrs_before = dict(attrs_before) if attrs_before else {}
+
+        # Validate and apply the LOGIN/connection-attempt timeout up front —
+        # before any Entra/token acquisition below — so invalid input (negative,
+        # non-int, bool) fails fast without triggering a network or interactive
+        # token fetch. ``timeout`` matches pyodbc's login timeout: it sets
+        # SQL_ATTR_LOGIN_TIMEOUT and bounds the login/network connection attempt.
+        # It is distinct from Connection.timeout (the per-statement QUERY timeout,
+        # tracked by self._timeout and applied to cursors), which defaults to
+        # 0 = disabled. Only inject the login timeout when the caller asked for
+        # one (> 0) and did not already set it explicitly via attrs_before (an
+        # explicit attrs_before value wins).
+        self._timeout = 0
+        login_timeout = self._validate_timeout(timeout, kind="Login timeout")
+        if login_timeout > 0:
+            self._attrs_before.setdefault(ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value, login_timeout)
 
         # Initialize encoding settings with defaults for Python 3
         # Python 3 only has str (which is Unicode), so we use utf-16le by default
@@ -261,10 +522,14 @@ class Connection:
         }
 
         # Initialize decoding settings with Python 3 defaults
+        # SQL_CHAR default uses SQL_WCHAR ctype so the ODBC driver returns
+        # UTF-16 data for VARCHAR columns. This avoids encoding mismatches on
+        # Windows where the driver returns raw bytes in the server's native
+        # code page (e.g. CP-1252) that may fail to decode as UTF-8.
         self._decoding_settings = {
             ConstantsDDBC.SQL_CHAR.value: {
-                "encoding": "utf-8",
-                "ctype": ConstantsDDBC.SQL_CHAR.value,
+                "encoding": "utf-16le",
+                "ctype": ConstantsDDBC.SQL_WCHAR.value,
             },
             ConstantsDDBC.SQL_WCHAR.value: {
                 "encoding": "utf-16le",
@@ -281,23 +546,229 @@ class Connection:
         # We intentionally do NOT cache the token — a fresh one is acquired
         # each time bulkcopy() is called to avoid expired-token errors.
         self._auth_type = None
+        # Credential constructor kwargs (e.g. user-assigned MSI client_id)
+        # captured at __init__ time before remove_sensitive_params strips UID
+        # from self.connection_str. bulkcopy() re-uses these when acquiring a
+        # fresh token; re-parsing self.connection_str at that point would miss
+        # them because UID is already gone.
+        self._credential_kwargs: Optional[Dict[str, str]] = None
+        # User-supplied token provider for custom Entra ID authentication.
+        # Stored so bulk copy can call .get_token() for a fresh JWT later.
+        self._token_provider: Optional["TokenProvider"] = None
+        # POSIX timestamp (seconds) at which the current access token expires,
+        # captured from the credential's AccessToken result. None when unknown.
+        # The token is a pre-connect ODBC attribute and cannot be refreshed on
+        # a live connection — this is exposed for diagnostics/logging only.
+        # A custom token_provider may report a float POSIX timestamp, so the
+        # hint is Optional[float] (int is accepted under the numeric tower).
+        self._token_expires_on: Optional[float] = None
 
-        # Check if the connection string contains authentication parameters
-        # This is important for processing the connection string correctly.
-        # If authentication is specified, it will be processed to handle
-        # different authentication types like interactive, device code, etc.
-        if re.search(r"authentication", self.connection_str, re.IGNORECASE):
-            connection_result = process_connection_string(self.connection_str)
-            self.connection_str = connection_result[0]
-            if connection_result[1]:
-                self._attrs_before.update(connection_result[1])
+        # Composite, identity-aware pool key. Empty means "key the native pool
+        # on the connection string" (legacy behavior, used for non-token auth).
+        # For Entra access-token auth it is set to connStr + identity so that
+        # distinct identities never share a pooled connection.
+        self._pool_key: str = ""
+
+        # Optional deferred-attrs callback handed to the native layer. When set,
+        # native invokes it *only* when it actually opens a physical connection
+        # (a pool miss or a non-pooled connect), so a same-identity pool hit
+        # skips token acquisition entirely. None means "no deferred
+        # token" — the token (if any) is already in self._attrs_before.
+        #
+        # NOTE: This is an internal, private callback and is intentionally NOT
+        # the public ``token_provider=`` credential parameter. It returns the
+        # full connect-attrs dict lazily; hence the distinct name
+        # ``_token_factory``.
+        self._token_factory = None
+
+        # Custom token_provider= parameter — takes priority, mutually exclusive
+        # with Authentication= in the connection string.
+        if token_provider is not None:
+            self._configure_token_provider(token_provider, parsed_params)
+
+        # Handle Entra ID authentication if specified.
+        # The parsed dict is used directly — no re-parsing of the connection string.
+        elif _KEY_AUTHENTICATION in parsed_params:
+            auth_type = process_auth_parameters(parsed_params)
+
+            if auth_type:
+                # Capture credential kwargs (e.g. user-assigned MSI client_id)
+                # from the parsed dict *before* remove_sensitive_params strips UID.
+                credential_kwargs: Optional[Dict[str, str]] = None
+                if auth_type == _AuthInternal.MSI:
+                    uid = (parsed_params.get(_KEY_UID) or "").strip()
+                    if uid:
+                        credential_kwargs = {"client_id": uid}
+
+                # Strip sensitive params and rebuild the connection string.
+                sanitized = remove_sensitive_params(parsed_params)
+                self.connection_str = _ConnectionStringBuilder(sanitized).build()
+                self._credential_kwargs = credential_kwargs
+
+                # Make the pool key identity-aware so two callers using the
+                # same server but different Entra identities never reuse each
+                # other's authenticated connection. auth_type here
+                # is the process_auth_parameters result, which is truthy only
+                # for the token-bearing types (default/devicecode/msi/
+                # interactive-non-Windows); ServicePrincipal and Windows
+                # Interactive return None and keep their identity in the
+                # connection string, so they stay on the legacy connStr key.
+                #
+                # First try to derive the identity *without* a token. For MSI
+                # the client/object id comes straight from the params, so the
+                # pool key is known before any token exists — which lets us
+                # defer token acquisition to a provider callback that native
+                # invokes only on a pool miss.
+                #
+                # The factory returns ``(attrs, expires_on)``: the connect-attrs
+                # dict plus the token's POSIX-epoch expiry (or None). Native
+                # stores the expiry so it can refresh/discard a pooled
+                # connection whose token is near expiry on checkout.
+                token_attr = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
+                base_attrs = self._attrs_before
+
+                def _acquire_token_info():
+                    # DB-API boundary: get_auth_token_info fails closed by
+                    # letting the underlying Azure error propagate as a
+                    # ValueError (unsupported auth type) or RuntimeError
+                    # (credential/network/auth failure). Re-wrap those as a
+                    # DB-API 2.0 InterfaceError so every auth failure surfaced
+                    # from connect() / the token factory is a consistent,
+                    # catchable driver exception rather than a bare RuntimeError.
+                    try:
+                        return get_auth_token_info(auth_type, credential_kwargs)
+                    except (RuntimeError, ValueError) as e:
+                        raise InterfaceError(
+                            driver_error=(
+                                "Failed to acquire an Entra ID access token for "
+                                f"authentication type '{auth_type}': {e}"
+                            ),
+                            ddbc_error=str(e),
+                        ) from e
+
+                def _make_token_factory(expected_account: Optional[str] = None):
+                    # Build the deferred connect-attrs provider handed to native.
+                    # Native invokes the returned callable only when it actually
+                    # opens a physical connection (a pool miss, non-pooled
+                    # connect, or near-expiry refresh on checkout), so a
+                    # same-identity pool hit never pays for a token.
+                    #
+                    # ``expected_account`` binds an account-keyed (``acct:``)
+                    # pool to the exact account it was keyed on: the shared
+                    # interactive/device-code credential can silently switch
+                    # signed-in accounts between pooling and a later refresh, and
+                    # opening a *different* principal's connection inside this
+                    # pool would hand a caller a connection authenticated as the
+                    # wrong account. MSI pools pass ``None`` (their identity is
+                    # fixed by params, not by a mutable signed-in account).
+                    def _token_factory():
+                        attrs = dict(base_attrs)
+                        info = _acquire_token_info()
+                        if info and info.token_struct:
+                            if (
+                                expected_account is not None
+                                and info.home_account_id != expected_account
+                            ):
+                                # Fail closed: the signed-in account changed out
+                                # from under this account-keyed pool. Refuse
+                                # rather than authenticate as the new principal.
+                                raise InterfaceError(
+                                    driver_error=(
+                                        "The signed-in account changed between "
+                                        "pooling and connect for authentication "
+                                        f"type '{auth_type}'; refusing to open a "
+                                        "connection for a different account in "
+                                        "this pool."
+                                    ),
+                                    ddbc_error="Account mismatch in token factory.",
+                                )
+                            attrs[token_attr] = info.token_struct
+                            return attrs, info.expires_on
+                        # Fail closed: a token-backed pool must never open a
+                        # physical connection without the token it is meant to
+                        # carry. get_auth_token_info already raises when
+                        # acquisition fails; this guards the empty-token edge so
+                        # native never connects with Authentication= stripped.
+                        raise InterfaceError(
+                            driver_error=(
+                                "Unable to acquire an Entra ID access token for "
+                                f"authentication type '{auth_type}'."
+                            ),
+                            ddbc_error="Token factory produced no usable token.",
+                        )
+
+                    return _token_factory
+
+                identity = compute_identity_key(auth_type, credential_kwargs)
+                if identity:
+                    # A real connection string can
+                    # never contain \0, so the composite key can never collide
+                    # with a bare connStr pool key. std::u16string map keys hold
+                    # embedded NULs fine and the key is never used as a C string.
+                    self._pool_key = self.connection_str + "\x00" + identity
+
+                    # Lazy token acquisition: native invokes this only
+                    # when it opens a physical connection, so same-identity pool
+                    # hits never pay for a token. MSI identity is param-derived,
+                    # so there is no signed-in account to bind.
+                    self._token_factory = _make_token_factory()
+                else:
+                    # Token/account-dependent identity: acquire once to derive
+                    # the key. Interactive / Device-code yield a stable
+                    # home_account_id (key ``acct:``) so subsequent acquisitions
+                    # can be deferred to the factory (silent refresh reuses the
+                    # pool). DefaultAzureCredential / raw token key on the token
+                    # hash (``tok:``); the pooled connection is bound to that
+                    # exact token, so it is kept in attrs_before with no factory.
+                    info = _acquire_token_info()
+                    token = info.token_struct if info else None
+                    home_account_id = info.home_account_id if info else None
+                    identity = compute_identity_key(
+                        auth_type,
+                        credential_kwargs,
+                        token_struct=token,
+                        home_account_id=home_account_id,
+                    )
+                    if identity:
+                        self._pool_key = self.connection_str + "\x00" + identity
+                    if identity and identity.startswith("acct:"):
+                        # Account-stable key: safe to defer to the factory so a
+                        # same-account pool hit skips token acquisition and a
+                        # near-expiry checkout can refresh silently. Bind the
+                        # factory to this exact account so a concurrent sign-in
+                        # that flips the shared credential's account can never
+                        # open a different principal's connection in this pool.
+                        self._token_factory = _make_token_factory(expected_account=home_account_id)
+                    elif token:
+                        # Token-hash key: bind the pooled connection to this
+                        # exact token so its hash always matches the pool key.
+                        # No token factory is attached, so this pool is NOT
+                        # expiry-aware — the near-expiry refresh in the native
+                        # layer only runs for factory-backed (msi:/acct:) pools.
+                        # A driver-acquired DAC/raw token is reused until the
+                        # connection dies; see the pooling notes in the README.
+                        self._attrs_before[token_attr] = token
+                    else:
+                        # Fail closed: a token-backed auth type reached here but
+                        # we could derive neither a deferred factory nor an
+                        # eager token, so connecting now would strip
+                        # Authentication= and open with no token (potentially
+                        # authenticating as an unintended identity). Surface a
+                        # clear error instead of silently falling through.
+                        raise InterfaceError(
+                            driver_error=(
+                                "Unable to acquire an Entra ID access token for "
+                                f"authentication type '{auth_type}'."
+                            ),
+                            ddbc_error="Token acquisition returned no usable token.",
+                        )
+
             # Store auth type so bulkcopy() can acquire a fresh token later.
-            # On Windows Interactive, process_connection_string returns None
-            # (DDBC handles auth natively), so fall back to the connection string.
-            self._auth_type = connection_result[2] or extract_auth_type(self.connection_str)
+            # On Windows Interactive, process_auth_parameters returns None
+            # (DDBC handles auth natively), so fall back to extract_auth_type.
+            self._auth_type = auth_type or extract_auth_type(parsed_params)
 
         self._closed = False
-        self._timeout = timeout
 
         # Using WeakSet which automatically removes cursors when they are no
         # longer in use
@@ -327,13 +798,76 @@ class Connection:
         # Initialize search escape character
         self._searchescape = None
 
+        # Safety net for the raw access-token pattern: a caller may pass
+        # SQL_COPT_SS_ACCESS_TOKEN directly in attrs_before with no
+        # Authentication= keyword (the documented msodbcsql raw-token pattern),
+        # or via the public token_provider= API. That path never runs the
+        # identity-key logic above, so without this guard the pool key would
+        # stay empty and two callers with different raw tokens against the same
+        # server would share a pool — handing user B user A's authenticated
+        # connection on a pool hit. Bind the pool key to the token hash so
+        # distinct tokens never collide (upholds the "a token is present =>
+        # key is never the bare connStr" invariant).
+        if not self._pool_key:
+            _raw_token = self._attrs_before.get(ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value)
+            if _raw_token is not None and not isinstance(_raw_token, (bytes, bytearray)):
+                # Fail closed: an access token supplied as anything other than
+                # raw bytes (e.g. a str) cannot be hashed into an identity-aware
+                # pool key, so it would fall through with the bare connStr key
+                # and two callers passing different str tokens against the same
+                # server could share a pooled, authenticated connection. Reject
+                # it up front with a clear DB-API error instead of relying on
+                # ODBC to mangle/reject the byte-struct downstream. The native
+                # setAttribute() enforces the same rule, so the invariant holds
+                # at both boundaries.
+                raise InterfaceError(
+                    driver_error=(
+                        "SQL_COPT_SS_ACCESS_TOKEN must be supplied as bytes (the "
+                        "raw [length][UTF-16LE token] struct), not "
+                        f"{type(_raw_token).__name__}."
+                    ),
+                    ddbc_error="Non-binary access token attribute rejected.",
+                )
+            if isinstance(_raw_token, (bytes, bytearray)):
+                # Freeze a mutable bytearray token to immutable bytes ONCE and
+                # store it back, so the pool-key hash below and the later native
+                # connect both read the exact same value. Hashing the bytearray
+                # and letting native read it separately would be a TOCTOU: a
+                # caller mutating the bytearray in between would bind the pooled
+                # connection to a key that no longer matches its token.
+                _frozen_token = bytes(_raw_token)
+                self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = _frozen_token
+                # This raw token has no param-derivable identity, so key it on
+                # the token hash directly.
+                _token_identity = compute_token_identity(_frozen_token)
+                if _token_identity:
+                    self._pool_key = self.connection_str + "\x00" + _token_identity
+
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
-        self._conn = ddbc_bindings.Connection(
-            self.connection_str, self._pooling, self._attrs_before
-        )
+
+        # Resolve and freeze the ODBC provider, then hand the selection to the
+        # native loader so it imports the matching provider package. Done here —
+        # after every Python-side validation and token acquisition has succeeded
+        # and immediately before the native driver loads — so a call that fails
+        # earlier never freezes the selection as a side effect; a later, corrected
+        # connection can then still choose a different provider without a process
+        # restart.
+        _provider = ProviderManager.ensure_available()
+        ddbc_bindings._set_odbc_provider(_provider)
+
+        try:
+            self._conn = ddbc_bindings.Connection(
+                self.connection_str,
+                self._pooling,
+                self._attrs_before,
+                self._pool_key,
+                self._token_factory,
+            )
+        except RuntimeError as e:
+            _raise_connection_error(e)
         self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
@@ -352,25 +886,149 @@ class Connection:
                 f"Unexpected error during connection registration: {type(e).__name__}: {e}"
             )
 
-    def _construct_connection_string(self, connection_str: str = "", **kwargs: Any) -> str:
+    def _configure_token_provider(
+        self, token_provider: "TokenProvider", parsed_params: Dict[str, str]
+    ) -> None:
+        """Validate a custom ``token_provider`` and wire it for pooled auth.
+
+        Validates that ``token_provider`` is not combined with another token
+        source and exposes a ``get_token()`` method, strips sensitive params
+        from the connection string, and acquires a token once up front so an
+        invalid credential fails fast at connect() and the expiry is captured.
+        The acquired token is placed in ``attrs_before``; the pool is keyed on
+        the token hash (``tok:``) by the safety net in ``__init__`` so distinct
+        tokens never share a pooled connection. Mutually exclusive with
+        ``Authentication=`` and a manual ``attrs_before`` access token.
+
+        Raises:
+            InterfaceError: If ``token_provider`` is combined with another token
+                source, or lacks a ``get_token(scope)`` method.
+            OperationalError: If acquiring a token from ``token_provider`` fails.
+        """
+        if _KEY_AUTHENTICATION in parsed_params:
+            raise InterfaceError(
+                driver_error=(
+                    "Cannot specify both 'token_provider' parameter and "
+                    "'Authentication' in the connection string. "
+                    "Use one or the other."
+                ),
+                ddbc_error="",
+            )
+        if ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in self._attrs_before:
+            raise InterfaceError(
+                driver_error=(
+                    "Cannot specify both 'token_provider' parameter and "
+                    "attrs_before[SQL_COPT_SS_ACCESS_TOKEN]. "
+                    "Use one token source."
+                ),
+                ddbc_error="",
+            )
+        get_token = getattr(token_provider, "get_token", None)
+        if not callable(get_token):
+            raise InterfaceError(
+                driver_error=(
+                    f"token_provider must have a .get_token() method. "
+                    f"Got {type(token_provider).__name__}."
+                ),
+                ddbc_error="",
+            )
+        # The get_token() signature is NOT inspected here: inspect.signature()
+        # is unreliable for partial/decorated/C-extension callables and would
+        # produce false warnings on valid credentials. The actual call is the
+        # source of truth — _get_token_from_credential turns a bad signature
+        # (TypeError) into a clear InterfaceError.
+        from mssql_python.auth import acquire_token_from_credential, _user_facing_stacklevel
+
+        # access-token auth ignores UID/PWD/Trusted_Connection — warn so the
+        # user is not surprised that those credentials are silently dropped.
+        dropped = [
+            key for key in (_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION) if key in parsed_params
+        ]
+        if dropped:
+            warnings.warn(
+                "token_provider is set, so the following connection-string "
+                f"credential(s) are ignored: {', '.join(sorted(dropped))}. "
+                "Remove them to silence this warning.",
+                UserWarning,
+                # Point the warning at the caller's own code rather than this
+                # internal helper, regardless of call depth (connect() vs a
+                # direct Connection()).
+                stacklevel=_user_facing_stacklevel(),
+            )
+        self._token_provider = token_provider
+
+        # Strip sensitive params (UID/PWD/Trusted_Connection) since access-token
+        # auth is used — same as the Authentication= path. Do this BEFORE
+        # building the pool key so the key is derived from the exact connection
+        # string native will connect with.
+        sanitized = remove_sensitive_params(parsed_params)
+        self.connection_str = _ConnectionStringBuilder(sanitized).build()
+
+        # Acquire the token once, up front. This validates the credential so an
+        # invalid one fails fast at connect() (raising InterfaceError/
+        # OperationalError here), captures the expiry for diagnostics, and fires
+        # the already-expired-token warning. The token is placed directly in
+        # attrs_before; the identity-aware safety net in __init__ then keys the
+        # pool on the token hash (``tok:``).
+        #
+        # NOTE: a custom token_provider is keyed on the token it mints, NOT on
+        # the provider object. Object-identity keying would be unsafe: a mutable
+        # credential (e.g. AzureCliCredential, which follows whoever is logged
+        # into the az CLI) can represent different principals over its lifetime,
+        # yet a same-object pool hit skips re-acquisition — so a caller could be
+        # handed a connection authenticated as a stale principal. Token-hash
+        # keying re-derives identity from the actual token on every physical
+        # connect, so a principal change always lands in a distinct pool. The
+        # trade-off is weaker reuse (a rotated token opens a new bucket, which
+        # the native idle sweep later evicts) and no expiry-aware refresh — the
+        # pooled connection is reused until it dies. See the pooling notes in
+        # the README.
+        token, token_expires_on = acquire_token_from_credential(token_provider)
+        self._token_expires_on = token_expires_on
+        self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value] = token
+
+    def _construct_connection_string(
+        self, connection_str: str = "", **kwargs: Any
+    ) -> Tuple[str, Dict[str, str]]:
         """
         Construct the connection string by parsing, validating, and merging parameters.
 
-        This method performs a 6-step process:
         1. Parse and validate the base connection_str (validates against allowlist)
         2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         3. Merge kwargs (which override connection_str params after normalization)
-        4. Build connection string from normalized, merged params
-        5. Add Driver and APP parameters (always controlled by the driver)
-        6. Return the final connection string
+        4. Add Driver and APP (always controlled by the driver)
+        5. Build and return the final connection string + parameter dictionary
 
         Args:
             connection_str (str): The base connection string.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
-            str: The constructed and validated connection string.
+            Tuple[str, Dict[str, str]]: The constructed connection string and
+                the normalized parameter dictionary.
         """
+
+        # Reject embedded NUL (\x00) up front, for both the base string and every
+        # kwargs value. The ODBC layer terminates the connection string at the
+        # first NUL (SQL_NTS), so anything after it is silently dropped; worse,
+        # the identity-aware pool key joins the connection string and the
+        # per-identity discriminator with a NUL separator, so a NUL smuggled into
+        # a value could forge or collide pool keys. Fail closed at this Python
+        # boundary rather than relying on downstream truncation.
+        if isinstance(connection_str, str) and "\x00" in connection_str:
+            raise InterfaceError(
+                driver_error="Connection string must not contain a NUL (\\x00) character.",
+                ddbc_error="Embedded NUL in connection string.",
+            )
+        for _key, _value in kwargs.items():
+            if isinstance(_value, str) and "\x00" in _value:
+                raise InterfaceError(
+                    driver_error=(
+                        f"Connection parameter '{_key}' must not contain a NUL "
+                        "(\\x00) character."
+                    ),
+                    ddbc_error="Embedded NUL in connection parameter.",
+                )
 
         # Step 1: Parse base connection string with allowlist validation
         # The parser validates everything: unknown params, reserved params, duplicates, syntax
@@ -399,20 +1057,45 @@ class Connection:
             else:
                 logger.warning(f"Ignoring unknown connection parameter from kwargs: {key}")
 
-        # Step 4: Build connection string with merged params
-        builder = _ConnectionStringBuilder(normalized_params)
+        # Step 4: Add Driver and APP (always controlled by the driver).
+        normalized_params["Driver"] = "ODBC Driver 18 for SQL Server"
+        normalized_params["APP"] = "MSSQL-Python"
 
-        # Step 5: Add Driver and APP parameters (always controlled by the driver)
-        # These maintain existing behavior: Driver is always hardcoded, APP is always MSSQL-Python
-        builder.add_param("Driver", "ODBC Driver 18 for SQL Server")
-        builder.add_param("APP", "MSSQL-Python")
-
-        # Step 6: Build final string
-        conn_str = builder.build()
+        # Step 5: Build final connection string
+        conn_str = _ConnectionStringBuilder(normalized_params).build()
 
         logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
 
-        return conn_str
+        return conn_str, normalized_params
+
+    @staticmethod
+    def _validate_timeout(value: int, kind: str = "Timeout") -> int:
+        """
+        Validate a timeout value (login or query) and normalize it to ``int``.
+
+        Shared by ``__init__`` (login timeout) and the ``timeout`` setter (query
+        timeout) so both entry points reject invalid input identically and can
+        never drift apart. ``kind`` only customizes the error-message wording
+        ("Login timeout" vs "Query timeout"); the validation rules are identical.
+
+        Args:
+            value (int): Timeout in seconds. Must be a non-negative integer.
+            kind (str): Human-readable label used in error messages.
+
+        Returns:
+            int: The validated timeout value.
+
+        Raises:
+            TypeError: If ``value`` is not an integer (``bool`` is rejected too).
+            ValueError: If ``value`` is negative.
+        """
+        # ``bool`` is a subclass of ``int``; reject it explicitly so a stray
+        # ``timeout=True`` cannot slip through as ``1`` (a classic int/bool footgun).
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{kind} must be an integer")
+        if value < 0:
+            raise ValueError(f"{kind} cannot be negative")
+        return value
 
     @property
     def timeout(self) -> int:
@@ -440,11 +1123,7 @@ class Connection:
             It cannot be changed for individual cursors or SQL statements.
             If a query timeout occurs, an OperationalError exception will be raised.
         """
-        if not isinstance(value, int):
-            raise TypeError("Timeout must be an integer")
-        if value < 0:
-            raise ValueError("Timeout cannot be negative")
-        self._timeout = value
+        self._timeout = self._validate_timeout(value, kind="Query timeout")
         logger.info(f"Query timeout set to {value} seconds")
 
     @property
@@ -454,7 +1133,10 @@ class Connection:
         Returns:
             bool: True if autocommit is enabled, False otherwise.
         """
-        return self._conn.get_autocommit()
+        try:
+            return self._conn.get_autocommit()
+        except RuntimeError as e:
+            _raise_connection_error(e)
 
     @autocommit.setter
     def autocommit(self, value: bool) -> None:
@@ -494,7 +1176,10 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while setting the autocommit mode.
         """
-        self._conn.set_autocommit(value)
+        try:
+            self._conn.set_autocommit(value)
+        except RuntimeError as e:
+            _raise_connection_error(e)
 
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
@@ -648,9 +1333,13 @@ class Connection:
             sqltype (int): The SQL type being configured: SQL_CHAR, SQL_WCHAR, or SQL_WMETADATA.
                 SQL_WMETADATA is a special flag for configuring column name decoding.
             encoding (str, optional): The Python encoding to use when decoding the data.
-                If None, uses default encoding based on sqltype.
+                If None, defaults to ``'utf-16le'`` for all sqltypes (SQL_CHAR,
+                SQL_WCHAR, and SQL_WMETADATA), matching the connection-level
+                defaults set in ``Connection.__init__``. Passing ``encoding=None``
+                therefore resets the sqltype to its initial default.
             ctype (int, optional): The C data type to request from SQLGetData:
-                SQL_CHAR or SQL_WCHAR. If None, uses default based on encoding.
+                SQL_CHAR or SQL_WCHAR. If None, uses default based on encoding
+                (SQL_WCHAR for UTF-16 variants, SQL_CHAR otherwise).
 
         Returns:
             None
@@ -660,7 +1349,10 @@ class Connection:
             InterfaceError: If the connection is closed.
 
         Example:
-            # Configure SQL_CHAR to use UTF-8 decoding
+            # Reset SQL_CHAR to the connection default (utf-16le + SQL_WCHAR ctype)
+            cnxn.setdecoding(mssql_python.SQL_CHAR)
+
+            # Configure SQL_CHAR to use UTF-8 decoding (opt-in, non-default)
             cnxn.setdecoding(mssql_python.SQL_CHAR, encoding='utf-8')
 
             # Configure column metadata decoding
@@ -696,12 +1388,15 @@ class Connection:
                 ),
             )
 
-        # Set default encoding based on sqltype if not provided
+        # Set default encoding based on sqltype if not provided.
+        # All sqltypes default to UTF-16LE to match Connection.__init__ defaults.
+        # SQL_CHAR uses utf-16le + SQL_WCHAR ctype so the ODBC driver returns
+        # UTF-16 data for VARCHAR columns, avoiding encoding mismatches on
+        # Windows where the driver may otherwise return raw bytes in the
+        # server's native code page (e.g. CP-1252). This makes
+        # ``setdecoding(SQL_CHAR)`` with no arguments a true reset-to-defaults.
         if encoding is None:
-            if sqltype == ConstantsDDBC.SQL_CHAR.value:
-                encoding = "utf-8"  # Default for SQL_CHAR in Python 3
-            else:  # SQL_WCHAR or SQL_WMETADATA
-                encoding = "utf-16le"  # Default for SQL_WCHAR in Python 3
+            encoding = "utf-16le"
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
@@ -951,7 +1646,7 @@ class Connection:
         logger.debug("cursor: Cursor created successfully - total_cursors=%d", len(self._cursors))
         return cursor
 
-    def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None:
+    def add_output_converter(self, sqltype: Union[int, type], func: Callable[[Any], Any]) -> None:
         """
         Register an output converter function that will be called whenever a value
         with the given SQL type is read from the database.
@@ -966,13 +1661,34 @@ class Connection:
         vulnerabilities. This API should never be exposed to untrusted or external input.
 
         Args:
-            sqltype (int): The integer SQL type value to convert, which can be one of the
-                          defined standard constants (e.g. SQL_VARCHAR) or a database-specific
-                          value (e.g. -151 for the SQL Server 2008 geometry data type).
-            func (callable): The converter function which will be called with a single parameter,
-                            the value, and should return the converted value. If the value is NULL
-                            then the parameter passed to the function will be None, otherwise it
-                            will be a bytes object.
+            sqltype (int or type): The type to convert. Either:
+                - an integer ODBC SQL type code (pyodbc-compatible), which can be one of
+                  the standard constants (e.g. SQL_VARCHAR, SQL_DECIMAL) or a
+                  database-specific value (e.g. -151 for the SQL Server geometry type). The
+                  converter fires for columns whose ODBC SQL type matches exactly, so
+                  distinct types such as DECIMAL and NUMERIC can have separate converters; or
+                - a Python type (e.g. ``decimal.Decimal``, ``str``, ``bytes``), which fires
+                  for every column whose value materializes to that Python type (so, for
+                  example, a single ``decimal.Decimal`` converter matches DECIMAL, NUMERIC,
+                  MONEY and SMALLMONEY columns alike). The supported Python types are
+                  ``str``, ``bytes``, ``bool``, ``int``, ``float``, ``decimal.Decimal``,
+                  ``datetime.date``, ``datetime.time``, ``datetime.datetime`` and
+                  ``uuid.UUID``.
+                When both an integer-keyed and a Python-type-keyed converter could apply to
+                the same column, the integer SQL-type converter takes precedence.
+
+                For pyodbc compatibility the ``sqltype`` argument is not validated: any key
+                is accepted and stored. A key that matches neither an exact integer ODBC SQL
+                type code nor an exact materialized Python type (for example a ``set``, a
+                ``dict``, ``object``, or a ``decimal.Decimal`` subclass) is stored but never
+                dispatched — registering it is a harmless no-op rather than an error.
+            func (callable): The converter function, called with a single parameter (the
+                            value) that returns the converted value. The converter is not
+                            invoked for SQL NULL values (they are returned as ``None``
+                            unchanged). For non-NULL values the parameter is the value
+                            already materialized as its Python type (e.g. a
+                            ``decimal.Decimal`` or ``datetime.datetime``); string values are
+                            passed as their UTF-16LE-encoded ``bytes``.
 
         Returns:
             None
@@ -1239,10 +1955,22 @@ class Connection:
 
         Returns:
             The requested information. The type of the returned value depends
-            on the information requested. It will be a string, integer, or boolean.
+            on the information requested. For registered ODBC types, character values (including
+            "Y"/"N") return strings; numeric values and bitmasks return unsigned
+            integers. Native retrieval failures, including unsupported types,
+            timeouts, and connection loss, are logged and return None.
+
+        Note:
+            SQL_DRIVER_HDBC, SQL_DRIVER_HENV and SQL_DRIVER_HLIB are implemented
+            by the ODBC Driver Manager, which this driver bypasses. Correct IDs
+            do not imply that the selected native provider supports these queries.
+            A native provider may return cached metadata even after connection loss;
+            getinfo() is not a connection-health check.
+            Deprecated GetInfoConstants names are retained for API compatibility,
+            not as valid requests. Their integer values may request unrelated information.
 
         Raises:
-            DatabaseError: If there is an error retrieving the information.
+            DatabaseError: If a numeric byte result does not match its ODBC type's width.
             InterfaceError: If the connection is closed.
         """
         if self._closed:
@@ -1257,17 +1985,14 @@ class Connection:
 
         # Check for invalid info_type values
         if info_type < 0:
-            logger.debug(
-                "warning",
-                f"Invalid info_type: {info_type}. Must be a positive integer.",
-            )
+            logger.debug("Invalid info_type: %d. Must be non-negative.", info_type)
             return None
 
         # Get the raw result from the C++ layer
         try:
             raw_result = self._conn.get_info(info_type)
         except Exception as e:  # pylint: disable=broad-exception-caught
-            # Log the error and return None for invalid info types
+            # Preserve the legacy logged-None contract for native retrieval failures.
             logger.warning(f"getinfo({info_type}) failed: {e}")
             return None
 
@@ -1284,69 +2009,19 @@ class Connection:
             data = raw_result["data"]
             length = raw_result["length"]
 
-            # Debug logging to understand the issue better
             logger.debug(
-                "debug",
-                f"getinfo: info_type={info_type}, length={length}, data_type={type(data)}",
+                "getinfo: info_type=%d, length=%r, data_type=%s",
+                info_type,
+                length,
+                type(data),
             )
 
-            # Define constants for different return types
-            # String types - these return strings in pyodbc
-            string_type_constants = {
-                GetInfoConstants.SQL_DATA_SOURCE_NAME.value,
-                GetInfoConstants.SQL_DRIVER_NAME.value,
-                GetInfoConstants.SQL_DRIVER_VER.value,
-                GetInfoConstants.SQL_SERVER_NAME.value,
-                GetInfoConstants.SQL_USER_NAME.value,
-                GetInfoConstants.SQL_DRIVER_ODBC_VER.value,
-                GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value,
-                GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value,
-                GetInfoConstants.SQL_CATALOG_TERM.value,
-                GetInfoConstants.SQL_SCHEMA_TERM.value,
-                GetInfoConstants.SQL_TABLE_TERM.value,
-                GetInfoConstants.SQL_KEYWORDS.value,
-                GetInfoConstants.SQL_PROCEDURE_TERM.value,
-                GetInfoConstants.SQL_SPECIAL_CHARACTERS.value,
-                GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value,
-            }
-
-            # Boolean 'Y'/'N' types
-            yn_type_constants = {
-                GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value,
-                GetInfoConstants.SQL_ACCESSIBLE_TABLES.value,
-                GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value,
-                GetInfoConstants.SQL_EXPRESSIONS_IN_ORDERBY.value,
-                GetInfoConstants.SQL_LIKE_ESCAPE_CLAUSE.value,
-                GetInfoConstants.SQL_MULTIPLE_ACTIVE_TXN.value,
-                GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value,
-                GetInfoConstants.SQL_PROCEDURES.value,
-            }
-
-            # Numeric type constants that return integers
-            numeric_type_constants = {
-                GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value,
-                GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value,
-                GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value,
-                GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value,
-                GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value,
-                GetInfoConstants.SQL_MAX_STATEMENT_LEN.value,
-                GetInfoConstants.SQL_MAX_DRIVER_CONNECTIONS.value,
-                GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value,
-                GetInfoConstants.SQL_STRING_FUNCTIONS.value,
-                GetInfoConstants.SQL_DATETIME_FUNCTIONS.value,
-                GetInfoConstants.SQL_TXN_CAPABLE.value,
-                GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value,
-                GetInfoConstants.SQL_CURSOR_COMMIT_BEHAVIOR.value,
-            }
-
-            # Determine the type of information we're dealing with
-            is_string_type = (
-                info_type > INFO_TYPE_STRING_THRESHOLD or info_type in string_type_constants
+            # Explicit numeric types take precedence over the legacy high-ID
+            # string fallback (e.g. SQL_MAX_IDENTIFIER_LEN is numeric at 10005).
+            return_type = _GETINFO_RETURN_TYPES.get(info_type)
+            is_string_type = return_type is str or (
+                return_type is None and info_type > INFO_TYPE_STRING_THRESHOLD
             )
-            is_yn_type = info_type in yn_type_constants
-            is_numeric_type = info_type in numeric_type_constants
-
-            # Process the data based on type
             if is_string_type:
                 # For string data, ensure we properly handle the byte array
                 if isinstance(data, bytes):
@@ -1371,85 +2046,33 @@ class Connection:
                 else:
                     # If it's not bytes, return as is
                     return data
-            elif is_yn_type:
-                # For Y/N types, pyodbc returns a string 'Y' or 'N'
-                if isinstance(data, bytes) and length >= 1:
-                    byte_val = data[0]
-                    if byte_val in (b"Y"[0], b"y"[0], 1):
-                        return "Y"
-                    return "N"
-                # If it's not a byte or we can't determine, default to 'N'
-                return "N"
-            elif is_numeric_type:
-                # Handle numeric types based on length
+            elif isinstance(return_type, struct.Struct):
                 if isinstance(data, bytes):
-                    # Map byte length → signed int size
-                    int_sizes = {
-                        1: lambda d: int(d[0]),
-                        2: lambda d: int.from_bytes(d[:2], "little", signed=True),
-                        4: lambda d: int.from_bytes(d[:4], "little", signed=True),
-                        8: lambda d: int.from_bytes(d[:8], "little", signed=True),
-                    }
-
-                    # Direct numeric conversion if supported length
-                    if length in int_sizes:
-                        result = int_sizes[length](data)
-                        return int(result)
-
-                    # Helper: check if all chars are digits
-                    def is_digit_bytes(b: bytes) -> bool:
-                        return all(c in b"0123456789" for c in b)
-
-                    # Helper: check if bytes are ASCII-printable or NUL padded
-                    def is_printable_bytes(b: bytes) -> bool:
-                        return all(32 <= c <= 126 or c == 0 for c in b)
-
-                    chunk = data[:length]
-
-                    # Try interpret as integer string
-                    if is_digit_bytes(chunk):
-                        return int(chunk)
-
-                    # Try decode as ASCII/UTF-8 string
-                    if is_printable_bytes(chunk):
-                        str_val = chunk.decode("utf-8", errors="replace").rstrip("\0")
-                        return int(str_val) if str_val.isdigit() else str_val
-
-                    # For 16-bit values that might be returned for max lengths
-                    if length == 2:
-                        return int.from_bytes(data[:2], "little", signed=True)
-
-                    # For 32-bit values (common for bitwise flags)
-                    if length == 4:
-                        return int.from_bytes(data[:4], "little", signed=True)
-
-                    # Fallback: try to convert to int if possible
+                    if (
+                        type(length) is not int
+                        or length != return_type.size
+                        or len(data) < return_type.size
+                    ):
+                        raise DatabaseError(
+                            driver_error=f"Invalid numeric result length for getinfo({info_type})",
+                            ddbc_error=(
+                                f"Expected {return_type.size} bytes; "
+                                f"got length={length} with {len(data)} bytes of data"
+                            ),
+                        )
+                    return return_type.unpack_from(data)[0]
+                # Legacy non-byte payloads must not lose precision or change bool to int.
+                if isinstance(data, str) and data.isdecimal():
                     try:
-                        if length <= 8:
-                            return int.from_bytes(data[:length], "little", signed=True)
-                    except Exception:
-                        pass
+                        return int(data)
+                    except ValueError:
+                        logger.debug(
+                            "Numeric getinfo compatibility value exceeds the integer conversion "
+                            "limit; returning it unchanged"
+                        )
+                return data
 
-                    # Last resort: return as integer if all else fails
-                    try:
-                        return int.from_bytes(data[: min(length, 8)], "little", signed=True)
-                    except Exception:
-                        return 0
-                elif isinstance(data, (int, float)):
-                    # Already numeric
-                    return int(data)
-                else:
-                    # Try to convert to int if it's a string
-                    try:
-                        if isinstance(data, str) and data.isdigit():
-                            return int(data)
-                    except Exception:
-                        pass
-
-                    # Return as is if we can't convert
-                    return data
-
-            # For other types, try to determine the most appropriate type
+            # Preserve legacy handling for unregistered, driver-specific info types.
             if isinstance(data, bytes):
                 # Try to convert to string first
                 try:
@@ -1492,7 +2115,10 @@ class Connection:
             )
 
         # Commit the current transaction
-        self._conn.commit()
+        try:
+            self._conn.commit()
+        except RuntimeError as e:
+            _raise_connection_error(e)
         logger.info("Transaction committed successfully.")
 
     def rollback(self) -> None:
@@ -1515,7 +2141,10 @@ class Connection:
             )
 
         # Roll back the current transaction
-        self._conn.rollback()
+        try:
+            self._conn.rollback()
+        except RuntimeError as e:
+            _raise_connection_error(e)
         logger.info("Transaction rolled back successfully.")
 
     def close(self) -> None:
@@ -1571,7 +2200,11 @@ class Connection:
                     # For autocommit True, this is not necessary as each statement is
                     # committed immediately
                     logger.debug("Rolling back uncommitted changes before closing connection.")
-                    self._conn.rollback()
+                    try:
+                        self._conn.rollback()
+                    except RuntimeError as e:
+                        # Handle C++ layer RuntimeError with proper DB-API exception mapping
+                        _raise_connection_error(e)
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
                 self._conn.close()
@@ -1620,16 +2253,51 @@ class Connection:
         logger.info("Entering connection context manager.")
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """
         Exit the context manager.
 
-        Closes the connection when exiting the context, ensuring proper
-        resource cleanup. This follows the modern standard used by most
-        database libraries.
+        Implements commit-on-success / rollback-on-exception semantics:
+        - If the block exits cleanly and autocommit is off, the transaction
+          is committed.
+        - If an exception is raised and autocommit is off, the transaction
+          is rolled back.
+        - The connection is always closed when leaving the block.
+
+        If commit() fails on clean exit, the connection is closed and the
+        commit exception is raised. On exception exit, cleanup failures
+        (rollback or close) are suppressed so the original user exception
+        propagates unchanged.
         """
-        if not self._closed:
+        if self._closed:
+            return
+        try:
+            if not self.autocommit:
+                if exc_type is None:
+                    self.commit()
+                else:
+                    self.rollback()
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                logger.warning(
+                    "Failed to close connection after failed "
+                    "commit/rollback in context manager.",
+                    exc_info=True,
+                )
+            if exc_type is None:
+                raise
+            return
+        try:
             self.close()
+        except Exception:
+            if exc_type is None:
+                raise
+            logger.warning(
+                "Failed to close connection in context manager.",
+                exc_info=True,
+            )
 
     def __del__(self) -> None:
         """

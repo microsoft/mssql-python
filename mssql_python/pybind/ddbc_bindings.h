@@ -1,12 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it
-//             arch agnostic will be taken up in future.
-
 #pragma once
 
 // pybind11.h must be the first include
+#include <cstring>
+#include <exception>
 #include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -16,6 +15,7 @@
 #include <pybind11/stl.h>
 #include <string>
 #include <vector>
+
 
 namespace py = pybind11;
 using py::literals::operator""_a;
@@ -33,142 +33,30 @@ using py::literals::operator""_a;
 #include <sql.h>
 #include <sqlext.h>
 
+//-------------------------------------------------------------------------------------------------
+// SQL Server specific ODBC constants
+//
+// These are not exposed via sql.h / sqlext.h, so they are defined here. They live in this shared
+// header rather than in a single .cpp because both the parameter-detection path
+// (param_detect.hpp) and the fetch paths in ddbc_bindings.cpp need them.
+//-------------------------------------------------------------------------------------------------
+
+#define SQL_SS_TIME2 (-154)
+#define SQL_SS_TIMESTAMPOFFSET (-155)
+#define SQL_C_SS_TIME2 (0x4000)
+#define SQL_C_SS_TIMESTAMPOFFSET (0x4001)
+#define MAX_DIGITS_IN_NUMERIC 64
+#define SQL_MAX_NUMERIC_LEN 16
+#define SQL_SS_XML (-152)
+#define SQL_SS_UDT (-151)
+#define SQL_SS_VARIANT (-150)
+#define SQL_CA_SS_VARIANT_TYPE (1215)
+
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
 
-#if defined(_WIN32)
-inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-    std::vector<SQLWCHAR> result(str.begin(), str.end());
-    result.push_back(0);
-    return result;
-}
-
-inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
-    if (!sqlwStr)
-        return std::wstring();
-
-    if (length == SQL_NTS) {
-        size_t i = 0;
-        while (sqlwStr[i] != 0)
-            ++i;
-        length = i;
-    }
-    return std::wstring(reinterpret_cast<const wchar_t*>(sqlwStr), length);
-}
-
-#endif
-
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
-
-// Unicode constants for surrogate ranges and max scalar value
-constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
-constexpr uint32_t UNICODE_SURROGATE_HIGH_END = 0xDBFF;
-constexpr uint32_t UNICODE_SURROGATE_LOW_START = 0xDC00;
-constexpr uint32_t UNICODE_SURROGATE_LOW_END = 0xDFFF;
-constexpr uint32_t UNICODE_MAX_CODEPOINT = 0x10FFFF;
-constexpr uint32_t UNICODE_REPLACEMENT_CHAR = 0xFFFD;
-
-// Validate whether a code point is a legal Unicode scalar value
-// (excludes surrogate halves and values beyond U+10FFFF)
-inline bool IsValidUnicodeScalar(uint32_t cp) {
-    return cp <= UNICODE_MAX_CODEPOINT &&
-           !(cp >= UNICODE_SURROGATE_HIGH_START && cp <= UNICODE_SURROGATE_LOW_END);
-}
-
-inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
-    if (!sqlwStr)
-        return std::wstring();
-    if (length == SQL_NTS) {
-        size_t i = 0;
-        while (sqlwStr[i] != 0)
-            ++i;
-        length = i;
-    }
-    std::wstring result;
-    result.reserve(length);
-    if constexpr (sizeof(SQLWCHAR) == 2) {
-        // Use a manual increment to handle skipping
-        for (size_t i = 0; i < length;) {
-            uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
-            // Check for high surrogate and valid low surrogate
-            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END &&
-                (i + 1 < length)) {
-                uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
-                if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
-                    // Combine into a single code point
-                    uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) |
-                                   (low - UNICODE_SURROGATE_LOW_START)) +
-                                  0x10000;
-                    result.push_back(static_cast<wchar_t>(cp));
-                    i += 2;  // Move past both surrogates
-                    continue;
-                }
-            }
-            // If we reach here, it's not a valid surrogate pair or is a BMP
-            // character. Check if it's a valid scalar and append, otherwise
-            // append replacement char.
-            if (IsValidUnicodeScalar(wc)) {
-                result.push_back(static_cast<wchar_t>(wc));
-            } else {
-                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
-            }
-            ++i;  // Move to the next code unit
-        }
-    } else {
-        // SQLWCHAR is UTF-32, so just copy with validation
-        for (size_t i = 0; i < length; ++i) {
-            uint32_t cp = static_cast<uint32_t>(sqlwStr[i]);
-            if (IsValidUnicodeScalar(cp)) {
-                result.push_back(static_cast<wchar_t>(cp));
-            } else {
-                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
-            }
-        }
-    }
-    return result;
-}
-
-inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-    std::vector<SQLWCHAR> result;
-    result.reserve(str.size() + 2);
-    if constexpr (sizeof(SQLWCHAR) == 2) {
-        // Encode UTF-32 to UTF-16
-        for (wchar_t wc : str) {
-            uint32_t cp = static_cast<uint32_t>(wc);
-            if (!IsValidUnicodeScalar(cp)) {
-                cp = UNICODE_REPLACEMENT_CHAR;
-            }
-            if (cp <= 0xFFFF) {
-                // Fits in a single UTF-16 code unit
-                result.push_back(static_cast<SQLWCHAR>(cp));
-            } else {
-                // Encode as surrogate pair
-                cp -= 0x10000;
-                SQLWCHAR high = static_cast<SQLWCHAR>((cp >> 10) + UNICODE_SURROGATE_HIGH_START);
-                SQLWCHAR low = static_cast<SQLWCHAR>((cp & 0x3FF) + UNICODE_SURROGATE_LOW_START);
-                result.push_back(high);
-                result.push_back(low);
-            }
-        }
-    } else {
-        // Encode UTF-32 directly
-        for (wchar_t wc : str) {
-            uint32_t cp = static_cast<uint32_t>(wc);
-            if (IsValidUnicodeScalar(cp)) {
-                result.push_back(static_cast<SQLWCHAR>(cp));
-            } else {
-                result.push_back(static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
-            }
-        }
-    }
-    result.push_back(0);  // null terminator
-    return result;
-}
-#endif
-
-#if defined(__APPLE__) || defined(__linux__)
-#include "unix_utils.h"  // Unix-specific fixes
 #endif
 
 //-------------------------------------------------------------------------------------------------
@@ -246,6 +134,12 @@ typedef SQLRETURN(SQL_API* SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
 typedef SQLRETURN(SQL_API* SQLDisconnectFunc)(SQLHDBC);
 typedef SQLRETURN(SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 
+// Cancel API (GH: arrow_reader.close): SQLCancel is one of the two ODBC
+// functions guaranteed safe to call from a thread other than the one running
+// SQLFetch/SQLExecute, so it is used by _ArrowReader.close() to unblock
+// in-flight fetches before SQLFreeStmt(SQL_CLOSE).
+typedef SQLRETURN(SQL_API* SQLCancelFunc)(SQLHSTMT);
+
 // Diagnostic APIs
 typedef SQLRETURN(SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*,
                                               SQLINTEGER*, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
@@ -303,6 +197,7 @@ extern SQLEndTranFunc SQLEndTran_ptr;
 extern SQLFreeHandleFunc SQLFreeHandle_ptr;
 extern SQLDisconnectFunc SQLDisconnect_ptr;
 extern SQLFreeStmtFunc SQLFreeStmt_ptr;
+extern SQLCancelFunc SQLCancel_ptr;
 
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
@@ -361,9 +256,15 @@ class DriverLoader {
     DriverLoader(const DriverLoader&) = delete;
     DriverLoader& operator=(const DriverLoader&) = delete;
 
-    bool m_driverLoaded;
     std::once_flag m_onceFlag;
+    // Captures a failure raised inside the std::call_once callable so loadDriver()
+    // can rethrow it from a normal context. This is required on musl libc
+    // (Alpine/musllinux), where an exception must not escape the call_once
+    // callable directly -- see loadDriver() for details.
+    std::exception_ptr m_loadError;
 };
+
+#include <unordered_map>
 
 //-------------------------------------------------------------------------------------------------
 // SqlHandle
@@ -371,6 +272,14 @@ class DriverLoader {
 // RAII wrapper around ODBC handles (ENV, DBC, STMT).
 // Use `std::shared_ptr<SqlHandle>` (alias: SqlHandlePtr) for shared ownership.
 //-------------------------------------------------------------------------------------------------
+
+// GH-610: Cached result of SQLDescribeParam for a single parameter.
+struct DescribedParamInfo {
+    SQLSMALLINT sqlType;
+    SQLULEN columnSize;
+    SQLSMALLINT decimalDigits;
+};
+
 class SqlHandle {
   public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
@@ -379,6 +288,13 @@ class SqlHandle {
     SQLSMALLINT type() const;
     void free();
     void close_cursor();
+    // Cancel an in-progress statement (SQLCancel). Safe to call from a
+    // thread other than the one running the fetch — this is the *only*
+    // ODBC entry point (along with SQLGetDiagField/Rec) for which the spec
+    // guarantees cross-thread safety. Releases the GIL while calling.
+    // No-op for non-STMT handles, freed handles, or when the function is
+    // unavailable.
+    void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
 
     // Mark this handle as implicitly freed (freed by parent handle)
@@ -395,6 +311,14 @@ class SqlHandle {
     // before freeing the DBC handle.
     void markImplicitlyFreed();
 
+    // GH-610: Per-handle SQLDescribeParam result cache.
+    // Keyed by 0-based parameter index. Populated on first NULL param
+    // execution, cleared on SQLPrepare (new SQL = new param types) and
+    // on handle free. No mutex needed — ODBC statement handles are not
+    // thread-safe by spec (same assumption as the rest of the driver).
+    std::unordered_map<int, DescribedParamInfo> describeCache;
+    void clearDescribeCache() { describeCache.clear(); }
+
   private:
     SQLSMALLINT _type;
     SQLHANDLE _handle;
@@ -405,171 +329,10 @@ using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 // This struct is used to relay error info obtained from SQLDiagRec API to the
 // Python module
 struct ErrorInfo {
-    std::wstring sqlState;
-    std::wstring ddbcErrorMsg;
+    std::string sqlState;
+    std::string ddbcErrorMsg;
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
-
-inline std::string WideToUTF8(const std::wstring& wstr) {
-    if (wstr.empty())
-        return {};
-
-#if defined(_WIN32)
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()),
-                                          nullptr, 0, nullptr, nullptr);
-    if (size_needed == 0)
-        return {};
-    std::string result(size_needed, 0);
-    int converted = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()),
-                                        result.data(), size_needed, nullptr, nullptr);
-    if (converted == 0)
-        return {};
-    return result;
-#else
-    // Manual UTF-32 to UTF-8 conversion for macOS/Linux
-    std::string utf8_string;
-    // Reserve enough space for worst case (4 bytes per character)
-    utf8_string.reserve(wstr.size() * 4);
-
-    for (wchar_t wc : wstr) {
-        uint32_t code_point = static_cast<uint32_t>(wc);
-
-        if (code_point <= 0x7F) {
-            // 1-byte UTF-8 sequence for ASCII characters
-            utf8_string += static_cast<char>(code_point);
-        } else if (code_point <= 0x7FF) {
-            // 2-byte UTF-8 sequence
-            utf8_string += static_cast<char>(0xC0 | ((code_point >> 6) & 0x1F));
-            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
-        } else if (code_point <= 0xFFFF) {
-            // 3-byte UTF-8 sequence
-            utf8_string += static_cast<char>(0xE0 | ((code_point >> 12) & 0x0F));
-            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
-            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
-        } else if (code_point <= 0x10FFFF) {
-            // 4-byte UTF-8 sequence for characters like emojis (e.g., U+1F604)
-            utf8_string += static_cast<char>(0xF0 | ((code_point >> 18) & 0x07));
-            utf8_string += static_cast<char>(0x80 | ((code_point >> 12) & 0x3F));
-            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
-            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
-        }
-    }
-    return utf8_string;
-#endif
-}
-
-inline std::wstring Utf8ToWString(const std::string& str) {
-    if (str.empty())
-        return {};
-#if defined(_WIN32)
-    int size_needed =
-        MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
-    if (size_needed == 0) {
-        LOG_ERROR("MultiByteToWideChar failed for UTF8 to wide string conversion");
-        return {};
-    }
-    std::wstring result(size_needed, 0);
-    int converted = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()),
-                                        result.data(), size_needed);
-    if (converted == 0)
-        return {};
-    return result;
-#else
-    // Optimized UTF-8 to UTF-32 conversion (wstring on Unix)
-
-    // Lambda to decode UTF-8 multi-byte sequences
-    auto decodeUtf8 = [](const unsigned char* data, size_t& i, size_t len) -> wchar_t {
-        unsigned char byte = data[i];
-
-        // 1-byte sequence (ASCII): 0xxxxxxx
-        if (byte <= 0x7F) {
-            ++i;
-            return static_cast<wchar_t>(byte);
-        }
-        // 2-byte sequence: 110xxxxx 10xxxxxx
-        if ((byte & 0xE0) == 0xC0 && i + 1 < len) {
-            // Validate continuation byte has correct bit pattern (10xxxxxx)
-            if ((data[i + 1] & 0xC0) != 0x80) {
-                ++i;
-                return 0xFFFD;  // Invalid continuation byte
-            }
-            uint32_t cp = ((static_cast<uint32_t>(byte & 0x1F) << 6) | (data[i + 1] & 0x3F));
-            // Reject overlong encodings (must be >= 0x80)
-            if (cp >= 0x80) {
-                i += 2;
-                return static_cast<wchar_t>(cp);
-            }
-            // Overlong encoding - invalid
-            ++i;
-            return 0xFFFD;
-        }
-        // 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx
-        if ((byte & 0xF0) == 0xE0 && i + 2 < len) {
-            // Validate continuation bytes have correct bit pattern (10xxxxxx)
-            if ((data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80) {
-                ++i;
-                return 0xFFFD;  // Invalid continuation bytes
-            }
-            uint32_t cp = ((static_cast<uint32_t>(byte & 0x0F) << 12) |
-                           ((data[i + 1] & 0x3F) << 6) | (data[i + 2] & 0x3F));
-            // Reject overlong encodings (must be >= 0x800) and surrogates (0xD800-0xDFFF)
-            if (cp >= 0x800 && (cp < 0xD800 || cp > 0xDFFF)) {
-                i += 3;
-                return static_cast<wchar_t>(cp);
-            }
-            // Overlong encoding or surrogate - invalid
-            ++i;
-            return 0xFFFD;
-        }
-        // 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
-        if ((byte & 0xF8) == 0xF0 && i + 3 < len) {
-            // Validate continuation bytes have correct bit pattern (10xxxxxx)
-            if ((data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80 ||
-                (data[i + 3] & 0xC0) != 0x80) {
-                ++i;
-                return 0xFFFD;  // Invalid continuation bytes
-            }
-            uint32_t cp =
-                ((static_cast<uint32_t>(byte & 0x07) << 18) | ((data[i + 1] & 0x3F) << 12) |
-                 ((data[i + 2] & 0x3F) << 6) | (data[i + 3] & 0x3F));
-            // Reject overlong encodings (must be >= 0x10000) and values above max Unicode
-            if (cp >= 0x10000 && cp <= 0x10FFFF) {
-                i += 4;
-                return static_cast<wchar_t>(cp);
-            }
-            // Overlong encoding or out of range - invalid
-            ++i;
-            return 0xFFFD;
-        }
-        // Invalid sequence - skip byte
-        ++i;
-        return 0xFFFD;  // Unicode replacement character
-    };
-
-    std::wstring result;
-    result.reserve(str.size());  // Reserve assuming mostly ASCII
-
-    const unsigned char* data = reinterpret_cast<const unsigned char*>(str.data());
-    const size_t len = str.size();
-    size_t i = 0;
-
-    // Fast path for ASCII-only prefix (most common case)
-    while (i < len && data[i] <= 0x7F) {
-        result.push_back(static_cast<wchar_t>(data[i]));
-        ++i;
-    }
-
-    // Handle remaining multi-byte sequences
-    while (i < len) {
-        wchar_t wc = decodeUtf8(data, i, len);
-        // Always push the decoded character (including 0xFFFD replacement characters)
-        // This correctly handles both legitimate 0xFFFD in input and invalid sequences
-        result.push_back(wc);
-    }
-
-    return result;
-#endif
-}
 
 // Thread-safe decimal separator accessor class
 class ThreadSafeDecimalSeparator {
@@ -678,6 +441,7 @@ struct ColumnInfoExt {
     uint64_t fetchBufferSize;
     bool isLob;
     bool isUtf8;               // Pre-computed from charEncoding (avoids string compare per cell)
+    bool useWideChar;          // True when charCtype == SQL_C_WCHAR (VARCHAR fetched as UTF-16)
     std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
 };
 
@@ -801,6 +565,10 @@ inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQ
 // Process SQL CHAR/VARCHAR (single-byte string) column into Python str
 // Performance: NULL/NO_TOTAL checks removed - handled centrally before
 // processor is called
+//
+// When useWideChar is true, the column was bound as SQL_C_WCHAR in
+// SQLBindColums and data lives in wcharBuffers (UTF-16). Otherwise,
+// charBuffers contain narrow data decoded with the configured codec.
 inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
@@ -818,6 +586,48 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         return;
     }
 
+    if (colInfo->useWideChar) {
+        // Wide-char path: data was bound as SQL_C_WCHAR, lives in wcharBuffers
+        uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+        if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
+            SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+#if defined(__APPLE__) || defined(__linux__)
+            PyObject* pyStr =
+                PyUnicode_DecodeUTF16(reinterpret_cast<const char*>(wcharData),
+                                      numCharsInData * sizeof(SQLWCHAR), nullptr, nullptr);
+#else
+            PyObject* pyStr =
+                PyUnicode_FromWideChar(reinterpret_cast<const wchar_t*>(wcharData), numCharsInData);
+#endif
+            if (!pyStr) {
+                // Decode failed — fall back to returning the raw UTF-16LE bytes
+                // (consistent with the narrow-char path below and with
+                // FetchLobColumnData / SQLGetData_wrap which return raw bytes on
+                // decode failure instead of silently dropping data as None).
+                PyErr_Clear();
+                PyObject* pyBytes = PyBytes_FromStringAndSize(
+                    reinterpret_cast<const char*>(wcharData), numCharsInData * sizeof(SQLWCHAR));
+                if (pyBytes) {
+                    PyList_SET_ITEM(row, col - 1, pyBytes);
+                } else {
+                    PyErr_Clear();
+                    Py_INCREF(Py_None);
+                    PyList_SET_ITEM(row, col - 1, Py_None);
+                }
+            } else {
+                PyList_SET_ITEM(row, col - 1, pyStr);
+            }
+        } else {
+            // LOB / truncated: stream with SQL_C_WCHAR
+            PyList_SET_ITEM(row, col - 1,
+                            FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-16le")
+                                .release()
+                                .ptr());
+        }
+        return;
+    }
+
+    // Original narrow-char path (charCtype == SQL_C_CHAR)
     uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence

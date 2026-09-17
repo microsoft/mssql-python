@@ -108,9 +108,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Optional performance profiling instrumentation (off by default).
+REM Enable with: set ENABLE_PROFILING=1  (or ON) before running build.bat.
+REM Only "1"/"ON" enable it — a stray "set ENABLE_PROFILING=0" must NOT produce a
+REM profiling build (matches build.sh and avoids accidentally shipping one).
+set PROFILING_FLAG=
+if /I "%ENABLE_PROFILING%"=="1"  set "PROFILING_FLAG=-DENABLE_PROFILING=ON"
+if /I "%ENABLE_PROFILING%"=="ON" set "PROFILING_FLAG=-DENABLE_PROFILING=ON"
+if defined PROFILING_FLAG (
+    echo [MODE] Building WITH profiling instrumentation ^(ENABLE_PROFILING=%ENABLE_PROFILING%^)
+)
+
 REM Now invoke CMake with correct source path (options first, path last!)
-echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
-cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %PROFILING_FLAG% "%SOURCE_DIR:~0,-1%"
+cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %PROFILING_FLAG% "%SOURCE_DIR:~0,-1%"
 echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
 if errorlevel 1 (
     echo [ERROR] CMake configuration failed
@@ -163,7 +174,11 @@ if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     )
     echo [DIAGNOSTIC] Parent is: !PARENT_DIR!
 
-    set VCREDIST_DLL_PATH=!PARENT_DIR!\libs\windows\!ARCH!\vcredist\msvcp140.dll
+    REM The VC++ runtime (msvcp140.dll) now ships with the driver binaries in the
+    REM standalone mssql-python-odbc package (mssql_python_odbc\libs), not under
+    REM mssql_python\libs. We still copy it next to the built .pyd because the
+    REM extension is built /MD and loads msvcp140.dll from its own directory.
+    set VCREDIST_DLL_PATH=!PARENT_DIR!\..\mssql_python_odbc\libs\windows\!ARCH!\vcredist\msvcp140.dll
     echo [DIAGNOSTIC] Looking for msvcp140.dll at "!VCREDIST_DLL_PATH!"
 
     if exist "!VCREDIST_DLL_PATH!" (

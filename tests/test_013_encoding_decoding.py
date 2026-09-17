@@ -604,12 +604,14 @@ def test_setencoding_cp1252(conn_str):
 def test_setdecoding_default_settings(db_connection):
     """Test that default decoding settings are correct for all SQL types."""
 
-    # Check SQL_CHAR defaults
+    # Check SQL_CHAR defaults (now SQL_WCHAR/utf-16le to avoid CP-1252 decode issues)
     sql_char_settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert sql_char_settings["encoding"] == "utf-8", "Default SQL_CHAR encoding should be utf-8"
     assert (
-        sql_char_settings["ctype"] == mssql_python.SQL_CHAR
-    ), "Default SQL_CHAR ctype should be SQL_CHAR"
+        sql_char_settings["encoding"] == "utf-16le"
+    ), "Default SQL_CHAR encoding should be utf-16le"
+    assert (
+        sql_char_settings["ctype"] == mssql_python.SQL_WCHAR
+    ), "Default SQL_CHAR ctype should be SQL_WCHAR"
 
     # Check SQL_WCHAR defaults
     sql_wchar_settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
@@ -702,13 +704,22 @@ def test_setdecoding_explicit_ctype_override(db_connection):
 
 
 def test_setdecoding_none_parameters(db_connection):
-    """Test setdecoding with None parameters uses appropriate defaults."""
+    """Test setdecoding with None parameters uses appropriate defaults.
 
-    # Test SQL_CHAR with encoding=None (should use utf-8 default)
+    All sqltypes default to utf-16le (matching Connection.__init__ defaults), so
+    setdecoding(<sqltype>, encoding=None) acts as a true reset-to-defaults.
+    """
+
+    # Test SQL_CHAR with encoding=None (should use utf-16le default + SQL_WCHAR ctype
+    # to match the connection-level default and avoid CP-1252 decode mismatches)
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert settings["encoding"] == "utf-8", "SQL_CHAR with encoding=None should use utf-8 default"
-    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should be SQL_CHAR for utf-8"
+    assert (
+        settings["encoding"] == "utf-16le"
+    ), "SQL_CHAR with encoding=None should use utf-16le default"
+    assert (
+        settings["ctype"] == mssql_python.SQL_WCHAR
+    ), "ctype should default to SQL_WCHAR for utf-16le"
 
     # Test SQL_WCHAR with encoding=None (should use utf-16le default)
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=None)
@@ -718,11 +729,15 @@ def test_setdecoding_none_parameters(db_connection):
     ), "SQL_WCHAR with encoding=None should use utf-16le default"
     assert settings["ctype"] == mssql_python.SQL_WCHAR, "ctype should be SQL_WCHAR for utf-16le"
 
-    # Test with both parameters None
+    # Test with both parameters None — should still resolve to the connection defaults
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None, ctype=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert settings["encoding"] == "utf-8", "SQL_CHAR with both None should use utf-8 default"
-    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should default to SQL_CHAR"
+    assert (
+        settings["encoding"] == "utf-16le"
+    ), "SQL_CHAR with both None should reset to utf-16le default"
+    assert (
+        settings["ctype"] == mssql_python.SQL_WCHAR
+    ), "ctype should default to SQL_WCHAR for utf-16le"
 
 
 def test_setdecoding_invalid_sqltype(db_connection):
@@ -4921,8 +4936,8 @@ def test_pooled_connections_have_independent_encoding_settings(conn_str, reset_p
     dec3 = conn3.getdecoding(mssql_python.SQL_CHAR)
 
     assert dec1["encoding"] == "latin-1"
-    assert dec2["encoding"] == "utf-8"
-    assert dec3["encoding"] == "utf-8"
+    assert dec2["encoding"] == "utf-16le"
+    assert dec3["encoding"] == "utf-16le"
 
     conn1.close()
     conn2.close()
@@ -5648,10 +5663,10 @@ def test_default_encoding_behavior_validation(conn_str):
         sql_char_settings = conn.getdecoding(SQL_CHAR)
         sql_wchar_settings = conn.getdecoding(SQL_WCHAR)
 
-        # SQL_CHAR should default to UTF-8
+        # SQL_CHAR now defaults to UTF-16LE (SQL_C_WCHAR) to avoid CP-1252 decode issues
         assert (
-            sql_char_settings["encoding"] == "utf-8"
-        ), f"SQL_CHAR should default to UTF-8, got {sql_char_settings['encoding']}"
+            sql_char_settings["encoding"] == "utf-16le"
+        ), f"SQL_CHAR should default to utf-16le, got {sql_char_settings['encoding']}"
 
         # SQL_WCHAR should default to UTF-16LE (or UTF-16BE)
         assert sql_wchar_settings["encoding"] in [
@@ -7254,6 +7269,660 @@ def test_dae_encoding_large_string(db_connection):
         except:
             pass
         cursor.close()
+
+
+# ====================================================================================
+# VARCHAR BYTE VALUE DECODING ISSUE TESTS
+# ====================================================================================
+# Validates VARCHAR decoding behavior for byte values that are valid in CP-1252
+# (the default Windows code page) but invalid as single-byte UTF-8 sequences.
+#
+# Fix: The default ctype for SQL_CHAR is now SQL_C_WCHAR, which tells the ODBC driver
+# to convert VARCHAR data to UTF-16 internally. This means all byte values (including
+# those >= 0x80) are consistently returned as Python str regardless of platform.
+#
+# Previously (before fix): Windows + default UTF-8 decoding → bytes (fallback)
+# Now (after fix): Default SQL_C_WCHAR → str on all platforms
+#
+# Users can still explicitly set SQL_C_CHAR via setdecoding() for backward compat.
+# ====================================================================================
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="This test class targets Windows-specific ODBC driver behavior"
+)
+class TestVarcharByteDecodingIssue:
+    """Tests for VARCHAR byte value decoding with the SQL_C_WCHAR default fix."""
+
+    TABLE_NAME = "test_varchar_byte_decoding"
+
+    @pytest.fixture(autouse=True)
+    def setup_table(self, db_connection, cursor):
+        """Create and clean up the test table for each test."""
+        # Reset decoding to the new default (SQL_C_WCHAR + utf-16le) before each test
+        # to avoid leaking settings from previous tests (db_connection is module-scoped).
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        cursor.execute(f"DROP TABLE IF EXISTS {self.TABLE_NAME}")
+        cursor.execute(f"CREATE TABLE {self.TABLE_NAME} (id INT PRIMARY KEY, data VARCHAR(256))")
+        db_connection.commit()
+        yield
+        try:
+            cursor.execute(f"DROP TABLE IF EXISTS {self.TABLE_NAME}")
+            db_connection.commit()
+        except Exception:
+            pass
+
+    def test_byte_173_returns_str_with_default_wchar(self, db_connection, cursor):
+        """Byte 173 (0xAD, soft hyphen in CP-1252) returns str with default SQL_C_WCHAR.
+
+        The default ctype for SQL_CHAR is now SQL_C_WCHAR, so the ODBC driver
+        converts the VARCHAR data to UTF-16 internally, avoiding encoding issues.
+        """
+        cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, CHAR(173))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        val = row[0]
+
+        # With the new default SQL_C_WCHAR, byte 0xAD is correctly decoded
+        # by the ODBC driver to U+00AD SOFT HYPHEN.
+        assert isinstance(
+            val, str
+        ), f"Expected str with default SQL_C_WCHAR, got {type(val).__name__}: {repr(val)}"
+        assert val == "\u00ad", f"Expected U+00AD, got {repr(val)}"
+
+    def test_byte_173_returns_bytes_with_explicit_sql_c_char(self, db_connection, cursor):
+        """Byte 173 returns str when using SQL_C_CHAR + utf-8 (issue #531 fix).
+
+        Historically, SQL_C_CHAR + utf-8 on Windows returned raw bytes because
+        the driver pre-converts VARCHAR data to the server's ANSI code page
+        (CP1252) and 0xAD is not a valid single-byte UTF-8 sequence.
+
+        The fix for issue #531 internally upgrades this combination to
+        SQL_C_WCHAR on Windows, so the driver does lossless UTF-16 conversion
+        and we get a correct Python str. On Linux/macOS the driver already
+        returns UTF-8 from SQL_C_CHAR, so the result has always been str.
+        """
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8")
+
+        cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, CHAR(173))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        val = row[0]
+
+        assert isinstance(
+            val, str
+        ), f"Expected str (issue #531 fix upgrades utf-8 fetch to SQL_C_WCHAR), got {type(val).__name__}: {repr(val)}"
+        assert val == "\u00ad", f"Expected U+00AD SOFT HYPHEN, got {repr(val)}"
+
+    def test_byte_173_returns_str_with_cp1252_decoding(self, db_connection, cursor):
+        """Setting SQL_CHAR decoding to cp1252 correctly decodes byte 173 as str.
+
+        Byte 173 in CP-1252 maps to U+00AD SOFT HYPHEN.
+        """
+        db_connection.setdecoding(SQL_CHAR, encoding="cp1252")
+
+        cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, CHAR(173))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        val = row[0]
+
+        assert isinstance(
+            val, str
+        ), f"Expected str with cp1252 decoding, got {type(val).__name__}: {repr(val)}"
+        assert val == "\u00ad", f"Expected U+00AD SOFT HYPHEN, got {repr(val)}"
+
+    def test_byte_173_returns_str_with_latin1_decoding(self, db_connection, cursor):
+        """Setting SQL_CHAR decoding to latin-1 also correctly decodes byte 173.
+
+        Latin-1 (ISO 8859-1) maps every byte 0x00-0xFF to the same Unicode
+        code point, so byte 173 → U+00AD.
+        """
+        db_connection.setdecoding(SQL_CHAR, encoding="latin-1")
+
+        cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, CHAR(173))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        val = row[0]
+
+        assert isinstance(
+            val, str
+        ), f"Expected str with latin-1 decoding, got {type(val).__name__}: {repr(val)}"
+        assert val == "\u00ad"
+
+    def test_all_high_bytes_return_str_with_default_wchar(self, db_connection, cursor):
+        """With the default SQL_C_WCHAR ctype, all high bytes return str.
+
+        The ODBC driver converts VARCHAR data to UTF-16 internally, so even
+        bytes >= 128 that are invalid in UTF-8 are correctly handled.
+        """
+        # Verify we are using the new default SQL_C_WCHAR
+        settings = db_connection.getdecoding(SQL_CHAR)
+        assert settings["ctype"] == SQL_WCHAR
+
+        # Insert a selection of high-byte values that are valid in CP-1252
+        test_bytes = [128, 142, 150, 160, 173, 192, 224, 255]
+        for b in test_bytes:
+            cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES ({b}, CHAR({b}))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {self.TABLE_NAME} ORDER BY id")
+        rows = cursor.fetchall()
+
+        str_ids = [r[0] for r in rows if isinstance(r[1], str)]
+        bytes_ids = [r[0] for r in rows if isinstance(r[1], bytes)]
+
+        assert len(str_ids) == len(test_bytes), (
+            f"Expected all {len(test_bytes)} high bytes to return str with default SQL_C_WCHAR, "
+            f"but {len(bytes_ids)} returned bytes: {bytes_ids}"
+        )
+
+    def test_all_high_bytes_decode_with_cp1252(self, db_connection, cursor):
+        """With cp1252 decoding, all high-byte values decode to str.
+
+        CP-1252 defines mappings for all byte values 0-255 (except 5 undefined
+        positions: 0x81, 0x8D, 0x8F, 0x90, 0x9D which Python's cp1252 codec
+        will raise on).
+        """
+        db_connection.setdecoding(SQL_CHAR, encoding="cp1252")
+
+        # CP-1252 defined high bytes (excluding 0x81, 0x8D, 0x8F, 0x90, 0x9D)
+        defined_bytes = [b for b in range(128, 256) if b not in (0x81, 0x8D, 0x8F, 0x90, 0x9D)]
+        # Batch insert via a single multi-row INSERT to avoid 123 separate
+        # round-trips on Windows CI. CHAR(n) is computed server-side from the
+        # parameterized id, keeping the test data identical to the per-row
+        # version while collapsing the work into one statement.
+        values_clause = ", ".join(f"({b}, CHAR({b}))" for b in defined_bytes)
+        cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES {values_clause}")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {self.TABLE_NAME} ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == len(
+            defined_bytes
+        ), f"Expected {len(defined_bytes)} rows, got {len(rows)}"
+        for row in rows:
+            byte_val, data = row[0], row[1]
+            assert isinstance(data, str), (
+                f"Byte {byte_val} (0x{byte_val:02X}): expected str with cp1252 decoding, "
+                f"got {type(data).__name__}: {repr(data)}"
+            )
+
+    def test_ascii_bytes_unaffected_by_encoding_choice(self, db_connection, cursor):
+        """ASCII bytes (0-127) are valid in all encodings and always return str."""
+        # Test a selection of printable ASCII characters
+        test_chars = [32, 65, 90, 97, 122, 48, 57, 33, 126]
+        for c in test_chars:
+            cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES ({c}, CHAR({c}))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {self.TABLE_NAME} ORDER BY id")
+        rows = cursor.fetchall()
+
+        for row in rows:
+            char_val, data = row[0], row[1]
+            assert isinstance(
+                data, str
+            ), f"ASCII char {char_val} should always return str, got {type(data).__name__}"
+
+    def test_mixed_ascii_and_high_bytes_returns_str_with_default_wchar(self, db_connection, cursor):
+        """A VARCHAR value mixing ASCII and high bytes returns str with default SQL_C_WCHAR.
+
+        E.g. 'hello' + CHAR(173) + 'world' — the ODBC driver converts everything
+        to UTF-16 so the entire value is correctly decoded to str.
+        """
+        cursor.execute(
+            f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, 'hello' + CHAR(173) + 'world')"
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        val = row[0]
+
+        assert isinstance(
+            val, str
+        ), f"Expected str with default SQL_C_WCHAR, got {type(val).__name__}: {repr(val)}"
+        assert val == "hello\u00adworld"
+
+    def test_mixed_ascii_and_high_bytes_with_cp1252(self, db_connection, cursor):
+        """With cp1252 decoding, mixed ASCII + high bytes returns str correctly."""
+        db_connection.setdecoding(SQL_CHAR, encoding="cp1252")
+
+        cursor.execute(
+            f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, 'hello' + CHAR(173) + 'world')"
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        val = row[0]
+
+        assert isinstance(
+            val, str
+        ), f"Expected str with cp1252 decoding, got {type(val).__name__}: {repr(val)}"
+        assert val == "hello\u00adworld"
+
+    def test_fetchmany_returns_str_for_high_byte_values(self, db_connection, cursor):
+        """fetchmany() returns str for high bytes with default SQL_C_WCHAR."""
+        for i in range(5):
+            cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES ({i}, CHAR(173))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME}")
+        rows = cursor.fetchmany(5)
+
+        for row in rows:
+            assert isinstance(
+                row[0], str
+            ), f"Expected str from fetchmany with default SQL_C_WCHAR: {repr(row[0])}"
+            assert row[0] == "\u00ad"
+
+    def test_fetchall_returns_str_for_high_byte_values(self, db_connection, cursor):
+        """fetchall() returns str for high bytes with default SQL_C_WCHAR."""
+        for i in range(5):
+            cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES ({i}, CHAR(173))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME}")
+        rows = cursor.fetchall()
+
+        for row in rows:
+            assert isinstance(
+                row[0], str
+            ), f"Expected str from fetchall with default SQL_C_WCHAR: {repr(row[0])}"
+            assert row[0] == "\u00ad"
+
+    def test_nvarchar_unaffected_by_varchar_decoding_issue(self, db_connection, cursor):
+        """NVARCHAR columns use SQL_WCHAR (UTF-16LE) and are not affected.
+
+        The issue only affects VARCHAR (SQL_CHAR) columns where the server's
+        native encoding (CP-1252) doesn't match the default UTF-8 decoding.
+        """
+        cursor.execute(f"DROP TABLE IF EXISTS {self.TABLE_NAME}")
+        cursor.execute(f"CREATE TABLE {self.TABLE_NAME} (id INT PRIMARY KEY, data NVARCHAR(256))")
+        # NCHAR(173) = U+00AD SOFT HYPHEN, stored as UTF-16 natively
+        cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, NCHAR(173))")
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        val = row[0]
+
+        assert isinstance(
+            val, str
+        ), f"NVARCHAR should always return str, got {type(val).__name__}: {repr(val)}"
+        assert val == "\u00ad"
+
+    def test_cp1252_specific_characters_round_trip(self, db_connection, cursor):
+        """CP-1252 has characters not in Latin-1: smart quotes, euro sign, etc.
+
+        Byte values like 0x80 (€), 0x93 (\u201c), 0x94 (\u201d), 0x96 (\u2013) are
+        Windows-specific and have no Latin-1 equivalent.
+        """
+        db_connection.setdecoding(SQL_CHAR, encoding="cp1252")
+
+        # CP-1252 specific mappings: byte -> Unicode codepoint
+        cp1252_specials = {
+            0x80: "\u20ac",  # € Euro sign
+            0x85: "\u2026",  # … Horizontal ellipsis
+            0x93: "\u201c",  # " Left double quotation mark
+            0x94: "\u201d",  # " Right double quotation mark
+            0x96: "\u2013",  # – En dash
+            0x97: "\u2014",  # — Em dash
+            0x99: "\u2122",  # ™ Trade mark sign
+        }
+
+        for byte_val, expected_char in cp1252_specials.items():
+            cursor.execute(
+                f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES ({byte_val}, CHAR({byte_val}))"
+            )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, data FROM {self.TABLE_NAME} ORDER BY id")
+        rows = cursor.fetchall()
+
+        for row in rows:
+            byte_val, data = row[0], row[1]
+            expected = cp1252_specials[byte_val]
+            assert isinstance(
+                data, str
+            ), f"Byte 0x{byte_val:02X}: expected str, got {type(data).__name__}"
+            assert (
+                data == expected
+            ), f"Byte 0x{byte_val:02X}: expected {repr(expected)}, got {repr(data)}"
+
+    def test_switching_decoding_mid_session(self, db_connection, cursor):
+        """Demonstrates switching between SQL_C_WCHAR (default) and SQL_C_CHAR + cp1252/utf-8.
+
+        First fetch with default SQL_C_WCHAR returns str, then we switch to
+        explicit SQL_C_CHAR + cp1252 and the same data still returns str.
+        Finally we switch to SQL_C_CHAR + utf-8: with the issue #531 fix this
+        also returns str on Windows (the SQL_C_CHAR fetch is internally
+        upgraded to SQL_C_WCHAR for lossless UTF-16 conversion).
+        """
+        cursor.execute(f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, CHAR(173))")
+        db_connection.commit()
+
+        # First fetch: default SQL_C_WCHAR → str
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        assert isinstance(row[0], str), "Expected str with default SQL_C_WCHAR"
+        assert row[0] == "\u00ad"
+
+        # Switch to cp1252 (auto-detects SQL_C_CHAR)
+        db_connection.setdecoding(SQL_CHAR, encoding="cp1252")
+
+        # Second fetch: cp1252 + SQL_C_CHAR → str (cp1252 can decode byte 0xAD)
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        assert isinstance(row[0], str), "Expected str with cp1252"
+        assert row[0] == "\u00ad"
+
+        # Switch to explicit utf-8 (auto-detects SQL_C_CHAR)
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8")
+
+        # Third fetch: utf-8 + SQL_C_CHAR → str (issue #531 fix upgrades to
+        # SQL_C_WCHAR internally on Windows; on Linux/macOS the driver already
+        # returns UTF-8). Either way, the user gets a correct Python str.
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        assert isinstance(
+            row[0], str
+        ), "Expected str with explicit SQL_C_CHAR + utf-8 (issue #531 fix)"
+        assert row[0] == "\u00ad"
+
+    def test_multiple_cp1252_bytes_in_single_row(self, db_connection, cursor):
+        """A VARCHAR value with multiple CP-1252 high bytes all decode correctly."""
+        db_connection.setdecoding(SQL_CHAR, encoding="cp1252")
+
+        # Build a string with euro sign + en dash + smart quotes: €–""
+        cursor.execute(
+            f"INSERT INTO {self.TABLE_NAME} (id, data) VALUES (1, "
+            f"CHAR(128) + CHAR(150) + CHAR(147) + CHAR(148))"
+        )
+        db_connection.commit()
+
+        cursor.execute(f"SELECT data FROM {self.TABLE_NAME} WHERE id = 1")
+        row = cursor.fetchone()
+        val = row[0]
+
+        assert isinstance(val, str)
+        assert val == "\u20ac\u2013\u201c\u201d", f"Expected €–\u201c\u201d, got {repr(val)}"
+
+
+# ====================================================================================
+# ISSUE #531 — VARCHAR with UTF-8 COLLATION DECODING TESTS
+# ====================================================================================
+# Validates the fix for https://github.com/microsoft/mssql-python/issues/531
+# ("Decoding VARCHAR with UTF-8 collations fails").
+#
+# Background:
+#   On Windows, when the user requests setdecoding(SQL_CHAR, "utf-8", SQL_C_CHAR),
+#   the SQL Server ODBC driver pre-converts VARCHAR data to the server's ANSI
+#   code page (CP1252) before returning bytes. UTF-8 collation columns and any
+#   non-ASCII data become '?' substitutions — unrecoverable on the Python side.
+#
+# Fix:
+#   Two complementary changes:
+#     1. Default ctype for SQL_CHAR is now SQL_C_WCHAR (utf-16le) — the driver
+#        does lossless UTF-16 conversion regardless of column collation.
+#     2. On Windows, when the user explicitly requests SQL_C_CHAR + utf-8, the
+#        fetch is internally upgraded to SQL_C_WCHAR so the user's intent
+#        ("give me UTF-8-decodable data") is honored without lossy ACP
+#        conversion. Linux/macOS unchanged (driver already returns UTF-8).
+#
+# Requires SQL Server 2019+ for the Latin1_General_100_CI_AS_SC_UTF8 collation.
+# ====================================================================================
+
+
+class TestIssue531Utf8CollationVarchar:
+    """Round-trip Unicode strings through a VARCHAR column with UTF-8 collation."""
+
+    TABLE_NAME = "test_issue_531_utf8_collation"
+    UTF8_COLLATION = "Latin1_General_100_CI_AS_SC_UTF8"
+
+    UNICODE_TEST_CASES = [
+        ("ASCII", "Hello World"),
+        ("German", "Gr\u00fc\u00dfe"),  # Grüße
+        ("Chinese", "\u4f60\u597d\u4e16\u754c"),  # 你好世界
+        ("Japanese", "\u3053\u3093\u306b\u3061\u306f"),  # こんにちは
+        ("Russian", "\u041f\u0440\u0438\u0432\u0435\u0442"),  # Привет
+        ("Mixed", "Hello \u4e16\u754c"),  # Hello 世界
+        ("Emoji", "\U0001f600\U0001f603\U0001f604\U0001f601"),  # 😀😃😄😁
+    ]
+
+    @pytest.fixture(autouse=True)
+    def setup_table(self, db_connection, cursor):
+        """Create a VARCHAR column with UTF-8 collation; skip if unsupported."""
+        # Reset decoding to defaults before each test (db_connection is module-scoped).
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)
+
+        cursor.execute(f"DROP TABLE IF EXISTS {self.TABLE_NAME}")
+        try:
+            cursor.execute(f"""
+                CREATE TABLE {self.TABLE_NAME} (
+                    id INT PRIMARY KEY,
+                    varchar_data  VARCHAR(100) COLLATE {self.UTF8_COLLATION},
+                    nvarchar_data NVARCHAR(100)
+                )
+                """)
+            db_connection.commit()
+        except Exception as exc:
+            pytest.skip(f"UTF-8 collation '{self.UTF8_COLLATION}' not supported: {exc}")
+
+        # Pre-populate test data once per test (cheap, simplifies assertions).
+        for i, (_, txt) in enumerate(self.UNICODE_TEST_CASES):
+            cursor.execute(
+                f"INSERT INTO {self.TABLE_NAME} (id, varchar_data, nvarchar_data) "
+                f"VALUES (?, ?, ?)",
+                i + 1,
+                txt,
+                txt,
+            )
+        db_connection.commit()
+
+        yield
+
+        try:
+            cursor.execute(f"DROP TABLE IF EXISTS {self.TABLE_NAME}")
+            db_connection.commit()
+        except Exception:
+            pass
+
+    def _fetch_all_rows(self, cursor):
+        cursor.execute(f"SELECT id, varchar_data, nvarchar_data FROM {self.TABLE_NAME} ORDER BY id")
+        return cursor.fetchall()
+
+    def test_default_settings_round_trip_unicode(self, db_connection, cursor):
+        """With default decoding, VARCHAR(UTF-8 collation) returns correct str
+        for every Unicode test case (ASCII, German, Chinese, Japanese, Russian,
+        Mixed, Emoji). This is the primary repro from issue #531.
+        """
+        rows = self._fetch_all_rows(cursor)
+        assert len(rows) == len(self.UNICODE_TEST_CASES)
+
+        failures = []
+        for (name, original), row in zip(self.UNICODE_TEST_CASES, rows):
+            varchar_val = row[1]
+            nvarchar_val = row[2]
+            if not isinstance(varchar_val, str) or varchar_val != original:
+                failures.append(f"{name}: VARCHAR expected {original!r}, got {varchar_val!r}")
+            if not isinstance(nvarchar_val, str) or nvarchar_val != original:
+                failures.append(f"{name}: NVARCHAR expected {original!r}, got {nvarchar_val!r}")
+
+        assert not failures, "Default-settings round-trip failed:\n" + "\n".join(failures)
+
+    def test_user_override_utf8_sql_c_char_round_trip(self, db_connection, cursor):
+        """The exact reproducer from issue #531: user calls
+        setdecoding(SQL_CHAR, encoding='utf-8', ctype=SQL_CHAR).
+
+        On Windows the fix internally upgrades this to SQL_C_WCHAR so the
+        driver does lossless UTF-16 conversion. On Linux/macOS the driver
+        already returns UTF-8 from SQL_C_CHAR. Either way the user gets a
+        correct Python str — no '?' substitution, no raw bytes.
+        """
+        db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
+        # Keep SQL_WCHAR/encoding defaults for NVARCHAR.
+        db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+
+        rows = self._fetch_all_rows(cursor)
+        assert len(rows) == len(self.UNICODE_TEST_CASES)
+
+        failures = []
+        for (name, original), row in zip(self.UNICODE_TEST_CASES, rows):
+            varchar_val = row[1]
+            nvarchar_val = row[2]
+            if not isinstance(varchar_val, str) or varchar_val != original:
+                failures.append(f"{name}: VARCHAR expected {original!r}, got {varchar_val!r}")
+            if not isinstance(nvarchar_val, str) or nvarchar_val != original:
+                failures.append(f"{name}: NVARCHAR expected {original!r}, got {nvarchar_val!r}")
+
+        assert (
+            not failures
+        ), "Issue #531 user-override (SQL_C_CHAR + utf-8) round-trip failed:\n" + "\n".join(
+            failures
+        )
+
+    def test_fetchone_utf8_sql_c_char_chinese(self, db_connection, cursor):
+        """Spot-check fetchone() path (uses SQLGetData) returns correct
+        Unicode for SQL_C_CHAR + utf-8 on a UTF-8 collation column.
+        """
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
+
+        cursor.execute(f"SELECT varchar_data FROM {self.TABLE_NAME} WHERE id = 3")  # Chinese
+        row = cursor.fetchone()
+        assert row is not None
+        assert isinstance(row[0], str)
+        assert row[0] == "\u4f60\u597d\u4e16\u754c"
+
+    def test_fetchmany_utf8_sql_c_char_emoji(self, db_connection, cursor):
+        """Spot-check fetchmany() path (uses bound columns / batch fetch)
+        returns correct Unicode for SQL_C_CHAR + utf-8.
+        """
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
+
+        cursor.execute(
+            f"SELECT id, varchar_data FROM {self.TABLE_NAME} " f"WHERE id IN (1, 7) ORDER BY id"
+        )
+        rows = cursor.fetchmany(10)
+        assert len(rows) == 2
+        assert rows[0][1] == "Hello World"
+        assert isinstance(rows[1][1], str)
+        assert rows[1][1] == "\U0001f600\U0001f603\U0001f604\U0001f601"
+
+    def test_fetchall_utf8_sql_c_char_all_cases(self, db_connection, cursor):
+        """Spot-check fetchall() path (uses bound columns / batch fetch)
+        returns correct Unicode for SQL_C_CHAR + utf-8 across all cases.
+        """
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
+
+        cursor.execute(f"SELECT id, varchar_data FROM {self.TABLE_NAME} ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == len(self.UNICODE_TEST_CASES)
+        for (_, original), row in zip(self.UNICODE_TEST_CASES, rows):
+            assert isinstance(row[1], str)
+            assert row[1] == original
+
+
+class TestIssue531CoverageGaps:
+    """Targeted coverage for the new CHAR-via-WCHAR / LOB / boundary branches
+    introduced for issue #531 (review feedback)."""
+
+    UTF8_COLLATION = "Latin1_General_100_CI_AS_SC_UTF8"
+
+    @pytest.fixture(autouse=True)
+    def reset_decoding(self, db_connection):
+        """Ensure default decoding settings before each test (db_connection
+        is module-scoped and other classes mutate it)."""
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)
+        yield
+
+    def test_fetchone_null_and_empty_varchar(self, cursor):
+        """Covers null/empty arms in the new CHAR-via-WCHAR block."""
+        cursor.execute("SELECT CAST(NULL AS VARCHAR(10)), CAST('' AS VARCHAR(10))")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] is None
+        assert row[1] == ""
+
+    def test_fetchone_varchar_max_and_nvarchar_max_50k_unicode(self, db_connection, cursor):
+        """Exercises wide-char LOB streaming in ProcessChar / SQLGetData_wrap.
+        Large LOBs deterministically surface SQL_NO_TOTAL on the first chunk."""
+        payload = "caf\u00e9 \u00ad " * 6250  # ~50k chars, includes non-ASCII (é, soft hyphen)
+        table = "#t_issue531_lob_max"
+        try:
+            cursor.execute(
+                f"CREATE TABLE {table} ("
+                f"  v VARCHAR(MAX) COLLATE {self.UTF8_COLLATION},"
+                f"  n NVARCHAR(MAX))"
+            )
+        except Exception as exc:
+            pytest.skip(f"UTF-8 collation '{self.UTF8_COLLATION}' not supported: {exc}")
+        try:
+            cursor.execute(f"INSERT INTO {table} VALUES (?, ?)", payload, payload)
+            cursor.execute(f"SELECT v, n FROM {table}")
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] == payload
+            assert row[1] == payload
+        finally:
+            try:
+                cursor.execute(f"DROP TABLE {table}")
+            except Exception:
+                pass
+
+    def test_fetchone_text_column_sql_no_total(self, cursor):
+        """Legacy TEXT LOB deterministically returns SQL_NO_TOTAL on the first
+        chunk — cheapest way to actually exercise that branch."""
+        table = "#t_issue531_text"
+        cursor.execute(f"CREATE TABLE {table} (v TEXT)")
+        try:
+            payload = "A" * 100_000
+            cursor.execute(f"INSERT INTO {table} VALUES (?)", payload)
+            cursor.execute(f"SELECT v FROM {table}")
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] == payload
+        finally:
+            try:
+                cursor.execute(f"DROP TABLE {table}")
+            except Exception:
+                pass
+
+    def test_fetchall_varchar_n_utf8_collation_non_bmp_boundary(self, cursor):
+        """Catches off-by-one in the wide-char path with a non-BMP character
+        on a VARCHAR(N) column at the size boundary."""
+        table = "#t_issue531_boundary"
+        try:
+            cursor.execute(f"CREATE TABLE {table} (v VARCHAR(4) COLLATE {self.UTF8_COLLATION})")
+        except Exception as exc:
+            pytest.skip(f"UTF-8 collation '{self.UTF8_COLLATION}' not supported: {exc}")
+        try:
+            cursor.execute(f"INSERT INTO {table} VALUES (N'\U0001f600')")
+            cursor.execute(f"SELECT v FROM {table}")
+            rows = cursor.fetchall()
+            assert len(rows) == 1
+            assert rows[0][0] == "\U0001f600"
+        finally:
+            try:
+                cursor.execute(f"DROP TABLE {table}")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

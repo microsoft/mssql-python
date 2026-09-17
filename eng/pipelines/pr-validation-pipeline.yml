@@ -6,6 +6,10 @@ trigger:
     include:
       - main
 
+variables:
+  # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
+  arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
+
 jobs:
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
@@ -98,7 +102,7 @@ jobs:
       Write-Host "Downloading SQL Server 2022 Express..."
       # Download SQL Server 2022 Express installer
       $ProgressPreference = 'SilentlyContinue'
-      Invoke-WebRequest -Uri "https://download.microsoft.com/download/5/1/4/5145fe04-4d30-4b85-b0d1-39533663a2f1/SQL2022-SSEI-Expr.exe" -OutFile "SQL2022-SSEI-Expr.exe"
+      Invoke-WebRequest -Uri "https://download.microsoft.com/download/e5d37105-aa68-4488-8ed5-b579e3809ea1/SQL2022-SSEI-Expr.exe" -OutFile "SQL2022-SSEI-Expr.exe"
       
       Write-Host "Installing SQL Server 2022 Express..."
       # Install SQL Server 2022 Express with basic features
@@ -154,6 +158,9 @@ jobs:
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      # Pool eviction tests observe physical connections from a second session.
+      sqlcmd -S "localhost" -U "sa" -P "$env:DB_PASSWORD" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
@@ -220,6 +227,9 @@ jobs:
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      # Pool eviction tests observe physical connections from a second session.
+      sqlcmd -S "localhost" -U "sa" -P "$env:DB_PASSWORD" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2025'
     condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
@@ -238,7 +248,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on LocalDB'
-    condition: eq(variables['sqlVersion'], 'LocalDB')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'LocalDB'))
     env:
       DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -246,7 +256,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
-    condition: eq(variables['sqlVersion'], 'SQL2022')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -254,7 +264,7 @@ jobs:
   - script: |
       python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2025'
-    condition: eq(variables['sqlVersion'], 'SQL2025')
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -292,7 +302,7 @@ jobs:
         exit 1
       }
     displayName: 'Download and restore AdventureWorks2022 database'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -307,7 +317,7 @@ jobs:
       artifact: 'perf-baseline-$(sqlVersion)'
       path: $(Build.SourcesDirectory)
     displayName: 'Download baseline from main'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Rename downloaded baseline so the script finds it (artifact may be in a subfolder)
@@ -320,7 +330,7 @@ jobs:
         Write-Host "No baseline file downloaded (first run or artifact missing)"
       }
     displayName: 'Prepare baseline file'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Run performance benchmarks on SQL Server 2022
@@ -340,10 +350,10 @@ jobs:
       } else {
         Write-Host "ODBC Driver 18 for SQL Server not found, installing..."
         
-        # Download ODBC Driver 18.5.2.1 (x64) from official Microsoft link
+        # Download ODBC Driver 18.6.2.1 (x64) from official Microsoft link
         $ProgressPreference = 'SilentlyContinue'
-        $installerUrl = "https://go.microsoft.com/fwlink/?linkid=2335671"
-        $installerPath = "$env:TEMP\msodbcsql_18.5.2.1_x64.msi"
+        $installerUrl = "https://go.microsoft.com/fwlink/?linkid=2358430"
+        $installerPath = "$env:TEMP\msodbcsql_18.6.2.1_x64.msi"
         
         Write-Host "Downloading ODBC Driver 18 (x64) from Microsoft..."
         Write-Host "  URL: $installerUrl"
@@ -412,7 +422,7 @@ jobs:
       Write-Host "`nRunning performance benchmarks..."
       python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
     displayName: 'Run performance benchmarks on SQL Server 2022/2025'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -461,85 +471,151 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
+  # Colima + SQL Server container setup averages ~12.5 min but has a long tail
+  # (setup has been observed at 17-39 min). The ADO default job timeout is 60 min,
+  # which the setup tail plus tests plus the 20-min benchmark step can exceed,
+  # getting the job killed mid-step. Give the job enough headroom for the tail.
+  timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
+
+  variables:
+    # Apply to setup, benchmark consumers and final cleanup without changing
+    # the Docker client's global context.
+    DOCKER_CONTEXT: colima
+    # pip's on-disk download/wheel cache. Persisted across runs by the Cache@2
+    # task below so `pip install -r requirements.txt` reuses wheels instead of
+    # re-downloading them on every run. Exposed to script steps as the
+    # $PIP_CACHE_DIR environment variable, which pip honors automatically.
+    PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip-cache
 
   strategy:
     matrix:
       SQL2022:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
         sqlVersion: 'SQL2022'
+        pythonVersion: '3.13'
       SQL2025:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
+        pythonVersion: '3.14'
 
   steps:
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.13'
+      versionSpec: '$(pythonVersion)'
       addToPath: true
-    displayName: 'Use Python 3.13 on macOS'
+    displayName: 'Use Python $(pythonVersion) on macOS'
+
+  - task: Cache@2
+    inputs:
+      key: 'pip | "$(Agent.OS)" | "$(pythonVersion)" | requirements.txt'
+      restoreKeys: |
+        pip | "$(Agent.OS)" | "$(pythonVersion)"
+        pip | "$(Agent.OS)"
+      path: $(PIP_CACHE_DIR)
+    displayName: 'Cache pip packages'
 
   - script: |
-      brew update
-      # Uninstall existing CMake to avoid tap conflicts
+      # Single serialized Homebrew transaction. brew holds a global lock, so
+      # installing cmake, docker, and colima together is both faster than three
+      # separate `brew install` calls and lets the next step overlap the Colima
+      # VM boot + SQL setup with the Python build.
+      # No `brew update` here: the hosted macOS runner ships an up-to-date
+      # Homebrew and a full formula re-sync is ~1-3 min of pure setup overhead.
+      # Uninstall the preinstalled CMake first to avoid tap conflicts.
       brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
-      # Install CMake from homebrew/core
-      brew install cmake
-    displayName: 'Install CMake'
+      brew install cmake docker colima
+    displayName: 'Install build & container tooling (Homebrew)'
 
   - script: |
-      brew update
-      brew install docker colima
+      set -e
+      # Only SQL lifecycle is retried. Colima starts once, overlapped with the
+      # unchanged dependency/native build chain. The helper bounds SQL work
+      # and redacts output before it reaches this job-private log.
+      SQL_LOG="$(Agent.TempDirectory)/sql-setup-$(System.JobId).log"
+      SQL_HELPER="$(Build.SourcesDirectory)/eng/scripts/setup_sql_container.py"
+      SQL_OWNER="$(Build.BuildId).$(System.JobId)"
+      SQL_PID=
+      finish_setup() {
+        status=$?
+        trap - EXIT INT TERM
+        if [ -n "$SQL_PID" ]; then
+          if kill -0 "$SQL_PID" 2>/dev/null; then
+            kill -TERM "$SQL_PID" || echo "[sql] Background setup already stopped"
+          fi
+          wait "$SQL_PID" || echo "[sql] Background setup stopped or failed"
+        fi
+        if [ -f "$SQL_LOG" ]; then
+          cat "$SQL_LOG"
+          rm -f "$SQL_LOG"
+        fi
+        if [ "$status" -ne 0 ]; then
+          python3 "$SQL_HELPER" --name sqlserver --owner "$SQL_OWNER" --colima --cleanup \
+            || echo "[sql] Cleanup failed; final job cleanup will also run"
+        fi
+        exit "$status"
+      }
+      trap finish_setup EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
 
-      # Start Colima with extra resources
-      colima start --cpu 4 --memory 8 --disk 50
+      echo "Starting container setup (Colima + SQL Server) in the background..."
+      python3 "$SQL_HELPER" --name sqlserver --owner "$SQL_OWNER" \
+        --image "$(sqlServerImage)" --colima > "$SQL_LOG" 2>&1 &
+      SQL_PID=$!
 
-      # Optional: set Docker context (usually automatic)
-      docker context use colima >/dev/null || true
-
-      # Confirm Docker is operational
-      docker version
-      docker ps
-    displayName: 'Install and start Colima-based Docker'
-
-  - script: |
-      # Pull and run SQL Server container
-      docker pull $(sqlServerImage)
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-        -p 1433:1433 \
-        -d $(sqlServerImage)
-
-      # Starting SQL Server container…
-      for i in {1..30}; do
-        docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$DB_PASSWORD" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
-    displayName: 'Pull & start SQL Server (Docker)'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
+      echo "Installing Python dependencies (overlapped with container setup)..."
       python -m pip install --upgrade pip
       pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
 
-  - script: |
-      cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
+      echo "Building pybind bindings (.so) (overlapped with container setup)..."
+      ( cd mssql_python/pybind && ./build.sh )
+
+      echo "Waiting for container setup (Colima + SQL Server) to finish..."
+      SQL_STATUS=0
+      wait "$SQL_PID" || SQL_STATUS=$?
+      SQL_PID=
+      if [ "$SQL_STATUS" -ne 0 ]; then
+        exit "$SQL_STATUS"
+      fi
+    displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
       platform: unix
+
+  - script: |
+      # Uninstall any system/Homebrew ODBC before tests so pytest exercises the
+      # driver and driver manager bundled in the wheel, not a system copy. Mirrors
+      # the Linux jobs. Every command is guarded so this is a no-op when nothing is
+      # installed (the hosted runner may or may not ship unixODBC).
+      echo "Removing Homebrew ODBC packages (if installed)..."
+      brew uninstall --ignore-dependencies --force msodbcsql18 mssql-tools18 unixodbc 2>/dev/null \
+        || echo "  no Homebrew ODBC packages to remove"
+
+      echo "Removing leftover driver-manager dylibs and config from Homebrew prefixes..."
+      for prefix in /opt/homebrew /usr/local; do
+        rm -f "$prefix"/lib/libodbc.*.dylib "$prefix"/lib/libodbcinst.*.dylib \
+              "$prefix"/lib/libodbc.dylib "$prefix"/lib/libodbcinst.dylib
+        rm -rf "$prefix"/opt/msodbcsql18 "$prefix"/opt/unixodbc
+        rm -f "$prefix"/etc/odbcinst.ini "$prefix"/etc/odbc.ini
+      done
+      rm -f /etc/odbcinst.ini /etc/odbc.ini "$HOME/.odbcinst.ini" "$HOME/.odbc.ini"
+
+      echo "Confirming no system unixODBC driver manager remains on the default search path:"
+      if ls /opt/homebrew/lib/libodbc.*.dylib /usr/local/lib/libodbc.*.dylib 2>/dev/null; then
+        echo "  WARNING: a system libodbc is still present"
+      else
+        echo "  none found (good)"
+      fi
+
+      echo "Verifying the bundled x86_64 driver load chain is intact:"
+      otool -L mssql_python_odbc/libs/macos/x86_64/lib/libmsodbcsql.18.dylib \
+        || echo "  bundled driver not found"
+    displayName: 'Uninstall system ODBC Driver before running tests on macOS'
 
   - script: |
       echo "Build successful, running tests now"
@@ -578,7 +654,7 @@ jobs:
       rm -f /tmp/AdventureWorks2022.bak
       docker exec sqlserver rm -f /tmp/AdventureWorks2022.bak || true
     displayName: 'Download and restore AdventureWorks2022 database on macOS'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -594,7 +670,7 @@ jobs:
       artifact: 'perf-baseline-macOS-$(sqlVersion)'
       path: $(Build.SourcesDirectory)
     displayName: 'Download macOS baseline from main'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   - script: |
@@ -606,19 +682,22 @@ jobs:
         echo "No baseline file downloaded (first run or artifact missing)"
       fi
     displayName: 'Prepare macOS baseline file'
-    condition: and(ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   # Run performance benchmarks on macOS
   - script: |
       echo "Installing ODBC Driver 18 for pyodbc..."
       brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
+      # Newer Homebrew refuses to load formulae from third-party taps unless the tap is trusted
+      brew trust microsoft/mssql-release || echo "brew trust failed; attempting install anyway"
       HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 || echo "ODBC Driver 18 install failed — pyodbc benchmarks will be skipped"
       pip install pyodbc
       echo "Running performance benchmarks..."
       python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
     displayName: 'Run performance benchmarks on macOS $(sqlVersion)'
-    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
+    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    timeoutInMinutes: 20
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -632,6 +711,15 @@ jobs:
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
+  - script: |
+      python3 eng/scripts/setup_sql_container.py --cleanup --colima \
+        --name sqlserver --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up macOS SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
   pool:
@@ -640,18 +728,18 @@ jobs:
   strategy:
     matrix:
       Ubuntu:
-        dockerImage: 'ubuntu:22.04'
+        dockerImage: 'ubuntu:24.04'
         distroName: 'Ubuntu'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
         useAzureSQL: 'false'
       Ubuntu_SQL2025:
-        dockerImage: 'ubuntu:22.04'
+        dockerImage: 'ubuntu:24.04'
         distroName: 'Ubuntu-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
       ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
         Ubuntu_AzureSQL:
-          dockerImage: 'ubuntu:22.04'
+          dockerImage: 'ubuntu:24.04'
           distroName: 'Ubuntu-AzureSQL'
           sqlServerImage: ''
           useAzureSQL: 'true'
@@ -678,38 +766,12 @@ jobs:
     displayName: 'Create $(distroName) container'
 
   - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-$(distroName) \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        $(sqlServerImage)
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-$(distroName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-$(distroName)" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "$(sqlServerImage)" --database TestDB
     displayName: 'Start SQL Server container for $(distroName)'
-    condition: eq(variables['useAzureSQL'], 'false')
+    condition: and(succeeded(), eq(variables['useAzureSQL'], 'false'))
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -737,12 +799,15 @@ jobs:
 
   - script: |
       # Install ODBC driver in the container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         
         # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+        if [[ '$(distroName)' =~ ^Ubuntu ]]; then
+          curl -sSL -O https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
         else
           # Debian 12
           curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
@@ -798,6 +863,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
@@ -808,7 +876,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
+        ldd mssql_python_odbc/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
 
@@ -842,7 +910,7 @@ jobs:
         "
       fi
     displayName: 'Run pytest with coverage in $(distroName) container'
-    condition: or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], '')))
+    condition: and(succeeded(), or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], ''))))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -874,7 +942,7 @@ jobs:
         docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak || true
       fi
     displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -898,7 +966,7 @@ jobs:
           
           # Add Microsoft repository
           curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
+          curl -sSL https://packages.microsoft.com/config/ubuntu/24.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
           
           # Update package lists
           apt-get update -qq
@@ -931,7 +999,7 @@ jobs:
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
       fi
     displayName: 'Run performance benchmarks in $(distroName) container'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -944,13 +1012,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-$(distroName)" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-$(distroName) SQL container'
+    condition: and(always(), eq(variables['useAzureSQL'], 'false'))
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-$(distroName) || true
       docker rm test-container-$(distroName) || true
-      if [ "$(useAzureSQL)" = "false" ]; then
-        docker stop sqlserver-$(distroName) || true
-        docker rm sqlserver-$(distroName) || true
-      fi
     displayName: 'Clean up $(distroName) containers'
     condition: always()
 
@@ -972,14 +1044,22 @@ jobs:
         distroName: 'Ubuntu'
         archName: 'arm64'
       Debian_ARM64:
-        dockerImage: 'debian:12'
+        # Python 3.11 is preinstalled (byte-compiled natively at image-build
+        # time) so we never run the apt python3 post-install byte-compilation
+        # that SIGSEGVs (exit 139) under QEMU user-mode emulation. Still Debian
+        # 12 (bookworm) underneath, so the msodbcsql18 debian/12 repo applies.
+        dockerImage: 'python:3.11-bookworm'
         distroName: 'Debian'
         archName: 'arm64'
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -996,38 +1076,11 @@ jobs:
     displayName: 'Create $(distroName) ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-$(distroName)-$(archName) \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName)-$(archName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-$(distroName)-$(archName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-$(distroName)-$(archName)" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for $(distroName) ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -1035,37 +1088,52 @@ jobs:
       # Install dependencies in the ARM64 container
       if [ "$(distroName)" = "Ubuntu" ]; then
         docker exec test-container-$(distroName)-$(archName) bash -c "
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
+          apt-get update
           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
           # Verify architecture
           uname -m
           dpkg --print-architecture
+          python3 --version
+          cmake --version
         "
       else
         # Debian ARM64
+        # Python (with pip, venv and dev headers) is already provided by the
+        # python:3.11-bookworm base image under /usr/local, so we do NOT
+        # apt-install python3* here -- the apt python3 post-install byte-
+        # compilation is what SIGSEGVs (exit 139) under QEMU emulation. pybind11
+        # comes from pip (requirements.txt); only non-Python build tools are
+        # pulled from apt, none of which depend on the Debian python3 package.
         docker exec test-container-$(distroName)-$(archName) bash -c "
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+          apt-get update
+          apt-get install -y cmake curl wget gnupg build-essential
           # Verify architecture
           uname -m
           dpkg --print-architecture
+          python3 --version
+          cmake --version
         "
       fi
     displayName: 'Install basic dependencies in $(distroName) ARM64 container'
 
   - script: |
       # Install ODBC driver in the ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName)-$(archName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         
         # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
+        if [[ '$(distroName)' =~ ^Ubuntu ]]; then
           curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
         else
           # Debian 12
@@ -1091,9 +1159,14 @@ jobs:
   - script: |
       # Install Python dependencies in the ARM64 container using virtual environment
       docker exec test-container-$(distroName)-$(archName) bash -c "
+        set -euo pipefail
         # Create a virtual environment
         python3 -m venv /opt/venv
         source /opt/venv/bin/activate
+
+        # Ensure the expected runtime tools are available before build/test steps
+        command -v python >/dev/null 2>&1
+        command -v cmake >/dev/null 2>&1
         
         # Install dependencies in the virtual environment
         python -m pip install --upgrade pip
@@ -1107,13 +1180,19 @@ jobs:
   - script: |
       # Build pybind bindings in the ARM64 container
       docker exec test-container-$(distroName)-$(archName) bash -c "
+        set -euo pipefail
+        if [ ! -f /opt/venv/bin/activate ]; then
+          echo '/opt/venv/bin/activate is missing. Python dependency setup did not complete.'
+          exit 1
+        fi
         source /opt/venv/bin/activate
+        command -v python >/dev/null 2>&1
+        command -v cmake >/dev/null 2>&1
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1123,6 +1202,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName)-$(archName) bash -c "
         export DEBIAN_FRONTEND=noninteractive
         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
@@ -1133,7 +1215,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
+        ldd mssql_python_odbc/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
 
@@ -1166,11 +1248,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-$(distroName)-$(archName)" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-$(distroName)-$(archName) SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-$(distroName)-$(archName) || true
       docker rm test-container-$(distroName)-$(archName) || true
-      docker stop sqlserver-$(distroName)-$(archName) || true
-      docker rm sqlserver-$(distroName)-$(archName) || true
     displayName: 'Clean up $(distroName) ARM64 containers'
     condition: always()
 
@@ -1197,42 +1285,19 @@ jobs:
     displayName: 'Create RHEL 9 container'
 
   - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-rhel9 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-rhel9 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-rhel9" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for RHEL 9'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the RHEL 9 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9 bash -c "
         # Enable CodeReady Builder repository for additional packages
         dnf update -y
@@ -1337,6 +1402,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9 bash -c "
         dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
         rm -f /usr/bin/sqlcmd
@@ -1346,7 +1414,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
+        ldd mssql_python_odbc/libs/linux/rhel/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
 
@@ -1378,11 +1446,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-rhel9" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-rhel9 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-rhel9 || true
       docker rm test-container-rhel9 || true
-      docker stop sqlserver-rhel9 || true
-      docker rm sqlserver-rhel9 || true
     displayName: 'Clean up RHEL 9 containers'
     condition: always()
 
@@ -1399,8 +1473,12 @@ jobs:
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -1417,43 +1495,19 @@ jobs:
     displayName: 'Create RHEL 9 ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-rhel9-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-rhel9-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-rhel9-arm64" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for RHEL 9 ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the RHEL 9 ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9-arm64 bash -c "
         # Enable CodeReady Builder repository for additional packages
         dnf update -y
@@ -1552,7 +1606,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1562,6 +1615,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9-arm64 bash -c "
         dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
         rm -f /usr/bin/sqlcmd
@@ -1571,7 +1627,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
+        ldd mssql_python_odbc/libs/linux/rhel/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
 
@@ -1603,11 +1659,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-rhel9-arm64" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-rhel9-arm64 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-rhel9-arm64 || true
       docker rm test-container-rhel9-arm64 || true
-      docker stop sqlserver-rhel9-arm64 || true
-      docker rm sqlserver-rhel9-arm64 || true
     displayName: 'Clean up RHEL 9 ARM64 containers'
     condition: always()
 
@@ -1642,38 +1704,11 @@ jobs:
     displayName: 'Create Alpine x86_64 container'
 
   - script: |
-      # Start SQL Server container (x86_64)
-      docker run -d --name sqlserver-alpine \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-alpine \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-alpine \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-alpine" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for Alpine x86_64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -1715,6 +1750,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the Alpine x86_64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine bash -c "
         # Detect architecture for ODBC driver download
         case \$(uname -m) in
@@ -1731,24 +1769,24 @@ jobs:
         echo 'Detected architecture: '\$architecture
         
         # Download the packages
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Download signatures for verification
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
         
         # Import Microsoft GPG key and verify packages
         curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
-        gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+        gpg --verify msodbcsql18_18.6.2.1-1_\$architecture.sig msodbcsql18_18.6.2.1-1_\$architecture.apk
         gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Install the packages
-        apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+        apk add --allow-untrusted msodbcsql18_18.6.2.1-1_\$architecture.apk
         apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Cleanup
-        rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+        rm -f msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
         
         # Add mssql-tools to PATH
         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
@@ -1795,6 +1833,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine bash -c "
         # Remove system ODBC installation
         apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
@@ -1805,7 +1846,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
+        ldd mssql_python_odbc/libs/linux/alpine/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
 
@@ -1851,11 +1892,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-alpine" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-alpine SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-alpine || true
       docker rm test-container-alpine || true
-      docker stop sqlserver-alpine || true
-      docker rm sqlserver-alpine || true
     displayName: 'Clean up Alpine x86_64 containers'
     condition: always()
 
@@ -1872,8 +1919,12 @@ jobs:
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -1892,38 +1943,11 @@ jobs:
     displayName: 'Create Alpine ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-alpine-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-alpine-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-alpine-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-alpine-arm64" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for Alpine ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -1965,6 +1989,9 @@ jobs:
 
   - script: |
       # Install ODBC driver in the Alpine ARM64 container
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine-arm64 bash -c "
         # Detect architecture for ODBC driver download
         case \$(uname -m) in
@@ -1981,24 +2008,24 @@ jobs:
         echo 'Detected architecture: '\$architecture
         
         # Download the packages
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Download signatures for verification
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
         
         # Import Microsoft GPG key and verify packages
         curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
-        gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+        gpg --verify msodbcsql18_18.6.2.1-1_\$architecture.sig msodbcsql18_18.6.2.1-1_\$architecture.apk
         gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Install the packages
-        apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+        apk add --allow-untrusted msodbcsql18_18.6.2.1-1_\$architecture.apk
         apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Cleanup
-        rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+        rm -f msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
         
         # Add mssql-tools to PATH
         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
@@ -2036,7 +2063,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -2046,6 +2072,9 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
+      DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
+      DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
+      if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine-arm64 bash -c "
         # Remove system ODBC installation
         apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
@@ -2056,7 +2085,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
+        ldd mssql_python_odbc/libs/linux/alpine/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
 
@@ -2102,11 +2131,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-alpine-arm64" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-alpine-arm64 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-alpine-arm64 || true
       docker rm test-container-alpine-arm64 || true
-      docker stop sqlserver-alpine-arm64 || true
-      docker rm sqlserver-alpine-arm64 || true
     displayName: 'Clean up Alpine ARM64 containers'
     condition: always()
 
@@ -2117,226 +2152,230 @@ jobs:
       testRunTitle: 'Publish pytest results on Alpine ARM64'
 
 # ===========================================================================================
-# Azure SQL Database Testing Jobs
-# Gated on the AZURE_CONNECTION_STRING pipeline variable being set.
-# No local SQL Server install needed — tests run directly against the cloud database.
-# Runs every 16 days (on days divisible by 16) or when ENABLE_AZURE_SQL is set to true
 # ===========================================================================================
-
-- job: CheckAzureSQLSchedule
-  displayName: 'Check if Azure SQL tests should run'
-  pool:
-    vmImage: 'ubuntu-latest'
-  steps:
-  - bash: |
-      day=$(date +%d)
-      remainder=$((10#$day % 15))
-      if [ "$remainder" -eq 0 ] || [ "$(ENABLE_AZURE_SQL)" = "true" ]; then
-        echo "##vso[task.setvariable variable=shouldRunAzureSQL;isOutput=true]true"
-        echo "Azure SQL tests will run (day: $day, ENABLE_AZURE_SQL: $(ENABLE_AZURE_SQL))"
-      else
-        echo "##vso[task.setvariable variable=shouldRunAzureSQL;isOutput=true]false"
-        echo "Azure SQL tests will be skipped (day: $day, ENABLE_AZURE_SQL: $(ENABLE_AZURE_SQL))"
-      fi
-    displayName: 'Determine if Azure SQL tests should run'
-    name: checkSchedule
-
-- job: PytestOnWindows_AzureSQL
-  displayName: 'Windows x64 AzureSQL'
-  dependsOn: CheckAzureSQLSchedule
-  condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
-  pool:
-    vmImage: 'windows-latest'
-
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13'
-      addToPath: true
-      githubToken: $(GITHUB_TOKEN)
-    displayName: 'Use Python 3.13'
-
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install dependencies'
-
-  - script: |
-      cd mssql_python\pybind
-      build.bat x64
-    displayName: 'Build .pyd file'
-
-  - template: steps/install-mssql-py-core.yml
-    parameters:
-      platform: windows
-
-  - script: |
-      python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
-    displayName: 'Run tests on Azure SQL Database'
-    env:
-      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
-
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-azuresql.xml'
-      testRunTitle: 'Publish test results for Windows AzureSQL'
-
-- job: PytestOnMacOS_AzureSQL
-  displayName: 'macOS x86_64 AzureSQL'
-  dependsOn: CheckAzureSQLSchedule
-  condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
-  pool:
-    vmImage: 'macos-latest'
-
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13'
-      addToPath: true
-    displayName: 'Use Python 3.13'
-
-  - script: |
-      brew update
-      brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
-      brew install cmake
-    displayName: 'Install CMake'
-
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
-
-  - script: |
-      cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
-
-  - template: steps/install-mssql-py-core.yml
-    parameters:
-      platform: unix
-
-  - script: |
-      python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
-    displayName: 'Run tests on Azure SQL Database'
-    env:
-      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
-
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-azuresql.xml'
-      testRunTitle: 'Publish pytest results on macOS AzureSQL'
-
-- job: PytestOnLinux_AzureSQL
-  displayName: 'Linux x86_64 AzureSQL'
-  dependsOn: CheckAzureSQLSchedule
-  condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
-  pool:
-    vmImage: 'ubuntu-latest'
-
-  steps:
-  - script: |
-      docker run -d --name test-container-ubuntu-azuresql \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        ubuntu:22.04 \
-        tail -f /dev/null
-    displayName: 'Create Ubuntu container'
-
-  - script: |
-      docker exec test-container-ubuntu-azuresql bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        export TZ=UTC
-        ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-        apt-get update && 
-        apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-      "
-    displayName: 'Install basic dependencies in Ubuntu container'
-
-  - script: |
-      docker exec test-container-ubuntu-azuresql bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-        dpkg -i packages-microsoft-prod.deb || true
-        rm packages-microsoft-prod.deb
-        apt-get update
-        ACCEPT_EULA=Y apt-get install -y msodbcsql18
-        ACCEPT_EULA=Y apt-get install -y mssql-tools18
-        apt-get install -y unixodbc-dev
-      "
-    displayName: 'Install ODBC Driver in Ubuntu container'
-
-  - script: |
-      docker exec test-container-ubuntu-azuresql bash -c "
-        python3 -m venv /opt/venv
-        source /opt/venv/bin/activate
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
-        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in Ubuntu container'
-
-  - script: |
-      docker exec test-container-ubuntu-azuresql bash -c "
-        source /opt/venv/bin/activate
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in Ubuntu container'
-
-  - template: steps/install-mssql-py-core.yml
-    parameters:
-      platform: container
-      containerName: test-container-ubuntu-azuresql
-      venvActivate: 'source /opt/venv/bin/activate'
-
-  - script: |
-      docker exec test-container-ubuntu-azuresql bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in Ubuntu container'
-
-  - script: |
-      docker exec \
-        -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
-        test-container-ubuntu-azuresql bash -c "
-        source /opt/venv/bin/activate
-        echo 'Running tests on Ubuntu against Azure SQL Database'
-        python -m pytest -v --junitxml=test-results-ubuntu-azuresql.xml --cov=. --cov-report=xml:coverage-ubuntu-azuresql.xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest on Azure SQL in Ubuntu container'
-    env:
-      AZURE_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
-
-  - script: |
-      docker cp test-container-ubuntu-azuresql:/workspace/test-results-ubuntu-azuresql.xml $(Build.SourcesDirectory)/
-      docker cp test-container-ubuntu-azuresql:/workspace/coverage-ubuntu-azuresql.xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from Ubuntu container'
-    condition: always()
-
-  - script: |
-      docker stop test-container-ubuntu-azuresql || true
-      docker rm test-container-ubuntu-azuresql || true
-    displayName: 'Clean up Ubuntu container'
-    condition: always()
-
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-ubuntu-azuresql.xml'
-      testRunTitle: 'Publish pytest results on Ubuntu AzureSQL'
+# TEMPORARILY DISABLED: Azure SQL Database Testing Jobs
+# To re-enable: Uncomment all jobs below
+# ===========================================================================================
+# # Azure SQL Database Testing Jobs
+# # Gated on the AZURE_CONNECTION_STRING pipeline variable being set.
+# # No local SQL Server install needed — tests run directly against the cloud database.
+# # Runs every 16 days (on days divisible by 16) or when ENABLE_AZURE_SQL is set to true
+# # ===========================================================================================
+# 
+# - job: CheckAzureSQLSchedule
+#   displayName: 'Check if Azure SQL tests should run'
+#   pool:
+#     vmImage: 'ubuntu-latest'
+#   steps:
+#   - bash: |
+#       day=$(date +%d)
+#       remainder=$((10#$day % 15))
+#       if [ "$remainder" -eq 0 ] || [ "$(ENABLE_AZURE_SQL)" = "true" ]; then
+#         echo "##vso[task.setvariable variable=shouldRunAzureSQL;isOutput=true]true"
+#         echo "Azure SQL tests will run (day: $day, ENABLE_AZURE_SQL: $(ENABLE_AZURE_SQL))"
+#       else
+#         echo "##vso[task.setvariable variable=shouldRunAzureSQL;isOutput=true]false"
+#         echo "Azure SQL tests will be skipped (day: $day, ENABLE_AZURE_SQL: $(ENABLE_AZURE_SQL))"
+#       fi
+#     displayName: 'Determine if Azure SQL tests should run'
+#     name: checkSchedule
+# 
+# - job: PytestOnWindows_AzureSQL
+#   displayName: 'Windows x64 AzureSQL'
+#   dependsOn: CheckAzureSQLSchedule
+#   condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
+#   pool:
+#     vmImage: 'windows-latest'
+# 
+#   steps:
+#   - task: UsePythonVersion@0
+#     inputs:
+#       versionSpec: '3.13'
+#       addToPath: true
+#       githubToken: $(GITHUB_TOKEN)
+#     displayName: 'Use Python 3.13'
+# 
+#   - script: |
+#       python -m pip install --upgrade pip
+#       pip install -r requirements.txt
+#     displayName: 'Install dependencies'
+# 
+#   - script: |
+#       cd mssql_python\pybind
+#       build.bat x64
+#     displayName: 'Build .pyd file'
+# 
+#   - template: steps/install-mssql-py-core.yml
+#     parameters:
+#       platform: windows
+# 
+#   - script: |
+#       python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
+#     displayName: 'Run tests on Azure SQL Database'
+#     env:
+#       DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
+# 
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-azuresql.xml'
+#       testRunTitle: 'Publish test results for Windows AzureSQL'
+# 
+# - job: PytestOnMacOS_AzureSQL
+#   displayName: 'macOS x86_64 AzureSQL'
+#   dependsOn: CheckAzureSQLSchedule
+#   condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
+#   pool:
+#     vmImage: 'macos-latest'
+# 
+#   steps:
+#   - task: UsePythonVersion@0
+#     inputs:
+#       versionSpec: '3.13'
+#       addToPath: true
+#     displayName: 'Use Python 3.13'
+# 
+#   - script: |
+#       brew update
+#       brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
+#       brew install cmake
+#     displayName: 'Install CMake'
+# 
+#   - script: |
+#       python -m pip install --upgrade pip
+#       pip install -r requirements.txt
+#     displayName: 'Install Python dependencies'
+# 
+#   - script: |
+#       cd mssql_python/pybind
+#       ./build.sh
+#     displayName: 'Build pybind bindings (.so)'
+# 
+#   - template: steps/install-mssql-py-core.yml
+#     parameters:
+#       platform: unix
+# 
+#   - script: |
+#       python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
+#     displayName: 'Run tests on Azure SQL Database'
+#     env:
+#       DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
+# 
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-azuresql.xml'
+#       testRunTitle: 'Publish pytest results on macOS AzureSQL'
+# 
+# - job: PytestOnLinux_AzureSQL
+#   displayName: 'Linux x86_64 AzureSQL'
+#   dependsOn: CheckAzureSQLSchedule
+#   condition: eq(dependencies.CheckAzureSQLSchedule.outputs['checkSchedule.shouldRunAzureSQL'], 'true')
+#   pool:
+#     vmImage: 'ubuntu-latest'
+# 
+#   steps:
+#   - script: |
+#       docker run -d --name test-container-ubuntu-azuresql \
+#         -v $(Build.SourcesDirectory):/workspace \
+#         -w /workspace \
+#         --network bridge \
+#         ubuntu:22.04 \
+#         tail -f /dev/null
+#     displayName: 'Create Ubuntu container'
+# 
+#   - script: |
+#       docker exec test-container-ubuntu-azuresql bash -c "
+#         export DEBIAN_FRONTEND=noninteractive
+#         export TZ=UTC
+#         ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+#         apt-get update && 
+#         apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+#       "
+#     displayName: 'Install basic dependencies in Ubuntu container'
+# 
+#   - script: |
+#       docker exec test-container-ubuntu-azuresql bash -c "
+#         export DEBIAN_FRONTEND=noninteractive
+#         curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+#         dpkg -i packages-microsoft-prod.deb || true
+#         rm packages-microsoft-prod.deb
+#         apt-get update
+#         ACCEPT_EULA=Y apt-get install -y msodbcsql18
+#         ACCEPT_EULA=Y apt-get install -y mssql-tools18
+#         apt-get install -y unixodbc-dev
+#       "
+#     displayName: 'Install ODBC Driver in Ubuntu container'
+# 
+#   - script: |
+#       docker exec test-container-ubuntu-azuresql bash -c "
+#         python3 -m venv /opt/venv
+#         source /opt/venv/bin/activate
+#         python -m pip install --upgrade pip
+#         python -m pip install -r requirements.txt
+#         echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+#       "
+#     displayName: 'Install Python dependencies in Ubuntu container'
+# 
+#   - script: |
+#       docker exec test-container-ubuntu-azuresql bash -c "
+#         source /opt/venv/bin/activate
+#         cd mssql_python/pybind
+#         chmod +x build.sh
+#         ./build.sh
+#       "
+#     displayName: 'Build pybind bindings (.so) in Ubuntu container'
+# 
+#   - template: steps/install-mssql-py-core.yml
+#     parameters:
+#       platform: container
+#       containerName: test-container-ubuntu-azuresql
+#       venvActivate: 'source /opt/venv/bin/activate'
+# 
+#   - script: |
+#       docker exec test-container-ubuntu-azuresql bash -c "
+#         export DEBIAN_FRONTEND=noninteractive
+#         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+#         rm -f /usr/bin/sqlcmd
+#         rm -f /usr/bin/bcp
+#         rm -rf /opt/microsoft/msodbcsql
+#         rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
+#         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+#         echo 'Uninstalled ODBC Driver and cleaned up libraries'
+#         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
+#         ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
+#       "
+#     displayName: 'Uninstall ODBC Driver before running tests in Ubuntu container'
+# 
+#   - script: |
+#       docker exec \
+#         -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
+#         test-container-ubuntu-azuresql bash -c "
+#         source /opt/venv/bin/activate
+#         echo 'Running tests on Ubuntu against Azure SQL Database'
+#         python -m pytest -v --junitxml=test-results-ubuntu-azuresql.xml --cov=. --cov-report=xml:coverage-ubuntu-azuresql.xml --capture=tee-sys --cache-clear
+#       "
+#     displayName: 'Run pytest on Azure SQL in Ubuntu container'
+#     env:
+#       AZURE_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
+# 
+#   - script: |
+#       docker cp test-container-ubuntu-azuresql:/workspace/test-results-ubuntu-azuresql.xml $(Build.SourcesDirectory)/
+#       docker cp test-container-ubuntu-azuresql:/workspace/coverage-ubuntu-azuresql.xml $(Build.SourcesDirectory)/
+#     displayName: 'Copy test results from Ubuntu container'
+#     condition: always()
+# 
+#   - script: |
+#       docker stop test-container-ubuntu-azuresql || true
+#       docker rm test-container-ubuntu-azuresql || true
+#     displayName: 'Clean up Ubuntu container'
+#     condition: always()
+# 
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-ubuntu-azuresql.xml'
+#       testRunTitle: 'Publish pytest results on Ubuntu AzureSQL'
 
 - job: CodeCoverageReport
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
@@ -2351,26 +2390,11 @@ jobs:
     displayName: 'Install build dependencies'
 
   - script: |
-      # Start SQL Server container
-      docker pull mcr.microsoft.com/mssql/server:2022-latest
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        -d mcr.microsoft.com/mssql/server:2022-latest
-
-      # Wait until SQL Server is ready
-      for i in {1..30}; do
-        docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest"
     displayName: 'Start SQL Server container'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -2417,3 +2441,12 @@ jobs:
       reportDirectory: 'unified-coverage'
       failIfCoverageEmpty: true
     displayName: 'Publish unified code coverage results'
+
+  - script: |
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name sqlserver --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up coverage SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)

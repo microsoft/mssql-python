@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 from mssql_python.connection_string_parser import (
     _ConnectionStringParser,
     ConnectionStringParseError,
+    sanitize_connection_string,
 )
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
 from mssql_python import connect
@@ -493,12 +494,13 @@ class TestConnectAPIIntegration:
         conn = connect(conn_str)
         assert conn is not None
 
+        # Assert on the sanitized string so a failure here cannot print the
+        # live credential through pytest assertion introspection.
+        sanitized = sanitize_connection_string(conn.connection_str)
+
         # Verify connection string has required parameters
-        assert "Driver=" in conn.connection_str or "driver=" in conn.connection_str
-        assert (
-            "APP=MSSQL-Python" in conn.connection_str
-            or "app=mssql-python" in conn.connection_str.lower()
-        )
+        assert "Driver=" in sanitized or "driver=" in sanitized
+        assert "APP=MSSQL-Python" in sanitized or "app=mssql-python" in sanitized.lower()
 
         # Test basic query execution
         cursor = conn.cursor()
@@ -521,12 +523,13 @@ class TestConnectAPIIntegration:
         # Verify connection works and autocommit is set
         assert conn.autocommit == True
 
+        # Assert on the sanitized string so a failure here cannot print the
+        # live credential through pytest assertion introspection.
+        sanitized = sanitize_connection_string(conn.connection_str)
+
         # Verify connection string still has all required params
-        assert "Driver=" in conn.connection_str or "driver=" in conn.connection_str
-        assert (
-            "APP=MSSQL-Python" in conn.connection_str
-            or "app=mssql-python" in conn.connection_str.lower()
-        )
+        assert "Driver=" in sanitized or "driver=" in sanitized
+        assert "APP=MSSQL-Python" in sanitized or "app=mssql-python" in sanitized.lower()
 
         conn.close()
 

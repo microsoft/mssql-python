@@ -104,7 +104,7 @@ def test_wchar_decoding_forwarded_to_live_fetch_bridge(connection, method, bridg
                 expected_reads += 2
             assert fetch_rows(cursor, method)[0].txt == "\u00e9"
             assert fetch.call_count == index
-            assert fetch.call_args.args[-2:] == ("utf-8", encoding)
+            assert fetch.call_args.args[-3:] == ("utf-16le", encoding, mssql_python.SQL_WCHAR)
             assert reads.call_count == expected_reads
             previous_encoding = encoding
         assert [call.args[0] for call in reads.call_args_list] == [
@@ -201,28 +201,28 @@ def test_converter_cache_reuse_between_fetches(connection):
             assert [row.txt for row in cursor.fetchmany(2)] == ["converted:abc"] * 2
             assert converter.call_count == 3
             assert builds.call_count == 2
-            assert lookups.call_count == 2
+            assert lookups.call_count == 1
 
             connection.add_output_converter(SQL_WVARCHAR, replacement)
             assert cursor.fetchone().txt == "new:abc"
             assert builds.call_count == 3
-            assert lookups.call_count == 4
+            assert lookups.call_count == 2
             assert replacement.call_count == 1
 
             connection.remove_output_converter(SQL_WVARCHAR)
             assert cursor.fetchmany(1)[0].txt == "abc"
             assert builds.call_count == 4
-            assert lookups.call_count == 4
+            assert lookups.call_count == 2
             assert fast_batch.call_count == 1
 
             connection.add_output_converter(SQL_WVARCHAR, converter)
             assert cursor.fetchone().txt == "converted:abc"
             assert builds.call_count == 5
-            assert lookups.call_count == 6
+            assert lookups.call_count == 3
             connection.clear_output_converters()
             assert [row.txt for row in cursor.fetchall()] == ["abc", "abc"]
             assert builds.call_count == 6
-            assert lookups.call_count == 6
+            assert lookups.call_count == 3
             assert fast_batch.call_count == 2
 
 
@@ -291,8 +291,15 @@ def test_preconfigured_converter_keeps_existing_fallback_semantics(connection):
     connection.add_output_converter(SQL_WVARCHAR, converter)
     with connection.cursor() as cursor:
         cursor.execute(MIXED_SELECT)
-        assert list(cursor.fetchone()) == ["converted"] * 5 + [None]
-        assert converter.call_count == 5
+        assert list(cursor.fetchone()) == [
+            "converted",
+            "converted",
+            42,
+            uuid.UUID(UUID_TEXT),
+            "converted",
+            None,
+        ]
+        assert [call.args[0] for call in converter.call_args_list] == MIXED_CONVERTER_INPUTS
 
 
 def test_converter_cache_multiple_cursors_and_result_shapes(connection):
@@ -307,7 +314,7 @@ def test_converter_cache_multiple_cursors_and_result_shapes(connection):
                 cursor, "_build_converter_map", wraps=cursor._build_converter_map
             ) as builds:
                 assert cursor.fetchall() == []
-                builds.assert_called_once_with(string_fallback_only=True)
+                builds.assert_called_once_with()
             cursor.execute(
                 "SELECT CAST(NULL AS INT) AS empty_value, CAST(N'def' AS NVARCHAR(10)) AS txt; "
                 "SELECT CAST(N'ghi' AS NVARCHAR(10)) AS renamed"
@@ -377,3 +384,58 @@ def test_converter_cache_refresh_failure_is_retried(connection):
                 cursor.fetchone()
         assert cursor._cached_converters_generation == generation
         assert cursor.fetchone().txt == "converted"
+
+
+@pytest.mark.parametrize("method", FETCH_METHODS)
+@pytest.mark.parametrize("lowercase", (False, True))
+@pytest.mark.parametrize("processing", ("none", "converter", "uuid"))
+def test_fetch_preserves_column_name_maps(connection, method, lowercase, processing, monkeypatch):
+    monkeypatch.setattr(mssql_python, "lowercase", lowercase)
+    monkeypatch.setattr(mssql_python, "native_uuid", processing != "uuid")
+    if processing == "converter":
+        connection.add_output_converter(SQL_WVARCHAR, lambda raw: "converted")
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT CAST(N'abc' AS NVARCHAR(10)) AS MixedName, "
+            f"CAST('{UUID_TEXT}' AS UNIQUEIDENTIFIER) AS MixedId"
+        )
+        row = fetch_rows(cursor, method)[0]
+        name = "mixedname" if lowercase else "MixedName"
+        expected = "converted" if processing == "converter" else "abc"
+        assert row[name] == getattr(row, name) == expected
+        if lowercase:
+            assert row["MIXEDNAME"] == row.MIXEDNAME == expected
+        else:
+            with pytest.raises(KeyError):
+                row["MIXEDNAME"]
+            with pytest.raises(AttributeError):
+                row.MIXEDNAME
+        assert row._column_map_lower is cursor._cached_column_map_lower
+        assert row[1] == (UUID_TEXT if processing == "uuid" else uuid.UUID(UUID_TEXT))
+
+
+@pytest.mark.parametrize(
+    ("method", "bridge_name"),
+    (
+        ("fetchone", "DDBCSQLFetchOne"),
+        ("fetchmany", "DDBCSQLFetchMany"),
+        ("fetchall", "DDBCSQLFetchAll"),
+    ),
+)
+def test_char_decoding_ctype_refresh(connection, method, bridge_name):
+    bridge = getattr(mssql_python.ddbc_bindings, bridge_name)
+    with (
+        patch.object(connection, "getdecoding", wraps=connection.getdecoding) as reads,
+        patch.object(mssql_python.ddbc_bindings, bridge_name, wraps=bridge) as fetch,
+        connection.cursor() as cursor,
+    ):
+        for encoding, ctype in (
+            ("utf-16le", mssql_python.SQL_WCHAR),
+            ("latin-1", mssql_python.SQL_CHAR),
+            ("utf-16le", mssql_python.SQL_WCHAR),
+        ):
+            cursor.execute("SELECT CONVERT(VARCHAR(1), 0xE9) AS txt")
+            connection.setdecoding(mssql_python.SQL_CHAR, encoding=encoding, ctype=ctype)
+            assert fetch_rows(cursor, method)[0].txt == "\u00e9"
+            assert fetch.call_args.args[-3:] == (encoding, "utf-16le", ctype)
+        assert reads.call_count == 8

@@ -190,6 +190,92 @@ def test_connection_error():
     assert "Incomplete specification" in str(excinfo.value) or "has no value" in str(excinfo.value)
 
 
+def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
+    """Regression test for https://github.com/microsoft/mssql-python/issues/532.
+
+    Connection failures from the C++ pybind layer (RuntimeError) must be mapped
+    to the correct DB-API 2.0 exception via the embedded SQLSTATE code.
+    This covers connect(), commit(), and rollback() — all of which go through
+    Connection::checkError() in the C++ layer.
+    """
+    from unittest.mock import MagicMock, patch
+
+    # SQLSTATE 28000 = login failed -> OperationalError
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError("SQLSTATE:28000:Login failed for user 'baduser'."),
+    ):
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    assert "Login failed for user" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # SQLSTATE IM002 = driver not found -> OperationalError (per SQLSTATE mapping)
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError(
+            "SQLSTATE:IM002:Data source name not found and no default driver specified"
+        ),
+    ):
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    assert "no default driver" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # No SQLSTATE prefix -> fallback OperationalError
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError("Connection handle not allocated"),
+    ):
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    assert "Connection handle not allocated" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # Unmapped SQLSTATE (sqlstate_to_exception returns None) -> DatabaseError
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError("SQLSTATE:99999:Unknown error with unmapped code"),
+    ):
+        with pytest.raises(DatabaseError) as exc_info:
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    assert "Unknown error with unmapped code" in exc_info.value.ddbc_error
+    assert "SQLSTATE code: 99999" in exc_info.value.driver_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # Malformed SQLSTATE (empty code) -> OperationalError
+    with patch(
+        "mssql_python.connection.ddbc_bindings.Connection",
+        side_effect=RuntimeError("SQLSTATE::Invalid handle!"),
+    ):
+        with pytest.raises(OperationalError) as exc_info:
+            connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    assert "Invalid handle!" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # commit() failure -> OperationalError via same _raise_connection_error path
+    mock_conn = MagicMock()
+    mock_conn.commit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+    mock_conn.get_autocommit.return_value = False
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    with pytest.raises(OperationalError) as exc_info:
+        conn.commit()
+    assert "Communication link failure" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+    # rollback() failure -> OperationalError via same _raise_connection_error path
+    mock_conn2 = MagicMock()
+    mock_conn2.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+    mock_conn2.get_autocommit.return_value = False
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn2):
+        conn2 = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    with pytest.raises(OperationalError) as exc_info:
+        conn2.rollback()
+    assert "Communication link failure" in exc_info.value.ddbc_error
+    assert not isinstance(exc_info.value, RuntimeError)
+
+
 def test_truncate_error_message_successful_cases():
     """Test truncate_error_message with valid Microsoft messages for comparison."""
 
@@ -365,3 +451,76 @@ def test_truncate_error_message_return_paths():
         # If the exception handling worked, it would have been caught
         # and the function would return the original message (line 531)
         pass
+
+
+# ---------------------------------------------------------------------------
+# Pickle / unpickle round-trip tests
+# ---------------------------------------------------------------------------
+
+
+def test_exception_pickle_roundtrip():
+    """All DB-API exception subclasses must survive a pickle round-trip."""
+    import pickle
+    import copy
+
+    exception_classes = [
+        Warning,
+        Error,
+        InterfaceError,
+        DatabaseError,
+        DataError,
+        OperationalError,
+        IntegrityError,
+        InternalError,
+        ProgrammingError,
+        NotSupportedError,
+    ]
+
+    for cls in exception_classes:
+        original = cls("driver msg", "ddbc msg")
+
+        # pickle round-trip
+        restored = pickle.loads(pickle.dumps(original))
+
+        assert type(restored) is cls, f"{cls.__name__}: type mismatch after unpickle"
+        assert restored.driver_error == "driver msg", f"{cls.__name__}: driver_error mismatch"
+        assert restored.ddbc_error == "ddbc msg", f"{cls.__name__}: ddbc_error mismatch"
+        assert str(restored) == str(original), f"{cls.__name__}: str() mismatch"
+
+        # copy.deepcopy also uses __reduce__
+        deep = copy.deepcopy(original)
+        assert type(deep) is cls
+        assert deep.driver_error == "driver msg"
+
+
+def test_exception_pickle_empty_ddbc_error():
+    """Exceptions with empty ddbc_error should also round-trip cleanly."""
+    import pickle
+
+    original = ProgrammingError("cursor is closed", "")
+    restored = pickle.loads(pickle.dumps(original))
+
+    assert type(restored) is ProgrammingError
+    assert restored.driver_error == "cursor is closed"
+    assert restored.ddbc_error == ""
+    assert str(restored) == str(original)
+
+
+def test_connection_string_parse_error_pickle_roundtrip():
+    """ConnectionStringParseError should survive a pickle round-trip."""
+    import pickle
+    import copy
+
+    errors = ["Unknown keyword: foo", "Missing value for: bar"]
+    original = ConnectionStringParseError(errors)
+
+    restored = pickle.loads(pickle.dumps(original))
+
+    assert type(restored) is ConnectionStringParseError
+    assert restored.errors == errors
+    assert str(restored) == str(original)
+
+    # copy.deepcopy
+    deep = copy.deepcopy(original)
+    assert type(deep) is ConnectionStringParseError
+    assert deep.errors == errors

@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
-# Downloads the mssql-py-core-wheels NuGet package from a public Azure Artifacts
-# feed and extracts the matching mssql_py_core binary into the repository root
-# so that 'import mssql_py_core' works when running from the source tree.
-#
-# The extracted files are placed at <repo-root>/mssql_py_core/ which contains:
-#   - __init__.py
-#   - mssql_py_core.<cpython-tag>.so  (native extension)
+# Installs mssql-python-rs from the pinned internal NuGet transport package.
 #
 # This script is used identically for:
 #   - Local development (dev runs it after build.sh)
 #   - PR validation pipelines
-#   - Official build pipelines (before setup.py bdist_wheel)
+#   - Official build pipelines and tests
 #
-# The package version is read from eng/versions/mssql-py-core.version (required).
+# The Python distribution and NuGet transport versions are pinned separately.
 #
 # Usage:
 #   ./install-mssql-py-core.sh [--feed-url URL]
@@ -24,17 +18,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PYTHON="${PYTHON:-$(command -v python || command -v python3)}"
 
 read_version() {
-    local version_file="$REPO_ROOT/eng/versions/mssql-py-core.version"
-    if [ ! -f "$version_file" ]; then
-        echo "ERROR: Version file not found: $version_file"
+    local distribution_file="$REPO_ROOT/eng/versions/mssql-python-rs.version"
+    local transport_file="$REPO_ROOT/eng/versions/mssql-python-rs-nuget.version"
+    for version_file in "$distribution_file" "$transport_file"; do
+        if [ ! -f "$version_file" ]; then
+            echo "ERROR: Version file not found: $version_file"
+            exit 1
+        fi
+    done
+    DISTRIBUTION_VERSION=$(tr -d '[:space:]' < "$distribution_file")
+    TRANSPORT_VERSION=$(tr -d '[:space:]' < "$transport_file")
+    if [ -z "$DISTRIBUTION_VERSION" ] || [ -z "$TRANSPORT_VERSION" ]; then
+        echo "ERROR: mssql-python-rs version files must not be empty"
         exit 1
     fi
-    PACKAGE_VERSION=$(tr -d '[:space:]' < "$version_file")
-    if [ -z "$PACKAGE_VERSION" ]; then
-        echo "ERROR: Version file is empty: $version_file"
-        exit 1
-    fi
-    echo "Version: $PACKAGE_VERSION"
+    echo "Distribution version: $DISTRIBUTION_VERSION"
+    echo "NuGet transport version: $TRANSPORT_VERSION"
 }
 
 detect_platform() {
@@ -61,8 +60,24 @@ print(f'cp{v.major}{v.minor} {platform.system().lower()} {platform.machine().low
             if echo "$ldd_output" | grep -qi musl || [ -f /etc/alpine-release ]; then
                 WHEEL_PLATFORM="musllinux_1_2_${ARCH_TAG}"
             else
-                # auditwheel=skip: wheels are tagged linux_* not manylinux_2_34_*
-                WHEEL_PLATFORM="linux_${ARCH_TAG}"
+                local glibc_version major minor
+                glibc_version=$(printf '%s\n' "$ldd_output" | head -1 | grep -Eo '[0-9]+\.[0-9]+' | tail -1)
+                major=${glibc_version%%.*}
+                minor=${glibc_version#*.}
+                if [ -z "$glibc_version" ] || ! [ "$major" -eq "$major" ] 2>/dev/null || ! [ "$minor" -eq "$minor" ] 2>/dev/null; then
+                    echo "ERROR: Could not determine glibc version from: $ldd_output"
+                    exit 1
+                fi
+                if [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 34 ]; }; then
+                    # glibc 2.34+ systems carry OpenSSL 3.
+                    WHEEL_PLATFORM="manylinux_2_34_${ARCH_TAG}"
+                elif [ "$major" -eq 2 ] && [ "$minor" -ge 28 ]; then
+                    # glibc 2.28-2.33 systems carry OpenSSL 1.1.
+                    WHEEL_PLATFORM="manylinux_2_28_${ARCH_TAG}"
+                else
+                    echo "ERROR: mssql-python-rs requires glibc 2.28 or newer; found $glibc_version"
+                    exit 1
+                fi
             fi
             ;;
         darwin)
@@ -74,7 +89,7 @@ print(f'cp{v.major}{v.minor} {platform.system().lower()} {platform.machine().low
             ;;
     esac
 
-    WHEEL_PATTERN="mssql_py_core-*-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
+    WHEEL_PATTERN="mssql_python_rs-${DISTRIBUTION_VERSION}-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
     echo "Wheel pattern: $WHEEL_PATTERN"
 }
 
@@ -82,8 +97,12 @@ download_nupkg() {
     local feed_url="$1"
     local output_dir="$2"
 
+    if ! output_dir=$("$PYTHON" "$SCRIPT_DIR/mssql_python_build_safety.py" "$output_dir"); then
+        exit 1
+    fi
     rm -rf "$output_dir"
     mkdir -p "$output_dir"
+    RESOLVED_OUTPUT_DIR="$output_dir"
 
     echo "Resolving feed: $feed_url"
     PACKAGE_BASE_URL=$("$PYTHON" "$SCRIPT_DIR/resolve_nuget_feed.py" "$feed_url")
@@ -91,17 +110,25 @@ download_nupkg() {
         echo "ERROR: Could not resolve PackageBaseAddress from feed"
         exit 1
     fi
+    PACKAGE_BASE_URL="${PACKAGE_BASE_URL%/}/"
 
-    local package_id="mssql-py-core-wheels"
     local version_lower
-    version_lower=$(echo "$PACKAGE_VERSION" | tr '[:upper:]' '[:lower:]')
-
-    # e.g. https://pkgs.dev.azure.com/.../nuget/v3/flat2/mssql-py-core-wheels/0.1.0-dev.20260222.140833/mssql-py-core-wheels.0.1.0-dev.20260222.140833.nupkg
+    version_lower=$(echo "$TRANSPORT_VERSION" | tr '[:upper:]' '[:lower:]')
+    local package_id="mssql-python-rs-wheels"
     NUPKG_URL="${PACKAGE_BASE_URL}${package_id}/${version_lower}/${package_id}.${version_lower}.nupkg"
     NUPKG_PATH="$output_dir/${package_id}.${version_lower}.nupkg"
-
+    local http_status
     echo "Downloading: $NUPKG_URL"
-    curl -sSL -o "$NUPKG_PATH" "$NUPKG_URL"
+    if ! http_status=$(curl -sSL -o "$NUPKG_PATH" -w '%{http_code}' "$NUPKG_URL"); then
+        rm -f "$NUPKG_PATH"
+        echo "ERROR: Failed to download NuGet package: $package_id $TRANSPORT_VERSION" >&2
+        exit 1
+    fi
+    if [ "$http_status" != "200" ]; then
+        rm -f "$NUPKG_PATH"
+        echo "ERROR: Failed to download NuGet package: $package_id $TRANSPORT_VERSION (HTTP $http_status)" >&2
+        exit 1
+    fi
 
     local filesize
     filesize=$(wc -c < "$NUPKG_PATH")
@@ -131,7 +158,7 @@ find_matching_wheel() {
         exit 1
     fi
 
-    MATCHING_WHEEL=$(find "$wheels_dir" -name "$WHEEL_PATTERN" | head -1)
+    MATCHING_WHEEL=$(find "$wheels_dir" -name "$WHEEL_PATTERN" -print -quit)
     if [ -z "$MATCHING_WHEEL" ]; then
         echo "Available wheels:"
         ls "$wheels_dir"/*.whl 2>/dev/null || echo "  (none)"
@@ -142,61 +169,22 @@ find_matching_wheel() {
     echo "Found: $(basename "$MATCHING_WHEEL")"
 }
 
-# Returns 0 (true) if the runtime glibc is new enough to load the .so.
-# The mssql_py_core native extension is built on manylinux_2_34 (glibc 2.34).
-# Build containers running manylinux_2_34 have glibc 2.34 — sufficient to dlopen it.
-# On musl (Alpine) or macOS we always attempt the import.
-can_verify_import() {
-    case "$PLATFORM" in
-        linux)
-            # musl doesn't use glibc versioning — always try
-            if echo "$WHEEL_PLATFORM" | grep -q musl; then
-                return 0
-            fi
-            local glibc_version
-            glibc_version=$(ldd --version 2>&1 | head -1 | grep -oP '[0-9]+\.[0-9]+$' || echo "0.0")
-            local major minor
-            major=$(echo "$glibc_version" | cut -d. -f1)
-            minor=$(echo "$glibc_version" | cut -d. -f2)
-            # Require glibc >= 2.34
-            if [ "$major" -gt 2 ] 2>/dev/null || { [ "$major" -eq 2 ] && [ "$minor" -ge 34 ]; } 2>/dev/null; then
-                return 0
-            fi
-            return 1
-            ;;
-        *)
-            return 0
-            ;;
-    esac
-}
-
-extract_and_verify() {
-    local target_dir="$REPO_ROOT"
-    local core_dir="$target_dir/mssql_py_core"
+install_and_verify() {
+    local core_dir="$REPO_ROOT/mssql_py_core"
 
     if [ -d "$core_dir" ]; then
         rm -rf "$core_dir"
         echo "Cleaned previous mssql_py_core/"
     fi
 
-    "$PYTHON" "$SCRIPT_DIR/extract_wheel.py" "$MATCHING_WHEEL" "$target_dir"
-
-    # Skip import verification when glibc is older than what the .so requires
-    # (e.g. manylinux_2_34 build containers with glibc 2.34, matching .so requirements).
-    if can_verify_import; then
-        echo "Verifying import..."
-        pushd "$target_dir" > /dev/null
-        "$PYTHON" -c "import mssql_py_core; print(f'mssql_py_core loaded: {dir(mssql_py_core)}')"
-        popd > /dev/null
-    else
-        echo "Skipping import verification (glibc too old for runtime load)"
-    fi
+    "$PYTHON" -m pip install --force-reinstall --no-deps "$MATCHING_WHEEL"
+    "$PYTHON" -c "import importlib.metadata as m, mssql_py_core; assert m.version('mssql-python-rs') == '$DISTRIBUTION_VERSION'; print('mssql-python-rs', m.version('mssql-python-rs'), 'loaded from', mssql_py_core.__file__)"
 }
 
 # --- main ---
 
 FEED_URL="${FEED_URL:-https://pkgs.dev.azure.com/sqlclientdrivers/public/_packaging/mssql-rs_Public/nuget/v3/index.json}"
-OUTPUT_DIR="${TMPDIR:-/tmp}/mssql-py-core-wheels"
+OUTPUT_DIR="${TMPDIR:-/tmp}/mssql-python-rs-wheels"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -205,13 +193,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "=== Install mssql_py_core from NuGet wheel package ==="
+echo "=== Install mssql-python-rs from NuGet transport ==="
+
+RESOLVED_OUTPUT_DIR=""
+trap 'if [ -n "$RESOLVED_OUTPUT_DIR" ]; then rm -rf "$RESOLVED_OUTPUT_DIR"; fi' EXIT
 
 read_version
 detect_platform
 download_nupkg "$FEED_URL" "$OUTPUT_DIR"
-find_matching_wheel "$OUTPUT_DIR"
-extract_and_verify
-
-rm -rf "$OUTPUT_DIR"
-echo "=== mssql_py_core extracted successfully ==="
+find_matching_wheel "$RESOLVED_OUTPUT_DIR"
+install_and_verify
+echo "=== mssql-python-rs installed successfully ==="

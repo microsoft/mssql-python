@@ -1,0 +1,297 @@
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+
+Build script for the ``mssql-python-odbc`` package.
+
+This packages the Microsoft ODBC Driver 18 for SQL Server binaries into a
+standalone, platform-specific wheel that ``mssql-python`` depends on. Build it
+with::
+
+    python setup_odbc.py bdist_wheel
+
+The driver binaries live under ``mssql_python_odbc/libs/`` (the committed source
+of truth, moved here from ``mssql_python/libs/`` in Phase 2). The release
+pipeline overwrites that subtree per-platform and is the source of truth for the
+full release matrix.
+
+Each wheel ships ONLY its own platform's ``libs/`` subtree (see
+``_target_libs_globs``). Because the package contains no compiled extension, a
+single build host can produce EVERY platform's wheel by setting
+``ODBC_TARGET_PLATFORM_TAG`` / ``ODBC_TARGET_ARCH`` (see ``get_platform_info``),
+e.g. build all 7 release wheels on one Windows agent.
+"""
+
+import os
+import re
+import sys
+from pathlib import Path
+
+import setuptools
+from setuptools import setup
+from setuptools.dist import Distribution
+from wheel.bdist_wheel import bdist_wheel
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+PACKAGE_NAME = "mssql_python_odbc"
+PACKAGE_DIR = PROJECT_ROOT / PACKAGE_NAME
+
+# The driver binaries are packaged via the recursive ``libs/**/*`` glob in
+# ``package_data`` below, which enumerates files from the copied
+# ``mssql_python_odbc/libs/`` subtree on disk (not from version control).
+# Support for ``**`` recursive globs in ``package_data`` landed in setuptools
+# 62.3.0; with an older setuptools the glob silently matches nothing and the
+# wheel ships WITHOUT any driver binaries. Fail fast instead of producing a
+# broken-but-quiet wheel.
+MIN_SETUPTOOLS = (62, 3, 0)
+
+
+def _read_odbc_version() -> str:
+    """Return ``__version__`` from ``mssql_python_odbc/__init__.py``.
+
+    Single source of truth for the package version: the value is defined once in
+    the package's ``__init__.py`` and read here (by regex, without importing the
+    package) so the wheel version can never drift from what the package reports
+    at runtime.
+    """
+    init_file = PACKAGE_DIR / "__init__.py"
+    text = init_file.read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"Could not find __version__ in {init_file}")
+    return match.group(1)
+
+
+def _require_min_setuptools() -> None:
+    raw = setuptools.__version__
+    parts = tuple(int(m) for m in re.findall(r"\d+", raw)[:3])
+    parts += (0,) * (3 - len(parts))
+    if parts < MIN_SETUPTOOLS:
+        raise SystemExit(
+            "setup_odbc.py requires setuptools >= "
+            f"{'.'.join(map(str, MIN_SETUPTOOLS))} to package the ODBC driver "
+            "binaries via the recursive 'libs/**/*' glob; found setuptools "
+            f"{raw}. Upgrade with:\n"
+            '    python -m pip install --upgrade "setuptools>=62.3.0"'
+        )
+
+
+class BinaryDistribution(Distribution):
+    """Force a platform-specific wheel (the package ships native binaries)."""
+
+    def has_ext_modules(self):
+        return True
+
+
+def get_platform_info():
+    """Get platform-specific architecture and platform tag information.
+
+    Kept in sync with ``setup.py`` so the ODBC wheel carries the same platform
+    tags as the main ``mssql-python`` wheel.
+    """
+    # Explicit target override for single-host cross-building: produce ANY
+    # platform's wheel from ONE build agent. The ODBC package ships only pre-built
+    # driver data (no compiled extension), so the build host is irrelevant to the
+    # wheel contents -- only the platform TAG and the selected libs subtree matter.
+    # When ODBC_TARGET_PLATFORM_TAG is set, honor it verbatim (with the libs-dir
+    # arch from ODBC_TARGET_ARCH) instead of inferring from the build host.
+    explicit_tag = os.environ.get("ODBC_TARGET_PLATFORM_TAG")
+    if explicit_tag:
+        target_arch = os.environ.get("ODBC_TARGET_ARCH", "").strip()
+        if not target_arch:
+            raise OSError(
+                "ODBC_TARGET_ARCH must be set (non-empty) when "
+                "ODBC_TARGET_PLATFORM_TAG is provided: an empty arch would expand the "
+                "libs/ package_data globs to EVERY architecture's subtree and leak "
+                "foreign-platform driver binaries into the wheel."
+            )
+        return target_arch, explicit_tag
+
+    if sys.platform.startswith("win"):
+        arch = os.environ.get("ARCHITECTURE", "x64")
+        if isinstance(arch, str):
+            arch = arch.strip("\"'")
+        if arch in ["x86", "win32"]:
+            return "x86", "win32"
+        elif arch == "arm64":
+            return "arm64", "win_arm64"
+        else:
+            return "x64", "win_amd64"
+
+    elif sys.platform.startswith("darwin"):
+        return "universal2", "macosx_15_0_universal2"
+
+    elif sys.platform.startswith("linux"):
+        import platform
+
+        target_arch = os.environ.get("targetArch", platform.machine())
+        libc_name, _ = platform.libc_ver()
+        is_musl = libc_name == "" or "musl" in libc_name.lower()
+        manylinux_tag = os.environ.get("MANYLINUX_TAG", "manylinux_2_28")
+
+        if target_arch == "x86_64":
+            return "x86_64", "musllinux_1_2_x86_64" if is_musl else f"{manylinux_tag}_x86_64"
+        elif target_arch in ["aarch64", "arm64"]:
+            return "aarch64", "musllinux_1_2_aarch64" if is_musl else f"{manylinux_tag}_aarch64"
+        else:
+            raise OSError(
+                f"Unsupported architecture '{target_arch}' for Linux; "
+                f"expected 'x86_64' or 'aarch64'."
+            )
+
+    raise OSError(f"Unsupported platform: {sys.platform!r}")
+
+
+def _target_libs_globs(platform_tag: str, arch: str) -> list:
+    """Return the ``package_data`` globs for exactly ONE target platform's libs.
+
+    Post-Phase-2 the committed ``mssql_python_odbc/libs/`` tree contains EVERY
+    platform's driver binaries. A wheel must ship only its own platform's subtree,
+    so we translate the (``platform_tag``, ``arch``) of the wheel being built into
+    the minimal set of ``libs/`` globs. Combined with ``include_package_data=False``
+    this guarantees a Windows wheel never carries Linux/macOS binaries (and vice
+    versa), whether the build runs on the native OS or is cross-built on a single
+    host via the ``ODBC_TARGET_*`` overrides.
+    """
+    # LICENSING travels with every wheel (it is a file at the libs/ root).
+    globs = ["libs/LICENSING"]
+    tag = platform_tag.lower()
+
+    def _subtree(root: str) -> None:
+        globs.append(f"{root}/*")
+        globs.append(f"{root}/**/*")
+
+    if tag.startswith("win"):
+        # arch is already the libs dir name on Windows: x64 / arm64 / x86.
+        _subtree(f"libs/windows/{arch}")
+    elif tag.startswith("macos"):
+        # The universal2 wheel serves both slices (arm64 + x86_64).
+        _subtree("libs/macos")
+    elif "linux" in tag:
+        libs_arch = (
+            "x86_64"
+            if arch in ("x86_64", "amd64")
+            else "arm64" if arch in ("aarch64", "arm64") else arch
+        )
+        # A single Linux wheel serves all distro families for its arch; the driver
+        # is selected at runtime via /etc/*-release detection.
+        for distro in ("alpine", "debian_ubuntu", "rhel", "suse"):
+            _subtree(f"libs/linux/{distro}/{libs_arch}")
+    else:
+        raise OSError(f"Cannot determine libs subtree for platform tag {platform_tag!r}")
+    return globs
+
+
+class CustomBdistWheel(bdist_wheel):
+    """Force a platform-specific but Python-agnostic tag.
+
+    The package ships only pre-built ODBC driver binaries (data), not a compiled
+    Python extension, so one ``py3-none-<platform>`` wheel serves every supported
+    Python version (3.10+). The wheel stays platform-specific
+    (``root_is_pure = False``) because the binaries differ per OS/arch/libc, but
+    the interpreter/ABI tags are forced to ``py3``/``none``. Without this the
+    ``BinaryDistribution`` (``has_ext_modules`` -> True) would produce a
+    ``cp3XX``-specific tag, forcing a needless per-Python-version build matrix.
+    """
+
+    def finalize_options(self):
+        bdist_wheel.finalize_options(self)
+        arch, platform_tag = get_platform_info()
+        self.plat_name = platform_tag
+        # Treat the tag as if it were passed via ``--plat-name`` so ``wheel``
+        # trusts it VERBATIM. Otherwise wheel's ``get_tag`` special-cases any
+        # ``macosx*`` tag and re-derives it from the *build host*, which silently
+        # mislabels a cross-built macOS wheel as (e.g.) ``win_amd64`` -- fatal to
+        # single-host cross-building of the macOS wheel.
+        self.plat_name_supplied = True
+        # Platform-specific (ships native binaries) but not tied to a CPython ABI.
+        self.root_is_pure = False
+        print(f"Setting wheel platform tag to: {self.plat_name} (arch: {arch})")
+
+    def get_tag(self):
+        # Preserve the platform tag from the base implementation but relabel the
+        # interpreter/ABI tags as Python-agnostic ("py3"/"none").
+        _python, _abi, plat = bdist_wheel.get_tag(self)
+        return "py3", "none", plat
+
+
+_require_min_setuptools()
+
+# Resolve the ONE target this invocation builds (host-inferred, or overridden via
+# ODBC_TARGET_* for single-host cross-building) and the minimal libs globs for it.
+_TARGET_ARCH, _TARGET_PLATFORM_TAG = get_platform_info()
+_LIBS_GLOBS = _target_libs_globs(_TARGET_PLATFORM_TAG, _TARGET_ARCH)
+print(f"ODBC wheel target: tag={_TARGET_PLATFORM_TAG} arch={_TARGET_ARCH!r}")
+print(f"ODBC libs globs: {_LIBS_GLOBS}")
+
+# PyPI long description is maintained as a standalone Markdown file (mirrors the
+# main mssql-python package, which reads PyPI_Description.md) so it can be edited
+# and reviewed as Markdown rather than embedded in this build script.
+_LONG_DESCRIPTION = (PROJECT_ROOT / "PyPI_Description_ODBC.md").read_text(encoding="utf-8")
+
+setup(
+    name="mssql-python-odbc",
+    version=_read_odbc_version(),
+    description=(
+        "Internal implementation package for mssql-python: Microsoft ODBC "
+        "Driver 18 for SQL Server binaries. Not intended for direct use."
+    ),
+    long_description=_LONG_DESCRIPTION,
+    long_description_content_type="text/markdown",
+    author="Microsoft Corporation",
+    author_email="mssql-python@microsoft.com",
+    url="https://github.com/microsoft/mssql-python",
+    license="Other/Proprietary License",
+    # This wheel redistributes Microsoft's proprietary ODBC driver (and the VC++
+    # runtime it links against), so the DISTRIBUTION is proprietary even though
+    # this build script's own source stays MIT (see the header). Embed both
+    # license texts in the wheel metadata (.dist-info/licenses/). These point at
+    # the committed, canonical ``mssql_python_odbc/licenses/`` copies so the
+    # references always resolve -- independent of whether the build-time libs/
+    # tree has been populated yet (on ``main`` it is empty until sync_libs runs).
+    license_files=[
+        "mssql_python_odbc/licenses/MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt",
+        "mssql_python_odbc/licenses/MICROSOFT_VISUAL_STUDIO_LICENSE.txt",
+    ],
+    packages=[PACKAGE_NAME],
+    # vcredist / VC++ runtime (deliberate divergence from the main wheel's SHAPE,
+    # not a behavior change): unlike setup.py we do NOT exclude
+    # ``libs/<plat>/vcredist/``. This is intentional and consistent with what the
+    # main wheel actually ships:
+    #   * The main mssql-python wheel still ships the VC++ runtime
+    #     (``msvcp140.dll``) -- build.bat copies it out of
+    #     ``libs/windows/<arch>/vcredist/`` to the package root next to the
+    #     compiled ``ddbc_bindings`` extension, and setup.py then excludes the
+    #     now-duplicate ``vcredist/`` folder. That exclusion is DE-DUPLICATION,
+    #     not a licensing/size-driven removal of the runtime.
+    #   * This package is pure driver-binary data with no compiled extension, so
+    #     there is no package-root ``.pyd`` to relocate the runtime beside. We
+    #     therefore keep ``msvcp140.dll`` in its original ``vcredist/`` folder
+    #     (with its license text) so the driver binaries and the runtime they
+    #     were built against travel together and the wheel stays self-contained.
+    # This does not create a Phase-2 runtime skew: the driver's ``msvcp140.dll``
+    # dependency is satisfied in-process by the mssql-python extension module
+    # (built ``/MD``, which loads ``msvcp140.dll`` from beside the ``.pyd``), so
+    # the external-package and bundled-libs paths behave identically. This copy
+    # is completeness + attribution, which is also why GetOdbcLibsBaseDir()'s
+    # completeness check does not need to verify vcredist.
+    package_data={
+        PACKAGE_NAME: _LIBS_GLOBS,
+    },
+    # include_package_data MUST stay False: the committed libs/ tree holds EVERY
+    # platform, so SCM-based inclusion would sweep them all into every wheel. We
+    # rely solely on the target-specific _LIBS_GLOBS above to ship one platform.
+    include_package_data=False,
+    python_requires=">=3.10",
+    classifiers=[
+        "License :: Other/Proprietary License",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: MacOS",
+        "Operating System :: POSIX :: Linux",
+    ],
+    zip_safe=False,
+    distclass=BinaryDistribution,
+    cmdclass={
+        "bdist_wheel": CustomBdistWheel,
+    },
+)

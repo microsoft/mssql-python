@@ -23,6 +23,12 @@ build/
 **/build/
 mssql_python.egg-info/
 
+# ODBC package (mssql-python-odbc).
+# The driver binaries under mssql_python_odbc/libs/ are the committed source of
+# truth for the standalone package (moved here from mssql_python/libs in Phase 2).
+# The release pipeline still overwrites them per-platform for the full matrix.
+mssql_python_odbc.egg-info/
+
 # Python bytecode
 __pycache__/
 *.py[cod]
@@ -48,6 +54,16 @@ build/
 
 # wheel files
 *.whl
+
+# Coverage reports and artifacts
+.coverage
+coverage.json
+coverage*.xml
+htmlcov/
+unified-coverage/
+*.profraw
+*.profdata
+*.info
 *.tar.gz
 *.zip
 
@@ -61,8 +77,13 @@ build/
 *venv*/
 **/*venv*/
 
-# Extracted mssql_py_core (from eng/scripts/install-mssql-py-core)
-mssql_py_core/
-
 # learning files
 learnings/
+
+# Local development and experimental scripts (not part of the PR)
+add_platform_exclusions.py
+add_lcov_exclusions.py
+fix_multiline_log_exclusions.py
+test_pyodbc_decimal.py
+run_coverage_docker.ps1
+TRIAGE_REPORT_*.md

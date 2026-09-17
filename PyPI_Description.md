@@ -35,21 +35,24 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.6.0
+## What's new in v1.15.0
 
 ### Enhancements
 
-- **Connection String Sanitization** - Connection string sanitization has been migrated from regex-based to parser-based logic, making it more robust and consistent with connection string parsing rules.
+- **Faster parameterized queries with `setinputsizes()`** - Queries that declare parameter types up front now execute measurably faster (up to ~50%), especially repeated `execute()` workloads. No code changes needed (#736).
+- **`memoryview` Support in `Binary()`** - `Binary()` now accepts `memoryview` objects in addition to existing bytes-like inputs (#741).
+- **Module-Level SQL Server Type Constants** - SQL Server-specific type constants are now available directly from the `mssql_python` module for simpler API access (#764).
 
 ### Bug Fixes
 
-- **GIL Release During ODBC Connect/Disconnect** - The driver now releases the GIL during blocking ODBC connect and disconnect calls, improving concurrency for multi-threaded applications.
-- **setinputsizes() SQL_DECIMAL Crash Fix** - Fixed a crash in `cursor.setinputsizes()` when specifying `SQL_DECIMAL` type hints.
-- **ODBC Catalog fetchone() Fix** - Fixed an issue where `fetchone()` on ODBC catalog method results returned incorrect data.
-- **cursor.execute() Invalid Cursor State Fix** - Fixed `cursor.execute()` raising an Invalid cursor state error when called with `reset_cursor=False`.
-- **executemany Type Annotation Fix** - Corrected the type annotation for `executemany` `seq_of_parameters` parameter to accept `Mapping` types.
-- **setup_logging Path Traversal Guard** - Added path canonicalization and traversal guard to `setup_logging`'s `log_file_path` parameter to prevent path traversal issues.
- 
+- **Concurrent Logging No Longer Deadlocks** - Logging now avoids GIL and mutex lock-order inversions during concurrent multithreaded use (#678).
+- **Correct Rust Core in Windows ARM64 Wheels** - Windows ARM64 wheels now vendor the matching `mssql_py_core` binary, restoring installation and bulk-copy compatibility (#737).
+- **Reliable Package-Local DLL Loading on Windows** - Bundled driver and authentication DLLs are resolved from package-local directories for more reliable deployment (#735).
+- **Consistent Decimal Parameter Binding** - `Decimal` values are now bound as `SQL_NUMERIC` regardless of their value, preventing inconsistent parameter typing (#742).
+- **ODBC 3.x Parameter Types** - Parameter binding now uses ODBC 3.x types instead of obsolete ODBC 2.x types for improved standards compatibility (#758).
+- **Database Name Metadata Is Decoded** - `Connection.getinfo(SQL_DATABASE_NAME)` now returns correctly decoded text (#771).
+- **Mixed Cursor Cleanup No Longer Crashes at Shutdown** - Cleanup for connections with mixed cursor states no longer causes a process-shutdown crash (#772).
+
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
 If you have any feedback, questions or need support please mail us at mssql-python@microsoft.com.

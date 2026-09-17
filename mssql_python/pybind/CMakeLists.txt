@@ -5,6 +5,10 @@ project(ddbc_bindings)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Performance profiling instrumentation. OFF by default so released wheels ship
+# with zero profiler code. Turn on with -DENABLE_PROFILING=ON (dev/internal builds).
+option(ENABLE_PROFILING "Build with performance profiling instrumentation" OFF)
+
 # Enable verbose output to see actual compiler/linker commands
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
 
@@ -72,6 +76,42 @@ endif()
 # Add platform and architecture to compiler definitions
 add_definitions(-DARCHITECTURE="${ARCHITECTURE}")
 add_definitions(-DPLATFORM_NAME="${PLATFORM_NAME}")
+
+# --- msodbcsql driver version (single source of truth) -----------------------
+# The ODBC driver filename embeds the msodbcsql version (e.g.
+# libmsodbcsql-18.6.so.2.1 on Linux, libmsodbcsql.18.dylib on macOS,
+# msodbcsql18.dll on Windows). Derive that version from
+# mssql_python_odbc.__version__ -- the single source of truth for the driver
+# version -- and inject it into GetDriverPathCpp() via -D defines, so the native
+# resolver and the Python package can never drift. The literal is read straight
+# from the file (not by importing the package) to keep configure hermetic and
+# independent of whatever packages the build interpreter happens to have.
+set(MSODBCSQL_VERSION_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../../mssql_python_odbc/__init__.py")
+if(NOT EXISTS "${MSODBCSQL_VERSION_SOURCE}")
+    message(FATAL_ERROR
+        "Cannot resolve the msodbcsql driver version: ${MSODBCSQL_VERSION_SOURCE} not found. "
+        "The native driver filename is derived from mssql_python_odbc.__version__; "
+        "build from a full repository checkout.")
+endif()
+file(STRINGS "${MSODBCSQL_VERSION_SOURCE}" _msodbcsql_version_line REGEX "^__version__")
+# Capture the full quoted version literal (e.g. 18.6.2, 18.6.2.1, 18.6.2.post1).
+# Only a leading MAJOR.MINOR.PATCH must be numeric; a trailing packaging-revision
+# component or PEP 440 suffix is allowed because mssql-python-odbc ships
+# metadata-only re-releases as e.g. 18.6.2.1. The native driver filename is
+# derived solely from MAJOR and MAJOR.MINOR below, so a trailing revision has no
+# effect on which driver is loaded.
+string(REGEX REPLACE ".*['\"]([^'\"]+)['\"].*" "\\1"
+       MSODBCSQL_VERSION "${_msodbcsql_version_line}")
+if(NOT MSODBCSQL_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+")
+    message(FATAL_ERROR
+        "Failed to parse __version__ from ${MSODBCSQL_VERSION_SOURCE} "
+        "(got '${MSODBCSQL_VERSION}'); expected a leading MAJOR.MINOR.PATCH.")
+endif()
+string(REGEX MATCH "^[0-9]+" MSODBCSQL_VERSION_MAJOR "${MSODBCSQL_VERSION}")
+string(REGEX MATCH "^[0-9]+\\.[0-9]+" MSODBCSQL_VERSION_MAJOR_MINOR "${MSODBCSQL_VERSION}")
+message(STATUS "msodbcsql driver version (from mssql_python_odbc.__version__): ${MSODBCSQL_VERSION} -> major=${MSODBCSQL_VERSION_MAJOR}, major.minor=${MSODBCSQL_VERSION_MAJOR_MINOR}")
+add_definitions(-DMSODBCSQL_VERSION_MAJOR="${MSODBCSQL_VERSION_MAJOR}")
+add_definitions(-DMSODBCSQL_VERSION_MAJOR_MINOR="${MSODBCSQL_VERSION_MAJOR_MINOR}")
 
 # For macOS, always set universal build
 if(APPLE)
@@ -215,6 +255,21 @@ endif()
 
 message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
+include(FetchContent)
+message(STATUS "Downloading simdutf v8.2.0 source archive with FetchContent")
+set(simdutf_fetchcontent_args
+    URL https://github.com/simdutf/simdutf/archive/refs/tags/v8.2.0.tar.gz
+    URL_HASH SHA256=033a91b1d7d1cb818c1eff49e61faaa1b64a3a530d59ef9efef0195e56bda8b1
+)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+    list(APPEND simdutf_fetchcontent_args DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+endif()
+FetchContent_Declare(simdutf ${simdutf_fetchcontent_args})
+set(SIMDUTF_TESTS OFF CACHE BOOL "Disable simdutf tests" FORCE)
+set(SIMDUTF_TOOLS OFF CACHE BOOL "Disable simdutf tools" FORCE)
+set(SIMDUTF_BENCHMARKS OFF CACHE BOOL "Disable simdutf benchmarks" FORCE)
+FetchContent_MakeAvailable(simdutf)
+
 set(DDBC_SOURCE "ddbc_bindings.cpp")
 message(STATUS "Using standard source file: ${DDBC_SOURCE}")
 # Include connection module and logger bridge
@@ -293,6 +348,8 @@ else()
     endif()
 endif()
 
+target_link_libraries(ddbc_bindings PRIVATE simdutf::simdutf)
+
 # Compiler definitions
 target_compile_definitions(ddbc_bindings PRIVATE 
     HAVE_SNPRINTF
@@ -300,6 +357,12 @@ target_compile_definitions(ddbc_bindings PRIVATE
     PYBIND11_COMPILER_TYPE="_MSC_VER"
     NOMINMAX
 )
+
+# Emit ENABLE_PROFILING to the compiler only when the option is on.
+if(ENABLE_PROFILING)
+    message(STATUS "Building WITH performance profiling instrumentation")
+    target_compile_definitions(ddbc_bindings PRIVATE ENABLE_PROFILING)
+endif()
 
 # Add warning level flags for MSVC
 if(MSVC)

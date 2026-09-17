@@ -3,6 +3,7 @@
 
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
+#include "utf_utils.h"
 #include <algorithm>
 #include <memory>
 #include <pybind11/pybind11.h>
@@ -11,11 +12,11 @@
 #include <utility>
 #include <vector>
 
-#define SQL_COPT_SS_ACCESS_TOKEN 1256  // Custom attribute ID for access token
 #define SQL_MAX_SMALL_INT 32767        // Maximum value for SQLSMALLINT
 
 // Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
@@ -45,8 +46,9 @@ static SqlHandlePtr getEnvHandle() {
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
-Connection::Connection(const std::wstring& conn_str, bool use_pool)
+Connection::Connection(const std::u16string& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
+    PERF_TIMER("Connection::Connection");
     allocateDbcHandle();
 }
 
@@ -56,15 +58,24 @@ Connection::~Connection() {
 
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
-    auto _envHandle = getEnvHandle();
+    PERF_TIMER("Connection::allocateDbcHandle");
+    // Fetch/initialize the shared env handle without holding the GIL (#671):
+    // its first-time initialization runs under a C++ static-init guard and
+    // emits log records; a thread waiting on that guard while holding the GIL
+    // would deadlock the initializing thread that needs the GIL to log.
+    auto envHandle = [&] {
+        py::gil_scoped_release gil_release;
+        return getEnvHandle();
+    }();
     SQLHANDLE dbc = nullptr;
     LOG("Allocating SQL Connection Handle");
-    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
+    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, envHandle->get(), &dbc);
     checkError(ret);
     _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
 }
 
 void Connection::connect(const py::dict& attrs_before) {
+    PERF_TIMER("Connection::connect");
     LOG("Connecting to database");
     // Apply access token before connect
     if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
@@ -74,17 +85,7 @@ void Connection::connect(const py::dict& attrs_before) {
             setAutocommit(_autocommit);
         }
     }
-    SQLWCHAR* connStrPtr;
-#if defined(__APPLE__) || defined(__linux__)  // macOS/Linux handling
-    LOG("Creating connection string buffer for macOS/Linux");
-    std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
-    // Ensure the buffer is null-terminated
-    LOG("Connection string buffer size=%zu", connStrBuffer.size());
-    connStrPtr = connStrBuffer.data();
-    LOG("Connection string buffer created");
-#else
-    connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
-#endif
+    SQLWCHAR* connStrPtr = reinterpretU16stringAsSqlWChar(_connStr);
     SQLRETURN ret;
     {
         // Release the GIL during the blocking ODBC connect call.
@@ -92,6 +93,7 @@ void Connection::connect(const py::dict& attrs_before) {
         // and SQL Server authentication — all pure I/O that doesn't need the GIL.
         // This allows other Python threads to run concurrently.
         py::gil_scoped_release release;
+        PERF_TIMER("Connection::connect::SQLDriverConnect_call");
         ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
                                    0, nullptr, SQL_DRIVER_NOPROMPT);
     }
@@ -100,13 +102,22 @@ void Connection::connect(const py::dict& attrs_before) {
 }
 
 void Connection::disconnect() {
+    PERF_TIMER("Connection::disconnect");
+    // Determine GIL state once, up front. disconnect() runs both from
+    // pybind11-bound methods (GIL held) and from GIL-less destructor / shutdown
+    // paths: Connection::~Connection() dropping the last shared_ptr, or teardown
+    // running after the interpreter has been finalized. Every LOG()/LOG_ERROR()
+    // below is gated on hasGil because LOG() acquires the GIL internally via
+    // py::gil_scoped_acquire, which is unsafe when the GIL is not held — it can
+    // hang or std::terminate during interpreter shutdown / stack unwinding.
+    // Py_IsInitialized() is checked first: after Py_Finalize() the interpreter is
+    // gone and PyGILState_Check() is unreliable, so treat "not initialized" as
+    // "no GIL" and skip all Python calls. (#671 follow-up)
+    bool hasGil = Py_IsInitialized() != 0 && PyGILState_Check() != 0;
     if (_dbcHandle) {
-        LOG("Disconnecting from database");
-
-        // Check if we hold the GIL so we can conditionally release it.
-        // The GIL is held when called from pybind11-bound methods but may NOT
-        // be held in destructor paths (C++ shared_ptr ref-count drop, shutdown).
-        bool hasGil = PyGILState_Check() != 0;
+        if (hasGil) {
+            LOG("Disconnecting from database");
+        }
 
         // CRITICAL FIX: Mark all child statement handles as implicitly freed
         // When we free the DBC handle below, the ODBC driver will automatically free
@@ -115,30 +126,25 @@ void Connection::disconnect() {
         
         // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
         // This protects against concurrent allocStatementHandle() calls or GC finalizers
+        size_t originalSize = 0, afterCompactSize = 0, badHandleCount = 0;
         {
             std::lock_guard<std::mutex> lock(_childHandlesMutex);
             
             // First compact: remove expired weak_ptrs (they're already destroyed)
-            size_t originalSize = _childStatementHandles.size();
+            originalSize = _childStatementHandles.size();
             _childStatementHandles.erase(
                 std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
                                [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
                 _childStatementHandles.end());
-            
-            LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
-                originalSize, _childStatementHandles.size(),
-                originalSize - _childStatementHandles.size());
-            
-            LOG("Marking %zu child statement handles as implicitly freed",
-                _childStatementHandles.size());
+            afterCompactSize = _childStatementHandles.size();
+
             for (auto& weakHandle : _childStatementHandles) {
                 if (auto handle = weakHandle.lock()) {
                     // SAFETY ASSERTION: Only STMT handles should be in this vector
                     // This is guaranteed by allocStatementHandle() which only creates STMT handles
                     // If this assertion fails, it indicates a serious bug in handle tracking
                     if (handle->type() != SQL_HANDLE_STMT) {
-                        LOG_ERROR("CRITICAL: Non-STMT handle (type=%d) found in _childStatementHandles. "
-                                  "This will cause a handle leak!", handle->type());
+                        ++badHandleCount;
                         continue;  // Skip marking to prevent leak
                     }
                     handle->markImplicitlyFreed();
@@ -147,6 +153,19 @@ void Connection::disconnect() {
             _childStatementHandles.clear();
             _allocationsSinceCompaction = 0;
         }  // Release lock before potentially slow SQLDisconnect call
+
+        // Log after releasing _childHandlesMutex (#671): LOG()/LOG_ERROR() acquire
+        // the GIL and must not run while a native mutex is held. Also gated on
+        // hasGil so the GIL-less destructor / shutdown path never tries to log.
+        if (hasGil) {
+            LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
+                originalSize, afterCompactSize, originalSize - afterCompactSize);
+            LOG("Marking %zu child statement handles as implicitly freed", afterCompactSize);
+            if (badHandleCount > 0) {
+                LOG_ERROR("CRITICAL: %zu non-STMT handle(s) found in _childStatementHandles. "
+                          "This will cause a handle leak!", badHandleCount);
+            }
+        }
 
         SQLRETURN ret;
         if (hasGil) {
@@ -170,7 +189,7 @@ void Connection::disconnect() {
         }
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
-    } else {
+    } else if (hasGil) {
         LOG("No connection handle to disconnect");
     }
 }
@@ -179,13 +198,22 @@ void Connection::disconnect() {
 // DB spec compliant
 void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
+        // Format: "SQLSTATE:XXXXX:<odbc_error_message>" — parsed by _raise_connection_error()
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
-        ThrowStdException(errorMsg);
+        std::string sqlState = err.sqlState;
+        std::string errorMsg = err.ddbcErrorMsg;
+        // Only add SQLSTATE prefix if we have a valid 5-character code
+        if (sqlState.length() == 5) {
+            ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
+        } else {
+            // No valid SQLSTATE (e.g., SQL_INVALID_HANDLE) — throw clean error message
+            ThrowStdException(errorMsg);
+        }
     }
 }
 
 void Connection::commit() {
+    PERF_TIMER("Connection::commit");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -201,6 +229,7 @@ void Connection::commit() {
 }
 
 void Connection::rollback() {
+    PERF_TIMER("Connection::rollback");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -216,14 +245,22 @@ void Connection::rollback() {
 }
 
 void Connection::setAutocommit(bool enable) {
+    PERF_TIMER("Connection::setAutocommit");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);
-    SQLRETURN ret =
-        SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
-                              reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    SQLRETURN ret;
+    {
+        // Release the GIL during the blocking ODBC call. Holding the GIL
+        // here can deadlock when the network path goes through another
+        // Python thread (e.g. an in-process SSH tunnel via paramiko +
+        // sshtunnel), since that thread also needs the GIL to run.
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                                    reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    }
     checkError(ret);
     if (value == SQL_AUTOCOMMIT_ON) {
         LOG("Autocommit enabled");
@@ -247,6 +284,7 @@ bool Connection::getAutocommit() const {
 }
 
 SqlHandlePtr Connection::allocStatementHandle() {
+    PERF_TIMER("Connection::allocStatementHandle");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -260,6 +298,8 @@ SqlHandlePtr Connection::allocStatementHandle() {
     // THREAD-SAFETY: Lock mutex before modifying _childStatementHandles
     // This protects against concurrent disconnect() or allocStatementHandle() calls,
     // or GC finalizers running from different threads
+    bool compacted = false;
+    size_t compactBefore = 0, compactAfter = 0;
     {
         std::lock_guard<std::mutex> lock(_childHandlesMutex);
         
@@ -272,17 +312,23 @@ SqlHandlePtr Connection::allocStatementHandle() {
         // This keeps allocation fast (O(1) amortized) while preventing unbounded growth
         // disconnect() also compacts, so this is just for long-lived connections with many cursors
         if (_allocationsSinceCompaction >= COMPACTION_INTERVAL) {
-            size_t originalSize = _childStatementHandles.size();
+            compactBefore = _childStatementHandles.size();
             _childStatementHandles.erase(
                 std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
                                [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
                 _childStatementHandles.end());
+            compactAfter = _childStatementHandles.size();
             _allocationsSinceCompaction = 0;
-            LOG("Periodic compaction: %zu -> %zu handles (removed %zu expired)",
-                originalSize, _childStatementHandles.size(),
-                originalSize - _childStatementHandles.size());
+            compacted = true;
         }
     }  // Release lock
+
+    // Log after releasing _childHandlesMutex (#671): LOG() acquires the GIL and
+    // must not run while a native mutex is held.
+    if (compacted) {
+        LOG("Periodic compaction: %zu -> %zu handles (removed %zu expired)",
+            compactBefore, compactAfter, compactBefore - compactAfter);
+    }
 
     return stmtHandle;
 }
@@ -292,13 +338,38 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
 
+    // Fail closed on a non-binary access token. SQL_COPT_SS_ACCESS_TOKEN (1256)
+    // MUST be the raw [DWORD byte-length][UTF-16LE token] struct passed as
+    // bytes/bytearray. If a caller supplies it as a py::str, the str->UTF-16
+    // cast in the string branch below would mangle that struct; worse, the
+    // Python identity-aware pool-key logic only hashes bytes/bytearray tokens,
+    // so a str token slips through with the bare connection-string pool key and
+    // two callers passing different str tokens against the same server could
+    // share a pooled, authenticated connection. Reject any non-binary token at
+    // this native boundary so the cross-identity invariant ("a token is present
+    // => the pool key is never the bare connStr") holds regardless of how the
+    // Connection was constructed.
+    if (attribute == SQL_COPT_SS_ACCESS_TOKEN && !py::isinstance<py::bytes>(value) &&
+        !py::isinstance<py::bytearray>(value)) {
+        LOG("Rejecting non-binary SQL_COPT_SS_ACCESS_TOKEN (attribute=%d): access token "
+            "must be bytes/bytearray",
+            attribute);
+        return SQL_ERROR;
+    }
+
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
         int64_t longValue = value.cast<int64_t>();
 
-        SQLRETURN ret = SQLSetConnectAttr_ptr(
-            _dbcHandle->get(), attribute,
-            reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
+        SQLRETURN ret;
+        {
+            // Release the GIL around the ODBC call for consistency with the
+            // other connection-attribute paths; some attributes can block.
+            py::gil_scoped_release release;
+            ret = SQLSetConnectAttr_ptr(
+                _dbcHandle->get(), attribute,
+                reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
+        }
 
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Failed to set integer attribute=%d, ret=%d", attribute, ret);
@@ -308,41 +379,44 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return ret;
     } else if (py::isinstance<py::str>(value)) {
         try {
-            std::string utf8_str = value.cast<std::string>();
+            // Store the value in a Connection-owned, per-attribute member
+            // buffer so the memory remains valid for the lifetime of the
+            // Connection object. Some ODBC connect attributes (notably
+            // SQL_COPT_SS_ACCESS_TOKEN, 1256) are "deferred": the MS driver
+            // stores the caller's pointer at SQLSetConnectAttr time and
+            // dereferences it later during SQLDriverConnect to build the
+            // FedAuth login packet. A stack-local buffer freed when this
+            // function returns would cause a use-after-free during connect
+            // (issue #594). Keying by attribute id also prevents a second
+            // deferred attribute from invalidating the pointer stored for
+            // the first.
+            //
+            // Lifetime: the buffer MUST outlive every potential dereference
+            // of the deferred-attribute pointer by the driver, which
+            // includes paths beyond the initial connect (Idle Connection
+            // Resiliency re-auth on a dropped socket, transparent pool
+            // checkout re-handshake). SQL_ATTR_RESET_CONNECTION (see
+            // Connection::reset()) only wipes per-session state and does
+            // NOT tear down the driver-side authentication context, so the
+            // per-attribute buffers are NOT cleared on reset()/checkin;
+            // they are released only when the Connection object itself is
+            // destroyed.
+            //
+            // Note: attrs_before is applied once, sequentially, during
+            // connect(); the Connection's attribute setters are not designed
+            // for concurrent mutation from multiple threads.
+            auto& buf = this->_attrStringBuffers[attribute];
+            buf = value.cast<std::u16string>();
 
-            // Convert to wide string
-            std::wstring wstr = Utf8ToWString(utf8_str);
-            if (wstr.empty() && !utf8_str.empty()) {
-                LOG("Failed to convert string value to wide string for "
-                    "attribute=%d",
-                    attribute);
-                return SQL_ERROR;
+            SQLPOINTER ptr = reinterpretU16stringAsSqlWChar(buf);
+            SQLINTEGER length =
+                static_cast<SQLINTEGER>(buf.length() * sizeof(SQLWCHAR));
+
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             }
-            this->wstrStringBuffer.clear();
-            this->wstrStringBuffer = std::move(wstr);
-
-            SQLPOINTER ptr;
-            SQLINTEGER length;
-
-#if defined(__APPLE__) || defined(__linux__)
-            // For macOS/Linux, convert wstring to SQLWCHAR buffer
-            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(this->wstrStringBuffer);
-            if (sqlwcharBuffer.empty() && !this->wstrStringBuffer.empty()) {
-                LOG("Failed to convert wide string to SQLWCHAR buffer for "
-                    "attribute=%d",
-                    attribute);
-                return SQL_ERROR;
-            }
-
-            ptr = sqlwcharBuffer.data();
-            length = static_cast<SQLINTEGER>(sqlwcharBuffer.size() * sizeof(SQLWCHAR));
-#else
-            // On Windows, wchar_t and SQLWCHAR are the same size
-            ptr = const_cast<SQLWCHAR*>(this->wstrStringBuffer.c_str());
-            length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
-#endif
-
-            SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             if (!SQL_SUCCEEDED(ret)) {
                 LOG("Failed to set string attribute=%d, ret=%d", attribute, ret);
             } else {
@@ -355,13 +429,48 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         }
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         try {
-            std::string binary_data = value.cast<std::string>();
-            this->strBytesBuffer.clear();
-            this->strBytesBuffer = std::move(binary_data);
-            SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.c_str());
-            SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
+            // Store the value in a Connection-owned, per-attribute member
+            // buffer so the memory remains valid for the lifetime of the
+            // Connection object. SQL_COPT_SS_ACCESS_TOKEN (1256) is a
+            // deferred attribute: the driver stores this pointer at
+            // SQLSetConnectAttr time and dereferences it later during
+            // SQLDriverConnect. A stack-local buffer freed when this
+            // function returns would cause a use-after-free during connect
+            // (issue #594, symptoms: SIGBUS on macOS, "Authentication
+            // token is missing in the federated authentication message"
+            // on Windows, TCP reset 0x2746 against Azure SQL). Keying by
+            // attribute id also prevents a second deferred attribute from
+            // invalidating the pointer stored for the first.
+            //
+            // Lifetime: the buffer MUST outlive every potential dereference
+            // of the deferred-attribute pointer by the driver, which
+            // includes paths beyond the initial connect:
+            //   * Idle Connection Resiliency (ICR): if the underlying TCP
+            //     connection drops while the connection sits idle in the
+            //     pool, the driver transparently re-establishes it on the
+            //     next use and re-runs the Login7 / FedAuth handshake,
+            //     dereferencing the same stashed token pointer.
+            //   * SQL_ATTR_RESET_CONNECTION pool checkin (see
+            //     Connection::reset()) only wipes per-session state; the
+            //     driver-side authentication context and the stashed
+            //     deferred-attribute pointer are intentionally retained.
+            // For these reasons the per-attribute buffers are NOT cleared
+            // on reset()/checkin; they are released only when the
+            // Connection object itself is destroyed.
+            //
+            // Note: attrs_before is applied once, sequentially, during
+            // connect(); concurrent setAttribute() on the same Connection
+            // from different threads is not a supported pattern.
+            auto& buf = this->_attrBytesBuffers[attribute];
+            buf = value.cast<std::string>();
+            SQLPOINTER ptr = const_cast<char*>(buf.data());
+            SQLINTEGER length = static_cast<SQLINTEGER>(buf.size());
 
-            SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            SQLRETURN ret;
+            {
+                py::gil_scoped_release release;
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            }
             if (!SQL_SUCCEEDED(ret)) {
                 LOG("Failed to set binary attribute=%d, ret=%d", attribute, ret);
             } else {
@@ -412,8 +521,26 @@ bool Connection::reset() {
         ThrowStdException("Connection handle not allocated");
     }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
-                                          (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+    // NOTE: SQL_ATTR_RESET_CONNECTION is a pool-checkin reset: it asks the
+    // driver to wipe per-session state (temp tables, open cursors, SET
+    // options, etc.) on the next use. It does NOT tear down the underlying
+    // TCP/TLS connection nor the driver-side authentication context, and
+    // it does NOT discard the deferred connect attributes the driver has
+    // stashed (e.g., the SQL_COPT_SS_ACCESS_TOKEN pointer used to build
+    // the FedAuth Login7 packet). The driver may still dereference those
+    // pointers after this reset on Idle Connection Resiliency re-auth or
+    // a transparent reconnect, so the per-attribute buffers owned by this
+    // Connection (_attrStringBuffers / _attrBytesBuffers) are intentionally
+    // retained here. Clearing them would reintroduce issue #594 in a new
+    // form (UAF during silent reconnect).
+    SQLRETURN ret;
+    {
+        // Release the GIL around the ODBC call for consistency with the
+        // other connection-attribute paths; some attributes can block.
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
+                                    (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
         return false;
@@ -423,8 +550,11 @@ bool Connection::reset() {
     // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
     // isolation level settings from leaking between pooled connection usages.
     LOG("Resetting transaction isolation level to READ COMMITTED");
-    ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
-                                (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
+                                    (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
         return false;
@@ -442,15 +572,88 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
-ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool,
-                                   const py::dict& attrsBefore)
-    : _usePool(usePool) {
-    _connStr = Utf8ToWString(connStr);
+py::dict Connection::invokeTokenFactory(const py::object& tokenFactory,
+                                        long long& outExpiryEpoch) {
+    outExpiryEpoch = 0;
+    py::object result = tokenFactory();
+    // New contract: factory returns (attrs, expires_on). Remain
+    // backward compatible with the legacy contract where it returned a
+    // bare attrs dict.
+    if (py::isinstance<py::tuple>(result)) {
+        py::tuple parts = result.cast<py::tuple>();
+        // Defensive: a well-formed factory always returns at least (attrs,).
+        // Guard the index so a misbehaving/empty tuple falls through to the
+        // cast below (which raises a clear tuple->dict error) instead of an
+        // out-of-range access on parts[0].
+        if (parts.size() >= 1) {
+            py::dict attrs = parts[0].cast<py::dict>();
+            if (parts.size() > 1 && !parts[1].is_none()) {
+                outExpiryEpoch = parts[1].cast<long long>();
+            }
+            return attrs;
+        }
+    }
+    return result.cast<py::dict>();
+}
+
+void Connection::setTokenExpiry(long long epochSeconds) {
+    _tokenExpiryEpoch = epochSeconds;
+}
+
+bool Connection::isTokenNearExpiry(int thresholdSecs) const {
+    if (_tokenExpiryEpoch == 0) {
+        // Unknown expiry. Fail closed when we actually hold a token whose
+        // validity we cannot prove: reusing it risks handing back a token that
+        // expires mid-query, so force a refresh check instead (matching
+        // tokenExpirySafelyBeyond()'s fail-closed treatment of an unknown
+        // expiry). With no token present (an empty access token, e.g. a factory
+        // that supplies non-token attrs for SQL auth) there is nothing to
+        // expire, so the connection stays reusable. Real credentials always
+        // report expires_on, so the fail-closed arm is a safety net.
+        return !currentAccessToken().empty();
+    }
+    const long long now = static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    return (now + static_cast<long long>(thresholdSecs)) >= _tokenExpiryEpoch;
+}
+
+std::string Connection::currentAccessToken() const {
+    auto it = _attrBytesBuffers.find(SQL_COPT_SS_ACCESS_TOKEN);
+    return it != _attrBytesBuffers.end() ? it->second : std::string();
+}
+
+ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
+                                   const py::dict& attrsBefore, const std::u16string& poolKey,
+                                   const py::object& tokenFactory)
+    : _usePool(usePool), _connStr(connStr), _poolKey(poolKey.empty() ? connStr : poolKey) {
+    PERF_TIMER("ConnectionHandle::ConnectionHandle");
     if (_usePool) {
-        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
-    } else {
+        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
+                                                                       _poolKey, tokenFactory);
+        // acquireConnection returns nullptr when pooling was disabled out from
+        // under us (a disable_pooling() won the race). Fall back to a non-pooled
+        // connection and flip _usePool so close() disconnects it directly rather
+        // than trying to return it to a pool that no longer exists.
+        if (!_conn) {
+            _usePool = false;
+        }
+    }
+    if (!_usePool) {
         _conn = std::make_shared<Connection>(_connStr, false);
-        _conn->connect(attrsBefore);
+        // Non-pooled connect still honors the lazy token factory: a
+        // token is materialized only when a physical connection is opened. The
+        // factory may also carry the token expiry, but a non-pooled
+        // connection is never reused, so expiry-aware checkout does not
+        // apply and the expiry is intentionally not recorded here.
+        if (tokenFactory && !tokenFactory.is_none()) {
+            long long expiry = 0;
+            py::dict connect_attrs = Connection::invokeTokenFactory(tokenFactory, expiry);
+            _conn->connect(connect_attrs);
+        } else {
+            _conn->connect(attrsBefore);
+        }
     }
 }
 
@@ -461,11 +664,12 @@ ConnectionHandle::~ConnectionHandle() {
 }
 
 void ConnectionHandle::close() {
+    PERF_TIMER("ConnectionHandle::close");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
     if (_usePool) {
-        ConnectionPoolManager::getInstance().returnConnection(_connStr, _conn);
+        ConnectionPoolManager::getInstance().returnConnection(_poolKey, _conn);
     } else {
         _conn->disconnect();
     }
@@ -473,6 +677,7 @@ void ConnectionHandle::close() {
 }
 
 void ConnectionHandle::commit() {
+    PERF_TIMER("ConnectionHandle::commit");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -480,6 +685,7 @@ void ConnectionHandle::commit() {
 }
 
 void ConnectionHandle::rollback() {
+    PERF_TIMER("ConnectionHandle::rollback");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -487,6 +693,7 @@ void ConnectionHandle::rollback() {
 }
 
 void ConnectionHandle::setAutocommit(bool enabled) {
+    PERF_TIMER("ConnectionHandle::setAutocommit");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -501,6 +708,7 @@ bool ConnectionHandle::getAutocommit() const {
 }
 
 SqlHandlePtr ConnectionHandle::allocStatementHandle() {
+    PERF_TIMER("ConnectionHandle::allocStatementHandle");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -565,6 +773,7 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
 }
 
 py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
+    PERF_TIMER("ConnectionHandle::getInfo");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
@@ -572,6 +781,7 @@ py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
 }
 
 void ConnectionHandle::setAttr(int attribute, py::object value) {
+    PERF_TIMER("ConnectionHandle::setAttr");
     if (!_conn) {
         ThrowStdException("Connection not established");
     }
@@ -586,9 +796,7 @@ void ConnectionHandle::setAttr(int attribute, py::object value) {
             std::string errorMsg =
                 "Failed to set connection attribute " + std::to_string(attribute);
             if (!errorInfo.ddbcErrorMsg.empty()) {
-                // Convert wstring to string for concatenation
-                std::string ddbcErrorStr = WideToUTF8(errorInfo.ddbcErrorMsg);
-                errorMsg += ": " + ddbcErrorStr;
+                errorMsg += ": " + errorInfo.ddbcErrorMsg;
             }
 
             LOG("Connection setAttribute failed: %s", errorMsg.c_str());
