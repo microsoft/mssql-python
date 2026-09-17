@@ -74,11 +74,15 @@ jobs:
       targetPath: '$(Build.SourcesDirectory)\wheels'
     displayName: 'Download pre-built wheel from build-whl-pipeline'
 
+  - script: |
+      python eng/scripts/download_mssql_python_rs_wheels.py --output-dir "$(Pipeline.Workspace)\mssql-python-rs-wheels"
+    displayName: 'Download pinned mssql-python-rs wheels'
+
   # Install the pre-built wheel
   - script: |
       echo "Installing pre-built wheel..."
       dir "$(Build.SourcesDirectory)\wheels"
-      pip install --find-links=$(Build.SourcesDirectory)\wheels mssql-python --force-reinstall
+      pip install --find-links=$(Build.SourcesDirectory)\wheels --find-links=$(Pipeline.Workspace)\mssql-python-rs-wheels mssql-python --force-reinstall
     displayName: 'Install pre-built mssql-python wheel'
 
   # Rename local source folder to avoid import conflicts with installed wheel
@@ -223,11 +227,15 @@ jobs:
       targetPath: '$(Build.SourcesDirectory)/wheels'
     displayName: 'Download pre-built wheel from build-whl-pipeline'
 
+  - script: |
+      python eng/scripts/download_mssql_python_rs_wheels.py --output-dir "$(Pipeline.Workspace)/mssql-python-rs-wheels"
+    displayName: 'Download pinned mssql-python-rs wheels'
+
   # Install the pre-built wheel
   - script: |
       echo "Installing pre-built wheel..."
       ls -la "$(Build.SourcesDirectory)/wheels"
-      pip install --find-links=$(Build.SourcesDirectory)/wheels mssql-python --force-reinstall
+      pip install --find-links=$(Build.SourcesDirectory)/wheels --find-links=$(Pipeline.Workspace)/mssql-python-rs-wheels mssql-python --force-reinstall
     displayName: 'Install pre-built mssql-python wheel'
 
   # Rename local source folder to avoid import conflicts with installed wheel
