@@ -6,6 +6,10 @@ trigger:
     include:
       - main
 
+variables:
+  # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
+  arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
+
 jobs:
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
@@ -154,6 +158,9 @@ jobs:
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      # Pool eviction tests observe physical connections from a second session.
+      sqlcmd -S "localhost" -U "sa" -P "$env:DB_PASSWORD" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
@@ -220,6 +227,9 @@ jobs:
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      # Pool eviction tests observe physical connections from a second session.
+      sqlcmd -S "localhost" -U "sa" -P "$env:DB_PASSWORD" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2025'
     condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
@@ -1044,8 +1054,12 @@ jobs:
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -1179,7 +1193,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1460,8 +1473,12 @@ jobs:
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -1589,7 +1606,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1903,8 +1919,12 @@ jobs:
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -2043,7 +2063,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
