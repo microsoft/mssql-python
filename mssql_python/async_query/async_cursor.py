@@ -6,9 +6,11 @@ Warning:
     may change without notice.
 """
 
+from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
 from ..logging import logger
+from . import async_execute
 from .exception_translator import translate_py_core_exceptions
 
 
@@ -20,8 +22,8 @@ class AsyncCursor:
         Its signatures, behavior, error handling, and compatibility may change without notice.
     """
 
-    def __init__(self, native_cursor: Any) -> None:
-        self._native_cursor = native_cursor
+    def __init__(self, py_core_async_cursor: Any) -> None:
+        self._py_core_async_cursor = py_core_async_cursor
 
     async def execute(
         self,
@@ -30,86 +32,74 @@ class AsyncCursor:
         use_prepare: bool = True,
         reset_cursor: bool = True,
     ) -> "AsyncCursor":
-        if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
-            parameters = tuple(parameters[0])
-
-        logger.debug("AsyncCursor.execute: starting")
-        with translate_py_core_exceptions():
-            await self._native_cursor.execute(
-                operation,
-                *parameters,
-                use_prepare=use_prepare,
-                reset_cursor=reset_cursor,
-            )
-        logger.debug("AsyncCursor.execute: completed")
-        return self
+        return await async_execute.execute(
+            self,
+            operation,
+            *parameters,
+            use_prepare=use_prepare,
+            reset_cursor=reset_cursor,
+        )
 
     async def executemany(
         self,
         operation: str,
-        seq_of_parameters: Any,
-        *,
-        use_prepare: bool = True,
-    ) -> "AsyncCursor":
-        logger.debug("AsyncCursor.executemany: starting")
-        with translate_py_core_exceptions():
-            await self._native_cursor.executemany(
-                operation,
-                seq_of_parameters,
-                use_prepare=use_prepare,
-            )
-        logger.debug("AsyncCursor.executemany: completed")
-        return self
+        seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
+    ) -> None:
+        await async_execute.executemany(
+            self,
+            operation,
+            seq_of_parameters,
+        )
 
     async def fetchone(self) -> Any:
         with translate_py_core_exceptions():
-            return await self._native_cursor.fetchone()
+            return await self._py_core_async_cursor.fetchone()
 
     async def fetchmany(self, size: Optional[int] = None) -> Any:
         with translate_py_core_exceptions():
             if size is None:
-                return await self._native_cursor.fetchmany()
-            return await self._native_cursor.fetchmany(size)
+                return await self._py_core_async_cursor.fetchmany()
+            return await self._py_core_async_cursor.fetchmany(size)
 
     async def fetchall(self) -> Any:
         with translate_py_core_exceptions():
-            return await self._native_cursor.fetchall()
+            return await self._py_core_async_cursor.fetchall()
 
     async def nextset(self) -> bool:
         with translate_py_core_exceptions():
-            return await self._native_cursor.nextset()
+            return await self._py_core_async_cursor.nextset()
 
     async def close(self) -> None:
         logger.debug("AsyncCursor.close: starting")
         with translate_py_core_exceptions():
-            await self._native_cursor.close()
+            await self._py_core_async_cursor.close()
         logger.debug("AsyncCursor.close: completed")
 
     def setinputsizes(self, sizes: Any) -> None:
         with translate_py_core_exceptions():
-            self._native_cursor.setinputsizes(sizes)
+            self._py_core_async_cursor.setinputsizes(sizes)
 
     @property
     def timeout(self) -> int:
         with translate_py_core_exceptions():
-            return self._native_cursor.timeout
+            return self._py_core_async_cursor.timeout
 
     @property
     def description(self) -> Any:
         with translate_py_core_exceptions():
-            return self._native_cursor.description
+            return self._py_core_async_cursor.description
 
     @property
     def rowcount(self) -> int:
         with translate_py_core_exceptions():
-            return self._native_cursor.rowcount
+            return self._py_core_async_cursor.rowcount
 
     @property
     def arraysize(self) -> int:
         with translate_py_core_exceptions():
-            return self._native_cursor.arraysize
+            return self._py_core_async_cursor.arraysize
 
     @arraysize.setter
     def arraysize(self, value: int) -> None:
         with translate_py_core_exceptions():
-            self._native_cursor.arraysize = value
+            self._py_core_async_cursor.arraysize = value

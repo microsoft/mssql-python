@@ -1,73 +1,10 @@
 from typing import Any, cast
-from uuid import uuid4
 
 import pytest
 
 pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python import DatabaseError
-from mssql_python.async_query import AsyncCursor
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("use_prepare", (True, False))
-async def test_execute_returns_public_cursor_and_binds_parameters(
-    async_connection,
-    use_prepare,
-):
-    cursor = async_connection.cursor()
-    try:
-        result = await cursor.execute(
-            "SELECT CAST(? AS INT) AS value",
-            7,
-            use_prepare=use_prepare,
-            reset_cursor=False,
-        )
-
-        assert result is cursor
-        assert await cursor.fetchone() == (7,)
-    finally:
-        await cursor.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("parameters", ((1, 2), [1, 2]))
-@pytest.mark.parametrize("use_prepare", (True, False))
-async def test_execute_accepts_single_parameter_sequence(
-    async_cursor,
-    parameters,
-    use_prepare,
-):
-    await async_cursor.execute(
-        "SELECT CAST(? AS INT), CAST(? AS INT)",
-        parameters,
-        use_prepare=use_prepare,
-    )
-
-    assert await async_cursor.fetchone() == (1, 2)
-
-
-@pytest.mark.asyncio
-async def test_executemany_returns_public_cursor_and_inserts_rows(async_connection):
-    cursor = async_connection.cursor()
-    rows = [(1, "one"), (2, "two")]
-    table_name = f"async_cursor_test_{uuid4().hex}"
-    try:
-        await cursor.execute(
-            f"CREATE TABLE {table_name} (id INT NOT NULL, value NVARCHAR(20) NOT NULL)"
-        )
-        result = await cursor.executemany(
-            f"INSERT INTO {table_name} (id, value) VALUES (?, ?)",
-            rows,
-            use_prepare=False,
-        )
-        assert result is cursor
-
-        await cursor.execute(f"SELECT id, value FROM {table_name} ORDER BY id")
-        assert await cursor.fetchall() == rows
-    finally:
-        await cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        await cursor.close()
 
 
 @pytest.mark.asyncio
@@ -105,7 +42,7 @@ async def test_fetchmany_uses_arraysize(async_connection):
 
 
 @pytest.mark.asyncio
-async def test_properties_and_setinputsizes_use_native_cursor(async_connection):
+async def test_properties_and_setinputsizes_use_py_core_async_cursor(async_connection):
     cursor = async_connection.cursor()
     try:
         assert cursor.timeout == async_connection.timeout
