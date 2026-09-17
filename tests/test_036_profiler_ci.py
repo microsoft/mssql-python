@@ -1242,18 +1242,20 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
         "eq(variables['Build.Reason'], 'PullRequest')" in condition
         for condition in profiler_conditions
     )
-    assert pipeline.count("profilerBuild: '0'") == 3
-    assert pipeline.count("bindingArtifact: 'ddbc_bindings'") == 3
     for release in (ROOT / "OneBranchPipelines").rglob("*.yml"):
         assert "ENABLE_PROFILING" not in release.read_text(encoding="utf-8")
     windows = pipeline.split("- job: pytestonwindows\n", 1)[1].split("\n- job:", 1)[0]
-    assert "##vso[task.setvariable variable=profilerBuild]1" in windows
-    assert (
-        "##vso[task.setvariable variable=bindingArtifact]" "ddbc_bindings-profiling-$(sqlVersion)"
-    ) in windows
+    assert "##vso[task.setvariable" not in windows
+    assert "ENABLE_PROFILING: 1" in windows
+    assert "ArtifactName: 'ddbc_bindings-profiling-$(sqlVersion)'" in windows
+    assert "ArtifactName: 'ddbc_bindings'" in windows
     assert (
         "condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), "
         "ne(variables['sqlVersion'], 'LocalDB'))"
+    ) in windows
+    assert (
+        "condition: and(succeeded(), or(ne(variables['Build.Reason'], 'PullRequest'), "
+        "eq(variables['sqlVersion'], 'LocalDB')))"
     ) in windows
     macos = pipeline.split("- job: PytestOnMacOS\n", 1)[1].split("\n- job:", 1)[0]
     assert 'if [ "$(Build.Reason)" = "PullRequest" ]; then' in macos

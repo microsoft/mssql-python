@@ -60,18 +60,12 @@ jobs:
       SQLServer2022:
         sqlVersion: 'SQL2022'
         pythonVersion: '3.13'
-        profilerBuild: '0'
-        bindingArtifact: 'ddbc_bindings'
       SQLServer2025:
         sqlVersion: 'SQL2025'
         pythonVersion: '3.14'
-        profilerBuild: '0'
-        bindingArtifact: 'ddbc_bindings'
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
-        profilerBuild: '0'
-        bindingArtifact: 'ddbc_bindings'
 
   steps:
   - checkout: self
@@ -82,12 +76,6 @@ jobs:
       addToPath: true
       githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python $(pythonVersion)'
-
-  - powershell: |
-      Write-Host "##vso[task.setvariable variable=profilerBuild]1"
-      Write-Host "##vso[task.setvariable variable=bindingArtifact]ddbc_bindings-profiling-$(sqlVersion)"
-    displayName: 'Configure PR profiling build'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['sqlVersion'], 'LocalDB'))
 
   - script: |
       python -m pip install --upgrade pip
@@ -253,9 +241,16 @@ jobs:
   - script: |
       cd mssql_python\pybind
       build.bat x64
-    displayName: 'Build .pyd file'
+    displayName: 'Build profiling .pyd file'
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['sqlVersion'], 'LocalDB'))
     env:
-      ENABLE_PROFILING: $(profilerBuild)
+      ENABLE_PROFILING: 1
+
+  - script: |
+      cd mssql_python\pybind
+      build.bat x64
+    displayName: 'Build .pyd file'
+    condition: and(succeeded(), or(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['sqlVersion'], 'LocalDB')))
 
   - script: python -m eng.profiler_benchmarks.controller --check-build on
     displayName: 'Verify native configuration and recording OFF before pytest'
@@ -446,9 +441,18 @@ jobs:
   - task: PublishBuildArtifacts@1
     inputs:
       PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-      ArtifactName: '$(bindingArtifact)'
+      ArtifactName: 'ddbc_bindings-profiling-$(sqlVersion)'
+      publishLocation: 'Container'
+    displayName: 'Publish profiling build artifacts'
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['sqlVersion'], 'LocalDB'))
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'ddbc_bindings'
       publishLocation: 'Container'
     displayName: 'Publish build artifacts'
+    condition: and(succeeded(), or(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['sqlVersion'], 'LocalDB')))
 
   - task: PublishTestResults@2
     condition: succeededOrFailed()
