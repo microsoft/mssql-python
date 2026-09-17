@@ -1,8 +1,8 @@
 # Conda Build + Validate Step Template (POSIX / bash)
 # ============================================================================
 # Bash twin of conda-build-validate-step.yml for the macOS and Linux build legs.
-# Repackages THIS leg's mssql-python wheel(s) + the
-# external mssql-python-odbc wheel into conda packages and validates solve+import
+# Repackages the selected producer's binding, ODBC and RS wheels into one Conda
+# package per Python version and validates solve+import
 # where the target Python can execute. Native osx-64/linux-64 run directly;
 # osx-arm64 skips target execution on the Intel host, and linux-aarch64 uses QEMU.
 # musllinux has no conda target.
@@ -17,7 +17,7 @@ parameters:
   # conda subdir this leg targets: 'osx-arm64' or 'linux-64' (display + staging).
   - name: condaSubdir
     type: string
-  # Directory holding the freshly built mssql-python wheel(s) for this platform.
+  # Selected producer's dist/ directory; rs-wheels/ is its sibling in the same artifact.
   - name: mssqlWheelDir
     type: string
     default: '$(Build.SourcesDirectory)/dist'
@@ -36,7 +36,7 @@ parameters:
   # else conda-build's pip install fails with DistributionNotFound.
   - name: odbcWheelFilter
     type: string
-  # Repo conda/ recipe root (contains mssql-python/ and mssql-python-odbc/).
+  # Repo conda/ recipe root (contains the single combined mssql-python/ recipe).
   - name: recipeRoot
     type: string
     default: '$(Build.SourcesDirectory)/conda'
@@ -60,10 +60,6 @@ parameters:
   - name: condaTargetSubdir
     type: string
     default: ''
-  # The shared cross-platform build+validate orchestrator.
-  - name: scriptPath
-    type: string
-    default: '$(Build.SourcesDirectory)/OneBranchPipelines/scripts/build_conda_packages.py'
   # BLOCKING by default: if conda cannot build/validate the packages, FAIL the leg
   # instead of letting a green build hide a broken conda package. Callers running an
   # intentionally best-effort emulated leg (e.g. linux-aarch64 under QEMU) may override
@@ -75,22 +71,30 @@ parameters:
 steps:
   - bash: |
       set -euo pipefail
+      rs_dir="$(dirname "${{ parameters.mssqlWheelDir }}")/rs-wheels"
+      [ -f "$rs_dir/transport.json" ] || {
+        echo "ERROR: selected wheel producer artifact is missing its RS transport receipt." >&2
+        exit 1
+      }
 
-      # One orchestrator (build_conda_packages.py) does gather + build + audit + verify + stage
+      # One module command does gather + build + audit + verify + stage
       # for EVERY leg (Windows/macOS/Linux) -- the two build scripts collapsed into one. The two
       # caller value-inputs are surfaced via the step-level env: block below (NOT interpolated
       # into the command), so they can't inject; the orchestrator validates their format itself.
-      python3 "${{ parameters.scriptPath }}" \
+      python3 -m eng.conda_tools build \
         --mssql-wheel-dir "${{ parameters.mssqlWheelDir }}" \
         --mssql-wheel-glob "${{ parameters.mssqlWheelGlob }}" \
         --odbc-wheel-dir "${{ parameters.odbcWheelDir }}" \
         --odbc-wheel-filter "${{ parameters.odbcWheelFilter }}" \
+        --rs-wheel-dir "$rs_dir" \
+        --rs-version-file "${{ parameters.mssqlWheelDir }}/mssql-python-rs.version" \
         --recipe-root "${{ parameters.recipeRoot }}" \
         --output-dir "${{ parameters.outputDir }}" \
         --stage-dir "$(ob_outputDirectory)/conda" \
         --conda-subdir "${{ parameters.condaSubdir }}" \
         --conda-target-subdir "${CONDA_TARGET_SUBDIR:-}" \
         --python-versions "${PYTHON_VERSIONS:-}"
+    workingDirectory: $(Build.SourcesDirectory)
     env:
       # Surface the caller's value inputs as env vars (validated in-script above) rather than
       # interpolating them into the script text -- repo secret-handling convention.

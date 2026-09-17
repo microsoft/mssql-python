@@ -61,6 +61,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- `mssql-python` now depends on `mssql-python-rs==0.1.0` for `mssql_py_core`
+  instead of embedding files owned by that separately published distribution.
 - **GH-769 deprecation policy:** The misplaced `GetInfoConstants` members
   `SQL_TXN_ISOLATION_LEVEL`, `SQL_CONCURRENCY`, `SQL_ROWSET_SIZE`, `SQL_ROW_NUMBER`,
   `SQL_IC_UPPER`, `SQL_IC_LOWER`, `SQL_IC_SENSITIVE`, `SQL_IC_MIXED`, and

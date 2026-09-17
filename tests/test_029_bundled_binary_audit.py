@@ -1,4 +1,4 @@
-"""Unit tests for the masking-immune RUNPATH audit (eng/scripts/audit_bundled_binaries.py).
+"""Unit tests for the masking-immune RUNPATH audit (eng.conda_tools elf).
 
 The audit reads the ELF ``PT_DYNAMIC`` program header of the vendored Linux ODBC
 binaries and asserts the EXACT ``$ORIGIN`` climb to ``$PREFIX/lib``, the effective
@@ -8,52 +8,31 @@ craft minimal ELF64 blobs (with real program headers) + ``.tar.bz2`` conda packa
 """
 
 import builtins
-import importlib.util
 import io
 import json
+import os
 import struct
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = (
-    Path(__file__).resolve().parent.parent / "eng" / "scripts" / "audit_bundled_binaries.py"
-)
+_ROOT = Path(__file__).resolve().parent.parent
+_TOOLS_DIR = _ROOT / "eng" / "conda_tools"
 
-# The eng/ sources are not shipped inside the built wheel; the installed-wheel test
-# leg copies only tests/. Skip the whole module when the audited source is absent.
-if not _MODULE_PATH.is_file():
+if not _TOOLS_DIR.is_dir():
     pytest.skip(
-        f"audit source not present ({_MODULE_PATH}); skipping RUNPATH audit tests",
+        f"Conda tooling source not present ({_TOOLS_DIR}); skipping source-only audit tests",
         allow_module_level=True,
     )
 
-
-def _load_module():
-    # audit_bundled_binaries.py imports its sibling _conda_pkg; put eng/scripts on sys.path so
-    # the by-path load here resolves it (a direct `python <script>` run gets this for free).
-    inserted = str(_MODULE_PATH.parent)
-    sys.path.insert(0, inserted)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "audit_bundled_binaries_under_test", _MODULE_PATH
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    finally:
-        # Don't leak eng/scripts onto sys.path for the rest of the session -- the sibling import
-        # resolved during exec_module and _conda_pkg stays cached in sys.modules.
-        if inserted in sys.path:
-            sys.path.remove(inserted)
-    return module
+from eng.conda_tools import archive, audit, build, contracts, environment
+from eng.conda_tools.formats import elf
 
 
-audit = _load_module()
-
-
-def _make_elf64(runpath=None, rpath=None, needed=(), machine=62):
+def _make_elf64(runpath=None, rpath=None, needed=(), machine=62, versions=()):
     """Build a minimal, self-consistent ELF64-LE with real program headers.
 
     Emits a PT_LOAD (vaddr == file offset, covering the whole file) + a PT_DYNAMIC,
@@ -78,25 +57,38 @@ def _make_elf64(runpath=None, rpath=None, needed=(), machine=62):
     rp_rel = add_str(runpath) if runpath is not None else None
     rpath_rel = add_str(rpath) if rpath is not None else None
     need_rels = [add_str(n) for n in needed]
+    version_rels = [add_str(n) for n in versions]
+    library_rel = add_str("libc.so.6") if versions else 0
+    verneed_off = dynstr_off + len(dynstr)
+    verneed = b""
+    if versions:
+        verneed = struct.pack("<HHIII", 1, len(versions), library_rel, 16, 0)
+        for position, relative in enumerate(version_rels):
+            next_aux = 16 if position < len(versions) - 1 else 0
+            verneed += struct.pack("<IHHII", 0, 0, position + 2, relative, next_aux)
 
-    dynamic_off = dynstr_off + len(dynstr)
+    dynamic_off = verneed_off + len(verneed)
     dyn = b""
     if rp_rel is not None:
-        dyn += struct.pack("<qQ", audit._DT_RUNPATH, rp_rel)
+        dyn += struct.pack("<qQ", elf._DT_RUNPATH, rp_rel)
     if rpath_rel is not None:
-        dyn += struct.pack("<qQ", audit._DT_RPATH, rpath_rel)
+        dyn += struct.pack("<qQ", elf._DT_RPATH, rpath_rel)
     for nr in need_rels:
-        dyn += struct.pack("<qQ", audit._DT_NEEDED, nr)
-    dyn += struct.pack("<qQ", audit._DT_STRTAB, dynstr_off)  # vaddr == offset (PT_LOAD v=0)
+        dyn += struct.pack("<qQ", elf._DT_NEEDED, nr)
+    dyn += struct.pack("<qQ", elf._DT_STRTAB, dynstr_off)  # vaddr == offset (PT_LOAD v=0)
+    dyn += struct.pack("<qQ", elf._DT_STRSZ, len(dynstr))
+    if versions:
+        dyn += struct.pack("<qQ", elf._DT_VERNEED, verneed_off)
+        dyn += struct.pack("<qQ", elf._DT_VERNEEDNUM, 1)
     dyn += struct.pack("<qQ", 0, 0)  # DT_NULL
 
     total = dynamic_off + len(dyn)
 
     # PT_LOAD: type, flags, offset, vaddr, paddr, filesz, memsz, align
-    ph_load = struct.pack("<IIQQQQQQ", audit._PT_LOAD, 5, 0, 0, 0, total, total, 0x1000)
+    ph_load = struct.pack("<IIQQQQQQ", elf._PT_LOAD, 5, 0, 0, 0, total, total, 0x1000)
     ph_dyn = struct.pack(
         "<IIQQQQQQ",
-        audit._PT_DYNAMIC,
+        elf._PT_DYNAMIC,
         6,
         dynamic_off,
         dynamic_off,
@@ -124,7 +116,7 @@ def _make_elf64(runpath=None, rpath=None, needed=(), machine=62):
         0,  # e_shstrndx
     )
     assert len(ehdr) == ehdr_size
-    return ehdr + ph_load + ph_dyn + dynstr + dyn
+    return ehdr + ph_load + ph_dyn + dynstr + verneed + dyn
 
 
 _LIBDIR = "lib/python3.12/site-packages/mssql_python_odbc/libs/linux/debian_ubuntu/x86_64/lib"
@@ -133,7 +125,18 @@ _CLIMB_ENTRY = "$ORIGIN/../../../../../../../.."
 _GOOD_RUNPATH = "$ORIGIN:" + _CLIMB_ENTRY
 _DRIVER_NEEDED = ["libkrb5.so.3", "libgssapi_krb5.so.2", "libodbcinst.so.2"]
 _INST_NEEDED = ["libltdl.so.7"]
-_GOOD_DEPENDS = ["python", "azure-identity", "krb5", "libtool", "openssl >=3,<4"]
+_GOOD_DEPENDS = [
+    "python >=3.12,<3.13.0a0",
+    "python_abi 3.12.* *_cp312",
+    "__glibc >=2.34",
+    "azure-identity",
+    "krb5",
+    "libtool",
+    "openssl >=3,<4",
+]
+_BINDING = "lib/python3.12/site-packages/mssql_python/ddbc_bindings.cp312-x86_64.so"
+_CORE = "lib/python3.12/site-packages/mssql_py_core/mssql_py_core.cpython-312-x86_64-linux-gnu.so"
+_CORE_INIT = "lib/python3.12/site-packages/mssql_py_core/__init__.py"
 _DISTROS_BY_SUBDIR = {
     "linux-64": ("alpine", "debian_ubuntu", "rhel", "suse"),
     "linux-aarch64": ("alpine", "debian_ubuntu", "rhel"),
@@ -146,11 +149,12 @@ def _make_pkg(
     rpath=None,
     subdir="linux-64",
     vendored=None,
-    depends=None,
+    depends=tuple(_GOOD_DEPENDS),
     driver_needed=None,
     inst_needed=None,
     machine=62,
     distros=None,
+    native_payload=None,
 ):
     """Write a minimal package with complete per-distro driver trees by default."""
     p = tmp_path / "mssql-python-1.13.0-py312_0.tar.bz2"
@@ -169,11 +173,22 @@ def _make_pkg(
                     "version": "1.13.0",
                     "build": "py312_0",
                     "subdir": subdir,
-                    "depends": _GOOD_DEPENDS if depends is None else depends,
+                    "depends": depends,
                 }
             ).encode(),
         )
         arch = "arm64" if subdir == "linux-aarch64" else "x86_64"
+        extension_arch = "aarch64" if subdir == "linux-aarch64" else "x86_64"
+        if native_payload is None:
+            native_payload = {
+                _CORE_INIT: b"from .mssql_py_core import *\n",
+                _BINDING.replace("x86_64", extension_arch): _make_elf64(machine=machine),
+                _CORE.replace("x86_64", extension_arch): _make_elf64(
+                    machine=machine, versions=("GLIBC_2.2.5", "GLIBC_2.34")
+                ),
+            }
+        for name, data in native_payload.items():
+            add(name, data)
         selected_distros = distros or _DISTROS_BY_SUBDIR.get(subdir, ("debian_ubuntu",))
         for distro in selected_distros:
             libdir = (
@@ -202,12 +217,81 @@ def _make_pkg(
     return str(p)
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        "valid",
+        "missing-private-library",
+        "openssl-1.1",
+        "missing-runpath",
+        "wrong-arch",
+        "unowned-core",
+        "wrong-rs-version",
+    ],
+)
+def test_rs_private_libraries_keep_separate_ownership_and_runtime_contract(tmp_path, state):
+    root = "lib/python3.12/site-packages/"
+    private = root + "mssql_py_core/libs/linux/glibc/x86_64/lib/mssqlodbc.so"
+    payload = {
+        _BINDING: _make_elf64(),
+        _CORE_INIT: b"from .mssql_py_core import *\n",
+    }
+    for name in (_CORE, private):
+        payload[name] = _make_elf64(
+            runpath=(
+                None
+                if state == "missing-runpath" and name == private
+                else "$ORIGIN:" + contracts.expected_climb_entry(name)
+            ),
+            needed=(
+                ("libssl.so.1.1", "libcrypto.so.1.1")
+                if state == "openssl-1.1"
+                else ("libssl.so.3", "libcrypto.so.3")
+            ),
+            versions=("GLIBC_2.28" if state == "openssl-1.1" else "GLIBC_2.34",),
+            machine=183 if state == "wrong-arch" and name == private else 62,
+        )
+    binding_info = root + "mssql_python-1.13.0.dist-info/"
+    rs_info = root + "mssql_python_rs-0.1.0.dist-info/"
+    payload[binding_info + "METADATA"] = (
+        b"Name: mssql-python\nVersion: 1.13.0\nRequires-Dist: mssql-python-rs==0.1.0\n"
+    )
+    payload[binding_info + "RECORD"] = f"{_BINDING.removeprefix(root)},,\n".encode()
+    version = "0.2.0" if state == "wrong-rs-version" else "0.1.0"
+    payload[rs_info + "METADATA"] = f"Name: mssql-python-rs\nVersion: {version}\n".encode()
+    payload[rs_info + "RECORD"] = "".join(
+        f"{name.removeprefix(root)},,\n"
+        for name in (_CORE, _CORE_INIT, private)
+        if not (state == "unowned-core" and name == _CORE)
+    ).encode()
+    if state == "missing-private-library":
+        del payload[private]
+    result = audit.audit_package(_make_pkg(tmp_path, native_payload=payload), "elf")
+    if state == "valid":
+        assert result.violations == []
+    else:
+        assert result.violations
+        if state == "openssl-1.1":
+            assert any("OpenSSL 1.1" in error for error in result.violations)
+        elif state == "missing-runpath":
+            assert any("RUNPATH" in error for error in result.violations)
+
+
 # --- low-level parser -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "depends",
+    [None, 17, "python_abi 3.12.* *_cp312", {"python_abi": "3.12"}, ["python_abi", None]],
+)
+def test_audit_reports_malformed_dependency_field(tmp_path, depends):
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
+    assert any("malformed" in error and "depends" in error for error in errors)
 
 
 def test_elf_dynamic_pt_parse():
     data = _make_elf64(runpath=_GOOD_RUNPATH, needed=["libkrb5.so.3", "libodbcinst.so.2"])
-    dyn = audit.elf_dynamic(data)
+    dyn = elf.elf_dynamic(data)
     assert dyn["runpath"] == _GOOD_RUNPATH
     assert dyn["rpath"] is None
     assert "libkrb5.so.3" in dyn["needed"] and "libodbcinst.so.2" in dyn["needed"]
@@ -215,28 +299,140 @@ def test_elf_dynamic_pt_parse():
 
 def test_effective_runpath_prefers_runpath_over_rpath():
     # DT_RUNPATH present -> loader ignores DT_RPATH.
-    dyn = audit.elf_dynamic(_make_elf64(runpath="$ORIGIN", rpath=_GOOD_RUNPATH))
-    assert audit.effective_runpath(dyn) == "$ORIGIN"
+    dyn = elf.elf_dynamic(_make_elf64(runpath="$ORIGIN", rpath=_GOOD_RUNPATH))
+    assert contracts.effective_runpath(dyn) == "$ORIGIN"
     # Only DT_RPATH present -> that is the effective one.
-    dyn2 = audit.elf_dynamic(_make_elf64(rpath=_GOOD_RUNPATH))
-    assert audit.effective_runpath(dyn2) == _GOOD_RUNPATH
+    dyn2 = elf.elf_dynamic(_make_elf64(rpath=_GOOD_RUNPATH))
+    assert contracts.effective_runpath(dyn2) == _GOOD_RUNPATH
 
 
 def test_expected_climb_entry_is_exact():
     member = f"{_LIBDIR}/libmsodbcsql-18.6.so.2.1"
-    assert audit.expected_climb_entry(member) == _CLIMB_ENTRY
+    assert contracts.expected_climb_entry(member) == _CLIMB_ENTRY
 
 
 # --- audit_package: the happy path -----------------------------------------
 
 
 def test_audit_passes_with_exact_climb(tmp_path):
-    assert audit.audit_package(_make_pkg(tmp_path)) == []
+    assert audit.audit_package(_make_pkg(tmp_path), "elf").violations == []
+
+
+@pytest.mark.parametrize("missing", [_BINDING, _CORE, _CORE_INIT])
+def test_full_feature_package_requires_binding_and_core(tmp_path, missing):
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64(), _CORE_INIT: b""}
+    del native[missing]
+    errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native), "elf").violations
+    assert any("exactly one" in error for error in errors)
+
+
+@pytest.mark.parametrize("component", [_BINDING, _CORE])
+def test_every_required_extension_checks_elf_arch_not_filename(tmp_path, component):
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64(), _CORE_INIT: b""}
+    native[component] = _make_elf64(machine=183)
+    errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native), "elf").violations
+    assert any(component in error and "does not match" in error for error in errors)
+
+
+@pytest.mark.parametrize("component", [_BINDING, _CORE])
+@pytest.mark.parametrize("wrong_tag", ["311", "312t", "312d"])
+def test_required_extensions_reject_wrong_or_non_normal_abi(tmp_path, component, wrong_tag):
+    native = {_BINDING: _make_elf64(), _CORE: _make_elf64(), _CORE_INIT: b""}
+    data = native.pop(component)
+    native[component.replace("312", wrong_tag)] = data
+    assert audit.audit_package(_make_pkg(tmp_path, native_payload=native), "elf").violations
+
+
+def test_core_abi3_and_extra_normal_bindings_are_supported(tmp_path):
+    native = {
+        _CORE_INIT: b"from .mssql_py_core import *\n",
+        _BINDING: _make_elf64(),
+        _BINDING.replace("312", "310"): _make_elf64(),
+        _CORE.replace("cpython-312-x86_64-linux-gnu", "abi3"): _make_elf64(),
+    }
+    assert audit.audit_package(_make_pkg(tmp_path, native_payload=native), "elf").violations == []
+
+
+@pytest.mark.parametrize(
+    "abi",
+    [
+        "python_abi 3.12.* *_cp312t",
+        "python_abi 3.12.* *_cp311",
+        "python_abi 3.11.* *_cp311",
+        "python_abi >=3.12",
+    ],
+)
+def test_archive_requires_consistent_normal_python_abi_metadata(tmp_path, abi):
+    depends = [abi if d.startswith("python_abi ") else d for d in _GOOD_DEPENDS]
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
+    assert any("python_abi" in error or "native binding" in error for error in errors)
+
+
+@pytest.mark.parametrize("declared", ["2.28", "2.33"])
+def test_core_symbol_floor_cannot_exceed_archive_glibc_minimum(tmp_path, declared):
+    depends = [f"__glibc >={declared}" if d.startswith("__glibc ") else d for d in _GOOD_DEPENDS]
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
+    assert any(_CORE in error and "GLIBC_2.34" in error for error in errors)
+
+
+@pytest.mark.parametrize("declared", ["2.34", "2.34.0", "2.35"])
+def test_core_symbol_floor_compatible_with_archive_minimum(tmp_path, declared):
+    depends = [f"__glibc >={declared}" if d.startswith("__glibc ") else d for d in _GOOD_DEPENDS]
+    assert audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations == []
+
+
+def test_symbol_floor_is_read_from_version_needs_not_arbitrary_bytes(tmp_path):
+    native = {
+        _CORE_INIT: b"from .mssql_py_core import *\n",
+        _BINDING: _make_elf64(),
+        _CORE: _make_elf64(versions=("GLIBC_2.34",)) + b"GLIBC_99.99\x00",
+    }
+    assert audit.audit_package(_make_pkg(tmp_path, native_payload=native), "elf").violations == []
+
+
+def test_auxiliary_native_library_symbol_floor_is_checked(tmp_path):
+    extra = "lib/python3.12/site-packages/mssql_py_core.libs/libsupport.so.1"
+    native = {
+        _CORE_INIT: b"from .mssql_py_core import *\n",
+        _BINDING: _make_elf64(),
+        _CORE: _make_elf64(),
+        extra: _make_elf64(versions=("GLIBC_2.35",)),
+    }
+    errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native), "elf").violations
+    assert any(extra in error and "GLIBC_2.35" in error for error in errors)
+
+
+@pytest.mark.parametrize("spec", [None, "__glibc >=2.28|>=2.34", "__glibc >=2.34junk"])
+def test_missing_or_ambiguous_glibc_floor_is_rejected(tmp_path, spec):
+    depends = [d for d in _GOOD_DEPENDS if not d.startswith("__glibc")]
+    if spec:
+        depends.append(spec)
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
+    assert any("glibc compatibility metadata" in error for error in errors)
+
+
+@pytest.mark.parametrize("damage", ["truncated", "version-address", "aux-chain", "class"])
+def test_malformed_required_core_elf_cannot_pass(tmp_path, damage):
+    core = bytearray(_make_elf64(versions=("GLIBC_2.2.5", "GLIBC_2.34")))
+    if damage == "truncated":
+        core = core[:70]
+    elif damage == "version-address":
+        tag = core.index(struct.pack("<q", elf._DT_VERNEED))
+        struct.pack_into("<Q", core, tag + 8, len(core) + 1)
+    elif damage == "aux-chain":
+        tag = core.index(struct.pack("<q", elf._DT_VERNEED))
+        record = struct.unpack_from("<Q", core, tag + 8)[0]
+        struct.pack_into("<I", core, record + 16 + 12, 0)
+    else:
+        core[4] = 1
+    native = {_BINDING: _make_elf64(), _CORE: bytes(core), _CORE_INIT: b""}
+    errors = audit.audit_package(_make_pkg(tmp_path, native_payload=native), "elf").violations
+    assert any(_CORE in error and "ELF" in error for error in errors)
 
 
 def test_audit_fails_when_entire_required_distro_tree_is_missing(tmp_path):
     package = _make_pkg(tmp_path, distros=("debian_ubuntu", "rhel", "suse"))
-    errors = audit.audit_package(package)
+    errors = audit.audit_package(package, "elf").violations
     assert any(
         "missing required Linux driver trees" in error and "alpine/x86_64" in error
         for error in errors
@@ -247,44 +443,48 @@ def test_audit_fails_when_entire_required_distro_tree_is_missing(tmp_path):
 
 
 def test_audit_fails_wrong_depth_too_short(tmp_path):
-    errors = audit.audit_package(_make_pkg(tmp_path, runpath="$ORIGIN:$ORIGIN/.."))
+    errors = audit.audit_package(
+        _make_pkg(tmp_path, runpath="$ORIGIN:$ORIGIN/.."), "elf"
+    ).violations
     assert any("exact climb entry" in e for e in errors)
 
 
 def test_audit_fails_overshoot(tmp_path):
     over = "$ORIGIN:$ORIGIN/../../../../../../../../.."  # one level too many
-    errors = audit.audit_package(_make_pkg(tmp_path, runpath=over))
+    errors = audit.audit_package(_make_pkg(tmp_path, runpath=over), "elf").violations
     assert any("exact climb entry" in e for e in errors)
 
 
 def test_audit_fails_decoy_rpath_behind_bad_runpath(tmp_path):
     # Good climb hidden in DT_RPATH, but DT_RUNPATH (which the loader uses) is bare.
-    errors = audit.audit_package(_make_pkg(tmp_path, runpath="$ORIGIN", rpath=_GOOD_RUNPATH))
+    errors = audit.audit_package(
+        _make_pkg(tmp_path, runpath="$ORIGIN", rpath=_GOOD_RUNPATH), "elf"
+    ).violations
     assert any("exact climb entry" in e for e in errors)
 
 
 def test_audit_fails_malformed_originator(tmp_path):
     bad = "$ORIGINATOR/../../../../../../../.."  # startswith('$ORIGIN') but wrong token
-    errors = audit.audit_package(_make_pkg(tmp_path, runpath=bad))
+    errors = audit.audit_package(_make_pkg(tmp_path, runpath=bad), "elf").violations
     assert any("exact climb entry" in e for e in errors)
 
 
 def test_audit_fails_on_absolute_rpath(tmp_path):
-    errors = audit.audit_package(_make_pkg(tmp_path, runpath="$ORIGIN:/opt/lib"))
+    errors = audit.audit_package(_make_pkg(tmp_path, runpath="$ORIGIN:/opt/lib"), "elf").violations
     assert any("ABSOLUTE" in e for e in errors)
 
 
 def test_audit_fails_empty_runpath_entry(tmp_path):
     # A trailing ':' (empty entry = current-directory search) must FAIL, even though the
     # NON-empty entries are exactly {$ORIGIN, climb} that _entries() would otherwise accept.
-    errors = audit.audit_package(_make_pkg(tmp_path, runpath=_GOOD_RUNPATH + ":"))
+    errors = audit.audit_package(_make_pkg(tmp_path, runpath=_GOOD_RUNPATH + ":"), "elf").violations
     assert any("EMPTY entry" in e for e in errors)
 
 
 def test_audit_fails_missing_bare_origin(tmp_path):
     # Climb entry present but bare $ORIGIN dropped -> the driver can no longer resolve
     # its co-located sibling libodbcinst.so.2 even though $PREFIX/lib is reachable.
-    errors = audit.audit_package(_make_pkg(tmp_path, runpath=_CLIMB_ENTRY))
+    errors = audit.audit_package(_make_pkg(tmp_path, runpath=_CLIMB_ENTRY), "elf").violations
     assert any("bare '$ORIGIN'" in e for e in errors)
 
 
@@ -293,26 +493,26 @@ def test_audit_fails_missing_bare_origin(tmp_path):
 
 def test_audit_fails_missing_declared_krb5(tmp_path):
     depends = ["python", "azure-identity", "libtool", "openssl >=3,<4"]  # no krb5
-    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
     assert any("missing 'krb5'" in e for e in errors)
 
 
 def test_audit_fails_missing_declared_libtool(tmp_path):
     depends = ["python", "azure-identity", "krb5", "openssl >=3,<4"]  # no libtool
-    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
     assert any("missing 'libtool'" in e for e in errors)
 
 
 def test_audit_fails_missing_declared_openssl(tmp_path):
     depends = ["python", "azure-identity", "krb5", "libtool"]  # no openssl
-    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
     assert any("missing 'openssl'" in e for e in errors)
 
 
 def test_audit_fails_openssl_not_range_pinned(tmp_path):
     # openssl present but not pinned to the Driver-18 ABI range (>=3,<4).
     depends = ["python", "azure-identity", "krb5", "libtool", "openssl"]
-    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
     assert any("range-pinned" in e for e in errors)
 
 
@@ -320,14 +520,14 @@ def test_audit_fails_openssl_loose_upper_bound(tmp_path):
     # '<40' merely CONTAINS the substring '<4' but admits openssl 4..39 -> must FAIL
     # (the substring heuristic this replaced would have false-passed here).
     depends = ["python", "azure-identity", "krb5", "libtool", "openssl >=3,<40"]
-    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
     assert any("range-pinned" in e for e in errors)
 
 
 def test_audit_passes_openssl_alpha_upper_bound(tmp_path):
     # conda's canonical exclusive upper bound is '<4.0a0'; the proper parse must accept it.
     depends = ["python", "azure-identity", "krb5", "libtool", "openssl >=3,<4.0a0"]
-    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+    errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
     assert not any("range-pinned" in e for e in errors)
 
 
@@ -335,7 +535,7 @@ def test_audit_fails_openssl_upper_admits_4x(tmp_path):
     # '<=4', '<4.1', '<4.0.1' each admit some openssl 4.x -> must FAIL (looser than the pin).
     for spec in ("openssl >=3,<=4", "openssl >=3,<4.1", "openssl >=3,<4.0.1"):
         depends = ["python", "azure-identity", "krb5", "libtool", spec]
-        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
         assert any("range-pinned" in e for e in errors), spec
 
 
@@ -343,7 +543,7 @@ def test_audit_passes_openssl_exclusive_4_variants(tmp_path):
     # '<4', '<4.0', '<4.0.0' all exclude every openssl 4.x and are accepted.
     for spec in ("openssl >=3,<4", "openssl >=3,<4.0", "openssl >=3,<4.0.0"):
         depends = ["python", "azure-identity", "krb5", "libtool", spec]
-        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
         assert not any("range-pinned" in e for e in errors), spec
 
 
@@ -352,7 +552,7 @@ def test_audit_fails_openssl_or_group_or_garbage_clause(tmp_path):
     # must all FAIL CLOSED -- the allowlist admits only canonical bound spellings.
     for spec in ("openssl >=3|>=1,<4", "openssl >=3,foo,<4", "openssl >=3,<4garbage"):
         depends = ["python", "azure-identity", "krb5", "libtool", spec]
-        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends))
+        errors = audit.audit_package(_make_pkg(tmp_path, depends=depends), "elf").violations
         assert any("range-pinned" in e for e in errors), spec
 
 
@@ -387,15 +587,15 @@ def test_audit_fails_driver_missing_from_one_subdir(tmp_path):
         add(f"{_LIBDIR}/libodbcinst.so.2", _make_elf64(_GOOD_RUNPATH, needed=_INST_NEEDED))
         # rhel: libodbcinst only -- the driver is missing from this subdir.
         add(f"{rhel_lib}/libodbcinst.so.2", _make_elf64(_GOOD_RUNPATH, needed=_INST_NEEDED))
-    errors = audit.audit_package(str(p))
+    errors = audit.audit_package(str(p), "elf").violations
     assert any("rhel" in e and "libmsodbcsql" in e for e in errors)
 
 
 def test_audit_fails_driver_lost_needed(tmp_path):
     # Driver stopped NEEDing libgssapi_krb5 -> declared krb5 dep is now moot.
     errors = audit.audit_package(
-        _make_pkg(tmp_path, driver_needed=["libkrb5.so.3", "libodbcinst.so.2"])
-    )
+        _make_pkg(tmp_path, driver_needed=["libkrb5.so.3", "libodbcinst.so.2"]), "elf"
+    ).violations
     assert any("libgssapi_krb5" in e and "no longer NEED" in e for e in errors)
 
 
@@ -406,13 +606,14 @@ def test_audit_fails_needed_substring_impostor(tmp_path):
         _make_pkg(
             tmp_path,
             driver_needed=["libkrb5support.so.0", "libgssapi_krb5.so.2", "libodbcinst.so.2"],
-        )
-    )
+        ),
+        "elf",
+    ).violations
     assert any("libkrb5.so" in e and "no longer NEED" in e for e in errors)
 
 
 def test_audit_fails_odbcinst_lost_libltdl(tmp_path):
-    errors = audit.audit_package(_make_pkg(tmp_path, inst_needed=["libc.so.6"]))
+    errors = audit.audit_package(_make_pkg(tmp_path, inst_needed=["libc.so.6"]), "elf").violations
     assert any("libltdl" in e and "no longer NEED" in e for e in errors)
 
 
@@ -446,7 +647,7 @@ def test_audit_fails_vendored_crypto_outside_libs_linux(tmp_path):
         )
         add(f"{_LIBDIR}/libodbcinst.so.2", _make_elf64(runpath=_GOOD_RUNPATH, needed=_INST_NEEDED))
         add("lib/python3.12/site-packages/mssql_python/.libs/libssl.so.3", b"\x7fELF fake")
-    errors = audit.audit_package(str(p))
+    errors = audit.audit_package(str(p), "elf").violations
     assert any("vendor" in e.lower() and "libssl" in e for e in errors)
 
 
@@ -476,6 +677,9 @@ def test_audit_allows_musl_variant_without_libltdl(tmp_path):
             ).encode(),
         )
         # glibc debian_ubuntu (complete: NEEDs libltdl/krb5).
+        add(_CORE_INIT, b"from .mssql_py_core import *\n")
+        add(_BINDING, _make_elf64())
+        add(_CORE, _make_elf64())
         add(
             f"{_LIBDIR}/libmsodbcsql-18.6.so.2.1", _make_elf64(_GOOD_RUNPATH, needed=_DRIVER_NEEDED)
         )
@@ -509,14 +713,14 @@ def test_audit_allows_musl_variant_without_libltdl(tmp_path):
                 f"{libdir}/libodbcinst.so.2",
                 _make_elf64(_GOOD_RUNPATH, needed=_INST_NEEDED),
             )
-    assert audit.audit_package(str(p)) == []
+    assert audit.audit_package(str(p), "elf").violations == []
 
 
 # --- vendoring + malformed + non-linux -------------------------------------
 
 
 def test_audit_fails_on_vendored_crypto(tmp_path):
-    errors = audit.audit_package(_make_pkg(tmp_path, vendored="libkrb5.so.3"))
+    errors = audit.audit_package(_make_pkg(tmp_path, vendored="libkrb5.so.3"), "elf").violations
     assert any("vendors" in e for e in errors)
 
 
@@ -528,12 +732,12 @@ def test_audit_fails_malformed_package(tmp_path):
         ti = tarfile.TarInfo("some/other/file")
         ti.size = len(data)
         tf.addfile(ti, io.BytesIO(data))
-    errors = audit.audit_package(str(p))
+    errors = audit.audit_package(str(p), "elf").violations
     assert any("unreadable/malformed" in e for e in errors)
 
 
 def test_audit_skips_non_linux(tmp_path):
-    assert audit.audit_package(_make_pkg(tmp_path, subdir="win-64")) == []
+    assert audit.audit_package(_make_pkg(tmp_path, subdir="win-64"), "elf").violations == []
 
 
 # --- arch gate (e_machine vs conda subdir) ---------------------------------
@@ -542,54 +746,55 @@ def test_audit_skips_non_linux(tmp_path):
 def test_audit_fails_wrong_arch(tmp_path):
     # x86-64 ELFs (e_machine=62) mislabeled inside a linux-aarch64 package must FAIL the
     # arch gate -- the emulated aarch64 leg's best-effort runtime probe would not catch it.
-    errors = audit.audit_package(_make_pkg(tmp_path, subdir="linux-aarch64"))
+    errors = audit.audit_package(_make_pkg(tmp_path, subdir="linux-aarch64"), "elf").violations
     assert any("does not match" in e and "aarch64" in e for e in errors)
 
 
 def test_audit_passes_matching_arch_aarch64(tmp_path):
     # aarch64 ELFs (e_machine=183) in a linux-aarch64 package satisfy the arch gate.
-    assert audit.audit_package(_make_pkg(tmp_path, subdir="linux-aarch64", machine=183)) == []
+    assert (
+        audit.audit_package(
+            _make_pkg(tmp_path, subdir="linux-aarch64", machine=183), "elf"
+        ).violations
+        == []
+    )
 
 
 def test_elf_machine_reads_arch():
-    assert audit.elf_machine(_make_elf64()) == 62
-    assert audit.elf_machine(_make_elf64(machine=183)) == 183
-    assert audit.elf_machine(b"not an elf") is None
+    assert elf.elf_machine(_make_elf64()) == 62
+    assert elf.elf_machine(_make_elf64(machine=183)) == 183
+    assert elf.elf_machine(b"not an elf") is None
 
 
 def test_audit_fails_unknown_linux_subdir(tmp_path):
     # A linux subdir with no e_machine mapping (e.g. a future linux-ppc64le) must FAIL CLOSED,
     # not silently skip the architecture gate this audit exists to enforce.
-    errors = audit.audit_package(_make_pkg(tmp_path, subdir="linux-ppc64le"))
+    errors = audit.audit_package(_make_pkg(tmp_path, subdir="linux-ppc64le"), "elf").violations
     assert any("unrecognized Linux subdir" in e for e in errors)
 
 
 @pytest.mark.parametrize("index", [{}, {"subdir": ""}, {"subdir": None}, {"subdir": " linux-64"}])
 def test_audit_fails_missing_or_invalid_subdir(monkeypatch, index):
-    monkeypatch.setattr(audit, "read_index", lambda _path: index)
+    monkeypatch.setattr(archive, "read_index", lambda _path: index)
 
-    errors = audit.audit_package("invalid-metadata.conda")
+    errors = audit.audit_package("invalid-metadata.conda", "elf").violations
 
     assert any("missing or invalid 'subdir'" in error for error in errors)
 
 
-# --- shared payload reader fails closed (eng/scripts/_conda_pkg.py) ---------
+# --- shared payload reader fails closed (eng/scripts/_archive.py) ---------
 
 
 def test_iter_payload_members_fails_closed_on_unknown_extension(tmp_path):
     # An unrecognized package extension must RAISE (like read_index), not silently yield
     # nothing -- a truncated/renamed artifact would otherwise pass every audit as "empty".
-    conda_pkg = sys.modules.get("_conda_pkg")
-    assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
     bogus = tmp_path / "notapackage.zip"
     bogus.write_bytes(b"not a conda package")
     with pytest.raises(ValueError, match="unrecognized"):
-        list(conda_pkg.iter_payload_members(str(bogus)))
+        list(archive.iter_payload_members(str(bogus)))
 
 
 def test_zstd_decompress_explains_missing_backend(monkeypatch):
-    conda_pkg = sys.modules.get("_conda_pkg")
-    assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
     real_import = builtins.__import__
 
     def missing_zstd(name, *args, **kwargs):
@@ -599,12 +804,10 @@ def test_zstd_decompress_explains_missing_backend(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", missing_zstd)
     with pytest.raises(RuntimeError, match="pip install zstandard"):
-        conda_pkg.zstd_decompress(b"not reached")
+        archive.zstd_decompress(b"not reached")
 
 
 def test_zstd_decompress_explains_broken_fallback_import(monkeypatch):
-    conda_pkg = sys.modules.get("_conda_pkg")
-    assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
     real_import = builtins.__import__
 
     def broken_zstd(name, *args, **kwargs):
@@ -616,13 +819,11 @@ def test_zstd_decompress_explains_broken_fallback_import(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", broken_zstd)
     with pytest.raises(RuntimeError, match="working 'zstandard' install") as exc_info:
-        conda_pkg.zstd_decompress(b"not reached")
+        archive.zstd_decompress(b"not reached")
     assert isinstance(exc_info.value.__cause__, ImportError)
 
 
 def test_zstd_decompress_preserves_decompression_errors(monkeypatch):
-    conda_pkg = sys.modules.get("_conda_pkg")
-    assert conda_pkg is not None, "loading the audit module should have imported _conda_pkg"
     real_import = builtins.__import__
 
     def fallback_only(name, *args, **kwargs):
@@ -635,9 +836,120 @@ def test_zstd_decompress_preserves_decompression_errors(monkeypatch):
         def decompress(_raw):
             raise ValueError("invalid zstd frame")
 
-    fake_backend = type("FakeZstandard", (), {"ZstdDecompressor": BrokenPayload})
+    fake_backend = type(
+        "FakeZstandard",
+        (),
+        {"ZstdDecompressor": BrokenPayload, "ZstdError": type("ZstdError", (Exception,), {})},
+    )
     monkeypatch.setattr(builtins, "__import__", fallback_only)
     monkeypatch.setitem(sys.modules, "zstandard", fake_backend)
 
     with pytest.raises(ValueError, match="invalid zstd frame"):
-        conda_pkg.zstd_decompress(b"invalid")
+        archive.zstd_decompress(b"invalid")
+
+
+@pytest.mark.parametrize("kind", ["elf", "pe", "macho"])
+def test_shared_audit_reads_metadata_once(tmp_path, monkeypatch, kind):
+    subdir = {"elf": "linux-64", "pe": "win-arm64", "macho": "osx-arm64"}[kind]
+    path = _make_pkg(tmp_path, subdir=subdir)
+    read_index = archive.read_index
+    reads = []
+
+    def read_once(package):
+        reads.append(package)
+        return read_index(package)
+
+    monkeypatch.setattr(archive, "read_index", read_once)
+    result = audit.audit_packages([path], kind, subdir)
+    assert reads == [path]
+    assert result.checked == 1
+    assert result.skipped == 0
+
+
+def test_shared_audit_parses_each_member_before_reading_the_next(tmp_path, monkeypatch):
+    path = _make_pkg(tmp_path)
+    iterate = archive.iter_payload_members
+    parse = elf.parse
+    parsed = []
+
+    def payload(package):
+        for position, member in enumerate(iterate(package)):
+            assert len(parsed) == position
+            yield member
+
+    def parse_member(data):
+        parsed.append(len(data))
+        return parse(data)
+
+    monkeypatch.setattr(archive, "iter_payload_members", payload)
+    monkeypatch.setattr(elf, "parse", parse_member)
+    assert audit.audit_package(path, "elf").violations == []
+    assert len(parsed) > 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "summary"),
+    [
+        ("elf", "all 1 Linux package(s)"),
+        ("pe", "all 1 checked package(s) carry the expected PE"),
+        ("macho", "all 1 checked package(s) satisfy the Mach-O"),
+    ],
+)
+def test_audit_module_cli(tmp_path, kind, summary):
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    path = _make_pkg(packages)
+    command = [sys.executable, "-m", "eng.conda_tools", kind]
+    args = ["--root", str(packages)]
+    if kind == "elf":
+        args.extend([path, path])
+    result = subprocess.run(command + args, cwd=_ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert summary in result.stdout
+    assert ("SKIP" in result.stdout) is (kind != "elf")
+    assert result.stderr == ""
+
+    help_result = subprocess.run(
+        command + ["--help"], cwd=_ROOT, capture_output=True, text=True, timeout=30
+    )
+    assert help_result.returncode == 0
+    assert "--root" in help_result.stdout
+    invalid = subprocess.run(
+        command + ["--unknown"], cwd=_ROOT, capture_output=True, text=True, timeout=30
+    )
+    assert invalid.returncode == 2
+    assert "usage:" in invalid.stderr
+
+
+def test_build_audit_module_from_neutral_parent_cwd(tmp_path, monkeypatch):
+    packages = tmp_path / "packages with spaces"
+    packages.mkdir()
+    _make_pkg(packages)
+    neutral = tmp_path / "neutral"
+    neutral.mkdir()
+    monkeypatch.chdir(neutral)
+    env = dict(os.environ)
+    calls = []
+
+    def run_audit(command, *, env, cwd, what):
+        assert command[4:8] == ["python", "-m", "eng.conda_tools", "elf"]
+        assert Path(cwd) == _ROOT
+        calls.append(command)
+        result = subprocess.run(
+            [sys.executable, *command[5:]],
+            env=env,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "all 1 Linux package(s)" in result.stdout
+
+    monkeypatch.setattr(environment, "run", run_audit)
+    build.audit_packages(
+        "conda", "builder", str(_ROOT / "conda"), os.path.relpath(packages), "linux-64", env
+    )
+    assert len(calls) == 1
+    assert Path.cwd() == neutral
+    assert env == dict(os.environ)
