@@ -1,34 +1,24 @@
 """Read public ADO artifacts as data and update a SHA-bound PR performance comment."""
 
 import argparse
-import io
+from http.client import HTTPException
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
-import stat
 import sys
 import time
 from urllib.error import URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from eng.profiler_benchmarks.report import (
-    LEGS,
-    MARKER,
-    MAX_BYTES,
-    render,
-    suite_hash,
-    suite_paths,
-    validate,
-)
+from eng.profiler_benchmarks import report as reporting
 
 ROOT = Path(__file__).resolve().parents[2]
 ADO = "https://dev.azure.com/sqlclientdrivers/public/_apis/build"
 REPOSITORY = "microsoft/mssql-python"
-HEADER = f"{MARKER}\n## PR Performance Report\n\n"
+HEADER = f"{reporting.MARKER}\n## PR Performance Report\n\n"
 # Allow a 160-minute ADO job plus queueing; the workflow reserves publication time.
 WAIT_MINUTES = 220
 
@@ -72,8 +62,11 @@ def fetch(url, token=None, method=None, data=None, limit=4 * 1024 * 1024):
     if payload is not None:
         headers["Content-Type"] = "application/json"
     request = Request(url, headers=headers, method=method, data=payload)
-    with build_opener(SafeRedirect()).open(request, timeout=30) as response:
-        body = response.read(limit + 1)
+    try:
+        with build_opener(SafeRedirect()).open(request, timeout=30) as response:
+            body = response.read(limit + 1)
+    except HTTPException as error:
+        raise URLError("Incomplete HTTP response") from error
     if len(body) > limit:
         raise ValueError("Response exceeds size limit")
     return body
@@ -87,32 +80,6 @@ def github(path, **kwargs):
     return api(
         f"https://api.github.com/repos/{REPOSITORY}/{path}", token=os.environ["GH_TOKEN"], **kwargs
     )
-
-
-def artifact_report(raw):
-    """Read exactly one bounded JSON member; never extract or execute artifact files."""
-    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-        members = archive.infolist()
-        if len(members) > 200 or sum(member.file_size for member in members) > 64 * 1024 * 1024:
-            raise ValueError("Oversized artifact")
-        reports = [
-            member for member in members if PurePosixPath(member.filename).name == "report.json"
-        ]
-        if len(reports) != 1:
-            raise ValueError("Expected exactly one report.json")
-        member = reports[0]
-        path = PurePosixPath(member.filename)
-        if (
-            path.is_absolute()
-            or ".." in path.parts
-            or "\\" in member.filename
-            or stat.S_ISLNK(member.external_attr >> 16)
-            or member.file_size > MAX_BYTES
-        ):
-            raise ValueError("Invalid report member")
-        if member.flag_bits & 1:
-            raise ValueError("Encrypted performance artifacts are unsupported")
-        return json.loads(archive.read(member).decode("utf-8"))
 
 
 def publish(pr_number, head, body, base=None):
@@ -135,7 +102,8 @@ def publish(pr_number, head, body, base=None):
             (
                 c
                 for c in comments
-                if c["user"]["login"] == "github-actions[bot]" and c["body"].startswith(MARKER)
+                if c["user"]["login"] == "github-actions[bot]"
+                and c["body"].startswith(reporting.MARKER)
             ),
             comment,
         )
@@ -187,26 +155,6 @@ def build_items(response):
     ):
         raise ValueError("Invalid build list")
     return items
-
-
-def suite_blobs(commit):
-    tree_sha = commit.get("tree", {}).get("sha")
-    if not re.fullmatch(r"[0-9a-f]{40}", tree_sha or ""):
-        raise ValueError("Invalid commit tree")
-    tree = github(f"git/trees/{tree_sha}?recursive=1")
-    if tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
-        raise ValueError("Incomplete commit tree")
-    expected = {path.relative_to(ROOT).as_posix() for path in suite_paths(ROOT)}
-    blobs = {
-        entry.get("path"): entry.get("sha")
-        for entry in tree["tree"]
-        if entry.get("type") == "blob" and entry.get("path") in expected
-    }
-    if set(blobs) != expected or any(
-        not re.fullmatch(r"[0-9a-f]{40}", sha or "") for sha in blobs.values()
-    ):
-        raise ValueError("Benchmark suite missing from commit tree")
-    return blobs
 
 
 def artifact_items(response):
@@ -302,26 +250,25 @@ def run(number, head, wait_minutes):
             or not re.fullmatch(r"[0-9a-f]{40}", pr_base or "")
         ):
             raise ValueError
-        # Authenticate both sides of the merge through the current GitHub PR.
         commit = github(f"git/commits/{source}")
-        if len(commit["parents"]) != 2 or [parent["sha"] for parent in commit["parents"]] != [
-            pr_base,
-            head,
-        ]:
-            raise ValueError
         base = pr_base
+        base_commit = github(f"git/commits/{base}")
+        if not isinstance(commit, dict) or not isinstance(base_commit, dict):
+            raise ValueError
+        source_tree_info = commit.get("tree")
+        base_tree_info = base_commit.get("tree")
+        if not isinstance(source_tree_info, dict) or not isinstance(base_tree_info, dict):
+            raise ValueError
+        source_tree_sha = source_tree_info.get("sha")
+        base_tree_sha = base_tree_info.get("sha")
+        if not re.fullmatch(r"[0-9a-f]{40}", source_tree_sha or "") or not re.fullmatch(
+            r"[0-9a-f]{40}", base_tree_sha or ""
+        ):
+            raise ValueError
+        source_tree = github(f"git/trees/{source_tree_sha}?recursive=1")
+        base_tree = github(f"git/trees/{base_tree_sha}?recursive=1")
     except (ValueError, KeyError, TypeError, URLError, TimeoutError):
         unavailable(number, head, "Build provenance validation failed.", pr_base)
-        return
-    try:
-        suite_unchanged = suite_blobs(commit) == suite_blobs(github(f"git/commits/{base}"))
-    except (ValueError, KeyError, TypeError, URLError, TimeoutError):
-        unavailable(
-            number,
-            head,
-            "Benchmark suite validation failed because a required file changed.",
-            pr_base,
-        )
         return
     artifact_deadline = time.monotonic() + 120
     artifacts = None
@@ -330,7 +277,9 @@ def run(number, head, wait_minutes):
         try:
             artifacts = artifact_items(api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1"))
             failures = 0
-            if {"profiler-" + leg for leg in LEGS} <= {item["name"] for item in artifacts}:
+            if {"profiler-" + leg for leg in reporting.LEGS} <= {
+                item["name"] for item in artifacts
+            }:
                 break
         except (ValueError, KeyError, TypeError, URLError, TimeoutError):
             failures += 1
@@ -341,33 +290,35 @@ def run(number, head, wait_minutes):
     if artifacts is None:
         unavailable(number, head, "Performance artifacts remained unavailable.", pr_base)
         return
-    reports, issues = [], []
-    for leg in LEGS:
+    artifact_urls, issues = {}, []
+    for leg in reporting.LEGS:
         matching = [item for item in artifacts if item["name"] == "profiler-" + leg]
         if len(matching) != 1:
             issues.append(leg + " (missing)")
             continue
-        try:
-            raw = fetch(matching[0]["resource"]["downloadUrl"], limit=32 * 1024 * 1024)
-            report = validate(artifact_report(raw), build_id, head, source, base)
-            if report["leg"] != leg:
-                raise ValueError("Artifact leg mismatch")
-            reports.append(report)
-        except (
-            ValueError,
-            KeyError,
-            TypeError,
-            RecursionError,
-            TimeoutError,
-            URLError,
-            zipfile.BadZipFile,
-        ):
-            # Invalid data is visibly incomplete, never converted to a success verdict.
+        url = matching[0]["resource"].get("downloadUrl")
+        if not isinstance(url, str):
             issues.append(leg + " (invalid artifact)")
-    if not suite_unchanged or any(report["suite_hash"] != suite_hash(ROOT) for report in reports):
-        reports = []
-        issues.append("workload version differs from trusted base")
-    publish(number, head, render(reports, head, build_id, issues), base)
+            continue
+        artifact_urls[leg] = url
+
+    def load_artifact(url):
+        try:
+            return fetch(url, limit=32 * 1024 * 1024)
+        except (TimeoutError, URLError) as error:
+            raise ValueError("Artifact download failed") from error
+
+    evidence = reporting.AssessmentEvidence(
+        build=build,
+        head=head,
+        base=base,
+        merge_commit=commit,
+        base_commit=base_commit,
+        source_tree=source_tree,
+        base_tree=base_tree,
+        trusted_root=ROOT,
+    )
+    publish(number, head, reporting.assess(evidence, artifact_urls, load_artifact, issues), base)
 
 
 if __name__ == "__main__":

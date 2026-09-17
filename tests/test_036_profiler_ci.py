@@ -1,6 +1,7 @@
 """Contract tests for paired performance comparisons and data-only PR reporting."""
 
 import copy
+from http.client import IncompleteRead
 import importlib.util
 import io
 import json
@@ -54,11 +55,34 @@ def ado_build(**values):
 
 
 def pr_topology(head="c" * 40, base="a" * 40, merge_base=None):
-    return lambda path: (
-        {"state": "open", "head": {"sha": head}, "base": {"sha": base}}
-        if path.startswith("pulls/")
-        else {"parents": [{"sha": merge_base or base}, {"sha": head}]}
-    )
+    def response(path):
+        if path.startswith("pulls/"):
+            return {"state": "open", "head": {"sha": head}, "base": {"sha": base}}
+        if path.startswith("git/commits/"):
+            commit_sha = path.removeprefix("git/commits/")
+            source = commit_sha == "b" * 40
+            return {
+                "sha": commit_sha,
+                "parents": [{"sha": merge_base or base}, {"sha": head}] if source else [],
+                "tree": {"sha": ("d" if source else "e") * 40},
+            }
+        if path.startswith("git/trees/"):
+            tree_sha = path.removeprefix("git/trees/").split("?", 1)[0]
+            return {
+                "sha": tree_sha,
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": file.relative_to(ROOT).as_posix(),
+                        "type": "blob",
+                        "sha": f"{index + 1:040x}",
+                    }
+                    for index, file in enumerate(reporting.suite_paths(ROOT))
+                ],
+            }
+        raise AssertionError(f"Unexpected GitHub path: {path}")
+
+    return response
 
 
 @pytest.fixture
@@ -200,6 +224,57 @@ def test_standalone_report_rejects_mixed_provenance(report, tmp_path, monkeypatc
     monkeypatch.setattr(sys, "argv", ["report", str(first), str(second)])
     with pytest.raises(ValueError, match=key):
         reporting.main()
+
+
+def test_render_rejects_duplicate_legs(report):
+    with pytest.raises(ValueError, match="Duplicate"):
+        reporting.render([report, copy.deepcopy(report)], "c" * 40, 42)
+
+
+def test_render_bounds_schema_valid_diagnostics(report):
+    reports = [set_leg(copy.deepcopy(report), leg) for leg in reporting.LEGS]
+    labels = ["ddbc::" + str(index) + "_" * 152 for index in range(3)]
+    for item in reports:
+        for pair in item["pairs"]:
+            for name in reporting.CASES:
+                for side, calls in (("base", 1), ("candidate", 2)):
+                    pair[side]["scenarios"][name]["cpp"] = {
+                        label: dict(calls=calls, total_us=2000, min_us=1000, max_us=1000)
+                        for label in labels
+                    }
+        reporting.validate(item)
+    body = reporting.render(reports, "c" * 40, 42)
+    assert len(body) <= 60000
+    assert "100 diagnostic rows are available in the raw ADO artifacts" in body
+    assert "<summary>All database tasks and timings</summary>" in body
+    assert "<summary>Build, commits and measurement details</summary>" in body
+
+
+@pytest.mark.parametrize("invalid", ["source commit", "base commit", "source tree"])
+def test_assessment_binds_all_evidence_to_authenticated_commits(invalid):
+    evidence = reporting.AssessmentEvidence(
+        build=ado_build(),
+        head="c" * 40,
+        base="a" * 40,
+        merge_commit={
+            "sha": "b" * 40,
+            "parents": [{"sha": "a" * 40}, {"sha": "c" * 40}],
+            "tree": {"sha": "d" * 40},
+        },
+        base_commit={"sha": "a" * 40, "tree": {"sha": "e" * 40}},
+        source_tree={"sha": "d" * 40, "truncated": False, "tree": []},
+        base_tree={"sha": "e" * 40, "truncated": False, "tree": []},
+        trusted_root=ROOT,
+    )
+    if invalid == "source commit":
+        evidence.merge_commit["sha"] = "f" * 40
+    elif invalid == "base commit":
+        evidence.base_commit["sha"] = "f" * 40
+    else:
+        evidence = reporting.AssessmentEvidence(**{**evidence.__dict__, "source_tree": []})
+    body = reporting.assess(evidence, {}, lambda url: pytest.fail("must not download"))
+    assert "Performance could not be assessed" in body
+    assert "Build provenance validation failed" in body
 
 
 def clear_slowdowns(report):
@@ -347,7 +422,7 @@ def test_coverage_artifact_reader_rejects_oversized_or_unrelated_archives(tmp_pa
 def test_artifact_read_never_extracts_paths(report):
     raw = json.dumps(report)
     assert (
-        publisher.artifact_report(zip_data([("profiler-Linux-SQL2022/report.json", raw)])) == report
+        reporting.artifact_report(zip_data([("profiler-Linux-SQL2022/report.json", raw)])) == report
     )
     for entries in [
         [("../report.json", raw)],
@@ -356,7 +431,7 @@ def test_artifact_read_never_extracts_paths(report):
         [("logs.txt", "no report")],
     ]:
         with pytest.raises(ValueError):
-            publisher.artifact_report(zip_data(entries))
+            reporting.artifact_report(zip_data(entries))
 
 
 def test_untrusted_labels_cannot_inject_links_mentions_or_markdown():
@@ -371,6 +446,14 @@ def test_untrusted_labels_cannot_inject_links_mentions_or_markdown():
         "https://artprodcus3.artifacts.visualstudio.com/A1/_apis/artifact/"
     )
     assert not publisher.allowed_url("https://artifacts.visualstudio.com.evil.example/artifact")
+
+
+def test_incomplete_http_response_is_normalized_for_terminal_fallback(monkeypatch):
+    opener = MagicMock()
+    opener.open.side_effect = IncompleteRead(b"partial")
+    monkeypatch.setattr(publisher, "build_opener", lambda *args: opener)
+    with pytest.raises(URLError, match="Incomplete HTTP response"):
+        publisher.fetch("https://api.github.com/repos/microsoft/mssql-python")
 
 
 def test_build_selection_requires_exact_pr_head():
@@ -440,9 +523,11 @@ def test_report_cases_match_the_executed_workload_registry():
     assert ROOT / "eng/profiler_benchmarks/__init__.py" in reporting.suite_paths(ROOT)
     assert ROOT / "eng/profiler_benchmarks/report.py" in reporting.suite_paths(ROOT)
     assert ROOT / "eng/pipelines/pr-validation-pipeline.yml" in reporting.suite_paths(ROOT)
+    assert ROOT / "eng/scripts/setup_sql_container.py" in reporting.suite_paths(ROOT)
+    assert ROOT / "requirements.txt" in reporting.suite_paths(ROOT)
 
 
-def test_suite_blobs_require_complete_authenticated_tree(monkeypatch):
+def test_suite_blobs_require_complete_authenticated_tree():
     expected = [path.relative_to(ROOT).as_posix() for path in reporting.suite_paths(ROOT)]
     tree = {
         "truncated": False,
@@ -451,11 +536,13 @@ def test_suite_blobs_require_complete_authenticated_tree(monkeypatch):
             for index, path in enumerate(expected)
         ],
     }
-    monkeypatch.setattr(publisher, "github", lambda path: tree)
-    assert set(publisher.suite_blobs({"tree": {"sha": "a" * 40}})) == set(expected)
+    assert set(reporting.suite_blobs(tree, ROOT)) == set(expected)
     tree["tree"].pop()
     with pytest.raises(ValueError, match="missing"):
-        publisher.suite_blobs({"tree": {"sha": "a" * 40}})
+        reporting.suite_blobs(tree, ROOT)
+    tree["tree"].append(None)
+    with pytest.raises(ValueError, match="Incomplete"):
+        reporting.suite_blobs(tree, ROOT)
 
 
 def test_publisher_finishes_unavailable_when_checked_suite_file_moves(monkeypatch):
@@ -465,9 +552,17 @@ def test_publisher_finishes_unavailable_when_checked_suite_file_moves(monkeypatc
         publisher, "publish", lambda number, head, body, base=None: posted.append(body)
     )
     monkeypatch.setattr(publisher, "github", pr_topology())
-    monkeypatch.setattr(publisher, "api", lambda url: {"value": [build]})
+    artifacts = [
+        {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
+        for leg in reporting.LEGS
+    ]
     monkeypatch.setattr(
         publisher,
+        "api",
+        lambda url: {"value": artifacts if "/artifacts?" in url else [build]},
+    )
+    monkeypatch.setattr(
+        reporting,
         "suite_blobs",
         MagicMock(side_effect=ValueError("Benchmark suite missing from commit tree")),
     )
@@ -809,12 +904,12 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     monkeypatch.setattr(
         publisher, "publish", lambda number, head, body, base=None: posted.append(body)
     )
-    monkeypatch.setattr(publisher, "suite_hash", lambda root: "d" * 64)
+    monkeypatch.setattr(reporting, "suite_hash", lambda root: "d" * 64)
     suite_versions = iter(({"suite": "source"}, {"suite": "base"}))
     monkeypatch.setattr(
-        publisher,
+        reporting,
         "suite_blobs",
-        lambda commit: next(suite_versions) if corrupt == "source" else {"suite": "same"},
+        lambda *args: next(suite_versions) if corrupt == "source" else {"suite": "same"},
     )
     monkeypatch.setattr(
         publisher,
@@ -869,7 +964,7 @@ def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report
     monkeypatch.setattr(
         publisher, "publish", lambda number, head, body, base=None: posted.append(body)
     )
-    monkeypatch.setattr(publisher, "suite_blobs", lambda commit: {"suite": "same"})
+    monkeypatch.setattr(reporting, "suite_blobs", lambda *args: {"suite": "same"})
     monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
@@ -961,9 +1056,9 @@ def test_artifact_symlink_and_oversized_json_are_rejected():
     symlink.create_system = 3
     symlink.external_attr = 0o120777 << 16
     with pytest.raises(ValueError, match="Invalid report"):
-        publisher.artifact_report(zip_data([(symlink, "{}")]))
+        reporting.artifact_report(zip_data([(symlink, "{}")]))
     with pytest.raises(ValueError, match="Invalid report"):
-        publisher.artifact_report(zip_data([("report.json", " " * (reporting.MAX_BYTES + 1))]))
+        reporting.artifact_report(zip_data([("report.json", " " * (reporting.MAX_BYTES + 1))]))
 
 
 @pytest.mark.parametrize("environment", [{"os": "Windows"}, {"sql_version": "17.0"}])
@@ -1011,6 +1106,9 @@ def test_comment_workflow_executes_only_trusted_base_code():
     assert coverage.count("extract_coverage_artifact.py") == 2
     assert coverage.count("--max-filesize 268435456") == 2
     assert "unzip -o" not in coverage
+    assert 'cp "$COVERAGE_XML"' not in coverage
+    assert 'diff-cover "$COVERAGE_XML"' in coverage
+    assert "COVERAGE_XML: ${{ runner.temp }}/coverage.xml" in coverage
     assert (
         "head.ref" not in workflow
         and "head.sha }}" not in workflow.split("ref:", 1)[1].split("persist", 1)[0]

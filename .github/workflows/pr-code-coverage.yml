@@ -365,9 +365,8 @@ jobs:
               echo "❌ Failed to read the coverage XML artifact"
               exit 1
             fi
-            cp "$COVERAGE_XML" ./coverage.xml
-            echo "✅ Coverage XML file is ready at ./coverage.xml"
-            ls -la ./coverage.xml
+            echo "✅ Coverage XML file is ready at $COVERAGE_XML"
+            ls -la "$COVERAGE_XML"
           else
             echo "❌ Could not find coverage artifacts"
             echo "This indicates the Azure DevOps CodeCoverageReport job may not have run successfully"
@@ -375,22 +374,24 @@ jobs:
           fi
 
       - name: Generate patch coverage report
+        env:
+          COVERAGE_XML: ${{ runner.temp }}/coverage.xml
         run: |
           # Install dependencies
           pip install diff-cover jq
           sudo apt-get update && sudo apt-get install -y libxml2-utils
           
           # Verify coverage.xml exists before proceeding
-          if [[ ! -f coverage.xml ]]; then
+          if [[ ! -f "$COVERAGE_XML" ]]; then
             echo "❌ coverage.xml not found in current directory"
             echo "Available files:"
             ls -la | head -20
             exit 1
           fi
           
-          echo "✅ coverage.xml found, size: $(wc -c < coverage.xml) bytes"
+          echo "✅ coverage.xml found, size: $(wc -c < "$COVERAGE_XML") bytes"
           echo "🔍 Coverage file preview (first 10 lines):"
-          head -10 coverage.xml
+          head -10 "$COVERAGE_XML"
           
           # Generate diff coverage report using the new command format
           echo "🚀 Generating patch coverage report..."
@@ -414,27 +415,27 @@ jobs:
           # Debug: Check coverage.xml content for specific files
           echo "🔍 Coverage.xml analysis:"
           echo "Python files mentioned in coverage.xml:"
-          grep -o 'filename="[^"]*\.py"' coverage.xml | head -10 || echo "Could not extract filenames"
+          grep -o 'filename="[^"]*\.py"' "$COVERAGE_XML" | head -10 || echo "Could not extract filenames"
           echo "Sample coverage data:"
-          head -20 coverage.xml
+          head -20 "$COVERAGE_XML"
           
           # Use the new format for diff-cover commands
           echo "🚀 Running diff-cover..."
-          diff-cover coverage.xml \
+          diff-cover "$COVERAGE_XML" \
             --compare-branch=main \
             --html-report patch-coverage.html \
             --json-report patch-coverage.json \
             --markdown-report patch-coverage.md || {
               echo "❌ diff-cover failed with exit code $?"
               echo "Checking if coverage.xml is valid XML..."
-              if ! xmllint --noout coverage.xml 2>/dev/null; then
+              if ! xmllint --noout "$COVERAGE_XML" 2>/dev/null; then
                 echo "❌ coverage.xml is not valid XML"
                 echo "First 50 lines of coverage.xml:"
-                head -50 coverage.xml
+                head -50 "$COVERAGE_XML"
               else
                 echo "✅ coverage.xml is valid XML"
                 echo "🔍 diff-cover verbose output:"
-                diff-cover coverage.xml --compare-branch=main --markdown-report debug-patch-coverage.md -v || echo "Verbose diff-cover also failed"
+                diff-cover "$COVERAGE_XML" --compare-branch=main --markdown-report debug-patch-coverage.md -v || echo "Verbose diff-cover also failed"
               fi
               # Don't exit here, let's see what files were created
             }

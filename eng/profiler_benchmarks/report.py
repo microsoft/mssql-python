@@ -1,13 +1,17 @@
 """Validate bounded profiler data and render an advisory, per-platform comparison."""
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import html
+import io
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
+import stat
 import statistics
+import zipfile
 
 LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
 TASK_NAMES = {
@@ -34,6 +38,8 @@ TASK_NAMES = {
 }
 CASES = tuple(TASK_NAMES)
 MAX_BYTES = 8 * 1024 * 1024
+MAX_COMMENT_CHARS = 60000
+MAX_DIAGNOSTIC_ROWS = 20
 MARKER = "<!-- mssql-python-profiler-ci -->"
 THRESHOLD = 0.20
 MIN_DELTA_MS = 1.0
@@ -47,6 +53,8 @@ def suite_paths(root):
         root / "eng/profiler_benchmarks/controller.py",
         root / "eng/profiler_benchmarks/report.py",
         root / "eng/profiler_benchmarks/workloads.py",
+        root / "eng/scripts/setup_sql_container.py",
+        root / "requirements.txt",
         *sorted((root / "profiler").glob("*.py")),
     ]
 
@@ -57,6 +65,72 @@ def suite_hash(root):
         digest.update(file.name.encode())
         digest.update(file.read_bytes().replace(b"\r\n", b"\n"))
     return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class AssessmentEvidence:
+    build: dict
+    head: str
+    base: str
+    merge_commit: dict
+    base_commit: dict
+    source_tree: dict
+    base_tree: dict
+    trusted_root: Path
+
+
+def artifact_report(raw):
+    """Read exactly one bounded JSON member; never extract or execute artifact files."""
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        members = archive.infolist()
+        if len(members) > 200 or sum(member.file_size for member in members) > 64 * 1024 * 1024:
+            raise ValueError("Oversized artifact")
+        reports = [
+            member for member in members if PurePosixPath(member.filename).name == "report.json"
+        ]
+        if len(reports) != 1:
+            raise ValueError("Expected exactly one report.json")
+        member = reports[0]
+        path = PurePosixPath(member.filename)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or "\\" in member.filename
+            or stat.S_ISLNK(member.external_attr >> 16)
+            or member.file_size > MAX_BYTES
+        ):
+            raise ValueError("Invalid report member")
+        if member.flag_bits & 1:
+            raise ValueError("Encrypted performance artifacts are unsupported")
+        return json.loads(archive.read(member).decode("utf-8"))
+
+
+def suite_blobs(tree, root):
+    if (
+        not isinstance(tree, dict)
+        or tree.get("truncated") is not False
+        or not isinstance(tree.get("tree"), list)
+        or not all(isinstance(entry, dict) for entry in tree["tree"])
+    ):
+        raise ValueError("Incomplete commit tree")
+    expected = {path.relative_to(root).as_posix() for path in suite_paths(root)}
+    blobs = {
+        entry.get("path"): entry.get("sha")
+        for entry in tree["tree"]
+        if entry.get("type") == "blob" and entry.get("path") in expected
+    }
+    if set(blobs) != expected or any(
+        not re.fullmatch(r"[0-9a-f]{40}", sha or "") for sha in blobs.values()
+    ):
+        raise ValueError("Benchmark suite missing from commit tree")
+    return blobs
+
+
+def unavailable(reason):
+    return (
+        f"{MARKER}\n## PR Performance Report\n\n"
+        f"**Performance could not be assessed.**\n\n{reason} No result is available."
+    )
 
 
 def number(value, maximum=1e12):
@@ -172,6 +246,82 @@ def validate(report, build_id=None, head=None, source=None, base=None, suite=Non
     return report
 
 
+def assess(evidence, artifact_urls, load_artifact, issues=()):
+    issues = list(issues)
+    try:
+        if (
+            not isinstance(evidence.build, dict)
+            or not isinstance(evidence.merge_commit, dict)
+            or not isinstance(evidence.base_commit, dict)
+            or not isinstance(evidence.source_tree, dict)
+            or not isinstance(evidence.base_tree, dict)
+        ):
+            raise ValueError
+        build_id = evidence.build.get("id")
+        source = evidence.build.get("sourceVersion")
+        if (
+            type(build_id) is not int
+            or build_id <= 0
+            or not re.fullmatch(r"[0-9a-f]{40}", source or "")
+            or not re.fullmatch(r"[0-9a-f]{40}", evidence.head)
+            or not re.fullmatch(r"[0-9a-f]{40}", evidence.base)
+            or evidence.merge_commit.get("sha") != source
+            or evidence.base_commit.get("sha") != evidence.base
+            or [parent["sha"] for parent in evidence.merge_commit["parents"]]
+            != [evidence.base, evidence.head]
+        ):
+            raise ValueError
+        source_tree_sha = evidence.merge_commit["tree"]["sha"]
+        base_tree_sha = evidence.base_commit["tree"]["sha"]
+        if (
+            not re.fullmatch(r"[0-9a-f]{40}", source_tree_sha)
+            or not re.fullmatch(r"[0-9a-f]{40}", base_tree_sha)
+            or evidence.source_tree.get("sha") != source_tree_sha
+            or evidence.base_tree.get("sha") != base_tree_sha
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        return unavailable("Build provenance validation failed.")
+
+    try:
+        suite_unchanged = suite_blobs(evidence.source_tree, evidence.trusted_root) == suite_blobs(
+            evidence.base_tree, evidence.trusted_root
+        )
+        trusted_suite = suite_hash(evidence.trusted_root)
+    except (KeyError, TypeError, ValueError):
+        return unavailable("Benchmark suite validation failed because a required file changed.")
+
+    reports = []
+    for leg, url in artifact_urls.items():
+        try:
+            report = validate(
+                artifact_report(load_artifact(url)),
+                build_id,
+                evidence.head,
+                source,
+                evidence.base,
+            )
+            if report["leg"] != leg:
+                raise ValueError("Artifact leg mismatch")
+            reports.append(report)
+        except (
+            KeyError,
+            RecursionError,
+            TypeError,
+            ValueError,
+            zipfile.BadZipFile,
+        ):
+            issues.append(leg + " (invalid artifact)")
+
+    if not suite_unchanged or any(report["suite_hash"] != trusted_suite for report in reports):
+        reports = []
+        issues.append("workload version differs from trusted base")
+    try:
+        return render(reports, evidence.head, build_id, issues)
+    except ValueError:
+        return unavailable("Performance report rendering failed.")
+
+
 def comparisons(report):
     """Do not add inclusive phase totals together or treat them as wall-clock time."""
     output = []
@@ -247,6 +397,8 @@ def issue_reason(leg, issues):
 def render(reports, head, build_id, issues=()):
     url = f"https://dev.azure.com/sqlclientdrivers/public/_build/results?buildId={build_id}"
     by_leg = {r["leg"]: r for r in reports}
+    if len(by_leg) != len(reports):
+        raise ValueError("Duplicate performance report leg")
     completed = {
         leg: (report, comparisons(report))
         for leg in LEGS
@@ -351,6 +503,7 @@ def render(reports, head, build_id, issues=()):
         )
         lines.append(f"| {environment_name(leg)} | {status} |")
 
+    diagnostics_start = len(lines)
     lines += [
         "",
         "<details>",
@@ -360,12 +513,15 @@ def render(reports, head, build_id, issues=()):
         "They identify where measured time changed, not why it changed.",
     ]
     diagnostics = 0
+    total_diagnostics = 0
     for leg, (_, rows) in completed.items():
         relevant = [row for row in rows if row["status"] != "ok" or row["counts"]]
-        if not relevant:
+        total_diagnostics += len(relevant)
+        visible = relevant[: max(0, MAX_DIAGNOSTIC_ROWS - diagnostics)]
+        if not visible:
             continue
         lines += ["", f"### {environment_name(leg)}"]
-        for row in relevant:
+        for row in visible:
             diagnostics += 1
             phases = "; ".join(f"{escape(label)} +{delta:.3f} ms" for delta, label in row["phases"])
             counts = "; ".join(escape(label) for label in row["counts"])
@@ -375,9 +531,18 @@ def render(reports, head, build_id, issues=()):
             lines.append(f"**{TASK_NAMES[row['name']]}:** {detail}.")
     if not diagnostics:
         lines += ["", "No affected phases or call-count changes were recorded."]
+    elif total_diagnostics > diagnostics:
+        lines += [
+            "",
+            f"{total_diagnostics - diagnostics} additional diagnostic rows are available "
+            "in the raw ADO artifacts.",
+        ]
     lines += [
         "",
         "</details>",
+    ]
+    diagnostics_end = len(lines)
+    lines += [
         "",
         "<details>",
         "<summary>All database tasks and timings</summary>",
@@ -450,7 +615,18 @@ def render(reports, head, build_id, issues=()):
         "</details>",
     ]
     body = "\n".join(lines)
-    if len(body) > 60000:
+    if len(body) > MAX_COMMENT_CHARS:
+        lines[diagnostics_start:diagnostics_end] = [
+            "",
+            "<details>",
+            "<summary>Affected phases and call counts</summary>",
+            "",
+            f"{total_diagnostics} diagnostic rows are available in the raw ADO artifacts.",
+            "",
+            "</details>",
+        ]
+        body = "\n".join(lines)
+    if len(body) > MAX_COMMENT_CHARS:
         raise ValueError("Performance comment exceeds its size budget")
     return body
 
