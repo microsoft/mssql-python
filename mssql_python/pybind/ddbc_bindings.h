@@ -54,6 +54,7 @@ using py::literals::operator""_a;
 
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
+#include "fetch_text.hpp"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
@@ -593,8 +594,8 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
             SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
 #if defined(__APPLE__) || defined(__linux__)
             PyObject* pyStr =
-                PyUnicode_DecodeUTF16(reinterpret_cast<const char*>(wcharData),
-                                      numCharsInData * sizeof(SQLWCHAR), nullptr, nullptr);
+                FetchText::decode_utf16_native(reinterpret_cast<const char*>(wcharData),
+                                              numCharsInData * sizeof(SQLWCHAR));
 #else
             PyObject* pyStr =
                 PyUnicode_FromWideChar(reinterpret_cast<const wchar_t*>(wcharData), numCharsInData);
@@ -707,11 +708,8 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on
         // Linux/macOS)
         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
-        PyObject* pyStr = PyUnicode_DecodeUTF16(reinterpret_cast<const char*>(wcharData),
-                                                numCharsInData * sizeof(SQLWCHAR),
-                                                NULL,  // errors (use default strict)
-                                                NULL   // byteorder (auto-detect)
-        );
+        PyObject* pyStr = FetchText::decode_utf16_native(
+            reinterpret_cast<const char*>(wcharData), numCharsInData * sizeof(SQLWCHAR));
         if (pyStr) {
             PyList_SET_ITEM(row, col - 1, pyStr);
         } else {

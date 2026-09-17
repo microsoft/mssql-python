@@ -97,7 +97,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Bounded text fetched as UTF-16 now preserves leading U+FEFF and U+FFFE as
   payload rather than treating them as byte-order markers. This corrects
   row-wise `fetchone()`, `fetchmany()`, and `fetchall()` results, including
-  bounded columns fetched alongside a MAX column. Actual MAX/LOB text decoding
+  bounded columns fetched alongside a MAX column, as well as bounded batch
+  decoding on Linux/macOS. Existing platform-specific decode-error fallbacks
+  remain unchanged. Actual MAX/LOB text decoding
   is unchanged; its existing BOM and trailing-NUL loss is not fixed here.
 - **GH-769:** Corrected 11 `GetInfoConstants` IDs for scalar functions, outer
   joins, driver handles, cursor attributes, catalog support, and parameter

@@ -7,6 +7,8 @@ The MAX value here is only a routing control. Actual MAX text BOM/NUL fidelity
 belongs to the separate LOB decoder and is not covered by this regression.
 """
 
+import sys
+
 import pytest
 
 from mssql_python import SQL_CHAR, SQL_WCHAR
@@ -171,5 +173,23 @@ def test_bounded_nvarchar_strict_decode_error(db_connection, raw, method, forced
         cursor.execute(f"SELECT CAST(0x{raw} AS nvarchar(64)) {extra}")
         with pytest.raises(UnicodeDecodeError):
             _fetch_rows(cursor, method)
+        cursor.execute("SELECT CAST(N'recovered' AS nvarchar(64))")
+        assert cursor.fetchone()[0] == "recovered"
+
+
+@pytest.mark.parametrize("raw", ["00D8", "00DC"], ids=["unpaired-high", "unpaired-low"])
+@pytest.mark.parametrize("method", ["fetchmany", "fetchall"])
+def test_bounded_nvarchar_batch_malformed_fallback(db_connection, raw, method):
+    """Preserve the existing platform-specific batch behavior for unpaired surrogates."""
+    expression = f"CAST(0x{raw} AS nvarchar(64))"
+    raw_bytes = bytes.fromhex(raw)
+    with db_connection.cursor() as cursor:
+        cursor.execute(f"SELECT DATALENGTH({expression}), CAST({expression} AS varbinary(64))")
+        assert tuple(cursor.fetchone()) == (len(raw_bytes), raw_bytes)
+        cursor.execute(f"SELECT {expression}")
+        expected = (
+            raw_bytes.decode("utf-16le", errors="surrogatepass") if sys.platform == "win32" else ""
+        )
+        assert _fetch_rows(cursor, method) == [(expected,)]
         cursor.execute("SELECT CAST(N'recovered' AS nvarchar(64))")
         assert cursor.fetchone()[0] == "recovered"
