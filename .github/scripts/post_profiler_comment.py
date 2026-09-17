@@ -281,10 +281,9 @@ def run(number, head, wait_minutes):
     except (ValueError, KeyError, TypeError, URLError, TimeoutError):
         unavailable(number, head, "Build provenance validation failed.", pr_base)
         return
-    artifact_deadline = time.monotonic() + 120
     artifacts = None
     failures = 0
-    while time.monotonic() < artifact_deadline:
+    while time.monotonic() < deadline:
         try:
             artifacts = artifact_items(api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1"))
             failures = 0

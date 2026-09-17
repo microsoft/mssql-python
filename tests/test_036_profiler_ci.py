@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.error import URLError
 import zipfile
+import zlib
 
 import pytest
 
@@ -929,6 +930,7 @@ def test_base_moving_while_listing_comments_prevents_publish(monkeypatch):
         "base",
         "provenance",
         "recursion",
+        "deflate",
         "delayed",
     ],
 )
@@ -1007,6 +1009,15 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
         return data[leg]
 
     monkeypatch.setattr(publisher, "fetch", fetch)
+    if corrupt == "deflate":
+        artifact_report = reporting.artifact_report
+
+        def corrupt_deflate(raw):
+            if raw == data["Linux-SQL2022"]:
+                raise zlib.error("corrupt deflate stream")
+            return artifact_report(raw)
+
+        monkeypatch.setattr(reporting, "artifact_report", corrupt_deflate)
     monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
@@ -1021,7 +1032,7 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     if corrupt in ("suite", "source"):
         assert "workload version differs from trusted base" in posted[1]
         assert "consistent slowdown signals" not in posted[1]
-    elif corrupt in ("zip", "timeout", "scenarios", "recursion"):
+    elif corrupt in ("zip", "timeout", "scenarios", "recursion", "deflate"):
         assert "### Windows / SQL Server 2022" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
         assert "| Linux / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
@@ -1051,8 +1062,8 @@ def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report
     monkeypatch.setattr(
         publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
     )
-    publisher.run(123, "c" * 40, 1)
-    assert clock[0] == 150
+    publisher.run(123, "c" * 40, 4)
+    assert clock[0] == 240
     assert len(posted) == 2
     assert "buildId=42" in posted[1]
 
@@ -1131,6 +1142,39 @@ def test_publisher_retries_malformed_pr_and_artifact_responses(monkeypatch):
     malformed["repository"]["id"] = None
     with pytest.raises(ValueError, match="build list"):
         publisher.build_items({"value": [malformed]})
+
+
+def test_artifact_polling_uses_remaining_publication_budget(monkeypatch):
+    posted = []
+    clock = [0]
+    build = ado_build()
+    artifacts = [
+        {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
+        for leg in reporting.LEGS
+    ]
+    artifact_responses = iter([[]] * 5 + [artifacts])
+
+    def api(url):
+        return {"value": next(artifact_responses)} if "/artifacts?" in url else {"value": [build]}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(reporting, "assess", lambda *args: "final report")
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 4)
+    assert clock[0] == 150
+    assert posted == [
+        publisher.HEADER
+        + "**Performance assessment pending.**\n\n"
+        + f"Waiting for the matching performance run for head `{'c' * 40}`.",
+        "final report",
+    ]
 
 
 def test_artifact_symlink_and_oversized_json_are_rejected():

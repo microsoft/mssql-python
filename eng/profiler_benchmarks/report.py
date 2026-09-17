@@ -12,6 +12,7 @@ import re
 import stat
 import statistics
 import zipfile
+import zlib
 
 LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
 TASK_NAMES = {
@@ -317,6 +318,7 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
             TypeError,
             ValueError,
             zipfile.BadZipFile,
+            zlib.error,
         ):
             issues.append(leg + " (invalid artifact)")
 
