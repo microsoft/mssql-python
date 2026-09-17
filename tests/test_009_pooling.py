@@ -1188,6 +1188,212 @@ def test_pool_size_accounting_race_on_candidate_validation_close_interleave(conn
     )
 
 
+def test_pool_size_accounting_race_on_successful_candidate_reuse_close_interleave(conn_str):
+    """Regression test for GH-746: candidate reuse success racing pool close().
+
+    When a candidate popped under generation 0 succeeds validation while racing
+    a pool close(), the candidate must NOT be returned as a valid connection
+    under the new generation. Returning it without an active reservation in the
+    new generation would allow another thread to reserve up to max_size, causing
+    the pool to exceed max_size. Instead, the stale candidate is discarded and
+    acquire retries under the new generation (or fails if the pool is full).
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+        # Inject candidate with near-expiry token to trigger token-factory validation
+        pool.inject_candidate("SERVER=dummy_test_746;", 1)
+        assert pool.current_size == 1
+        assert pool.generation == 0
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+
+        def factory_a():
+            in_factory_a.set()
+            assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            return {}, 9999999999
+
+        t_a_conn = []
+        t_a_error = []
+
+        def run_a():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", factory_a)
+                t_a_conn.append(conn)
+            except Exception as exc:
+                t_a_error.append(exc)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+
+        # Thread A popped candidate (generation 0). Now pool.close() wipes the pool.
+        pool.close()
+        assert pool.current_size == 0
+        assert pool.generation == 1
+
+        # Thread B reserves the freed slot under generation 1
+        in_factory_b = threading.Event()
+        release_factory_b = threading.Event()
+
+        def factory_b():
+            in_factory_b.set()
+            assert release_factory_b.wait(timeout=5.0), "Timed out waiting to release factory B"
+            return {}
+
+        t_b_conn = []
+        t_b_error = []
+
+        def run_b():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", factory_b)
+                t_b_conn.append(conn)
+            except Exception as exc:
+                t_b_error.append(exc)
+
+        t_b = threading.Thread(target=run_b)
+        t_b.start()
+        assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+        assert pool.current_size == 1
+
+        # Thread A's validation succeeds. Under the generation fix, Thread A detects
+        # generation mismatch (0 != 1), discards the stale candidate, and retries acquire.
+        # Since max_size=1 and Thread B currently holds the generation 1 reservation,
+        # Thread A's retry is rejected with 'pool size limit reached' instead of handing out
+        # an uncounted live connection.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+
+        assert len(t_a_error) == 1 and "pool size limit reached" in str(t_a_error[0]), (
+            f"Expected Thread A to be rejected due to pool limit, got {t_a_error}"
+        )
+        assert len(t_a_conn) == 0
+
+        # Thread B finishes connecting and successfully checks out its connection
+        release_factory_b.set()
+        t_b.join(timeout=5.0)
+        assert len(t_b_error) == 0
+        assert len(t_b_conn) == 1
+        assert pool.current_size == 1
+
+        # Return Thread B's connection and clean up
+        pool.release(t_b_conn[0])
+        assert pool.current_size == 1
+        pool.close()
+        assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str):
+    """Regression test for GH-746: connection open success racing pool close().
+
+    When a connection open succeeds after racing a pool close(), the newly opened
+    connection must NOT be returned into the pool under the new generation without
+    validating the generation counter. If Thread A connected under generation 0,
+    close() reset the pool, and Thread B reserved generation 1, returning Thread A's
+    connection would result in 2 live connections when max_size=1. The generation
+    check ensures Thread A discards the orphaned connection and retries under the
+    new generation (failing if Thread B has claimed the capacity).
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+        assert pool.current_size == 0
+        assert pool.generation == 0
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+
+        def factory_a():
+            in_factory_a.set()
+            assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            return {}
+
+        t_a_conn = []
+        t_a_error = []
+
+        def run_a():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", factory_a)
+                t_a_conn.append(conn)
+            except Exception as exc:
+                t_a_error.append(exc)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+        assert pool.current_size == 1
+
+        # Thread A reserved slot under generation 0. Now pool.close() wipes the pool.
+        pool.close()
+        assert pool.current_size == 0
+        assert pool.generation == 1
+
+        # Thread B reserves the freed slot under generation 1
+        in_factory_b = threading.Event()
+        release_factory_b = threading.Event()
+
+        def factory_b():
+            in_factory_b.set()
+            assert release_factory_b.wait(timeout=5.0), "Timed out waiting to release factory B"
+            return {}
+
+        t_b_conn = []
+        t_b_error = []
+
+        def run_b():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", factory_b)
+                t_b_conn.append(conn)
+            except Exception as exc:
+                t_b_error.append(exc)
+
+        t_b = threading.Thread(target=run_b)
+        t_b.start()
+        assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+        assert pool.current_size == 1
+
+        # Thread A's open succeeds. Under the generation fix, Thread A detects
+        # reservation generation mismatch (0 != 1), discards the opened connection,
+        # and retries acquire under generation 1.
+        # Since max_size=1 and Thread B holds the generation 1 slot, Thread A's retry
+        # fails with 'pool size limit reached' rather than creating a 2nd concurrent connection.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+
+        assert len(t_a_error) == 1 and "pool size limit reached" in str(t_a_error[0]), (
+            f"Expected Thread A to be rejected due to pool limit, got {t_a_error}"
+        )
+        assert len(t_a_conn) == 0
+
+        # Thread B finishes connecting and successfully checks out its connection
+        release_factory_b.set()
+        t_b.join(timeout=5.0)
+        assert len(t_b_error) == 0
+        assert len(t_b_conn) == 1
+        assert pool.current_size == 1
+
+        # Return Thread B's connection and clean up
+        pool.release(t_b_conn[0])
+        assert pool.current_size == 1
+        pool.close()
+        assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
 # =============================================================================
 # Native token-factory (lazy token acquisition) integration tests
 # =============================================================================

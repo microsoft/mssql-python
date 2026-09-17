@@ -76,6 +76,10 @@ void Connection::allocateDbcHandle() {
 
 void Connection::connect(const py::dict& attrs_before) {
     PERF_TIMER("Connection::connect");
+    if (_isMock) {
+        updateLastUsed();
+        return;
+    }
     LOG("Connecting to database");
     // Apply access token before connect
     if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
@@ -103,6 +107,10 @@ void Connection::connect(const py::dict& attrs_before) {
 
 void Connection::disconnect() {
     PERF_TIMER("Connection::disconnect");
+    if (_isMock) {
+        _dbcHandle.reset();
+        return;
+    }
     // Determine GIL state once, up front. disconnect() runs both from
     // pybind11-bound methods (GIL held) and from GIL-less destructor / shutdown
     // paths: Connection::~Connection() dropping the last shared_ptr, or teardown
@@ -507,6 +515,9 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
 }
 
 bool Connection::isAlive() const {
+    if (_isMock) {
+        return true;
+    }
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -517,6 +528,9 @@ bool Connection::isAlive() const {
 }
 
 bool Connection::reset() {
+    if (_isMock) {
+        return true;
+    }
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }

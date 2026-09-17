@@ -6136,18 +6136,22 @@ PYBIND11_MODULE(ddbc_bindings, m) {
             py::arg("conn_str"), py::arg("token_factory") = py::none())
         .def("release", &ConnectionPool::release, py::arg("conn"))
         .def("close", &ConnectionPool::close)
+        .def("set_mock_mode", &ConnectionPool::set_mock_mode, py::arg("enable") = true)
         .def_property_readonly("current_size", &ConnectionPool::current_size)
         .def_property_readonly("generation", &ConnectionPool::generation)
         .def(
             "inject_candidate",
-            [](ConnectionPool& pool, const std::u16string& connStr, long long expiry) {
+            [](ConnectionPool& pool, const std::u16string& connStr, long long expiry, bool mock) {
                 auto conn = std::make_shared<Connection>(connStr, true);
+                if (mock || pool.mock_mode()) {
+                    conn->setMock(true);
+                }
                 if (expiry > 0) {
                     conn->setTokenExpiry(expiry);
                 }
                 pool.inject_candidate(conn);
             },
-            py::arg("conn_str"), py::arg("expiry") = 0);
+            py::arg("conn_str"), py::arg("expiry") = 0, py::arg("mock") = false);
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap,
           "DetectParamTypes + BindParameters + SQLExecute all in C++",

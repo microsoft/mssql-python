@@ -6,6 +6,7 @@
 
 #pragma once
 #include "connection/connection.h"
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <memory>
@@ -58,11 +59,20 @@ class ConnectionPool {
         ++_current_size;
     }
 
+    // Test hooks for deterministic race testing (#746)
+    void set_mock_mode(bool enable) {
+        _mock_mode = enable;
+    }
+    bool mock_mode() const {
+        return _mock_mode;
+    }
+
   private:
     size_t _max_size;        // Maximum number of connections allowed
     int _idle_timeout_secs;  // Idle time before connections are stale
     size_t _current_size = 0;
     uint64_t _generation = 0;  // Pool reset generation for reservation attribution (#746)
+    std::atomic<bool> _mock_mode{false};
     std::deque<std::shared_ptr<Connection>> _pool;  // Available connections
     std::mutex _mutex;                              // Mutex for thread-safe access
 };

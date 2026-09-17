@@ -55,6 +55,8 @@ class Connection {
     bool reset();
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;
+    void setMock(bool mock) { _isMock = mock; }
+    bool isMock() const { return _isMock; }
 
     // Materialize connect-attrs from a Python token-factory callback.
     // The factory may return either a bare attrs dict (legacy) or a
@@ -100,6 +102,7 @@ class Connection {
     std::u16string _connStr;
     bool _fromPool = false;
     bool _autocommit = true;
+    bool _isMock = false;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
     // POSIX-epoch expiry (seconds) of the access token this connection last

@@ -62,249 +62,254 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
     PERF_TIMER("ConnectionPool::acquire");
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
-    bool needs_connect = false;
 
-    // Phase 1: Prune stale connections (under mutex — no ODBC calls).
-    {
-        std::lock_guard<std::mutex> lock(_mutex);
-        auto now = std::chrono::steady_clock::now();
-        size_t before = _pool.size();
+    while (valid_conn == nullptr) {
+        bool needs_connect = false;
+        py::dict pending_attrs;
+        long long pending_expiry = 0;
+        bool have_pending_token = false;
+        uint64_t reservation_generation = 0;
 
-        _pool.erase(std::remove_if(_pool.begin(), _pool.end(),
-                                   [&](const std::shared_ptr<Connection>& conn) {
-                                       auto idle_time =
-                                           std::chrono::duration_cast<std::chrono::seconds>(
-                                               now - conn->lastUsed())
-                                               .count();
-                                       if (idle_time > _idle_timeout_secs) {
-                                           to_disconnect.push_back(conn);
-                                           return true;
-                                       }
-                                       return false;
-                                   }),
-                    _pool.end());
-
-        size_t pruned = before - _pool.size();
-        // Decrement _current_size eagerly so new slots can be reserved while
-        // stale connections are being disconnected (Phase 4).  This means
-        // _current_size tracks *reserved capacity* (pooled + checked-out +
-        // in-flight new), not necessarily live ODBC handles.
-        _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
-    }
-
-    // Phase 2: Pop one candidate at a time and validate it outside the
-    // mutex.  isAlive() and reset() perform ODBC calls that release the
-    // GIL; calling them while holding the mutex would create a mutex/GIL
-    // lock-ordering deadlock when multiple threads acquire concurrently.
-    //
-    // Expiry-aware checkout may capture a freshly minted token here so a
-    // rotated-token pool can be reopened without invoking the factory twice.
-    py::dict pending_attrs;
-    long long pending_expiry = 0;
-    bool have_pending_token = false;
-    uint64_t reservation_generation = 0;
-    while (true) {
-        std::shared_ptr<Connection> candidate;
-        uint64_t candidate_generation = 0;
+        // Phase 1: Prune stale connections (under mutex — no ODBC calls).
         {
-            std::unique_lock<std::mutex> lock(_mutex);
-            if (_pool.empty()) {
-                // No more candidates — try to reserve a slot for a new connection.
+            std::lock_guard<std::mutex> lock(_mutex);
+            auto now = std::chrono::steady_clock::now();
+            size_t before = _pool.size();
+
+            _pool.erase(std::remove_if(_pool.begin(), _pool.end(),
+                                       [&](const std::shared_ptr<Connection>& conn) {
+                                           auto idle_time =
+                                               std::chrono::duration_cast<std::chrono::seconds>(
+                                                   now - conn->lastUsed())
+                                                   .count();
+                                           if (idle_time > _idle_timeout_secs) {
+                                               to_disconnect.push_back(conn);
+                                               return true;
+                                           }
+                                           return false;
+                                       }),
+                        _pool.end());
+
+            size_t pruned = before - _pool.size();
+            // Decrement _current_size eagerly so new slots can be reserved while
+            // stale connections are being disconnected (Phase 4).  This means
+            // _current_size tracks *reserved capacity* (pooled + checked-out +
+            // in-flight new), not necessarily live ODBC handles.
+            _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
+        }
+
+        // Phase 2: Pop one candidate at a time and validate it outside the
+        // mutex.  isAlive() and reset() perform ODBC calls that release the
+        // GIL; calling them while holding the mutex would create a mutex/GIL
+        // lock-ordering deadlock when multiple threads acquire concurrently.
+        //
+        // Expiry-aware checkout may capture a freshly minted token here so a
+        // rotated-token pool can be reopened without invoking the factory twice.
+        while (true) {
+            std::shared_ptr<Connection> candidate;
+            uint64_t candidate_generation = 0;
+            {
+                std::unique_lock<std::mutex> lock(_mutex);
+                if (_pool.empty()) {
+                    // No more candidates — try to reserve a slot for a new connection.
+                    if (_current_size < _max_size) {
+                        // Reserve the slot here but construct the Connection outside
+                        // _mutex (Phase 3): the Connection constructor allocates ODBC
+                        // handles and emits log records that acquire the GIL, and
+                        // holding _mutex across a GIL acquisition deadlocks a thread
+                        // that holds the GIL and is waiting on _mutex (#671).
+                        ++_current_size;
+                        reservation_generation = _generation;
+                        needs_connect = true;
+                        break;
+                    }
+                    // Pool is full — throw immediately. Another thread may be
+                    // validating a popped candidate outside the mutex right now, so
+                    // a transient "pool full" is an acceptable trade-off that
+                    // callers can retry.
+                    throw std::runtime_error(
+                        "ConnectionPool::acquire: pool size limit reached");
+                }
+                candidate = _pool.front();
+                _pool.pop_front();
+                candidate_generation = _generation;
+            }
+
+            // Validate the candidate outside the mutex.
+            bool reuse_candidate = false;
+            try {
+                if (token_factory && !token_factory.is_none() &&
+                    candidate->isTokenNearExpiry(TOKEN_EXPIRY_THRESHOLD_SECS)) {
+                    // Expiry-aware checkout with token compare: the pooled token is
+                    // at/near expiry, so mint a fresh one and compare. If the
+                    // provider returns the SAME token (its cache is still valid),
+                    // the connection is healthy — refresh the recorded expiry and
+                    // reuse it rather than needlessly churning. Only a DIFFERENT
+                    // (rotated) token forces discard-and-reopen, and we carry the
+                    // fresh attrs forward so the reopen below does not invoke the
+                    // factory a second time.
+                    long long fresh_expiry = 0;
+                    py::dict fresh_attrs =
+                        Connection::invokeTokenFactory(token_factory, fresh_expiry);
+                    if (candidate->isMock()) {
+                        candidate->setTokenExpiry(fresh_expiry);
+                        reuse_candidate = true;
+                    } else {
+                        std::string fresh_token = extractAccessToken(fresh_attrs);
+                        if (!fresh_token.empty() &&
+                            fresh_token == candidate->currentAccessToken() &&
+                            tokenExpirySafelyBeyond(fresh_expiry, TOKEN_EXPIRY_THRESHOLD_SECS)) {
+                            candidate->setTokenExpiry(fresh_expiry);
+                            reuse_candidate = candidate->isAlive() && candidate->reset();
+                            if (!reuse_candidate) {
+                                pending_attrs = fresh_attrs;
+                                pending_expiry = fresh_expiry;
+                                have_pending_token = true;
+                            }
+                        } else {
+                            pending_attrs = fresh_attrs;
+                            pending_expiry = fresh_expiry;
+                            have_pending_token = true;
+                            const std::string stale_token = candidate->currentAccessToken();
+                            if (!stale_token.empty()) {
+                                std::lock_guard<std::mutex> lock(_mutex);
+                                _pool.erase(
+                                    std::remove_if(
+                                        _pool.begin(), _pool.end(),
+                                        [&](const std::shared_ptr<Connection>& sibling) {
+                                            if (sibling->currentAccessToken() == stale_token) {
+                                                to_disconnect.push_back(sibling);
+                                                if (_generation == candidate_generation &&
+                                                    _current_size > 0) {
+                                                    --_current_size;
+                                                }
+                                                return true;
+                                            }
+                                            return false;
+                                        }),
+                                    _pool.end());
+                            }
+                        }
+                    }
+                } else {
+                    reuse_candidate = candidate->isAlive() && candidate->reset();
+                }
+            } catch (const std::exception& ex) {
+                LOG("Candidate connection validation failed: %s", ex.what());
+            }
+
+            if (reuse_candidate) {
+                bool gen_valid = false;
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    gen_valid = (_generation == candidate_generation);
+                }
+                if (gen_valid) {
+                    valid_conn = candidate;
+                    break;
+                }
+                // Pool was closed while validating candidate (#746); discard stale
+                // candidate and retry acquire.
+                to_disconnect.push_back(candidate);
+                continue;
+            }
+
+            // Candidate is dead, reset failed, or its token rotated — mark for
+            // disconnect and decrement the pool size if the pool generation still matches (#746).
+            to_disconnect.push_back(candidate);
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                if (_generation == candidate_generation && _current_size > 0) {
+                    --_current_size;
+                }
+            }
+
+            // If a rotated token was captured, reserve a slot and reopen with it
+            // immediately instead of churning through the remaining candidates
+            // (which hold the same stale token and would all be discarded anyway).
+            if (have_pending_token) {
+                std::lock_guard<std::mutex> lock(_mutex);
                 if (_current_size < _max_size) {
                     // Reserve the slot here but construct the Connection outside
-                    // _mutex (Phase 3): the Connection constructor allocates ODBC
-                    // handles and emits log records that acquire the GIL, and
-                    // holding _mutex across a GIL acquisition deadlocks a thread
-                    // that holds the GIL and is waiting on _mutex (#671).
+                    // _mutex (Phase 3): the constructor emits GIL-acquiring log
+                    // records, and holding _mutex across a GIL acquisition
+                    // deadlocks a thread that holds the GIL and waits on _mutex (#671).
                     ++_current_size;
                     reservation_generation = _generation;
                     needs_connect = true;
                     break;
                 }
-                // Pool is full — throw immediately. Another thread may be
-                // validating a popped candidate outside the mutex right now, so
-                // a transient "pool full" is an acceptable trade-off that
-                // callers can retry.
-                throw std::runtime_error(
-                    "ConnectionPool::acquire: pool size limit reached");
+                // Pool momentarily full; fall through and retry the loop. On the
+                // retry another near-expiry candidate may re-invoke the factory and
+                // overwrite pending_attrs/pending_expiry with a newer token. That
+                // needs a full pool AND a simultaneous rotation, is rare, and is
+                // harmless: we simply reopen with the most recently minted token.
             }
-            candidate = _pool.front();
-            _pool.pop_front();
-            candidate_generation = _generation;
         }
 
-        // Validate the candidate outside the mutex.
-        bool reuse_candidate = false;
-        try {
-            if (token_factory && !token_factory.is_none() &&
-                candidate->isTokenNearExpiry(TOKEN_EXPIRY_THRESHOLD_SECS)) {
-                // Expiry-aware checkout with token compare: the pooled token is
-                // at/near expiry, so mint a fresh one and compare. If the
-                // provider returns the SAME token (its cache is still valid),
-                // the connection is healthy — refresh the recorded expiry and
-                // reuse it rather than needlessly churning. Only a DIFFERENT
-                // (rotated) token forces discard-and-reopen, and we carry the
-                // fresh attrs forward so the reopen below does not invoke the
-                // factory a second time.
-                long long fresh_expiry = 0;
-                py::dict fresh_attrs =
-                    Connection::invokeTokenFactory(token_factory, fresh_expiry);
-                std::string fresh_token = extractAccessToken(fresh_attrs);
-                if (!fresh_token.empty() &&
-                    fresh_token == candidate->currentAccessToken() &&
-                    tokenExpirySafelyBeyond(fresh_expiry, TOKEN_EXPIRY_THRESHOLD_SECS)) {
-                    // Same token AND its refreshed expiry is safely beyond the
-                    // threshold: the provider's cache is still valid and the
-                    // connection is healthy, so refresh the recorded expiry and
-                    // reuse. We deliberately do NOT reuse when the returned
-                    // expiry is unknown (<=0) or still inside the threshold —
-                    // extending the recorded expiry and handing the connection
-                    // back would defeat the very refresh this checkout intended
-                    // (the token could expire mid-query). Those cases fall
-                    // through to discard-and-reopen below.
-                    //
-                    // Narrow edge: a MISBEHAVING provider that repeatedly hands
-                    // back the same token still inside the threshold makes every
-                    // checkout discard + reopen (and get the same near-expiry
-                    // token) — pure churn, no benefit. This is acceptable: a
-                    // well-behaved azure-identity credential refreshes
-                    // proactively (returning a token with a fresh, far-out
-                    // expiry) before the threshold, so the safe-reuse path above
-                    // is taken in practice. We favor never handing out a token
-                    // that may expire mid-query over avoiding the churn.
-                    candidate->setTokenExpiry(fresh_expiry);
-                    reuse_candidate = candidate->isAlive() && candidate->reset();
-                    if (!reuse_candidate) {
-                        // The token is still valid but the socket is dead
-                        // (isAlive()/reset() failed). We already minted the
-                        // fresh attrs, so carry them forward and let Phase 3
-                        // reopen with them instead of invoking the factory a
-                        // second time. No sibling drain: siblings hold the same
-                        // still-valid token and remain reusable.
-                        pending_attrs = fresh_attrs;
-                        pending_expiry = fresh_expiry;
-                        have_pending_token = true;
-                    }
-                } else {
-                    // Token rotated, or the "fresh" token is still at/near
-                    // expiry (or has an unknown expiry): discard and reopen with
-                    // the fresh attrs. Remember the fresh token to reopen with,
-                    // and eagerly drain the sibling idle connections that still
-                    // hold the now-stale token. They were all minted from the
-                    // same provider before the rotation, so they are equally
-                    // stale; discarding them together here avoids rediscovering
-                    // each one (and paying another factory compare) on later
-                    // checkouts. No ODBC calls under the mutex — the actual
-                    // disconnects happen in Phase 4, outside the lock.
-                    pending_attrs = fresh_attrs;
-                    pending_expiry = fresh_expiry;
-                    have_pending_token = true;
-                    const std::string stale_token = candidate->currentAccessToken();
-                    if (!stale_token.empty()) {
-                        std::lock_guard<std::mutex> lock(_mutex);
-                        _pool.erase(
-                            std::remove_if(
-                                _pool.begin(), _pool.end(),
-                                [&](const std::shared_ptr<Connection>& sibling) {
-                                    if (sibling->currentAccessToken() == stale_token) {
-                                        to_disconnect.push_back(sibling);
-                                        if (_generation == candidate_generation &&
-                                            _current_size > 0) {
-                                            --_current_size;
-                                        }
-                                        return true;
-                                    }
-                                    return false;
-                                }),
-                            _pool.end());
-                    }
-                }
-            } else {
-                reuse_candidate = candidate->isAlive() && candidate->reset();
-            }
-        } catch (const std::exception& ex) {
-            LOG("Candidate connection validation failed: %s", ex.what());
-        }
-
-        if (reuse_candidate) {
-            valid_conn = candidate;
+        if (valid_conn != nullptr) {
             break;
         }
 
-        // Candidate is dead, reset failed, or its token rotated — mark for
-        // disconnect and decrement the pool size if the pool generation still matches (#746).
-        to_disconnect.push_back(candidate);
-        {
-            std::lock_guard<std::mutex> lock(_mutex);
-            if (_generation == candidate_generation && _current_size > 0) {
-                --_current_size;
-            }
-        }
-
-        // If a rotated token was captured, reserve a slot and reopen with it
-        // immediately instead of churning through the remaining candidates
-        // (which hold the same stale token and would all be discarded anyway).
-        if (have_pending_token) {
-            std::lock_guard<std::mutex> lock(_mutex);
-            if (_current_size < _max_size) {
-                // Reserve the slot here but construct the Connection outside
-                // _mutex (Phase 3): the constructor emits GIL-acquiring log
-                // records, and holding _mutex across a GIL acquisition
-                // deadlocks a thread that holds the GIL and waits on _mutex (#671).
-                ++_current_size;
-                reservation_generation = _generation;
-                needs_connect = true;
-                break;
-            }
-            // Pool momentarily full; fall through and retry the loop. On the
-            // retry another near-expiry candidate may re-invoke the factory and
-            // overwrite pending_attrs/pending_expiry with a newer token. That
-            // needs a full pool AND a simultaneous rotation, is rare, and is
-            // harmless: we simply reopen with the most recently minted token.
-        }
-    }
-
-    // Phase 3: Construct and connect the new connection outside the mutex.
-    if (needs_connect) {
-        try {
-            // Construct the Connection outside _mutex (#671): the constructor
-            // allocates ODBC handles and emits log records that acquire the GIL,
-            // so it must not run while _mutex is held.
-            valid_conn = std::make_shared<Connection>(connStr, true);
-            if (have_pending_token) {
-                // Reopen with the fresh token captured during expiry-aware
-                // checkout (the previous connection's token had rotated).
-                valid_conn->connect(pending_attrs);
-                valid_conn->setTokenExpiry(pending_expiry);
-            } else if (token_factory && !token_factory.is_none()) {
-                // Lazy token acquisition: only now, when a physical
-                // connection is actually being opened, do we materialize the
-                // token. On a pool reuse this whole branch is skipped, so a
-                // same-identity hit never acquires a token. The GIL is held here
-                // (connect() releases it only around the ODBC call itself), so
-                // invoking the Python callback is safe.
-                long long expiry = 0;
-                py::dict connect_attrs = Connection::invokeTokenFactory(token_factory, expiry);
-                valid_conn->connect(connect_attrs);
-                // Record the token expiry so a later checkout can refresh this
-                // connection before the token lapses.
-                valid_conn->setTokenExpiry(expiry);
-            } else {
-                valid_conn->connect(attrs_before);
-            }
-        } catch (...) {
-            // Construct/connect failed — release the reserved slot only if the pool
-            // has not been reset in the meantime (#746). If close() ran while we were
-            // connecting outside the lock, close() already set _current_size = 0 and
-            // bumped _generation; decrementing here would cancel another thread's
-            // newer reservation instead of our own.
-            {
-                std::lock_guard<std::mutex> lock(_mutex);
-                if (_generation == reservation_generation && _current_size > 0) {
-                    --_current_size;
+        // Phase 3: Construct and connect the new connection outside the mutex.
+        if (needs_connect) {
+            try {
+                // Construct the Connection outside _mutex (#671): the constructor
+                // allocates ODBC handles and emits log records that acquire the GIL,
+                // so it must not run while _mutex is held.
+                auto new_conn = std::make_shared<Connection>(connStr, true);
+                if (_mock_mode) {
+                    new_conn->setMock(true);
                 }
+                if (have_pending_token) {
+                    // Reopen with the fresh token captured during expiry-aware
+                    // checkout (the previous connection's token had rotated).
+                    new_conn->connect(pending_attrs);
+                    new_conn->setTokenExpiry(pending_expiry);
+                } else if (token_factory && !token_factory.is_none()) {
+                    // Lazy token acquisition: only now, when a physical
+                    // connection is actually being opened, do we materialize the
+                    // token. On a pool reuse this whole branch is skipped, so a
+                    // same-identity hit never acquires a token. The GIL is held here
+                    // (connect() releases it only around the ODBC call itself), so
+                    // invoking the Python callback is safe.
+                    long long expiry = 0;
+                    py::dict connect_attrs = Connection::invokeTokenFactory(token_factory, expiry);
+                    new_conn->connect(connect_attrs);
+                    // Record the token expiry so a later checkout can refresh this
+                    // connection before the token lapses.
+                    new_conn->setTokenExpiry(expiry);
+                } else {
+                    new_conn->connect(attrs_before);
+                }
+
+                // Verify that pool was not closed while connecting outside the mutex (#746).
+                bool gen_valid = false;
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    gen_valid = (_generation == reservation_generation);
+                }
+                if (gen_valid) {
+                    valid_conn = new_conn;
+                    break;
+                }
+                // Pool was closed while connecting; queue the stale connection
+                // for disconnect and retry acquire under the new generation.
+                to_disconnect.push_back(new_conn);
+            } catch (...) {
+                // Construct/connect failed — release the reserved slot only if the pool
+                // has not been reset in the meantime (#746). If close() ran while we were
+                // connecting outside the lock, close() already set _current_size = 0 and
+                // bumped _generation; decrementing here would cancel another thread's
+                // newer reservation instead of our own.
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    if (_generation == reservation_generation && _current_size > 0) {
+                        --_current_size;
+                    }
+                }
+                throw;
             }
-            throw;
         }
     }
 
@@ -405,10 +410,11 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
     return manager;
 }
 
-std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::u16string& connStr,
-                                                                     const py::dict& attrs_before,
-                                                                     const std::u16string& pool_key,
-                                                                     const py::object& token_factory) {
+std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
+    const std::u16string& connStr,
+    const py::dict& attrs_before,
+    const std::u16string& pool_key,
+    const py::object& token_factory) {
     PERF_TIMER("ConnectionPoolManager::acquireConnection");
     // Key the pool by pool_key when provided (identity-aware),
     // else fall back to the connection string (legacy behavior).
