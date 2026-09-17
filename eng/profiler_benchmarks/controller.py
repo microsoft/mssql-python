@@ -75,9 +75,10 @@ def terminate_process_tree(process):
             text=True,
         )
         if result.returncode:
-            if process.poll() is None:
-                process.kill()
-                process.wait()
+            if process.poll() is not None:
+                return
+            process.kill()
+            process.wait()
             raise RuntimeError(f"Failed to terminate build process tree: {result.stdout.strip()}")
         process.wait(timeout=5)
         return

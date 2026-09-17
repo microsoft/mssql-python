@@ -762,6 +762,19 @@ def test_windows_process_tree_cleanup_uses_taskkill(monkeypatch):
     process.wait.assert_called_once_with(timeout=5)
 
 
+def test_windows_process_tree_cleanup_accepts_already_exited_process(monkeypatch):
+    process = MagicMock(pid=123)
+    process.poll.return_value = 0
+    monkeypatch.setattr(controller, "WINDOWS", True)
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        MagicMock(return_value=subprocess.CompletedProcess([], 128, "", "not found")),
+    )
+    controller.terminate_process_tree(process)
+    process.kill.assert_not_called()
+
+
 def test_overall_budget_caps_build_and_worker_time(monkeypatch):
     monkeypatch.setattr(controller.time, "monotonic", lambda: 100)
     assert controller.remaining(110, controller.WORKER_TIMEOUT) == 10
@@ -1200,6 +1213,13 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
     pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
     assert "benchmarks/perf-benchmarking.py" not in pipeline
     assert pipeline.count("python -m eng.profiler_benchmarks.controller --reuse-candidate") == 3
+    profiler_conditions = re.findall(
+        r"displayName: '(?:Compare profiling builds[^']*|Publish paired profiler measurements)'\n"
+        r"    condition: ([^\n]+)",
+        pipeline,
+    )
+    assert len(profiler_conditions) == 6
+    assert all("eq(variables['Build.Reason'], 'PullRequest')" in condition for condition in profiler_conditions)
     assert "profilerBuild: '0'" in pipeline  # LocalDB still exercises the normal build
     assert "ddbc_bindings-profiling-SQL2022" in pipeline
     assert "ddbc_bindings-profiling-SQL2025" in pipeline

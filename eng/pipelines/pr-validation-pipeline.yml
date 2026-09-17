@@ -409,20 +409,20 @@ jobs:
       python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "Windows-$(sqlVersion)" --output profiler-results
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Compare profiling builds on SQL Server 2022/2025'
-    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
     timeoutInMinutes: 100
     env:
       SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-  # Publish on PRs as well as main, including partial reports and failure logs.
+  # Publish partial reports and failure logs for PR assessment.
   - task: PublishPipelineArtifact@1
     inputs:
       targetPath: profiler-results
       artifact: 'profiler-Windows-$(sqlVersion)'
     displayName: 'Publish paired profiler measurements'
-    condition: and(succeededOrFailed(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   - task: CopyFiles@2
@@ -662,7 +662,7 @@ jobs:
       HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18
       python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "macOS-$(sqlVersion)" --output profiler-results
     displayName: 'Compare profiling builds on macOS $(sqlVersion)'
-    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     timeoutInMinutes: 100
     continueOnError: true
     env:
@@ -675,7 +675,7 @@ jobs:
       targetPath: profiler-results
       artifact: 'profiler-macOS-$(sqlVersion)'
     displayName: 'Publish paired profiler measurements'
-    condition: and(succeededOrFailed(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
     continueOnError: true
 
   - script: |
@@ -956,7 +956,7 @@ jobs:
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
       fi
     displayName: 'Compare profiling builds in $(distroName) container'
-    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
     timeoutInMinutes: 100
     env:
@@ -969,7 +969,7 @@ jobs:
       targetPath: profiler-results
       artifact: profiler-Linux-SQL2022
     displayName: 'Publish paired profiler measurements'
-    condition: and(succeededOrFailed(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
     continueOnError: true
 
   - script: |
