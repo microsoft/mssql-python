@@ -659,6 +659,9 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
     }
     if (!_usePool) {
         _conn = std::make_shared<Connection>(_connStr, false);
+        if (ConnectionPoolManager::getInstance().mock_mode()) {
+            _conn->setMock(true);
+        }
         // Non-pooled connect still honors the lazy token factory: a
         // token is materialized only when a physical connection is opened. The
         // factory may also carry the token expiry, but a non-pooled

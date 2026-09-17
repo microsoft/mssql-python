@@ -164,6 +164,9 @@ class ConnectionHandle {
     // Get information about the driver and data source
     py::object getInfo(SQLUSMALLINT infoType) const;
 
+    uint64_t originGeneration() const { return _conn ? _conn->originGeneration() : 0; }
+    uint64_t originPoolId() const { return _conn ? _conn->originPoolId() : 0; }
+
   private:
     std::shared_ptr<Connection> _conn;
     bool _usePool;

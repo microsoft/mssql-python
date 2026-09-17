@@ -1198,10 +1198,13 @@ def test_pool_size_accounting_race_on_successful_candidate_reuse_close_interleav
 
         in_factory_a = threading.Event()
         release_factory_a = threading.Event()
+        factory_a_calls = [0]
 
         def factory_a():
-            in_factory_a.set()
-            assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            factory_a_calls[0] += 1
+            if factory_a_calls[0] == 1:
+                in_factory_a.set()
+                assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
             return {}, 9999999999
 
         t_a_conn = []
@@ -1266,6 +1269,9 @@ def test_pool_size_accounting_race_on_successful_candidate_reuse_close_interleav
         t_a.join(timeout=5.0)
         assert len(t_a_error) == 0
         assert len(t_a_conn) == 1
+        # Verify candidate was discarded and A performed a fresh open under generation 1 (#746)
+        assert factory_a_calls[0] == 2, f"Expected 2 factory invocations (validation + retry open), got {factory_a_calls[0]}"
+        assert t_a_conn[0].origin_generation == 1, f"Expected generation 1, got {t_a_conn[0].origin_generation}"
         assert pool.checked_out == 2
         assert pool.in_flight == 0
         assert pool.current_size == 2
@@ -1304,10 +1310,13 @@ def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str)
 
         in_factory_a = threading.Event()
         release_factory_a = threading.Event()
+        factory_a_calls = [0]
 
         def factory_a():
-            in_factory_a.set()
-            assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            factory_a_calls[0] += 1
+            if factory_a_calls[0] == 1:
+                in_factory_a.set()
+                assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
             return {}
 
         t_a_conn = []
@@ -1364,6 +1373,7 @@ def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str)
         t_b.join(timeout=5.0)
         assert len(t_b_error) == 0
         assert len(t_b_conn) == 1
+        assert t_b_conn[0].origin_generation == 1
         assert pool.checked_out == 1
         assert pool.in_flight == 1
         assert pool.current_size == 2
@@ -1378,6 +1388,9 @@ def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str)
         t_a.join(timeout=5.0)
         assert len(t_a_error) == 0
         assert len(t_a_conn) == 1
+        # Verify stale open was discarded and A performed a fresh open under generation 1 (#746)
+        assert factory_a_calls[0] == 2, f"Expected 2 factory invocations (initial open + retry open), got {factory_a_calls[0]}"
+        assert t_a_conn[0].origin_generation == 1, f"Expected generation 1, got {t_a_conn[0].origin_generation}"
         assert pool.checked_out == 2
         assert pool.in_flight == 0
         assert pool.current_size == 2
@@ -1588,6 +1601,69 @@ def test_pool_release_after_pool_recreation(conn_str):
         assert pool_2.checked_out == 0
         pool_2.close()
         assert pool_2.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_manager_defers_replacement_while_connection_checked_out(conn_str):
+    """Across a disable/enable cycle, acquires respect capacity of checked-out connections.
+
+    When ConnectionPoolManager::closePools() runs while a connection is checked out,
+    the pool is retained in _pools, deferring replacement pool creation until the old pool
+    has no live work. Subsequent acquires under the re-enabled pool manager must not
+    allow exceeding max_size while the old connection remains checked out (#746).
+    """
+    _run_in_subprocess(
+        """
+        from mssql_python import ddbc_bindings
+
+        ddbc_bindings._set_pool_manager_mock_mode(True)
+
+        pool_key = "SERVER=dummy_test_746;test_replace"
+        conn_str = "SERVER=dummy_test_746;"
+
+        # 1. Enable pooling with max_size=2
+        ddbc_bindings.enable_pooling(2, 600)
+
+        # 2. Acquire conn_1 from pool (generation 0)
+        conn_1 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        assert conn_1.origin_generation == 0
+
+        # 3. Disable pooling (invokes closePools())
+        # The pool has checked_out=1, so it is retained in _pools with generation bumped to 1.
+        ddbc_bindings.disable_pooling()
+
+        # 4. Re-enable pooling with max_size=2
+        ddbc_bindings.enable_pooling(2, 600)
+
+        # 5. Acquire conn_2 from the manager while conn_1 is still checked out.
+        # Replacement pool creation is deferred because conn_1 is still live.
+        # conn_2 is acquired under generation 1 (1 + 1 = 2 connections active).
+        conn_2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        assert conn_2.origin_generation == 1
+        assert conn_2.origin_pool_id == conn_1.origin_pool_id
+
+        # 6. Attempting to acquire a 3rd connection must fail because max_size=2 is reached!
+        rejected = False
+        try:
+            ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Must reject acquire when max_size=2 is reached across recreation!"
+
+        # 7. Close conn_1: releases the old-generation connection and frees capacity.
+        conn_1.close()
+
+        # 8. Now acquire conn_3: capacity is freed, so acquire succeeds!
+        conn_3 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        assert conn_3.origin_generation == 1
+
+        # Clean up remaining connections
+        conn_2.close()
+        conn_3.close()
+        ddbc_bindings.close_pooling()
         """,
         conn_str,
     )

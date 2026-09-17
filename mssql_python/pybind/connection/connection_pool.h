@@ -127,6 +127,21 @@ class ConnectionPoolManager {
     // Closes all pools and their connections
     void closePools();
 
+    // Test hooks for mock mode
+    void set_mock_mode(bool enable) {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        _mock_mode = enable;
+        for (auto& [_, pool] : _pools) {
+            if (pool) {
+                pool->set_mock_mode(enable);
+            }
+        }
+    }
+    bool mock_mode() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_manager_mutex));
+        return _mock_mode;
+    }
+
   private:
     ConnectionPoolManager() = default;
     ~ConnectionPoolManager() = default;
@@ -146,6 +161,7 @@ class ConnectionPoolManager {
     // explicit enable_pooling() call; only disable_pooling() disarms it, and
     // enable_pooling() re-arms it.
     bool _accepting = true;
+    bool _mock_mode = false;
 
     // Throttle for the lazy-eviction sweep in acquireConnection(). The sweep
     // iterates every pool (and every idle connection within each) under

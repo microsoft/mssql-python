@@ -548,9 +548,20 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
                 }
             }
         }
+        // Defer replacement-pool creation if the existing pool still has live
+        // work. If the existing pool has finished all live work (canEvict() == true),
+        // evict it now and create a fresh replacement pool (#746).
+        auto it = _pools.find(key);
+        if (it != _pools.end() && it->second && it->second->canEvict()) {
+            evicted.push_back(it->second);
+            _pools.erase(it);
+        }
         auto& pool_ref = _pools[key];
         if (!pool_ref) {
             pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+            if (_mock_mode) {
+                pool_ref->set_mock_mode(true);
+            }
             created = true;
         }
         pool = pool_ref;
@@ -620,11 +631,10 @@ void ConnectionPoolManager::configure(int max_size, int idle_timeout_secs) {
 }
 
 void ConnectionPoolManager::closePools() {
-    // Mirror the eviction-sweep pattern: under the mutex, move every pool into
-    // a local vector and clear the map, then release the mutex before closing.
-    // close() disconnects ODBC handles (releasing the GIL), which must never
-    // run while holding _manager_mutex or we risk a mutex/GIL lock-ordering
-    // deadlock with a concurrent acquireConnection()/returnConnection().
+    // Under _manager_mutex, snapshot all pools to close their idle connections.
+    // We do not clear _pools immediately: close() disconnects ODBC handles
+    // (releasing the GIL), which must run outside _manager_mutex to avoid
+    // deadlock.
     std::vector<std::shared_ptr<ConnectionPool>> to_close;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
@@ -634,18 +644,36 @@ void ConnectionPoolManager::closePools() {
                 to_close.push_back(pool);
             }
         }
-        _pools.clear();
-        // Nothing left to sweep; reset the throttle so a fresh pool set after
-        // this is swept on its next acquireConnection().
-        _last_sweep = std::chrono::steady_clock::time_point{};
     }
-    // Close each pool outside _manager_mutex.
+    // Close each pool outside _manager_mutex: close() drains idle connections,
+    // bumps _generation, and sets _current_size = _checked_out + _in_flight (#746).
     for (auto& pool : to_close) {
         try {
             pool->close();
         } catch (const std::exception& ex) {
             LOG("ConnectionPoolManager::closePools: closing pool failed: %s", ex.what());
         }
+    }
+    {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        // Only evict pools that have no live work left (canEvict() == true).
+        // If an old pool still has checked-out connections or in-flight opens,
+        // retain it in _pools so that:
+        // 1. Creation of a replacement pool is deferred until the old pool has
+        //    no live work, preventing capacity overflow across recreation (#746).
+        // 2. Any subsequent acquireConnection() respects live capacity.
+        // 3. returnConnection() continues to route to this pool to decrement
+        //    _checked_out and _current_size as connections are released.
+        for (auto it = _pools.begin(); it != _pools.end();) {
+            if (!it->second || it->second->canEvict()) {
+                it = _pools.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        // Reset the sweep throttle so a fresh pool set after this is swept
+        // on its next acquireConnection().
+        _last_sweep = std::chrono::steady_clock::time_point{};
     }
 }
 

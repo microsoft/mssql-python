@@ -6109,9 +6109,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"), py::arg("value"),
              "Set connection attribute")
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
-        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
+        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"))
+        .def_property_readonly("origin_generation", &ConnectionHandle::originGeneration)
+        .def_property_readonly("origin_pool_id", &ConnectionHandle::originPoolId);
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
+    m.def("_set_pool_manager_mock_mode", [](bool enable) {
+        ConnectionPoolManager::getInstance().set_mock_mode(enable);
+    }, py::arg("enable") = true);
     m.def("disable_pooling", []() {
         // Disarm new-pool creation *before* closing so a connect racing this
         // disable cannot resurrect a pool after the map is cleared: any
@@ -6124,7 +6129,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     }, "Disable global connection pooling and close all pools");
     // Internal test seam: allows deterministic unit testing of ConnectionPool
     // concurrency and generation tracking (#746).
-    py::class_<Connection, std::shared_ptr<Connection>>(m, "_TestPooledConnection");
+    py::class_<Connection, std::shared_ptr<Connection>>(m, "_TestPooledConnection")
+        .def_property_readonly("origin_generation", &Connection::originGeneration)
+        .def_property_readonly("origin_pool_id", &Connection::originPoolId);
     py::class_<ConnectionPool, std::shared_ptr<ConnectionPool>>(m, "_TestConnectionPool")
         .def(py::init<size_t, int>(), py::arg("max_size") = 1, py::arg("idle_timeout_secs") = 600)
         .def(
