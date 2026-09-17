@@ -124,6 +124,13 @@ def _zstd_compress(raw: bytes) -> bytes:
 def _make_conda(tmp_path, subdir, payload, depends=("python_abi 3.12.* *_cp312",)):
     """Build a minimal .conda (info-*.tar.zst + pkg-*.tar.zst) with the given payload files."""
     name = "mssql-python-1.13.0-py312_0"
+    payload = dict(payload)
+    root = "lib/python3.12/site-packages/"
+    prefix = root + "mssql_python-1.13.0.dist-info/"
+    payload[prefix + "METADATA"] = b"Name: mssql-python\nVersion: 1.13.0\n"
+    payload[prefix + "RECORD"] = "".join(
+        f"{member.removeprefix(root)},,\n" for member in [*payload, prefix + "RECORD"]
+    ).encode()
 
     pkg_buf = io.BytesIO()
     with tarfile.open(fileobj=pkg_buf, mode="w") as tf:
