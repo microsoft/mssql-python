@@ -1854,19 +1854,22 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode) {
     PERF_TIMER("SQLCheckError_Wrap");
     LOG("SQLCheckError: Checking ODBC errors - handleType=%d, retcode=%d", handleType, retcode);
+    if (retcode != SQL_INVALID_HANDLE && !SQL_SUCCEEDED(retcode) && !SQLGetDiagRec_ptr) {
+        LOG("SQLCheckError: SQLGetDiagRec function pointer not initialized, loading driver");
+        DriverLoader::getInstance().loadDriver();
+    }
+    return SQLReadError(handleType, handle ? handle->get() : nullptr, retcode);
+}
+
+ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN retcode) {
     ErrorInfo errorInfo;
-    if (retcode == SQL_INVALID_HANDLE) {
-        LOG("SQLCheckError: SQL_INVALID_HANDLE detected - handle is invalid");
+    if (retcode == SQL_INVALID_HANDLE || !rawHandle) {
         errorInfo.ddbcErrorMsg = "Invalid handle!";
         return errorInfo;
     }
-    assert(handle != 0);
-    SQLHANDLE rawHandle = handle->get();
     if (!SQL_SUCCEEDED(retcode)) {
         if (!SQLGetDiagRec_ptr) {
-            LOG("SQLCheckError: SQLGetDiagRec function pointer not "
-                "initialized, loading driver");
-            DriverLoader::getInstance().loadDriver();  // Load the driver
+            ThrowStdException("SQLGetDiagRec function pointer not initialized");
         }
 
         SQLWCHAR sqlState[6], message[SQL_MAX_MESSAGE_LENGTH_SQLSERVER];

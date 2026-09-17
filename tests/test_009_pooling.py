@@ -1427,6 +1427,15 @@ def test_failed_native_disconnect_preserves_child_statement(conn_str):
             else:
                 raise AssertionError("Native disconnect accepted an uncommitted INSERT")
 
+            extra_statement = native.alloc_statement_handle()
+            try:
+                assert ddbc.DDBCSQLExecDirect(extra_statement, "SELECT 42") in (0, 1)
+                extra_row = []
+                assert ddbc.DDBCSQLFetchOne(extra_statement, extra_row) in (0, 1)
+                assert extra_row == [42]
+            finally:
+                extra_statement.free()
+
             assert ddbc.DDBCSQLExecDirect(
                 statement, f"SELECT COUNT(*), @@TRANCOUNT FROM {table}"
             ) in (0, 1)
@@ -1512,6 +1521,71 @@ def test_native_statement_free_entrypoints_are_idempotent(conn_str, free_api):
                 if native is not None:
                     native.close()
             """),
+        conn_str,
+    )
+
+
+def test_native_statement_allocation_racing_disconnect(conn_str):
+    """Allocation either registers before disconnect or rejects its closed state."""
+    _run_in_subprocess(
+        """
+        import os
+        import threading
+
+        from mssql_python import ddbc_bindings as ddbc
+
+        barrier = threading.Barrier(2, timeout=10)
+        errors = []
+        statements = []
+        iterations = 100
+        native = None
+
+        def allocate():
+            try:
+                for _ in range(iterations):
+                    barrier.wait()
+                    try:
+                        statements.append(native.alloc_statement_handle())
+                    except RuntimeError as exc:
+                        assert str(exc) in (
+                            "Connection object is not initialized",
+                            "Connection handle not allocated",
+                        ), str(exc)
+                    barrier.wait()
+            except Exception as exc:
+                errors.append(repr(exc))
+                barrier.abort()
+
+        worker = threading.Thread(target=allocate, daemon=True)
+        worker.start()
+        try:
+            for _ in range(iterations):
+                native = ddbc.Connection(os.environ["DB_CONNECTION_STRING"], False)
+                native.set_autocommit(True)
+                barrier.wait()
+                native.close()
+                barrier.wait()
+                assert not errors, errors
+                for statement in statements:
+                    assert ddbc.DDBCSQLFreeHandle(3, statement) in (0, 1)
+                    assert statement.free() is None
+                statements.clear()
+                try:
+                    native.alloc_statement_handle()
+                except RuntimeError as exc:
+                    assert "Connection object is not initialized" in str(exc)
+                else:
+                    raise AssertionError("Allocation succeeded after native close")
+        finally:
+            worker.join(timeout=10)
+            if worker.is_alive():
+                barrier.abort()
+                worker.join(timeout=10)
+            for statement in statements:
+                statement.free()
+        assert not worker.is_alive(), "Allocation worker did not exit"
+        assert not errors, errors
+        """,
         conn_str,
     )
 

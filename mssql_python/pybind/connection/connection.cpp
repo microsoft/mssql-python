@@ -338,23 +338,30 @@ bool Connection::getAutocommit() const {
 
 SqlHandlePtr Connection::allocStatementHandle() {
     PERF_TIMER("Connection::allocStatementHandle");
-    if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
-    }
-    updateLastUsed();
     LOG("Allocating statement handle");
-    SQLHANDLE stmt = nullptr;
-    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
-    checkError(ret);
-    auto stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT),
-                                                stmt, _cleanupState);
-
-    // THREAD-SAFETY: Lock mutex before modifying _childStatementHandles
-    // This protects against concurrent disconnect() or allocStatementHandle() calls,
-    // or GC finalizers running from different threads
+    // Keep the wrapper outside the lock scope: unwinding a failed registration
+    // frees the statement through the same cleanup gate.
+    SqlHandlePtr stmtHandle;
     bool compacted = false;
     size_t compactBefore = 0, compactAfter = 0;
     {
+        py::gil_scoped_release release;
+        std::lock_guard<std::mutex> cleanupLock(_cleanupState->mutex);
+        if (_cleanupState->disconnected || !_dbcHandle) {
+            ThrowStdException("Connection handle not allocated");
+        }
+        updateLastUsed();
+        SQLHANDLE stmt = nullptr;
+        SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
+        if (!SQL_SUCCEEDED(ret)) {
+            // Snapshot diagnostics before disconnect can overwrite/free the DBC.
+            ErrorInfo err = SQLReadError(SQL_HANDLE_DBC, _dbcHandle->get(), ret);
+            ThrowStdException(err.sqlState.length() == 5
+                                  ? "SQLSTATE:" + err.sqlState + ":" + err.ddbcErrorMsg
+                                  : err.ddbcErrorMsg);
+        }
+        stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT),
+                                                stmt, _cleanupState);
         std::lock_guard<std::mutex> lock(_childHandlesMutex);
         
         // Track this child handle so we can mark it as implicitly freed when connection closes
@@ -809,10 +816,12 @@ bool ConnectionHandle::getAutocommit() const {
 
 SqlHandlePtr ConnectionHandle::allocStatementHandle() {
     PERF_TIMER("ConnectionHandle::allocStatementHandle");
-    if (!_conn) {
+    // close() can detach _conn while allocation waits without the GIL.
+    auto conn = _conn;
+    if (!conn) {
         ThrowStdException("Connection object is not initialized");
     }
-    return _conn->allocStatementHandle();
+    return conn->allocStatementHandle();
 }
 
 py::object Connection::getInfo(SQLUSMALLINT infoType) const {

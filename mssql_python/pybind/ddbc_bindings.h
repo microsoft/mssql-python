@@ -343,6 +343,8 @@ struct ErrorInfo {
     std::string ddbcErrorMsg;
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
+// Driver must be initialized; reads diagnostics without Python logging/callbacks.
+ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE handle, SQLRETURN retcode);
 
 // Thread-safe decimal separator accessor class
 class ThreadSafeDecimalSeparator {
