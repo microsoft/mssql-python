@@ -1003,7 +1003,7 @@ def test_pool_size_accounting_race_on_close_interleave(conn_str):
         import threading
         from mssql_python import ddbc_bindings
 
-        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool = ddbc_bindings._TestConnectionPool(2, 600)
         assert pool.current_size == 0
         assert pool.generation == 0
 
@@ -1027,14 +1027,16 @@ def test_pool_size_accounting_race_on_close_interleave(conn_str):
         t_a.start()
         assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
         assert pool.current_size == 1
+        assert pool.in_flight == 1
 
-        # Thread A has reserved the slot. Now pool.close() resets the pool
-        # and increments the pool generation counter.
+        # Thread A has reserved slot 1. Pool is closed while Thread A is in-flight.
+        # Reserved capacity is retained for in-flight opens so max_size is never exceeded (#746).
         pool.close()
-        assert pool.current_size == 0
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
         assert pool.generation == 1
 
-        # Thread B initiates acquire and reserves the freed slot under the new generation.
+        # Thread B initiates acquire and reserves the 2nd slot under the new generation.
         in_factory_b = threading.Event()
         release_factory_b = threading.Event()
 
@@ -1054,11 +1056,11 @@ def test_pool_size_accounting_race_on_close_interleave(conn_str):
         t_b = threading.Thread(target=run_b)
         t_b.start()
         assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
-        assert pool.current_size == 1
+        assert pool.current_size == 2
+        assert pool.in_flight == 2
 
-        # Thread A now raises its error. With the generation counter fix, its cleanup
-        # detects that the pool generation changed (0 != 1) and does NOT decrement current_size.
-        # On buggy code without the fix, Thread A's cleanup would decrement current_size back to 0.
+        # Thread A now raises its error. Its cleanup decrements in_flight and current_size
+        # for Thread A (2 -> 1). Thread B's reservation under generation 1 is preserved.
         release_factory_a.set()
         t_a.join(timeout=5.0)
         assert len(t_a_error) == 1 and "simulated open failure A" in str(t_a_error[0])
@@ -1067,24 +1069,14 @@ def test_pool_size_accounting_race_on_close_interleave(conn_str):
         assert pool.current_size == 1, (
             f"Expected pool.current_size to be 1, but got {pool.current_size} (drift occurred!)"
         )
-
-        # Thread C now attempts to acquire on the same pool.
-        # Since max_size=1 and Thread B is still reserving the slot, Thread C must fail
-        # with 'pool size limit reached'.
-        thread_c_rejected = False
-        try:
-            pool.acquire("SERVER=dummy_test_746;", lambda: {})
-        except RuntimeError as exc:
-            if "pool size limit reached" in str(exc):
-                thread_c_rejected = True
-
-        assert thread_c_rejected, "Thread C should have been rejected due to pool capacity limit"
+        assert pool.in_flight == 1
 
         # Clean up Thread B
         release_factory_b.set()
         t_b.join(timeout=5.0)
         assert len(t_b_error) == 1 and "simulated open failure B" in str(t_b_error[0])
         assert pool.current_size == 0
+        assert pool.in_flight == 0
         pool.close()
         """,
         conn_str,
@@ -1103,7 +1095,7 @@ def test_pool_size_accounting_race_on_candidate_validation_close_interleave(conn
         import threading
         from mssql_python import ddbc_bindings
 
-        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool = ddbc_bindings._TestConnectionPool(2, 600)
         # Inject an expired candidate into the idle pool
         pool.inject_candidate("SERVER=dummy_test_746;", 1)
         assert pool.current_size == 1
@@ -1128,14 +1120,16 @@ def test_pool_size_accounting_race_on_candidate_validation_close_interleave(conn
         t_a = threading.Thread(target=run_a)
         t_a.start()
         assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+        assert pool.in_flight == 1
 
         # Thread A popped the candidate (generation 0) and is validating it in factory_a.
-        # Now pool.close() clears idle connections, resets current_size=0, and bumps generation=1.
+        # Pool close retains capacity for in-flight validation: current_size stays 1.
         pool.close()
-        assert pool.current_size == 0
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
         assert pool.generation == 1
 
-        # Thread B reserves the freed slot under generation 1.
+        # Thread B reserves the 2nd slot under generation 1.
         in_factory_b = threading.Event()
         release_factory_b = threading.Event()
 
@@ -1155,12 +1149,12 @@ def test_pool_size_accounting_race_on_candidate_validation_close_interleave(conn
         t_b = threading.Thread(target=run_b)
         t_b.start()
         assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
-        assert pool.current_size == 1
+        assert pool.current_size == 2
+        assert pool.in_flight == 2
 
-        # Thread A finishes factory_a (which raises an error / fails validation).
-        # Thread A's cleanup detects that the candidate was from generation 0 != 1,
-        # so it does NOT decrement current_size!
-        # On unpatched code, Thread A would decrement current_size to 0.
+        # Thread A finishes factory_a (validation fails).
+        # Thread A releases its in-flight reservation (2 -> 1).
+        # Thread B's reservation under generation 1 is preserved.
         release_factory_a.set()
         t_a.join(timeout=5.0)
 
@@ -1168,20 +1162,12 @@ def test_pool_size_accounting_race_on_candidate_validation_close_interleave(conn
         assert pool.current_size == 1, (
             f"Expected pool.current_size to be 1, but got {pool.current_size} (drift occurred!)"
         )
-
-        # Thread C must be rejected because max_size=1 and Thread B holds the slot
-        thread_c_rejected = False
-        try:
-            pool.acquire("SERVER=dummy_test_746;", lambda: {})
-        except RuntimeError as exc:
-            if "pool size limit reached" in str(exc):
-                thread_c_rejected = True
-
-        assert thread_c_rejected, "Thread C should have been rejected due to pool capacity limit"
+        assert pool.in_flight == 1
 
         release_factory_b.set()
         t_b.join(timeout=5.0)
         assert pool.current_size == 0
+        assert pool.in_flight == 0
         pool.close()
         """,
         conn_str,
@@ -1203,10 +1189,10 @@ def test_pool_size_accounting_race_on_successful_candidate_reuse_close_interleav
         import threading
         from mssql_python import ddbc_bindings
 
-        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool = ddbc_bindings._TestConnectionPool(2, 600)
         pool.set_mock_mode(True)
-        # Inject candidate with near-expiry token to trigger token-factory validation
-        pool.inject_candidate("SERVER=dummy_test_746;", 1)
+        # Inject candidate with near-expiry so factory_a runs to check it
+        pool.inject_candidate("SERVER=dummy_test_746;", 1, True)
         assert pool.current_size == 1
         assert pool.generation == 0
 
@@ -1231,13 +1217,15 @@ def test_pool_size_accounting_race_on_successful_candidate_reuse_close_interleav
         t_a = threading.Thread(target=run_a)
         t_a.start()
         assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+        assert pool.in_flight == 1
 
-        # Thread A popped candidate (generation 0). Now pool.close() wipes the pool.
+        # Thread A popped candidate (generation 0). Pool close retains in-flight validation.
         pool.close()
-        assert pool.current_size == 0
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
         assert pool.generation == 1
 
-        # Thread B reserves the freed slot under generation 1
+        # Thread B reserves slot 2 under generation 1
         in_factory_b = threading.Event()
         release_factory_b = threading.Event()
 
@@ -1259,31 +1247,33 @@ def test_pool_size_accounting_race_on_successful_candidate_reuse_close_interleav
         t_b = threading.Thread(target=run_b)
         t_b.start()
         assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
-        assert pool.current_size == 1
+        assert pool.current_size == 2
+        assert pool.in_flight == 2
 
-        # Thread A's validation succeeds. Under the generation fix, Thread A detects
-        # generation mismatch (0 != 1), discards the stale candidate, and retries acquire.
-        # Since max_size=1 and Thread B currently holds the generation 1 reservation,
-        # Thread A's retry is rejected with 'pool size limit reached' instead of handing out
-        # an uncounted live connection.
-        release_factory_a.set()
-        t_a.join(timeout=5.0)
-
-        assert len(t_a_error) == 1 and "pool size limit reached" in str(t_a_error[0]), (
-            f"Expected Thread A to be rejected due to pool limit, got {t_a_error}"
-        )
-        assert len(t_a_conn) == 0
-
-        # Thread B finishes connecting and successfully checks out its connection
+        # 1. Thread B finishes connecting first and publishes under generation 1
         release_factory_b.set()
         t_b.join(timeout=5.0)
         assert len(t_b_error) == 0
         assert len(t_b_conn) == 1
-        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 1
+        assert pool.current_size == 2
 
-        # Return Thread B's connection and clean up
+        # 2. Thread A finishes validation second. Under the generation fix, Thread A detects
+        # generation mismatch (0 != 1), discards stale candidate, decrements in_flight and current_size (2 -> 1).
+        # Thread A retries acquire under generation 1 and successfully acquires slot 2.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+        assert len(t_a_error) == 0
+        assert len(t_a_conn) == 1
+        assert pool.checked_out == 2
+        assert pool.in_flight == 0
+        assert pool.current_size == 2
+
+        # Return both connections and clean up
+        pool.release(t_a_conn[0])
         pool.release(t_b_conn[0])
-        assert pool.current_size == 1
+        assert pool.checked_out == 0
         pool.close()
         assert pool.current_size == 0
         """,
@@ -1307,7 +1297,7 @@ def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str)
         import threading
         from mssql_python import ddbc_bindings
 
-        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool = ddbc_bindings._TestConnectionPool(2, 600)
         pool.set_mock_mode(True)
         assert pool.current_size == 0
         assert pool.generation == 0
@@ -1334,13 +1324,16 @@ def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str)
         t_a.start()
         assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
         assert pool.current_size == 1
+        assert pool.in_flight == 1
 
-        # Thread A reserved slot under generation 0. Now pool.close() wipes the pool.
+        # Thread A reserved slot under generation 0. Pool is closed while Thread A is in-flight.
+        # In-flight capacity is retained so max_size is not exceeded (#746).
         pool.close()
-        assert pool.current_size == 0
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
         assert pool.generation == 1
 
-        # Thread B reserves the freed slot under generation 1
+        # Thread B begins acquiring under generation 1 (reserves slot 2 of max_size=2)
         in_factory_b = threading.Event()
         release_factory_b = threading.Event()
 
@@ -1362,31 +1355,106 @@ def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str)
         t_b = threading.Thread(target=run_b)
         t_b.start()
         assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
-        assert pool.current_size == 1
+        assert pool.current_size == 2
+        assert pool.in_flight == 2
 
-        # Thread A's open succeeds. Under the generation fix, Thread A detects
-        # reservation generation mismatch (0 != 1), discards the opened connection,
-        # and retries acquire under generation 1.
-        # Since max_size=1 and Thread B holds the generation 1 slot, Thread A's retry
-        # fails with 'pool size limit reached' rather than creating a 2nd concurrent connection.
-        release_factory_a.set()
-        t_a.join(timeout=5.0)
-
-        assert len(t_a_error) == 1 and "pool size limit reached" in str(t_a_error[0]), (
-            f"Expected Thread A to be rejected due to pool limit, got {t_a_error}"
-        )
-        assert len(t_a_conn) == 0
-
-        # Thread B finishes connecting and successfully checks out its connection
+        # 1. NEW-GENERATION OPEN COMPLETES FIRST:
+        # Thread B finishes connecting and publishes valid_conn under generation 1
         release_factory_b.set()
         t_b.join(timeout=5.0)
         assert len(t_b_error) == 0
         assert len(t_b_conn) == 1
-        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 1
+        assert pool.current_size == 2
 
-        # Return Thread B's connection and clean up
+        # 2. OLD-GENERATION OPEN COMPLETES SECOND:
+        # Thread A finishes connecting outside the lock.
+        # Under generation fix, Thread A detects reservation generation mismatch (0 != 1),
+        # disconnects its stale connection, decrements in_flight (1 -> 0) and current_size (2 -> 1).
+        # Thread B's connection is intact and valid!
+        # Thread A retries acquire under generation 1 and successfully acquires the freed slot.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+        assert len(t_a_error) == 0
+        assert len(t_a_conn) == 1
+        assert pool.checked_out == 2
+        assert pool.in_flight == 0
+        assert pool.current_size == 2
+
+        # Clean up both connections
+        pool.release(t_a_conn[0])
         pool.release(t_b_conn[0])
+        assert pool.checked_out == 0
+        pool.close()
+        assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_in_flight_open_blocks_acquire_exceeding_max_size_1(conn_str):
+    """When max_size=1 and an open is in flight across close(), new acquire is blocked.
+
+    Ensures that an in-flight open retains reserved capacity across close(),
+    preventing a new-generation thread from opening another physical connection
+    while the stale open is still establishing its socket (#746).
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+
+        def factory_a():
+            in_factory_a.set()
+            assert release_factory_a.wait(timeout=5.0)
+            return {}
+
+        t_a_conn = []
+
+        def run_a():
+            conn = pool.acquire("SERVER=dummy_test_746;", factory_a)
+            t_a_conn.append(conn)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0)
         assert pool.current_size == 1
+        assert pool.in_flight == 1
+
+        # Close pool while Thread A is in-flight
+        pool.close()
+        # In-flight capacity is retained: current_size stays 1!
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+        assert pool.generation == 1
+
+        # Thread B tries to acquire under generation 1: REJECTED because capacity is held!
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Thread B must be rejected while Thread A's open is still in-flight"
+
+        # Thread A completes and disconnects stale connection, freeing the slot
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+
+        # Thread A's retry acquired the freed slot under generation 1
+        assert len(t_a_conn) == 1
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+
+        pool.release(t_a_conn[0])
+        assert pool.checked_out == 0
         pool.close()
         assert pool.current_size == 0
         """,

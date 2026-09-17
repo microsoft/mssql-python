@@ -6139,6 +6139,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("set_mock_mode", &ConnectionPool::set_mock_mode, py::arg("enable") = true)
         .def_property_readonly("current_size", &ConnectionPool::current_size)
         .def_property_readonly("checked_out", &ConnectionPool::checked_out)
+        .def_property_readonly("in_flight", &ConnectionPool::in_flight)
         .def_property_readonly("generation", &ConnectionPool::generation)
         .def_property_readonly("pool_id", &ConnectionPool::pool_id)
         .def(

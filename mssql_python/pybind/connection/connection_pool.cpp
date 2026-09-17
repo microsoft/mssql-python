@@ -59,6 +59,7 @@ ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
       _idle_timeout_secs(idle_timeout_secs),
       _current_size(0),
       _checked_out(0),
+      _in_flight(0),
       _pool_id(s_next_pool_id.fetch_add(1)) {}
 
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
@@ -124,6 +125,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                         // holding _mutex across a GIL acquisition deadlocks a thread
                         // that holds the GIL and is waiting on _mutex (#671).
                         ++_current_size;
+                        ++_in_flight;
                         reservation_generation = _generation;
                         needs_connect = true;
                         break;
@@ -137,6 +139,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 }
                 candidate = _pool.front();
                 _pool.pop_front();
+                ++_in_flight;
                 candidate_generation = _generation;
             }
 
@@ -213,6 +216,9 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                         candidate->setPoolOrigin(_pool_id, _generation);
                         valid_conn = candidate;
                         ++_checked_out;
+                        if (_in_flight > 0) {
+                            --_in_flight;
+                        }
                         gen_valid = true;
                     }
                 }
@@ -220,17 +226,37 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     break;
                 }
                 // Pool was closed while validating candidate (#746); discard stale
-                // candidate and retry acquire.
-                to_disconnect.push_back(candidate);
+                // candidate and release in-flight reservation.
+                try {
+                    candidate->disconnect();
+                } catch (const std::exception& ex) {
+                    LOG("Disconnect candidate failed: %s", ex.what());
+                }
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    if (_in_flight > 0) {
+                        --_in_flight;
+                    }
+                    if (_current_size > 0) {
+                        --_current_size;
+                    }
+                }
                 continue;
             }
 
-            // Candidate is dead, reset failed, or its token rotated — mark for
-            // disconnect and decrement the pool size if the pool generation still matches (#746).
-            to_disconnect.push_back(candidate);
+            // Candidate is dead, reset failed, or its token rotated — disconnect and
+            // release the in-flight reservation (#746).
+            try {
+                candidate->disconnect();
+            } catch (const std::exception& ex) {
+                LOG("Disconnect candidate failed: %s", ex.what());
+            }
             {
                 std::lock_guard<std::mutex> lock(_mutex);
-                if (_generation == candidate_generation && _current_size > 0) {
+                if (_in_flight > 0) {
+                    --_in_flight;
+                }
+                if (_current_size > 0) {
                     --_current_size;
                 }
             }
@@ -246,6 +272,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     // records, and holding _mutex across a GIL acquisition
                     // deadlocks a thread that holds the GIL and waits on _mutex (#671).
                     ++_current_size;
+                    ++_in_flight;
                     reservation_generation = _generation;
                     needs_connect = true;
                     break;
@@ -303,24 +330,42 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                         new_conn->setPoolOrigin(_pool_id, _generation);
                         valid_conn = new_conn;
                         ++_checked_out;
+                        if (_in_flight > 0) {
+                            --_in_flight;
+                        }
                         gen_valid = true;
                     }
                 }
                 if (gen_valid) {
                     break;
                 }
-                // Pool was closed while connecting; queue the stale connection
-                // for disconnect and retry acquire under the new generation.
-                to_disconnect.push_back(new_conn);
-            } catch (...) {
-                // Construct/connect failed — release the reserved slot only if the pool
-                // has not been reset in the meantime (#746). If close() ran while we were
-                // connecting outside the lock, close() already set _current_size = _checked_out and
-                // bumped _generation; decrementing here would cancel another thread's
-                // newer reservation instead of our own.
+                // Pool was closed while connecting. Disconnect the stale connection
+                // immediately BEFORE relinquishing the in-flight reservation, so that
+                // the stale physical connection and any newly reserved connections do
+                // not co-exist and exceed max_size (#746).
+                try {
+                    new_conn->disconnect();
+                } catch (const std::exception& ex) {
+                    LOG("Disconnect stale connection failed: %s", ex.what());
+                }
                 {
                     std::lock_guard<std::mutex> lock(_mutex);
-                    if (_generation == reservation_generation && _current_size > 0) {
+                    if (_in_flight > 0) {
+                        --_in_flight;
+                    }
+                    if (_current_size > 0) {
+                        --_current_size;
+                    }
+                }
+                continue;
+            } catch (...) {
+                // Construct/connect failed — release the reserved slot and in-flight count.
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    if (_in_flight > 0) {
+                        --_in_flight;
+                    }
+                    if (_current_size > 0) {
                         --_current_size;
                     }
                 }
@@ -389,7 +434,7 @@ bool ConnectionPool::canEvict() {
     // caller still holds one, so the pool must stay.
     size_t in_flight_or_checked_out =
         (_current_size > _pool.size()) ? (_current_size - _pool.size()) : 0;
-    if (in_flight_or_checked_out > 0 || _checked_out > 0) {
+    if (in_flight_or_checked_out > 0 || _checked_out > 0 || _in_flight > 0) {
         return false;
     }
     // Nothing checked out and the pool is empty: safe to drop immediately.
@@ -423,9 +468,10 @@ void ConnectionPool::close() {
             to_close.push_back(_pool.front());
             _pool.pop_front();
         }
-        // Retain reserved capacity for checked-out connections so a new acquire
-        // cannot exceed _max_size while old connections are still live (#746).
-        _current_size = _checked_out;
+        // Retain reserved capacity for checked-out connections and in-flight opens
+        // so a new acquire cannot exceed _max_size while old connections or opens
+        // are still live (#746).
+        _current_size = _checked_out + _in_flight;
         ++_generation;
     }
     for (auto& conn : to_close) {

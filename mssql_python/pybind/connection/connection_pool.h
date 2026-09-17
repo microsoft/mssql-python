@@ -51,6 +51,10 @@ class ConnectionPool {
         std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
         return _checked_out;
     }
+    size_t in_flight() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
+        return _in_flight;
+    }
     uint64_t generation() const {
         std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
         return _generation;
@@ -79,6 +83,7 @@ class ConnectionPool {
     int _idle_timeout_secs;  // Idle time before connections are stale
     size_t _current_size = 0;
     size_t _checked_out = 0;   // Live connections currently checked out by callers (#746)
+    size_t _in_flight = 0;     // Connects or validations currently in flight (#746)
     uint64_t _generation = 0;  // Pool reset generation for reservation attribution (#746)
     uint64_t _pool_id = 0;     // Monotonic process-wide pool ID to avoid ABA reuse (#746)
     std::atomic<bool> _mock_mode{false};
