@@ -120,6 +120,17 @@ def publish(pr_number, head, body, base=None):
         github(f"issues/{pr_number}/comments", method="POST", data={"body": body})
 
 
+def publish_with_retry(pr_number, head, body, base=None, attempts=3):
+    for attempt in range(attempts):
+        try:
+            publish(pr_number, head, body, base)
+            return
+        except (KeyError, TypeError, ValueError, TimeoutError, URLError):
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(5)
+
+
 def find_build(builds, number, head):
     return next(
         (
@@ -170,7 +181,7 @@ def artifact_items(response):
 
 
 def unavailable(number, head, reason, base=None):
-    publish(
+    publish_with_retry(
         number,
         head,
         HEADER + "**Performance could not be assessed.**\n\n" + reason + " No result is available.",
@@ -179,7 +190,7 @@ def unavailable(number, head, reason, base=None):
 
 
 def run(number, head, wait_minutes):
-    publish(
+    publish_with_retry(
         number,
         head,
         HEADER
@@ -318,7 +329,9 @@ def run(number, head, wait_minutes):
         base_tree=base_tree,
         trusted_root=ROOT,
     )
-    publish(number, head, reporting.assess(evidence, artifact_urls, load_artifact, issues), base)
+    publish_with_retry(
+        number, head, reporting.assess(evidence, artifact_urls, load_artifact, issues), base
+    )
 
 
 if __name__ == "__main__":

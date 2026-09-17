@@ -234,7 +234,8 @@ jobs:
 
           if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" && "$COVERAGE_ARTIFACT" != "empty" ]]; then
             echo "📊 Downloading coverage report..."
-            if ! curl -L "$COVERAGE_ARTIFACT" -o coverage-report.zip --fail --silent --show-error \
+            COVERAGE_ARCHIVE="$RUNNER_TEMP/coverage-report.zip"
+            if ! curl -L "$COVERAGE_ARTIFACT" -o "$COVERAGE_ARCHIVE" --fail --silent --show-error \
               --connect-timeout 10 --max-time 60 --max-filesize 268435456 \
               --retry 2 --retry-delay 5 --retry-max-time 180; then
               echo "❌ Failed to download coverage report from Azure DevOps"
@@ -243,7 +244,7 @@ jobs:
             fi
 
             INDEX_FILE="$RUNNER_TEMP/coverage-index.html"
-            if ! python .github/scripts/extract_coverage_artifact.py html coverage-report.zip "$INDEX_FILE"; then
+            if ! python .github/scripts/extract_coverage_artifact.py html "$COVERAGE_ARCHIVE" "$INDEX_FILE"; then
               echo "❌ Failed to read the coverage HTML artifact"
               exit 1
             fi
@@ -353,7 +354,8 @@ jobs:
           
           if [[ -n "$COVERAGE_XML_ARTIFACT" && "$COVERAGE_XML_ARTIFACT" != "null" && "$COVERAGE_XML_ARTIFACT" != "empty" ]]; then
             echo "📊 Downloading coverage artifact from: $COVERAGE_XML_ARTIFACT"
-            if ! curl -L "$COVERAGE_XML_ARTIFACT" -o coverage-artifacts.zip --fail --silent --show-error \
+            COVERAGE_XML_ARCHIVE="$RUNNER_TEMP/coverage-artifacts.zip"
+            if ! curl -L "$COVERAGE_XML_ARTIFACT" -o "$COVERAGE_XML_ARCHIVE" --fail --silent --show-error \
               --connect-timeout 10 --max-time 60 --max-filesize 268435456 \
               --retry 2 --retry-delay 5 --retry-max-time 180; then
               echo "❌ Failed to download coverage artifacts"
@@ -361,7 +363,7 @@ jobs:
             fi
             
             COVERAGE_XML="$RUNNER_TEMP/coverage.xml"
-            if ! python .github/scripts/extract_coverage_artifact.py xml coverage-artifacts.zip "$COVERAGE_XML"; then
+            if ! python .github/scripts/extract_coverage_artifact.py xml "$COVERAGE_XML_ARCHIVE" "$COVERAGE_XML"; then
               echo "❌ Failed to read the coverage XML artifact"
               exit 1
             fi

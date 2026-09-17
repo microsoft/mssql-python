@@ -26,6 +26,7 @@ if not (ROOT / ".github/scripts/post_profiler_comment.py").is_file():
 
 from eng.profiler_benchmarks import controller
 from eng.profiler_benchmarks import report as reporting
+from eng.profiler_benchmarks import workloads as benchmark_workloads
 
 
 def load(name, path):
@@ -477,6 +478,16 @@ def test_publisher_does_not_post_stale_head(monkeypatch):
     assert len(calls) == 1 and calls[0][1] == {}
 
 
+def test_publisher_retries_transient_comment_failures(monkeypatch):
+    publish = MagicMock(side_effect=[URLError("temporary"), None])
+    sleeps = []
+    monkeypatch.setattr(publisher, "publish", publish)
+    monkeypatch.setattr(publisher.time, "sleep", sleeps.append)
+    publisher.publish_with_retry(123, "a" * 40, "body")
+    assert publish.call_count == 2
+    assert sleeps == [5]
+
+
 def test_revisions_use_exact_first_parent(monkeypatch):
     calls = []
 
@@ -525,6 +536,52 @@ def test_report_cases_match_the_executed_workload_registry():
     assert ROOT / "eng/pipelines/pr-validation-pipeline.yml" in reporting.suite_paths(ROOT)
     assert ROOT / "eng/scripts/setup_sql_container.py" in reporting.suite_paths(ROOT)
     assert ROOT / "requirements.txt" in reporting.suite_paths(ROOT)
+
+
+def test_query_workload_executes_and_collects(monkeypatch):
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [(1,), (2,)]
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({"cpp": {}}, {"py": {}})
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", MagicMock(side_effect=[1, 1.1]))
+    result = benchmark_workloads.query(connection, context, "SELECT 1")
+    cursor.execute.assert_called_once_with("SELECT 1")
+    assert result["detail"] == "Rows: 2"
+    context.enable.assert_called_once()
+    context.disable.assert_called_once()
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_parameter_workload_executes_both_binding_forms(named):
+    cursor = MagicMock()
+    cursor.fetchone.side_effect = [(value,) for value in range(100)]
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    result = benchmark_workloads.parameter_execution(connection, context, named=named)
+    expected = ("SELECT %(value)s", {"value": 0}) if named else ("SELECT ?", (0,))
+    assert cursor.execute.call_args_list[0].args == expected
+    assert cursor.execute.call_count == 100
+    assert result["detail"] == "Rows: 100"
+    context.disable.assert_called_once()
+
+
+@pytest.mark.parametrize("input_sizes", [False, True])
+def test_legacy_insert_workload_executes_both_variants(input_sizes):
+    cursor = MagicMock()
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    result = benchmark_workloads.legacy_insertmany(connection, context, input_sizes=input_sizes)
+    assert cursor.execute.call_count == 101
+    assert cursor.setinputsizes.call_count == (100 if input_sizes else 0)
+    assert result["detail"] == "Rows: 100000"
+    connection.rollback.assert_called_once()
+    context.disable.assert_called_once()
 
 
 def test_suite_blobs_require_complete_authenticated_tree():
@@ -653,6 +710,9 @@ def test_build_timeout_terminates_descendants(tmp_path, monkeypatch):
             try:
                 os.kill(descendant, 0)
             except ProcessLookupError:
+                break
+            stat = Path(f"/proc/{descendant}/stat")
+            if stat.is_file() and stat.read_text(encoding="utf-8").split()[2] == "Z":
                 break
             time.sleep(0.05)
         else:
@@ -1106,6 +1166,10 @@ def test_comment_workflow_executes_only_trusted_base_code():
     assert coverage.count("extract_coverage_artifact.py") == 2
     assert coverage.count("--max-filesize 268435456") == 2
     assert "unzip -o" not in coverage
+    assert '-o "$COVERAGE_ARCHIVE"' in coverage
+    assert '-o "$COVERAGE_XML_ARCHIVE"' in coverage
+    assert "-o coverage-report.zip" not in coverage
+    assert "-o coverage-artifacts.zip" not in coverage
     assert 'cp "$COVERAGE_XML"' not in coverage
     assert 'diff-cover "$COVERAGE_XML"' in coverage
     assert "COVERAGE_XML: ${{ runner.temp }}/coverage.xml" in coverage
