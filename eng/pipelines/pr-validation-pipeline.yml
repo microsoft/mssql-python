@@ -244,6 +244,10 @@ jobs:
     parameters:
       platform: windows
 
+  - template: steps/install-test-dependencies.yml
+    parameters:
+      platform: windows
+
   # Run tests for LocalDB
   - script: |
       python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
@@ -587,6 +591,10 @@ jobs:
     parameters:
       platform: unix
 
+  - template: steps/install-test-dependencies.yml
+    parameters:
+      platform: unix
+
   - script: |
       # Uninstall any system/Homebrew ODBC before tests so pytest exercises the
       # driver and driver manager bundled in the wheel, not a system copy. Mirrors
@@ -856,6 +864,12 @@ jobs:
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
 
   - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-$(distroName)
+      venvActivate: 'source /opt/venv/bin/activate'
+
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-$(distroName)
@@ -1200,6 +1214,12 @@ jobs:
       containerName: test-container-$(distroName)-$(archName)
       venvActivate: 'source /opt/venv/bin/activate'
 
+  - template: steps/install-test-dependencies.yml
+    parameters:
+      platform: container
+      containerName: test-container-$(distroName)-$(archName)
+      venvActivate: 'source /opt/venv/bin/activate'
+
   - script: |
       # Uninstall ODBC Driver before running tests
       DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
@@ -1395,6 +1415,12 @@ jobs:
     displayName: 'Build pybind bindings (.so) in RHEL 9 container'
 
   - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-rhel9
+      venvActivate: 'source myvenv/bin/activate'
+
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-rhel9
@@ -1613,6 +1639,12 @@ jobs:
       containerName: test-container-rhel9-arm64
       venvActivate: 'source myvenv/bin/activate'
 
+  - template: steps/install-test-dependencies.yml
+    parameters:
+      platform: container
+      containerName: test-container-rhel9-arm64
+      venvActivate: 'source myvenv/bin/activate'
+
   - script: |
       # Uninstall ODBC Driver before running tests
       DRIVER_VERSION=$(awk -F= '/^__version__/ {gsub(/[[:space:]"]/, "", $2); print $2; exit}' mssql_python_odbc/__init__.py)
@@ -1826,6 +1858,12 @@ jobs:
     displayName: 'Build pybind bindings (.so) in Alpine x86_64 container'
 
   - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-alpine
+      venvActivate: 'source /workspace/venv/bin/activate'
+
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-alpine
@@ -2065,6 +2103,12 @@ jobs:
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
 
   - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: test-container-alpine-arm64
+      venvActivate: 'source /workspace/venv/bin/activate'
+
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: container
       containerName: test-container-alpine-arm64
@@ -2412,6 +2456,10 @@ jobs:
     displayName: 'Build pybind bindings with coverage'
 
   - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: unix
+
+  - template: steps/install-test-dependencies.yml
     parameters:
       platform: unix
 
