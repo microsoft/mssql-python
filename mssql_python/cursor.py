@@ -152,20 +152,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         self._cached_column_map = None
         self._cached_converter_map = None
+        self._cached_converters_generation = self._connection._converters_generation
         self._uuid_str_indices = None  # Pre-computed UUID column indices for str conversion
         # Cache the effective native_uuid setting for this cursor's connection.
         # Resolution order: connection._native_uuid (if not None) → module-level setting.
         self._conn_native_uuid = getattr(self.connection, "_native_uuid", None)
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
-        # Cache decoding encoding strings — these don't change between fetches,
-        # so we avoid 2 method calls + 2 dict.get() per fetch call.
-        self._cached_char_encoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value).get(
-            "encoding", "utf-8"
-        )
-        self._cached_wchar_encoding = self._get_decoding_settings(
-            ddbc_sql_const.SQL_WCHAR.value
-        ).get("encoding", "utf-16le")
+        self._refresh_decoding_cache()
         self._skip_increment_for_next_fetch = (
             False  # Track if we need to skip incrementing the row index
         )
@@ -355,6 +349,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Return default encoding settings if getencoding is not available
         # This is the only case where defaults are appropriate (method doesn't exist)
         return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
+
+    def _refresh_decoding_cache(self):
+        """Read decoding settings only when the connection configuration changes."""
+        generation = self._connection._decoding_generation
+        char_encoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value).get(
+            "encoding", "utf-8"
+        )
+        wchar_encoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value).get(
+            "encoding", "utf-16le"
+        )
+        self._cached_char_encoding = char_encoding
+        self._cached_wchar_encoding = wchar_encoding
+        self._cached_decoding_generation = generation
 
     def _get_decoding_settings(self, sql_type):
         """
@@ -1062,17 +1069,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
         self.description = description
 
-    def _build_converter_map(self):
+    def _build_converter_map(self, *, string_fallback_only=False):
         """
         Build a pre-computed converter map for output converters.
         Returns a list where each element is either a converter function or None.
         This eliminates the need to look up converters for every row.
         """
+        generation = self._connection._converters_generation
         if (
             not self.description
             or not hasattr(self.connection, "_output_converters")
             or not self.connection._output_converters
         ):
+            self._cached_converters_generation = generation
             return None
 
         converter_map = []
@@ -1088,9 +1097,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 from mssql_python.constants import ConstantsDDBC
 
                 converter = self.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
+                if string_fallback_only and converter:
+                    # Late registration used Row's value-based str/bytes fallback.
+                    def string_converter(value, convert=converter):
+                        return convert(value) if isinstance(value, (str, bytes)) else value
+
+                    converter = string_converter
 
             converter_map.append(converter)
 
+        self._cached_converters_generation = generation
         return converter_map
 
     def _compute_uuid_str_indices(self):
@@ -1138,7 +1154,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fallback to legacy column name map if no cached map
         column_map = column_map or getattr(self, "_column_name_map", None)
 
-        # Get cached converter map
+        # Refresh once per settings change, not once per row.
+        if self._cached_converters_generation != self._connection._converters_generation:
+            self._cached_converter_map = self._build_converter_map(string_fallback_only=True)
         converter_map = getattr(self, "_cached_converter_map", None)
 
         return column_map, converter_map
@@ -2463,7 +2481,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         self._check_closed()  # Check if the cursor is closed
 
-        # Use cached encoding strings — eliminates 2 method calls + 2 dict.get() per fetch
+        if self._cached_decoding_generation != self._connection._decoding_generation:
+            self._refresh_decoding_cache()
         char_enc = self._cached_char_encoding
         wchar_enc = self._cached_wchar_encoding
 
@@ -2532,7 +2551,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if size <= 0:
             return []
 
-        # Use cached encoding strings
+        if self._cached_decoding_generation != self._connection._decoding_generation:
+            self._refresh_decoding_cache()
         char_enc = self._cached_char_encoding
         wchar_enc = self._cached_wchar_encoding
 
@@ -2595,7 +2615,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
-        # Use cached encoding strings
+        if self._cached_decoding_generation != self._connection._decoding_generation:
+            self._refresh_decoding_cache()
         char_enc = self._cached_char_encoding
         wchar_enc = self._cached_wchar_encoding
 

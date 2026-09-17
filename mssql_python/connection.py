@@ -275,6 +275,7 @@ class Connection:
                 "ctype": ConstantsDDBC.SQL_WCHAR.value,
             },
         }
+        self._decoding_generation = 0
 
         # Auth type for acquiring fresh tokens at bulk copy time.
         # We intentionally do NOT cache the token — a fresh one is acquired
@@ -311,6 +312,7 @@ class Connection:
 
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
+        self._converters_generation = 0
         self._converters_lock = threading.Lock()
 
         # Initialize encoding/decoding settings lock for thread safety
@@ -635,6 +637,9 @@ class Connection:
         """
         Sets the text decoding used when reading SQL_CHAR and SQL_WCHAR from the database.
 
+        Existing cursors refresh their cached SQL_CHAR/SQL_WCHAR decoding settings
+        before their next fetch.
+
         This method configures how text data is decoded when reading from the database.
         In Python 3, all text is Unicode (str), so this primarily affects the encoding
         used to decode bytes from the database.
@@ -748,6 +753,7 @@ class Connection:
         # Store the decoding settings for the specified sqltype (thread-safe with lock)
         with self._encoding_lock:
             self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
+            self._decoding_generation += 1
 
         # Log with sanitized values for security
         sqltype_name = {
@@ -952,6 +958,8 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Changes apply on the next fetch, including for an already executed result set.
+
         ⚠️ WARNING: Registering an output converter will cause the supplied Python function
         to be executed on every matching database value. Do not register converters from
         untrusted sources, as this can result in arbitrary code execution and security
@@ -971,6 +979,7 @@ class Connection:
         """
         with self._converters_lock:
             self._output_converters[sqltype] = func
+            self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "add_output_converter"):
                 self._conn.add_output_converter(sqltype, func)
@@ -1001,6 +1010,8 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Existing cursors use the updated converters on their next fetch.
+
         Args:
             sqltype (int or type): The SQL type value to remove the converter for
 
@@ -1010,6 +1021,7 @@ class Connection:
         with self._converters_lock:
             if sqltype in self._output_converters:
                 del self._output_converters[sqltype]
+                self._converters_generation += 1
                 # Pass to the underlying connection if native implementation supports it
                 if hasattr(self._conn, "remove_output_converter"):
                     self._conn.remove_output_converter(sqltype)
@@ -1021,11 +1033,14 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Existing cursors stop applying converters on their next fetch.
+
         Returns:
             None
         """
         with self._converters_lock:
             self._output_converters.clear()
+            self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()

@@ -57,29 +57,20 @@ class Row:
                 converted to str. Pre-computed once per result set when native_uuid=False.
                 None means no conversion (native_uuid=True, the default).
         """
-        # Fast path: no converters and no UUID stringification (common case).
-        # Avoids the converter_map iteration and list copy entirely.
-        if not converter_map and not uuid_str_indices:
-            if (
-                cursor
-                and hasattr(cursor.connection, "_output_converters")
-                and cursor.connection._output_converters
-            ):
-                # Fallback to original method for backward compatibility
-                self._values = self._apply_output_converters(values, cursor)
-            else:
-                # Zero-copy: just store the reference directly
-                self._values = values
+        if converter_map:
+            self._values = self._apply_output_converters_optimized(values, converter_map)
+        elif (
+            cursor
+            and hasattr(cursor.connection, "_output_converters")
+            and cursor.connection._output_converters
+        ):
+            # Support direct Row construction without a pre-computed converter map.
+            self._values = self._apply_output_converters(values, cursor)
         else:
-            # Apply output converters if available using pre-computed converter map
-            if converter_map:
-                self._values = self._apply_output_converters_optimized(values, converter_map)
-            else:
-                self._values = values
+            self._values = values
 
-            # Convert UUID columns to str when native_uuid=False.
-            if uuid_str_indices:
-                self._stringify_uuids(uuid_str_indices)
+        if uuid_str_indices:
+            self._stringify_uuids(uuid_str_indices)
 
         self._column_map = column_map
         self._cursor = cursor
