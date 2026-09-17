@@ -3,7 +3,7 @@ import pytest
 pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 import mssql_python
-from mssql_python import DatabaseError, Row
+from mssql_python import DataError, Row
 
 
 @pytest.mark.asyncio
@@ -86,7 +86,7 @@ async def test_fetch_translates_py_core_exception(async_connection):
     try:
         await cursor.execute("SELECT 1 / 0")
 
-        with pytest.raises(DatabaseError) as caught:
+        with pytest.raises(DataError) as caught:
             await cursor.fetchone()
 
         assert type(caught.value.__cause__).__module__ == "mssql_py_core"
