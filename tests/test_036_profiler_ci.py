@@ -1219,7 +1219,10 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
         pipeline,
     )
     assert len(profiler_conditions) == 6
-    assert all("eq(variables['Build.Reason'], 'PullRequest')" in condition for condition in profiler_conditions)
+    assert all(
+        "eq(variables['Build.Reason'], 'PullRequest')" in condition
+        for condition in profiler_conditions
+    )
     assert "profilerBuild: '0'" in pipeline  # LocalDB still exercises the normal build
     assert "ddbc_bindings-profiling-SQL2022" in pipeline
     assert "ddbc_bindings-profiling-SQL2025" in pipeline
