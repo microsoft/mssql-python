@@ -22,6 +22,7 @@ async def execute(
     reset_cursor: bool = True,
 ) -> "AsyncCursor":
     """Execute a statement using the py-core async cursor."""
+    cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
         parameters = tuple(parameters[0])
 
@@ -43,6 +44,8 @@ async def executemany(
     seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
 ) -> None:
     """Execute a statement for every parameter row using the py-core async cursor."""
+    _ = len(seq_of_parameters)
+    cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     logger.debug("AsyncCursor.executemany: starting")
     with translate_py_core_exceptions():
         await _get_py_core_async_cursor(cursor).executemany(

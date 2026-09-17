@@ -9,8 +9,10 @@ Warning:
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
+from ..helpers import get_settings
 from ..logging import logger
-from . import async_execute
+from ..row import Row
+from . import async_execute, async_fetch
 from .exception_translator import translate_py_core_exceptions
 
 
@@ -24,6 +26,19 @@ class AsyncCursor:
 
     def __init__(self, py_core_async_cursor: Any) -> None:
         self._py_core_async_cursor = py_core_async_cursor
+        self._fetched_row_count = 0
+        self._fetch_rowcount: int | None = None
+
+    def _reset_fetch_tracking(self) -> None:
+        self._fetched_row_count = 0
+        self._fetch_rowcount = None
+
+    def _record_fetch(self, count: int, exhausted: bool) -> None:
+        if count:
+            self._fetched_row_count += count
+            self._fetch_rowcount = self._fetched_row_count
+        elif exhausted and self._fetched_row_count == 0:
+            self._fetch_rowcount = 0
 
     async def execute(
         self,
@@ -51,23 +66,20 @@ class AsyncCursor:
             seq_of_parameters,
         )
 
-    async def fetchone(self) -> Any:
-        with translate_py_core_exceptions():
-            return await self._py_core_async_cursor.fetchone()
+    async def fetchone(self) -> Row | None:
+        return await async_fetch.fetchone(self)
 
-    async def fetchmany(self, size: Optional[int] = None) -> Any:
-        with translate_py_core_exceptions():
-            if size is None:
-                return await self._py_core_async_cursor.fetchmany()
-            return await self._py_core_async_cursor.fetchmany(size)
+    async def fetchmany(self, size: Optional[int] = None) -> list[Row]:
+        return await async_fetch.fetchmany(self, size)
 
-    async def fetchall(self) -> Any:
-        with translate_py_core_exceptions():
-            return await self._py_core_async_cursor.fetchall()
+    async def fetchall(self) -> list[Row]:
+        return await async_fetch.fetchall(self)
 
     async def nextset(self) -> bool:
         with translate_py_core_exceptions():
-            return await self._py_core_async_cursor.nextset()
+            has_next = await self._py_core_async_cursor.nextset()
+        self._reset_fetch_tracking()
+        return has_next
 
     async def close(self) -> None:
         logger.debug("AsyncCursor.close: starting")
@@ -87,10 +99,18 @@ class AsyncCursor:
     @property
     def description(self) -> Any:
         with translate_py_core_exceptions():
-            return self._py_core_async_cursor.description
+            description = self._py_core_async_cursor.description
+        if description is None:
+            return None
+        lowercase = get_settings().lowercase
+        return [
+            ((column[0].lower() if lowercase else column[0]), *column[1:]) for column in description
+        ]
 
     @property
     def rowcount(self) -> int:
+        if self._fetch_rowcount is not None:
+            return self._fetch_rowcount
         with translate_py_core_exceptions():
             return self._py_core_async_cursor.rowcount
 

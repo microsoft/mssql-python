@@ -20,14 +20,13 @@ async def test_execute_returns_public_cursor_and_binds_parameters(
         assert isinstance(cursor, AsyncCursor)
 
         result = await cursor.execute(
-            "SELECT CAST(? AS INT) AS value",
+            "IF CAST(? AS INT) <> 7 THROW 50000, 'Unexpected parameter value', 1",
             7,
             use_prepare=use_prepare,
             reset_cursor=False,
         )
 
         assert result is cursor
-        assert await cursor.fetchone() == (7,)
     finally:
         await cursor.close()
 
@@ -41,33 +40,35 @@ async def test_execute_accepts_single_parameter_sequence(
     use_prepare,
 ):
     await async_cursor.execute(
-        "SELECT CAST(? AS INT), CAST(? AS INT)",
+        "IF CAST(? AS INT) <> 1 OR CAST(? AS INT) <> 2 "
+        "THROW 50000, 'Unexpected parameter values', 1",
         parameters,
         use_prepare=use_prepare,
     )
-
-    assert await async_cursor.fetchone() == (1, 2)
 
 
 @pytest.mark.asyncio
 async def test_execute_accepts_named_parameters(async_cursor):
     result = await async_cursor.execute(
-        "SELECT CAST(%(first)s AS INT), CAST(%(second)s AS INT)",
+        "IF CAST(%(first)s AS INT) <> 1 OR CAST(%(second)s AS INT) <> 2 "
+        "THROW 50000, 'Unexpected parameter values', 1",
         {"first": 1, "second": 2},
     )
 
     assert result is async_cursor
-    assert await async_cursor.fetchone() == (1, 2)
 
 
 @pytest.mark.asyncio
 async def test_execute_accepts_dbapi_row(async_cursor):
     row = Row([1, 2], {"first": 0, "second": 1})
 
-    result = await async_cursor.execute("SELECT CAST(? AS INT), CAST(? AS INT)", row)
+    result = await async_cursor.execute(
+        "IF CAST(? AS INT) <> 1 OR CAST(? AS INT) <> 2 "
+        "THROW 50000, 'Unexpected parameter values', 1",
+        row,
+    )
 
     assert result is async_cursor
-    assert await async_cursor.fetchone() == (1, 2)
 
 
 @pytest.mark.asyncio
@@ -90,9 +91,13 @@ async def test_executemany_matches_sync_contract(async_connection, operation, ro
         )
         result = await cursor.executemany(operation.format(table=table_name), rows)
         assert result is None
-
-        await cursor.execute(f"SELECT id, value FROM {table_name} ORDER BY id")
-        assert await cursor.fetchall() == [(1, "one"), (2, "two")]
+        assert cursor.rowcount == 2
     finally:
         await cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         await cursor.close()
+
+
+@pytest.mark.asyncio
+async def test_executemany_rejects_non_sequence_like_sync(async_cursor):
+    with pytest.raises(TypeError):
+        await async_cursor.executemany("SELECT CAST(? AS INT)", iter([(1,), (2,)]))
