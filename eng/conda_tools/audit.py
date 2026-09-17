@@ -27,21 +27,14 @@ def _validate_payload(
     path: str, kind: Format, index: dict[str, Any]
 ) -> tuple[list[str], list[str]]:
     # Retain names and parsed facts, not every member's native payload bytes.
-    metadata: dict[str, tuple[archive.DistributionMetadata, str]] = {}
-    records: dict[str, list[str]] = {}
+    metadata_files: dict[str, bytes] = {}
     names: list[str] = []
 
     def members() -> Iterator[tuple[str, bytes]]:
         for name, data in archive.iter_payload_members(path):
             names.append(name)
-            if name.endswith(".dist-info/METADATA"):
-                facts = archive.parse_distribution_metadata(data)
-                distribution = contracts.canonical_distribution_name(facts["name"])
-                if distribution in metadata:
-                    raise ValueError(f"duplicate installed metadata for {distribution}")
-                metadata[distribution] = facts, name
-            elif name.endswith(".dist-info/RECORD"):
-                records[name] = archive.parse_record_members(data)
+            if name.endswith((".dist-info/METADATA", ".dist-info/RECORD")):
+                metadata_files[name] = data
             yield name, data
 
     base = os.path.basename(path)
@@ -52,44 +45,53 @@ def _validate_payload(
     else:
         macho_members = [(name, macho.macho_arches(data)) for name, data in members()]
 
-    def ownership(
-        distribution: str,
-    ) -> tuple[archive.DistributionMetadata, list[str], list[str]]:
-        facts, member = metadata[distribution]
-        root = member.rsplit("/", 2)[0] + "/"
-        record = member[: -len("METADATA")] + "RECORD"
-        owned = records.get(record, [])
-        relative = [name[len(root) :] for name in names if name.startswith(root)]
-        return facts, [name for name in relative if name in owned], owned
+    metadata = {}
+    for facts, present, owned, prefix in archive.installed_metadata(names, metadata_files):
+        distribution = contracts.canonical_distribution_name(facts["name"])
+        if distribution in metadata:
+            raise ValueError(f"duplicate installed metadata for {distribution}")
+        metadata[distribution] = facts, present, owned, prefix
 
     rs_required = "mssql-python-rs" in metadata
-    if rs_required and "mssql-python" not in metadata:
-        raise ValueError("RS distribution is missing its binding distribution metadata")
-    if "mssql-python" in metadata:
-        binding, files, owned = ownership("mssql-python")
-        rs_version = contracts.binding_rs_version(binding, files, owned)
-        if rs_version is None and rs_required:
-            raise ValueError(
-                "historical embedded-core binding must not be combined with an RS distribution"
-            )
-        if rs_version is not None:
-            if not rs_required:
-                raise ValueError(
-                    f"binding requires mssql-python-rs=={rs_version}, but its metadata is missing"
-                )
-            rs, files, owned = ownership("mssql-python-rs")
-            abi = [dep for dep in index.get("depends", []) if dep.split()[:1] == ["python_abi"]]
-            python_tag = abi[0].rsplit("_", 1)[-1] if len(abi) == 1 else ""
-            errors = contracts.validate_rs_ownership(
-                rs, files, owned, rs_version, python_tag, index["subdir"]
-            )
-            if errors:
-                raise ValueError("; ".join(errors))
     if kind == "elf":
-        return contracts.validate_elf(base, index, elf_members, rs_required)
-    if kind == "pe":
-        return contracts.validate_pe(base, index, pe_members)
-    return contracts.validate_macho(base, index, macho_members)
+        errors, details = contracts.validate_elf(base, index, elf_members, rs_required)
+    elif kind == "pe":
+        errors, details = contracts.validate_pe(base, index, pe_members)
+    else:
+        errors, details = contracts.validate_macho(base, index, macho_members)
+    if errors:
+        return errors, details
+    if "mssql-python" not in metadata:
+        raise ValueError("Package is missing its binding distribution metadata")
+    binding, files, owned, prefix = metadata["mssql-python"]
+    rs_version = contracts.binding_rs_version(binding, files, owned)
+    if rs_version is None and rs_required:
+        raise ValueError(
+            "historical embedded-core binding must not be combined with an RS distribution"
+        )
+    if rs_version is not None:
+        if not rs_required:
+            raise ValueError(
+                f"binding requires mssql-python-rs=={rs_version}, but its metadata is missing"
+            )
+        rs, files, owned, _ = metadata["mssql-python-rs"]
+        abi = [dep for dep in index.get("depends", []) if dep.split()[:1] == ["python_abi"]]
+        python_tag = abi[0].rsplit("_", 1)[-1] if len(abi) == 1 else ""
+        errors = contracts.validate_rs_ownership(
+            rs, files, owned, rs_version, python_tag, index["subdir"]
+        )
+        if errors:
+            raise ValueError("; ".join(errors))
+    root = prefix.rsplit("/", 2)[0] + "/"
+    errors = contracts.validate_core_ownership(
+        names,
+        {name: component[2] for name, component in metadata.items()},
+        "mssql-python-rs" if rs_version is not None else "mssql-python",
+        root=root,
+    )
+    if errors:
+        raise ValueError("; ".join(errors))
+    return [], details
 
 
 def audit_packages(paths: Iterable[str], kind: Format, subdir: str = "") -> AuditResult:
