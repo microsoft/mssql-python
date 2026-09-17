@@ -73,16 +73,19 @@ def text(value, limit=160):
     return value
 
 
-def validate(report, build_id=None, head=None, source=None, base=None):
+def validate(report, build_id=None, head=None, source=None, base=None, suite=None):
     if not isinstance(report, dict) or report.get("schema_version") != 1:
         raise ValueError("Unsupported report schema")
     if report.get("leg") not in LEGS or report.get("status") not in ("complete", "incomplete"):
         raise ValueError("Invalid report status or leg")
+    if type(report.get("build_id")) is not int or report["build_id"] < 0:
+        raise ValueError("Invalid build_id")
     for key, expected in (
         ("build_id", build_id),
         ("head_commit", head),
         ("source_commit", source),
         ("base_commit", base),
+        ("suite_hash", suite),
     ):
         if expected is not None and report.get(key) != expected:
             raise ValueError(f"Report provenance mismatch: {key}")
@@ -457,7 +460,17 @@ def main():
     parser.add_argument("reports", nargs="+", type=Path)
     args = parser.parse_args()
     reports = [validate(json.loads(path.read_text(encoding="utf-8"))) for path in args.reports]
-    print(render(reports, reports[0]["head_commit"], reports[0]["build_id"]))
+    first = reports[0]
+    for report in reports[1:]:
+        validate(
+            report,
+            build_id=first["build_id"],
+            head=first["head_commit"],
+            source=first["source_commit"],
+            base=first["base_commit"],
+            suite=first["suite_hash"],
+        )
+    print(render(reports, first["head_commit"], first["build_id"]))
 
 
 if __name__ == "__main__":

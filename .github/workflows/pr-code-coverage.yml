@@ -122,9 +122,11 @@ jobs:
           ARTIFACT_FAILURES=0
           BUILD_FAILURES=0
           COVERAGE_ARTIFACT=""
+          COVERAGE_ARTIFACT_APPROVED=false
           echo "📥 Waiting up to 220 minutes for coverage artifacts for build $BUILD_ID..."
 
           while (( SECONDS < DEADLINE )); do
+            COVERAGE_ARTIFACT=""
             REQUEST_TIMEOUT=$((DEADLINE - SECONDS))
             if (( REQUEST_TIMEOUT <= 0 )); then break; fi
             if (( REQUEST_TIMEOUT > 30 )); then REQUEST_TIMEOUT=30; fi
@@ -183,6 +185,7 @@ jobs:
                   ARTIFACT_FAILURES=0
                   BUILD_FAILURES=0
                   COVERAGE_ARTIFACT=""
+                  COVERAGE_ARTIFACT_APPROVED=false
                   echo "Selected ADO run was canceled; continuing with replacement build $BUILD_ID"
                   continue
                 fi
@@ -193,7 +196,11 @@ jobs:
                 if (( SLEEP_SECONDS > 0 )); then sleep "$SLEEP_SECONDS"; fi
                 continue
               fi
-              if [[ -n "$COVERAGE_ARTIFACT" ]]; then
+              if [[ -n "$COVERAGE_ARTIFACT" ]] &&
+                { [[ "$STATUS" == "inProgress" ]] ||
+                  { [[ "$STATUS" == "completed" ]] &&
+                    [[ "$RESULT" =~ ^(succeeded|partiallySucceeded|failed)$ ]]; }; }; then
+                COVERAGE_ARTIFACT_APPROVED=true
                 echo "✅ Found coverage artifact!"
                 break
               fi
@@ -220,7 +227,7 @@ jobs:
             if (( SLEEP_SECONDS > 0 )); then sleep "$SLEEP_SECONDS"; fi
           done
 
-          if [[ -z "$COVERAGE_ARTIFACT" ]]; then
+          if [[ "$COVERAGE_ARTIFACT_APPROVED" != true || -z "$COVERAGE_ARTIFACT" ]]; then
             echo "❌ Timeout: Coverage report artifact not found within 220 minutes"
             exit 1
           fi

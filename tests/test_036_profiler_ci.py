@@ -4,11 +4,14 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tarfile
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.error import URLError
@@ -157,6 +160,13 @@ def test_reject_wrong_commit_and_preserve_incomplete_status(report):
     assert "Performance could not be assessed" in reporting.render([report], "c" * 40, 42)
 
 
+@pytest.mark.parametrize("build_id", [None, True, -1])
+def test_reject_invalid_build_id(report, build_id):
+    report["build_id"] = build_id
+    with pytest.raises(ValueError, match="build_id"):
+        reporting.validate(report)
+
+
 def set_leg(report, leg):
     report = copy.deepcopy(report)
     report["leg"] = leg
@@ -168,6 +178,28 @@ def set_leg(report, leg):
             )
             sample["environment"]["sql_version"] = "16.0" if sql == "SQL2022" else "17.0"
     return report
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("build_id", 43),
+        ("head_commit", "e" * 40),
+        ("source_commit", "e" * 40),
+        ("base_commit", "e" * 40),
+        ("suite_hash", "e" * 64),
+    ],
+)
+def test_standalone_report_rejects_mixed_provenance(report, tmp_path, monkeypatch, key, value):
+    first = tmp_path / "linux.json"
+    second = tmp_path / "windows.json"
+    first.write_text(json.dumps(report), encoding="utf-8")
+    other = set_leg(report, "Windows-SQL2022")
+    other[key] = value
+    second.write_text(json.dumps(other), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["report", str(first), str(second)])
+    with pytest.raises(ValueError, match=key):
+        reporting.main()
 
 
 def clear_slowdowns(report):
@@ -500,6 +532,56 @@ def test_measure_timeout_retains_partial_results_and_log(tmp_path, monkeypatch):
         controller.measure(tmp_path, output, ["fetchone"], timeout=3)
     assert json.loads(output.read_text())["active_scenario"] == "fetchone"
     assert "Starting scenario: fetchone" in output.with_suffix(".log").read_text()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="exercises POSIX process groups")
+def test_build_timeout_terminates_descendants(tmp_path, monkeypatch):
+    pybind = tmp_path / "mssql_python/pybind"
+    pybind.mkdir(parents=True)
+    pid_file = tmp_path / "descendant.pid"
+    monkeypatch.setenv("DESCENDANT_PID", str(pid_file))
+    (pybind / "build.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f'"{sys.executable}" -c "import time; time.sleep(60)" &\n'
+        'echo "$!" > "$DESCENDANT_PID"\n'
+        "wait\n",
+        encoding="utf-8",
+    )
+
+    descendant = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            controller.build(tmp_path, tmp_path / "build.log", timeout=1)
+        descendant = int(pid_file.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(descendant, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("build descendant survived timeout cleanup")
+    finally:
+        if descendant is not None:
+            try:
+                os.kill(descendant, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_windows_process_tree_cleanup_uses_taskkill(monkeypatch):
+    process = MagicMock(pid=123)
+    taskkill = MagicMock(return_value=subprocess.CompletedProcess([], 0, ""))
+    monkeypatch.setattr(controller, "WINDOWS", True)
+    monkeypatch.setattr(controller.subprocess, "run", taskkill)
+    controller.terminate_process_tree(process)
+    taskkill.assert_called_once_with(
+        ["taskkill", "/PID", "123", "/T", "/F"],
+        capture_output=True,
+        text=True,
+    )
+    process.wait.assert_called_once_with(timeout=5)
 
 
 def test_overall_budget_caps_build_and_worker_time(monkeypatch):

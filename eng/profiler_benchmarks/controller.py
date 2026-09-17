@@ -10,6 +10,7 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
+import signal
 import subprocess
 import sys
 import tarfile
@@ -26,6 +27,7 @@ SHA = re.compile(r"[0-9a-f]{40}")
 BENCHMARK_TIMEOUT = 90 * 60
 LOCAL_BENCHMARK_TIMEOUT = 105 * 60
 WORKER_TIMEOUT = 6 * 60
+WINDOWS = os.name == "nt"
 
 
 def git(*args):
@@ -65,21 +67,50 @@ def checkout(revision, path):
             tar.extractall(path, members=members)
 
 
+def terminate_process_tree(process):
+    if WINDOWS:
+        result = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            raise RuntimeError(f"Failed to terminate build process tree: {result.stdout.strip()}")
+        process.wait(timeout=5)
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=5)
+
+
 def build(path, log, timeout=900):
     env = dict(os.environ, ENABLE_PROFILING="1")
     # build scripts find Python via PATH; keep the controller's interpreter.
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env["PATH"]
     command = ["cmd", "/c", "build.bat"] if os.name == "nt" else ["bash", "build.sh"]
     with log.open("w", encoding="utf-8") as output:
-        subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=path / "mssql_python/pybind",
             env=env,
             stdout=output,
             stderr=subprocess.STDOUT,
-            timeout=timeout,
-            check=True,
+            start_new_session=not WINDOWS,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0,
         )
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            terminate_process_tree(process)
+            raise
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, command)
 
 
 def check_build(source_root, profiling):

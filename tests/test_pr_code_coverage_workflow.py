@@ -201,6 +201,14 @@ def test_canceled_without_replacement_obeys_wall_clock_budget(tmp_path):
     assert 220 * 60 <= int((tmp_path / "elapsed").read_text()) < 225 * 60
 
 
+def test_canceled_visible_artifact_without_replacement_is_rejected(tmp_path):
+    canceled = {**_build(), "status": "completed", "result": "canceled"}
+    run = _poll(tmp_path, [ARTIFACT], [canceled], clock_scale=10)
+    assert run.returncode != 0
+    assert "has no replacement yet" in run.stdout
+    assert "Timeout:" in run.stdout
+
+
 def test_immediately_available_artifact_is_accepted_after_lifecycle_check(tmp_path):
     result = _poll(tmp_path, [ARTIFACT], [_build()])
     assert result.returncode == 0, result.stdout + result.stderr
