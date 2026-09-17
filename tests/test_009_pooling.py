@@ -912,7 +912,7 @@ def test_pool_removes_invalid_connections(conn_str):
             admin.cursor().execute(f"KILL {victim_spid}")
         except Exception as e:
             msg = str(e)
-            if "permission" in msg.lower() or "KILL" in msg:
+            if "does not have permission to use the kill statement" in msg.lower():
                 import sys as _sys
                 print(
                     f"Skipping: KILL not permitted for this login: {msg}",
