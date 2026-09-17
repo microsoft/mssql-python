@@ -57,6 +57,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- DATE, TIME, and TIMESTAMP fetch conversion uses checked CPython constructors
+  for the standard datetime types, while preserving cached substitute constructors,
+  their positional arguments and exceptions, and fractional-second truncation.
+  DATETIMEOFFSET, UUID, and Decimal conversion are unchanged.
 - `mssql-python` now depends on `mssql-python-rs==0.1.0` for `mssql_py_core`
   instead of embedding files owned by that separately published distribution.
 - **GH-769 deprecation policy:** The misplaced `GetInfoConstants` members
