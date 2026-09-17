@@ -6149,6 +6149,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                 if (expiry > 0) {
                     conn->setTokenExpiry(expiry);
                 }
+                conn->updateLastUsed();
+                conn->setPoolOrigin(&pool, pool.generation());
                 pool.inject_candidate(conn);
             },
             py::arg("conn_str"), py::arg("expiry") = 0, py::arg("mock") = false);

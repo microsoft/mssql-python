@@ -202,10 +202,14 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 bool gen_valid = false;
                 {
                     std::lock_guard<std::mutex> lock(_mutex);
-                    gen_valid = (_generation == candidate_generation);
+                    if (_generation == candidate_generation) {
+                        candidate->updateLastUsed();
+                        candidate->setPoolOrigin(this, _generation);
+                        valid_conn = candidate;
+                        gen_valid = true;
+                    }
                 }
                 if (gen_valid) {
-                    valid_conn = candidate;
                     break;
                 }
                 // Pool was closed while validating candidate (#746); discard stale
@@ -287,10 +291,14 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 bool gen_valid = false;
                 {
                     std::lock_guard<std::mutex> lock(_mutex);
-                    gen_valid = (_generation == reservation_generation);
+                    if (_generation == reservation_generation) {
+                        new_conn->updateLastUsed();
+                        new_conn->setPoolOrigin(this, _generation);
+                        valid_conn = new_conn;
+                        gen_valid = true;
+                    }
                 }
                 if (gen_valid) {
-                    valid_conn = new_conn;
                     break;
                 }
                 // Pool was closed while connecting; queue the stale connection
@@ -326,12 +334,16 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
 
 void ConnectionPool::release(std::shared_ptr<Connection> conn) {
     PERF_TIMER("ConnectionPool::release");
+    if (!conn) {
+        return;
+    }
     bool should_disconnect = false;
-    uint64_t release_generation = 0;
+    bool gen_matches = false;
+    uint64_t conn_gen = conn->originGeneration();
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        release_generation = _generation;
-        if (_pool.size() < _max_size) {
+        gen_matches = conn->matchesPoolOrigin(this, _generation);
+        if (gen_matches && _pool.size() < _max_size) {
             conn->updateLastUsed();
             _pool.push_back(conn);
         } else {
@@ -346,9 +358,11 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
         } catch (const std::exception& ex) {
             LOG("ConnectionPool::release: disconnect failed: %s", ex.what());
         }
-        std::lock_guard<std::mutex> lock(_mutex);
-        if (_generation == release_generation && _current_size > 0) {
-            --_current_size;
+        if (gen_matches) {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_generation == conn_gen && _current_size > 0) {
+                --_current_size;
+            }
         }
     }
 }

@@ -57,6 +57,15 @@ class Connection {
     std::chrono::steady_clock::time_point lastUsed() const;
     void setMock(bool mock) { _isMock = mock; }
     bool isMock() const { return _isMock; }
+    void setPoolOrigin(void* pool, uint64_t generation) {
+        _originPool = pool;
+        _originGeneration = generation;
+    }
+    bool matchesPoolOrigin(void* pool, uint64_t generation) const {
+        return _originPool == pool && _originGeneration == generation;
+    }
+    void* originPool() const { return _originPool; }
+    uint64_t originGeneration() const { return _originGeneration; }
 
     // Materialize connect-attrs from a Python token-factory callback.
     // The factory may return either a bare attrs dict (legacy) or a
@@ -103,6 +112,8 @@ class Connection {
     bool _fromPool = false;
     bool _autocommit = true;
     bool _isMock = false;
+    void* _originPool = nullptr;
+    uint64_t _originGeneration = 0;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
     // POSIX-epoch expiry (seconds) of the access token this connection last

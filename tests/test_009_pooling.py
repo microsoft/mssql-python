@@ -1394,6 +1394,73 @@ def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str)
     )
 
 
+def test_pool_release_from_stale_generation_does_not_pollute_pool(conn_str):
+    """Regression test for GH-746: releasing a connection from an invalidated pool/generation.
+
+    When a connection checked out from an earlier pool generation is released after
+    pool.close() has advanced the generation, release() must NOT push that stale connection
+    back into the active pool nor decrement current_size of the new generation. Instead, it
+    must cleanly disconnect the stale connection, ensuring the new pool generation remains
+    uncorrupted and never exceeds max_size.
+    """
+    _run_in_subprocess(
+        """
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+
+        # 1. Acquire conn_1 under generation 0
+        conn_1 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_1 is not None
+        assert pool.current_size == 1
+        assert pool.generation == 0
+
+        # 2. Pool is closed while conn_1 is still checked out
+        pool.close()
+        assert pool.current_size == 0
+        assert pool.generation == 1
+
+        # 3. Acquire conn_2 under generation 1 (consumes the 1 slot of max_size=1)
+        conn_2 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_2 is not None
+        assert pool.current_size == 1
+        assert pool.generation == 1
+
+        # 4. Release conn_1 (from generation 0).
+        # The pool origin check ensures conn_1 is NOT added to the idle pool
+        # and current_size of generation 1 is NOT decremented.
+        pool.release(conn_1)
+        assert pool.current_size == 1, (
+            f"Expected pool.current_size to stay 1, but got {pool.current_size}"
+        )
+
+        # 5. Since conn_2 is still checked out and max_size=1, acquire must be rejected
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "A new acquire must be rejected when max_size=1 capacity is occupied"
+
+        # 6. Release conn_2 (matches generation 1). It returns to the pool.
+        pool.release(conn_2)
+        assert pool.current_size == 1
+
+        # 7. Next acquire reuses conn_2 from the pool
+        conn_3 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_3 is not None
+        assert pool.current_size == 1
+
+        pool.release(conn_3)
+        pool.close()
+        assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
 # =============================================================================
 # Native token-factory (lazy token acquisition) integration tests
 # =============================================================================

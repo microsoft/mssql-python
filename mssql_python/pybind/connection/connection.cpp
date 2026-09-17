@@ -47,7 +47,10 @@ static SqlHandlePtr getEnvHandle() {
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
 Connection::Connection(const std::u16string& conn_str, bool use_pool)
-    : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
+    : _connStr(conn_str),
+      _autocommit(false),
+      _fromPool(use_pool),
+      _lastUsed(std::chrono::steady_clock::now()) {
     PERF_TIMER("Connection::Connection");
     allocateDbcHandle();
 }
