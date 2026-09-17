@@ -10,7 +10,6 @@ cursor fixture is requested, so the file runs with DB_CONNECTION_STRING unset.
 
 import gc
 import logging
-import random
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -299,7 +298,11 @@ def test_jitter_keeps_capped_delays_spread_out(monkeypatch):
     # Once backoff reaches max_delay every client is asking for the same number, so the jitter is
     # the only thing keeping them apart. Scaling around the delay used to clamp roughly half of
     # the draws to exactly max_delay.
-    monkeypatch.setattr(mssql_python.retry, "_random", random.Random(682).random)
+    # The seam is fed an evenly spaced sweep of [0, 1) rather than a seeded generator. It covers
+    # the interval the same way, so the assertions below hold on every run instead of for one
+    # seed, and the test carries no random source of its own.
+    sweep = iter([(i + 0.5) / 2000 for i in range(2000)])
+    monkeypatch.setattr(mssql_python.retry, "_random", lambda: next(sweep))
     policy = RetryPolicy(base_delay=1.0, max_delay=30.0, jitter=True)
     delays = [policy.compute_delay(5000) for _ in range(2000)]
     assert all(0.0 <= d < 30.0 for d in delays)
