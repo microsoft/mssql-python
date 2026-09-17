@@ -388,23 +388,38 @@ def test_conda_component_cardinality(tmp_path, component, layout):
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
-def test_win_arm64_arm64_binaries_pass(tmp_path):
-    p = _make_conda(
-        tmp_path,
-        "win-arm64",
-        {
-            _CORE_INIT: b"from .mssql_py_core import *\n",
-            "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
-            "Lib/site-packages/mssql_py_core/mssql_py_core.cp312-win_arm64.pyd": _fake_pe(_ARM64),
-            "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(
-                _ARM64
-            ),
-            "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/mssql-auth.dll": _fake_pe(
-                _ARM64
-            ),
-        },
-    )
-    assert audit.audit_package(p, "pe").violations == []
+@pytest.mark.parametrize("metadata_state", ["valid", "missing", "case", "backslash"])
+def test_win_arm64_binaries_require_binding_metadata(tmp_path, metadata_state):
+    payload = {
+        _CORE_INIT: b"from .mssql_py_core import *\n",
+        "Lib/site-packages/mssql_python/ddbc_bindings.cp312-arm64.pyd": _fake_pe(_ARM64),
+        "Lib/site-packages/mssql_py_core/mssql_py_core.cp312-win_arm64.pyd": _fake_pe(_ARM64),
+        "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/msodbcsql18.dll": _fake_pe(_ARM64),
+        "Lib/site-packages/mssql_python_odbc/libs/windows/arm64/mssql-auth.dll": _fake_pe(_ARM64),
+    }
+    root = "Lib/site-packages/"
+    prefix = root + "mssql_python-1.13.0.dist-info/"
+    if metadata_state != "missing":
+        payload[prefix + "METADATA"] = b"Name: mssql-python\nVersion: 1.13.0\n"
+        payload[prefix + "RECORD"] = "".join(
+            f"{name.removeprefix(root)},,\n" for name in [*payload, prefix + "RECORD"]
+        ).encode()
+        if metadata_state != "valid":
+            payload = {
+                (
+                    (name.lower() if metadata_state == "case" else name.replace("/", "\\"))
+                    if ".dist-info/" in name
+                    else name
+                ): data
+                for name, data in payload.items()
+            }
+    errors = audit.audit_package(_make_conda(tmp_path, "win-arm64", payload), "pe").violations
+    if metadata_state == "valid":
+        assert errors == []
+    elif metadata_state == "missing":
+        assert any("binding" in error and "metadata" in error.lower() for error in errors)
+    else:
+        assert any("Noncanonical installed METADATA" in error for error in errors)
 
 
 @pytest.mark.parametrize(
@@ -444,6 +459,11 @@ def test_required_core_contract(tmp_path, state):
         payload[core.replace("312", "311")] = payload.pop(core)
     elif state == "abi3":
         payload[core.replace(".cp312-win_arm64", "")] = payload.pop(core)
+    prefix = "Lib/site-packages/mssql_python-1.13.0.dist-info/"
+    payload[prefix + "METADATA"] = b"Name: mssql-python\nVersion: 1.13.0\n"
+    payload[prefix + "RECORD"] = "".join(
+        f"{name.removeprefix('Lib/site-packages/')},,\n" for name in [*payload, prefix + "RECORD"]
+    ).encode()
     errors = audit.audit_package(
         _make_conda(tmp_path, "win-arm64", payload, depends=depends), "pe"
     ).violations
