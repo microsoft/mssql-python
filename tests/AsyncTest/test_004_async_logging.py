@@ -50,7 +50,7 @@ async def test_connect_logging_does_not_include_client_context(
     assert "AsyncConnection.connect: starting" in messages
     assert "AsyncConnection.connect: connected" in messages
     assert "PWD=" not in messages
-    assert "password=" not in messages.lower()
+assert "password" not in messages.lower()
     assert "client_context" not in messages
 
 
