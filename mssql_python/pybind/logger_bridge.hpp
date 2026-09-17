@@ -25,6 +25,13 @@ namespace py = pybind11;
 namespace mssql_python {
 namespace logging {
 
+#if defined(__GNUC__) || defined(__clang__)
+#define MSSQL_PRINTF_FORMAT(format_index, first_argument) \
+    __attribute__((format(printf, format_index, first_argument)))
+#else
+#define MSSQL_PRINTF_FORMAT(format_index, first_argument)
+#endif
+
 // Log level constants (matching Python levels)
 // Note: Avoid using ERROR as it conflicts with Windows.h macro
 const int LOG_LEVEL_DEBUG = 10;     // Debug/diagnostic logging
@@ -81,7 +88,8 @@ class LoggerBridge {
      * @param format Printf-style format string
      * @param ... Variable arguments for format string
      */
-    static void log(int level, const char* file, int line, const char* format, ...);
+    static void log(int level, const char* file, int line, const char* format, ...)
+        MSSQL_PRINTF_FORMAT(4, 5);
 
     /**
      * Get the current log level.
@@ -124,7 +132,8 @@ class LoggerBridge {
      * @param args Variable arguments
      * @return Formatted string
      */
-    static std::string formatMessage(const char* format, va_list args);
+    static std::string formatMessage(const char* format, va_list args)
+        MSSQL_PRINTF_FORMAT(1, 0);
 
     /**
      * Helper to extract filename from full path.
@@ -137,6 +146,8 @@ class LoggerBridge {
 
 }  // namespace logging
 }  // namespace mssql_python
+
+#undef MSSQL_PRINTF_FORMAT
 
 // Convenience macros for logging
 // Single LOG() macro for all diagnostic logging (DEBUG level)
