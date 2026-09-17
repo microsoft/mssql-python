@@ -57,6 +57,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- `fetchmany()` keeps freshly described column types and sizes in call-local native
+  metadata instead of round-tripping them through Python dictionaries. Column names
+  retain eager Unicode conversion; public column descriptions and fetch behavior
+  are unchanged.
 - `mssql-python` now depends on `mssql-python-rs==0.1.0` for `mssql_py_core`
   instead of embedding files owned by that separately published distribution.
 - **GH-769 deprecation policy:** The misplaced `GetInfoConstants` members
