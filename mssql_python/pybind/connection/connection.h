@@ -40,6 +40,9 @@ class Connection {
     // Disconnect and free the connection handle.
     void disconnect();
 
+    // Roll back and disconnect without Python callbacks or escaping exceptions.
+    void disconnectNoThrow() noexcept;
+
     // Relinquish native handles without ODBC calls during interpreter finalization.
     void abandonDuringFinalization() noexcept;
 

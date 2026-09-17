@@ -5,6 +5,7 @@
 #include "connection/connection_pool.h"
 #include "utf_utils.h"
 #include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <pybind11/pybind11.h>
 #include <regex>
@@ -64,13 +65,7 @@ Connection::Connection(const std::u16string& conn_str, bool use_pool)
 }
 
 Connection::~Connection() noexcept {
-    try {
-        disconnect();  // fallback if user forgets to disconnect
-    } catch (...) {
-        // Destructors must not propagate ODBC disconnect failures. Releasing
-        // the handle still lets SqlHandle perform SQLFreeHandle cleanup.
-        _dbcHandle.reset();
-    }
+    disconnectNoThrow();
 }
 
 // Allocates connection handle
@@ -136,13 +131,10 @@ void Connection::disconnect() {
             LOG("Disconnecting from database");
         }
 
-        // CRITICAL FIX: Mark all child statement handles as implicitly freed
-        // When we free the DBC handle below, the ODBC driver will automatically free
-        // all child STMT handles. We need to tell the SqlHandle objects about this
-        // so they don't try to free the handles again during their destruction.
-        
-        // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
-        // This protects against concurrent allocStatementHandle() calls or GC finalizers
+        // Keep wrappers alive while SQLDisconnect frees their native handles.
+        // Otherwise another thread's GC could free a statement again before we
+        // mark it as implicitly freed. On failure, keep the handles usable.
+        std::vector<SqlHandlePtr> childHandles;
         size_t originalSize = 0, afterCompactSize = 0, badHandleCount = 0;
         {
             std::lock_guard<std::mutex> lock(_childHandlesMutex);
@@ -164,12 +156,36 @@ void Connection::disconnect() {
                         ++badHandleCount;
                         continue;  // Skip marking to prevent leak
                     }
-                    handle->markImplicitlyFreed();
+                    childHandles.push_back(std::move(handle));
                 }
+            }
+        }
+
+        SQLRETURN ret;
+        if (hasGil) {
+            py::gil_scoped_release release;
+            ret = SQLDisconnect_ptr(_dbcHandle->get());
+        } else {
+            ret = SQLDisconnect_ptr(_dbcHandle->get());
+        }
+        if (!SQL_SUCCEEDED(ret)) {
+            if (hasGil) {
+                checkError(ret);
+            } else {
+                std::fprintf(stderr, "mssql-python: native disconnect failed (SQLRETURN %d)\n",
+                             static_cast<int>(ret));
+            }
+            // Keep ownership and child-handle tracking intact for a cleanup retry.
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(_childHandlesMutex);
+            for (const auto& handle : childHandles) {
+                handle->markImplicitlyFreed();
             }
             _childStatementHandles.clear();
             _allocationsSinceCompaction = 0;
-        }  // Release lock before potentially slow SQLDisconnect call
+        }
 
         // Log after releasing _childHandlesMutex (#671): LOG()/LOG_ERROR() acquire
         // the GIL and must not run while a native mutex is held. Also gated on
@@ -184,30 +200,41 @@ void Connection::disconnect() {
             }
         }
 
-        SQLRETURN ret;
-        if (hasGil) {
-            // Release the GIL during the blocking ODBC disconnect call.
-            // This allows other Python threads to run while the network
-            // round-trip completes.
-            py::gil_scoped_release release;
-            ret = SQLDisconnect_ptr(_dbcHandle->get());
-        } else {
-            // Destructor / shutdown path — GIL is not held, call directly.
-            ret = SQLDisconnect_ptr(_dbcHandle->get());
-        }
-        // In destructor/shutdown paths, suppress errors to avoid
-        // std::terminate() if this throws during stack unwinding.
-        if (hasGil) {
-            checkError(ret);
-        } else if (!SQL_SUCCEEDED(ret)) {
-            // Intentionally no LOG() here: LOG() acquires the GIL internally
-            // via py::gil_scoped_acquire, which is unsafe during interpreter
-            // shutdown or stack unwinding (can deadlock or call std::terminate).
-        }
         // triggers SQLFreeHandle via destructor, if last owner
         _dbcHandle.reset();
     } else if (hasGil) {
         LOG("No connection handle to disconnect");
+    }
+}
+
+void Connection::disconnectNoThrow() noexcept {
+    try {
+        if (isPythonFinalizing()) {
+            abandonDuringFinalization();
+            return;
+        }
+        if (!_dbcHandle) {
+            return;
+        }
+        auto cleanup = [this]() {
+            // SQLEndTran only rolls back explicit SQL transactions after entering
+            // manual-commit mode. Never turn autocommit on here: that could commit.
+            SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                                 reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0);
+            SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+            // Attempt disconnect even if rollback failed (e.g. a dead connection).
+            disconnect();
+        };
+        // disconnect() already supports GIL-less cleanup. Drop the GIL once so
+        // neither its diagnostics nor handle destruction can enter Python.
+        if (PyGILState_Check()) {
+            py::gil_scoped_release release;
+            cleanup();
+        } else {
+            cleanup();
+        }
+    } catch (...) {
+        std::fputs("mssql-python: unexpected failure during native connection cleanup\n", stderr);
     }
 }
 
@@ -714,18 +741,12 @@ ConnectionHandle::~ConnectionHandle() {
             return;
         }
         try {
-            // A destructor cannot report sanitation errors to a caller. Discard
-            // instead of running close(), which performs logging and transaction
-            // operations that are unsafe during late object teardown.
+            // Discard ends abandoned work without returning this connection to
+            // the pool or entering Python from a native destructor.
             ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
         } catch (...) {
-            if (_conn) {
-                try {
-                    _conn->disconnect();
-                } catch (...) {
-                }
-            }
-            _conn = nullptr;
+            std::fputs("mssql-python: failed to release native connection pool capacity\n", stderr);
+            _conn->disconnectNoThrow();
         }
     }
 }

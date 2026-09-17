@@ -245,10 +245,6 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
             subject_cursor = subject.cursor()
             subject_cursor.execute("SELECT @@SPID")
             subject_spid = subject_cursor.fetchone()[0]
-            subject_cursor.execute(f"BEGIN TRANSACTION; INSERT INTO {table} VALUES (1)")
-            subject_cursor.close()
-            subject.close()
-
             try:
                 observer_cursor.execute(
                     "SELECT open_transaction_count "
@@ -274,6 +270,18 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
                     file=sys.stderr,
                 )
                 sys.exit(77)
+
+            subject_cursor.execute(f"BEGIN TRANSACTION; INSERT INTO {table} VALUES (1)")
+            subject_cursor.close()
+            subject.close()
+
+            observer_cursor.execute(
+                "SELECT open_transaction_count "
+                "FROM sys.dm_exec_sessions WHERE session_id = ?",
+                [subject_spid],
+            )
+            row = observer_cursor.fetchone()
+            assert row is not None, "Previously visible pooled session disappeared on close"
             assert row[0] == 0
 
             observer_cursor.execute(f"SELECT COUNT(*) FROM {table}")
@@ -989,7 +997,7 @@ def test_failed_pool_sanitation_releases_capacity(conn_str):
             admin.cursor().execute(f"KILL {victim_spid}")
         except Exception as exc:
             message = str(exc)
-            if "permission" in message.lower() or "kill" in message.lower():
+            if "does not have permission to use the kill statement" in message.lower():
                 print(
                     f"Skipping: KILL not permitted for this login: {message}",
                     file=sys.stderr,
@@ -1107,6 +1115,163 @@ def test_unclosed_native_handle_destructor_releases_pool_capacity(conn_str):
             replacement.close()
             pooling(enabled=False)
         """,
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("use_pool", [False, True])
+@pytest.mark.parametrize("autocommit", [False, True])
+def test_native_destructor_rolls_back_pending_dml(conn_str, use_pool, autocommit):
+    """Native destruction must release transactions, locks, and the server session."""
+    _run_in_subprocess(
+        f"use_pool = {use_pool!r}\nautocommit = {autocommit!r}\n" + textwrap.dedent("""
+            import gc
+            import os
+            import sys
+            import time
+            import uuid
+
+            from mssql_python import connect, ddbc_bindings as ddbc, pooling
+
+            conn_str = os.environ["DB_CONNECTION_STRING"]
+            pool_key = "pytest_native_cleanup_" + uuid.uuid4().hex
+            table = pool_key
+            pooling(max_size=1, idle_timeout=30)
+            observer = connect(conn_str, autocommit=True)
+            native = ddbc.Connection(conn_str, use_pool, {}, pool_key, None)
+            statement = native.alloc_statement_handle()
+            try:
+                assert ddbc.DDBCSQLExecDirect(statement, "SELECT @@SPID") in (0, 1)
+                row = []
+                assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
+                session_id = row[0]
+                statement.free()
+
+                cursor = observer.cursor()
+                try:
+                    cursor.execute(
+                        "SELECT session_id FROM sys.dm_exec_sessions WHERE session_id = ?",
+                        [session_id],
+                    )
+                except Exception as exc:
+                    if "permission" in str(exc).lower():
+                        print("Observer cannot inspect the native session", file=sys.stderr)
+                        sys.exit(77)
+                    raise
+                if cursor.fetchone() is None:
+                    print("Observer cannot inspect the native session", file=sys.stderr)
+                    sys.exit(77)
+
+                cursor.execute("SET LOCK_TIMEOUT 1000")
+                cursor.execute(f"CREATE TABLE {table} (id INT)")
+                try:
+                    native.set_autocommit(autocommit)
+                    statement = native.alloc_statement_handle()
+                    sql = f"INSERT INTO {table} VALUES (1)"
+                    if autocommit:
+                        sql = "BEGIN TRANSACTION; " + sql
+                    assert ddbc.DDBCSQLExecDirect(statement, sql) in (0, 1)
+                    statement.free()
+                    statement = None
+                    native = None
+                    gc.collect()
+
+                    cursor.execute(f"SELECT COUNT(*) FROM {table} WITH (READCOMMITTEDLOCK)")
+                    assert cursor.fetchone()[0] == 0, "Destructor committed abandoned work"
+
+                    deadline = time.monotonic() + 5
+                    while True:
+                        cursor.execute(
+                            "SELECT session_id FROM sys.dm_exec_sessions WHERE session_id = ?",
+                            [session_id],
+                        )
+                        if cursor.fetchone() is None:
+                            break
+                        assert time.monotonic() < deadline, "Native session survived destruction"
+                        time.sleep(0.05)
+
+                    replacement = ddbc.Connection(conn_str, use_pool, {}, pool_key, None)
+                    replacement_statement = replacement.alloc_statement_handle()
+                    try:
+                        assert ddbc.DDBCSQLExecDirect(replacement_statement, "SELECT 1") in (0, 1)
+                        row = []
+                        assert ddbc.DDBCSQLFetchOne(replacement_statement, row) in (0, 1)
+                        assert row == [1]
+                    finally:
+                        replacement_statement.free()
+                        replacement.close()
+                finally:
+                    cursor.execute(f"DROP TABLE {table}")
+                cursor.close()
+            finally:
+                if statement is not None:
+                    statement.free()
+                if native is not None:
+                    native.rollback()
+                    native.close()
+                observer.close()
+                pooling(enabled=False)
+            """),
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("explicit_close", [False, True])
+def test_native_disconnect_with_concurrent_child_gc(conn_str, explicit_close):
+    """Child wrappers collected during disconnect must not double-free statements."""
+    _run_in_subprocess(
+        f"explicit_close = {explicit_close!r}\n" + textwrap.dedent("""
+            import gc
+            import os
+            import threading
+
+            from mssql_python import ddbc_bindings as ddbc
+
+            class StatementCycle:
+                def __init__(self, statement):
+                    self.statement = statement
+                    self.cycle = self
+
+            barrier = threading.Barrier(2, timeout=10)
+            errors = []
+            iterations = 50
+
+            def collect_children():
+                try:
+                    for _ in range(iterations):
+                        barrier.wait()
+                        gc.collect()
+                        barrier.wait()
+                except Exception as exc:
+                    errors.append(exc)
+                    barrier.abort()
+
+            gc.disable()
+            collector = threading.Thread(target=collect_children, daemon=True)
+            collector.start()
+            try:
+                for _ in range(iterations):
+                    native = ddbc.Connection(os.environ["DB_CONNECTION_STRING"], False)
+                    native.set_autocommit(True)
+                    statement = native.alloc_statement_handle()
+                    assert ddbc.DDBCSQLExecDirect(statement, "SELECT 1") in (0, 1)
+                    cycle = StatementCycle(statement)
+                    del statement, cycle
+                    barrier.wait()
+                    if explicit_close:
+                        native.close()
+                    native = None
+                    barrier.wait()
+            finally:
+                collector.join(timeout=10)
+                if collector.is_alive():
+                    barrier.abort()
+                    collector.join(timeout=10)
+                gc.enable()
+            assert not collector.is_alive(), "GC worker did not exit"
+            assert not errors, errors
+            gc.collect()
+            """),
         conn_str,
     )
 

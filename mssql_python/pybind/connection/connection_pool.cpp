@@ -335,12 +335,7 @@ void ConnectionPool::discard(std::shared_ptr<Connection> conn) {
         if (_current_size > 0)
             --_current_size;
     }
-    try {
-        conn->disconnect();
-    } catch (...) {
-        // The caller is already handling a sanitation failure. Connection's
-        // noexcept destructor still releases the ODBC handle.
-    }
+    conn->disconnectNoThrow();
 }
 
 bool ConnectionPool::canEvict() {
@@ -535,11 +530,7 @@ void ConnectionPoolManager::discardConnection(
     if (pool) {
         pool->discard(conn);
     } else {
-        try {
-            conn->disconnect();
-        } catch (...) {
-            // Connection's noexcept destructor still releases the ODBC handle.
-        }
+        conn->disconnectNoThrow();
     }
 }
 
