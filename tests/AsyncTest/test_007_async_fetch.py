@@ -220,7 +220,9 @@ async def test_fetchone_fetchmany_interleaving(async_cursor, fetch_plan):
 
 @pytest.mark.asyncio
 async def test_fetchmany_more_than_available_and_repeated_exhaustion(async_cursor):
-    await async_cursor.execute("SELECT value FROM (VALUES (1), (2), (3)) AS rows(value)")
+    await async_cursor.execute(
+        "SELECT value FROM (VALUES (1), (2), (3)) AS rows(value) ORDER BY value"
+    )
 
     rows = await async_cursor.fetchmany(10)
 
