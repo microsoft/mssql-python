@@ -195,7 +195,9 @@ class Row:
     def __getitem__(self, index) -> Any:
         """Allow accessing by numeric index (row[0]) or column name (row["col"])."""
         if isinstance(index, str):
-            if index in self._column_map:
+            # A row built without a column map has no named columns, so any
+            # string key is simply absent (KeyError), never a TypeError.
+            if self._column_map is not None and index in self._column_map:
                 return self._values[self._column_map[index]]
             # O(1) case-insensitive lookup when lowercase is enabled
             if self._column_map_lower is not None:

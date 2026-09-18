@@ -3636,6 +3636,14 @@ def test_row_mapping_none_column_map():
     assert dict(mapping) == {}
     assert len(mapping) == 0
 
+    # An absent column map has no named columns, so a string key must be treated
+    # as missing (KeyError / get-default / not-in), never surface a TypeError.
+    with pytest.raises(KeyError):
+        mapping["missing"]
+    assert mapping.get("missing", "fallback") == "fallback"
+    assert mapping.get("missing") is None
+    assert ("missing" in mapping) is False
+
 
 def test_row_mapping_dedup_fallback():
     """Test row._mapping reconstructs names from _column_map when cursor is None."""
