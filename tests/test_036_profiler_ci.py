@@ -477,11 +477,14 @@ def test_publisher_does_not_post_stale_head(monkeypatch):
 
     def api(path, **kwargs):
         calls.append((path, kwargs))
-        return {"state": "open", "head": {"sha": "new-head"}}
+        if path.startswith("pulls/"):
+            return {"state": "open", "head": {"sha": "new-head"}}
+        return []
 
     monkeypatch.setattr(publisher, "github", api)
     publisher.publish(123, "old-head", "anything")
-    assert len(calls) == 1 and calls[0][1] == {}
+    assert all(not kwargs for _, kwargs in calls)
+    assert not any(path == "issues/123/comments" and kwargs for path, kwargs in calls)
 
 
 def test_publisher_can_finalize_exact_head_after_merge(monkeypatch):
