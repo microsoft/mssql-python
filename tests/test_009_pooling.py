@@ -1839,6 +1839,91 @@ def test_pool_close_disconnect_keeps_in_flight_until_disconnected(conn_str):
     )
 
 
+def test_pool_prune_stale_disconnect_keeps_in_flight_until_disconnected(conn_str):
+    """Regression test for GH-746: Phase 1 stale idle pruning retains in-flight capacity.
+
+    When Phase 1 prunes stale idle connections past idle_timeout, they are moved to
+    _in_flight and only decremented after physical disconnect in Phase 4 finishes,
+    preventing concurrent callers from allocating into slots of disconnecting handles.
+    """
+    _run_in_subprocess(
+        """
+        import time
+        import threading
+        from mssql_python import ddbc_bindings
+
+        # Pool with idle timeout of 0 seconds and max_size=1
+        pool = ddbc_bindings._TestConnectionPool(1, 0)
+        pool.set_mock_mode(True)
+
+        pool.inject_candidate("SERVER=dummy_test_746;", 0, True)
+        assert pool.current_size == 1
+        assert pool.checked_out == 0
+        assert pool.in_flight == 0
+
+        # Wait for candidate to exceed idle timeout
+        time.sleep(1.1)
+
+        in_disconnect = threading.Event()
+        release_disconnect = threading.Event()
+        hook_observed = {}
+
+        def on_disconnect():
+            hook_observed["current_size"] = pool.current_size
+            hook_observed["in_flight"] = pool.in_flight
+            hook_observed["checked_out"] = pool.checked_out
+            in_disconnect.set()
+            assert release_disconnect.wait(timeout=5.0), "Timed out waiting to release disconnect"
+
+        pool.set_on_disconnect_hook(on_disconnect)
+
+        t_err = []
+        t_conn = []
+
+        def run_acquire():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", None)
+                t_conn.append(conn)
+            except Exception as exc:
+                t_err.append(exc)
+
+        t = threading.Thread(target=run_acquire)
+        t.start()
+        assert in_disconnect.wait(timeout=5.0), "Timed out waiting for disconnect hook in Phase 4"
+
+        # Verify hook observed state:
+        assert hook_observed["current_size"] == 1
+        assert hook_observed["in_flight"] == 1
+        assert hook_observed["checked_out"] == 0
+
+        # Concurrent acquire cannot exceed max_size while pruned connection is disconnecting
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", None)
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Concurrent acquire must be rejected while pruned disconnect is in-flight!"
+
+        # Let disconnect finish
+        release_disconnect.set()
+        t.join(timeout=5.0)
+        assert not t_err, f"Acquire thread error: {t_err}"
+        assert len(t_conn) == 1
+
+        # Now newly acquired connection is checked out
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 0
+
+        pool.set_on_disconnect_hook(None)
+        pool.release(t_conn[0])
+        pool.close()
+        """,
+        conn_str,
+    )
+
+
 # =============================================================================
 # Native token-factory (lazy token acquisition) integration tests
 # =============================================================================

@@ -39,6 +39,9 @@ class ConnectionPool {
     // Closes all connections in the pool, releasing resources
     void close();
 
+    // Drains and disconnects connections outside the lock, decrementing in-flight capacity
+    void drainDisconnectList(std::vector<std::shared_ptr<Connection>>& list);
+
     // True when the pool holds no live or in-flight connections and can be
     // dropped by the manager to reclaim memory (lazy eviction).
     bool canEvict();

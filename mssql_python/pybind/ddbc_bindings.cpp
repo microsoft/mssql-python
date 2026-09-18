@@ -6132,6 +6132,38 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<Connection, std::shared_ptr<Connection>>(m, "_TestPooledConnection")
         .def_property_readonly("origin_generation", &Connection::originGeneration)
         .def_property_readonly("origin_pool_id", &Connection::originPoolId);
+    struct GilSafeCallback {
+        py::object obj;
+        explicit GilSafeCallback(py::object o) : obj(std::move(o)) {}
+        GilSafeCallback(const GilSafeCallback& other) {
+            py::gil_scoped_acquire gil;
+            obj = other.obj;
+        }
+        GilSafeCallback(GilSafeCallback&& other) noexcept {
+            py::gil_scoped_acquire gil;
+            obj = std::move(other.obj);
+        }
+        GilSafeCallback& operator=(const GilSafeCallback& other) {
+            py::gil_scoped_acquire gil;
+            obj = other.obj;
+            return *this;
+        }
+        GilSafeCallback& operator=(GilSafeCallback&& other) noexcept {
+            py::gil_scoped_acquire gil;
+            obj = std::move(other.obj);
+            return *this;
+        }
+        ~GilSafeCallback() {
+            py::gil_scoped_acquire gil;
+            obj = py::object();
+        }
+        void operator()() const {
+            py::gil_scoped_acquire gil;
+            if (obj && !obj.is_none()) {
+                obj();
+            }
+        }
+    };
     py::class_<ConnectionPool, std::shared_ptr<ConnectionPool>>(m, "_TestConnectionPool")
         .def(py::init<size_t, int>(), py::arg("max_size") = 1, py::arg("idle_timeout_secs") = 600)
         .def(
@@ -6150,10 +6182,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                 if (hook.is_none()) {
                     pool.set_on_disconnect_hook(nullptr);
                 } else {
-                    pool.set_on_disconnect_hook([hook]() {
-                        py::gil_scoped_acquire gil;
-                        hook();
-                    });
+                    pool.set_on_disconnect_hook(GilSafeCallback(hook));
                 }
             },
             py::arg("hook"))

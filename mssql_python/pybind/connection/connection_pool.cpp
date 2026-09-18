@@ -62,11 +62,49 @@ ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
       _in_flight(0),
       _pool_id(s_next_pool_id.fetch_add(1)) {}
 
+void ConnectionPool::drainDisconnectList(std::vector<std::shared_ptr<Connection>>& list) {
+    for (auto& conn : list) {
+        if (!conn) {
+            continue;
+        }
+        std::function<void()> hook;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            hook = _on_disconnect_hook;
+        }
+        if (hook) {
+            hook();
+        }
+        try {
+            conn->disconnect();
+        } catch (const std::exception& ex) {
+            LOG("ConnectionPool::drainDisconnectList: disconnect failed: %s", ex.what());
+        }
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_in_flight > 0) {
+                --_in_flight;
+            }
+            if (_current_size > 0) {
+                --_current_size;
+            }
+        }
+    }
+    list.clear();
+}
+
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
                                                     const py::dict& attrs_before,
                                                     const py::object& token_factory) {
     PERF_TIMER("ConnectionPool::acquire");
     std::vector<std::shared_ptr<Connection>> to_disconnect;
+    struct DisconnectGuard {
+        ConnectionPool& pool;
+        std::vector<std::shared_ptr<Connection>>& list;
+        ~DisconnectGuard() {
+            pool.drainDisconnectList(list);
+        }
+    } guard{*this, to_disconnect};
     std::shared_ptr<Connection> valid_conn = nullptr;
 
     while (valid_conn == nullptr) {
@@ -97,12 +135,15 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                         _pool.end());
 
             size_t pruned = before - _pool.size();
-            // Decrement _current_size eagerly so new slots can be reserved while
-            // stale connections are being disconnected (Phase 4).  This means
-            // _current_size tracks *reserved capacity* (pooled + checked-out +
-            // in-flight new), not necessarily live ODBC handles.
-            _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
+            // Retain capacity for pruned stale connections by accounting for them
+            // in _in_flight until Phase 4 disconnects them outside the mutex (#746).
+            _in_flight += pruned;
         }
+
+        // Disconnect pruned stale connections outside lock BEFORE attempting
+        // candidate validation or slot reservation in Phase 2/3. As each disconnect
+        // finishes, drainDisconnectList decrements _in_flight and _current_size.
+        drainDisconnectList(to_disconnect);
 
         // Phase 2: Pop one candidate at a time and validate it outside the
         // mutex.  isAlive() and reset() perform ODBC calls that release the
@@ -188,9 +229,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                                             [&](const std::shared_ptr<Connection>& sibling) {
                                                 if (sibling->currentAccessToken() == stale_token) {
                                                     to_disconnect.push_back(sibling);
-                                                    if (_current_size > 0) {
-                                                        --_current_size;
-                                                    }
+                                                    ++_in_flight;
                                                     return true;
                                                 }
                                                 return false;
@@ -265,6 +304,8 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             // immediately instead of churning through the remaining candidates
             // (which hold the same stale token and would all be discarded anyway).
             if (have_pending_token) {
+                // Drain any siblings placed into to_disconnect before reserving a new slot
+                drainDisconnectList(to_disconnect);
                 std::lock_guard<std::mutex> lock(_mutex);
                 if (_current_size < _max_size) {
                     // Reserve the slot here but construct the Connection outside
@@ -382,14 +423,8 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
         }
     }
 
-    // Phase 4: Disconnect expired/bad connections outside lock.
-    for (auto& conn : to_disconnect) {
-        try {
-            conn->disconnect();
-        } catch (const std::exception& ex) {
-            LOG("Disconnect bad/expired connections failed: %s", ex.what());
-        }
-    }
+    // Phase 4: Disconnect expired/bad connections outside lock and decrement in-flight capacity.
+    drainDisconnectList(to_disconnect);
     return valid_conn;
 }
 
@@ -539,6 +574,7 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
     // else fall back to the connection string (legacy behavior).
     const std::u16string& key = pool_key.empty() ? connStr : pool_key;
     std::shared_ptr<ConnectionPool> pool;
+    std::shared_ptr<ConnectionPool> old_pool_to_close;
     bool created = false;
     std::vector<std::shared_ptr<ConnectionPool>> evicted;
     {
@@ -591,23 +627,50 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
         }
         // Defer replacement-pool creation if the existing pool still has live
         // work. If the existing pool has finished all live work (canEvict() == true)
-        // and is not held by concurrent acquirers (use_count() == 1), evict it now
-        // and create a fresh replacement pool (#746).
+        // and is not held by concurrent acquirers (use_count() == 1), evict it
+        // and serialize its close BEFORE publishing a new replacement pool (#746).
         auto it = _pools.find(key);
         if (it != _pools.end() && it->second && it->second.use_count() == 1 &&
             it->second->canEvict()) {
-            evicted.push_back(it->second);
+            old_pool_to_close = it->second;
             _pools.erase(it);
         }
-        auto& pool_ref = _pools[key];
-        if (!pool_ref) {
-            pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
-            if (_mock_mode) {
-                pool_ref->set_mock_mode(true);
+        if (!old_pool_to_close) {
+            auto& pool_ref = _pools[key];
+            if (!pool_ref) {
+                pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+                if (_mock_mode) {
+                    pool_ref->set_mock_mode(true);
+                }
+                created = true;
             }
-            created = true;
+            pool = pool_ref;
         }
-        pool = pool_ref;
+    }
+    if (old_pool_to_close) {
+        // Close the old pool completely BEFORE creating and publishing the replacement,
+        // ensuring its physical handles are disconnected before new ones can be opened (#746).
+        try {
+            old_pool_to_close->close();
+        } catch (const std::exception& ex) {
+            LOG("ConnectionPoolManager: closing evicted pool failed: %s", ex.what());
+        }
+        old_pool_to_close.reset();
+        {
+            std::lock_guard<std::mutex> lock(_manager_mutex);
+            if (!_accepting) {
+                return nullptr;
+            }
+            auto& pool_ref = _pools[key];
+            if (!pool_ref) {
+                pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+                if (_mock_mode) {
+                    pool_ref->set_mock_mode(true);
+                }
+                created = true;
+            }
+            pool = pool_ref;
+        }
     }
     // Log after releasing _manager_mutex (#671): LOG() acquires the GIL, and
     // holding a native mutex across a GIL acquisition deadlocks a thread that
