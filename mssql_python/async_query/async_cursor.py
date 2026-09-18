@@ -122,13 +122,12 @@ class AsyncCursor:
         return await async_fetch.fetchall(self)
 
     async def nextset(self) -> bool:
+        self._reset_fetch_tracking()
+        self._clear_result_metadata()
         with translate_py_core_exceptions():
             has_next = await self._py_core_async_cursor.nextset()
-        self._reset_fetch_tracking()
         if has_next:
             self._initialize_result_metadata()
-        else:
-            self._clear_result_metadata()
         return has_next
 
     async def close(self) -> None:

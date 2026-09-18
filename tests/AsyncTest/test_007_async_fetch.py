@@ -7,6 +7,7 @@ pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 import mssql_python
 from mssql_python import DataError, Row
+from mssql_python.async_query import AsyncCursor
 
 
 @pytest.mark.asyncio
@@ -39,6 +40,37 @@ async def test_fetch_and_result_navigation_preserve_native_values(async_connecti
         assert cursor.description is None
     finally:
         await cursor.close()
+
+
+@pytest.mark.asyncio
+async def test_nextset_failure_clears_previous_result_state():
+    class FailingNativeCursor:
+        rowcount = -1
+
+        async def nextset(self):
+            raise RuntimeError("nextset failed")
+
+    class StatefulAsyncCursor(AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("value", int, None, None, None, None, True)]
+            self._column_map = {"value": 0}
+            self._column_map_lower = {"value": 0}
+            self._uuid_str_indices = (0,)
+            self._fetched_row_count = 2
+            self._fetch_rowcount = 2
+
+        def result_maps(self):
+            return self._column_map, self._column_map_lower, self._uuid_str_indices
+
+    cursor = StatefulAsyncCursor(FailingNativeCursor())
+    cursor.seed_result_state()
+
+    with pytest.raises(RuntimeError, match="nextset failed"):
+        await cursor.nextset()
+
+    assert cursor.description is None
+    assert cursor.rowcount == -1
+    assert cursor.result_maps() == ({}, None, None)
 
 
 @pytest.mark.asyncio
