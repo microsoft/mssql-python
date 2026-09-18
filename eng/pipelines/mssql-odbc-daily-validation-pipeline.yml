@@ -85,10 +85,11 @@ jobs:
       displaySuffix: ' for mssql-odbc tests'
 
   - script: |
-      set -euo pipefail
+      set -uo pipefail
       SQLSERVER_IP=$(docker inspect $(sqlContainer) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
-      docker exec \
+      rc=0
+      output=$(docker exec \
         -e MSSQL_PYTHON_NATIVE_PROVIDER=mssql-odbc \
         -e DB_CONNECTION_STRING \
         -e PYTHONPATH=/workspace \
@@ -96,7 +97,12 @@ jobs:
           set -euo pipefail
           source /opt/venv/bin/activate
           python eng/scripts/verify_mssql_odbc_provider.py
-        '
+        ' 2>&1) || rc=$?
+      printf '%s\n' "$output"
+      if ! grep -q 'MSSQL_ODBC_PREFLIGHT_OK' <<< "$output"; then
+        echo "##[error]mssql-odbc provider preflight failed (exit $rc)."
+        exit 1
+      fi
     displayName: 'Verify packaged mssql-odbc selection, load, and query'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -109,11 +115,14 @@ jobs:
         exit 1
       fi
       export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
+      status_file="$(Build.SourcesDirectory)/test-results/mssql-odbc/runner.status"
+      rm -f "$status_file"
       rc=0
       docker exec \
         -e MSSQL_PYTHON_NATIVE_PROVIDER=mssql-odbc \
         -e DB_CONNECTION_STRING \
         -e TEST_RESULTS_DIR=/workspace/test-results/mssql-odbc \
+        -e TEST_STATUS_FILE=/workspace/test-results/mssql-odbc/runner.status \
         -e PYTEST_FILE_TIMEOUT=10m \
         -e PYTEST_TOTAL_BUDGET=110m \
         -e PYTHONPATH=/workspace \
@@ -123,11 +132,20 @@ jobs:
           eng/scripts/run-mssql-odbc-tests.sh
         ' || rc=$?
 
+      status=$(cat "$status_file" 2>/dev/null || true)
       case "$rc" in
         0)
+          if [ "$status" != success ]; then
+            echo "##vso[task.logissue type=error]The pytest process returned success without a valid runner status."
+            exit 1
+          fi
           echo 'The complete pytest suite passed with mssql-odbc.'
           ;;
         1)
+          if [ "$status" != advisory ]; then
+            echo '##vso[task.logissue type=error]The test container failed before the pytest runner reported an advisory result.'
+            exit 1
+          fi
           echo '##vso[task.logissue type=warning]The complete pytest suite has expected compatibility failures with mssql-odbc; see published test results.'
           echo '##vso[task.complete result=SucceededWithIssues;]'
           ;;
@@ -145,7 +163,6 @@ jobs:
   - task: PublishTestResults@2
     displayName: 'Publish mssql-odbc compatibility results'
     condition: always()
-    continueOnError: true
     inputs:
       testResultsFormat: JUnit
       testResultsFiles: 'test-results/mssql-odbc/*.xml'
@@ -156,9 +173,11 @@ jobs:
       publishRunAttachments: true
 
   - script: |
+      cleanup_rc=0
       python3 eng/scripts/setup_sql_container.py --cleanup \
-        --name "$(sqlContainer)" --owner "$(Build.BuildId).$(System.JobId)"
+        --name "$(sqlContainer)" --owner "$(Build.BuildId).$(System.JobId)" || cleanup_rc=$?
       docker rm -f $(testContainer) || true
+      exit "$cleanup_rc"
     displayName: 'Clean up mssql-odbc test containers'
     condition: always()
     timeoutInMinutes: 3

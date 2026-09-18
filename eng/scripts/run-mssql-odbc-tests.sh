@@ -11,9 +11,30 @@ set -uo pipefail
 RESULTS_DIR="${TEST_RESULTS_DIR:-test-results/mssql-odbc}"
 FILE_TIMEOUT="${PYTEST_FILE_TIMEOUT:-10m}"
 TOTAL_BUDGET="${PYTEST_TOTAL_BUDGET:-110m}"
+STATUS_FILE="${TEST_STATUS_FILE:-$RESULTS_DIR/runner.status}"
+KILL_GRACE_SECONDS=10
 
-mkdir -p "$RESULTS_DIR"
+if ! mkdir -p "$RESULTS_DIR"; then
+    echo "##[error]Could not create test results directory: $RESULTS_DIR"
+    exit 2
+fi
 rm -f "$RESULTS_DIR"/*.xml
+rm -f "$STATUS_FILE"
+
+finish() {
+    local code="$1" status="$2"
+    printf '%s\n' "$status" > "$STATUS_FILE" || exit 2
+    exit "$code"
+}
+
+on_exit() {
+    local code=$?
+    if [ ! -s "$STATUS_FILE" ]; then
+        printf 'harness\n' > "$STATUS_FILE" 2>/dev/null || true
+    fi
+    return "$code"
+}
+trap on_exit EXIT
 
 xml_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
@@ -59,10 +80,19 @@ to_seconds() {
     esac
 }
 
+report_is_valid() {
+    python - "$1" <<'PY'
+import sys
+from xml.etree import ElementTree
+
+ElementTree.parse(sys.argv[1])
+PY
+}
+
 mapfile -t TEST_FILES < <(find tests -name 'test_*.py' -type f | sort)
 if [ "${#TEST_FILES[@]}" -eq 0 ] || ! python -m pytest --version >/dev/null 2>&1; then
     echo "##[error]The pytest harness is not usable"
-    exit 2
+    finish 2 harness
 fi
 
 FILE_BUDGET_SECONDS="$(to_seconds "$FILE_TIMEOUT")"
@@ -83,26 +113,27 @@ for index in "${!TEST_FILES[@]}"; do
     report="$RESULTS_DIR/results-$name.xml"
     remaining=$((TOTAL_BUDGET_SECONDS - SECONDS))
 
-    if [ "$remaining" -le 30 ]; then
+    if [ "$remaining" -le "$KILL_GRACE_SECONDS" ]; then
+        remaining_files=$((${#TEST_FILES[@]} - index))
         for rest_index in $(seq "$index" $((${#TEST_FILES[@]} - 1))); do
             rest_file="${TEST_FILES[$rest_index]}"
             rest_name="${rest_file#tests/}"
             rest_name="${rest_name%.py}"
             rest_name="${rest_name//\//_}"
-            write_stub "$rest_name" skipped "Total test budget of $TOTAL_BUDGET exhausted" \
+            write_stub "$rest_name" error "Total test budget of $TOTAL_BUDGET exhausted before this file ran" \
                 "$RESULTS_DIR/results-$rest_name.xml"
-            skipped=$((skipped + 1))
         done
+        timed_out=$((timed_out + remaining_files))
         break
     fi
 
     slice="$FILE_BUDGET_SECONDS"
-    if [ "$slice" -gt "$remaining" ]; then
-        slice="$remaining"
+    if [ "$slice" -gt "$((remaining - KILL_GRACE_SECONDS))" ]; then
+        slice=$((remaining - KILL_GRACE_SECONDS))
     fi
 
     echo "##[group]$test_file"
-    timeout --kill-after=60s "${slice}s" \
+    timeout --kill-after="${KILL_GRACE_SECONDS}s" "${slice}s" \
         python -m pytest "$test_file" -v --junitxml="$report" \
         --capture=tee-sys --cache-clear
     rc=$?
@@ -117,7 +148,7 @@ for index in "${!TEST_FILES[@]}"; do
             ;;
         2|3|4)
             echo "##[error]The pytest harness failed on $test_file (exit $rc)"
-            exit 2
+            finish 2 harness
             ;;
         5)
             write_stub "$name" skipped "No tests collected" "$report"
@@ -128,19 +159,23 @@ for index in "${!TEST_FILES[@]}"; do
             ;;
         125|126|127)
             echo "##[error]The pytest harness could not execute $test_file (exit $rc)"
-            exit 2
+            finish 2 harness
             ;;
         *)
             crashed=$((crashed + 1))
             ;;
     esac
 
-    if [ ! -s "$report" ]; then
+    if [ ! -s "$report" ] || ! report_is_valid "$report" >/dev/null 2>&1; then
         if [ "$rc" -eq 0 ]; then
-            echo "##[error]Pytest reported success for $test_file but produced no JUnit results (harness failure)"
-            exit 2
+            echo "##[error]Pytest reported success for $test_file but produced no valid JUnit results (harness failure)"
+            finish 2 harness
         fi
-        write_stub "$name" error "Pytest exited $rc without producing JUnit" "$report"
+        write_stub "$name" error "Pytest exited $rc without producing valid JUnit" "$report"
+    fi
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] || [ "$rc" -gt 127 ]; then
+        write_stub "${name}_process" error "Pytest process exited $rc after producing JUnit" \
+            "$RESULTS_DIR/results-$name-process.xml"
     fi
 done
 
@@ -148,11 +183,12 @@ echo "files: ${#TEST_FILES[@]} | passed: $passed | failed: $failed | crashed: $c
 
 if [ "$((passed + failed + crashed + timed_out))" -eq 0 ]; then
     echo "##[error]No test file executed any tests"
-    exit 2
+    finish 2 harness
 fi
 
 # Intentional no-test files (pytest exit 5, e.g. stress files excluded by the
 # "not stress" marker) count as skipped and must not mark the run SucceededWithIssues.
 if [ "$failed" -gt 0 ] || [ "$crashed" -gt 0 ] || [ "$timed_out" -gt 0 ]; then
-    exit 1
+    finish 1 advisory
 fi
+finish 0 success

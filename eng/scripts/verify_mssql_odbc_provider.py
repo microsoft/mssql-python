@@ -24,7 +24,7 @@ def main():
     loaded_info = mssql_python.get_native_provider_info()
     assert loaded_info["id"] == "mssql-odbc", loaded_info
     assert loaded_info["frozen"] is True, loaded_info
-    print("MSSQL_ODBC_PREFLIGHT_OK", loaded_info)
+    print("MSSQL_ODBC_PREFLIGHT_OK", loaded_info, flush=True)
 
 
 if __name__ == "__main__":
