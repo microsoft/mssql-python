@@ -6141,9 +6141,22 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                 return pool.acquire(connStr, py::dict(), token_factory);
             },
             py::arg("conn_str"), py::arg("token_factory") = py::none())
-        .def("release", &ConnectionPool::release, py::arg("conn"))
-        .def("close", &ConnectionPool::close)
+        .def("release", &ConnectionPool::release, py::call_guard<py::gil_scoped_release>(), py::arg("conn"))
+        .def("close", &ConnectionPool::close, py::call_guard<py::gil_scoped_release>())
         .def("set_mock_mode", &ConnectionPool::set_mock_mode, py::arg("enable") = true)
+        .def(
+            "set_on_disconnect_hook",
+            [](ConnectionPool& pool, py::object hook) {
+                if (hook.is_none()) {
+                    pool.set_on_disconnect_hook(nullptr);
+                } else {
+                    pool.set_on_disconnect_hook([hook]() {
+                        py::gil_scoped_acquire gil;
+                        hook();
+                    });
+                }
+            },
+            py::arg("hook"))
         .def_property_readonly("current_size", &ConnectionPool::current_size)
         .def_property_readonly("checked_out", &ConnectionPool::checked_out)
         .def_property_readonly("in_flight", &ConnectionPool::in_flight)

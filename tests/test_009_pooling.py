@@ -987,13 +987,11 @@ def test_pooling_state_consistency(conn_str):
 def test_pool_size_accounting_race_on_close_interleave(conn_str):
     """Regression test for GH-746: connection pool size accounting drift on close race.
 
-    When a connection-open failure races pool close(), the failed thread's
-    decrement must not cancel a newer generation's reservation on that pool.
-    With max_size=1, if Thread A's open failure wrongly decrements the counter
-    after Thread B reserved the slot under the new generation, Thread C would
-    be allowed to connect, exceeding max_size. The generation counter guarantees
-    that Thread A's cleanup only decrements if the pool generation still matches
-    its reservation.
+    When a connection-open failure races pool close(), in-flight reservations
+    and checked-out connections are retained in _current_size across close().
+    Coupled with pool generation tracking, Thread A's cleanup on failure only
+    decrements capacity if its generation still matches, preventing drift and
+    ensuring max_size is never exceeded across close() interleavings.
 
     Uses _TestConnectionPool to ensure Thread A, Thread B, and Thread C all
     operate deterministically against the exact same pool instance.
@@ -1087,8 +1085,10 @@ def test_pool_size_accounting_race_on_candidate_validation_close_interleave(conn
     """Regression test for GH-746: candidate validation failure racing pool close().
 
     When a candidate popped from the pool fails validation (e.g. dead socket or
-    token rotation failure) while racing a pool close(), the popped candidate's
-    cleanup must not decrement a reservation created under the new pool generation.
+    token rotation failure) while racing a pool close(), the pool retains
+    capacity for the in-flight validation across close(). Coupled with generation
+    guarding, Thread A's cleanup on validation failure decrements only its own
+    reservation without corrupting any newer generation's reservation.
     """
     _run_in_subprocess(
         """
@@ -1664,6 +1664,176 @@ def test_pool_manager_defers_replacement_while_connection_checked_out(conn_str):
         conn_2.close()
         conn_3.close()
         ddbc_bindings.close_pooling()
+        """,
+        conn_str,
+    )
+
+
+def test_pool_release_disconnect_keeps_in_flight_until_disconnected(conn_str):
+    """Regression test for GH-746: stale/overflow release disconnect retains in-flight accounting.
+
+    When an expired, generation-mismatched, or overflow connection is released,
+    it must be transitioned from _checked_out to _in_flight during the
+    unlocked conn->disconnect() call, and only decremented after disconnect finishes.
+    This guarantees that concurrent callers cannot reserve a slot or open a new
+    physical connection before the old physical connection has finished closing.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+
+        # 1. Acquire connection (generation 0, checked_out=1, current_size=1)
+        conn = pool.acquire("SERVER=dummy_test_746;", None)
+        assert conn is not None
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 0
+
+        # 2. Close the pool to bump the generation so releasing conn triggers a disconnect.
+        # Since conn was checked out, close() keeps current_size=1, checked_out=1, in_flight=0.
+        pool.close()
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 0
+        assert pool.generation == 1
+
+        in_disconnect = threading.Event()
+        release_disconnect = threading.Event()
+        hook_observed = {}
+
+        def on_disconnect():
+            # At this point, release() has moved conn from _checked_out to _in_flight,
+            # but has NOT yet decremented current_size.
+            hook_observed["current_size"] = pool.current_size
+            hook_observed["in_flight"] = pool.in_flight
+            hook_observed["checked_out"] = pool.checked_out
+            in_disconnect.set()
+            assert release_disconnect.wait(timeout=5.0), "Timed out waiting to release disconnect"
+
+        pool.set_on_disconnect_hook(on_disconnect)
+
+        t_err = []
+        def run_release():
+            try:
+                pool.release(conn)
+            except Exception as exc:
+                t_err.append(exc)
+
+        t = threading.Thread(target=run_release)
+        t.start()
+        assert in_disconnect.wait(timeout=5.0), "Timed out waiting for disconnect hook"
+
+        # Verify hook observed state:
+        assert hook_observed["current_size"] == 1
+        assert hook_observed["in_flight"] == 1
+        assert hook_observed["checked_out"] == 0
+
+        # While disconnect is in progress, any concurrent acquire is blocked from
+        # allocating because max_size=1 is still fully occupied by in_flight teardown!
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", None)
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Concurrent acquire must be rejected while teardown disconnect is in-flight!"
+
+        # Let the disconnect complete
+        release_disconnect.set()
+        t.join(timeout=5.0)
+        assert not t_err, f"Release thread error: {t_err}"
+
+        # Now that disconnect is finished, counters are decremented to 0
+        assert pool.current_size == 0
+        assert pool.in_flight == 0
+        assert pool.checked_out == 0
+
+        # Now acquire succeeds
+        pool.set_on_disconnect_hook(None)
+        conn_new = pool.acquire("SERVER=dummy_test_746;", None)
+        assert conn_new is not None
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        pool.release(conn_new)
+        pool.close()
+        """,
+        conn_str,
+    )
+
+
+def test_pool_close_disconnect_keeps_in_flight_until_disconnected(conn_str):
+    """Regression test for GH-746: idle connection disconnect in close() retains in-flight accounting.
+
+    When close() drains idle connections from the pool, they must be added to
+    _in_flight and only decremented from _in_flight and _current_size after each
+    physical disconnect finishes, preventing concurrent acquires from observing freed
+    slots while physical sockets are still closing.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+
+        # Inject an idle candidate into the pool
+        pool.inject_candidate("SERVER=dummy_test_746;", 0, True)
+        assert pool.current_size == 1
+        assert pool.checked_out == 0
+        assert pool.in_flight == 0
+
+        in_disconnect = threading.Event()
+        release_disconnect = threading.Event()
+        hook_observed = {}
+
+        def on_disconnect():
+            hook_observed["current_size"] = pool.current_size
+            hook_observed["in_flight"] = pool.in_flight
+            hook_observed["checked_out"] = pool.checked_out
+            in_disconnect.set()
+            assert release_disconnect.wait(timeout=5.0), "Timed out waiting to release disconnect"
+
+        pool.set_on_disconnect_hook(on_disconnect)
+
+        t_err = []
+        def run_close():
+            try:
+                pool.close()
+            except Exception as exc:
+                t_err.append(exc)
+
+        t = threading.Thread(target=run_close)
+        t.start()
+        assert in_disconnect.wait(timeout=5.0), "Timed out waiting for disconnect hook in close"
+
+        # Verify hook observed state:
+        assert hook_observed["current_size"] == 1
+        assert hook_observed["in_flight"] == 1
+        assert hook_observed["checked_out"] == 0
+
+        # Concurrent acquire cannot exceed max_size while idle connection is disconnecting
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", None)
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Concurrent acquire must be rejected while close disconnect is in-flight!"
+
+        # Let close complete
+        release_disconnect.set()
+        t.join(timeout=5.0)
+        assert not t_err, f"Close thread error: {t_err}"
+
+        # Verify clean post-close state
+        assert pool.current_size == 0
+        assert pool.in_flight == 0
+        assert pool.checked_out == 0
         """,
         conn_str,
     )

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -77,6 +78,10 @@ class ConnectionPool {
     bool mock_mode() const {
         return _mock_mode;
     }
+    void set_on_disconnect_hook(std::function<void()> hook) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _on_disconnect_hook = hook;
+    }
 
   private:
     size_t _max_size;        // Maximum number of connections allowed
@@ -87,6 +92,7 @@ class ConnectionPool {
     uint64_t _generation = 0;  // Pool reset generation for reservation attribution (#746)
     uint64_t _pool_id = 0;     // Monotonic process-wide pool ID to avoid ABA reuse (#746)
     std::atomic<bool> _mock_mode{false};
+    std::function<void()> _on_disconnect_hook;
     std::deque<std::shared_ptr<Connection>> _pool;  // Available connections
     std::mutex _mutex;                              // Mutex for thread-safe access
 };

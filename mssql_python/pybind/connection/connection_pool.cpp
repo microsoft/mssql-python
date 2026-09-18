@@ -343,6 +343,14 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 // immediately BEFORE relinquishing the in-flight reservation, so that
                 // the stale physical connection and any newly reserved connections do
                 // not co-exist and exceed max_size (#746).
+                std::function<void()> hook;
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    hook = _on_disconnect_hook;
+                }
+                if (hook) {
+                    hook();
+                }
                 try {
                     new_conn->disconnect();
                 } catch (const std::exception& ex) {
@@ -391,6 +399,7 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
         return;
     }
     bool should_disconnect = false;
+    bool decrement_in_flight = false;
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (conn->originPoolId() == _pool_id) {
@@ -406,9 +415,11 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
                 should_disconnect = true;
                 if (_checked_out > 0) {
                     --_checked_out;
-                }
-                if (_current_size > 0) {
-                    --_current_size;
+                    // Keep this connection accounted for as in-flight until disconnect
+                    // completes outside the mutex, so a concurrent acquire cannot reserve
+                    // and open a new physical handle while this handle is still live (#746).
+                    ++_in_flight;
+                    decrement_in_flight = true;
                 }
                 conn->setPoolOrigin(0, 0);
             }
@@ -419,10 +430,27 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
     // Disconnect outside the mutex to avoid holding it during the
     // blocking ODBC call (which releases the GIL).
     if (should_disconnect) {
+        std::function<void()> hook;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            hook = _on_disconnect_hook;
+        }
+        if (hook) {
+            hook();
+        }
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
             LOG("ConnectionPool::release: disconnect failed: %s", ex.what());
+        }
+        if (decrement_in_flight) {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_in_flight > 0) {
+                --_in_flight;
+            }
+            if (_current_size > 0) {
+                --_current_size;
+            }
         }
     }
 }
@@ -441,12 +469,7 @@ bool ConnectionPool::canEvict() {
     if (_pool.empty()) {
         return true;
     }
-    // Nothing checked out but idle connections remain. Evict the whole pool
-    // only once EVERY pooled connection has been idle longer than the idle
-    // timeout. This is what reclaims pools for rotating / single-use identities
-    // (e.g. per-request Entra users keyed by token hash): such a pool is never
-    // acquired again, so its idle connection is never pruned by acquire() and
-    // _current_size would otherwise stay > 0 forever. Evaluating the idle
+    // Empty pools past idle timeout can be evicted. Checking the idle
     // timeout here lets the next acquireConnection() on any key sweep it away.
     auto now = std::chrono::steady_clock::now();
     for (const auto& conn : _pool) {
@@ -468,17 +491,35 @@ void ConnectionPool::close() {
             to_close.push_back(_pool.front());
             _pool.pop_front();
         }
-        // Retain reserved capacity for checked-out connections and in-flight opens
-        // so a new acquire cannot exceed _max_size while old connections or opens
-        // are still live (#746).
+        // Account for closing idle connections in _in_flight so a concurrent
+        // acquire cannot reserve and open a new physical handle while these
+        // old handles are still connected outside the mutex (#746).
+        _in_flight += to_close.size();
         _current_size = _checked_out + _in_flight;
         ++_generation;
     }
     for (auto& conn : to_close) {
+        std::function<void()> hook;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            hook = _on_disconnect_hook;
+        }
+        if (hook) {
+            hook();
+        }
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
             LOG("ConnectionPool::close: disconnect failed: %s", ex.what());
+        }
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_in_flight > 0) {
+                --_in_flight;
+            }
+            if (_current_size > 0) {
+                --_current_size;
+            }
         }
     }
 }
@@ -549,10 +590,12 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
             }
         }
         // Defer replacement-pool creation if the existing pool still has live
-        // work. If the existing pool has finished all live work (canEvict() == true),
-        // evict it now and create a fresh replacement pool (#746).
+        // work. If the existing pool has finished all live work (canEvict() == true)
+        // and is not held by concurrent acquirers (use_count() == 1), evict it now
+        // and create a fresh replacement pool (#746).
         auto it = _pools.find(key);
-        if (it != _pools.end() && it->second && it->second->canEvict()) {
+        if (it != _pools.end() && it->second && it->second.use_count() == 1 &&
+            it->second->canEvict()) {
             evicted.push_back(it->second);
             _pools.erase(it);
         }
@@ -654,9 +697,11 @@ void ConnectionPoolManager::closePools() {
             LOG("ConnectionPoolManager::closePools: closing pool failed: %s", ex.what());
         }
     }
+    to_close.clear();
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
-        // Only evict pools that have no live work left (canEvict() == true).
+        // Only evict pools that have no live work left (canEvict() == true) and
+        // are not held by any concurrent thread (use_count() == 1).
         // If an old pool still has checked-out connections or in-flight opens,
         // retain it in _pools so that:
         // 1. Creation of a replacement pool is deferred until the old pool has
@@ -665,7 +710,7 @@ void ConnectionPoolManager::closePools() {
         // 3. returnConnection() continues to route to this pool to decrement
         //    _checked_out and _current_size as connections are released.
         for (auto it = _pools.begin(); it != _pools.end();) {
-            if (!it->second || it->second->canEvict()) {
+            if (!it->second || (it->second.use_count() == 1 && it->second->canEvict())) {
                 it = _pools.erase(it);
             } else {
                 ++it;
