@@ -16,7 +16,7 @@ import zlib
 
 # Hosted macOS plus Colima produced false regressions on a documentation-only
 # control PR. Routine reports use stable Ubuntu measurements as the Unix signal.
-LEGS = ("Windows-SQL2022", "Windows-SQL2025", "Linux-SQL2022")
+LEGS = ("Windows-SQL2022", "Windows-SQL2025", "Linux-SQL2022", "Linux-SQL2025")
 TASK_NAMES = {
     "connect": "Connection opening",
     "select": "SELECT queries",

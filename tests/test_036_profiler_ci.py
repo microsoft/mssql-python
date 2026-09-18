@@ -258,7 +258,7 @@ def test_render_bounds_schema_valid_diagnostics(report):
         reporting.validate(item)
     body = reporting.render(reports, "c" * 40, 42)
     assert len(body) <= 60000
-    assert "60 diagnostic rows are available in the raw ADO artifacts" in body
+    assert "80 diagnostic rows are available in the raw ADO artifacts" in body
     assert "<summary>All database tasks and timings</summary>" in body
     assert "<summary>Build, commits and measurement details</summary>" in body
 
@@ -312,8 +312,8 @@ def test_impact_summary_handles_single_inconsistent_and_complete_clean_results(r
 
     complete = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
     clean_body = reporting.render(complete, "c" * 40, 42)
-    assert "**No consistent slowdowns detected across all 3 environments.**" in clean_body
-    assert "**Coverage:** 3 of 3 environments completed." in clean_body
+    assert "**No consistent slowdowns detected across all 4 environments.**" in clean_body
+    assert "**Coverage:** 4 of 4 environments completed." in clean_body
 
 
 def test_impact_summary_handles_single_regression_partial_and_no_results(report):
@@ -336,7 +336,7 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
         ["Windows-SQL2022 (missing)"],
     )
     assert "No consistent slowdowns in the 1 completed environment." in partial
-    assert "No result is available for 2 environments." in partial
+    assert "No result is available for 3 environments." in partial
     assert "| Windows / SQL Server 2022 | No result available (missing) |" in partial
     assert "pending" not in partial.lower()
 
@@ -1264,14 +1264,15 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
     assert "profiler-macOS" not in macos
     assert "Routine PR profiling excludes hosted macOS" in macos
     linux = pipeline.split("- job: PytestOnLinux\n", 1)[1].split("\n- job:", 1)[0]
-    assert (
-        'if [ "$(Build.Reason)" = "PullRequest" ] && [ "$(distroName)" = "Ubuntu" ]; then' in linux
-    )
+    assert 'if [ "$(Build.Reason)" = "PullRequest" ] &&' in linux
+    assert '[[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]]' in linux
     assert 'if [ "$PROFILER_BUILD" = "1" ]; then' in linux
     assert "python -m eng.profiler_benchmarks.controller --check-build on" in linux
-    assert "--leg Linux-SQL2022" in linux
-    assert "artifact: profiler-Linux-SQL2022" in linux
-    benchmark = linux.split("# Run Unix performance benchmarks on Ubuntu", 1)[1]
+    assert "profilerLeg: 'Linux-SQL2022'" in linux
+    assert "profilerLeg: 'Linux-SQL2025'" in linux
+    assert '--leg "$(profilerLeg)"' in linux
+    assert "artifact: profiler-$(profilerLeg)" in linux
+    benchmark = linux.split("# Run Unix performance benchmarks on Ubuntu with", 1)[1]
     assert "-e BUILD_BUILDID \\" in benchmark
     assert "BUILD_BUILDID: $(Build.BuildId)" in benchmark
     assert "git config --global --add safe.directory /workspace" in benchmark

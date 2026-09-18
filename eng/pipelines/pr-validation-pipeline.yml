@@ -653,11 +653,13 @@ jobs:
         distroName: 'Ubuntu'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
         useAzureSQL: 'false'
+        profilerLeg: 'Linux-SQL2022'
       Ubuntu_SQL2025:
         dockerImage: 'ubuntu:24.04'
         distroName: 'Ubuntu-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
+        profilerLeg: 'Linux-SQL2025'
       ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
         Ubuntu_AzureSQL:
           dockerImage: 'ubuntu:24.04'
@@ -772,7 +774,8 @@ jobs:
   - script: |
       # Build pybind bindings in the container
       PROFILER_BUILD=0
-      if [ "$(Build.Reason)" = "PullRequest" ] && [ "$(distroName)" = "Ubuntu" ]; then
+      if [ "$(Build.Reason)" = "PullRequest" ] &&
+        [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]]; then
         PROFILER_BUILD=1
       fi
       docker exec -e ENABLE_PROFILING="$PROFILER_BUILD" test-container-$(distroName) bash -c "
@@ -852,8 +855,8 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      # Download and restore AdventureWorks2022 database for benchmarking on Ubuntu only
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+      # Download and restore AdventureWorks2022 for both Unix profiler legs.
+      if [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]] && [ "$(useAzureSQL)" = "false" ]; then
         echo "Downloading AdventureWorks2022.bak..."
         wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
         
@@ -879,7 +882,7 @@ jobs:
         docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak || true
       fi
     displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
-    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -887,8 +890,8 @@ jobs:
   # Unix profiling uses Ubuntu because it covers the shared Unix hot paths while
   # producing stable paired measurements on hosted agents.
   - script: |
-      # Run Unix performance benchmarks on Ubuntu with SQL Server 2022 only
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+      # Run Unix performance benchmarks on Ubuntu with SQL Server 2022 and 2025.
+      if [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]] && [ "$(useAzureSQL)" = "false" ]; then
         export SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
         echo "Running performance benchmarks on Ubuntu with SQL Server IP: $SQLSERVER_IP"
         
@@ -909,13 +912,13 @@ jobs:
           ACCEPT_EULA=Y apt-get install -y --no-install-recommends git unixodbc unixodbc-dev libodbc2 libodbcinst2 odbcinst msodbcsql18
           git config --global --add safe.directory /workspace
           odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
-          python -m eng.profiler_benchmarks.controller --reuse-candidate --leg Linux-SQL2022 --output profiler-results
+          python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "$(profilerLeg)" --output profiler-results
         '
       else
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
       fi
     displayName: 'Compare profiling builds on Unix in $(distroName) container'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
     continueOnError: true
     timeoutInMinutes: 100
     env:
@@ -926,9 +929,9 @@ jobs:
   - task: PublishPipelineArtifact@1
     inputs:
       targetPath: profiler-results
-      artifact: profiler-Linux-SQL2022
+      artifact: profiler-$(profilerLeg)
     displayName: 'Publish paired profiler measurements'
-    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
     continueOnError: true
 
   - script: |

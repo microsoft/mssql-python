@@ -27,8 +27,8 @@ Partial results never produce a verdict.
 
 ## Publication
 
-Three environments publish raw samples: Windows on SQL Server 2022/2025 and Unix
-on Ubuntu with SQL Server 2022. Routine macOS profiling is intentionally excluded:
+Four environments publish raw samples: Windows and Unix on SQL Server 2022/2025.
+Unix measurements run on Ubuntu. Routine macOS profiling is intentionally excluded:
 hosted macOS plus Colima produced false regressions on a documentation-only control
 PR, while macOS remains covered by functional CI. The privileged publisher runs
 trusted base code, authenticates benchmark producers, validates bounded artifacts,
