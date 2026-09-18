@@ -14,7 +14,9 @@ import statistics
 import zipfile
 import zlib
 
-LEGS = ("Windows-SQL2022", "Windows-SQL2025", "macOS-SQL2022", "macOS-SQL2025", "Linux-SQL2022")
+# Hosted macOS plus Colima produced false regressions on a documentation-only
+# control PR. Routine reports use stable Ubuntu measurements as the Unix signal.
+LEGS = ("Windows-SQL2022", "Windows-SQL2025", "Linux-SQL2022")
 TASK_NAMES = {
     "connect": "Connection opening",
     "select": "SELECT queries",
@@ -208,7 +210,7 @@ def _validate(report, build_id=None, head=None, source=None, base=None, suite=No
             for value in env.values():
                 text(value)
             expected_os, sql = report["leg"].split("-")
-            if env["os"] != {"macOS": "Darwin"}.get(expected_os, expected_os):
+            if env["os"] != expected_os:
                 raise ValueError("Artifact platform does not match its leg")
             if not env["sql_version"].startswith({"SQL2022": "16.", "SQL2025": "17."}[sql]):
                 raise ValueError("Artifact SQL version does not match its leg")
@@ -391,6 +393,7 @@ def escape(value):
 
 def environment_name(leg):
     operating_system, sql = leg.split("-")
+    operating_system = {"Linux": "Unix"}.get(operating_system, operating_system)
     return f"{operating_system} / SQL Server {sql.removeprefix('SQL')}"
 
 
