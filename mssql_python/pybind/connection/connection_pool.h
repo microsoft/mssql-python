@@ -6,12 +6,16 @@
 
 #pragma once
 #include "connection/connection.h"
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 // Manages a fixed-size pool of reusable database connections for a
 // single connection string
@@ -37,14 +41,69 @@ class ConnectionPool {
     // Closes all connections in the pool, releasing resources
     void close();
 
+    // Drains and disconnects connections outside the lock, decrementing in-flight capacity
+    void drainDisconnectList(std::vector<std::shared_ptr<Connection>>& list);
+
     // True when the pool holds no live or in-flight connections and can be
     // dropped by the manager to reclaim memory (lazy eviction).
     bool canEvict();
 
+    // Test accessors for pool generation, checked-out count, and current size
+    size_t current_size() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
+        return _current_size;
+    }
+    size_t checked_out() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
+        return _checked_out;
+    }
+    size_t in_flight() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
+        return _in_flight;
+    }
+    uint64_t generation() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_mutex));
+        return _generation;
+    }
+    uint64_t pool_id() const {
+        return _pool_id;
+    }
+
+    // Test helper to inject a candidate connection for race testing
+    void inject_candidate(std::shared_ptr<Connection> conn) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _pool.push_back(conn);
+        ++_current_size;
+    }
+
+    // Test hooks for deterministic race testing (#746)
+    void set_mock_mode(bool enable) {
+        _mock_mode = enable;
+    }
+    bool mock_mode() const {
+        return _mock_mode;
+    }
+    void set_on_disconnect_hook(std::shared_ptr<std::function<void()>> hook) {
+        std::shared_ptr<std::function<void()>> old_hook;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            old_hook = std::move(_on_disconnect_hook);
+            _on_disconnect_hook = std::move(hook);
+        }
+    }
+
   private:
+    void invokeDisconnectHook();
+
     size_t _max_size;        // Maximum number of connections allowed
     int _idle_timeout_secs;  // Idle time before connections are stale
     size_t _current_size = 0;
+    size_t _checked_out = 0;   // Live connections currently checked out by callers (#746)
+    size_t _in_flight = 0;     // Connects or validations currently in flight (#746)
+    uint64_t _generation = 0;  // Pool reset generation for reservation attribution (#746)
+    uint64_t _pool_id = 0;     // Monotonic process-wide pool ID to avoid ABA reuse (#746)
+    std::atomic<bool> _mock_mode{false};
+    std::shared_ptr<std::function<void()>> _on_disconnect_hook;
     std::deque<std::shared_ptr<Connection>> _pool;  // Available connections
     std::mutex _mutex;                              // Mutex for thread-safe access
 };
@@ -85,12 +144,39 @@ class ConnectionPoolManager {
     // Closes all pools and their connections
     void closePools();
 
+    // Test hooks for mock mode
+    void set_mock_mode(bool enable) {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        _mock_mode = enable;
+        for (auto& [_, pool] : _pools) {
+            if (pool) {
+                pool->set_mock_mode(enable);
+            }
+        }
+    }
+    bool mock_mode() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(_manager_mutex));
+        return _mock_mode;
+    }
+
+    // Test accessor to look up an existing pool for deterministic testing (#746)
+    std::shared_ptr<ConnectionPool> getPool(const std::u16string& key) {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        auto it = _pools.find(key);
+        return (it != _pools.end()) ? it->second : nullptr;
+    }
+
   private:
     ConnectionPoolManager() = default;
     ~ConnectionPoolManager() = default;
 
     // Map from connection string to connection pool
     std::unordered_map<std::u16string, std::shared_ptr<ConnectionPool>> _pools;
+
+    // Keys whose pools are currently being closed outside _manager_mutex (#746).
+    // Serializes same-key replacement creation with old-pool teardown.
+    std::unordered_set<std::u16string> _closing_keys;
+    std::condition_variable _manager_cv;
 
     // Protects access to the _pools map
     std::mutex _manager_mutex;
@@ -104,6 +190,7 @@ class ConnectionPoolManager {
     // explicit enable_pooling() call; only disable_pooling() disarms it, and
     // enable_pooling() re-arms it.
     bool _accepting = true;
+    bool _mock_mode = false;
 
     // Throttle for the lazy-eviction sweep in acquireConnection(). The sweep
     // iterates every pool (and every idle connection within each) under

@@ -39,7 +39,10 @@ def _run_in_subprocess(body: str, conn_str: str) -> None:
     is fine).
     """
     env = os.environ.copy()
-    env["DB_CONNECTION_STRING"] = conn_str
+    if conn_str:
+        env["DB_CONNECTION_STRING"] = conn_str
+    else:
+        env.pop("DB_CONNECTION_STRING", None)
     proc = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(body)],
         env=env,
@@ -979,6 +982,1056 @@ def test_pooling_state_consistency(conn_str):
     assert PoolingManager.is_initialized(), "Should remain initialized after disable call"
 
     print("Pooling state consistency verified")
+
+
+def test_pool_size_accounting_race_on_close_interleave(conn_str):
+    """Regression test for GH-746: connection pool size accounting drift on close race.
+
+    When a connection-open failure races pool close(), in-flight reservations
+    and checked-out connections are retained in _current_size across close().
+    Coupled with pool generation tracking, Thread A's cleanup on failure only
+    decrements capacity if its generation still matches, preventing drift and
+    ensuring max_size is never exceeded across close() interleavings.
+
+    Uses _TestConnectionPool to ensure Thread A, Thread B, and Thread C all
+    operate deterministically against the exact same pool instance.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(2, 600)
+        assert pool.current_size == 0
+        assert pool.generation == 0
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+
+        def factory_a():
+            in_factory_a.set()
+            assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            raise RuntimeError("simulated open failure A")
+
+        t_a_error = []
+
+        def run_a():
+            try:
+                pool.acquire("SERVER=dummy_test_746;", factory_a)
+            except Exception as exc:
+                t_a_error.append(exc)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+
+        # Thread A has reserved slot 1. Pool is closed while Thread A is in-flight.
+        # Reserved capacity is retained for in-flight opens so max_size is never exceeded (#746).
+        pool.close()
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+        assert pool.generation == 1
+
+        # Thread B initiates acquire and reserves the 2nd slot under the new generation.
+        in_factory_b = threading.Event()
+        release_factory_b = threading.Event()
+
+        def factory_b():
+            in_factory_b.set()
+            assert release_factory_b.wait(timeout=5.0), "Timed out waiting to release factory B"
+            raise RuntimeError("simulated open failure B")
+
+        t_b_error = []
+
+        def run_b():
+            try:
+                pool.acquire("SERVER=dummy_test_746;", factory_b)
+            except Exception as exc:
+                t_b_error.append(exc)
+
+        t_b = threading.Thread(target=run_b)
+        t_b.start()
+        assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+        assert pool.current_size == 2
+        assert pool.in_flight == 2
+
+        # Thread A now raises its error. Its cleanup decrements in_flight and current_size
+        # for Thread A (2 -> 1). Thread B's reservation under generation 1 is preserved.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+        assert len(t_a_error) == 1 and "simulated open failure A" in str(t_a_error[0])
+
+        # Under the generation fix, current_size MUST still be 1 (Thread B's reservation is preserved).
+        assert pool.current_size == 1, (
+            f"Expected pool.current_size to be 1, but got {pool.current_size} (drift occurred!)"
+        )
+        assert pool.in_flight == 1
+
+        # Clean up Thread B
+        release_factory_b.set()
+        t_b.join(timeout=5.0)
+        assert len(t_b_error) == 1 and "simulated open failure B" in str(t_b_error[0])
+        assert pool.current_size == 0
+        assert pool.in_flight == 0
+        pool.close()
+        """,
+        conn_str,
+    )
+
+
+def test_pool_size_accounting_race_on_candidate_validation_close_interleave(conn_str):
+    """Regression test for GH-746: candidate validation failure racing pool close().
+
+    When a candidate popped from the pool fails validation (e.g. dead socket or
+    token rotation failure) while racing a pool close(), the pool retains
+    capacity for the in-flight validation across close(). Coupled with generation
+    guarding, Thread A's cleanup on validation failure decrements only its own
+    reservation without corrupting any newer generation's reservation.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(2, 600)
+        # Inject an expired candidate into the idle pool
+        pool.inject_candidate("SERVER=dummy_test_746;", 1)
+        assert pool.current_size == 1
+        assert pool.generation == 0
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+
+        def factory_a():
+            in_factory_a.set()
+            assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            raise RuntimeError("simulated token rotation validation failure")
+
+        t_a_error = []
+
+        def run_a():
+            try:
+                pool.acquire("SERVER=dummy_test_746;", factory_a)
+            except Exception as exc:
+                t_a_error.append(exc)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+        assert pool.in_flight == 1
+
+        # Thread A popped the candidate (generation 0) and is validating it in factory_a.
+        # Pool close retains capacity for in-flight validation: current_size stays 1.
+        pool.close()
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+        assert pool.generation == 1
+
+        # Thread B reserves the 2nd slot under generation 1.
+        in_factory_b = threading.Event()
+        release_factory_b = threading.Event()
+
+        def factory_b():
+            in_factory_b.set()
+            assert release_factory_b.wait(timeout=5.0), "Timed out waiting to release factory B"
+            raise RuntimeError("simulated open failure B")
+
+        t_b_error = []
+
+        def run_b():
+            try:
+                pool.acquire("SERVER=dummy_test_746;", factory_b)
+            except Exception as exc:
+                t_b_error.append(exc)
+
+        t_b = threading.Thread(target=run_b)
+        t_b.start()
+        assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+        assert pool.current_size == 2
+        assert pool.in_flight == 2
+
+        # Thread A finishes factory_a (validation fails).
+        # Thread A releases its in-flight reservation (2 -> 1).
+        # Thread B's reservation under generation 1 is preserved.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+
+        # Verify Thread B's reservation was not cancelled
+        assert pool.current_size == 1, (
+            f"Expected pool.current_size to be 1, but got {pool.current_size} (drift occurred!)"
+        )
+        assert pool.in_flight == 1
+
+        release_factory_b.set()
+        t_b.join(timeout=5.0)
+        assert pool.current_size == 0
+        assert pool.in_flight == 0
+        pool.close()
+        """,
+        conn_str,
+    )
+
+
+def test_pool_size_accounting_race_on_successful_candidate_reuse_close_interleave(conn_str):
+    """Regression test for GH-746: candidate reuse success racing pool close().
+
+    When a candidate popped under generation 0 succeeds validation while racing
+    a pool close(), the candidate must NOT be returned as a valid connection
+    under the new generation. Returning it without an active reservation in the
+    new generation would allow another thread to reserve up to max_size, causing
+    the pool to exceed max_size. Instead, the stale candidate is discarded and
+    acquire retries under the new generation (or fails if the pool is full).
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(2, 600)
+        pool.set_mock_mode(True)
+        # Inject candidate with near-expiry so factory_a runs to check it
+        pool.inject_candidate("SERVER=dummy_test_746;", 1, True)
+        assert pool.current_size == 1
+        assert pool.generation == 0
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+        factory_a_calls = [0]
+
+        def factory_a():
+            factory_a_calls[0] += 1
+            if factory_a_calls[0] == 1:
+                in_factory_a.set()
+                assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            return {}, 9999999999
+
+        t_a_conn = []
+        t_a_error = []
+
+        def run_a():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", factory_a)
+                t_a_conn.append(conn)
+            except Exception as exc:
+                t_a_error.append(exc)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+        assert pool.in_flight == 1
+
+        # Thread A popped candidate (generation 0). Pool close retains in-flight validation.
+        pool.close()
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+        assert pool.generation == 1
+
+        # Thread B reserves slot 2 under generation 1
+        in_factory_b = threading.Event()
+        release_factory_b = threading.Event()
+
+        def factory_b():
+            in_factory_b.set()
+            assert release_factory_b.wait(timeout=5.0), "Timed out waiting to release factory B"
+            return {}
+
+        t_b_conn = []
+        t_b_error = []
+
+        def run_b():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", factory_b)
+                t_b_conn.append(conn)
+            except Exception as exc:
+                t_b_error.append(exc)
+
+        t_b = threading.Thread(target=run_b)
+        t_b.start()
+        assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+        assert pool.current_size == 2
+        assert pool.in_flight == 2
+
+        # 1. Thread B finishes connecting first and publishes under generation 1
+        release_factory_b.set()
+        t_b.join(timeout=5.0)
+        assert len(t_b_error) == 0
+        assert len(t_b_conn) == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 1
+        assert pool.current_size == 2
+
+        # 2. Thread A finishes validation second. Under the generation fix, Thread A detects
+        # generation mismatch (0 != 1), discards stale candidate, decrements in_flight and current_size (2 -> 1).
+        # Thread A retries acquire under generation 1 and successfully acquires slot 2.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+        assert len(t_a_error) == 0
+        assert len(t_a_conn) == 1
+        # Verify candidate was discarded and A performed a fresh open under generation 1 (#746)
+        assert factory_a_calls[0] == 2, f"Expected 2 factory invocations (validation + retry open), got {factory_a_calls[0]}"
+        assert t_a_conn[0].origin_generation == 1, f"Expected generation 1, got {t_a_conn[0].origin_generation}"
+        assert pool.checked_out == 2
+        assert pool.in_flight == 0
+        assert pool.current_size == 2
+
+        # Return both connections and clean up
+        pool.release(t_a_conn[0])
+        pool.release(t_b_conn[0])
+        assert pool.checked_out == 0
+        pool.close()
+        assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_size_accounting_race_on_successful_open_close_interleave(conn_str):
+    """Regression test for GH-746: connection open success racing pool close().
+
+    When a connection open succeeds after racing a pool close(), the newly opened
+    connection must NOT be returned into the pool under the new generation without
+    validating the generation counter. If Thread A connected under generation 0,
+    close() reset the pool, and Thread B reserved generation 1, returning Thread A's
+    connection would result in 2 live connections when max_size=1. The generation
+    check ensures Thread A discards the orphaned connection and retries under the
+    new generation (failing if Thread B has claimed the capacity).
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(2, 600)
+        pool.set_mock_mode(True)
+        assert pool.current_size == 0
+        assert pool.generation == 0
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+        factory_a_calls = [0]
+
+        def factory_a():
+            factory_a_calls[0] += 1
+            if factory_a_calls[0] == 1:
+                in_factory_a.set()
+                assert release_factory_a.wait(timeout=5.0), "Timed out waiting to release factory A"
+            return {}
+
+        t_a_conn = []
+        t_a_error = []
+
+        def run_a():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", factory_a)
+                t_a_conn.append(conn)
+            except Exception as exc:
+                t_a_error.append(exc)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0), "Timed out waiting for Thread A to enter factory"
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+
+        # Thread A reserved slot under generation 0. Pool is closed while Thread A is in-flight.
+        # In-flight capacity is retained so max_size is not exceeded (#746).
+        pool.close()
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+        assert pool.generation == 1
+
+        # Thread B begins acquiring under generation 1 (reserves slot 2 of max_size=2)
+        in_factory_b = threading.Event()
+        release_factory_b = threading.Event()
+
+        def factory_b():
+            in_factory_b.set()
+            assert release_factory_b.wait(timeout=5.0), "Timed out waiting to release factory B"
+            return {}
+
+        t_b_conn = []
+        t_b_error = []
+
+        def run_b():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", factory_b)
+                t_b_conn.append(conn)
+            except Exception as exc:
+                t_b_error.append(exc)
+
+        t_b = threading.Thread(target=run_b)
+        t_b.start()
+        assert in_factory_b.wait(timeout=5.0), "Timed out waiting for Thread B to enter factory"
+        assert pool.current_size == 2
+        assert pool.in_flight == 2
+
+        # 1. NEW-GENERATION OPEN COMPLETES FIRST:
+        # Thread B finishes connecting and publishes valid_conn under generation 1
+        release_factory_b.set()
+        t_b.join(timeout=5.0)
+        assert len(t_b_error) == 0
+        assert len(t_b_conn) == 1
+        assert t_b_conn[0].origin_generation == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 1
+        assert pool.current_size == 2
+
+        # 2. OLD-GENERATION OPEN COMPLETES SECOND:
+        # Thread A finishes connecting outside the lock.
+        # Under generation fix, Thread A detects reservation generation mismatch (0 != 1),
+        # disconnects its stale connection, decrements in_flight (1 -> 0) and current_size (2 -> 1).
+        # Thread B's connection is intact and valid!
+        # Thread A retries acquire under generation 1 and successfully acquires the freed slot.
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+        assert len(t_a_error) == 0
+        assert len(t_a_conn) == 1
+        # Verify stale open was discarded and A performed a fresh open under generation 1 (#746)
+        assert factory_a_calls[0] == 2, f"Expected 2 factory invocations (initial open + retry open), got {factory_a_calls[0]}"
+        assert t_a_conn[0].origin_generation == 1, f"Expected generation 1, got {t_a_conn[0].origin_generation}"
+        assert pool.checked_out == 2
+        assert pool.in_flight == 0
+        assert pool.current_size == 2
+
+        # Clean up both connections
+        pool.release(t_a_conn[0])
+        pool.release(t_b_conn[0])
+        assert pool.checked_out == 0
+        pool.close()
+        assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_in_flight_open_blocks_acquire_exceeding_max_size_1(conn_str):
+    """When max_size=1 and an open is in flight across close(), new acquire is blocked.
+
+    Ensures that an in-flight open retains reserved capacity across close(),
+    preventing a new-generation thread from opening another physical connection
+    while the stale open is still establishing its socket (#746).
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+
+        in_factory_a = threading.Event()
+        release_factory_a = threading.Event()
+
+        def factory_a():
+            in_factory_a.set()
+            assert release_factory_a.wait(timeout=5.0)
+            return {}
+
+        t_a_conn = []
+
+        def run_a():
+            conn = pool.acquire("SERVER=dummy_test_746;", factory_a)
+            t_a_conn.append(conn)
+
+        t_a = threading.Thread(target=run_a)
+        t_a.start()
+        assert in_factory_a.wait(timeout=5.0)
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+
+        # Close pool while Thread A is in-flight
+        pool.close()
+        # In-flight capacity is retained: current_size stays 1!
+        assert pool.current_size == 1
+        assert pool.in_flight == 1
+        assert pool.generation == 1
+
+        # Thread B tries to acquire under generation 1: REJECTED because capacity is held!
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Thread B must be rejected while Thread A's open is still in-flight"
+
+        # Thread A completes and disconnects stale connection, freeing the slot
+        release_factory_a.set()
+        t_a.join(timeout=5.0)
+
+        # Thread A's retry acquired the freed slot under generation 1
+        assert len(t_a_conn) == 1
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+
+        pool.release(t_a_conn[0])
+        assert pool.checked_out == 0
+        pool.close()
+        assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_release_from_stale_generation_does_not_pollute_pool(conn_str):
+    """Regression test for GH-746: releasing a connection from an invalidated pool/generation.
+
+    When a connection checked out from an earlier pool generation is released after
+    pool.close() has advanced the generation, release() must NOT push that stale connection
+    back into the active pool nor decrement current_size of the new generation. Instead, it
+    must cleanly disconnect the stale connection, ensuring the new pool generation remains
+    uncorrupted and never exceeds max_size.
+    """
+    _run_in_subprocess(
+        """
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+
+        # 1. Acquire conn_1 under generation 0
+        conn_1 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_1 is not None
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.generation == 0
+
+        # 2. Pool is closed while conn_1 is still checked out.
+        # Reserved capacity is retained for checked-out connections so the
+        # max_size cap is not exceeded while conn_1 is live (#746).
+        pool.close()
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.generation == 1
+
+        # 3. An acquire under generation 1 must be rejected while conn_1 is still checked out,
+        # preserving the max_size=1 invariant across pool.close() (#746).
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "A new acquire must be rejected while conn_1 is still checked out"
+
+        # 4. Release conn_1 (from generation 0).
+        # It belongs to this pool but its generation is stale. It is disconnected,
+        # and the retained checked-out capacity is released: current_size drops to 0.
+        pool.release(conn_1)
+        assert pool.current_size == 0
+        assert pool.checked_out == 0
+
+        # 5. Now that capacity has freed up, acquire conn_2 under generation 1 succeeds
+        conn_2 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_2 is not None
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.generation == 1
+
+        # 6. Release conn_2 (matches generation 1). It returns to the pool idle deque.
+        pool.release(conn_2)
+        assert pool.current_size == 1
+        assert pool.checked_out == 0
+
+        # 7. Next acquire reuses conn_2 from the pool
+        conn_3 = pool.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_3 is not None
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+
+        pool.release(conn_3)
+        assert pool.checked_out == 0
+        pool.close()
+        assert pool.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_release_after_pool_recreation(conn_str):
+    """Releasing a connection to a newly recreated pool must not corrupt the new pool's size.
+
+    Verifies that monotonic pool IDs prevent address-reuse (ABA) corruption:
+    even if pool_2 were to be allocated at the same memory address as pool_1,
+    releasing conn_1 (from pool_1) to pool_2 will not match pool_2's monotonic pool ID.
+    Therefore, pool_2's current_size is not erroneously decremented or corrupted (#746).
+    """
+    _run_in_subprocess(
+        """
+        from mssql_python import ddbc_bindings
+
+        pool_1 = ddbc_bindings._TestConnectionPool(1, 600)
+        pool_1.set_mock_mode(True)
+        assert pool_1.pool_id > 0
+
+        # Acquire conn_1 from pool_1
+        conn_1 = pool_1.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_1 is not None
+        assert pool_1.current_size == 1
+        assert pool_1.checked_out == 1
+
+        # Create pool_2 with its own distinct monotonic pool_id
+        pool_2 = ddbc_bindings._TestConnectionPool(1, 600)
+        pool_2.set_mock_mode(True)
+        assert pool_2.pool_id > pool_1.pool_id
+        assert pool_2.current_size == 0
+        assert pool_2.checked_out == 0
+
+        # Release conn_1 into pool_2 (wrong pool ID)
+        pool_2.release(conn_1)
+        # pool_2 must not adopt conn_1 or decrement its size: stays 0
+        assert pool_2.current_size == 0
+        assert pool_2.checked_out == 0
+
+        # pool_2 can acquire normally
+        conn_2 = pool_2.acquire("SERVER=dummy_test_746;", lambda: {})
+        assert conn_2 is not None
+        assert pool_2.current_size == 1
+        assert pool_2.checked_out == 1
+
+        # Releasing conn_1 again to pool_2 does not corrupt pool_2's active connection
+        pool_2.release(conn_1)
+        assert pool_2.current_size == 1
+        assert pool_2.checked_out == 1
+
+        # Cleanly release conn_2
+        pool_2.release(conn_2)
+        assert pool_2.checked_out == 0
+        pool_2.close()
+        assert pool_2.current_size == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_manager_defers_replacement_while_connection_checked_out(conn_str):
+    """Across a disable/enable cycle, acquires respect capacity of checked-out connections.
+
+    When ConnectionPoolManager::closePools() runs while a connection is checked out,
+    the pool is retained in _pools, deferring replacement pool creation until the old pool
+    has no live work. Subsequent acquires under the re-enabled pool manager must not
+    allow exceeding max_size while the old connection remains checked out (#746).
+    """
+    _run_in_subprocess(
+        """
+        from mssql_python import ddbc_bindings
+
+        ddbc_bindings._set_pool_manager_mock_mode(True)
+
+        pool_key = "SERVER=dummy_test_746;test_replace"
+        conn_str = "SERVER=dummy_test_746;"
+
+        # 1. Enable pooling with max_size=2
+        ddbc_bindings.enable_pooling(2, 600)
+
+        # 2. Acquire conn_1 from pool (generation 0)
+        conn_1 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        assert conn_1.origin_generation == 0
+
+        # 3. Disable pooling (invokes closePools())
+        # The pool has checked_out=1, so it is retained in _pools with generation bumped to 1.
+        ddbc_bindings.disable_pooling()
+
+        # 4. Re-enable pooling with max_size=2
+        ddbc_bindings.enable_pooling(2, 600)
+
+        # 5. Acquire conn_2 from the manager while conn_1 is still checked out.
+        # Replacement pool creation is deferred because conn_1 is still live.
+        # conn_2 is acquired under generation 1 (1 + 1 = 2 connections active).
+        conn_2 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        assert conn_2.origin_generation == 1
+        assert conn_2.origin_pool_id == conn_1.origin_pool_id
+
+        # 6. Attempting to acquire a 3rd connection must fail because max_size=2 is reached!
+        rejected = False
+        try:
+            ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Must reject acquire when max_size=2 is reached across recreation!"
+
+        # 7. Close conn_1: releases the old-generation connection and frees capacity.
+        conn_1.close()
+
+        # 8. Now acquire conn_3: capacity is freed, so acquire succeeds!
+        conn_3 = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        assert conn_3.origin_generation == 1
+
+        # Clean up remaining connections
+        conn_2.close()
+        conn_3.close()
+        ddbc_bindings.close_pooling()
+        """,
+        conn_str,
+    )
+
+
+def test_pool_release_disconnect_keeps_in_flight_until_disconnected(conn_str):
+    """Regression test for GH-746: stale/overflow release disconnect retains in-flight accounting.
+
+    When an expired, generation-mismatched, or overflow connection is released,
+    it must be transitioned from _checked_out to _in_flight during the
+    unlocked conn->disconnect() call, and only decremented after disconnect finishes.
+    This guarantees that concurrent callers cannot reserve a slot or open a new
+    physical connection before the old physical connection has finished closing.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+
+        # 1. Acquire connection (generation 0, checked_out=1, current_size=1)
+        conn = pool.acquire("SERVER=dummy_test_746;", None)
+        assert conn is not None
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 0
+
+        # 2. Close the pool to bump the generation so releasing conn triggers a disconnect.
+        # Since conn was checked out, close() keeps current_size=1, checked_out=1, in_flight=0.
+        pool.close()
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 0
+        assert pool.generation == 1
+
+        in_disconnect = threading.Event()
+        release_disconnect = threading.Event()
+        hook_observed = {}
+
+        def on_disconnect():
+            # At this point, release() has moved conn from _checked_out to _in_flight,
+            # but has NOT yet decremented current_size.
+            hook_observed["current_size"] = pool.current_size
+            hook_observed["in_flight"] = pool.in_flight
+            hook_observed["checked_out"] = pool.checked_out
+            in_disconnect.set()
+            assert release_disconnect.wait(timeout=5.0), "Timed out waiting to release disconnect"
+
+        pool.set_on_disconnect_hook(on_disconnect)
+
+        t_err = []
+        def run_release():
+            try:
+                pool.release(conn)
+            except Exception as exc:
+                t_err.append(exc)
+
+        t = threading.Thread(target=run_release)
+        t.start()
+        assert in_disconnect.wait(timeout=5.0), "Timed out waiting for disconnect hook"
+
+        # Verify hook observed state:
+        assert hook_observed["current_size"] == 1
+        assert hook_observed["in_flight"] == 1
+        assert hook_observed["checked_out"] == 0
+
+        # While disconnect is in progress, any concurrent acquire is blocked from
+        # allocating because max_size=1 is still fully occupied by in_flight teardown!
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", None)
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Concurrent acquire must be rejected while teardown disconnect is in-flight!"
+
+        # Let the disconnect complete
+        release_disconnect.set()
+        t.join(timeout=5.0)
+        assert not t_err, f"Release thread error: {t_err}"
+
+        # Now that disconnect is finished, counters are decremented to 0
+        assert pool.current_size == 0
+        assert pool.in_flight == 0
+        assert pool.checked_out == 0
+
+        # Now acquire succeeds
+        pool.set_on_disconnect_hook(None)
+        conn_new = pool.acquire("SERVER=dummy_test_746;", None)
+        assert conn_new is not None
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        pool.release(conn_new)
+        pool.close()
+        """,
+        conn_str,
+    )
+
+
+def test_pool_close_disconnect_keeps_in_flight_until_disconnected(conn_str):
+    """Regression test for GH-746: idle connection disconnect in close() retains in-flight accounting.
+
+    When close() drains idle connections from the pool, they must be added to
+    _in_flight and only decremented from _in_flight and _current_size after each
+    physical disconnect finishes, preventing concurrent acquires from observing freed
+    slots while physical sockets are still closing.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        from mssql_python import ddbc_bindings
+
+        pool = ddbc_bindings._TestConnectionPool(1, 600)
+        pool.set_mock_mode(True)
+
+        # Inject an idle candidate into the pool
+        pool.inject_candidate("SERVER=dummy_test_746;", 0, True)
+        assert pool.current_size == 1
+        assert pool.checked_out == 0
+        assert pool.in_flight == 0
+
+        in_disconnect = threading.Event()
+        release_disconnect = threading.Event()
+        hook_observed = {}
+
+        def on_disconnect():
+            hook_observed["current_size"] = pool.current_size
+            hook_observed["in_flight"] = pool.in_flight
+            hook_observed["checked_out"] = pool.checked_out
+            in_disconnect.set()
+            assert release_disconnect.wait(timeout=5.0), "Timed out waiting to release disconnect"
+
+        pool.set_on_disconnect_hook(on_disconnect)
+
+        t_err = []
+        def run_close():
+            try:
+                pool.close()
+            except Exception as exc:
+                t_err.append(exc)
+
+        t = threading.Thread(target=run_close)
+        t.start()
+        assert in_disconnect.wait(timeout=5.0), "Timed out waiting for disconnect hook in close"
+
+        # Verify hook observed state:
+        assert hook_observed["current_size"] == 1
+        assert hook_observed["in_flight"] == 1
+        assert hook_observed["checked_out"] == 0
+
+        # Concurrent acquire cannot exceed max_size while idle connection is disconnecting
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", None)
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Concurrent acquire must be rejected while close disconnect is in-flight!"
+
+        # Let close complete
+        release_disconnect.set()
+        t.join(timeout=5.0)
+        assert not t_err, f"Close thread error: {t_err}"
+
+        # Verify clean post-close state
+        assert pool.current_size == 0
+        assert pool.in_flight == 0
+        assert pool.checked_out == 0
+        """,
+        conn_str,
+    )
+
+
+def test_pool_prune_stale_disconnect_keeps_in_flight_until_disconnected(conn_str):
+    """Regression test for GH-746: Phase 1 stale idle pruning retains in-flight capacity.
+
+    When Phase 1 prunes stale idle connections past idle_timeout, they are moved to
+    _in_flight and only decremented after physical disconnect in Phase 4 finishes,
+    preventing concurrent callers from allocating into slots of disconnecting handles.
+    """
+    _run_in_subprocess(
+        """
+        import time
+        import threading
+        from mssql_python import ddbc_bindings
+
+        # Pool with idle timeout of 0 seconds and max_size=1
+        pool = ddbc_bindings._TestConnectionPool(1, 0)
+        pool.set_mock_mode(True)
+
+        pool.inject_candidate("SERVER=dummy_test_746;", 0, True)
+        assert pool.current_size == 1
+        assert pool.checked_out == 0
+        assert pool.in_flight == 0
+
+        # Wait for candidate to exceed idle timeout
+        time.sleep(1.1)
+
+        in_disconnect = threading.Event()
+        release_disconnect = threading.Event()
+        hook_observed = {}
+
+        def on_disconnect():
+            hook_observed["current_size"] = pool.current_size
+            hook_observed["in_flight"] = pool.in_flight
+            hook_observed["checked_out"] = pool.checked_out
+            in_disconnect.set()
+            assert release_disconnect.wait(timeout=5.0), "Timed out waiting to release disconnect"
+
+        pool.set_on_disconnect_hook(on_disconnect)
+
+        t_err = []
+        t_conn = []
+
+        def run_acquire():
+            try:
+                conn = pool.acquire("SERVER=dummy_test_746;", None)
+                t_conn.append(conn)
+            except Exception as exc:
+                t_err.append(exc)
+
+        t = threading.Thread(target=run_acquire)
+        t.start()
+        assert in_disconnect.wait(timeout=5.0), "Timed out waiting for disconnect hook in Phase 4"
+
+        # Verify hook observed state:
+        assert hook_observed["current_size"] == 1
+        assert hook_observed["in_flight"] == 1
+        assert hook_observed["checked_out"] == 0
+
+        # Concurrent acquire cannot exceed max_size while pruned connection is disconnecting
+        rejected = False
+        try:
+            pool.acquire("SERVER=dummy_test_746;", None)
+        except RuntimeError as exc:
+            if "pool size limit reached" in str(exc):
+                rejected = True
+        assert rejected, "Concurrent acquire must be rejected while pruned disconnect is in-flight!"
+
+        # Let disconnect finish
+        release_disconnect.set()
+        t.join(timeout=5.0)
+        assert not t_err, f"Acquire thread error: {t_err}"
+        assert len(t_conn) == 1
+
+        # Now newly acquired connection is checked out
+        assert pool.current_size == 1
+        assert pool.checked_out == 1
+        assert pool.in_flight == 0
+
+        pool.set_on_disconnect_hook(None)
+        pool.release(t_conn[0])
+        pool.close()
+        """,
+        conn_str,
+    )
+
+
+def test_pool_manager_serializes_same_key_replacement_while_old_pool_closing(conn_str):
+    """Regression test for GH-746: serialize replacement-pool creation while old pool is closing.
+
+    When ConnectionPoolManager evicts an evictable pool and begins closing it, concurrent
+    acquires for the same key must wait for teardown to finish rather than creating and
+    publishing a competing pool before old idle handles are disconnected.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        import time
+        from mssql_python import ddbc_bindings
+
+        ddbc_bindings._set_pool_manager_mock_mode(True)
+
+        pool_key = "SERVER=dummy_test_746;test_replace_closing"
+        conn_str = "SERVER=dummy_test_746;"
+
+        # 1. Enable pooling with max_size=1, idle_timeout=0 so idle pools become evictable
+        ddbc_bindings.enable_pooling(1, 0)
+
+        # 2. Acquire a connection from the manager and return it to make the pool idle
+        conn_init = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        conn_init.close()
+
+        # Sleep briefly so idle_time > 0 (idle_timeout=0) makes canEvict() return True
+        time.sleep(1.05)
+
+        # 3. Retrieve the internal pool instance for pool_key and attach a disconnect hook
+        old_pool = ddbc_bindings._get_pool_for_key(pool_key)
+        assert old_pool is not None
+
+        hook_entered = threading.Event()
+        proceed_disconnect = threading.Event()
+        thread_b_started = threading.Event()
+        thread_b_finished = threading.Event()
+        thread_b_result = []
+
+        def on_disconnect():
+            hook_entered.set()
+            # Wait until Thread B has launched its acquire attempt
+            thread_b_started.wait(timeout=5.0)
+            # Sleep a moment to ensure Thread B enters acquireConnection and waits on _manager_cv
+            time.sleep(0.15)
+            assert not thread_b_finished.is_set(), "Thread B must be blocked waiting on _closing_keys!"
+            proceed_disconnect.wait(timeout=5.0)
+
+        old_pool.set_on_disconnect_hook(on_disconnect)
+        # Drop Python reference so it->second.use_count() == 1 allows eviction
+        del old_pool
+
+        # 4. Thread A triggers acquireConnection, detecting the evictable pool and calling close()
+        thread_a_result = []
+        def thread_a_worker():
+            try:
+                c = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+                thread_a_result.append(c)
+            except Exception as e:
+                thread_a_result.append(e)
+
+        def thread_b_worker():
+            thread_b_started.set()
+            try:
+                c = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+                thread_b_result.append(c)
+            except Exception as e:
+                thread_b_result.append(e)
+            finally:
+                thread_b_finished.set()
+
+        t_a = threading.Thread(target=thread_a_worker)
+        t_a.start()
+
+        assert hook_entered.wait(timeout=5.0), "Disconnect hook was not reached"
+
+        # 5. Launch Thread B: tries to acquire for the same key while Thread A is closing old pool
+        t_b = threading.Thread(target=thread_b_worker)
+        t_b.start()
+
+        # Let Thread A complete the disconnect and pool replacement
+        proceed_disconnect.set()
+
+        t_a.join(timeout=5.0)
+        t_b.join(timeout=5.0)
+
+        assert len(thread_a_result) == 1 and not isinstance(thread_a_result[0], Exception)
+        conn_a = thread_a_result[0]
+
+        # Thread B must have been serialized and checked out from the replacement pool.
+        # Since Thread A took the only slot on the replacement pool (max_size=1),
+        # Thread B was rejected with 'pool size limit reached'.
+        assert len(thread_b_result) == 1
+        res_b = thread_b_result[0]
+        assert isinstance(res_b, RuntimeError) and "pool size limit reached" in str(res_b), (
+            f"Expected pool size limit reached on serialized replacement pool, got: {res_b}"
+        )
+
+        # Free slot on replacement pool and verify subsequent acquire succeeds
+        expected_pool_id = conn_a.origin_pool_id
+        conn_a.close()
+        conn_after = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        assert conn_after.origin_pool_id == expected_pool_id
+        conn_after.close()
+
+        ddbc_bindings.close_pooling()
+        """,
+        conn_str,
+    )
 
 
 # =============================================================================

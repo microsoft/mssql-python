@@ -21,6 +21,7 @@
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
@@ -6111,9 +6112,17 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"), py::arg("value"),
              "Set connection attribute")
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
-        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
+        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"))
+        .def_property_readonly("origin_generation", &ConnectionHandle::originGeneration)
+        .def_property_readonly("origin_pool_id", &ConnectionHandle::originPoolId);
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
+    m.def("_set_pool_manager_mock_mode", [](bool enable) {
+        ConnectionPoolManager::getInstance().set_mock_mode(enable);
+    }, py::arg("enable") = true);
+    m.def("_get_pool_for_key", [](const std::u16string& key) {
+        return ConnectionPoolManager::getInstance().getPool(key);
+    }, py::arg("key"), "Get internal pool instance for testing (#746)");
     m.def("disable_pooling", []() {
         // Disarm new-pool creation *before* closing so a connect racing this
         // disable cannot resurrect a pool after the map is cleared: any
@@ -6124,6 +6133,88 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         manager.setAccepting(false);
         manager.closePools();
     }, "Disable global connection pooling and close all pools");
+    // Internal test seam: allows deterministic unit testing of ConnectionPool
+    // concurrency and generation tracking (#746).
+    py::class_<Connection, std::shared_ptr<Connection>>(m, "_TestPooledConnection")
+        .def_property_readonly("origin_generation", &Connection::originGeneration)
+        .def_property_readonly("origin_pool_id", &Connection::originPoolId);
+    struct PyObjectHolder {
+        PyObject* ptr = nullptr;
+        explicit PyObjectHolder(py::object obj) : ptr(obj.release().ptr()) {}
+        ~PyObjectHolder() {
+            if (ptr) {
+                py::gil_scoped_acquire gil;
+                Py_XDECREF(ptr);
+                ptr = nullptr;
+            }
+        }
+        PyObjectHolder(const PyObjectHolder&) = delete;
+        PyObjectHolder& operator=(const PyObjectHolder&) = delete;
+        PyObjectHolder(PyObjectHolder&& other) noexcept : ptr(other.ptr) {
+            other.ptr = nullptr;
+        }
+        PyObjectHolder& operator=(PyObjectHolder&& other) noexcept {
+            if (this != &other) {
+                if (ptr) {
+                    py::gil_scoped_acquire gil;
+                    Py_XDECREF(ptr);
+                }
+                ptr = other.ptr;
+                other.ptr = nullptr;
+            }
+            return *this;
+        }
+    };
+    py::class_<ConnectionPool, std::shared_ptr<ConnectionPool>>(m, "_TestConnectionPool")
+        .def(py::init<size_t, int>(), py::arg("max_size") = 1, py::arg("idle_timeout_secs") = 600)
+        .def(
+            "acquire",
+            [](ConnectionPool& pool, const std::u16string& connStr,
+               const py::object& token_factory) {
+                return pool.acquire(connStr, py::dict(), token_factory);
+            },
+            py::arg("conn_str"), py::arg("token_factory") = py::none())
+        .def("release", &ConnectionPool::release, py::call_guard<py::gil_scoped_release>(), py::arg("conn"))
+        .def("close", &ConnectionPool::close, py::call_guard<py::gil_scoped_release>())
+        .def("set_mock_mode", &ConnectionPool::set_mock_mode, py::arg("enable") = true)
+        .def(
+            "set_on_disconnect_hook",
+            [](ConnectionPool& pool, py::object hook) {
+                if (hook.is_none()) {
+                    pool.set_on_disconnect_hook(nullptr);
+                } else {
+                    auto holder = std::make_shared<PyObjectHolder>(std::move(hook));
+                    auto fn = std::make_shared<std::function<void()>>([holder]() {
+                        py::gil_scoped_acquire gil;
+                        if (holder && holder->ptr) {
+                            py::handle h(holder->ptr);
+                            h();
+                        }
+                    });
+                    pool.set_on_disconnect_hook(fn);
+                }
+            },
+            py::arg("hook"))
+        .def_property_readonly("current_size", &ConnectionPool::current_size)
+        .def_property_readonly("checked_out", &ConnectionPool::checked_out)
+        .def_property_readonly("in_flight", &ConnectionPool::in_flight)
+        .def_property_readonly("generation", &ConnectionPool::generation)
+        .def_property_readonly("pool_id", &ConnectionPool::pool_id)
+        .def(
+            "inject_candidate",
+            [](ConnectionPool& pool, const std::u16string& connStr, long long expiry, bool mock) {
+                auto conn = std::make_shared<Connection>(connStr, true);
+                if (mock || pool.mock_mode()) {
+                    conn->setMock(true);
+                }
+                if (expiry > 0) {
+                    conn->setTokenExpiry(expiry);
+                }
+                conn->updateLastUsed();
+                conn->setPoolOrigin(pool.pool_id(), pool.generation());
+                pool.inject_candidate(conn);
+            },
+            py::arg("conn_str"), py::arg("expiry") = 0, py::arg("mock") = false);
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap,
           "DetectParamTypes + BindParameters + SQLExecute all in C++",

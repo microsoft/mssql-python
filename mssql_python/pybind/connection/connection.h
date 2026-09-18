@@ -55,6 +55,17 @@ class Connection {
     bool reset();
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;
+    void setMock(bool mock) { _isMock = mock; }
+    bool isMock() const { return _isMock; }
+    void setPoolOrigin(uint64_t pool_id, uint64_t generation) {
+        _originPoolId = pool_id;
+        _originGeneration = generation;
+    }
+    bool matchesPoolOrigin(uint64_t pool_id, uint64_t generation) const {
+        return _originPoolId == pool_id && _originGeneration == generation;
+    }
+    uint64_t originPoolId() const { return _originPoolId; }
+    uint64_t originGeneration() const { return _originGeneration; }
 
     // Materialize connect-attrs from a Python token-factory callback.
     // The factory may return either a bare attrs dict (legacy) or a
@@ -100,6 +111,9 @@ class Connection {
     std::u16string _connStr;
     bool _fromPool = false;
     bool _autocommit = true;
+    bool _isMock = false;
+    uint64_t _originPoolId = 0;
+    uint64_t _originGeneration = 0;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
     // POSIX-epoch expiry (seconds) of the access token this connection last
@@ -149,6 +163,9 @@ class ConnectionHandle {
 
     // Get information about the driver and data source
     py::object getInfo(SQLUSMALLINT infoType) const;
+
+    uint64_t originGeneration() const { return _conn ? _conn->originGeneration() : 0; }
+    uint64_t originPoolId() const { return _conn ? _conn->originPoolId() : 0; }
 
   private:
     std::shared_ptr<Connection> _conn;
