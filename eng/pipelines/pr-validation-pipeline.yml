@@ -468,9 +468,7 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
-  # Reserve 60 minutes outside the 100-minute benchmark step for Colima/SQL
-  # setup, pytest, fixture restore and artifact publication.
-  timeoutInMinutes: 160
+  timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
 
@@ -568,11 +566,7 @@ jobs:
       pip install -r requirements.txt
 
       echo "Building pybind bindings (.so) (overlapped with container setup)..."
-      PROFILER_BUILD=0
-      if [ "$(Build.Reason)" = "PullRequest" ]; then
-        PROFILER_BUILD=1
-      fi
-      ( cd mssql_python/pybind && ENABLE_PROFILING="$PROFILER_BUILD" ./build.sh )
+      ( cd mssql_python/pybind && ./build.sh )
 
       echo "Waiting for container setup (Colima + SQL Server) to finish..."
       SQL_STATUS=0
@@ -584,10 +578,6 @@ jobs:
     displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: python -m eng.profiler_benchmarks.controller --check-build on
-    displayName: 'Verify native configuration and recording OFF before pytest'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -637,59 +627,9 @@ jobs:
       testResultsFiles: '**/test-results.xml'
       testRunTitle: 'Publish pytest results on macOS $(sqlVersion)'
 
-  # Download and restore AdventureWorks2022 database for benchmarking
-  - script: |
-      echo "Downloading AdventureWorks2022.bak..."
-      curl -sSL -o /tmp/AdventureWorks2022.bak \
-        https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak
-
-      echo "Copying backup into SQL Server container..."
-      docker cp /tmp/AdventureWorks2022.bak sqlserver:/tmp/AdventureWorks2022.bak
-
-      echo "Restoring AdventureWorks2022 database..."
-      docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost -U SA -P "$DB_PASSWORD" -C \
-        -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
-
-      if [ $? -eq 0 ]; then
-        echo "AdventureWorks2022 database restored successfully"
-      else
-        echo "Failed to restore AdventureWorks2022 database"
-      fi
-
-      rm -f /tmp/AdventureWorks2022.bak
-      docker exec sqlserver rm -f /tmp/AdventureWorks2022.bak || true
-    displayName: 'Download and restore AdventureWorks2022 database on macOS'
-    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  # Run performance benchmarks on macOS
-  - script: |
-      set -euo pipefail
-      echo "Restoring build dependencies for isolated profiling builds..."
-      brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
-      # Newer Homebrew refuses to load formulae from third-party taps unless the tap is trusted
-      brew trust microsoft/mssql-release || echo "brew trust failed; attempting install anyway"
-      HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18
-      python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "macOS-$(sqlVersion)" --output profiler-results
-    displayName: 'Compare profiling builds on macOS $(sqlVersion)'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    timeoutInMinutes: 100
-    continueOnError: true
-    env:
-      SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
-      DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-
-  # Both revisions and samples travel together; no historical baseline lookup.
-  - task: PublishPipelineArtifact@1
-    inputs:
-      targetPath: profiler-results
-      artifact: 'profiler-macOS-$(sqlVersion)'
-    displayName: 'Publish paired profiler measurements'
-    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
+  # Routine PR profiling excludes hosted macOS because Colima-backed control
+  # runs produced regressions with no product-code change. Functional macOS
+  # coverage remains above; Unix performance signal comes from Ubuntu.
 
   - script: |
       python3 eng/scripts/setup_sql_container.py --cleanup --colima \
@@ -713,11 +653,13 @@ jobs:
         distroName: 'Ubuntu'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
         useAzureSQL: 'false'
+        profilerLeg: 'Linux-SQL2022'
       Ubuntu_SQL2025:
         dockerImage: 'ubuntu:24.04'
         distroName: 'Ubuntu-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
+        profilerLeg: 'Linux-SQL2025'
       ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
         Ubuntu_AzureSQL:
           dockerImage: 'ubuntu:24.04'
@@ -832,7 +774,8 @@ jobs:
   - script: |
       # Build pybind bindings in the container
       PROFILER_BUILD=0
-      if [ "$(Build.Reason)" = "PullRequest" ] && [ "$(distroName)" = "Ubuntu" ]; then
+      if [ "$(Build.Reason)" = "PullRequest" ] &&
+        [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]]; then
         PROFILER_BUILD=1
       fi
       docker exec -e ENABLE_PROFILING="$PROFILER_BUILD" test-container-$(distroName) bash -c "
@@ -912,8 +855,8 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      # Download and restore AdventureWorks2022 database for benchmarking on Ubuntu only
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+      # Download and restore AdventureWorks2022 for both Unix profiler legs.
+      if [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]] && [ "$(useAzureSQL)" = "false" ]; then
         echo "Downloading AdventureWorks2022.bak..."
         wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
         
@@ -939,14 +882,16 @@ jobs:
         docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak || true
       fi
     displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
-    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
+  # Unix profiling uses Ubuntu because it covers the shared Unix hot paths while
+  # producing stable paired measurements on hosted agents.
   - script: |
-      # Run performance benchmarks on Ubuntu with SQL Server 2022 only
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+      # Run Unix performance benchmarks on Ubuntu with SQL Server 2022 and 2025.
+      if [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]] && [ "$(useAzureSQL)" = "false" ]; then
         export SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
         echo "Running performance benchmarks on Ubuntu with SQL Server IP: $SQLSERVER_IP"
         
@@ -967,13 +912,13 @@ jobs:
           ACCEPT_EULA=Y apt-get install -y --no-install-recommends git unixodbc unixodbc-dev libodbc2 libodbcinst2 odbcinst msodbcsql18
           git config --global --add safe.directory /workspace
           odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
-          python -m eng.profiler_benchmarks.controller --reuse-candidate --leg Linux-SQL2022 --output profiler-results
+          python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "$(profilerLeg)" --output profiler-results
         '
       else
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
       fi
-    displayName: 'Compare profiling builds in $(distroName) container'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    displayName: 'Compare profiling builds on Unix in $(distroName) container'
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
     continueOnError: true
     timeoutInMinutes: 100
     env:
@@ -984,9 +929,9 @@ jobs:
   - task: PublishPipelineArtifact@1
     inputs:
       targetPath: profiler-results
-      artifact: profiler-Linux-SQL2022
+      artifact: profiler-$(profilerLeg)
     displayName: 'Publish paired profiler measurements'
-    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
     continueOnError: true
 
   - script: |
