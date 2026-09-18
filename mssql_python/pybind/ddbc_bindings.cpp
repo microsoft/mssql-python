@@ -6051,6 +6051,9 @@ py::list construct_rows(const py::list& rows_data,
                         const py::object& column_map,
                         const py::object& cursor_obj,
                         const py::object& column_map_lower) {
+    if (!PyType_Check(row_class.ptr())) {
+        throw py::type_error("row_class must be a type");
+    }
     PyTypeObject* row_type = reinterpret_cast<PyTypeObject*>(row_class.ptr());
     Py_ssize_t n = PyList_GET_SIZE(rows_data.ptr());
 

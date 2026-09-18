@@ -6,6 +6,8 @@ Regression and operation-count tests for connection settings cached by fetch API
 All integration queries are read-only and each test owns its connection.
 """
 
+import subprocess
+import sys
 import uuid
 from unittest.mock import Mock, patch
 
@@ -439,3 +441,138 @@ def test_char_decoding_ctype_refresh(connection, method, bridge_name):
             assert fetch_rows(cursor, method)[0].txt == "\u00e9"
             assert fetch.call_args.args[-3:] == (encoding, "utf-16le", ctype)
         assert reads.call_count == 8
+
+
+@pytest.mark.parametrize("invalid_type", ("None", "object()", "42", "'Row'"))
+@pytest.mark.parametrize("rows", ("[]", "[[1]]"))
+def test_construct_rows_rejects_non_types_in_subprocess(invalid_type, rows):
+    code = f"""
+import sys
+if sys.platform == "win32":
+    import ctypes
+    ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
+from mssql_python import ddbc_bindings
+try:
+    ddbc_bindings.construct_rows({rows}, {invalid_type}, {{}}, None)
+except TypeError as error:
+    assert str(error) == "row_class must be a type", str(error)
+else:
+    raise AssertionError("Expected TypeError")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+
+
+@pytest.mark.parametrize("method", FETCH_METHODS)
+@pytest.mark.parametrize("stringify_uuid", (False, True))
+def test_unrelated_converter_preserves_zero_copy_fast_path(
+    connection, method, stringify_uuid, monkeypatch
+):
+    monkeypatch.setattr(mssql_python, "native_uuid", not stringify_uuid)
+    converter = Mock(return_value="unexpected")
+    connection.add_output_converter(ConstantsDDBC.SQL_INTEGER.value, converter)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT CAST(N'abc' AS NVARCHAR(10)) AS txt, "
+            f"CAST('{UUID_TEXT}' AS UNIQUEIDENTIFIER) AS id"
+        )
+        with (
+            patch.object(Row, "_fast_create", wraps=Row._fast_create) as fast_one,
+            patch.object(
+                mssql_python.ddbc_bindings,
+                "construct_rows",
+                wraps=mssql_python.ddbc_bindings.construct_rows,
+            ) as fast_batch,
+            patch.object(
+                Row, "_apply_output_converters", side_effect=AssertionError("per-row lookup")
+            ),
+            patch.object(
+                Row,
+                "_apply_output_converters_optimized",
+                side_effect=AssertionError("unnecessary row copy"),
+            ),
+            patch.object(
+                connection, "get_output_converter", wraps=connection.get_output_converter
+            ) as lookups,
+        ):
+            row = fetch_rows(cursor, method)[0]
+            assert row.txt == "abc"
+            assert row.id == (UUID_TEXT if stringify_uuid else uuid.UUID(UUID_TEXT))
+            assert lookups.call_count == 0
+            assert fast_one.call_count == int(not stringify_uuid and method == "fetchone")
+            assert fast_batch.call_count == int(not stringify_uuid and method != "fetchone")
+        converter.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("method", "bridge_name"),
+    (
+        ("fetchone", "DDBCSQLFetchOne"),
+        ("fetchmany", "DDBCSQLFetchMany"),
+        ("fetchall", "DDBCSQLFetchAll"),
+    ),
+)
+@pytest.mark.parametrize(
+    "status",
+    (
+        ConstantsDDBC.SQL_SUCCESS.value,
+        ConstantsDDBC.SQL_SUCCESS_WITH_INFO.value,
+        ConstantsDDBC.SQL_NO_DATA.value,
+    ),
+)
+def test_fetch_drains_diagnostics_independent_of_final_status(
+    connection, method, bridge_name, status
+):
+    bridge = getattr(mssql_python.ddbc_bindings, bridge_name)
+    warning = ("01000", 0, "injected fetch warning")
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT CAST(N'abc' AS NVARCHAR(MAX)) AS txt")
+
+        def fetch_with_final_status(*args):
+            bridge(*args)
+            return status
+
+        with (
+            patch.object(
+                mssql_python.ddbc_bindings, bridge_name, side_effect=fetch_with_final_status
+            ),
+            patch.object(
+                mssql_python.ddbc_bindings, "DDBCSQLGetAllDiagRecords", return_value=[warning]
+            ) as diagnostics,
+        ):
+            fetch_rows(cursor, method)
+            diagnostics.assert_called_once_with(cursor.hstmt)
+            assert warning in cursor.messages
+
+
+@pytest.mark.parametrize(
+    ("method", "bridge_name"),
+    (
+        ("fetchone", "DDBCSQLFetchOne"),
+        ("fetchmany", "DDBCSQLFetchMany"),
+        ("fetchall", "DDBCSQLFetchAll"),
+    ),
+)
+def test_fetch_error_is_raised_before_wrapping_rows(connection, method, bridge_name):
+    from types import SimpleNamespace
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 1 AS number")
+        position = cursor._next_row_index
+        with (
+            patch.object(
+                mssql_python.ddbc_bindings,
+                bridge_name,
+                return_value=ConstantsDDBC.SQL_ERROR.value,
+            ),
+            patch.object(
+                mssql_python.ddbc_bindings,
+                "DDBCSQLCheckError",
+                return_value=SimpleNamespace(sqlState="HY000", ddbcErrorMsg="injected fetch error"),
+            ),
+        ):
+            with pytest.raises(mssql_python.DatabaseError, match="injected fetch error"):
+                fetch_rows(cursor, method)
+        assert cursor._next_row_index == position

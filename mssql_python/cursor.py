@@ -1375,6 +1375,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         Build a pre-computed converter map for output converters.
         Returns a list where each element is either a converter function or None.
+        An empty tuple means no converters apply; None is reserved for uncached
+        direct Row construction and its legacy connection lookup.
         This eliminates the need to look up converters for every row.
         """
         generation = self._connection._converters_generation
@@ -1384,7 +1386,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             or not self.connection._output_converters
         ):
             self._cached_converters_generation = generation
-            return None
+            return ()
 
         sql_type_codes = self._column_sql_types
         converter_map = []
@@ -1413,7 +1415,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             converter_map.append(converter)
 
         self._cached_converters_generation = generation
-        return converter_map
+        return converter_map if any(converter is not None for converter in converter_map) else ()
 
     def _compute_uuid_str_indices(self):
         """
@@ -2810,8 +2812,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self._cached_char_ctype,
                 )
 
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
             with perf_phase("py::fetchone::diag_records"):
-                if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
+                # The native bridge's final status can mask earlier fetch warnings.
+                if self.hstmt:
                     self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
@@ -2884,8 +2888,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self._cached_char_ctype,
                 )
 
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
             with perf_phase("py::fetchmany::diag_records"):
-                if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
+                if self.hstmt:
                     self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
@@ -2957,7 +2962,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
             with perf_phase("py::fetchall::diag_records"):
-                if ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value and self.hstmt:
+                if self.hstmt:
                     self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched

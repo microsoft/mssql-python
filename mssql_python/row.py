@@ -60,7 +60,8 @@ class Row:
             values: List of values for this row
             column_map: Pre-built column name to index mapping (shared across rows)
             cursor: Optional cursor reference (for backward compatibility and lowercase access)
-            converter_map: Pre-computed converter map (shared across rows for performance)
+            converter_map: Pre-computed converter map (shared across rows for performance).
+                An empty sequence skips converters; None enables the connection fallback.
             uuid_str_indices: Tuple of column indices whose uuid.UUID values should be
                 converted to str. Pre-computed once per result set when native_uuid=False.
                 None means no conversion (native_uuid=True, the default).
@@ -71,7 +72,8 @@ class Row:
         if converter_map:
             self._values = self._apply_output_converters_optimized(values, converter_map)
         elif (
-            cursor
+            converter_map is None
+            and cursor
             and hasattr(cursor.connection, "_output_converters")
             and cursor.connection._output_converters
         ):
