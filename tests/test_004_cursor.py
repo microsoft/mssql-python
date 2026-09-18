@@ -3929,6 +3929,49 @@ def test_row_mapping_lowercase_setting(db_connection):
             cursor.close()
 
 
+def test_row_mapping_lookup_agrees_with_iteration_lowercase(db_connection):
+    """_mapping lookup/membership must agree with iteration (Mapping contract).
+
+    With lowercase=True the canonical keys are lowercased. Row itself still
+    resolves the original mixed-case name (case-insensitive), but the mapping
+    view must NOT: its keys, ``in`` and ``[]`` are restricted to the iterated
+    canonical names, so it can never accept a name it does not yield.
+    """
+    original = mssql_python.lowercase
+    cursor = None
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        cursor.execute("SELECT 1 AS MixedCase")
+        row = cursor.fetchone()
+        mapping = row._mapping
+
+        # Row-level access is unchanged: case-insensitive name still resolves.
+        assert row["MixedCase"] == 1
+        assert row.MixedCase == 1
+
+        # The mapping view yields only the canonical lowercased key.
+        assert list(mapping) == ["mixedcase"]
+        assert mapping["mixedcase"] == 1
+
+        # The non-canonical mixed-case name is NOT a member and NOT subscriptable,
+        # so the key set agrees with membership and lookup.
+        assert "MixedCase" not in mapping
+        with pytest.raises(KeyError):
+            mapping["MixedCase"]
+        assert mapping.get("MixedCase") is None
+        assert mapping.get("MixedCase", "fallback") == "fallback"
+
+        # Every iterated key is a member and is subscriptable (contract holds).
+        for name in mapping:
+            assert name in mapping
+            assert mapping[name] == mapping.get(name)
+    finally:
+        mssql_python.lowercase = original
+        if cursor is not None:
+            cursor.close()
+
+
 def test_row_comparison_with_list(cursor, db_connection):
     """Test comparing Row objects with lists (__eq__ method)"""
     try:

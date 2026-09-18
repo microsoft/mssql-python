@@ -236,21 +236,43 @@ class Row:
 
     @property
     def _mapping(self) -> "RowMapping":
-        """Read-only dict-like view (column name -> value) over this row.
+        """Read-only ``dict``-like view (column name -> value) over this row.
 
-        Returns a ``collections.abc.Mapping``; use ``dict(row._mapping)`` for a plain
-        dict, ``row._mapping.items()`` for name/value pairs, and ``iter(row._mapping)``
-        for column names. Names are order-preserving and de-duplicated (last column
-        wins for a repeated name, matching subscript and attribute access).
+        Returns a :class:`RowMapping` (a ``collections.abc.Mapping``). Typical use::
+
+            row = cursor.fetchone()
+            dict(row._mapping)                     # {'id': 1, 'name': 'Alice'}
+            for name, value in row._mapping.items():
+                ...
+            row._mapping["name"]                    # value by column name
+            "name" in row._mapping                  # membership by column name
+
+        Semantics and caveats:
+
+        - Keys are the result set's column names, order-preserving and
+          de-duplicated: when a name repeats, one key is kept and the last column
+          with that name supplies its value (matching ``row[name]`` / ``row.name``).
+          Every duplicate value stays reachable positionally via ``row[i]``.
+        - Lookup and membership use the canonical column names exactly, so the key
+          set, ``in`` and ``[]`` always agree. Unlike ``row[name]`` / ``row.name``,
+          the view does NOT resolve case-insensitive names or catalog aliases; with
+          ``lowercase=True`` the keys are the lowercased names.
+        - ``_mapping`` is a property, so a column literally named ``_mapping`` is
+          shadowed: read it with ``row["_mapping"]`` or ``row._mapping["_mapping"]``.
         """
         return RowMapping(self)
 
     def _mapping_keys(self) -> tuple:
         """Canonical, order-preserving column names backing ``_mapping``.
 
-        Prefers the names snapshotted once by the cursor for the result set. When a
-        row was built without that snapshot, reconstructs names from ``_column_map``
-        (one name per column index); returns ``()`` when neither is available.
+        Prefers the names snapshotted once by the cursor for the result set, which
+        preserve the result set's column order. When a row was built without that
+        snapshot (e.g. a direct ``Row(values, column_map)`` construction), names are
+        reconstructed from ``_column_map`` in column-index order; that order can
+        differ from ``_column_map``'s insertion order, so a directly-constructed row
+        may key differently from an otherwise-equivalent cursor row. Returns ``()``
+        when neither source is available. Normal cursor fetches always supply the
+        snapshot.
         """
         if self._column_names is not None:
             return self._column_names
@@ -310,10 +332,11 @@ class Row:
 class RowMapping(Mapping):
     """Read-only ``Mapping`` view over a :class:`Row` (column name -> value).
 
-    Created via :attr:`Row._mapping`. Keys are the row's column names, order-
-    preserving and de-duplicated (last column wins for a repeated name, matching
-    ``row[name]`` / ``row.name``). The view reflects the row it wraps and copies
-    no values.
+    Created via :attr:`Row._mapping`. Keys are the row's canonical column names,
+    order-preserving and de-duplicated (last column wins for a repeated name).
+    Lookup and membership use those names exactly -- no case-insensitive or catalog
+    alias resolution -- so iteration, ``in`` and ``[]`` always agree. The view
+    reflects the row it wraps and copies no values.
     """
 
     __slots__ = ("_row",)
@@ -322,11 +345,13 @@ class RowMapping(Mapping):
         self._row = row
 
     def __getitem__(self, key: str) -> Any:
-        if isinstance(key, str):
-            try:
-                return self._row[key]
-            except KeyError:
-                raise KeyError(key) from None
+        # Restrict lookups to the canonical column names yielded by __iter__ so
+        # membership and lookup agree with iteration (proper Mapping semantics).
+        # Row.__getitem__ additionally accepts case-insensitive names and catalog
+        # aliases, but those are not iterated keys, so the view must not resolve
+        # them here.
+        if isinstance(key, str) and key in self._row._mapping_keys():
+            return self._row[key]
         raise KeyError(key)
 
     def __iter__(self):
