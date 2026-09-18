@@ -50,7 +50,15 @@ using py::literals::operator""_a;
 #define SQL_SS_XML (-152)
 #define SQL_SS_UDT (-151)
 #define SQL_SS_VARIANT (-150)
+#define SQL_SS_TABLE (-153)
 #define SQL_CA_SS_VARIANT_TYPE (1215)
+#define SQL_SOPT_SS_PARAM_FOCUS (1236)
+#define SQL_SOPT_SS_NAME_SCOPE (1237)
+#define SQL_SS_NAME_SCOPE_TABLE (0L)
+#define SQL_SS_NAME_SCOPE_TABLE_TYPE (1L)
+#define SQL_CA_SS_CATALOG_NAME (1225)
+#define SQL_CA_SS_SCHEMA_NAME (1226)
+#define SQL_CA_SS_TYPE_NAME (1227)
 
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
@@ -84,6 +92,8 @@ typedef SQLRETURN(SQL_API* SQLExecuteFunc)(SQLHANDLE);
 typedef SQLRETURN(SQL_API* SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
 typedef SQLRETURN(SQL_API* SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER,
                                                 SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLGetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER,
+                                                SQLINTEGER, SQLINTEGER*);
 typedef SQLRETURN(SQL_API* SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER,
                                                SQLINTEGER*);
 
@@ -169,6 +179,7 @@ extern SQLBindParameterFunc SQLBindParameter_ptr;
 extern SQLExecuteFunc SQLExecute_ptr;
 extern SQLRowCountFunc SQLRowCount_ptr;
 extern SQLSetDescFieldFunc SQLSetDescField_ptr;
+extern SQLGetDescFieldFunc SQLGetDescField_ptr;
 extern SQLGetStmtAttrFunc SQLGetStmtAttr_ptr;
 
 // Data retrieval APIs
@@ -280,6 +291,13 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+struct TvpParamInfo {
+    std::u16string catalog;
+    std::u16string schema;
+    std::u16string typeName;
+    std::vector<DescribedParamInfo> columns;
+};
+
 class SqlHandle {
   public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
@@ -317,7 +335,11 @@ class SqlHandle {
     // on handle free. No mutex needed — ODBC statement handles are not
     // thread-safe by spec (same assumption as the rest of the driver).
     std::unordered_map<int, DescribedParamInfo> describeCache;
-    void clearDescribeCache() { describeCache.clear(); }
+    std::unordered_map<int, TvpParamInfo> tvpCache;
+    void clearDescribeCache() {
+        describeCache.clear();
+        tvpCache.clear();
+    }
 
   private:
     SQLSMALLINT _type;
