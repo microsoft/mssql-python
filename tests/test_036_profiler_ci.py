@@ -472,9 +472,10 @@ def test_untrusted_labels_cannot_inject_links_mentions_or_markdown():
     assert not publisher.allowed_url("https://artifacts.visualstudio.com.evil.example/artifact")
 
 
-def test_incomplete_http_response_is_normalized_for_terminal_fallback(monkeypatch):
+@pytest.mark.parametrize("error", [IncompleteRead(b"partial"), ConnectionResetError("reset")])
+def test_incomplete_http_response_is_normalized_for_terminal_fallback(monkeypatch, error):
     opener = MagicMock()
-    opener.open.side_effect = IncompleteRead(b"partial")
+    opener.open.return_value.__enter__.return_value.read.side_effect = error
     monkeypatch.setattr(publisher, "build_opener", lambda *args: opener)
     with pytest.raises(URLError, match="Incomplete HTTP response"):
         publisher.fetch("https://api.github.com/repos/microsoft/mssql-python")

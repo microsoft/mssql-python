@@ -66,7 +66,7 @@ def fetch(url, token=None, method=None, data=None, limit=4 * 1024 * 1024):
     try:
         with build_opener(SafeRedirect()).open(request, timeout=30) as response:
             body = response.read(limit + 1)
-    except HTTPException as error:
+    except (HTTPException, ConnectionError) as error:
         raise URLError("Incomplete HTTP response") from error
     if len(body) > limit:
         raise ValueError("Response exceeds size limit")
