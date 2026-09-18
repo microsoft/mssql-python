@@ -74,7 +74,7 @@ def _classify_database_error(error: Exception, default_type: type[DatabaseError]
 
 
 def translate_py_core_exception(error: Exception) -> Exception:
-    """Return the equivalent public exception, or the original non-py-core error."""
+    """Translate py-core and recognized built-in errors to public exceptions."""
     for error_type in type(error).__mro__:
         if error_type.__module__ != "mssql_py_core":
             continue
@@ -100,7 +100,7 @@ def translate_py_core_exception(error: Exception) -> Exception:
 
 @contextmanager
 def translate_py_core_exceptions() -> Iterator[None]:
-    """Translate only exceptions originating from mssql-py-core."""
+    """Translate py-core and recognized built-in errors raised by the wrapped operation."""
     try:
         yield
     except Exception as error:
