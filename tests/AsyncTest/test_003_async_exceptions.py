@@ -149,8 +149,17 @@ async def test_fetch_data_error_preserves_server_diagnostics(async_connection, f
         lambda cursor: cursor.fetchall(),
         lambda cursor: cursor.fetchmany(),
         lambda cursor: cursor.fetchmany(0),
+        lambda cursor: cursor.fetchmany("invalid"),
     ),
-    ids=("execute", "executemany", "fetchone", "fetchall", "fetchmany", "fetchmany-zero"),
+    ids=(
+        "execute",
+        "executemany",
+        "fetchone",
+        "fetchall",
+        "fetchmany",
+        "fetchmany-zero",
+        "fetchmany-invalid",
+    ),
 )
 async def test_closed_cursor_operations_raise_programming_error(async_connection, operation):
     cursor = async_connection.cursor()
@@ -158,6 +167,29 @@ async def test_closed_cursor_operations_raise_programming_error(async_connection
 
     with pytest.raises(public_exceptions.ProgrammingError) as caught:
         await operation(cursor)
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_closed_cursor_executemany_checks_state_before_parameters(async_connection):
+    cursor = async_connection.cursor()
+    await cursor.close()
+
+    with pytest.raises(public_exceptions.ProgrammingError) as caught:
+        await cursor.executemany("SELECT ?", iter([(1,)]))
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_connection_close_invalidates_cursor_fetchmany_fast_path(async_connection_string):
+    connection = await AsyncConnection.connect(async_connection_string)
+    cursor = connection.cursor()
+    await connection.close()
+
+    with pytest.raises(public_exceptions.OperationalError) as caught:
+        await cursor.fetchmany(0)
 
     assert isinstance(caught.value.__cause__, RuntimeError)
 
@@ -184,8 +216,11 @@ async def test_execute_parameter_count_error_is_programming_error_and_cursor_is_
     ids=("fetchone", "fetchall", "fetchmany"),
 )
 async def test_fetch_without_result_set_raises_programming_error(async_cursor, fetch):
-    with pytest.raises(public_exceptions.ProgrammingError):
+    with pytest.raises(public_exceptions.ProgrammingError) as caught:
         await fetch(async_cursor)
+
+    assert type(caught.value.__cause__) is getattr(mssql_py_core, "ProgrammingError")
+    assert str(caught.value.__cause__) == "No active result set"
 
 
 @pytest.mark.asyncio

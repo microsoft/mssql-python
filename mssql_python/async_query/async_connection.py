@@ -86,7 +86,7 @@ class AsyncConnection:
         with translate_py_core_exceptions():
             py_core_async_cursor = self._py_core_async_connection.cursor()
         logger.debug("AsyncConnection.cursor: cursor created")
-        return AsyncCursor(py_core_async_cursor)
+        return AsyncCursor(py_core_async_cursor, self)
 
     async def commit(self) -> None:
         """Commit the active transaction, if any."""

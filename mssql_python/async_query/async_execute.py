@@ -60,6 +60,7 @@ async def executemany(
     use_prepare: bool = True,
 ) -> None:
     """Execute a statement for every parameter row using the py-core async cursor."""
+    cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
     batch_count = len(seq_of_parameters)
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]

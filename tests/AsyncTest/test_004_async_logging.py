@@ -7,6 +7,9 @@ mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 from mssql_python import OperationalError, setup_logging
 from mssql_python.async_query import AsyncConnection
 from mssql_python.async_query import exception_translator
+from mssql_python.connection_string_parser import (
+    _ConnectionStringParser,  # pyright: ignore[reportPrivateUsage]
+)
 from mssql_python.logging import logger
 
 
@@ -36,6 +39,14 @@ def enable_file_logging(tmp_path, name):
     return log_path
 
 
+def log_contains_connection_password(messages, connection_string):
+    connection_params = _ConnectionStringParser()._parse(  # pyright: ignore[reportPrivateUsage]
+        str(connection_string)
+    )
+    password = connection_params.get("pwd") or connection_params.get("password")
+    return bool(password and password in messages)
+
+
 @pytest.mark.asyncio
 async def test_connect_logging_does_not_include_client_context(
     async_connection_string,
@@ -52,6 +63,8 @@ async def test_connect_logging_does_not_include_client_context(
     assert "PWD=" not in messages
     assert "password=" not in messages.lower()
     assert "client_context" not in messages
+    if log_contains_connection_password(messages, async_connection_string):
+        pytest.fail("Async connection logs contain the SQL authentication secret")
 
 
 @pytest.mark.asyncio

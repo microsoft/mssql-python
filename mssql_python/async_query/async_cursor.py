@@ -25,8 +25,9 @@ class AsyncCursor:
         Its signatures, behavior, error handling, and compatibility may change without notice.
     """
 
-    def __init__(self, py_core_async_cursor: Any) -> None:
+    def __init__(self, py_core_async_cursor: Any, connection: Any = None) -> None:
         self._py_core_async_cursor = py_core_async_cursor
+        self._connection = connection
         self._closed = False
         self._fetched_row_count = 0
         self._fetch_rowcount: int | None = None
@@ -70,9 +71,10 @@ class AsyncCursor:
         self._fetch_rowcount = None
 
     def _check_closed(self) -> None:
-        if self._closed:
+        if self._closed or (self._connection is not None and self._connection.closed):
+            message = "Cursor is closed" if self._closed else "Connection is closed"
             with translate_py_core_exceptions():
-                raise RuntimeError("Cursor is closed")
+                raise RuntimeError(message)
 
     def _record_fetch(self, count: int, exhausted: bool) -> None:
         if count:

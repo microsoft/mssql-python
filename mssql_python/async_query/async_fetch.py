@@ -39,10 +39,10 @@ async def fetchone(cursor: "AsyncCursor") -> Row | None:
 
 async def fetchmany(cursor: "AsyncCursor", size: int | None = None) -> list[Row]:
     """Fetch up to size rows, using cursor arraysize when size is omitted."""
+    cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
     requested_size = cursor.arraysize if size is None else size
     logger.debug("AsyncCursor.fetchmany: starting; requested_size=%s", requested_size)
     if requested_size <= 0:
-        cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
         logger.debug("AsyncCursor.fetchmany: completed; row_count=0; rowcount=%d", cursor.rowcount)
         return []
     with translate_py_core_exceptions():
