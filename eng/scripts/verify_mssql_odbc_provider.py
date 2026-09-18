@@ -17,7 +17,9 @@ def main():
     require(info.get("id") == "mssql-odbc", "Unexpected native provider", info)
     require(info.get("package") == "mssql_py_core", "Unexpected provider package", info)
     require(info.get("source") == "environment", "Unexpected provider source", info)
-    driver_path = Path(info["driver_path"])
+    driver_path_value = info.get("driver_path")
+    require(driver_path_value, "Provider did not return a driver path", info)
+    driver_path = Path(driver_path_value)
     require("mssqlodbc" in driver_path.name.lower(), "Unexpected driver filename", info)
     require(driver_path.is_file(), "Driver path does not exist", info)
 

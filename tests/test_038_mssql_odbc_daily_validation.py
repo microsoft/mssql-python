@@ -15,9 +15,9 @@ PIPELINE = ROOT / "eng" / "pipelines" / "mssql-odbc-daily-validation-pipeline.ym
 PREFLIGHT = ROOT / "eng" / "scripts" / "verify_mssql_odbc_provider.py"
 
 
-@unittest.skipIf(os.name == "nt", "runner requires POSIX timeout and bash")
+@unittest.skipUnless(sys.platform.startswith("linux"), "runner requires Linux GNU timeout and bash")
 class RunnerTests(unittest.TestCase):
-    def run_runner(self, behavior: str, total_budget: str = "60s"):
+    def run_runner(self, behavior: str, total_budget: str = "60s", provider: str = "mssql-odbc"):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             (work / "tests").mkdir()
@@ -45,11 +45,11 @@ class RunnerTests(unittest.TestCase):
             results = work / "results"
             env = {
                 **os.environ,
-                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
                 "TEST_RESULTS_DIR": str(results),
                 "PYTEST_FILE_TIMEOUT": "30s",
                 "PYTEST_TOTAL_BUDGET": total_budget,
-                "MSSQL_PYTHON_NATIVE_PROVIDER": "mssql-odbc",
+                "MSSQL_PYTHON_NATIVE_PROVIDER": provider,
             }
             proc = subprocess.run(
                 ["bash", str(RUNNER)],
@@ -71,6 +71,13 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(status, "success")
         self.assertEqual(set(reports), {"results-test_sample.xml"})
+
+    def test_wrong_provider_is_blocking_harness_failure(self):
+        proc, status, reports = self.run_runner("success", provider="msodbcsql18")
+
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(status, "harness")
+        self.assertEqual(reports, {})
 
     def test_budget_exhaustion_is_advisory_not_success(self):
         proc, status, reports = self.run_runner("success", total_budget="1s")

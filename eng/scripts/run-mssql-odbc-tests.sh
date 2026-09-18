@@ -36,6 +36,11 @@ on_exit() {
 }
 trap on_exit EXIT
 
+if [ "${MSSQL_PYTHON_NATIVE_PROVIDER:-}" != "mssql-odbc" ]; then
+    echo "##[error]MSSQL_PYTHON_NATIVE_PROVIDER must be set to mssql-odbc"
+    finish 2 harness
+fi
+
 xml_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
 }
