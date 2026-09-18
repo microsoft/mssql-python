@@ -31,10 +31,13 @@ Four environments publish raw samples: Windows and Unix on SQL Server 2022/2025.
 Unix measurements run on Ubuntu. Routine macOS profiling is intentionally excluded:
 hosted macOS plus Colima produced false regressions on a documentation-only control
 PR, while macOS remains covered by functional CI. The privileged publisher runs
-trusted base code, authenticates benchmark producers, validates bounded artifacts,
-and ignores stale heads. A failed aggregate build can still publish when its
-authenticated artifacts validate. Missing, malformed, canceled, incomplete, or
-invalid data remains unavailable.
+trusted base code, selects the exact PR-head ADO build, and validates bounded
+artifacts as data. It publishes as soon as all four profiler artifacts exist,
+without waiting for unrelated matrix legs. After build completion, missing
+artifacts receive a two-minute propagation grace before a partial result is
+published. A failed aggregate build can still publish usable profiler artifacts.
+Exact-head reports may finalize after merge; stale heads are ignored. Missing,
+malformed, canceled, incomplete, or invalid data remains unavailable.
 
 The publisher waits up to 220 minutes inside a 230-minute workflow. The first main
 comparison after introduction may be incomplete because its parent lacks this

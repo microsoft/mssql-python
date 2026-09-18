@@ -2,7 +2,6 @@
 
 import argparse
 from dataclasses import dataclass
-import hashlib
 import html
 import io
 import json
@@ -48,28 +47,6 @@ THRESHOLD = 0.20
 MIN_DELTA_MS = 1.0
 
 
-def suite_paths(root):
-    root = Path(root)
-    return [
-        root / "eng/pipelines/pr-validation-pipeline.yml",
-        root / "eng/profiler_benchmarks/__init__.py",
-        root / "eng/profiler_benchmarks/controller.py",
-        root / "eng/profiler_benchmarks/report.py",
-        root / "eng/profiler_benchmarks/workloads.py",
-        root / "eng/scripts/setup_sql_container.py",
-        root / "requirements.txt",
-        *sorted((root / "profiler").glob("*.py")),
-    ]
-
-
-def suite_hash(root):
-    digest = hashlib.sha256()
-    for file in suite_paths(root):
-        digest.update(file.name.encode())
-        digest.update(file.read_bytes().replace(b"\r\n", b"\n"))
-    return digest.hexdigest()
-
-
 @dataclass(frozen=True)
 class AssessmentEvidence:
     build: dict
@@ -77,9 +54,6 @@ class AssessmentEvidence:
     base: str
     merge_commit: dict
     base_commit: dict
-    source_tree: dict
-    base_tree: dict
-    trusted_root: Path
 
 
 def artifact_report(raw):
@@ -108,27 +82,6 @@ def artifact_report(raw):
         return json.loads(archive.read(member).decode("utf-8"))
 
 
-def suite_blobs(tree, root):
-    if (
-        not isinstance(tree, dict)
-        or tree.get("truncated") is not False
-        or not isinstance(tree.get("tree"), list)
-        or not all(isinstance(entry, dict) for entry in tree["tree"])
-    ):
-        raise ValueError("Incomplete commit tree")
-    expected = {path.relative_to(root).as_posix() for path in suite_paths(root)}
-    blobs = {
-        entry.get("path"): entry.get("sha")
-        for entry in tree["tree"]
-        if entry.get("type") == "blob" and entry.get("path") in expected
-    }
-    if set(blobs) != expected or any(
-        not re.fullmatch(r"[0-9a-f]{40}", sha or "") for sha in blobs.values()
-    ):
-        raise ValueError("Benchmark suite missing from commit tree")
-    return blobs
-
-
 def unavailable(reason):
     return (
         f"{MARKER}\n## PR Performance Report\n\n"
@@ -150,14 +103,14 @@ def text(value, limit=160):
     return value
 
 
-def validate(report, build_id=None, head=None, source=None, base=None, suite=None):
+def validate(report, build_id=None, head=None, source=None, base=None):
     try:
-        return _validate(report, build_id, head, source, base, suite)
+        return _validate(report, build_id, head, source, base)
     except KeyError as error:
         raise ValueError(f"Missing performance report field: {error.args[0]}") from error
 
 
-def _validate(report, build_id=None, head=None, source=None, base=None, suite=None):
+def _validate(report, build_id=None, head=None, source=None, base=None):
     if not isinstance(report, dict) or report.get("schema_version") != 1:
         raise ValueError("Unsupported report schema")
     if report.get("leg") not in LEGS or report.get("status") not in ("complete", "incomplete"):
@@ -169,15 +122,12 @@ def _validate(report, build_id=None, head=None, source=None, base=None, suite=No
         ("head_commit", head),
         ("source_commit", source),
         ("base_commit", base),
-        ("suite_hash", suite),
     ):
         if expected is not None and report.get(key) != expected:
             raise ValueError(f"Report provenance mismatch: {key}")
     for key in ("head_commit", "source_commit", "base_commit"):
         if not re.fullmatch(r"[0-9a-f]{40}", report.get(key, "")):
             raise ValueError("Invalid commit identity")
-    if not re.fullmatch(r"[0-9a-f]{64}", report.get("suite_hash", "")):
-        raise ValueError("Invalid workload identity")
     samples = report.get("samples")
     if type(samples) is not int or not 3 <= samples <= 15:
         raise ValueError("Insufficient or excessive samples")
@@ -263,8 +213,6 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
             not isinstance(evidence.build, dict)
             or not isinstance(evidence.merge_commit, dict)
             or not isinstance(evidence.base_commit, dict)
-            or not isinstance(evidence.source_tree, dict)
-            or not isinstance(evidence.base_tree, dict)
         ):
             raise ValueError
         build_id = evidence.build.get("id")
@@ -281,26 +229,11 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
             != [evidence.base, evidence.head]
         ):
             raise ValueError
-        source_tree_sha = evidence.merge_commit["tree"]["sha"]
-        base_tree_sha = evidence.base_commit["tree"]["sha"]
-        if (
-            not re.fullmatch(r"[0-9a-f]{40}", source_tree_sha)
-            or not re.fullmatch(r"[0-9a-f]{40}", base_tree_sha)
-            or evidence.source_tree.get("sha") != source_tree_sha
-            or evidence.base_tree.get("sha") != base_tree_sha
-        ):
-            raise ValueError
     except (KeyError, TypeError, ValueError):
         return unavailable("Build provenance validation failed.")
 
-    try:
-        suite_unchanged = suite_blobs(evidence.source_tree, evidence.trusted_root) == suite_blobs(
-            evidence.base_tree, evidence.trusted_root
-        )
-        trusted_suite = suite_hash(evidence.trusted_root)
-    except (KeyError, TypeError, ValueError):
-        return unavailable("Benchmark suite validation failed because a required file changed.")
-
+    # Match coverage's trust boundary: select the exact PR-head build and treat
+    # its bounded artifacts as data without requiring an identical producer tree.
     reports = []
     for leg, url in artifact_urls.items():
         try:
@@ -324,9 +257,6 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
         ):
             issues.append(leg + " (invalid artifact)")
 
-    if not suite_unchanged or any(report["suite_hash"] != trusted_suite for report in reports):
-        reports = []
-        issues.append("workload version differs from trusted base")
     try:
         return render(reports, evidence.head, build_id, issues)
     except ValueError:
@@ -656,7 +586,6 @@ def main():
             head=first["head_commit"],
             source=first["source_commit"],
             base=first["base_commit"],
-            suite=first["suite_hash"],
         )
     print(render(reports, first["head_commit"], first["build_id"]))
 

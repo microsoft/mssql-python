@@ -15,13 +15,13 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from eng.profiler_benchmarks import report as reporting
 
-ROOT = Path(__file__).resolve().parents[2]
 ADO = "https://dev.azure.com/sqlclientdrivers/public/_apis/build"
 REPOSITORY = "microsoft/mssql-python"
 HEADER = f"{reporting.MARKER}\n## PR Performance Report\n\n"
 # Allow a 160-minute ADO job plus queueing; the workflow reserves publication time.
 WAIT_MINUTES = 220
 COMPLETED_RESULTS = {"succeeded", "partiallySucceeded", "failed"}
+ARTIFACT_GRACE_SECONDS = 120
 
 
 def allowed_url(url):
@@ -84,15 +84,22 @@ def github(path, **kwargs):
 
 
 def publish(pr_number, head, body, base=None):
-    def current():
+    def current_body():
         pr = github(f"pulls/{pr_number}")
-        return (
-            pr["state"] == "open"
-            and pr["head"]["sha"] == head
-            and (base is None or pr["base"]["sha"] == base)
-        )
+        if pr["head"]["sha"] != head or (base is not None and pr["base"]["sha"] != base):
+            return None
+        if pr["state"] == "closed" and pr.get("merged") is not True:
+            return (
+                HEADER
+                + "**Performance could not be assessed.**\n\n"
+                + "Pull request closed before assessment completed. No result is available."
+            )
+        # Exact head/base identity remains stable after merge, so a run that
+        # started while open may replace its pending comment with a terminal one.
+        return body if pr["state"] == "open" or pr.get("merged") is True else None
 
-    if not current():
+    message = current_body()
+    if message is None:
         print("Not publishing stale performance results")
         return
     page = 1
@@ -112,13 +119,36 @@ def publish(pr_number, head, body, base=None):
             break
         page += 1
     if comment:
-        if not current():
+        message = current_body()
+        if message is None:
             return
-        github(f"issues/comments/{comment['id']}", method="PATCH", data={"body": body})
+        github(f"issues/comments/{comment['id']}", method="PATCH", data={"body": message})
+        comment_id = comment["id"]
     else:
-        if not current():
+        message = current_body()
+        if message is None:
             return
-        github(f"issues/{pr_number}/comments", method="POST", data={"body": body})
+        created = github(f"issues/{pr_number}/comments", method="POST", data={"body": message})
+        comment_id = created.get("id") if isinstance(created, dict) else None
+    verified = current_body()
+    if comment_id is None:
+        return
+    if verified is not None and verified != message:
+        github(f"issues/comments/{comment_id}", method="PATCH", data={"body": verified})
+    elif verified is None:
+        latest = github(f"issues/comments/{comment_id}")
+        if isinstance(latest, dict) and latest.get("body") == message:
+            github(
+                f"issues/comments/{comment_id}",
+                method="PATCH",
+                data={
+                    "body": (
+                        HEADER
+                        + "**Performance assessment superseded.**\n\n"
+                        + "The pull request revision changed before publication completed."
+                    )
+                },
+            )
 
 
 def publish_with_retry(pr_number, head, body, base=None, attempts=3):
@@ -200,9 +230,17 @@ def run(number, head, wait_minutes):
     )
     deadline = time.monotonic() + wait_minutes * 60
     build = None
+    artifacts = None
     pr_base = None
+    completed_at = None
+    selected_build_id = None
+    assessment_ready = False
     failures = 0
-    while time.monotonic() < deadline:
+    while time.monotonic() < (
+        max(deadline, completed_at + ARTIFACT_GRACE_SECONDS)
+        if completed_at is not None
+        else deadline
+    ):
         try:
             pr = github(f"pulls/{number}")
             if (
@@ -215,6 +253,15 @@ def run(number, head, wait_minutes):
             current_head = pr["head"].get("sha")
             current_base = pr["base"].get("sha")
             pr_base = current_base
+            if current_head != head:
+                return
+            if pr["state"] == "closed" and pr.get("merged") is not True:
+                unavailable(
+                    number, head, "Pull request closed before assessment completed.", pr_base
+                )
+                return
+            if pr["state"] != "open" and pr.get("merged") is not True:
+                raise ValueError
             query = urlencode(
                 {
                     "definitions": 2128,
@@ -225,13 +272,24 @@ def run(number, head, wait_minutes):
                 }
             )
             build = find_build(build_items(api(f"{ADO}/builds?{query}")), number, head)
-            if pr["state"] != "open" or current_head != head:
-                return
-            if (
-                build is not None
-                and build.get("status") == "completed"
-                and build.get("result") not in COMPLETED_RESULTS | {"canceled"}
-            ):
+            if build is None:
+                failures = 0
+                time.sleep(30)
+                continue
+            build_id = build["id"]
+            if selected_build_id != build_id:
+                selected_build_id = build_id
+                artifacts = None
+                completed_at = None
+            status = build.get("status")
+            result = build.get("result")
+            if status == "completed" and result == "canceled":
+                failures = 0
+                artifacts = None
+                completed_at = None
+                time.sleep(30)
+                continue
+            if status == "completed" and result not in COMPLETED_RESULTS:
                 unavailable(
                     number,
                     head,
@@ -239,32 +297,58 @@ def run(number, head, wait_minutes):
                     pr_base,
                 )
                 return
-            complete = (
-                build is not None
-                and build.get("status") == "completed"
-                and build.get("result") in COMPLETED_RESULTS
-            )
+            if status == "completed" and completed_at is None:
+                completed_at = time.monotonic()
+            artifacts = artifact_items(api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1"))
+            failures = 0
+            required = {"profiler-" + leg for leg in reporting.LEGS}
+            # Artifact readiness is the report signal; unrelated matrix legs do
+            # not need to finish before the four profiler legs are assessed.
+            if required <= {item["name"] for item in artifacts}:
+                assessment_ready = True
+                break
+            if (
+                completed_at is not None
+                and time.monotonic() - completed_at >= ARTIFACT_GRACE_SECONDS
+            ):
+                assessment_ready = True
+                break
         except (ValueError, KeyError, TypeError, URLError, TimeoutError):
             failures += 1
+            if (
+                artifacts is not None
+                and completed_at is not None
+                and time.monotonic() - completed_at >= ARTIFACT_GRACE_SECONDS
+            ):
+                assessment_ready = True
+                break
             if failures >= 5:
                 unavailable(number, head, "Performance data services failed repeatedly.", pr_base)
                 return
             time.sleep(30)
             continue
         failures = 0
-        if complete:
-            break
         time.sleep(30)
     if (
-        build is None
-        or build.get("status") != "completed"
-        or build.get("result") not in COMPLETED_RESULTS
+        not assessment_ready
+        and completed_at is not None
+        and time.monotonic() >= completed_at + ARTIFACT_GRACE_SECONDS
     ):
+        assessment_ready = True
+    if build is None:
         unavailable(
             number,
             head,
-            f"No matching performance run completed within the {wait_minutes}-minute wait "
+            f"No matching performance run appeared within the {wait_minutes}-minute wait "
             f"for `{head}`.",
+            pr_base,
+        )
+        return
+    if not assessment_ready:
+        unavailable(
+            number,
+            head,
+            f"Performance artifacts did not become ready within the {wait_minutes}-minute wait.",
             pr_base,
         )
         return
@@ -283,37 +367,9 @@ def run(number, head, wait_minutes):
         base_commit = github(f"git/commits/{base}")
         if not isinstance(commit, dict) or not isinstance(base_commit, dict):
             raise ValueError
-        source_tree_info = commit.get("tree")
-        base_tree_info = base_commit.get("tree")
-        if not isinstance(source_tree_info, dict) or not isinstance(base_tree_info, dict):
-            raise ValueError
-        source_tree_sha = source_tree_info.get("sha")
-        base_tree_sha = base_tree_info.get("sha")
-        if not re.fullmatch(r"[0-9a-f]{40}", source_tree_sha or "") or not re.fullmatch(
-            r"[0-9a-f]{40}", base_tree_sha or ""
-        ):
-            raise ValueError
-        source_tree = github(f"git/trees/{source_tree_sha}?recursive=1")
-        base_tree = github(f"git/trees/{base_tree_sha}?recursive=1")
     except (ValueError, KeyError, TypeError, URLError, TimeoutError):
         unavailable(number, head, "Build provenance validation failed.", pr_base)
         return
-    artifacts = None
-    failures = 0
-    while time.monotonic() < deadline:
-        try:
-            artifacts = artifact_items(api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1"))
-            failures = 0
-            if {"profiler-" + leg for leg in reporting.LEGS} <= {
-                item["name"] for item in artifacts
-            }:
-                break
-        except (ValueError, KeyError, TypeError, URLError, TimeoutError):
-            failures += 1
-            if failures >= 5:
-                artifacts = None
-                break
-        time.sleep(30)
     if artifacts is None:
         unavailable(number, head, "Performance artifacts remained unavailable.", pr_base)
         return
@@ -341,9 +397,6 @@ def run(number, head, wait_minutes):
         base=base,
         merge_commit=commit,
         base_commit=base_commit,
-        source_tree=source_tree,
-        base_tree=base_tree,
-        trusted_root=ROOT,
     )
     publish_with_retry(
         number, head, reporting.assess(evidence, artifact_urls, load_artifact, issues), base
