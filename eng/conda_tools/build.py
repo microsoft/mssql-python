@@ -113,6 +113,10 @@ def gather_wheels(
             if not source_rs:
                 raise ValueError(f"empty RS source version assertion: {rs_version_file}")
         _checked_metadata(odbc, "mssql-python-odbc", odbc_ver)
+        if target_subdir and not contracts.odbc_wheel_matches_target(
+            os.path.basename(odbc), target_subdir
+        ):
+            raise ValueError(f"{odbc}: ODBC wheel does not match target {target_subdir}")
         for wheel in mssql:
             metadata = _checked_metadata(wheel, "mssql-python", mssql_ver)
             try:
@@ -207,7 +211,11 @@ def _checked_metadata(path: str, distribution: str, version: str) -> archive.Whe
     try:
         metadata = archive.read_wheel_metadata(path)
         errors = contracts.validate_distribution_identity(metadata, distribution, version)
+        errors.extend(
+            contracts.validate_wheel_metadata_members(metadata["members"], distribution, version)
+        )
         errors.extend(contracts.validate_wheel_tags(Path(path).name, metadata["tags"]))
+        errors.extend(contracts.validate_wheel_core_ownership(metadata))
         if errors:
             raise ValueError("; ".join(errors))
         return metadata
@@ -216,25 +224,17 @@ def _checked_metadata(path: str, distribution: str, version: str) -> archive.Whe
 
 
 def _select_rs_wheel(directory: str | None, version: str, python_tag: str, subdir: str) -> str:
-    platforms = {
-        "win-64": "win_amd64",
-        "win-arm64": "win_arm64",
-        "osx-64": "macosx_15_0_universal2",
-        "osx-arm64": "macosx_15_0_universal2",
-        "linux-64": "manylinux_2_34_x86_64",
-        "linux-aarch64": "manylinux_2_34_aarch64",
-    }
-    if not directory or subdir not in platforms or not re.fullmatch(r"cp3\d+", python_tag):
+    if (
+        not directory
+        or subdir not in contracts._RS_PLATFORMS
+        or not re.fullmatch(r"cp3\d+", python_tag)
+    ):
         raise ValueError(
             "an RS-dependent binding requires --rs-wheel-dir and a normal CPython target"
         )
     matches = []
     for path in sorted(Path(directory).glob(f"mssql_python_rs-{version}-*.whl")):
-        py, abi, platform = path.stem.rsplit("-", 3)[1:]
-        compatible_python = py == python_tag and abi == python_tag
-        if abi == "abi3" and re.fullmatch(r"cp3\d+", py):
-            compatible_python = int(py[2:]) <= int(python_tag[2:])
-        if compatible_python and platforms[subdir] in platform.split("."):
+        if contracts.rs_wheel_matches_target(path.name, python_tag, subdir):
             matches.append(str(path))
     if len(matches) != 1:
         raise ValueError(
