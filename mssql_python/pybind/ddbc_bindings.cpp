@@ -3022,9 +3022,51 @@ SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
     return columnCount;
 }
 
-// Wrap SQLDescribeCol
-SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMetadata) {
-    PERF_TIMER("SQLDescribeCol_wrap");
+namespace {
+
+struct FetchColumnMetadata {
+    py::object name;
+    SQLSMALLINT dataType;
+    SQLULEN columnSize;
+    SQLSMALLINT decimalDigits;
+    SQLSMALLINT nullable;
+};
+
+py::dict GetFetchColumnMetadata(const py::list& columns, size_t index) {
+    return columns[index].cast<py::dict>();
+}
+
+const FetchColumnMetadata& GetFetchColumnMetadata(
+    const std::vector<FetchColumnMetadata>& columns, size_t index) {
+    return columns.at(index);
+}
+
+SQLSMALLINT GetFetchColumnType(const py::dict& column) {
+    return column["DataType"].cast<SQLSMALLINT>();
+}
+
+SQLSMALLINT GetFetchColumnType(const FetchColumnMetadata& column) {
+    return column.dataType;
+}
+
+SQLULEN GetFetchColumnSize(const py::dict& column) {
+    return column["ColumnSize"].cast<SQLULEN>();
+}
+
+SQLULEN GetFetchColumnSize(const FetchColumnMetadata& column) {
+    return column.columnSize;
+}
+
+std::string GetFetchColumnName(const py::dict& column) {
+    return column["ColumnName"].cast<std::string>();
+}
+
+std::string GetFetchColumnName(const FetchColumnMetadata& column) {
+    return column.name.cast<std::string>();
+}
+
+template <typename AppendColumn>
+SQLRETURN DescribeColumns(SqlHandlePtr StatementHandle, AppendColumn&& appendColumn) {
     LOG("SQLDescribeCol: Getting column descriptions for statement_handle=%p",
         (void*)StatementHandle->get());
     if (!SQLDescribeCol_ptr) {
@@ -3052,19 +3094,30 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
                                      &ColumnSize, &DecimalDigits, &Nullable);
 
         if (SQL_SUCCEEDED(retcode)) {
-            // Append a named py::dict to ColumnMetadata
-            // TODO: Should we define a struct for this task instead of dict?
-            ColumnMetadata.append(
-                py::dict("ColumnName"_a = dupeSqlWCharAsUtf16Le(
-                             ColumnName, std::min(static_cast<size_t>(NameLength),
-                                                  (sizeof(ColumnName) / sizeof(SQLWCHAR)) - 1)),
-                         "DataType"_a = DataType, "ColumnSize"_a = ColumnSize,
-                         "DecimalDigits"_a = DecimalDigits, "Nullable"_a = Nullable));
+            // Own the name and preserve eager UTF-16 conversion, including codec errors.
+            auto name = py::cast(dupeSqlWCharAsUtf16Le(
+                ColumnName, std::min(static_cast<size_t>(NameLength),
+                                     (sizeof(ColumnName) / sizeof(SQLWCHAR)) - 1)));
+            appendColumn(FetchColumnMetadata{
+                std::move(name), DataType, ColumnSize, DecimalDigits, Nullable});
         } else {
             return retcode;
         }
     }
     return SQL_SUCCESS;
+}
+
+}  // namespace
+
+// Wrap SQLDescribeCol
+SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMetadata) {
+    PERF_TIMER("SQLDescribeCol_wrap");
+    return DescribeColumns(StatementHandle, [&](FetchColumnMetadata column) {
+        ColumnMetadata.append(
+            py::dict("ColumnName"_a = column.name, "DataType"_a = column.dataType,
+                     "ColumnSize"_a = column.columnSize, "DecimalDigits"_a = column.decimalDigits,
+                     "Nullable"_a = column.nullable));
+    });
 }
 
 SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT identifierType,
@@ -3999,16 +4052,17 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
-SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
+template <typename Metadata>
+SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& columnNames,
                         SQLUSMALLINT numCols, int fetchSize, int charCtype = SQL_C_WCHAR) {
     PERF_TIMER("SQLBindColums");
     SQLRETURN ret = SQL_SUCCESS;
     const bool useWideChar = (charCtype == SQL_C_WCHAR);
     // Bind columns based on their data types
     for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-        auto columnMeta = columnNames[col - 1].cast<py::dict>();
-        SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
-        SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+        const auto& columnMeta = GetFetchColumnMetadata(columnNames, col - 1);
+        SQLSMALLINT dataType = GetFetchColumnType(columnMeta);
+        SQLULEN columnSize = GetFetchColumnSize(columnMeta);
 
         switch (dataType) {
             case SQL_CHAR:
@@ -4140,7 +4194,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                                      buffers.indicators[col - 1].data());
                 break;
             default:
-                std::string columnName = columnMeta["ColumnName"].cast<std::string>();
+                std::string columnName = GetFetchColumnName(columnMeta);
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for column - " << columnName.c_str()
                             << ", Type - " << dataType << ", column ID - " << col;
@@ -4149,7 +4203,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 break;
         }
         if (!SQL_SUCCEEDED(ret)) {
-            std::string columnName = columnMeta["ColumnName"].cast<std::string>();
+            std::string columnName = GetFetchColumnName(columnMeta);
             std::ostringstream errorString;
             errorString << "Failed to bind column - " << columnName.c_str() << ", Type - "
                         << dataType << ", column ID - " << col;
@@ -4163,7 +4217,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
-SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
+template <typename Metadata>
+SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
                          const std::vector<SQLUSMALLINT>& lobColumns,
                          const std::string& charEncoding = "utf-16le",
@@ -4213,9 +4268,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     {
         PERF_TIMER("FetchBatchData::cache_column_metadata");
         for (SQLUSMALLINT col = 0; col < numCols; col++) {
-            const auto& columnMeta = columnNames[col].cast<py::dict>();
-            columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
-            columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+            const auto& columnMeta = GetFetchColumnMetadata(columnNames, col);
+            columnInfos[col].dataType = GetFetchColumnType(columnMeta);
+            columnInfos[col].columnSize = GetFetchColumnSize(columnMeta);
             columnInfos[col].isLob =
                 std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
             columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
@@ -4504,8 +4559,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 default: {
-                    const auto& columnMeta = columnNames[col - 1].cast<py::dict>();
-                    std::string columnName = columnMeta["ColumnName"].cast<std::string>();
+                    const auto& columnMeta = GetFetchColumnMetadata(columnNames, col - 1);
+                    std::string columnName = GetFetchColumnName(columnMeta);
                     std::ostringstream errorString;
                     errorString << "Unsupported data type for column - " << columnName.c_str()
                                 << ", Type - " << dataType << ", column ID - " << col;
@@ -4650,18 +4705,24 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
 
     // Retrieve column metadata
-    py::list columnNames;
-    ret = SQLDescribeCol_wrap(StatementHandle, columnNames);
+    std::vector<FetchColumnMetadata> columnNames;
+    ret = DescribeColumns(StatementHandle, [&](FetchColumnMetadata column) {
+        columnNames.push_back(std::move(column));
+    });
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchMany_wrap: Failed to get column descriptions - SQLRETURN=%d", ret);
         return ret;
     }
+    if (numCols < 0 || columnNames.size() != static_cast<size_t>(numCols)) {
+        LOG("FetchMany_wrap: Column metadata count does not match result column count");
+        ThrowStdException("Column metadata count does not match result column count");
+    }
 
     std::vector<SQLUSMALLINT> lobColumns;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
-        auto colMeta = columnNames[i].cast<py::dict>();
-        SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
-        SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+        const auto& colMeta = GetFetchColumnMetadata(columnNames, i);
+        SQLSMALLINT dataType = GetFetchColumnType(colMeta);
+        SQLULEN columnSize = GetFetchColumnSize(colMeta);
 
         if (IsLobOrVariantColumn(dataType, columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
