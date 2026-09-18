@@ -13,6 +13,7 @@
 #include "py_ref.hpp"
 #include "py_type_cache.hpp"
 #include "utf_utils.h"
+#include "fetch_text.hpp"
 
 #include <algorithm>  // std::min
 #include <cctype>
@@ -1596,7 +1597,13 @@ void SqlHandle::free() {
         // 2. OS-level cleanup at process termination recovers any remaining resources
         // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
         //    is appropriate since we're already in shutdown sequence
-        if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
+        bool skipDuringShutdown = _type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC;
+#ifdef _WIN32
+        // The static ENV is destroyed during DLL_PROCESS_DETACH, after Python
+        // finalization. Calling ODBC then can access already-torn-down SSPI state.
+        skipDuringShutdown = skipDuringShutdown || _type == SQL_HANDLE_ENV;
+#endif
+        if (pythonShuttingDown && skipDuringShutdown) {
             _handle = nullptr;  // Mark as freed to prevent double-free attempts
             return;
         }
@@ -3411,8 +3418,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
-                                row.append(py::cast(
-                                    dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData)));
+                                row.append(FetchText::from_utf16_native(
+                                    reinterpret_cast<const char*>(dataBuffer.data()),
+                                    static_cast<Py_ssize_t>(numCharsInData * sizeof(SQLWCHAR))));
                                 LOG("SQLGetData: CHAR column %d fetched as WCHAR, "
                                     "length=%lu",
                                     i, (unsigned long)numCharsInData);
@@ -3577,8 +3585,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
-                                row.append(py::cast(
-                                    dupeSqlWCharAsUtf16Le(dataBuffer.data(), numCharsInData)));
+                                row.append(FetchText::from_utf16_native(
+                                    reinterpret_cast<const char*>(dataBuffer.data()),
+                                    static_cast<Py_ssize_t>(numCharsInData * sizeof(SQLWCHAR))));
                                 LOG("SQLGetData: Appended NVARCHAR string "
                                     "length=%lu for column %d",
                                     (unsigned long)numCharsInData, i);

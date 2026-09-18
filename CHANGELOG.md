@@ -57,6 +57,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- `mssql-python` now depends on `mssql-python-rs==0.1.0` for `mssql_py_core`
+  instead of embedding files owned by that separately published distribution.
 - **GH-769 deprecation policy:** The misplaced `GetInfoConstants` members
   `SQL_TXN_ISOLATION_LEVEL`, `SQL_CONCURRENCY`, `SQL_ROWSET_SIZE`, `SQL_ROW_NUMBER`,
   `SQL_IC_UPPER`, `SQL_IC_LOWER`, `SQL_IC_SENSITIVE`, `SQL_IC_MIXED`, and
@@ -92,6 +94,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- Bounded text fetched as UTF-16 now preserves leading U+FEFF and U+FFFE as
+  payload rather than treating them as byte-order markers. This corrects
+  row-wise `fetchone()`, `fetchmany()`, and `fetchall()` results, including
+  bounded columns fetched alongside a MAX column, as well as bounded batch
+  decoding on Linux/macOS. Existing platform-specific decode-error fallbacks
+  remain unchanged. Actual MAX/LOB text decoding
+  is unchanged; its existing BOM and trailing-NUL loss is not fixed here.
 - **GH-769:** Corrected 11 `GetInfoConstants` IDs for scalar functions, outer
   joins, driver handles, cursor attributes, catalog support, and parameter
   descriptions. Added the ODBC name `SQL_TIMEDATE_FUNCTIONS` as an alias of

@@ -29,7 +29,6 @@ Exit code 0 = driver loaded; non-zero = driver did not load (blocks publish).
 """
 
 import os
-import sys
 
 _NATIVE_PROVIDER_ENV_VAR = "MSSQL_PYTHON_NATIVE_PROVIDER"
 _REQUIRED_NATIVE_PROVIDER = "msodbcsql18"
@@ -37,7 +36,7 @@ _REQUIRED_NATIVE_PROVIDER = "msodbcsql18"
 # Positive signals: the native ODBC driver LOADED and reached the network / TLS
 # / auth stage (or connected). These are the ONLY outcomes that count as PASS.
 # All markers are matched case-insensitively.
-_DRIVER_LOADED_MARKERS = (
+_DRIVER_LOADED_MARKERS: tuple[str, ...] = (
     # The loaded msodbcsql driver brands every diagnostic it emits; a driver
     # that failed to load / link / resolve its symbols never gets far enough to
     # print this, so it is the strongest single proof of a successful load.
@@ -66,7 +65,7 @@ _DRIVER_LOADED_MARKERS = (
 )
 
 
-def driver_loaded(exc):
+def driver_loaded(exc: Exception | None) -> bool:
     """FAIL-CLOSED classifier for the connect outcome.
 
     Returns ``True`` only when there is positive proof the native ODBC driver
@@ -81,14 +80,15 @@ def driver_loaded(exc):
     return any(marker in msg for marker in _DRIVER_LOADED_MARKERS)
 
 
-def describe(exc):
+def describe(exc: Exception | None) -> str:
     """Short, human-readable reason string for the probe's stdout / exit line."""
     if exc is None:
         return "clean connect"
     return str(exc)[:300]
 
 
-def main():
+def _connection_outcome() -> Exception | None:
+    """Run the isolated native probe without classifying or reporting its outcome."""
     # This probe validates the bundled Microsoft ODBC Driver 18 payload. Override any ambient
     # customer/provider selection before importing mssql_python so an inherited mssql-odbc
     # setting cannot redirect the proof to a different native provider.
@@ -102,7 +102,6 @@ def main():
     # Unreachable endpoint (nothing listens on TCP port 1) -> the driver loads,
     # attempts the socket, and fails fast at the network stage. The loopback:1 is a
     # dummy DB-less probe target, never a live endpoint.
-    outcome = None
     try:
         conn = mssql_python.connect(
             Server="127.0.0.1,1",  # DevSkim: ignore DS162092 - loopback-only probe
@@ -117,13 +116,18 @@ def main():
             conn.close()
         except Exception:  # noqa: BLE001 - best-effort cleanup only
             pass
-    except Exception as exc:  # noqa: BLE001 - deliberately classified below
-        outcome = exc
+    except Exception as exc:  # noqa: BLE001 - deliberately classified by the caller
+        return exc
+    return None
 
+
+def main() -> None:
+    """Report the native outcome using the existing fail-closed command contract."""
+    outcome = _connection_outcome()
     if driver_loaded(outcome):
-        print("DRIVER_LOADED (" + describe(outcome) + ")")
+        print(f"DRIVER_LOADED ({describe(outcome)})")
         return
-    sys.exit("DRIVER DID NOT LOAD / wrong arch: " + describe(outcome))
+    raise SystemExit(f"DRIVER DID NOT LOAD / wrong arch: {describe(outcome)}")
 
 
 if __name__ == "__main__":

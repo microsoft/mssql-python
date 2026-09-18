@@ -1,0 +1,118 @@
+---
+# N3: PR-triggered conda build + masking-immune RUNPATH audit.
+#
+# The OneBranch conda-build pipeline is `trigger: none` / `pr: none`, so its blocking
+# audit never runs on a PR. This lightweight GitHub Actions job builds ONE real
+# linux-64 conda package from the SHIPPED PyPI wheels and runs
+# python -m eng.conda_tools elf on it, so a regression in the $ORIGIN climb,
+# the declared conda deps (krb5/libtool/openssl), or the expected DT_NEEDED set fails
+# the PR automatically -- the full-agent runtime masking cannot hide it.
+#
+# build.sh ALWAYS stamps the relative $ORIGIN climb onto the vendored Linux ODBC .so
+# (they are not code-signed, so the patch breaks no signature; an already-baked climb
+# is a byte-for-byte no-op). This gate builds one real linux-64 conda package from the
+# shipped PyPI wheels and audits the resulting climb (see conda/mssql-python/build.sh).
+name: conda-audit
+
+on:
+  pull_request:
+    paths:
+      - 'conda/**'
+      - 'eng/conda_tools/**'
+      - 'eng/scripts/download_mssql_python_rs_wheels.py'
+      - 'eng/scripts/resolve_nuget_feed.py'
+      - 'eng/scripts/mssql_python_build_safety.py'
+      - 'eng/versions/mssql-python-rs*.version'
+      - 'OneBranchPipelines/conda-build-pipeline.yml'
+      - 'OneBranchPipelines/steps/conda-build-validate-step*.yml'
+      - 'OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml'
+      - 'OneBranchPipelines/jobs/consolidate-artifacts-job.yml'
+      - 'OneBranchPipelines/variables/*.yml'
+      - 'OneBranchPipelines/conda-release-pipeline.yml'
+      - 'OneBranchPipelines/steps/conda-release-step.yml'
+      - 'OneBranchPipelines/steps/conda-publish-step.yml'
+      - 'tests/test_027_conda_release_metadata.py'
+      - 'tests/test_029_bundled_binary_audit.py'
+      - 'tests/test_030_pe_machine_assert.py'
+      - 'tests/test_033_driver_load_probe.py'
+      - 'tests/test_034_conda_verify_cwd.py'
+      - 'tests/test_035_conda_macho_assert.py'
+      - 'tests/test_036_conda_provenance.py'
+      - 'tests/test_037_rs_wheel_download.py'
+      - 'tests/test_038_conda_archive_limits.py'
+      - 'requirements.txt'
+      - 'setup.py'
+      - 'mssql_python/__init__.py'
+      - 'mssql_python_odbc/__init__.py'
+      - '.github/workflows/conda-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-conda-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Unit-test the audit + release validator
+        run: |
+          python -m pip install --quiet --require-hashes --only-binary=:all: -r conda/requirements-audit.txt
+          # --noconftest: tests/conftest.py imports mssql_python (the native ddbc_bindings
+          # extension), which is NOT built in this repackage-only gate. test_027/test_029
+          # are pure conda validator/audit tests using only built-in fixtures, so skip
+          # conftest to avoid that unrelated import.
+          python -m pytest --noconftest \
+                           tests/test_029_bundled_binary_audit.py \
+                           tests/test_030_pe_machine_assert.py \
+                           tests/test_033_driver_load_probe.py \
+                           tests/test_034_conda_verify_cwd.py \
+                           tests/test_035_conda_macho_assert.py \
+                           tests/test_036_conda_provenance.py \
+                           tests/test_037_rs_wheel_download.py \
+                           tests/test_038_conda_archive_limits.py \
+                           tests/test_027_conda_release_metadata.py -q
+
+      - name: Fetch the shipped linux wheels from PyPI
+        id: public-wheels
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          # Exact maintained release versions and PyPI digests, never an older/latest fallback.
+          # Fetch RS only if binding METADATA requires it, using its distribution (not NuGet) pin.
+          # Embedded-core public wheels are historical controls, not current-source RS proof.
+          python -m eng.conda_tools fetch-wheels \
+            --wheel-dir "$PWD/wheels" --requirements-file "$PWD/wheel-inputs.txt" \
+            --python-tag cp311 --conda-subdir linux-64
+          echo "Downloaded:"; ls -1 wheels
+
+      - name: Build + audit a linux-64 conda package
+        working-directory: ${{ github.workspace }}
+        env:
+          RS_REQUIRED: ${{ steps.public-wheels.outputs.rsRequired }}
+        run: |
+          set -euo pipefail
+          # The verified public dependency/ownership facts select the actual input set.
+          rsArgs=()
+          if [[ "$RS_REQUIRED" == "true" ]]; then
+            rsArgs=(--rs-wheel-dir "$PWD/wheels" --rs-version-file "$PWD/eng/versions/mssql-python-rs.version")
+          elif [[ "$RS_REQUIRED" != "false" ]]; then
+            echo "Missing verified public wheel profile"; exit 1
+          fi
+          python -m eng.conda_tools build \
+            "${rsArgs[@]}" \
+            --mssql-wheel-dir "$PWD/wheels" \
+            --odbc-wheel-dir "$PWD/wheels" \
+            --odbc-wheel-filter "mssql_python_odbc-*.whl" \
+            --recipe-root "$PWD/conda" \
+            --output-dir "$RUNNER_TEMP/conda-bld" \
+            --stage-dir "$RUNNER_TEMP/conda-stage" \
+            --conda-subdir "linux-64" \
+            --python-versions "3.11"
