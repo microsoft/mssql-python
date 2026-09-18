@@ -3636,8 +3636,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_INTEGER: {
                 SQLINTEGER intValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, NULL);
-                if (SQL_SUCCEEDED(ret)) {
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     row.append(static_cast<int>(intValue));
                 } else {
                     row.append(py::none());
@@ -3646,7 +3647,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_SMALLINT: {
                 SQLSMALLINT smallIntValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<int>(smallIntValue));
                 } else {
@@ -3659,7 +3665,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_REAL: {
                 SQLREAL realValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(realValue);
                 } else {
@@ -3732,7 +3743,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_DOUBLE:
             case SQL_FLOAT: {
                 SQLDOUBLE doubleValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(doubleValue);
                 } else {
@@ -3745,7 +3761,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_BIGINT: {
                 SQLBIGINT bigintValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<long long>(bigintValue));
                 } else {
@@ -3758,9 +3779,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TYPE_DATE: {
                 SQL_DATE_STRUCT dateValue;
-                ret =
-                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
-                if (SQL_SUCCEEDED(ret)) {
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue),
+                                     &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     row.append(PyTypeCache::get_date_class_obj()(dateValue.year, dateValue.month,
                                                                    dateValue.day));
                 } else {
@@ -3790,8 +3812,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME: {
                 SQL_TIMESTAMP_STRUCT timestampValue;
+                SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
-                                     sizeof(timestampValue), NULL);
+                                     sizeof(timestampValue), &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(PyTypeCache::get_datetime_class_obj()(
                         timestampValue.year, timestampValue.month, timestampValue.day,
@@ -3895,7 +3922,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TINYINT: {
                 SQLCHAR tinyIntValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<int>(tinyIntValue));
                 } else {
@@ -3908,7 +3940,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_BIT: {
                 SQLCHAR bitValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<bool>(bitValue));
                 } else {
@@ -6035,6 +6072,62 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 #endif
 
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
+// ---------------------------------------------------------------------------
+// construct_rows — Build Row objects entirely in C++.
+//
+// Replaces the Python list comprehension:
+//   [Row._fast_create(rd, column_map, cursor, column_map_lower) for rd in rows_data]
+//
+// By doing tp_alloc + slot assignment in a tight C loop, this avoids:
+//   - Python bytecode dispatch (FOR_ITER, LOAD_FAST, CALL_FUNCTION)
+//   - Keyword argument processing overhead per Row
+//   - Python function call frame setup per iteration
+//
+// Requires Row's value, column-map, cursor, and lowercase-map slots.
+// Semantically identical to _fast_create — no converter or UUID processing.
+// ---------------------------------------------------------------------------
+py::list construct_rows(const py::list& rows_data,
+                        const py::object& row_class,
+                        const py::object& column_map,
+                        const py::object& cursor_obj,
+                        const py::object& column_map_lower) {
+    if (!PyType_Check(row_class.ptr())) {
+        throw py::type_error("row_class must be a type");
+    }
+    PyTypeObject* row_type = reinterpret_cast<PyTypeObject*>(row_class.ptr());
+    Py_ssize_t n = PyList_GET_SIZE(rows_data.ptr());
+
+    // Pre-intern slot name strings (cached by CPython after first call)
+    static PyObject* attr_values = PyUnicode_InternFromString("_values");
+    static PyObject* attr_column_map = PyUnicode_InternFromString("_column_map");
+    static PyObject* attr_cursor = PyUnicode_InternFromString("_cursor");
+    py::str attr_column_map_lower("_column_map_lower");
+
+    py::list result(n);
+
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        // Allocate Row without calling __init__
+        PyObject* row = row_type->tp_alloc(row_type, 0);
+        if (!row) throw py::error_already_set();
+
+        PyObject* row_data = PyList_GET_ITEM(rows_data.ptr(), i);
+
+        // Set __slots__ via GenericSetAttr (uses descriptor offsets — fast path)
+        if (PyObject_GenericSetAttr(row, attr_values, row_data) < 0 ||
+            PyObject_GenericSetAttr(row, attr_column_map, column_map.ptr()) < 0 ||
+            PyObject_GenericSetAttr(row, attr_cursor, cursor_obj.ptr()) < 0 ||
+            PyObject_GenericSetAttr(row, attr_column_map_lower.ptr(), column_map_lower.ptr()) < 0) {
+            Py_DECREF(row);
+            throw py::error_already_set();
+        }
+
+        // PyList_SET_ITEM steals the reference — don't Py_DECREF row
+        PyList_SET_ITEM(result.ptr(), i, row);
+    }
+
+    return result;
+}
+
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
 
@@ -6247,6 +6340,13 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
+
+    // Fast Row construction in C++ — replaces Python list comprehension
+    m.def("construct_rows", &construct_rows,
+          "Build Row objects in C++ for fetchall/fetchmany fast path",
+          py::arg("rows_data"), py::arg("row_class"),
+          py::arg("column_map"), py::arg("cursor"),
+          py::arg("column_map_lower") = py::none());
 
     // Expose logger bridge function to Python
     m.def("update_log_level", &mssql_python::logging::LoggerBridge::updateLevel,
