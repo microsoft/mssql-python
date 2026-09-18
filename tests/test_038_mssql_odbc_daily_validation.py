@@ -12,6 +12,7 @@ from xml.etree import ElementTree
 ROOT = Path(__file__).parents[1]
 RUNNER = ROOT / "eng" / "scripts" / "run-mssql-odbc-tests.sh"
 PIPELINE = ROOT / "eng" / "pipelines" / "mssql-odbc-daily-validation-pipeline.yml"
+PREFLIGHT = ROOT / "eng" / "scripts" / "verify_mssql_odbc_provider.py"
 
 
 @unittest.skipIf(os.name == "nt", "runner requires POSIX timeout and bash")
@@ -99,6 +100,27 @@ class RunnerTests(unittest.TestCase):
 
 
 class PipelineContractTests(unittest.TestCase):
+    def test_optimized_preflight_rejects_wrong_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake_module = Path(directory) / "mssql_python.py"
+            fake_module.write_text(
+                "def get_native_provider_info():\n"
+                "    return {'id': 'msodbcsql18', 'package': 'wrong', 'source': 'default'}\n",
+                encoding="utf-8",
+            )
+            env = {**os.environ, "PYTHONPATH": directory, "DB_CONNECTION_STRING": "unused"}
+
+            proc = subprocess.run(
+                [sys.executable, "-O", str(PREFLIGHT)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn("MSSQL_ODBC_PREFLIGHT_OK", proc.stdout)
+
     def test_pipeline_authenticates_advisory_status_and_keeps_publish_strict(self):
         pipeline = PIPELINE.read_text(encoding="utf-8")
 

@@ -174,7 +174,7 @@ for index in "${!TEST_FILES[@]}"; do
         write_stub "$name" error "Pytest exited $rc without producing valid JUnit" "$report"
     fi
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] || [ "$rc" -gt 127 ]; then
-        write_stub "${name}_process" error "Pytest process exited $rc after producing JUnit" \
+        write_stub "${name}_process" error "Pytest process exited $rc" \
             "$RESULTS_DIR/results-$name-process.xml"
     fi
 done
