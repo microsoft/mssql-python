@@ -148,8 +148,9 @@ async def test_fetch_data_error_preserves_server_diagnostics(async_connection, f
         lambda cursor: cursor.fetchone(),
         lambda cursor: cursor.fetchall(),
         lambda cursor: cursor.fetchmany(),
+        lambda cursor: cursor.fetchmany(0),
     ),
-    ids=("execute", "executemany", "fetchone", "fetchall", "fetchmany"),
+    ids=("execute", "executemany", "fetchone", "fetchall", "fetchmany", "fetchmany-zero"),
 )
 async def test_closed_cursor_operations_raise_programming_error(async_connection, operation):
     cursor = async_connection.cursor()

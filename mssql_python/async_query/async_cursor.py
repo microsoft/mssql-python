@@ -8,6 +8,7 @@ Warning:
 
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
+import uuid
 
 from ..helpers import get_settings
 from ..logging import logger
@@ -26,12 +27,52 @@ class AsyncCursor:
 
     def __init__(self, py_core_async_cursor: Any) -> None:
         self._py_core_async_cursor = py_core_async_cursor
+        self._closed = False
         self._fetched_row_count = 0
         self._fetch_rowcount: int | None = None
+        self._description: list[tuple[Any, ...]] | None = None
+        self._column_map: dict[str, int] = {}
+        self._column_map_lower: dict[str, int] | None = None
+        self._uuid_str_indices: tuple[int, ...] | None = None
+
+    def _clear_result_metadata(self) -> None:
+        self._description = None
+        self._column_map = {}
+        self._column_map_lower = None
+        self._uuid_str_indices = None
+
+    def _initialize_result_metadata(self) -> None:
+        with translate_py_core_exceptions():
+            description = self._py_core_async_cursor.description
+        if description is None:
+            self._clear_result_metadata()
+            return
+
+        settings = get_settings()
+        self._description = [
+            ((column[0].lower() if settings.lowercase else column[0]), *column[1:])
+            for column in description
+        ]
+        self._column_map = {column[0]: index for index, column in enumerate(self._description)}
+        self._column_map_lower = (
+            {name.lower(): index for name, index in self._column_map.items()}
+            if settings.lowercase
+            else None
+        )
+        self._uuid_str_indices = (
+            tuple(index for index, column in enumerate(self._description) if column[1] is uuid.UUID)
+            if not settings.native_uuid
+            else None
+        )
 
     def _reset_fetch_tracking(self) -> None:
         self._fetched_row_count = 0
         self._fetch_rowcount = None
+
+    def _check_closed(self) -> None:
+        if self._closed:
+            with translate_py_core_exceptions():
+                raise RuntimeError("Cursor is closed")
 
     def _record_fetch(self, count: int, exhausted: bool) -> None:
         if count:
@@ -59,11 +100,14 @@ class AsyncCursor:
         self,
         operation: str,
         seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
+        *,
+        use_prepare: bool = True,
     ) -> None:
         await async_execute.executemany(
             self,
             operation,
             seq_of_parameters,
+            use_prepare=use_prepare,
         )
 
     async def fetchone(self) -> Row | None:
@@ -79,12 +123,18 @@ class AsyncCursor:
         with translate_py_core_exceptions():
             has_next = await self._py_core_async_cursor.nextset()
         self._reset_fetch_tracking()
+        if has_next:
+            self._initialize_result_metadata()
+        else:
+            self._clear_result_metadata()
         return has_next
 
     async def close(self) -> None:
         logger.debug("AsyncCursor.close: starting")
         with translate_py_core_exceptions():
             await self._py_core_async_cursor.close()
+        self._closed = True
+        self._reset_fetch_tracking()
         logger.debug("AsyncCursor.close: completed")
 
     def setinputsizes(self, sizes: Any) -> None:
@@ -98,14 +148,7 @@ class AsyncCursor:
 
     @property
     def description(self) -> Any:
-        with translate_py_core_exceptions():
-            description = self._py_core_async_cursor.description
-        if description is None:
-            return None
-        lowercase = get_settings().lowercase
-        return [
-            ((column[0].lower() if lowercase else column[0]), *column[1:]) for column in description
-        ]
+        return self._description
 
     @property
     def rowcount(self) -> int:

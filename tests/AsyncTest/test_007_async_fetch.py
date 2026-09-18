@@ -36,6 +36,7 @@ async def test_fetch_and_result_navigation_preserve_native_values(async_connecti
         assert isinstance(next_result, Row)
         assert tuple(next_result) == (3,)
         assert await cursor.nextset() is False
+        assert cursor.description is None
     finally:
         await cursor.close()
 
@@ -53,6 +54,28 @@ async def test_fetchmany_uses_arraysize(async_connection):
         assert await cursor.fetchmany(-1) == []
         assert [tuple(row) for row in await cursor.fetchmany()] == [(1,), (2,)]
         assert [tuple(row) for row in await cursor.fetchall()] == [(3,)]
+    finally:
+        await cursor.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", (0, -1))
+async def test_fetchmany_non_positive_size_skips_native_fetch(async_connection, monkeypatch, size):
+    cursor = async_connection.cursor()
+    try:
+        await cursor.execute("SELECT 1 AS value")
+
+        class UnexpectedNativeFetch:
+            async def fetchmany(self, *_args):
+                pytest.fail("fetchmany must not call py-core for a non-positive size")
+
+        monkeypatch.setattr(
+            "mssql_python.async_query.async_fetch._get_py_core_async_cursor",
+            lambda _cursor: UnexpectedNativeFetch(),
+        )
+
+        assert await cursor.fetchmany(size) == []
+        assert cursor.rowcount == -1
     finally:
         await cursor.close()
 
@@ -77,6 +100,73 @@ async def test_fetch_respects_row_settings(async_connection):
         assert row.MixedGuid == "6F9619FF-8B86-D011-B42D-00C04FC964FF"
         assert row.mixedguid == row.MixedGuid
         assert row.MIXEDGUID == row.MixedGuid
+    finally:
+        mssql_python.lowercase = previous_lowercase
+        mssql_python.native_uuid = previous_native_uuid
+        await cursor.close()
+
+
+@pytest.mark.asyncio
+async def test_row_settings_are_snapshotted_at_execute(async_connection):
+    cursor = async_connection.cursor()
+    previous_lowercase = mssql_python.lowercase
+    previous_native_uuid = mssql_python.native_uuid
+    try:
+        mssql_python.lowercase = True
+        mssql_python.native_uuid = False
+        await cursor.execute(
+            "SELECT CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' "
+            "AS UNIQUEIDENTIFIER) AS MixedGuid UNION ALL "
+            "SELECT CAST('6F9619FF-8B86-D011-B42D-00C04FC964FE' AS UNIQUEIDENTIFIER)"
+        )
+
+        mssql_python.lowercase = False
+        mssql_python.native_uuid = True
+        first = await cursor.fetchone()
+        mssql_python.lowercase = True
+        mssql_python.native_uuid = False
+        second = await cursor.fetchone()
+
+        assert cursor.description[0][0] == "mixedguid"
+        assert isinstance(first[0], str)
+        assert isinstance(second[0], str)
+        assert first.MixedGuid == first.mixedguid
+        assert second.MixedGuid == second.mixedguid
+    finally:
+        mssql_python.lowercase = previous_lowercase
+        mssql_python.native_uuid = previous_native_uuid
+        await cursor.close()
+
+
+@pytest.mark.asyncio
+async def test_row_settings_are_resnapshotted_at_nextset(async_connection):
+    cursor = async_connection.cursor()
+    previous_lowercase = mssql_python.lowercase
+    previous_native_uuid = mssql_python.native_uuid
+    try:
+        mssql_python.lowercase = False
+        mssql_python.native_uuid = True
+        await cursor.execute(
+            "SELECT CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' "
+            "AS UNIQUEIDENTIFIER) AS FirstGuid; "
+            "SELECT CAST('6F9619FF-8B86-D011-B42D-00C04FC964FE' "
+            "AS UNIQUEIDENTIFIER) AS SecondGuid"
+        )
+
+        mssql_python.lowercase = True
+        mssql_python.native_uuid = False
+        first = await cursor.fetchone()
+        assert cursor.description[0][0] == "FirstGuid"
+        assert isinstance(first[0], UUID)
+
+        assert await cursor.nextset() is True
+        mssql_python.lowercase = False
+        mssql_python.native_uuid = True
+        second = await cursor.fetchone()
+
+        assert cursor.description[0][0] == "secondguid"
+        assert isinstance(second[0], str)
+        assert second.SecondGuid == second.secondguid
     finally:
         mssql_python.lowercase = previous_lowercase
         mssql_python.native_uuid = previous_native_uuid

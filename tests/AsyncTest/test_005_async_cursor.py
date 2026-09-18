@@ -31,3 +31,15 @@ async def test_close_is_idempotent(async_connection):
 
     assert await cursor.close() is None
     assert await cursor.close() is None
+
+
+@pytest.mark.asyncio
+async def test_close_clears_cached_fetch_rowcount(async_connection):
+    cursor = async_connection.cursor()
+    await cursor.execute("SELECT 1 AS value")
+    await cursor.fetchone()
+    assert cursor.rowcount == 1
+
+    await cursor.close()
+
+    assert cursor.rowcount == -1

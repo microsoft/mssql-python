@@ -7,7 +7,7 @@ from mssql_python.constants import ConstantsDDBC
 
 pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
-from mssql_python.async_query import AsyncConnection, AsyncCursor
+from mssql_python.async_query import AsyncConnection, AsyncCursor, async_execute
 from mssql_python.row import Row
 
 
@@ -63,8 +63,14 @@ async def test_execute_accepts_named_parameters(async_cursor):
 
 
 @pytest.mark.asyncio
-async def test_execute_accepts_dbapi_row(async_cursor):
+async def test_execute_accepts_dbapi_row(async_cursor, monkeypatch):
     row = Row([1, 2], {"first": 0, "second": 1})
+    log_calls = []
+    monkeypatch.setattr(
+        async_execute.logger,
+        "debug",
+        lambda message, *args: log_calls.append((message, args)),
+    )
 
     result = await async_cursor.execute(
         "IF CAST(? AS INT) <> 1 OR CAST(? AS INT) <> 2 "
@@ -73,9 +79,11 @@ async def test_execute_accepts_dbapi_row(async_cursor):
     )
 
     assert result is async_cursor
+    assert log_calls[0][1][0] == 2
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (True, False))
 @pytest.mark.parametrize(
     "operation, rows",
     (
@@ -86,14 +94,23 @@ async def test_execute_accepts_dbapi_row(async_cursor):
         ),
     ),
 )
-async def test_executemany_matches_sync_contract(async_connection, operation, rows):
+async def test_executemany_matches_sync_contract(
+    async_connection,
+    operation,
+    rows,
+    use_prepare,
+):
     cursor = async_connection.cursor()
     table_name = f"async_execute_test_{uuid4().hex}"
     try:
         await cursor.execute(
             f"CREATE TABLE {table_name} (id INT NOT NULL, value NVARCHAR(20) NOT NULL)"
         )
-        result = await cursor.executemany(operation.format(table=table_name), rows)
+        result = await cursor.executemany(
+            operation.format(table=table_name),
+            rows,
+            use_prepare=use_prepare,
+        )
         assert result is None
         assert cursor.rowcount == 2
     finally:
