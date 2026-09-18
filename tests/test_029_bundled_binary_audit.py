@@ -138,8 +138,8 @@ _BINDING = "lib/python3.12/site-packages/mssql_python/ddbc_bindings.cp312-x86_64
 _CORE = "lib/python3.12/site-packages/mssql_py_core/mssql_py_core.cpython-312-x86_64-linux-gnu.so"
 _CORE_INIT = "lib/python3.12/site-packages/mssql_py_core/__init__.py"
 _DISTROS_BY_SUBDIR = {
-    "linux-64": ("alpine", "debian_ubuntu", "rhel", "suse"),
-    "linux-aarch64": ("alpine", "debian_ubuntu", "rhel"),
+    "linux-64": ("debian_ubuntu", "rhel", "suse"),
+    "linux-aarch64": ("debian_ubuntu", "rhel"),
 }
 
 
@@ -512,12 +512,20 @@ def test_malformed_required_core_elf_cannot_pass(tmp_path, damage):
 
 
 def test_audit_fails_when_entire_required_distro_tree_is_missing(tmp_path):
-    package = _make_pkg(tmp_path, distros=("debian_ubuntu", "rhel", "suse"))
+    package = _make_pkg(tmp_path, distros=("debian_ubuntu", "suse"))
     errors = audit.audit_package(package, "elf").violations
     assert any(
-        "missing required Linux driver trees" in error and "alpine/x86_64" in error
+        "missing required Linux driver trees" in error and "rhel/x86_64" in error
         for error in errors
     )
+
+
+@pytest.mark.parametrize("subdir,machine", [("linux-64", 62), ("linux-aarch64", 183)])
+def test_audit_accepts_glibc_only_driver_trees(tmp_path, subdir, machine):
+    package = _make_pkg(
+        tmp_path, subdir=subdir, machine=machine, distros=_DISTROS_BY_SUBDIR[subdir]
+    )
+    assert audit.audit_package(package, "elf").violations == []
 
 
 # --- N1: wrong climb variants must all FAIL --------------------------------
@@ -733,9 +741,8 @@ def test_audit_fails_vendored_crypto_outside_libs_linux(tmp_path):
 
 
 def test_audit_allows_musl_variant_without_libltdl(tmp_path):
-    # The alpine/musl libodbcinst NEEDs libc.musl* and statically links ltdl, so the
-    # glibc libltdl DT_NEEDED requirement must NOT fail it. Package has a complete glibc
-    # debian_ubuntu variant plus an alpine/musl variant.
+    # Legacy manylinux wheels also carry Alpine. Its libodbcinst statically links
+    # libltdl, so glibc-specific DT_NEEDED requirements must not reject that payload.
     alpine_lib = "lib/python3.12/site-packages/mssql_python_odbc/libs/linux/alpine/x86_64/lib"
     p = tmp_path / "mssql-python-1.13.0-py312_0.tar.bz2"
     with tarfile.open(p, "w:bz2") as tf:

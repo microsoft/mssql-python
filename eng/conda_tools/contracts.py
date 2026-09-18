@@ -42,13 +42,11 @@ _SUBDIR_MACHINE = {"linux-64": _EM_X86_64, "linux-aarch64": _EM_AARCH64}
 _MACHINE_NAME = {_EM_X86_64: "x86_64", _EM_AARCH64: "aarch64"}
 _REQUIRED_DRIVER_TREES = {
     "linux-64": {
-        ("alpine", "x86_64"),
         ("debian_ubuntu", "x86_64"),
         ("rhel", "x86_64"),
         ("suse", "x86_64"),
     },
     "linux-aarch64": {
-        ("alpine", "arm64"),
         ("debian_ubuntu", "arm64"),
         ("rhel", "arm64"),
     },
@@ -655,9 +653,9 @@ def validate_elf(
             )
         # musl/alpine variants (NEEDED libc.musl*) link differently -- their libodbcinst
         # statically resolves libltdl, so the glibc DT_NEEDED requirements below do not
-        # apply. There is no musl conda subdir (conda Linux is glibc-only); these variants
-        # ride along in the payload but are never the conda load target. The climb /
-        # presence / no-vendored checks still apply to them.
+        # apply. Older ODBC wheels also carry these variants, but they are never a
+        # conda load target (conda Linux is glibc-only). The climb / presence /
+        # no-vendored checks still apply when auditing those older payloads.
         is_musl = any("libc.musl" in n for n in needed)
         want = expected_climb_entry(name)
 
@@ -725,8 +723,8 @@ def validate_elf(
         )
     # Require the supported distro inventory for this architecture, then require EVERY
     # discovered driver lib dir to ship BOTH a driver and libodbcinst.so.2. The x86_64
-    # ODBC wheel supports alpine/debian_ubuntu/rhel/suse; the arm64 wheel supports
-    # alpine/debian_ubuntu/rhel (Microsoft does not ship a SUSE ARM64 driver tree).
+    # manylinux ODBC wheel supports debian_ubuntu/rhel/suse; the arm64 wheel supports
+    # debian_ubuntu/rhel (Microsoft does not ship a SUSE ARM64 driver tree).
     missing_trees = _REQUIRED_DRIVER_TREES[subdir] - driver_trees
     if missing_trees:
         errors.append(
