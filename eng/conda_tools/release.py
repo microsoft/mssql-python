@@ -1,0 +1,480 @@
+"""Metadata-based conda release-readiness gate.
+
+The release pipeline must never ship an incomplete conda set. This module reads
+the AUTHORITATIVE ``info/index.json`` embedded in every ``.conda`` / ``.tar.bz2``
+(never folder names or bare counts) and validates the self-contained
+``mssql-python`` package -- which vendors the ODBC Driver 18 payload, so there is
+NO separate companion package:
+
+* every package's real ``subdir`` is in the allowed set AND matches its folder
+  (catches a mislabeled / mis-stamped leg);
+* every archive uses its metadata-derived canonical basename;
+* the only package name is ``mssql-python`` and its version matches the expected
+  release version (or, if none supplied, is internally consistent -- one version);
+* build tags, recognized exact/bounded Python requirements, and optional canonical
+  normal CPython ABI pins agree on the interpreter minor;
+* all Python requirements jointly admit a stable release in that minor. Supported
+  version syntax is numeric major/minor/patch, a0 bounds, trailing .*, comparisons
+  (=, ==, !=, <, <=, >, >=, ~=), comma AND and pipe OR, plus an optional build pin.
+  Regex, parentheses, epochs, local/dev/post versions and other syntax fail closed.
+* the (required-subdir x Python) matrix is complete -- every required platform
+  ships a package for every expected Python, honoring any per-subdir Python
+  override (e.g. win-arm64 ships only 3.12-3.14).
+
+Exit code 0 = release-ready; non-zero = a violation was found (blocks publish).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import operator
+import re
+import sys
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+
+from . import archive, inputs
+
+_BINDING_NAME = "mssql-python"
+
+_PY_TAG_RE = re.compile(r"py(\d)(\d{1,2})")
+_PY_DEP_RE = re.compile(r"python\s+(?:==?)?(\d+)\.(\d+)(?:\.(?:\d+|\*))?(?:\s+\S+)?")
+_PY_RANGE_RE = re.compile(r"python\s+>=\s*(\d+)\.(\d+)(?:\.\d+)?\s*,\s*<\s*(\d+)\.(\d+)(?:\.0a0)?")
+_PY_ABI_RE = re.compile(r"python_abi\s+(\d+)\.(\d+)\.\*\s+\*_cp(\d)(\d{1,2})")
+_PY_BOUND_RE = re.compile(r"(==|!=|<=|>=|~=|=|<|>)?(\d+(?:\.\d+){0,2})(a0)?(\.\*)?")
+_COMPARISONS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
+
+# Some subdirs legitimately ship a REDUCED Python matrix. win-arm64's conda
+# dependencies (cryptography, pyodbc) are published on Anaconda `defaults` only
+# for Python 3.12+, so 3.10/3.11 cannot be built there -- expect 3.12-3.14 only.
+_DEFAULT_SUBDIR_PYTHONS = "win-arm64=3.12,3.13,3.14"
+
+
+@dataclass(frozen=True)
+class _PythonBound:
+    operation: str
+    release: tuple[int, ...]
+    prerelease: bool = False
+
+    def matches(self, candidate: tuple[int, int, int]) -> bool:
+        if self.operation == "*":
+            return True
+        prefix = not self.prerelease and candidate[: len(self.release)] == self.release
+        if self.operation in {"=", "!=prefix"}:
+            return prefix if self.operation == "=" else not prefix
+        bound = (*self.release, *((0,) * (3 - len(self.release))), -int(self.prerelease))
+        if self.operation == "~=":
+            prefix_release = self.release[:-1]
+            return (*candidate, 0) >= bound and candidate[: len(prefix_release)] == prefix_release
+        return _COMPARISONS[self.operation]((*candidate, 0), bound)
+
+
+def _python_requirement(dep: str) -> list[list[_PythonBound]]:
+    """Parse only the documented CPython release-constraint subset, not MatchSpec."""
+    match = re.fullmatch(r"python(?:\s+(.+))?", dep)
+    if not match:
+        raise ValueError(f"Unsupported Python requirement syntax: {dep!r}.")
+    specification = match.group(1) or "*"
+    specification = re.sub(r"\s*(>=|<=|==|!=|~=|=|>|<|,|\|)\s*", r"\1", specification)
+    parts = specification.split()
+    if len(parts) > 2 or (len(parts) == 2 and not re.fullmatch(r"[A-Za-z0-9_.*-]+", parts[1])):
+        raise ValueError(f"Unsupported Python requirement syntax: {dep!r}.")
+    clauses = []
+    for alternative in parts[0].split("|"):
+        bounds = []
+        for atom in alternative.split(","):
+            if atom == "*":
+                bounds.append(_PythonBound("*", ()))
+                continue
+            match = _PY_BOUND_RE.fullmatch(atom)
+            if not match:
+                raise ValueError(f"Unsupported Python requirement syntax: {dep!r}.")
+            operation, version, prerelease, wildcard = match.groups()
+            release = tuple(map(int, version.split(".")))
+            if (prerelease and (len(release) != 3 or wildcard)) or (
+                operation == "~=" and (len(release) < 2 or wildcard)
+            ):
+                raise ValueError(f"Unsupported Python requirement syntax: {dep!r}.")
+            # Conda treats bare trailing .* and = as prefixes, but ==3.12.*
+            # as exact 3.12; !=3.12.* excludes the entire prefix.
+            operation = operation or ("=" if wildcard else "==")
+            if wildcard and operation == "!=":
+                operation = "!=prefix"
+            bounds.append(_PythonBound(operation, release, bool(prerelease)))
+        clauses.append(bounds)
+    return clauses
+
+
+def python_tag_from_index(index: dict) -> str:
+    """Extract the ``X.Y`` Python version a package is built for, or ``''``.
+
+    Build tokens and every recognized exact/bounded Python requirement must agree.
+    Canonical normal CPython ABI pins, when present, must also agree but are not
+    required and do not identify a variant by themselves. Broad requirements alone
+    cannot identify a minor. Every Python requirement must admit a common stable
+    patch release within the identified minor; tags never override an exclusion.
+    """
+    minors = set()
+    abi_minors = set()
+    requirements = []
+    dependencies = index.get("depends", [])
+    if not isinstance(dependencies, list) or not all(isinstance(dep, str) for dep in dependencies):
+        raise ValueError("info/index.json field 'depends' must be a list of dependency strings.")
+    for build_match in _PY_TAG_RE.finditer(str(index.get("build", ""))):
+        minors.add(f"{build_match.group(1)}.{build_match.group(2)}")
+    for dep in dependencies:
+        if re.match(r"python(?:\s|$|[<>=!~\[])", dep.strip()):
+            requirements.append(_python_requirement(dep.strip()))
+        match = _PY_DEP_RE.fullmatch(str(dep).strip())
+        if match:
+            minors.add(f"{match.group(1)}.{match.group(2)}")
+        match = _PY_RANGE_RE.fullmatch(str(dep).strip())
+        if match:
+            major, lower_minor, upper_major, upper_minor = map(int, match.groups())
+            if (upper_major, upper_minor) == (major, lower_minor + 1):
+                minors.add(f"{major}.{lower_minor}")
+        match = _PY_ABI_RE.fullmatch(str(dep).strip())
+        if match:
+            abi_minors.add(f"{match.group(1)}.{match.group(2)}")
+            abi_minors.add(f"{match.group(3)}.{match.group(4)}")
+    if len(minors | abi_minors) > 1:
+        raise ValueError(
+            f"Conflicting Python minor metadata: build={index.get('build')!r}, "
+            f"depends={index.get('depends')!r}."
+        )
+    minor = next(iter(minors), "")
+    if minor and requirements:
+        major, minor_number = map(int, minor.split("."))
+        major_minor = (major, minor_number)
+        patches = {0}
+        # For the supported comparisons, truth can change only at a named patch
+        # boundary. Its neighbors cover every interval, including the unbounded tail.
+        for clauses in requirements:
+            for bounds in clauses:
+                for bound in bounds:
+                    if len(bound.release) >= 2 and bound.release[:2] == major_minor:
+                        patch = bound.release[2] if len(bound.release) == 3 else 0
+                        patches.update((max(0, patch - 1), patch, patch + 1))
+        if not any(
+            all(
+                any(
+                    all(bound.matches((*major_minor, patch)) for bound in bounds)
+                    for bounds in clauses
+                )
+                for clauses in requirements
+            )
+            for patch in patches
+        ):
+            raise ValueError(
+                f"Conflicting Python requirements exclude all stable Python {minor} releases: "
+                f"{index.get('depends')!r}."
+            )
+    return minor
+
+
+def validate(
+    packages: list[dict],
+    required_subdirs: list[str],
+    allowed_subdirs: list[str],
+    expected_pythons: list[str],
+    expected_versions: dict | None = None,
+    subdir_pythons: dict | None = None,
+) -> list[str]:
+    """Return a list of human-readable violation strings (empty == release-ready).
+
+    ``packages`` is a list of dicts with keys: ``folder`` (staged subdir folder),
+    ``subdir`` (real info/index.json subdir), ``name``, ``version``, ``build``,
+    ``python`` (``X.Y`` or ``''``).
+
+    ``subdir_pythons`` maps a subdir to the Python versions expected FOR THAT
+    subdir, overriding ``expected_pythons`` (e.g. win-arm64 ships only 3.12-3.14).
+    """
+    errors: list[str] = []
+    expected_versions = expected_versions or {}
+    subdir_pythons = subdir_pythons or {}
+
+    for policy_name, values in (
+        ("required_subdirs", required_subdirs),
+        ("allowed_subdirs", allowed_subdirs),
+        ("expected_pythons", expected_pythons),
+    ):
+        if not values or any(not value.strip() for value in values):
+            errors.append(f"release policy '{policy_name}' must not be empty.")
+        elif len(values) != len(set(values)):
+            errors.append(f"release policy '{policy_name}' contains duplicates: {values}.")
+    missing_allowed = sorted(set(required_subdirs) - set(allowed_subdirs))
+    if missing_allowed:
+        errors.append(f"required subdirs are absent from allowed_subdirs: {missing_allowed}.")
+    for subdir, versions in sorted(subdir_pythons.items()):
+        if not versions or any(not version.strip() for version in versions):
+            errors.append(f"subdir Python override for '{subdir}' must not be empty.")
+        elif len(versions) != len(set(versions)):
+            errors.append(f"subdir Python override for '{subdir}' contains duplicates: {versions}.")
+
+    # 1. Authoritative subdir must be allowed AND match the folder it was staged in.
+    for p in packages:
+        ident = f"{p['name']}-{p['version']}-{p['build']}"
+        if not p["version"]:
+            errors.append(f"{ident}: package version is missing.")
+        if p["subdir"] not in allowed_subdirs:
+            errors.append(
+                f"{ident}: real subdir '{p['subdir']}' is not in allowed set {allowed_subdirs}."
+            )
+        if p["subdir"] != p["folder"]:
+            errors.append(
+                f"MISLABELED: {ident} is staged in folder '{p['folder']}' but its "
+                f"info/index.json subdir is '{p['subdir']}'."
+            )
+
+    # 2. Only the self-contained mssql-python package may appear; versions match
+    #    expected (or are internally consistent -- one version per package).
+    seen_versions: dict = defaultdict(set)
+    for p in packages:
+        if p["name"] != _BINDING_NAME:
+            errors.append(
+                f"unexpected package name '{p['name']}' ({p['version']}); the "
+                f"self-contained conda package ships only '{_BINDING_NAME}'."
+            )
+            continue
+        seen_versions[p["name"]].add(p["version"])
+    for name, versions in seen_versions.items():
+        if len(versions) > 1:
+            errors.append(
+                f"{name}: multiple versions present {sorted(versions)} "
+                f"(a release must ship exactly one version per package)."
+            )
+        exp = expected_versions.get(name)
+        if exp is not None:
+            for v in versions:
+                if v != exp:
+                    errors.append(f"{name}: version '{v}' != expected '{exp}'.")
+
+    # 2b. Reject duplicate (name, version, subdir, python) keys. Two packages with
+    #     an identical key are never legitimate -- it means one leg's package bled
+    #     into another subdir's staging folder (the shared-output-dir hazard) or was
+    #     staged twice. The per-subdir matrix check below collapses variants into a
+    #     set, so a duplicate would silently MASK a genuinely missing variant; fail
+    #     loudly on the duplicate instead.
+    key_folders: dict = defaultdict(list)
+    for p in packages:
+        key_folders[(p["name"], p["version"], p["subdir"], p["python"])].append(p["folder"])
+    for (name, version, subdir, python), folders in sorted(key_folders.items()):
+        if len(folders) > 1:
+            errors.append(
+                f"DUPLICATE: {name}-{version} (subdir '{subdir}', python "
+                f"'{python or '-'}') appears {len(folders)}x (staged in {sorted(folders)})."
+            )
+
+    # Group by the REAL (metadata) subdir, never the folder name.
+    by_subdir: dict = defaultdict(list)
+    for p in packages:
+        by_subdir[p["subdir"]].append(p)
+
+    # 3. Required subdirs must be PRESENT; every present ALLOWED subdir must ship a
+    #    COMPLETE per-Python matrix. Validating present-but-not-required subdirs too
+    #    (not just the required set) stops a partially built allowed subdir -- e.g. a
+    #    half-finished win-arm64 -- from slipping through to publish just because it
+    #    is not in the required set.
+    for sub in required_subdirs:
+        if not by_subdir.get(sub):
+            errors.append(f"required subdir '{sub}' is MISSING.")
+
+    for sub in sorted(by_subdir):
+        if sub not in allowed_subdirs:
+            # Not an allowed subdir: already flagged per-package in step 1. Skip the
+            # matrix work so the error set stays focused on the root cause.
+            continue
+        grp = by_subdir[sub]
+        bindings = [p for p in grp if p["name"] == _BINDING_NAME]
+        if not bindings:
+            errors.append(f"subdir '{sub}': no {_BINDING_NAME} package.")
+            continue
+
+        for p in bindings:
+            if not p["python"]:
+                errors.append(
+                    f"{p['name']}-{p['version']}-{p['build']} in '{sub}' has no "
+                    f"detectable Python tag (build string should carry pyXY)."
+                )
+        sub_expected = subdir_pythons.get(sub, expected_pythons)
+        got_pythons = sorted({p["python"] for p in bindings if p["python"]})
+        missing = [py for py in sub_expected if py not in got_pythons]
+        if missing:
+            errors.append(
+                f"subdir '{sub}': matrix INCOMPLETE -- missing Python {missing} "
+                f"(present: {got_pythons or 'none'})."
+            )
+        # Reject EXTRA pythons too (got == expected, not just expected subset of got): an
+        # unsupported build (e.g. a win-arm64 3.10 that slipped in) must never publish.
+        extra = [py for py in got_pythons if py not in sub_expected]
+        if extra:
+            errors.append(
+                f"subdir '{sub}': matrix has UNSUPPORTED Python {extra} "
+                f"(expected exactly {sub_expected})."
+            )
+
+    return errors
+
+
+def collect_packages(root: str) -> list[dict]:
+    """Read every ``.conda`` / ``.tar.bz2`` under ``root`` into package dicts."""
+    paths = archive.collect(root)
+    packages = []
+    for path in paths:
+        index = archive.read_release_index(path)
+        name, version, subdir, build = archive._validated_package_identity(index, path)
+        packages.append(
+            {
+                "folder": Path(path).parent.name,
+                "subdir": subdir,
+                "name": name,
+                "version": version,
+                "build": build,
+                "python": python_tag_from_index(index),
+                "path": path,
+            }
+        )
+    return packages
+
+
+def _split(value: str) -> list[str]:
+    values = [x.strip() for x in value.split(",")]
+    if any(not item for item in values):
+        raise ValueError("release policy entries must not be empty.")
+    if len(values) != len(set(values)):
+        raise ValueError(f"release policy contains duplicates: {values}.")
+    return values
+
+
+def _parse_subdir_pythons(value: str) -> dict:
+    """Parse ``subdir=py,py;subdir2=py,py`` into ``{subdir: [py, ...]}``."""
+    result: dict = {}
+    if not value.strip():
+        return result
+    for chunk in value.split(";"):
+        chunk = chunk.strip()
+        subdir, _, pys = chunk.partition("=")
+        if not subdir.strip() or not pys.strip():
+            raise ValueError(
+                f"invalid subdir Python override '{chunk}'; expected subdir=X.Y[,X.Y]."
+            )
+        subdir = subdir.strip()
+        if subdir in result:
+            raise ValueError(f"invalid subdir Python override: duplicate subdir '{subdir}'.")
+        try:
+            result[subdir] = _split(pys)
+        except ValueError as exc:
+            raise ValueError(f"invalid subdir Python override '{chunk}': {exc}") from exc
+    return result
+
+
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--root", required=True, help="Root of the consolidated conda tree.")
+    parser.add_argument(
+        "--required-subdirs",
+        default="win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64",
+    )
+    parser.add_argument(
+        "--allowed-subdirs",
+        default="win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64",
+    )
+    parser.add_argument("--pythons", default="3.10,3.11,3.12,3.13,3.14")
+    parser.add_argument(
+        "--subdir-pythons",
+        default=_DEFAULT_SUBDIR_PYTHONS,
+        help="Per-subdir Python overrides, e.g. 'win-arm64=3.12,3.13,3.14'.",
+    )
+    parser.add_argument("--mssql-python-version", default=None)
+    parser.add_argument(
+        "--release-versions",
+        nargs="?",
+        const=os.environ.get("RELEASE_VERSIONS", ""),
+        default=None,
+        help="Exact component version JSON; without a value, read RELEASE_VERSIONS.",
+    )
+    parser.add_argument(
+        "--rs-transport-version", default=os.environ.get("RS_TRANSPORT_VERSION", "")
+    )
+
+
+def execute(args: argparse.Namespace) -> int:
+    try:
+        required_subdirs = _split(args.required_subdirs)
+        allowed_subdirs = _split(args.allowed_subdirs)
+        expected_pythons = _split(args.pythons)
+        subdir_pythons = _parse_subdir_pythons(args.subdir_pythons)
+        packages = collect_packages(args.root)
+        if args.release_versions is not None:
+            versions = inputs.parse_release_versions(args.release_versions)
+            if args.mssql_python_version != versions["mssql-python"]:
+                raise ValueError(
+                    "Binding release version differs from verified component versions."
+                )
+            receipt_path = Path(args.root) / "rs-transport.json"
+            receipt = (
+                json.loads(receipt_path.read_text(encoding="utf-8"))
+                if receipt_path.exists()
+                else None
+            )
+            inputs.validate_rs_transport(receipt, versions, args.rs_transport_version)
+    except archive.READ_ERRORS as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if not packages:
+        print(f"ERROR: no conda packages found under {args.root}.", file=sys.stderr)
+        return 1
+
+    expected_versions = {}
+    if args.mssql_python_version:
+        expected_versions[_BINDING_NAME] = args.mssql_python_version
+
+    print(f"Discovered {len(packages)} conda package(s):")
+    for p in sorted(packages, key=lambda x: (x["subdir"], x["name"], x["python"])):
+        print(
+            f"  {p['subdir']:<14} {p['name']:<18} {p['version']:<12} "
+            f"py={p['python'] or '-':<5} build={p['build']}"
+        )
+    if subdir_pythons:
+        print(f"Per-subdir Python overrides: {subdir_pythons}")
+
+    errors = validate(
+        packages,
+        required_subdirs=required_subdirs,
+        allowed_subdirs=allowed_subdirs,
+        expected_pythons=expected_pythons,
+        expected_versions=expected_versions,
+        subdir_pythons=subdir_pythons,
+    )
+
+    if errors:
+        print("\nConda release readiness FAILED:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 1
+
+    if args.release_versions is not None:
+        try:
+            for package in packages:
+                inputs.validate_installed_inputs(
+                    package["path"],
+                    "cp" + package["python"].replace(".", ""),
+                    package["subdir"],
+                    versions,
+                    receipt,
+                )
+        except archive.READ_ERRORS as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print("COMPONENT_INPUT_OK: installed components match verified producer source inputs.")
+    print("\nOK: metadata-validated conda set is release-ready (subdirs, Python matrix, pairing).")
+    return 0
