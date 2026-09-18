@@ -89,10 +89,13 @@ def test_non_py_core_exception_is_not_translated():
     "native_error, public_type",
     (
         (RuntimeError("Cursor is closed"), public_exceptions.ProgrammingError),
+        (RuntimeError("Connection is closed"), public_exceptions.InterfaceError),
+        (RuntimeError("Connection is closing"), public_exceptions.InterfaceError),
         (
             RuntimeError("Connection is busy with another cursor operation"),
             public_exceptions.OperationalError,
         ),
+        (RuntimeError("Connection is broken"), public_exceptions.OperationalError),
         (
             TypeError("The SQL contains 2 parameter markers, but 1 parameters were supplied"),
             public_exceptions.ProgrammingError,
@@ -188,7 +191,7 @@ async def test_connection_close_invalidates_cursor_fetchmany_fast_path(async_con
     cursor = connection.cursor()
     await connection.close()
 
-    with pytest.raises(public_exceptions.OperationalError) as caught:
+    with pytest.raises(public_exceptions.InterfaceError) as caught:
         await cursor.fetchmany(0)
 
     assert isinstance(caught.value.__cause__, RuntimeError)

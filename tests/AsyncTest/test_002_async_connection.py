@@ -6,7 +6,6 @@ from mssql_python import (
     ConnectionStringParseError,
     InterfaceError,
     NotSupportedError,
-    OperationalError,
 )
 from mssql_python.async_query import AsyncConnection, AsyncCursor
 from mssql_python.async_query._connection_context import build_async_connection_context
@@ -318,19 +317,19 @@ async def test_operations_after_close_translate_native_errors(async_connection_s
     connection = await AsyncConnection.connect(async_connection_string)
     await connection.close()
 
-    with pytest.raises(OperationalError, match="Connection is closed") as cursor_error:
+    with pytest.raises(InterfaceError, match="Connection is closed") as cursor_error:
         connection.cursor()
     assert isinstance(cursor_error.value.__cause__, RuntimeError)
 
-    with pytest.raises(OperationalError, match="Connection is closed") as commit_error:
+    with pytest.raises(InterfaceError, match="Connection is closed") as commit_error:
         await connection.commit()
     assert isinstance(commit_error.value.__cause__, RuntimeError)
 
-    with pytest.raises(OperationalError, match="Connection is closed") as rollback_error:
+    with pytest.raises(InterfaceError, match="Connection is closed") as rollback_error:
         await connection.rollback()
     assert isinstance(rollback_error.value.__cause__, RuntimeError)
 
-    with pytest.raises(OperationalError, match="Connection is closed") as enter_error:
+    with pytest.raises(InterfaceError, match="Connection is closed") as enter_error:
         await connection.__aenter__()
     assert isinstance(enter_error.value.__cause__, RuntimeError)
 

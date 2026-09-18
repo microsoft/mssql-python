@@ -33,9 +33,11 @@ _EXCEPTION_TYPES = {
 _ASYNC_DRIVER_ERROR = "Async operation failed"
 
 _PROGRAMMING_RUNTIME_ERRORS = ("Cursor is closed",)
-_OPERATIONAL_RUNTIME_ERROR_PREFIXES = (
+_INTERFACE_RUNTIME_ERRORS = (
     "Connection is closing",
     "Connection is closed",
+)
+_OPERATIONAL_RUNTIME_ERROR_PREFIXES = (
     "Connection is broken",
     "Connection is busy",
 )
@@ -54,6 +56,8 @@ def _translate_known_builtin_error(error: Exception) -> Exception:
     if isinstance(error, RuntimeError):
         if message in _PROGRAMMING_RUNTIME_ERRORS:
             return ProgrammingError(_ASYNC_DRIVER_ERROR, message)
+        if message in _INTERFACE_RUNTIME_ERRORS:
+            return InterfaceError(_ASYNC_DRIVER_ERROR, message)
         if message.startswith(_OPERATIONAL_RUNTIME_ERROR_PREFIXES):
             return OperationalError(_ASYNC_DRIVER_ERROR, message)
     if isinstance(error, TypeError) and message.startswith(_PROGRAMMING_TYPE_ERROR_PREFIXES):
