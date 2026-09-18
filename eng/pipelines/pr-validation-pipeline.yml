@@ -104,7 +104,7 @@ jobs:
         sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
         if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       } finally {
-        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $sqlPath -Force -ErrorAction Stop
       }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
@@ -132,7 +132,7 @@ jobs:
         Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQLSetup","/u" -Wait
         
         Write-Host "Running SQL Server setup..."
-        $configPath = Join-Path $env:TEMP "sql2022-setup.ini"
+        $configPath = Join-Path $env:TEMP ("sql2022-setup-{0}.ini" -f [guid]::NewGuid())
         $configLines = @(
           '[OPTIONS]'
           'QUIET="True"'
@@ -152,9 +152,9 @@ jobs:
           icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Failed to secure SQL Server setup configuration" }
           Set-Content -Path $configPath -Value $configLines -Encoding ASCII
-          Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/ConfigurationFile=$configPath" -Wait
+          Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/ConfigurationFile=`"$configPath`"" -Wait
         } finally {
-          Remove-Item $configPath -Force -ErrorAction SilentlyContinue
+          Remove-Item $configPath -Force -ErrorAction Stop
         }
       } else {
         Write-Error "Failed to download SQL Server setup file"
@@ -207,7 +207,7 @@ jobs:
         sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
         if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       } finally {
-        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $sqlPath -Force -ErrorAction Stop
       }
       sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
@@ -238,7 +238,7 @@ jobs:
         Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQL2025Setup","/u" -Wait
         
         Write-Host "Running SQL Server setup..."
-        $configPath = Join-Path $env:TEMP "sql2025-setup.ini"
+        $configPath = Join-Path $env:TEMP ("sql2025-setup-{0}.ini" -f [guid]::NewGuid())
         $configLines = @(
           '[OPTIONS]'
           'QUIET="True"'
@@ -258,9 +258,9 @@ jobs:
           icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Failed to secure SQL Server setup configuration" }
           Set-Content -Path $configPath -Value $configLines -Encoding ASCII
-          Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/ConfigurationFile=$configPath" -Wait
+          Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/ConfigurationFile=`"$configPath`"" -Wait
         } finally {
-          Remove-Item $configPath -Force -ErrorAction SilentlyContinue
+          Remove-Item $configPath -Force -ErrorAction Stop
         }
       } else {
         Write-Error "Failed to download SQL Server setup file"
@@ -313,7 +313,7 @@ jobs:
         sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
         if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       } finally {
-        Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $sqlPath -Force -ErrorAction Stop
       }
       sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
       sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C

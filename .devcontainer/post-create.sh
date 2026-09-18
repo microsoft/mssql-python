@@ -55,6 +55,10 @@ SA_PASSWORD="$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)Aa1!"
 # mktemp creates 0600; chmod before writing keeps it owner-only without touching the global umask.
 SQL_ENV_FILE="$(mktemp)"
 chmod 600 "$SQL_ENV_FILE"
+trap 'rm -f "$SQL_ENV_FILE"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\n' "$SA_PASSWORD" > "$SQL_ENV_FILE"
 
 # Start SQL Server container (use Azure SQL Edge for ARM64 compatibility)
@@ -75,6 +79,7 @@ else
         -d mcr.microsoft.com/mssql/server:2025-latest && SQL_STARTED=true || SQL_STARTED=false
 fi
 rm -f "$SQL_ENV_FILE"
+trap - EXIT HUP INT TERM
 
 if [ "$SQL_STARTED" = "true" ]; then
     echo "Waiting for SQL Server to start..."
@@ -91,8 +96,7 @@ DB_CONNECTION_STRING="Server=localhost,1433;Database=master;UID=sa;PWD=$SA_PASSW
 # Keep the credential in a user-only file and source it from interactive shells.
 MSSQL_ENV_FILE="$HOME/.mssql_python_env"
 # Scope umask to this write only so the file is owner-only from creation; global umask stays untouched.
-( umask 077; printf "export DB_CONNECTION_STRING='%s'\n" "$DB_CONNECTION_STRING" > "$MSSQL_ENV_FILE" )
-chmod 600 "$MSSQL_ENV_FILE"
+( umask 077; touch "$MSSQL_ENV_FILE"; chmod 600 "$MSSQL_ENV_FILE"; printf "export DB_CONNECTION_STRING='%s'\n" "$DB_CONNECTION_STRING" > "$MSSQL_ENV_FILE" )
 
 # Remove plaintext entries left by older versions of this script.
 [ -f /etc/environment ] && sudo sed -i '/^DB_CONNECTION_STRING=/d' /etc/environment

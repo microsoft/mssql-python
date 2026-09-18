@@ -180,7 +180,7 @@ stages:
                 sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
                 if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
               } finally {
-                Remove-Item $sqlPath -Force -ErrorAction SilentlyContinue
+                Remove-Item $sqlPath -Force -ErrorAction Stop
               }
               sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
               sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
