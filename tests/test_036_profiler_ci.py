@@ -501,7 +501,7 @@ def test_publisher_can_finalize_exact_head_after_merge(monkeypatch):
                 {
                     "id": 42,
                     "user": {"login": "github-actions[bot]"},
-                    "body": reporting.MARKER + "\npending",
+                    "body": publisher.pending_message("head"),
                 }
             ]
         return {}
@@ -520,6 +520,33 @@ def test_publisher_finalizes_pending_comment_when_pr_is_abandoned(monkeypatch):
     publisher.run(123, "c" * 40, 1)
     assert len(posted) == 2
     assert "Pull request closed before assessment completed" in posted[-1]
+
+
+def test_publisher_preserves_completed_report_when_pr_is_abandoned(monkeypatch):
+    calls = []
+
+    def api(path, **kwargs):
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            return {
+                "state": "closed",
+                "merged": False,
+                "head": {"sha": "head"},
+                "base": {"sha": "base"},
+            }
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": "final report",
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", "new report", "base")
+    assert not any(kwargs for path, kwargs in calls if path == "issues/comments/42")
 
 
 def test_publisher_retries_transient_comment_failures(monkeypatch):
@@ -879,6 +906,40 @@ def test_head_moving_while_listing_comments_prevents_publish(monkeypatch):
     assert reads == 2 and len(calls) == 3
 
 
+def test_head_moving_before_write_supersedes_unchanged_pending_comment(monkeypatch):
+    calls = []
+    reads = 0
+
+    def api(path, **kwargs):
+        nonlocal reads
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            reads += 1
+            return {
+                "state": "open",
+                "head": {"sha": "head" if reads == 1 else "new-head"},
+                "base": {"sha": "base"},
+            }
+        if path == "issues/comments/42" and not kwargs:
+            return {"id": 42, "body": publisher.pending_message("head")}
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": publisher.pending_message("head"),
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", "normal report", "base")
+    writes = [
+        kwargs["data"]["body"] for path, kwargs in calls if path == "issues/comments/42" and kwargs
+    ]
+    assert len(writes) == 1 and "Performance assessment superseded" in writes[0]
+
+
 def test_base_moving_while_listing_comments_prevents_publish(monkeypatch):
     calls = []
     reads = 0
@@ -916,19 +977,23 @@ def test_abandoned_while_listing_comments_replaces_pending_with_terminal_state(m
                 "head": {"sha": "head"},
                 "base": {"sha": "base"},
             }
+        if path == "issues/comments/42" and not kwargs:
+            return {"id": 42, "body": publisher.pending_message("head")}
         if path.startswith("issues/") and "comments" in path:
             return [
                 {
                     "id": 42,
                     "user": {"login": "github-actions[bot]"},
-                    "body": reporting.MARKER + "\npending",
+                    "body": publisher.pending_message("head"),
                 }
             ]
         return {}
 
     monkeypatch.setattr(publisher, "github", api)
     publisher.publish(1, "head", "normal report", "base")
-    writes = [kwargs["data"]["body"] for path, kwargs in calls if path == "issues/comments/42"]
+    writes = [
+        kwargs["data"]["body"] for path, kwargs in calls if path == "issues/comments/42" and kwargs
+    ]
     assert len(writes) == 1 and "Pull request closed before assessment completed" in writes[0]
 
 
@@ -952,7 +1017,7 @@ def test_abandoned_after_comment_write_is_immediately_terminalized(monkeypatch):
                 {
                     "id": 42,
                     "user": {"login": "github-actions[bot]"},
-                    "body": reporting.MARKER + "\npending",
+                    "body": publisher.pending_message("head"),
                 }
             ]
         return {}
@@ -985,7 +1050,7 @@ def test_head_change_after_comment_write_supersedes_only_unchanged_body(monkeypa
                 {
                     "id": 42,
                     "user": {"login": "github-actions[bot]"},
-                    "body": reporting.MARKER + "\npending",
+                    "body": publisher.pending_message("head"),
                 }
             ]
         return {}
@@ -1279,9 +1344,7 @@ def test_artifact_polling_uses_remaining_publication_budget(monkeypatch):
     publisher.run(123, "c" * 40, 4)
     assert clock[0] == 150
     assert posted == [
-        publisher.HEADER
-        + "**Performance assessment pending.**\n\n"
-        + f"Waiting for the matching performance run for head `{'c' * 40}`.",
+        publisher.pending_message("c" * 40),
         "final report",
     ]
 
@@ -1307,6 +1370,35 @@ def test_publisher_finishes_after_merge_before_aggregate_build(monkeypatch):
     monkeypatch.setattr(publisher.time, "sleep", sleeps.append)
     publisher.run(123, "c" * 40, 4)
     assert sleeps == []
+    assert posted[-1] == "final report"
+
+
+def test_publisher_waits_for_usable_artifact_urls(monkeypatch):
+    posted = []
+    build = ado_build(status="inProgress", result=None)
+    valid = [
+        {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
+        for leg in reporting.LEGS
+    ]
+    invalid = copy.deepcopy(valid)
+    invalid[0]["resource"]["downloadUrl"] = ""
+    responses = [invalid, valid]
+
+    def api(url):
+        if "/artifacts?" in url:
+            return {"value": responses.pop(0)}
+        return {"value": [build]}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(reporting, "assess", lambda *args: "final report")
+    sleeps = []
+    monkeypatch.setattr(publisher.time, "sleep", sleeps.append)
+    publisher.run(123, "c" * 40, 4)
+    assert sleeps == [30]
     assert posted[-1] == "final report"
 
 

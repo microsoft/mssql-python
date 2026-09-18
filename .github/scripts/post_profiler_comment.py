@@ -24,6 +24,30 @@ COMPLETED_RESULTS = {"succeeded", "partiallySucceeded", "failed"}
 ARTIFACT_GRACE_SECONDS = 120
 
 
+def pending_message(head):
+    return (
+        HEADER
+        + "**Performance assessment pending.**\n\n"
+        + f"Waiting for the matching performance run for head `{head}`."
+    )
+
+
+def closed_message():
+    return (
+        HEADER
+        + "**Performance could not be assessed.**\n\n"
+        + "Pull request closed before assessment completed. No result is available."
+    )
+
+
+def superseded_message():
+    return (
+        HEADER
+        + "**Performance assessment superseded.**\n\n"
+        + "The pull request revision changed before publication completed."
+    )
+
+
 def allowed_url(url):
     parsed = urlparse(url)
     host = parsed.hostname or ""
@@ -89,11 +113,7 @@ def publish(pr_number, head, body, base=None):
         if pr["head"]["sha"] != head or (base is not None and pr["base"]["sha"] != base):
             return None
         if pr["state"] == "closed" and pr.get("merged") is not True:
-            return (
-                HEADER
-                + "**Performance could not be assessed.**\n\n"
-                + "Pull request closed before assessment completed. No result is available."
-            )
+            return closed_message()
         # Exact head/base identity remains stable after merge, so a run that
         # started while open may replace its pending comment with a terminal one.
         return body if pr["state"] == "open" or pr.get("merged") is True else None
@@ -121,7 +141,23 @@ def publish(pr_number, head, body, base=None):
     if comment:
         message = current_body()
         if message is None:
+            if comment["body"] == pending_message(head):
+                latest = github(f"issues/comments/{comment['id']}")
+                if isinstance(latest, dict) and latest.get("body") == comment["body"]:
+                    # Workflow concurrency serializes publishers per PR; the
+                    # re-read also preserves updates from people or other tools.
+                    github(
+                        f"issues/comments/{comment['id']}",
+                        method="PATCH",
+                        data={"body": superseded_message()},
+                    )
             return
+        if message == closed_message():
+            if comment["body"] != pending_message(head):
+                return
+            latest = github(f"issues/comments/{comment['id']}")
+            if not isinstance(latest, dict) or latest.get("body") != comment["body"]:
+                return
         github(f"issues/comments/{comment['id']}", method="PATCH", data={"body": message})
         comment_id = comment["id"]
     else:
@@ -141,13 +177,7 @@ def publish(pr_number, head, body, base=None):
             github(
                 f"issues/comments/{comment_id}",
                 method="PATCH",
-                data={
-                    "body": (
-                        HEADER
-                        + "**Performance assessment superseded.**\n\n"
-                        + "The pull request revision changed before publication completed."
-                    )
-                },
+                data={"body": (superseded_message())},
             )
 
 
@@ -221,13 +251,7 @@ def unavailable(number, head, reason, base=None):
 
 
 def run(number, head, wait_minutes):
-    publish_with_retry(
-        number,
-        head,
-        HEADER
-        + "**Performance assessment pending.**\n\n"
-        + f"Waiting for the matching performance run for head `{head}`.",
-    )
+    publish_with_retry(number, head, pending_message(head))
     deadline = time.monotonic() + wait_minutes * 60
     build = None
     artifacts = None
@@ -302,9 +326,15 @@ def run(number, head, wait_minutes):
             artifacts = artifact_items(api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1"))
             failures = 0
             required = {"profiler-" + leg for leg in reporting.LEGS}
+            usable = {
+                item["name"]
+                for item in artifacts
+                if isinstance(item["resource"].get("downloadUrl"), str)
+                and item["resource"]["downloadUrl"]
+            }
             # Artifact readiness is the report signal; unrelated matrix legs do
             # not need to finish before the four profiler legs are assessed.
-            if required <= {item["name"] for item in artifacts}:
+            if required <= usable:
                 assessment_ready = True
                 break
             if (
@@ -380,7 +410,7 @@ def run(number, head, wait_minutes):
             issues.append(leg + " (missing)")
             continue
         url = matching[0]["resource"].get("downloadUrl")
-        if not isinstance(url, str):
+        if not isinstance(url, str) or not url:
             issues.append(leg + " (invalid artifact)")
             continue
         artifact_urls[leg] = url
