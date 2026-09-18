@@ -37,8 +37,8 @@ out of each built ``.conda`` payload -- via the ``PT_DYNAMIC`` program header th
     caught too;
   * no ``krb5``/``openssl``/``libltdl`` is VENDORED inside the payload (they are
     serviced by conda, never bundled).
-    * the complete supported driver inventory is present: alpine/debian_ubuntu/rhel/suse
-        for x86_64 and alpine/debian_ubuntu/rhel for arm64 (no SUSE ARM64 driver is shipped).
+  * the complete glibc driver inventory is present: debian_ubuntu/rhel/suse for x86_64
+    and debian_ubuntu/rhel for arm64 (no SUSE ARM64 driver is shipped).
 
 Non-Linux packages (``win-*`` / ``osx-*``) have no such ELF payload and are skipped.
 An unreadable/malformed package FAILS (it is never silently treated as non-Linux).
