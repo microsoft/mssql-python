@@ -126,8 +126,8 @@ def test_consistent_slowdown_is_advisory_regression(report):
     )
     body = reporting.render([report], "c" * 40, 42)
     assert "20 consistent slowdown signals" in body
-    assert "| Linux / SQL Server 2022 | Connection opening |" in body
-    assert "| macOS / SQL Server 2022 | No result available" in body
+    assert "| Unix / SQL Server 2022 | Connection opening |" in body
+    assert "| Windows / SQL Server 2022 | No result available" in body
     assert body.index("consistent slowdown signals") < body.index(
         "<summary>Build, commits and measurement details</summary>"
     )
@@ -212,9 +212,7 @@ def set_leg(report, leg):
     operating_system, sql = leg.split("-")
     for pair in report["pairs"]:
         for sample in pair.values():
-            sample["environment"]["os"] = {"macOS": "Darwin"}.get(
-                operating_system, operating_system
-            )
+            sample["environment"]["os"] = operating_system
             sample["environment"]["sql_version"] = "16.0" if sql == "SQL2022" else "17.0"
     return report
 
@@ -260,7 +258,7 @@ def test_render_bounds_schema_valid_diagnostics(report):
         reporting.validate(item)
     body = reporting.render(reports, "c" * 40, 42)
     assert len(body) <= 60000
-    assert "100 diagnostic rows are available in the raw ADO artifacts" in body
+    assert "80 diagnostic rows are available in the raw ADO artifacts" in body
     assert "<summary>All database tasks and timings</summary>" in body
     assert "<summary>Build, commits and measurement details</summary>" in body
 
@@ -307,15 +305,15 @@ def test_impact_summary_handles_single_inconsistent_and_complete_clean_results(r
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
     noisy = reporting.render([clean], "c" * 40, 42)
     assert (
-        "**Row-by-row fetching was slower on Linux / SQL Server 2022, "
+        "**Row-by-row fetching was slower on Unix / SQL Server 2022, "
         "but the repeated comparisons were inconsistent.**"
     ) in noisy
     assert "Inconsistent slowdowns to review:" in noisy
 
     complete = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
     clean_body = reporting.render(complete, "c" * 40, 42)
-    assert "**No consistent slowdowns detected across all 5 environments.**" in clean_body
-    assert "**Coverage:** 5 of 5 environments completed." in clean_body
+    assert "**No consistent slowdowns detected across all 4 environments.**" in clean_body
+    assert "**Coverage:** 4 of 4 environments completed." in clean_body
 
 
 def test_impact_summary_handles_single_regression_partial_and_no_results(report):
@@ -324,7 +322,7 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
     body = reporting.render([single], "c" * 40, 42)
     assert (
-        "**This PR consistently slows row-by-row fetching on Linux / SQL Server 2022 " "by 30.0%.**"
+        "**This PR consistently slows row-by-row fetching on Unix / SQL Server 2022 " "by 30.0%.**"
     ) in body
     assert "<summary>Affected phases and call counts</summary>" in body
     assert "<summary>All database tasks and timings</summary>" in body
@@ -338,7 +336,7 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
         ["Windows-SQL2022 (missing)"],
     )
     assert "No consistent slowdowns in the 1 completed environment." in partial
-    assert "No result is available for 4 environments." in partial
+    assert "No result is available for 3 environments." in partial
     assert "| Windows / SQL Server 2022 | No result available (missing) |" in partial
     assert "pending" not in partial.lower()
 
@@ -843,7 +841,7 @@ def test_full_sample_budget_fits_slow_hosted_workers(
 
 def test_ci_deadlines_include_setup_queueing_and_publication():
     pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
-    for job in ("pytestonwindows", "PytestOnMacOS", "PytestOnLinux"):
+    for job in ("pytestonwindows", "PytestOnLinux"):
         section = pipeline.split(f"- job: {job}\n", 1)[1].split("\n- job:", 1)[0]
         job_minutes = int(re.search(r"^  timeoutInMinutes: (\d+)$", section, re.M)[1])
         benchmark_step = section.split(
@@ -861,9 +859,9 @@ def test_ci_deadlines_include_setup_queueing_and_publication():
     )
 
 
-def test_linux_profiler_step_does_not_put_database_password_on_command_line():
+def test_unix_profiler_step_does_not_put_database_password_on_command_line():
     pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
-    benchmark = pipeline.split("# Run performance benchmarks on Ubuntu", 1)[1]
+    benchmark = pipeline.split("# Run Unix performance benchmarks on Ubuntu", 1)[1]
     benchmark = benchmark.split("displayName: 'Compare profiling builds", 1)[0]
     assert "-e DB_PASSWORD \\" in benchmark
     assert "Pwd=$(DB_PASSWORD)" not in benchmark
@@ -1042,14 +1040,14 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     if corrupt in ("base", "provenance"):
         assert "Build provenance validation failed" in posted[1]
         return
-    assert "| macOS / SQL Server 2022 | No result available" in posted[1]
+    assert "| Windows / SQL Server 2025 | No result available" in posted[1]
     if corrupt in ("suite", "source"):
         assert "workload version differs from trusted base" in posted[1]
         assert "consistent slowdown signals" not in posted[1]
     elif corrupt in ("zip", "timeout", "scenarios", "recursion", "deflate"):
         assert "### Windows / SQL Server 2022" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
-        assert "| Linux / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
+        assert "| Unix / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
         assert posted[1].count("20 consistent slowdown signals") == 1
     else:
         assert "### Windows / SQL Server 2022" in posted[1]
@@ -1232,13 +1230,13 @@ def test_report_leg_must_match_measured_environment(report, environment):
 def test_ci_reuses_profiling_builds_without_changing_release_defaults():
     pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
     assert "benchmarks/perf-benchmarking.py" not in pipeline
-    assert pipeline.count("python -m eng.profiler_benchmarks.controller --reuse-candidate") == 3
+    assert pipeline.count("python -m eng.profiler_benchmarks.controller --reuse-candidate") == 2
     profiler_conditions = re.findall(
         r"displayName: '(?:Compare profiling builds[^']*|Publish paired profiler measurements)'\n"
         r"    condition: ([^\n]+)",
         pipeline,
     )
-    assert len(profiler_conditions) == 6
+    assert len(profiler_conditions) == 4
     assert all(
         "eq(variables['Build.Reason'], 'PullRequest')" in condition
         for condition in profiler_conditions
@@ -1259,16 +1257,22 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
         "eq(variables['sqlVersion'], 'LocalDB')))"
     ) in windows
     macos = pipeline.split("- job: PytestOnMacOS\n", 1)[1].split("\n- job:", 1)[0]
-    assert 'if [ "$(Build.Reason)" = "PullRequest" ]; then' in macos
-    assert 'ENABLE_PROFILING="$PROFILER_BUILD" ./build.sh' in macos
-    assert "condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))" in macos
+    assert "timeoutInMinutes: 90" in macos
+    assert "ENABLE_PROFILING" not in macos
+    assert "--reuse-candidate" not in macos
+    assert "AdventureWorks2022" not in macos
+    assert "profiler-macOS" not in macos
+    assert "Routine PR profiling excludes hosted macOS" in macos
     linux = pipeline.split("- job: PytestOnLinux\n", 1)[1].split("\n- job:", 1)[0]
-    assert (
-        'if [ "$(Build.Reason)" = "PullRequest" ] && [ "$(distroName)" = "Ubuntu" ]; then' in linux
-    )
+    assert 'if [ "$(Build.Reason)" = "PullRequest" ] &&' in linux
+    assert '[[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]]' in linux
     assert 'if [ "$PROFILER_BUILD" = "1" ]; then' in linux
     assert "python -m eng.profiler_benchmarks.controller --check-build on" in linux
-    benchmark = linux.split("# Run performance benchmarks on Ubuntu", 1)[1]
+    assert "profilerLeg: 'Linux-SQL2022'" in linux
+    assert "profilerLeg: 'Linux-SQL2025'" in linux
+    assert '--leg "$(profilerLeg)"' in linux
+    assert "artifact: profiler-$(profilerLeg)" in linux
+    benchmark = linux.split("# Run Unix performance benchmarks on Ubuntu with", 1)[1]
     assert "-e BUILD_BUILDID \\" in benchmark
     assert "BUILD_BUILDID: $(Build.BuildId)" in benchmark
     assert "git config --global --add safe.directory /workspace" in benchmark
