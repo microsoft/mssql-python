@@ -8,12 +8,14 @@
 #include "connection/connection.h"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 // Manages a fixed-size pool of reusable database connections for a
 // single connection string
@@ -81,12 +83,18 @@ class ConnectionPool {
     bool mock_mode() const {
         return _mock_mode;
     }
-    void set_on_disconnect_hook(std::function<void()> hook) {
-        std::lock_guard<std::mutex> lock(_mutex);
-        _on_disconnect_hook = hook;
+    void set_on_disconnect_hook(std::shared_ptr<std::function<void()>> hook) {
+        std::shared_ptr<std::function<void()>> old_hook;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            old_hook = std::move(_on_disconnect_hook);
+            _on_disconnect_hook = std::move(hook);
+        }
     }
 
   private:
+    void invokeDisconnectHook();
+
     size_t _max_size;        // Maximum number of connections allowed
     int _idle_timeout_secs;  // Idle time before connections are stale
     size_t _current_size = 0;
@@ -95,7 +103,7 @@ class ConnectionPool {
     uint64_t _generation = 0;  // Pool reset generation for reservation attribution (#746)
     uint64_t _pool_id = 0;     // Monotonic process-wide pool ID to avoid ABA reuse (#746)
     std::atomic<bool> _mock_mode{false};
-    std::function<void()> _on_disconnect_hook;
+    std::shared_ptr<std::function<void()>> _on_disconnect_hook;
     std::deque<std::shared_ptr<Connection>> _pool;  // Available connections
     std::mutex _mutex;                              // Mutex for thread-safe access
 };
@@ -151,12 +159,24 @@ class ConnectionPoolManager {
         return _mock_mode;
     }
 
+    // Test accessor to look up an existing pool for deterministic testing (#746)
+    std::shared_ptr<ConnectionPool> getPool(const std::u16string& key) {
+        std::lock_guard<std::mutex> lock(_manager_mutex);
+        auto it = _pools.find(key);
+        return (it != _pools.end()) ? it->second : nullptr;
+    }
+
   private:
     ConnectionPoolManager() = default;
     ~ConnectionPoolManager() = default;
 
     // Map from connection string to connection pool
     std::unordered_map<std::u16string, std::shared_ptr<ConnectionPool>> _pools;
+
+    // Keys whose pools are currently being closed outside _manager_mutex (#746).
+    // Serializes same-key replacement creation with old-pool teardown.
+    std::unordered_set<std::u16string> _closing_keys;
+    std::condition_variable _manager_cv;
 
     // Protects access to the _pools map
     std::mutex _manager_mutex;

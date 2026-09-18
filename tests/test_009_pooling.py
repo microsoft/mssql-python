@@ -1924,6 +1924,116 @@ def test_pool_prune_stale_disconnect_keeps_in_flight_until_disconnected(conn_str
     )
 
 
+def test_pool_manager_serializes_same_key_replacement_while_old_pool_closing(conn_str):
+    """Regression test for GH-746: serialize replacement-pool creation while old pool is closing.
+
+    When ConnectionPoolManager evicts an evictable pool and begins closing it, concurrent
+    acquires for the same key must wait for teardown to finish rather than creating and
+    publishing a competing pool before old idle handles are disconnected.
+    """
+    _run_in_subprocess(
+        """
+        import threading
+        import time
+        from mssql_python import ddbc_bindings
+
+        ddbc_bindings._set_pool_manager_mock_mode(True)
+
+        pool_key = "SERVER=dummy_test_746;test_replace_closing"
+        conn_str = "SERVER=dummy_test_746;"
+
+        # 1. Enable pooling with max_size=1, idle_timeout=0 so idle pools become evictable
+        ddbc_bindings.enable_pooling(1, 0)
+
+        # 2. Acquire a connection from the manager and return it to make the pool idle
+        conn_init = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        conn_init.close()
+
+        # Sleep briefly so idle_time > 0 (idle_timeout=0) makes canEvict() return True
+        time.sleep(1.05)
+
+        # 3. Retrieve the internal pool instance for pool_key and attach a disconnect hook
+        old_pool = ddbc_bindings._get_pool_for_key(pool_key)
+        assert old_pool is not None
+
+        hook_entered = threading.Event()
+        proceed_disconnect = threading.Event()
+        thread_b_started = threading.Event()
+        thread_b_finished = threading.Event()
+        thread_b_result = []
+
+        def on_disconnect():
+            hook_entered.set()
+            # Wait until Thread B has launched its acquire attempt
+            thread_b_started.wait(timeout=5.0)
+            # Sleep a moment to ensure Thread B enters acquireConnection and waits on _manager_cv
+            time.sleep(0.15)
+            assert not thread_b_finished.is_set(), "Thread B must be blocked waiting on _closing_keys!"
+            proceed_disconnect.wait(timeout=5.0)
+
+        old_pool.set_on_disconnect_hook(on_disconnect)
+        # Drop Python reference so it->second.use_count() == 1 allows eviction
+        del old_pool
+
+        # 4. Thread A triggers acquireConnection, detecting the evictable pool and calling close()
+        thread_a_result = []
+        def thread_a_worker():
+            try:
+                c = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+                thread_a_result.append(c)
+            except Exception as e:
+                thread_a_result.append(e)
+
+        def thread_b_worker():
+            thread_b_started.set()
+            try:
+                c = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+                thread_b_result.append(c)
+            except Exception as e:
+                thread_b_result.append(e)
+            finally:
+                thread_b_finished.set()
+
+        t_a = threading.Thread(target=thread_a_worker)
+        t_a.start()
+
+        assert hook_entered.wait(timeout=5.0), "Disconnect hook was not reached"
+
+        # 5. Launch Thread B: tries to acquire for the same key while Thread A is closing old pool
+        t_b = threading.Thread(target=thread_b_worker)
+        t_b.start()
+
+        # Let Thread A complete the disconnect and pool replacement
+        proceed_disconnect.set()
+
+        t_a.join(timeout=5.0)
+        t_b.join(timeout=5.0)
+
+        assert len(thread_a_result) == 1 and not isinstance(thread_a_result[0], Exception)
+        conn_a = thread_a_result[0]
+
+        # Thread B must have been serialized and checked out from the replacement pool.
+        # Since Thread A took the only slot on the replacement pool (max_size=1),
+        # Thread B was rejected with 'pool size limit reached'.
+        assert len(thread_b_result) == 1
+        res_b = thread_b_result[0]
+        assert isinstance(res_b, RuntimeError) and "pool size limit reached" in str(res_b), (
+            f"Expected pool size limit reached on serialized replacement pool, got: {res_b}"
+        )
+
+        # Free slot on replacement pool and verify subsequent acquire succeeds
+        expected_pool_id = conn_a.origin_pool_id
+        conn_a.close()
+        conn_after = ddbc_bindings.Connection(conn_str, True, {}, pool_key, lambda: {})
+        assert conn_after.origin_pool_id == expected_pool_id
+        conn_after.close()
+
+        ddbc_bindings.close_pooling()
+        """,
+        conn_str,
+    )
+
+
 # =============================================================================
 # Native token-factory (lazy token acquisition) integration tests
 # =============================================================================

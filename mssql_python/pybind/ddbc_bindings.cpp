@@ -6117,6 +6117,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("_set_pool_manager_mock_mode", [](bool enable) {
         ConnectionPoolManager::getInstance().set_mock_mode(enable);
     }, py::arg("enable") = true);
+    m.def("_get_pool_for_key", [](const std::u16string& key) {
+        return ConnectionPoolManager::getInstance().getPool(key);
+    }, py::arg("key"), "Get internal pool instance for testing (#746)");
     m.def("disable_pooling", []() {
         // Disarm new-pool creation *before* closing so a connect racing this
         // disable cannot resurrect a pool after the map is cleared: any
@@ -6132,36 +6135,31 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<Connection, std::shared_ptr<Connection>>(m, "_TestPooledConnection")
         .def_property_readonly("origin_generation", &Connection::originGeneration)
         .def_property_readonly("origin_pool_id", &Connection::originPoolId);
-    struct GilSafeCallback {
-        py::object obj;
-        explicit GilSafeCallback(py::object o) : obj(std::move(o)) {}
-        GilSafeCallback(const GilSafeCallback& other) {
-            py::gil_scoped_acquire gil;
-            obj = other.obj;
-        }
-        GilSafeCallback(GilSafeCallback&& other) noexcept {
-            py::gil_scoped_acquire gil;
-            obj = std::move(other.obj);
-        }
-        GilSafeCallback& operator=(const GilSafeCallback& other) {
-            py::gil_scoped_acquire gil;
-            obj = other.obj;
-            return *this;
-        }
-        GilSafeCallback& operator=(GilSafeCallback&& other) noexcept {
-            py::gil_scoped_acquire gil;
-            obj = std::move(other.obj);
-            return *this;
-        }
-        ~GilSafeCallback() {
-            py::gil_scoped_acquire gil;
-            obj = py::object();
-        }
-        void operator()() const {
-            py::gil_scoped_acquire gil;
-            if (obj && !obj.is_none()) {
-                obj();
+    struct PyObjectHolder {
+        PyObject* ptr = nullptr;
+        explicit PyObjectHolder(py::object obj) : ptr(obj.release().ptr()) {}
+        ~PyObjectHolder() {
+            if (ptr) {
+                py::gil_scoped_acquire gil;
+                Py_XDECREF(ptr);
+                ptr = nullptr;
             }
+        }
+        PyObjectHolder(const PyObjectHolder&) = delete;
+        PyObjectHolder& operator=(const PyObjectHolder&) = delete;
+        PyObjectHolder(PyObjectHolder&& other) noexcept : ptr(other.ptr) {
+            other.ptr = nullptr;
+        }
+        PyObjectHolder& operator=(PyObjectHolder&& other) noexcept {
+            if (this != &other) {
+                if (ptr) {
+                    py::gil_scoped_acquire gil;
+                    Py_XDECREF(ptr);
+                }
+                ptr = other.ptr;
+                other.ptr = nullptr;
+            }
+            return *this;
         }
     };
     py::class_<ConnectionPool, std::shared_ptr<ConnectionPool>>(m, "_TestConnectionPool")
@@ -6182,7 +6180,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                 if (hook.is_none()) {
                     pool.set_on_disconnect_hook(nullptr);
                 } else {
-                    pool.set_on_disconnect_hook(GilSafeCallback(hook));
+                    auto holder = std::make_shared<PyObjectHolder>(std::move(hook));
+                    auto fn = std::make_shared<std::function<void()>>([holder]() {
+                        py::gil_scoped_acquire gil;
+                        if (holder && holder->ptr) {
+                            py::handle h(holder->ptr);
+                            h();
+                        }
+                    });
+                    pool.set_on_disconnect_hook(fn);
                 }
             },
             py::arg("hook"))

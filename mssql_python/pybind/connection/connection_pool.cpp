@@ -62,19 +62,27 @@ ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
       _in_flight(0),
       _pool_id(s_next_pool_id.fetch_add(1)) {}
 
+void ConnectionPool::invokeDisconnectHook() {
+    std::shared_ptr<std::function<void()>> hook;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        hook = _on_disconnect_hook;
+    }
+    if (hook) {
+        if (*hook) {
+            (*hook)();
+        }
+        py::gil_scoped_acquire gil;
+        hook.reset();
+    }
+}
+
 void ConnectionPool::drainDisconnectList(std::vector<std::shared_ptr<Connection>>& list) {
     for (auto& conn : list) {
         if (!conn) {
             continue;
         }
-        std::function<void()> hook;
-        {
-            std::lock_guard<std::mutex> lock(_mutex);
-            hook = _on_disconnect_hook;
-        }
-        if (hook) {
-            hook();
-        }
+        invokeDisconnectHook();
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
@@ -384,14 +392,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 // immediately BEFORE relinquishing the in-flight reservation, so that
                 // the stale physical connection and any newly reserved connections do
                 // not co-exist and exceed max_size (#746).
-                std::function<void()> hook;
-                {
-                    std::lock_guard<std::mutex> lock(_mutex);
-                    hook = _on_disconnect_hook;
-                }
-                if (hook) {
-                    hook();
-                }
+                invokeDisconnectHook();
                 try {
                     new_conn->disconnect();
                 } catch (const std::exception& ex) {
@@ -465,14 +466,7 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
     // Disconnect outside the mutex to avoid holding it during the
     // blocking ODBC call (which releases the GIL).
     if (should_disconnect) {
-        std::function<void()> hook;
-        {
-            std::lock_guard<std::mutex> lock(_mutex);
-            hook = _on_disconnect_hook;
-        }
-        if (hook) {
-            hook();
-        }
+        invokeDisconnectHook();
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
@@ -534,14 +528,7 @@ void ConnectionPool::close() {
         ++_generation;
     }
     for (auto& conn : to_close) {
-        std::function<void()> hook;
-        {
-            std::lock_guard<std::mutex> lock(_mutex);
-            hook = _on_disconnect_hook;
-        }
-        if (hook) {
-            hook();
-        }
+        invokeDisconnectHook();
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
@@ -576,100 +563,154 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
     std::shared_ptr<ConnectionPool> pool;
     std::shared_ptr<ConnectionPool> old_pool_to_close;
     bool created = false;
-    std::vector<std::shared_ptr<ConnectionPool>> evicted;
+    std::vector<std::pair<std::u16string, std::shared_ptr<ConnectionPool>>> evicted;
+
+    // RAII guard ensuring any key placed in _closing_keys is removed and
+    // _manager_cv notified even if an exception or early return occurs (#746).
+    struct ClosingGuard {
+        ConnectionPoolManager& mgr;
+        std::vector<std::u16string> keys;
+        ~ClosingGuard() {
+            if (!keys.empty()) {
+                std::lock_guard<std::mutex> lock(mgr._manager_mutex);
+                for (const auto& k : keys) {
+                    mgr._closing_keys.erase(k);
+                }
+                mgr._manager_cv.notify_all();
+            }
+        }
+        void remove(const std::u16string& k) {
+            mgr._closing_keys.erase(k);
+            keys.erase(std::remove(keys.begin(), keys.end(), k), keys.end());
+            mgr._manager_cv.notify_all();
+        }
+    } closing_guard{*this};
+
     {
-        std::lock_guard<std::mutex> lock(_manager_mutex);
-        // Pooling disabled (a concurrent disable_pooling() disarmed us): decline
-        // to create or hand out a pool. Because this check and the pool creation
-        // below share _manager_mutex with the setAccepting(false) in
-        // disable_pooling(), the decision is atomic — a connect either creates
-        // its pool before the disable (and closePools() then reaps it) or sees
-        // _accepting == false here and never creates one. The caller
-        // (ConnectionHandle) falls back to a non-pooled connection.
-        if (!_accepting) {
-            return nullptr;
-        }
-        // Lazy eviction: drop pools whose connections are all idle past the
-        // idle timeout (and none checked out) so distinct short-lived
-        // identities (e.g. per-request Entra users keyed by token hash) do not
-        // accumulate pools forever. canEvict() only inspects state (no ODBC
-        // calls), so it is safe under _manager_mutex; the actual disconnects
-        // happen via close() below, outside the lock. The pool we are about to
-        // use is skipped so it is never evicted from under us.
-        //
-        // The sweep is O(pools × idle-conns) under the global mutex, so it is
-        // throttled: a pool can only become evictable after its connections
-        // sit idle past the idle timeout, so sweeping more often than that
-        // window is pure overhead. Between sweeps we skip straight to the pool
-        // lookup, keeping the hot path cheap under a many-identity connect load.
-        auto now = std::chrono::steady_clock::now();
-        auto sweep_interval = std::chrono::seconds(std::max(1, _default_idle_secs));
-        if (now - _last_sweep >= sweep_interval) {
-            _last_sweep = now;
-            for (auto it = _pools.begin(); it != _pools.end();) {
-                // Only evict a pool that no one else is holding: use_count == 1
-                // means the map is the sole owner. An in-flight acquirer copies
-                // its pool shared_ptr while holding _manager_mutex (same section
-                // as this sweep) and keeps that copy across the unlocked
-                // acquire(); returnConnection() likewise takes a ref under the
-                // mutex before releasing. Either bumps use_count above 1 for the
-                // whole window, so this guard prevents evicting — and then
-                // closing (disconnecting) — a pool a peer thread has already
-                // selected but not yet finished using.
-                if (it->first != key && it->second && it->second.use_count() == 1 &&
-                    it->second->canEvict()) {
-                    evicted.push_back(it->second);
-                    it = _pools.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        }
-        // Defer replacement-pool creation if the existing pool still has live
-        // work. If the existing pool has finished all live work (canEvict() == true)
-        // and is not held by concurrent acquirers (use_count() == 1), evict it
-        // and serialize its close BEFORE publishing a new replacement pool (#746).
-        auto it = _pools.find(key);
-        if (it != _pools.end() && it->second && it->second.use_count() == 1 &&
-            it->second->canEvict()) {
-            old_pool_to_close = it->second;
-            _pools.erase(it);
-        }
-        if (!old_pool_to_close) {
-            auto& pool_ref = _pools[key];
-            if (!pool_ref) {
-                pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
-                if (_mock_mode) {
-                    pool_ref->set_mock_mode(true);
-                }
-                created = true;
-            }
-            pool = pool_ref;
-        }
-    }
-    if (old_pool_to_close) {
-        // Close the old pool completely BEFORE creating and publishing the replacement,
-        // ensuring its physical handles are disconnected before new ones can be opened (#746).
-        try {
-            old_pool_to_close->close();
-        } catch (const std::exception& ex) {
-            LOG("ConnectionPoolManager: closing evicted pool failed: %s", ex.what());
-        }
-        old_pool_to_close.reset();
+        py::gil_scoped_release release_gil;
         {
-            std::lock_guard<std::mutex> lock(_manager_mutex);
+            std::unique_lock<std::mutex> lock(_manager_mutex);
+            // Wait if this key is currently undergoing close/replacement by another thread,
+            // or until pooling is disabled. Serializes replacement creation with old-pool teardown (#746).
+            _manager_cv.wait(lock, [this, &key]() {
+                return !_accepting || _closing_keys.find(key) == _closing_keys.end();
+            });
+
+            // Pooling disabled (a concurrent disable_pooling() disarmed us): decline
+            // to create or hand out a pool. Because this check and the pool creation
+            // below share _manager_mutex with the setAccepting(false) in
+            // disable_pooling(), the decision is atomic — a connect either creates
+            // its pool before the disable (and closePools() then reaps it) or sees
+            // _accepting == false here and never creates one. The caller
+            // (ConnectionHandle) falls back to a non-pooled connection.
             if (!_accepting) {
                 return nullptr;
             }
-            auto& pool_ref = _pools[key];
-            if (!pool_ref) {
-                pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
-                if (_mock_mode) {
-                    pool_ref->set_mock_mode(true);
+
+            // Lazy eviction: drop pools whose connections are all idle past the
+            // idle timeout (and none checked out) so distinct short-lived
+            // identities (e.g. per-request Entra users keyed by token hash) do not
+            // accumulate pools forever. canEvict() only inspects state (no ODBC
+            // calls), so it is safe under _manager_mutex; the actual disconnects
+            // happen via close() below, outside the lock. The pool we are about to
+            // use is skipped so it is never evicted from under us.
+            //
+            // The sweep is O(pools × idle-conns) under the global mutex, so it is
+            // throttled: a pool can only become evictable after its connections
+            // sit idle past the idle timeout, so sweeping more often than that
+            // window is pure overhead. Between sweeps we skip straight to the pool
+            // lookup, keeping the hot path cheap under a many-identity connect load.
+            auto now = std::chrono::steady_clock::now();
+            auto sweep_interval = std::chrono::seconds(std::max(1, _default_idle_secs));
+            if (now - _last_sweep >= sweep_interval) {
+                _last_sweep = now;
+                for (auto it = _pools.begin(); it != _pools.end();) {
+                    // Only evict a pool that no one else is holding: use_count == 1
+                    // means the map is the sole owner. An in-flight acquirer copies
+                    // its pool shared_ptr while holding _manager_mutex (same section
+                    // as this sweep) and keeps that copy across the unlocked
+                    // acquire(); returnConnection() likewise takes a ref under the
+                    // mutex before releasing. Either bumps use_count above 1 for the
+                    // whole window, so this guard prevents evicting — and then
+                    // closing (disconnecting) — a pool a peer thread has already
+                    // selected but not yet finished using.
+                    if (it->first != key && it->second && it->second.use_count() == 1 &&
+                        it->second->canEvict()) {
+                        _closing_keys.insert(it->first);
+                        closing_guard.keys.push_back(it->first);
+                        evicted.push_back({it->first, it->second});
+                        it = _pools.erase(it);
+                    } else {
+                        ++it;
+                    }
                 }
-                created = true;
             }
-            pool = pool_ref;
+            // Defer replacement-pool creation if the existing pool still has live
+            // work. If the existing pool has finished all live work (canEvict() == true)
+            // and is not held by concurrent acquirers (use_count() == 1), evict it
+            // and serialize its close BEFORE publishing a new replacement pool (#746).
+            auto it = _pools.find(key);
+            if (it != _pools.end() && it->second && it->second.use_count() == 1 &&
+                it->second->canEvict()) {
+                old_pool_to_close = it->second;
+                _pools.erase(it);
+                _closing_keys.insert(key);
+                closing_guard.keys.push_back(key);
+            }
+            if (!old_pool_to_close) {
+                auto& pool_ref = _pools[key];
+                if (!pool_ref) {
+                    pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+                    if (_mock_mode) {
+                        pool_ref->set_mock_mode(true);
+                    }
+                    created = true;
+                }
+                pool = pool_ref;
+            }
+        }
+        if (old_pool_to_close) {
+            // Close the old pool completely BEFORE creating and publishing the replacement,
+            // ensuring its physical handles are disconnected before new ones can be opened (#746).
+            try {
+                old_pool_to_close->close();
+            } catch (const std::exception& ex) {
+                LOG("ConnectionPoolManager: closing evicted pool failed: %s", ex.what());
+            }
+            old_pool_to_close.reset();
+            {
+                std::lock_guard<std::mutex> lock(_manager_mutex);
+                if (_accepting) {
+                    auto& pool_ref = _pools[key];
+                    if (!pool_ref) {
+                        pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+                        if (_mock_mode) {
+                            pool_ref->set_mock_mode(true);
+                        }
+                        created = true;
+                    }
+                    pool = pool_ref;
+                }
+                closing_guard.remove(key);
+            }
+            if (!_accepting) {
+                return nullptr;
+            }
+        }
+        // Close evicted pools outside _manager_mutex: close() disconnects ODBC
+        // handles (releasing the GIL), which must never run while holding
+        // _manager_mutex or we risk a mutex/GIL lock-ordering deadlock.
+        for (auto& [evicted_key, evicted_pool] : evicted) {
+            try {
+                evicted_pool->close();
+            } catch (const std::exception& ex) {
+                LOG("ConnectionPoolManager: closing evicted pool failed: %s", ex.what());
+            }
+            evicted_pool.reset();
+            {
+                std::lock_guard<std::mutex> lock(_manager_mutex);
+                closing_guard.remove(evicted_key);
+            }
         }
     }
     // Log after releasing _manager_mutex (#671): LOG() acquires the GIL, and
@@ -677,16 +718,6 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
     // holds the GIL and is waiting on the same mutex.
     if (created) {
         LOG("Creating new connection pool");
-    }
-    // Close evicted pools outside _manager_mutex: close() disconnects ODBC
-    // handles (releasing the GIL), which must never run while holding
-    // _manager_mutex or we risk a mutex/GIL lock-ordering deadlock.
-    for (auto& evicted_pool : evicted) {
-        try {
-            evicted_pool->close();
-        } catch (const std::exception& ex) {
-            LOG("ConnectionPoolManager: closing evicted pool failed: %s", ex.what());
-        }
     }
     // Call acquire() outside _manager_mutex.  acquire() may release the GIL
     // during the ODBC connect call; holding _manager_mutex across that would
@@ -737,13 +768,13 @@ void ConnectionPoolManager::configure(int max_size, int idle_timeout_secs) {
 }
 
 void ConnectionPoolManager::closePools() {
+    py::gil_scoped_release release_gil;
     // Under _manager_mutex, snapshot all pools to close their idle connections.
-    // We do not clear _pools immediately: close() disconnects ODBC handles
-    // (releasing the GIL), which must run outside _manager_mutex to avoid
-    // deadlock.
+    // Wait for any in-flight same-key pool replacements to finish closing first (#746).
     std::vector<std::shared_ptr<ConnectionPool>> to_close;
     {
-        std::lock_guard<std::mutex> lock(_manager_mutex);
+        std::unique_lock<std::mutex> lock(_manager_mutex);
+        _manager_cv.wait(lock, [this]() { return _closing_keys.empty(); });
         to_close.reserve(_pools.size());
         for (auto& [conn_str, pool] : _pools) {
             if (pool) {
@@ -788,4 +819,5 @@ void ConnectionPoolManager::closePools() {
 void ConnectionPoolManager::setAccepting(bool accepting) {
     std::lock_guard<std::mutex> lock(_manager_mutex);
     _accepting = accepting;
+    _manager_cv.notify_all();
 }
