@@ -6,6 +6,7 @@ Regression and operation-count tests for connection settings cached by fetch API
 All integration queries are read-only and each test owns its connection.
 """
 
+import datetime
 import subprocess
 import sys
 import uuid
@@ -50,6 +51,55 @@ def fetch_rows(cursor, method):
     if method == "fetchmany":
         return cursor.fetchmany(10)
     return cursor.fetchall()
+
+
+@pytest.mark.parametrize("method", FETCH_METHODS)
+@pytest.mark.parametrize("lob", (False, True), ids=("bound", "lob"))
+@pytest.mark.parametrize(
+    ("sql_type", "literal", "expected"),
+    (
+        ("INT", "42", 42),
+        ("SMALLINT", "42", 42),
+        ("BIGINT", "42", 42),
+        ("TINYINT", "42", 42),
+        ("BIT", "1", True),
+        ("REAL", "1.25", 1.25),
+        ("FLOAT", "1.25", 1.25),
+        ("DATE", "'20260102'", datetime.date(2026, 1, 2)),
+        ("DATETIME", "'20260102'", datetime.datetime(2026, 1, 2)),
+        ("DATETIME2", "'20260102'", datetime.datetime(2026, 1, 2)),
+        ("SMALLDATETIME", "'20260102'", datetime.datetime(2026, 1, 2)),
+    ),
+)
+def test_fixed_width_null_fetch(connection, method, lob, sql_type, literal, expected):
+    prefix = "CAST(N'payload' AS NVARCHAR(MAX)), " if lob else ""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT {prefix}CAST(CASE WHEN n = 2 THEN NULL ELSE {literal} END AS {sql_type}) "
+            "AS value FROM (VALUES (1), (2)) AS v(n) ORDER BY n"
+        )
+        rows = fetch_rows(cursor, method)
+        if method == "fetchone":
+            rows.extend(fetch_rows(cursor, method))
+        assert len(rows) == 2
+        assert rows[0][-1] == expected
+        assert type(rows[0][-1]) is type(expected)
+        assert rows[1][-1] is None
+        assert not cursor.messages
+        assert fetch_rows(cursor, method) == []
+        cursor.execute(f"SELECT CAST({literal} AS {sql_type})")
+        assert cursor.fetchval() == expected
+        assert not cursor.messages
+
+
+@pytest.mark.parametrize("expression", ("NULL", "OBJECT_ID('tempdb..#missing_fetch_null_table')"))
+def test_fetchval_null_expression(connection, expression):
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT {expression}")
+        assert cursor.fetchval() is None
+        assert not cursor.messages
+        cursor.execute("SELECT 42")
+        assert cursor.fetchval() == 42
 
 
 @pytest.mark.parametrize("method", FETCH_METHODS)
@@ -576,3 +626,4 @@ def test_fetch_error_is_raised_before_wrapping_rows(connection, method, bridge_n
             with pytest.raises(mssql_python.DatabaseError, match="injected fetch error"):
                 fetch_rows(cursor, method)
         assert cursor._next_row_index == position
+        assert tuple(fetch_rows(cursor, method)[0]) == (1,)

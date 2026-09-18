@@ -3633,8 +3633,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_INTEGER: {
                 SQLINTEGER intValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, NULL);
-                if (SQL_SUCCEEDED(ret)) {
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     row.append(static_cast<int>(intValue));
                 } else {
                     row.append(py::none());
@@ -3643,7 +3644,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_SMALLINT: {
                 SQLSMALLINT smallIntValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<int>(smallIntValue));
                 } else {
@@ -3656,7 +3662,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_REAL: {
                 SQLREAL realValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(realValue);
                 } else {
@@ -3729,7 +3740,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_DOUBLE:
             case SQL_FLOAT: {
                 SQLDOUBLE doubleValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(doubleValue);
                 } else {
@@ -3742,7 +3758,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_BIGINT: {
                 SQLBIGINT bigintValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<long long>(bigintValue));
                 } else {
@@ -3755,9 +3776,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TYPE_DATE: {
                 SQL_DATE_STRUCT dateValue;
-                ret =
-                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
-                if (SQL_SUCCEEDED(ret)) {
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue),
+                                     &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     row.append(PyTypeCache::get_date_class_obj()(dateValue.year, dateValue.month,
                                                                    dateValue.day));
                 } else {
@@ -3787,8 +3809,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME: {
                 SQL_TIMESTAMP_STRUCT timestampValue;
+                SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
-                                     sizeof(timestampValue), NULL);
+                                     sizeof(timestampValue), &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(PyTypeCache::get_datetime_class_obj()(
                         timestampValue.year, timestampValue.month, timestampValue.day,
@@ -3892,7 +3919,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TINYINT: {
                 SQLCHAR tinyIntValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<int>(tinyIntValue));
                 } else {
@@ -3905,7 +3937,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_BIT: {
                 SQLCHAR bitValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<bool>(bitValue));
                 } else {
