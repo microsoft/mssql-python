@@ -138,7 +138,7 @@ for index in "${!TEST_FILES[@]}"; do
     fi
 
     echo "##[group]$test_file"
-    timeout --kill-after="${KILL_GRACE_SECONDS}s" "${slice}s" \
+    timeout -k "${KILL_GRACE_SECONDS}s" "${slice}s" \
         python -m pytest "$test_file" -v --junitxml="$report" \
         --capture=tee-sys --cache-clear
     rc=$?

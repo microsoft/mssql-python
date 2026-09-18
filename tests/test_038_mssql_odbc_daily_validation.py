@@ -107,6 +107,12 @@ class RunnerTests(unittest.TestCase):
 
 
 class PipelineContractTests(unittest.TestCase):
+    def test_runner_uses_busybox_compatible_timeout_options(self):
+        runner = RUNNER.read_text(encoding="utf-8")
+
+        self.assertIn('timeout -k "${KILL_GRACE_SECONDS}s"', runner)
+        self.assertNotIn("--kill-after", runner)
+
     def test_optimized_preflight_rejects_wrong_provider(self):
         with tempfile.TemporaryDirectory() as directory:
             fake_module = Path(directory) / "mssql_python.py"
