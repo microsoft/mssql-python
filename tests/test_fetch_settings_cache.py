@@ -449,9 +449,13 @@ def test_fetch_preserves_column_name_maps(connection, method, lowercase, process
     with connection.cursor() as cursor:
         cursor.execute(
             "SELECT CAST(N'abc' AS NVARCHAR(10)) AS MixedName, "
-            f"CAST('{UUID_TEXT}' AS UNIQUEIDENTIFIER) AS MixedId"
+            f"CAST('{UUID_TEXT}' AS UNIQUEIDENTIFIER) AS MixedId "
+            "FROM (VALUES (1), (2)) AS v(n)"
         )
-        row = fetch_rows(cursor, method)[0]
+        rows = fetch_rows(cursor, method)
+        if method == "fetchone":
+            rows.extend(fetch_rows(cursor, method))
+        row = rows[0]
         name = "mixedname" if lowercase else "MixedName"
         expected = "converted" if processing == "converter" else "abc"
         assert row[name] == getattr(row, name) == expected
@@ -464,6 +468,32 @@ def test_fetch_preserves_column_name_maps(connection, method, lowercase, process
                 row.MIXEDNAME
         assert row._column_map_lower is cursor._cached_column_map_lower
         assert row[1] == (UUID_TEXT if processing == "uuid" else uuid.UUID(UUID_TEXT))
+        id_name = "mixedid" if lowercase else "MixedId"
+        names = cursor._cached_result_columns
+        assert names == (name, id_name)
+        assert len(rows) == 2
+        assert all(item._column_names is names for item in rows)
+        expected_mapping = {name: expected, id_name: row[1]}
+        assert all(dict(item._mapping) == expected_mapping for item in rows)
+        cursor.execute("SELECT 42 AS replacement")
+        replacement = fetch_rows(cursor, method)[0]
+        assert replacement._column_names is cursor._cached_result_columns
+        assert replacement._column_names is not names
+        assert dict(replacement._mapping) == {"replacement": 42}
+    assert all(dict(item._mapping) == expected_mapping for item in rows)
+
+
+@pytest.mark.parametrize("native", (False, True))
+def test_fast_row_without_column_snapshot_mapping(native):
+    values = [1, "abc"]
+    column_map = {"number": 0, "text": 1}
+    if native:
+        row = mssql_python.ddbc_bindings.construct_rows([values], Row, column_map, None)[0]
+    else:
+        row = Row._fast_create(values, column_map, None)
+    assert row._values is values
+    assert row._column_names is None
+    assert dict(row._mapping) == {"number": 1, "text": "abc"}
 
 
 @pytest.mark.parametrize(

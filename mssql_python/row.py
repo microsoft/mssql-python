@@ -7,6 +7,7 @@ from a cursor fetch operation.
 
 import decimal
 import uuid as _uuid
+from collections.abc import Mapping
 from typing import Any
 from mssql_python.logging import logger
 
@@ -16,22 +17,33 @@ class Row:
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
     and attribute access to column values.
 
+    For dict-like access, use the read-only ``row._mapping`` view (a
+    ``collections.abc.Mapping`` of column name -> value). Iterating the Row itself
+    (for x in row) yields values, not keys — consistent with pyodbc.Row and
+    sqlite3.Row; iterate ``row._mapping`` to get column names.
+
     Column attribute access behavior depends on the global 'lowercase' setting:
     - When enabled: Case-insensitive attribute access
     - When disabled (default): Case-sensitive attribute access matching original column names
 
     Example:
         row = cursor.fetchone()
-        print(row[0])           # Access by index
-        print(row.column_name)  # Access by column name (case sensitivity varies)
+        print(row[0])                  # Access by index
+        print(row.column_name)         # Access by column name
+        print(dict(row._mapping))      # Convert to a plain dict
+        print(row._mapping["col"])     # Access a value by column name via the mapping
+        for name in row._mapping:      # Iterate column names
+            print(name, row._mapping[name])
+        for value in row:              # Iterating the Row yields values, not keys
+            print(value)
     """
 
     # __slots__ eliminates per-instance __dict__ (~232 bytes/row savings),
     # and makes attribute access ~30% faster (array index vs dict lookup).
-    __slots__ = ("_values", "_column_map", "_cursor", "_column_map_lower")
+    __slots__ = ("_values", "_column_map", "_cursor", "_column_map_lower", "_column_names")
 
     @staticmethod
-    def _fast_create(values, column_map, cursor, column_map_lower=None):
+    def _fast_create(values, column_map, cursor, column_map_lower=None, column_names=None):
         """Construct a Row bypassing __init__ — for the common fast path.
 
         Used by fetchall/fetchmany when no output converters and no UUID
@@ -43,6 +55,7 @@ class Row:
         r._column_map = column_map
         r._cursor = cursor
         r._column_map_lower = column_map_lower
+        r._column_names = column_names
         return r
 
     def __init__(
@@ -53,6 +66,7 @@ class Row:
         converter_map=None,
         uuid_str_indices=None,
         column_map_lower=None,
+        column_names=None,
     ):
         """
         Initialize a Row object with values and pre-built column map.
@@ -68,6 +82,11 @@ class Row:
             column_map_lower: Pre-built lowercase column map for O(1) case-insensitive
                 lookups. Built once per result set in the cursor when lowercase is enabled;
                 None when lowercase is off (the default). Shared across all rows.
+            column_names: Canonical, order- and duplicate-preserving column names for
+                the result set, snapshotted once by the cursor and shared by reference
+                across all rows. Backs ``row._mapping``. None for rows built without a
+                cursor snapshot; ``_mapping_keys()`` then reconstructs names from
+                ``column_map``.
         """
         if converter_map:
             self._values = self._apply_output_converters_optimized(values, converter_map)
@@ -90,6 +109,11 @@ class Row:
         # Lowercase map is pre-built once per result set in the cursor and shared
         # across all rows. None when lowercase is off (the default) — zero cost.
         self._column_map_lower = column_map_lower
+        # Canonical column names for this row's result set, snapshotted once by the
+        # cursor (order- and duplicate-preserving) and shared by reference across every
+        # row. None only for rows built without a cursor snapshot (e.g. some direct or
+        # test constructions); _mapping_keys() then reconstructs names from _column_map.
+        self._column_names = column_names
 
     def _stringify_uuids(self, indices):
         """
@@ -189,7 +213,9 @@ class Row:
     def __getitem__(self, index) -> Any:
         """Allow accessing by numeric index (row[0]) or column name (row["col"])."""
         if isinstance(index, str):
-            if index in self._column_map:
+            # A row built without a column map has no named columns, so any
+            # string key is simply absent (KeyError), never a TypeError.
+            if self._column_map is not None and index in self._column_map:
                 return self._values[self._column_map[index]]
             # O(1) case-insensitive lookup when lowercase is enabled
             if self._column_map_lower is not None:
@@ -225,6 +251,55 @@ class Row:
                 return self._values[idx]
 
         raise AttributeError(f"Row has no attribute '{name}'")
+
+    @property
+    def _mapping(self) -> "RowMapping":
+        """Read-only ``dict``-like view (column name -> value) over this row.
+
+        Returns a :class:`RowMapping` (a ``collections.abc.Mapping``). Typical use::
+
+            row = cursor.fetchone()
+            dict(row._mapping)                     # {'id': 1, 'name': 'Alice'}
+            for name, value in row._mapping.items():
+                ...
+            row._mapping["name"]                    # value by column name
+            "name" in row._mapping                  # membership by column name
+
+        Semantics and caveats:
+
+        - Keys are the result set's column names, order-preserving and
+          de-duplicated: when a name repeats, one key is kept and the last column
+          with that name supplies its value (matching ``row[name]`` / ``row.name``).
+          Every duplicate value stays reachable positionally via ``row[i]``.
+        - Lookup and membership use the canonical column names exactly, so the key
+          set, ``in`` and ``[]`` always agree. Unlike ``row[name]`` / ``row.name``,
+          the view does NOT resolve case-insensitive names or catalog aliases; with
+          ``lowercase=True`` the keys are the lowercased names.
+        - ``_mapping`` is a property, so a column literally named ``_mapping`` is
+          shadowed: read it with ``row["_mapping"]`` or ``row._mapping["_mapping"]``.
+        """
+        return RowMapping(self)
+
+    def _mapping_keys(self) -> tuple:
+        """Canonical, order-preserving column names backing ``_mapping``.
+
+        Prefers the names snapshotted once by the cursor for the result set, which
+        preserve the result set's column order. When a row was built without that
+        snapshot (e.g. a direct ``Row(values, column_map)`` construction), names are
+        reconstructed from ``_column_map`` in column-index order; that order can
+        differ from ``_column_map``'s insertion order, so a directly-constructed row
+        may key differently from an otherwise-equivalent cursor row. Returns ``()``
+        when neither source is available. Normal cursor fetches always supply the
+        snapshot.
+        """
+        if self._column_names is not None:
+            return self._column_names
+        if self._column_map:
+            idx_to_name: dict = {}
+            for name, idx in self._column_map.items():
+                idx_to_name.setdefault(idx, name)
+            return tuple(idx_to_name[i] for i in sorted(idx_to_name))
+        return ()
 
     def __eq__(self, other: Any) -> bool:
         """
@@ -270,3 +345,42 @@ class Row:
     def __repr__(self) -> str:
         """Return a detailed string representation for debugging"""
         return repr(tuple(self._values))
+
+
+class RowMapping(Mapping):
+    """Read-only ``Mapping`` view over a :class:`Row` (column name -> value).
+
+    Created via :attr:`Row._mapping`. Keys are the row's canonical column names,
+    order-preserving and de-duplicated (last column wins for a repeated name).
+    Lookup and membership use those names exactly -- no case-insensitive or catalog
+    alias resolution -- so iteration, ``in`` and ``[]`` always agree. The view
+    reflects the row it wraps and copies no values.
+    """
+
+    __slots__ = ("_row",)
+
+    def __init__(self, row: "Row") -> None:
+        self._row = row
+
+    def __getitem__(self, key: str) -> Any:
+        # Restrict lookups to the canonical column names yielded by __iter__ so
+        # membership and lookup agree with iteration (proper Mapping semantics).
+        # Row.__getitem__ additionally accepts case-insensitive names and catalog
+        # aliases, but those are not iterated keys, so the view must not resolve
+        # them here.
+        if isinstance(key, str) and key in self._row._mapping_keys():
+            return self._row[key]
+        raise KeyError(key)
+
+    def __iter__(self):
+        seen = set()
+        for name in self._row._mapping_keys():
+            if name not in seen:
+                seen.add(name)
+                yield name
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+    def __repr__(self) -> str:
+        return f"RowMapping({dict(self)!r})"

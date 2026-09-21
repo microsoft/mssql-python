@@ -407,6 +407,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._cached_column_map_lower = None
         self._cached_converter_map = None
         self._cached_converters_generation = self._connection._converters_generation
+        # Canonical, order-preserving column names snapshotted once per result set
+        # and handed to each Row so mapping views never read the live cursor.description
+        # (which changes when the cursor is reused for another query). _result_columns_src
+        # tracks the self.description identity the snapshot was built from, so a new
+        # result set rebuilds it exactly once.
+        self._cached_result_columns = None
+        self._result_columns_src = None
         # Raw ODBC SQL type codes (from SQLDescribeCol) per column, parallel to
         # self.description. Kept so output-converter dispatch can key on the integer
         # ODBC SQL type code (pyodbc-compatible), not just the mapped Python type. See #684.
@@ -1469,6 +1476,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if self._cached_converters_generation != self._connection._converters_generation:
             self._cached_converter_map = self._build_converter_map()
         converter_map = getattr(self, "_cached_converter_map", None)
+
+        # Snapshot canonical column names once per result set (identity-tracked against
+        # self.description) so each Row carries stable names even after the cursor is reused.
+        if self.description is not None and self._result_columns_src is not self.description:
+            self._cached_result_columns = tuple(col_desc[0] for col_desc in self.description)
+            self._result_columns_src = self.description
 
         return column_map, converter_map, self._cached_column_map_lower
 
@@ -2837,7 +2850,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
             with perf_phase("py::fetchone::row_wrap"):
                 if not converter_map and not self._uuid_str_indices:
-                    return Row._fast_create(row_data, column_map, self, column_map_lower)
+                    return Row._fast_create(
+                        row_data, column_map, self, column_map_lower, self._cached_result_columns
+                    )
                 return Row(
                     row_data,
                     column_map,
@@ -2845,6 +2860,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     converter_map=converter_map,
                     uuid_str_indices=self._uuid_str_indices,
                     column_map_lower=column_map_lower,
+                    column_names=self._cached_result_columns,
                 )
         except Exception:
             # On error, don't increment rownumber - rethrow the error
@@ -2913,7 +2929,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             with perf_phase("py::fetchmany::row_wrap"):
                 if not converter_map and not uuid_idx:
                     return ddbc_bindings.construct_rows(
-                        rows_data, Row, column_map, self, column_map_lower
+                        rows_data,
+                        Row,
+                        column_map,
+                        self,
+                        column_map_lower,
+                        self._cached_result_columns,
                     )
                 return [
                     Row(
@@ -2923,6 +2944,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         converter_map=converter_map,
                         uuid_str_indices=uuid_idx,
                         column_map_lower=column_map_lower,
+                        column_names=self._cached_result_columns,
                     )
                     for row_data in rows_data
                 ]
@@ -2984,7 +3006,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             with perf_phase("py::fetchall::row_wrap"):
                 if not converter_map and not uuid_idx:
                     return ddbc_bindings.construct_rows(
-                        rows_data, Row, column_map, self, column_map_lower
+                        rows_data,
+                        Row,
+                        column_map,
+                        self,
+                        column_map_lower,
+                        self._cached_result_columns,
                     )
                 return [
                     Row(
@@ -2994,6 +3021,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         converter_map=converter_map,
                         uuid_str_indices=uuid_idx,
                         column_map_lower=column_map_lower,
+                        column_names=self._cached_result_columns,
                     )
                     for row_data in rows_data
                 ]
