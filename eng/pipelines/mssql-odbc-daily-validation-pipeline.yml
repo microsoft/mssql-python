@@ -1,0 +1,185 @@
+name: mssql-odbc-daily-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger: none
+pr: none
+
+schedules:
+- cron: '0 4 * * *'
+  displayName: 'Daily mssql-odbc validation'
+  branches:
+    include:
+    - main
+  always: true
+
+jobs:
+- job: PytestOnMssqlOdbc
+  displayName: 'Complete mssql-python suite on mssql-odbc'
+  # Headroom over the serial step budgets (SQL setup 22m + pytest 130m + cleanup 3m)
+  # plus unbudgeted deps-install/build/install-core/verify/publish, so the always()
+  # publish and cleanup steps still run in the worst case.
+  timeoutInMinutes: 240
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  variables:
+    testContainer: 'mssql-python-rust-odbc-$(Build.BuildId)'
+    sqlContainer: 'sqlserver-rust-odbc-$(Build.BuildId)'
+
+  steps:
+  - checkout: self
+    clean: true
+    fetchDepth: 1
+    displayName: 'Checkout latest GitHub main'
+
+  - script: |
+      docker run -d --name $(testContainer) \
+        -v $(Build.SourcesDirectory):/workspace \
+        -w /workspace \
+        --network bridge \
+        ubuntu:24.04 \
+        tail -f /dev/null
+    displayName: 'Create mssql-odbc test container'
+
+  - script: |
+      python3 eng/scripts/setup_sql_container.py \
+        --name "$(sqlContainer)" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
+    displayName: 'Start SQL Server for mssql-odbc tests'
+    timeoutInMinutes: 22
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      docker exec $(testContainer) bash -c '
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive TZ=UTC
+        ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
+        echo $TZ > /etc/timezone
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          python3 python3-pip python3-venv python3-full python3-dev \
+          cmake build-essential pybind11-dev unixodbc-dev curl ca-certificates \
+          libssl3 libgssapi-krb5-2 libkrb5-3
+        python3 -m venv /opt/venv
+        source /opt/venv/bin/activate
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements.txt
+      '
+    displayName: 'Install mssql-odbc test dependencies'
+
+  - script: |
+      docker exec $(testContainer) bash -c '
+        set -euo pipefail
+        source /opt/venv/bin/activate
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      '
+    displayName: 'Build mssql-python native bindings'
+
+  - template: steps/install-mssql-py-core.yml
+    parameters:
+      platform: container
+      containerName: $(testContainer)
+      venvActivate: 'source /opt/venv/bin/activate'
+      displaySuffix: ' for mssql-odbc tests'
+
+  - script: |
+      set -uo pipefail
+      SQLSERVER_IP=$(docker inspect $(sqlContainer) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
+      rc=0
+      output=$(docker exec \
+        -e MSSQL_PYTHON_NATIVE_PROVIDER=mssql-odbc \
+        -e DB_CONNECTION_STRING \
+        -e PYTHONPATH=/workspace \
+        $(testContainer) bash -c '
+          set -euo pipefail
+          source /opt/venv/bin/activate
+          python eng/scripts/verify_mssql_odbc_provider.py
+        ' 2>&1) || rc=$?
+      printf '%s\n' "$output"
+      if ! grep -q 'MSSQL_ODBC_PREFLIGHT_OK' <<< "$output"; then
+        echo "##[error]mssql-odbc provider preflight failed (exit $rc)."
+        exit 1
+      fi
+    displayName: 'Verify packaged mssql-odbc selection, load, and query'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      set -uo pipefail
+      SQLSERVER_IP=$(docker inspect $(sqlContainer) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      if [ -z "$SQLSERVER_IP" ]; then
+        echo "##[error]Could not resolve SQL Server container IP; SQL Server is unreachable (infrastructure failure)."
+        exit 1
+      fi
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
+      status_file="$(Build.SourcesDirectory)/test-results/mssql-odbc/runner.status"
+      rm -f "$status_file"
+      rc=0
+      docker exec \
+        -e MSSQL_PYTHON_NATIVE_PROVIDER=mssql-odbc \
+        -e DB_CONNECTION_STRING \
+        -e TEST_RESULTS_DIR=/workspace/test-results/mssql-odbc \
+        -e TEST_STATUS_FILE=/workspace/test-results/mssql-odbc/runner.status \
+        -e PYTEST_FILE_TIMEOUT=10m \
+        -e PYTEST_TOTAL_BUDGET=110m \
+        -e PYTHONPATH=/workspace \
+        $(testContainer) bash -c '
+          source /opt/venv/bin/activate
+          chmod +x eng/scripts/run-mssql-odbc-tests.sh
+          eng/scripts/run-mssql-odbc-tests.sh
+        ' || rc=$?
+
+      status=$(cat "$status_file" 2>/dev/null || true)
+      case "$rc" in
+        0)
+          if [ "$status" != success ]; then
+            echo "##vso[task.logissue type=error]The pytest process returned success without a valid runner status."
+            exit 1
+          fi
+          echo 'The complete pytest suite passed with mssql-odbc.'
+          ;;
+        1)
+          if [ "$status" != advisory ]; then
+            echo '##vso[task.logissue type=error]The test container failed before the pytest runner reported an advisory result.'
+            exit 1
+          fi
+          echo '##vso[task.logissue type=warning]The complete pytest suite has expected compatibility failures with mssql-odbc; see published test results.'
+          echo '##vso[task.complete result=SucceededWithIssues;]'
+          ;;
+        *)
+          echo "##vso[task.logissue type=error]The mssql-odbc pytest harness failed (exit $rc)."
+          exit 1
+          ;;
+      esac
+      exit 0
+    displayName: 'Run complete pytest suite with mssql-odbc (advisory)'
+    timeoutInMinutes: 130
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - task: PublishTestResults@2
+    displayName: 'Publish mssql-odbc compatibility results'
+    condition: always()
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: 'test-results/mssql-odbc/*.xml'
+      searchFolder: '$(Build.SourcesDirectory)'
+      testRunTitle: 'mssql-python complete suite on mssql-odbc'
+      mergeTestResults: true
+      failTaskOnFailedTests: false
+      publishRunAttachments: true
+
+  - script: |
+      cleanup_rc=0
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "$(sqlContainer)" --owner "$(Build.BuildId).$(System.JobId)" || cleanup_rc=$?
+      docker rm -f $(testContainer) || true
+      exit "$cleanup_rc"
+    displayName: 'Clean up mssql-odbc test containers'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
