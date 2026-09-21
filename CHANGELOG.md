@@ -98,6 +98,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-754:** Pooled connections are now rolled back and restored to autocommit
+  mode before being parked. This prevents an empty transaction from remaining
+  visible on an idle SQL Server session after `Connection.close()`. Abandoned
+  native connections also roll back pending work before disconnecting during
+  normal object destruction. Statement-handle allocation and cleanup are
+  synchronized with disconnect, including cleanup invoked by cursor finalizers.
 - Bounded text fetched as UTF-16 now preserves leading U+FEFF and U+FFFE as
   payload rather than treating them as byte-order markers. This corrects
   row-wise `fetchone()`, `fetchmany()`, and `fetchall()` results, including
