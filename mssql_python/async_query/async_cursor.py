@@ -34,12 +34,14 @@ class AsyncCursor:
         self._description: list[tuple[Any, ...]] | None = None
         self._column_map: dict[str, int] = {}
         self._column_map_lower: dict[str, int] | None = None
+        self._column_names: tuple[str, ...] | None = None
         self._uuid_str_indices: tuple[int, ...] | None = None
 
     def _clear_result_metadata(self) -> None:
         self._description = None
         self._column_map = {}
         self._column_map_lower = None
+        self._column_names = None
         self._uuid_str_indices = None
 
     def _initialize_result_metadata(self) -> None:
@@ -54,6 +56,7 @@ class AsyncCursor:
             ((column[0].lower() if settings.lowercase else column[0]), *column[1:])
             for column in description
         ]
+        self._column_names = tuple(column[0] for column in self._description)
         self._column_map = {column[0]: index for index, column in enumerate(self._description)}
         self._column_map_lower = (
             {name.lower(): index for name, index in self._column_map.items()}

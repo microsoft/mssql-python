@@ -8,7 +8,105 @@ from mssql_python.constants import ConstantsDDBC
 pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python.async_query import AsyncConnection, AsyncCursor, async_execute
+from mssql_python import OperationalError, ProgrammingError
 from mssql_python.row import Row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "error", "public_error"),
+    (
+        (
+            "execute",
+            TypeError("The SQL contains 2 parameter markers, but 1 parameters were supplied"),
+            ProgrammingError,
+        ),
+        (
+            "executemany",
+            TypeError("Parameter style mismatch: expected positional parameters"),
+            ProgrammingError,
+        ),
+        (
+            "execute",
+            RuntimeError("Connection is busy with another cursor operation"),
+            OperationalError,
+        ),
+    ),
+)
+async def test_rejected_execution_preserves_pending_result_state(method, error, public_error):
+    class RejectingNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
+        rowcount = 1
+        arraysize = 1
+
+        async def execute(self, *_args, **_kwargs):
+            raise error
+
+        async def executemany(self, *_args, **_kwargs):
+            raise error
+
+        async def fetchone(self):
+            self.rowcount = 2
+            return (2,)
+
+    class StatefulAsyncCursor(AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("value", int, None, None, None, None, True)]
+            self._column_map = {"value": 0}
+            self._fetched_row_count = 1
+            self._fetch_rowcount = 1
+
+    cursor = StatefulAsyncCursor(RejectingNativeCursor())
+    cursor.seed_result_state()
+
+    with pytest.raises(public_error):
+        if method == "execute":
+            await cursor.execute("SELECT ?, ?", 1)
+        else:
+            await cursor.executemany("SELECT ?", [(1,)])
+
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row == [2]
+    assert row.value == 2
+    assert cursor.rowcount == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ("execute", "executemany"))
+async def test_failed_execution_clears_wrapper_state_when_native_discards_result(method):
+    class FailingNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
+        rowcount = 1
+
+        async def execute(self, *_args, **_kwargs):
+            self.description = None
+            self.rowcount = -1
+            raise RuntimeError("execution failed")
+
+        async def executemany(self, *_args, **_kwargs):
+            self.description = None
+            self.rowcount = -1
+            raise RuntimeError("execution failed")
+
+    class StatefulAsyncCursor(AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("value", int, None, None, None, None, True)]
+            self._column_map = {"value": 0}
+            self._fetched_row_count = 1
+            self._fetch_rowcount = 1
+
+    cursor = StatefulAsyncCursor(FailingNativeCursor())
+    cursor.seed_result_state()
+
+    with pytest.raises(RuntimeError, match="execution failed"):
+        if method == "execute":
+            await cursor.execute("SELECT 1")
+        else:
+            await cursor.executemany("SELECT ?", [(1,)])
+
+    assert cursor.description is None
+    assert cursor.rowcount == -1
 
 
 @pytest.mark.asyncio

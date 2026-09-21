@@ -16,10 +16,11 @@ def _get_py_core_async_cursor(cursor: "AsyncCursor") -> Any:
 
 def _wrap_row(cursor: "AsyncCursor", values: tuple[Any, ...]) -> Row:
     return Row(
-        values,
+        list(values),
         cursor._column_map,  # pyright: ignore[reportPrivateUsage]
         uuid_str_indices=cursor._uuid_str_indices,  # pyright: ignore[reportPrivateUsage]
         column_map_lower=cursor._column_map_lower,  # pyright: ignore[reportPrivateUsage]
+        column_names=cursor._column_names,  # pyright: ignore[reportPrivateUsage]
     )
 
 

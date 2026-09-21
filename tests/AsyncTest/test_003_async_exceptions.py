@@ -201,10 +201,19 @@ async def test_connection_close_invalidates_cursor_fetchmany_fast_path(async_con
 async def test_execute_parameter_count_error_is_programming_error_and_cursor_is_reusable(
     async_cursor,
 ):
+    await async_cursor.execute("SELECT 1 AS value UNION ALL SELECT 2 ORDER BY value")
+    assert await async_cursor.fetchone() == [1]
+    description = async_cursor.description
+
     with pytest.raises(public_exceptions.ProgrammingError) as caught:
         await async_cursor.execute("SELECT ?, ?", 1)
 
     assert isinstance(caught.value.__cause__, TypeError)
+    assert async_cursor.description == description
+    row = await async_cursor.fetchone()
+    assert row == [2]
+    assert row.value == 2
+    assert async_cursor.rowcount == 2
     assert await async_cursor.execute("SELECT 1") is async_cursor
 
 
@@ -231,8 +240,18 @@ async def test_client_validation_errors_remain_native_python_errors(async_cursor
     with pytest.raises(KeyError):
         await async_cursor.execute("SELECT %(missing)s", {"other": 1})
 
+    await async_cursor.execute("SELECT 1 AS value UNION ALL SELECT 2 ORDER BY value")
+    assert await async_cursor.fetchone() == [1]
+    description = async_cursor.description
+
     with pytest.raises(TypeError):
         await async_cursor.executemany("SELECT %(value)s", [{"value": 1}, (2,)])
+
+    assert async_cursor.description == description
+    row = await async_cursor.fetchone()
+    assert row == [2]
+    assert row.value == 2
+    assert async_cursor.rowcount == 2
 
     await async_cursor.execute("SELECT 1")
     with pytest.raises(TypeError):

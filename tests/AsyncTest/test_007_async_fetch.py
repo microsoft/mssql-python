@@ -11,6 +11,31 @@ from mssql_python.async_query import AsyncCursor
 
 
 @pytest.mark.asyncio
+async def test_fetched_row_matches_dbapi_row_equality_semantics():
+    class NativeCursor:
+        async def fetchone(self):
+            return (7,)
+
+    cursor = AsyncCursor(NativeCursor())
+
+    row = await cursor.fetchone()
+
+    assert row == [7]
+    assert row == Row([7], {})
+
+
+@pytest.mark.asyncio
+async def test_fetched_row_mapping_preserves_duplicate_column_order(async_cursor):
+    await async_cursor.execute("SELECT 1 AS b, 2 AS a, 3 AS b")
+
+    row = await async_cursor.fetchone()
+
+    assert row is not None
+    assert list(row._mapping) == ["b", "a"]
+    assert dict(row._mapping) == {"b": 3, "a": 2}
+
+
+@pytest.mark.asyncio
 async def test_fetch_and_result_navigation_preserve_native_values(async_connection):
     cursor = async_connection.cursor()
     try:
@@ -55,12 +80,18 @@ async def test_nextset_failure_clears_previous_result_state():
             self._description = [("value", int, None, None, None, None, True)]
             self._column_map = {"value": 0}
             self._column_map_lower = {"value": 0}
+            self._column_names = ("value",)
             self._uuid_str_indices = (0,)
             self._fetched_row_count = 2
             self._fetch_rowcount = 2
 
         def result_maps(self):
-            return self._column_map, self._column_map_lower, self._uuid_str_indices
+            return (
+                self._column_map,
+                self._column_map_lower,
+                self._column_names,
+                self._uuid_str_indices,
+            )
 
     cursor = StatefulAsyncCursor(FailingNativeCursor())
     cursor.seed_result_state()
@@ -70,7 +101,7 @@ async def test_nextset_failure_clears_previous_result_state():
 
     assert cursor.description is None
     assert cursor.rowcount == -1
-    assert cursor.result_maps() == ({}, None, None)
+    assert cursor.result_maps() == ({}, None, None, None)
 
 
 @pytest.mark.asyncio
