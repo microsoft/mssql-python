@@ -54,6 +54,7 @@ using py::literals::operator""_a;
 
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
+#include "fetch_text.hpp"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
@@ -280,13 +281,20 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+struct ConnectionCleanupState {
+    std::mutex mutex;
+    bool disconnected = false;  // Protected by mutex, shared with every child.
+};
+
 class SqlHandle {
   public:
-    SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
+    SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
+              std::shared_ptr<ConnectionCleanupState> cleanupState = nullptr);
     ~SqlHandle();
     SQLHANDLE get() const;
     SQLSMALLINT type() const;
     void free();
+    SQLRETURN freeHandle();
     void close_cursor();
     // Cancel an in-progress statement (SQLCancel). Safe to call from a
     // thread other than the one running the fetch — this is the *only*
@@ -320,9 +328,12 @@ class SqlHandle {
     void clearDescribeCache() { describeCache.clear(); }
 
   private:
+    // The caller must release the GIL before waiting for native cleanup.
+    std::unique_lock<std::mutex> lockForCleanup() const;
     SQLSMALLINT _type;
     SQLHANDLE _handle;
     bool _implicitly_freed = false;  // Tracks if handle was freed by parent
+    std::shared_ptr<ConnectionCleanupState> _cleanupState;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 
@@ -333,6 +344,8 @@ struct ErrorInfo {
     std::string ddbcErrorMsg;
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
+// Driver must be initialized; reads diagnostics without Python logging/callbacks.
+ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE handle, SQLRETURN retcode);
 
 // Thread-safe decimal separator accessor class
 class ThreadSafeDecimalSeparator {
@@ -593,8 +606,8 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
             SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
 #if defined(__APPLE__) || defined(__linux__)
             PyObject* pyStr =
-                PyUnicode_DecodeUTF16(reinterpret_cast<const char*>(wcharData),
-                                      numCharsInData * sizeof(SQLWCHAR), nullptr, nullptr);
+                FetchText::decode_utf16_native(reinterpret_cast<const char*>(wcharData),
+                                              numCharsInData * sizeof(SQLWCHAR));
 #else
             PyObject* pyStr =
                 PyUnicode_FromWideChar(reinterpret_cast<const wchar_t*>(wcharData), numCharsInData);
@@ -707,11 +720,8 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on
         // Linux/macOS)
         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
-        PyObject* pyStr = PyUnicode_DecodeUTF16(reinterpret_cast<const char*>(wcharData),
-                                                numCharsInData * sizeof(SQLWCHAR),
-                                                NULL,  // errors (use default strict)
-                                                NULL   // byteorder (auto-detect)
-        );
+        PyObject* pyStr = FetchText::decode_utf16_native(
+            reinterpret_cast<const char*>(wcharData), numCharsInData * sizeof(SQLWCHAR));
         if (pyStr) {
             PyList_SET_ITEM(row, col - 1, pyStr);
         } else {
