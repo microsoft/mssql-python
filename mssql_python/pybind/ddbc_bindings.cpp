@@ -346,6 +346,46 @@ size_t CheckedMultiplySize(size_t left, size_t right, const char* errorMessage) 
     return left * right;
 }
 
+size_t CheckedFetchAdd(size_t left, size_t right, const char* errorMessage) {
+    return CheckedAddSize(left, right, errorMessage);
+}
+
+size_t CheckedFetchMultiply(size_t left, size_t right, const char* errorMessage) {
+    return CheckedMultiplySize(left, right, errorMessage);
+}
+
+size_t CheckedFetchColumnSize(SQLULEN columnSize) {
+    if (columnSize > std::numeric_limits<size_t>::max()) {
+        ThrowStdException("Column size is too large");
+    }
+    return static_cast<size_t>(columnSize);
+}
+
+SQLLEN CheckedFetchBufferLength(size_t elementCount, size_t elementSize) {
+    const size_t byteCount =
+        CheckedFetchMultiply(elementCount, elementSize, "Column fetch stride is too large");
+    if (byteCount > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+        ThrowStdException("Column fetch stride is too large");
+    }
+    return static_cast<SQLLEN>(byteCount);
+}
+
+template <typename ElementType>
+size_t CheckedArrowSourceOffset(const std::vector<ElementType>& buffer, size_t rowIndex,
+                                size_t stride, size_t dataBytes) {
+    const size_t offset =
+        CheckedFetchMultiply(rowIndex, stride, "Arrow source offset is too large");
+    if (offset > buffer.size() || stride > buffer.size() - offset) {
+        ThrowStdException("Driver data length exceeds the allocated fetch buffer");
+    }
+    const size_t availableBytes =
+        CheckedFetchMultiply(stride, sizeof(ElementType), "Arrow source size is too large");
+    if (dataBytes > availableBytes) {
+        ThrowStdException("Driver data length exceeds the allocated fetch buffer");
+    }
+    return offset;
+}
+
 constexpr int MAX_NATIVE_ROW_COUNT = 1000000;
 constexpr size_t MAX_NATIVE_FETCH_BYTES = 256ULL * 1024 * 1024;
 
@@ -4122,7 +4162,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 if (useWideChar) {
                     // Bind VARCHAR columns as SQL_C_WCHAR so the ODBC driver
                     // returns UTF-16 data, avoiding code-page decode issues.
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    const size_t fetchBufferSize = CheckedFetchAdd(
+                        baseColumnSize, 1, "Column fetch stride is too large");
                     ResizeNativeFetchBuffer(buffers.wcharBuffers[col - 1],
                                             CheckedMultiplySize(fetchSize, fetchBufferSize,
                                                                 "Native fetch buffer is too large"),
@@ -4159,7 +4200,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                const size_t fetchBufferSize = CheckedFetchAdd(
+                    CheckedFetchColumnSize(columnSize), 1, "Column fetch stride is too large");
                 ResizeNativeFetchBuffer(buffers.wcharBuffers[col - 1],
                                         CheckedMultiplySize(fetchSize, fetchBufferSize,
                                                             "Native fetch buffer is too large"),
@@ -4311,16 +4353,16 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         LOG("FetchBatchData: No data to fetch");
         return ret;
     }
-    for (SQLUSMALLINT col = 0; col < numCols; ++col) {
-        if (numRowsFetched > buffers.indicators[col].size()) {
-            ThrowStdException("Driver returned more rows than the allocated fetch buffers");
-        }
-    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchBatchData: Error while fetching rows in batches - "
             "SQLRETURN=%d",
             ret);
         return ret;
+    }
+    for (SQLUSMALLINT col = 0; col < numCols; ++col) {
+        if (numRowsFetched > buffers.indicators[col].size()) {
+            ThrowStdException("Driver returned more rows than the allocated fetch buffers");
+        }
     }
     // Pre-cache column metadata to avoid repeated dictionary lookups.
     // The vectors below are consumed later by construct_rows, so they are
@@ -4753,6 +4795,26 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
     return rowSize;
 }
 
+struct FetchStateGuard {
+    SQLHSTMT hStmt;
+
+    FetchStateGuard(SQLHSTMT stmtHandle, SQLULEN* numRowsFetched, SQLULEN rowArraySize)
+        : hStmt(stmtHandle) {
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)rowArraySize, 0);
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, numRowsFetched, 0);
+    }
+
+    ~FetchStateGuard() {
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+        SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+    }
+
+    void setRowArraySize(SQLULEN rowArraySize) const {
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)rowArraySize, 0);
+    }
+};
+
 // FetchMany_wrap - Fetches multiple rows of data from the result set.
 //
 // @param StatementHandle: Handle to the statement from which data is to be
@@ -4846,8 +4908,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         return ret;
     }
 
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
+    FetchStateGuard fetchStateGuard(hStmt, &numRowsFetched, fetchSize);
 
     ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
                          charEncoding, charCtype);
@@ -4855,13 +4916,6 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         LOG("FetchMany_wrap: Error when fetching data - SQLRETURN=%d", ret);
         return ret;
     }
-
-    // Reset attributes before returning to avoid using stack pointers later
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
-
-    // Unbind columns to allow subsequent fetchone() calls to use SQLGetData
-    SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
     return ret;
 }
@@ -4898,9 +4952,10 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
             ThrowStdException("GetDataVar only supports SQL_C_CHAR, SQL_C_WCHAR, and SQL_C_BINARY");
     }
 
-    // Ensure initial buffer has space for at least the null terminator
-    if (dataVec.size() < sizeNullTerminator) {
-        ResizeNativeFetchBuffer(dataVec, sizeNullTerminator, reservedBytes);
+    // Binary data has no terminator, but SQL_NO_TOTAL still needs room to make progress.
+    const size_t initialSize = std::max<size_t>(sizeNullTerminator, 1);
+    if (dataVec.size() < initialSize) {
+        ResizeNativeFetchBuffer(dataVec, initialSize, reservedBytes);
     }
 
     while (true) {
@@ -4957,8 +5012,13 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
                 end = CheckedMultiplySize(dataVec.size(), 2,
                                           "Native fetch buffer size is too large");
             } else {
+                if (localInd < 0) {
+                    ThrowStdException("Unexpected negative variable-length data indicator");
+                }
+                if (localInd % sizeof(T) != 0) {
+                    ThrowStdException("Variable-length data has an invalid byte length");
+                }
                 // Driver returned total size: allocate exactly what we need
-                assert(localInd % sizeof(T) == 0);
                 end = CheckedAddSize(
                     CheckedAddSize(start, static_cast<size_t>(localInd) / sizeof(T),
                                    "Native fetch buffer size is too large"),
@@ -4994,26 +5054,6 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
 
     return SQL_SUCCESS;
 }
-
-struct FetchStateGuard {
-    SQLHSTMT hStmt;
-
-    FetchStateGuard(SQLHSTMT stmtHandle, SQLULEN* numRowsFetched, SQLULEN rowArraySize)
-        : hStmt(stmtHandle) {
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)rowArraySize, 0);
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, numRowsFetched, 0);
-    }
-
-    ~FetchStateGuard() {
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
-        SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
-    }
-
-    void setRowArraySize(SQLULEN rowArraySize) const {
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)rowArraySize, 0);
-    }
-};
 
 int32_t days_from_civil(int y, int m, int d) {
     // Implements the "days_from_civil" algorithm by Howard Hinnant
@@ -5583,6 +5623,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                             *target_vec,
                             CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
                             reservedBytes);
+                        const size_t sourceOffset = CheckedArrowSourceOffset(
+                            buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
 
                         std::memcpy(&(*target_vec)[start],
                                     &buffers.charBuffers[idxCol][sourceOffset], dataLen);
@@ -5621,6 +5663,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                 *target_vec,
                                 CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
                                 reservedBytes);
+                            const size_t sourceOffset = CheckedArrowSourceOffset(
+                                buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
 
                             std::memcpy(&(*target_vec)[start],
                                         &buffers.charBuffers[idxCol][sourceOffset], dataLen);
@@ -6140,9 +6184,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         return ret;
     }
 
-    SQLULEN numRowsFetched;
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
+    SQLULEN numRowsFetched = 0;
+    FetchStateGuard fetchStateGuard(hStmt, &numRowsFetched, fetchSize);
 
     while (ret != SQL_NO_DATA) {
         ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
@@ -6152,13 +6195,6 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
             return ret;
         }
     }
-
-    // Reset attributes before returning to avoid using stack pointers later
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
-
-    // Unbind columns to allow subsequent fetchone() calls to use SQLGetData
-    SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
 
     return ret;
 }
