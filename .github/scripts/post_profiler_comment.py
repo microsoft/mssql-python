@@ -118,10 +118,9 @@ def publish(pr_number, head, body, base=None):
         # started while open may replace its pending comment with a terminal one.
         return body if pr["state"] == "open" or pr.get("merged") is True else None
 
+    # A stale head/base yields no message here, but still routes through the
+    # comment scan so a lingering pending comment can be superseded below.
     message = current_body()
-    if message is None:
-        print("Not publishing stale performance results")
-        return
     page = 1
     comment = None
     while True:
@@ -278,6 +277,9 @@ def run(number, head, wait_minutes):
             current_base = pr["base"].get("sha")
             pr_base = current_base
             if current_head != head:
+                # Supersede the pending comment through the compare-and-update
+                # path instead of leaving it posted for the stale head.
+                publish_with_retry(number, head, superseded_message())
                 return
             if pr["state"] == "closed" and pr.get("merged") is not True:
                 unavailable(
