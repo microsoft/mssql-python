@@ -236,6 +236,12 @@ async def test_fetch_without_result_set_raises_programming_error(async_cursor, f
 
 
 @pytest.mark.asyncio
+async def test_fetchmany_zero_without_result_set_raises_programming_error(async_cursor):
+    with pytest.raises(public_exceptions.ProgrammingError, match="No active result set"):
+        await async_cursor.fetchmany(0)
+
+
+@pytest.mark.asyncio
 async def test_client_validation_errors_remain_native_python_errors(async_cursor):
     with pytest.raises(KeyError):
         await async_cursor.execute("SELECT %(missing)s", {"other": 1})

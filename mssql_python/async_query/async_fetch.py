@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
+from ..exceptions import ProgrammingError
 from ..logging import logger
 from ..row import Row
 from .exception_translator import translate_py_core_exceptions
@@ -44,6 +45,8 @@ async def fetchmany(cursor: "AsyncCursor", size: int | None = None) -> list[Row]
     requested_size = cursor.arraysize if size is None else size
     logger.debug("AsyncCursor.fetchmany: starting; requested_size=%s", requested_size)
     if requested_size <= 0:
+        if cursor.description is None:
+            raise ProgrammingError("Async operation failed", "No active result set")
         logger.debug("AsyncCursor.fetchmany: completed; row_count=0; rowcount=%d", cursor.rowcount)
         return []
     with translate_py_core_exceptions():
