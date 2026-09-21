@@ -6071,10 +6071,10 @@ py::list construct_rows(const py::list& rows_data,
     PyTypeObject* row_type = reinterpret_cast<PyTypeObject*>(row_class.ptr());
     Py_ssize_t n = PyList_GET_SIZE(rows_data.ptr());
 
-    // Pre-intern slot name strings (cached by CPython after first call)
-    static PyObject* attr_values = PyUnicode_InternFromString("_values");
-    static PyObject* attr_column_map = PyUnicode_InternFromString("_column_map");
-    static PyObject* attr_cursor = PyUnicode_InternFromString("_cursor");
+    // Keep Python-owned names local to this call and its interpreter.
+    py::str attr_values("_values");
+    py::str attr_column_map("_column_map");
+    py::str attr_cursor("_cursor");
     py::str attr_column_map_lower("_column_map_lower");
     py::str attr_column_names("_column_names");
 
@@ -6088,9 +6088,9 @@ py::list construct_rows(const py::list& rows_data,
         PyObject* row_data = PyList_GET_ITEM(rows_data.ptr(), i);
 
         // Set __slots__ via GenericSetAttr (uses descriptor offsets — fast path)
-        if (PyObject_GenericSetAttr(row, attr_values, row_data) < 0 ||
-            PyObject_GenericSetAttr(row, attr_column_map, column_map.ptr()) < 0 ||
-            PyObject_GenericSetAttr(row, attr_cursor, cursor_obj.ptr()) < 0 ||
+        if (PyObject_GenericSetAttr(row, attr_values.ptr(), row_data) < 0 ||
+            PyObject_GenericSetAttr(row, attr_column_map.ptr(), column_map.ptr()) < 0 ||
+            PyObject_GenericSetAttr(row, attr_cursor.ptr(), cursor_obj.ptr()) < 0 ||
             PyObject_GenericSetAttr(row, attr_column_map_lower.ptr(), column_map_lower.ptr()) < 0 ||
             PyObject_GenericSetAttr(row, attr_column_names.ptr(), column_names.ptr()) < 0) {
             Py_DECREF(row);

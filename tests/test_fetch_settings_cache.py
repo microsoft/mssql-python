@@ -496,6 +496,56 @@ def test_fast_row_without_column_snapshot_mapping(native):
     assert dict(row._mapping) == {"number": 1, "text": "abc"}
 
 
+@pytest.mark.parametrize("size", (0, 1, 3))
+def test_construct_rows_repeated_calls_release_references(size):
+    values = [[index] for index in range(size)]
+    column_map = {"Number": 0}
+    column_map_lower = {"number": 0}
+    column_names = ("Number",)
+    cursor = object()
+    tracked = (values, column_map, column_map_lower, column_names, cursor, *values)
+    references = [sys.getrefcount(value) for value in tracked]
+    for _ in range(10):
+        rows = mssql_python.ddbc_bindings.construct_rows(
+            values, Row, column_map, cursor, column_map_lower, column_names
+        )
+        assert len(rows) == size
+        assert all(row._values is values[index] for index, row in enumerate(rows))
+        assert all(row._column_map is column_map for row in rows)
+        assert all(row._column_map_lower is column_map_lower for row in rows)
+        assert all(row._column_names is column_names for row in rows)
+        assert all(row._cursor is cursor for row in rows)
+        del rows
+        assert [sys.getrefcount(value) for value in tracked] == references
+
+
+def test_construct_rows_releases_partial_batch_on_attribute_error():
+    class FailingRow(Row):
+        __slots__ = ()
+
+        @property
+        def _column_names(self):
+            return None
+
+        @_column_names.setter
+        def _column_names(self, names):
+            if self._values[0] == 2:
+                raise RuntimeError("injected slot assignment failure")
+
+    values = [[1], [2]]
+    column_map = {"number": 0}
+    column_names = ("number",)
+    cursor = object()
+    tracked = (values, column_map, column_names, cursor, *values)
+    references = [sys.getrefcount(value) for value in tracked]
+    for _ in range(10):
+        with pytest.raises(RuntimeError, match="injected slot assignment failure"):
+            mssql_python.ddbc_bindings.construct_rows(
+                values, FailingRow, column_map, cursor, None, column_names
+            )
+        assert [sys.getrefcount(value) for value in tracked] == references
+
+
 @pytest.mark.parametrize(
     ("method", "bridge_name"),
     (
