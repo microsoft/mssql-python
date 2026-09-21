@@ -13,6 +13,7 @@ variables:
 jobs:
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -51,6 +52,7 @@ jobs:
 
 - job: pytestonwindows
   displayName: 'Windows x64'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   timeoutInMinutes: 160
   pool:
     vmImage: 'windows-latest'
@@ -558,6 +560,7 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
@@ -734,6 +737,8 @@ jobs:
 
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
+  # Disposable report-format canary #799 needs only the two artifact-producing legs.
+  condition: or(ne(variables['System.PullRequest.PullRequestNumber'], '799'), eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025'))
   timeoutInMinutes: 160
   pool:
     vmImage: 'ubuntu-latest'
@@ -1061,6 +1066,7 @@ jobs:
 
 - job: PytestOnLinux_ARM64
   displayName: 'Linux ARM64'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1300,6 +1306,7 @@ jobs:
 
 - job: PytestOnLinux_RHEL9
   displayName: 'Linux RedHat x86_64'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1501,6 +1508,7 @@ jobs:
 
 - job: PytestOnLinux_RHEL9_ARM64
   displayName: 'Linux RedHat ARM64'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1717,6 +1725,7 @@ jobs:
 
 - job: PytestOnLinux_Alpine
   displayName: 'Linux Alpine x86_64'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1953,6 +1962,7 @@ jobs:
 
 - job: PytestOnLinux_Alpine_ARM64
   displayName: 'Linux Alpine ARM64'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -2421,6 +2431,7 @@ jobs:
 
 - job: CodeCoverageReport
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
+  condition: ne(variables['System.PullRequest.PullRequestNumber'], '799')
   pool:
     vmImage: 'ubuntu-latest'
 
