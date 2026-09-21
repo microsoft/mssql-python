@@ -263,6 +263,7 @@ def run(number, head, wait_minutes):
     pr_base = None
     completed_at = None
     selected_build_id = None
+    build_resumed = False
     assessment_ready = False
     failures = 0
     while time.monotonic() < (
@@ -313,12 +314,21 @@ def run(number, head, wait_minutes):
                 selected_build_id = build_id
                 artifacts = None
                 completed_at = None
+                build_resumed = False
             status = build.get("status")
             result = build.get("result")
+            if status == "cancelling":
+                failures = 0
+                artifacts = None
+                completed_at = None
+                build_resumed = True
+                time.sleep(30)
+                continue
             if status == "completed" and result == "canceled":
                 failures = 0
                 artifacts = None
                 completed_at = None
+                build_resumed = True
                 time.sleep(30)
                 continue
             if status == "completed" and result not in COMPLETED_RESULTS:
@@ -329,6 +339,10 @@ def run(number, head, wait_minutes):
                     pr_base,
                 )
                 return
+            if status != "completed":
+                if completed_at is not None:
+                    build_resumed = True
+                completed_at = None
             if status == "completed" and completed_at is None:
                 completed_at = time.monotonic()
             artifacts = artifact_items(api(f"{ADO}/builds/{build_id}/artifacts?api-version=7.1"))
@@ -342,7 +356,7 @@ def run(number, head, wait_minutes):
             }
             # Artifact readiness is the report signal; unrelated matrix legs do
             # not need to finish before the required profiler legs are assessed.
-            if required <= usable:
+            if required <= usable and (status == "completed" or not build_resumed):
                 assessment_ready = True
                 break
             if (

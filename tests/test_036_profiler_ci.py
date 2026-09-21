@@ -1268,6 +1268,74 @@ def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report
     assert "buildId=42" in posted[1]
 
 
+def test_publisher_ignores_cancelling_build_artifacts_and_uses_replacement(monkeypatch):
+    posted = []
+    clock = [0]
+    cancelling = ado_build(id=41, status="cancelling", result=None)
+    replacement = ado_build(id=42, status="inProgress", result=None)
+    builds = [[cancelling], [replacement]]
+    artifacts = [
+        {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
+        for leg in reporting.LEGS
+    ]
+
+    def api(url):
+        if "/builds?" in url:
+            return {"value": builds.pop(0) if len(builds) > 1 else builds[0]}
+        return {"value": artifacts}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(
+        reporting, "assess", lambda evidence, *args: f"buildId={evidence.build['id']}"
+    )
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 4)
+    assert clock[0] == 30
+    assert posted[-1] == "buildId=42"
+
+
+def test_publisher_restarts_artifact_grace_when_completed_build_resumes(monkeypatch):
+    posted = []
+    clock = [0]
+    builds = [
+        ado_build(),
+        ado_build(status="inProgress", result=None),
+        ado_build(),
+    ]
+    artifacts = [
+        {
+            "name": "profiler-Linux-SQL2022",
+            "resource": {"downloadUrl": "https://dev.azure.com/Linux-SQL2022"},
+        }
+    ]
+
+    def api(url):
+        if "/builds?" in url:
+            return {"value": [builds.pop(0) if len(builds) > 1 else builds[0]]}
+        return {"value": artifacts}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(reporting, "assess", lambda *args: "partial report")
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 2)
+    assert clock[0] == 180
+    assert posted[-1] == "partial report"
+
+
 @pytest.mark.parametrize("result", [None, "unknown"])
 def test_publisher_rejects_unsupported_completed_results(monkeypatch, result):
     posted = []
