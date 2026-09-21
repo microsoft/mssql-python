@@ -5,10 +5,10 @@ from uuid import UUID, uuid4
 
 from mssql_python.constants import ConstantsDDBC
 
-pytest.importorskip("mssql_py_core", exc_type=ImportError)
+mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python.async_query import AsyncConnection, AsyncCursor, async_execute
-from mssql_python import OperationalError, ProgrammingError
+from mssql_python import DatabaseError, OperationalError, ProgrammingError
 from mssql_python.row import Row
 
 
@@ -107,6 +107,53 @@ async def test_failed_execution_clears_wrapper_state_when_native_discards_result
 
     assert cursor.description is None
     assert cursor.rowcount == -1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ("execute", "executemany"))
+@pytest.mark.parametrize("failure_stage", ("inspection", "metadata"))
+async def test_reconciliation_failure_preserves_original_execution_error(method, failure_stage):
+    native_error = mssql_py_core.DatabaseError("query failed")
+    native_error.sql_errors = [{"number": 50001}]
+
+    class BrokenNativeCursor:
+        broken = False
+        description_reads = 0
+
+        @property
+        def description(self):
+            self.description_reads += 1
+            if self.broken and (failure_stage == "inspection" or self.description_reads > 2):
+                raise RuntimeError("Connection is broken")
+            if self.broken:
+                return None
+            return [("value", int, None, None, None, None, True)]
+
+        @property
+        def rowcount(self):
+            if self.broken and failure_stage == "inspection":
+                raise RuntimeError("Connection is broken")
+            return -1 if self.broken else 1
+
+        async def execute(self, *_args, **_kwargs):
+            self.broken = True
+            raise native_error
+
+        async def executemany(self, *_args, **_kwargs):
+            self.broken = True
+            raise native_error
+
+    cursor = AsyncCursor(BrokenNativeCursor())
+
+    with pytest.raises(DatabaseError) as caught:
+        if method == "execute":
+            await cursor.execute("SELECT 1")
+        else:
+            await cursor.executemany("SELECT ?", [(1,)])
+
+    assert caught.value.__cause__ is native_error
+    assert getattr(caught.value, "sql_errors") == native_error.sql_errors
+    assert cursor.description is None
 
 
 @pytest.mark.asyncio

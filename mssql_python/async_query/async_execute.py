@@ -23,11 +23,20 @@ def _native_result_state(cursor: "AsyncCursor") -> tuple[Any, int]:
 def _reconcile_failed_execution(
     cursor: "AsyncCursor", previous_native_state: tuple[Any, int]
 ) -> None:
-    if _native_result_state(cursor) == previous_native_state:
+    try:
+        if _native_result_state(cursor) == previous_native_state:
+            return
+    except Exception as error:
+        logger.debug("Async execution state inspection failed: %s", error)
+        cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
+        cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]
         return
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]
-    cursor._initialize_result_metadata()  # pyright: ignore[reportPrivateUsage]
+    try:
+        cursor._initialize_result_metadata()  # pyright: ignore[reportPrivateUsage]
+    except Exception as error:
+        logger.debug("Async execution metadata recovery failed: %s", error)
 
 
 async def execute(
