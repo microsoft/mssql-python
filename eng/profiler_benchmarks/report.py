@@ -15,7 +15,7 @@ import zlib
 
 # Hosted macOS plus Colima produced false regressions on a documentation-only
 # control PR. Routine reports use stable Ubuntu measurements as the Unix signal.
-LEGS = ("Windows-SQL2022", "Windows-SQL2025", "Linux-SQL2022", "Linux-SQL2025")
+LEGS = ("Linux-SQL2022", "Linux-SQL2025")
 TASK_NAMES = {
     "connect": "Connection opening",
     "select": "SELECT queries",
@@ -275,12 +275,17 @@ def comparisons(report):
         ratio = statistics.median(ratios)
         # Requiring 80% of paired samples to agree avoids flagging one noisy pass.
         agrees = sum(r > 1 + THRESHOLD for r in ratios) >= math.ceil(len(ratios) * 0.8)
+        improves = sum(r < 1 - THRESHOLD for r in ratios) >= math.ceil(len(ratios) * 0.8)
         status = (
             "regression"
             if ratio > 1 + THRESHOLD and new - old >= MIN_DELTA_MS and agrees
-            else ("noisy" if ratio > 1 + THRESHOLD and new - old >= MIN_DELTA_MS else "ok")
+            else (
+                "improvement"
+                if ratio < 1 - THRESHOLD and old - new >= MIN_DELTA_MS and improves
+                else ("noisy" if ratio > 1 + THRESHOLD and new - old >= MIN_DELTA_MS else "ok")
+            )
         )
-        phases = []
+        phase_deltas = []
         changed_counts = []
         for layer in ("cpp", "py"):
             labels = set().union(*(s[layer] for s in base + candidate))
@@ -298,8 +303,13 @@ def comparisons(report):
                     statistics.median(s["total_us"] for s in after)
                     - statistics.median(s["total_us"] for s in before)
                 ) / 1000
-                if delta > 0:
-                    phases.append((delta, label))
+                if delta:
+                    phase_deltas.append((delta, label))
+        phases = (
+            sorted((item for item in phase_deltas if item[0] < 0))[:3]
+            if status == "improvement"
+            else sorted((item for item in phase_deltas if item[0] > 0), reverse=True)[:3]
+        )
         output.append(
             dict(
                 name=name,
@@ -307,7 +317,7 @@ def comparisons(report):
                 candidate_ms=new,
                 change_pct=(ratio - 1) * 100,
                 status=status,
-                phases=sorted(phases, reverse=True)[:3],
+                phases=phases,
                 counts=sorted(changed_counts)[:3],
             )
         )
@@ -352,6 +362,12 @@ def render(reports, head, build_id, issues=()):
         for row in rows
         if row["status"] == "regression"
     ]
+    improvements = [
+        (leg, row)
+        for leg, (_, rows) in completed.items()
+        for row in rows
+        if row["status"] == "improvement"
+    ]
     noisy = [
         (leg, row)
         for leg, (_, rows) in completed.items()
@@ -387,6 +403,19 @@ def render(reports, head, build_id, issues=()):
                 f"No consistent slowdowns detected. {len(noisy)} inconsistent comparisons "
                 f"need review across {tasks} database tasks and {environments} environments."
             )
+    elif len(improvements) == 1:
+        leg, row = improvements[0]
+        opening = (
+            f"This PR consistently makes {TASK_NAMES[row['name']].lower()} faster on "
+            f"{environment_name(leg)} by {abs(row['change_pct']):.1f}%."
+        )
+    elif improvements:
+        tasks = len({row["name"] for _, row in improvements})
+        environments = len({leg for leg, _ in improvements})
+        opening = (
+            f"This PR has {len(improvements)} consistent improvement signals across "
+            f"{tasks} database tasks and {environments} environments."
+        )
     elif not completed:
         opening = (
             "Performance could not be assessed because no environment produced a complete result."
@@ -402,9 +431,9 @@ def render(reports, head, build_id, issues=()):
         )
 
     lines = [MARKER, "## PR Performance Report", "", f"**{opening}**", ""]
-    highlighted = regressions or noisy
+    highlighted = regressions or noisy or improvements
     if highlighted:
-        if not regressions:
+        if not regressions and noisy:
             lines += ["Inconsistent slowdowns to review:", ""]
         lines += [
             "| Environment | Affected task | Before | After | Change |",
@@ -465,9 +494,9 @@ def render(reports, head, build_id, issues=()):
         lines += ["", f"### {environment_name(leg)}"]
         for row in visible:
             diagnostics += 1
-            phases = "; ".join(f"{escape(label)} +{delta:.3f} ms" for delta, label in row["phases"])
+            phases = "; ".join(f"{escape(label)} {delta:+.3f} ms" for delta, label in row["phases"])
             counts = "; ".join(escape(label) for label in row["counts"])
-            detail = phases or "no positive phase delta"
+            detail = phases or "no measured phase delta"
             if counts:
                 detail += f". Call changes: {counts}"
             lines.append(f"**{TASK_NAMES[row['name']]}:** {detail}.")
@@ -500,6 +529,7 @@ def render(reports, head, build_id, issues=()):
         for row in rows:
             result = {
                 "regression": "consistent slowdown",
+                "improvement": "consistent improvement",
                 "noisy": "inconsistent slowdown",
                 "ok": "no signal",
             }[row["status"]]
@@ -536,10 +566,10 @@ def render(reports, head, build_id, issues=()):
             )
     lines += [
         "",
-        "A consistent slowdown requires more than 20% median paired slowdown, at least "
+        "A consistent change requires more than 20% median paired movement, at least "
         "1 ms between the median runtimes, and at least 80% of pairs exceeding the "
-        "relative threshold. An inconsistent slowdown crosses the first two thresholds "
-        "without enough pair agreement.",
+        "relative threshold in the same direction. A slowdown without enough pair "
+        "agreement is reported as inconsistent.",
         "",
         "The displayed change is the median of paired before-and-after ratios. It is not "
         "recalculated from the two displayed median runtimes.",

@@ -117,7 +117,7 @@ def test_consistent_slowdown_is_advisory_regression(report):
     body = reporting.render([report], "c" * 40, 42)
     assert "20 consistent slowdown signals" in body
     assert "| Unix / SQL Server 2022 | Connection opening |" in body
-    assert "| Windows / SQL Server 2022 | No result available" in body
+    assert "| Unix / SQL Server 2025 | No result available" in body
     assert body.index("consistent slowdown signals") < body.index(
         "<summary>Build, commits and measurement details</summary>"
     )
@@ -218,9 +218,9 @@ def set_leg(report, leg):
 )
 def test_standalone_report_rejects_mixed_provenance(report, tmp_path, monkeypatch, key, value):
     first = tmp_path / "linux.json"
-    second = tmp_path / "windows.json"
+    second = tmp_path / "linux-2025.json"
     first.write_text(json.dumps(report), encoding="utf-8")
-    other = set_leg(report, "Windows-SQL2022")
+    other = set_leg(report, "Linux-SQL2025")
     other[key] = value
     second.write_text(json.dumps(other), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["report", str(first), str(second)])
@@ -247,7 +247,7 @@ def test_render_bounds_schema_valid_diagnostics(report):
         reporting.validate(item)
     body = reporting.render(reports, "c" * 40, 42)
     assert len(body) <= 60000
-    assert "80 diagnostic rows are available in the raw ADO artifacts" in body
+    assert "20 additional diagnostic rows are available in the raw ADO artifacts" in body
     assert "<summary>All database tasks and timings</summary>" in body
     assert "<summary>Build, commits and measurement details</summary>" in body
 
@@ -296,8 +296,8 @@ def test_impact_summary_handles_single_inconsistent_and_complete_clean_results(r
 
     complete = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
     clean_body = reporting.render(complete, "c" * 40, 42)
-    assert "**No consistent slowdowns detected across all 4 environments.**" in clean_body
-    assert "**Coverage:** 4 of 4 environments completed." in clean_body
+    assert "**No consistent slowdowns detected across all 2 environments.**" in clean_body
+    assert "**Coverage:** 2 of 2 environments completed." in clean_body
 
 
 def test_impact_summary_handles_single_regression_partial_and_no_results(report):
@@ -317,16 +317,56 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
         [clear_slowdowns(copy.deepcopy(report))],
         "c" * 40,
         42,
-        ["Windows-SQL2022 (missing)"],
+        ["Linux-SQL2025 (missing)"],
     )
     assert "No consistent slowdowns in the 1 completed environment." in partial
-    assert "No result is available for 3 environments." in partial
-    assert "| Windows / SQL Server 2022 | No result available (missing) |" in partial
+    assert "No result is available for 1 environment." in partial
+    assert "| Unix / SQL Server 2025 | No result available (missing) |" in partial
     assert "pending" not in partial.lower()
 
     unavailable = reporting.render([], "c" * 40, 42, ["Linux-SQL2022 (invalid artifact)"])
     assert "Performance could not be assessed" in unavailable
     assert "No consistent slowdowns" not in unavailable
+
+
+def test_impact_summary_reports_consistent_improvements(report):
+    single = clear_slowdowns(copy.deepcopy(report))
+    for pair in single["pairs"]:
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
+        pair["candidate"]["scenarios"]["fetchall"]["cpp"]["ddbc::query"] = dict(
+            calls=1, total_us=500, min_us=500, max_us=500
+        )
+    rows = reporting.comparisons(single)
+    assert rows[4]["status"] == "improvement"
+    assert rows[4]["phases"] == [(-0.5, "ddbc::query")]
+    body = reporting.render([single], "c" * 40, 42)
+    assert (
+        "**This PR consistently makes fetch-all queries faster on Unix / SQL Server 2022 "
+        "by 30.0%.**"
+    ) in body
+    assert "| Unix / SQL Server 2022 | Fetch-all queries |" in body
+    assert "| Fetch-all queries |" in body and "| consistent improvement |" in body
+    assert "ddbc::query -0.500 ms" in body
+
+
+def test_regression_headline_keeps_precedence_over_improvement(report):
+    mixed = clear_slowdowns(copy.deepcopy(report))
+    for pair in mixed["pairs"]:
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
+        pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
+    body = reporting.render([mixed], "c" * 40, 42)
+    assert "**This PR consistently slows row-by-row fetching" in body
+
+
+def test_inconsistent_slowdown_keeps_precedence_over_improvement(report):
+    mixed = clear_slowdowns(copy.deepcopy(report))
+    for pair in mixed["pairs"]:
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
+    for pair, scale in zip(mixed["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
+        pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
+    body = reporting.render([mixed], "c" * 40, 42)
+    assert "**Row-by-row fetching was slower" in body
+    assert "Inconsistent slowdowns to review:" in body
 
 
 @pytest.mark.parametrize(
@@ -839,7 +879,7 @@ def test_full_sample_budget_fits_slow_hosted_workers(
 
 def test_ci_deadlines_include_setup_queueing_and_publication():
     pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
-    for job in ("pytestonwindows", "PytestOnLinux"):
+    for job in ("PytestOnLinux",):
         section = pipeline.split(f"- job: {job}\n", 1)[1].split("\n- job:", 1)[0]
         job_minutes = int(re.search(r"^  timeoutInMinutes: (\d+)$", section, re.M)[1])
         benchmark_step = section.split(
@@ -1080,15 +1120,11 @@ def test_head_change_after_comment_write_supersedes_only_unchanged_body(monkeypa
 )
 def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, monkeypatch, corrupt):
     posted = []
-    windows = copy.deepcopy(report)
-    windows["leg"] = "Windows-SQL2022"
-    for pair in windows["pairs"]:
-        for sample in pair.values():
-            sample["environment"]["os"] = "Windows"
+    linux_2025 = set_leg(report, "Linux-SQL2025")
     if corrupt == "scenarios":
         report["pairs"][0]["candidate"]["scenarios"] = list(reporting.CASES)
     data = {
-        "Windows-SQL2022": zip_data([("report.json", json.dumps(windows))]),
+        "Linux-SQL2025": zip_data([("report.json", json.dumps(linux_2025))]),
         "Linux-SQL2022": (
             b"invalid ZIP"
             if corrupt == "zip"
@@ -1163,14 +1199,15 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     if corrupt in ("base", "provenance"):
         assert "Build provenance validation failed" in posted[1]
         return
-    assert "| Windows / SQL Server 2025 | No result available" in posted[1]
     if corrupt in ("zip", "timeout", "scenarios", "recursion", "deflate"):
-        assert "### Windows / SQL Server 2022" in posted[1]
+        assert "### Unix / SQL Server 2025" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
         assert "| Unix / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
         assert posted[1].count("20 consistent slowdown signals") == 1
     else:
-        assert "### Windows / SQL Server 2022" in posted[1]
+        assert "**Coverage:** 2 of 2 environments completed." in posted[1]
+        assert "### Unix / SQL Server 2022" in posted[1]
+        assert "### Unix / SQL Server 2025" in posted[1]
         assert posted[1].count("40 consistent slowdown signals") == 1
 
 
@@ -1408,8 +1445,8 @@ def test_completed_build_publishes_partial_result_after_artifact_grace(monkeypat
     build = ado_build()
     artifacts = [
         {
-            "name": "profiler-Windows-SQL2022",
-            "resource": {"downloadUrl": "https://dev.azure.com/Windows-SQL2022"},
+            "name": "profiler-Linux-SQL2022",
+            "resource": {"downloadUrl": "https://dev.azure.com/Linux-SQL2022"},
         }
     ]
 
@@ -1437,8 +1474,8 @@ def test_deadline_does_not_assess_partial_running_build(monkeypatch):
     build = ado_build(status="inProgress", result=None)
     artifacts = [
         {
-            "name": "profiler-Windows-SQL2022",
-            "resource": {"downloadUrl": "https://dev.azure.com/Windows-SQL2022"},
+            "name": "profiler-Linux-SQL2022",
+            "resource": {"downloadUrl": "https://dev.azure.com/Linux-SQL2022"},
         }
     ]
 
@@ -1490,25 +1527,19 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
         pipeline,
     )
     assert len(profiler_conditions) == 4
+    assert profiler_conditions.count("false") == 2
     assert all(
         "eq(variables['Build.Reason'], 'PullRequest')" in condition
         for condition in profiler_conditions
+        if condition != "false"
     )
     for release in (ROOT / "OneBranchPipelines").rglob("*.yml"):
         assert "ENABLE_PROFILING" not in release.read_text(encoding="utf-8")
     windows = pipeline.split("- job: pytestonwindows\n", 1)[1].split("\n- job:", 1)[0]
     assert "##vso[task.setvariable" not in windows
-    assert "ENABLE_PROFILING: 1" in windows
-    assert "ArtifactName: 'ddbc_bindings-profiling-$(sqlVersion)'" in windows
+    assert windows.count("condition: false") >= 5
     assert "ArtifactName: 'ddbc_bindings'" in windows
-    assert (
-        "condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), "
-        "ne(variables['sqlVersion'], 'LocalDB'))"
-    ) in windows
-    assert (
-        "condition: and(succeeded(), or(ne(variables['Build.Reason'], 'PullRequest'), "
-        "eq(variables['sqlVersion'], 'LocalDB')))"
-    ) in windows
+    assert "Hosted Windows timings varied more than the regression threshold" in windows
     macos = pipeline.split("- job: PytestOnMacOS\n", 1)[1].split("\n- job:", 1)[0]
     assert "timeoutInMinutes: 90" in macos
     assert "ENABLE_PROFILING" not in macos
