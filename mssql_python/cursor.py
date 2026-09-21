@@ -13,7 +13,6 @@ Resource Management:
 
 import decimal
 import logging
-import time
 import uuid
 import datetime
 import warnings
@@ -1699,9 +1698,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Log the actual query being executed
         logger.debug("Executing query: %s", operation)
-
-        if operation == "SELECT ?" and parameters:
-            time.sleep(0.005)
 
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
