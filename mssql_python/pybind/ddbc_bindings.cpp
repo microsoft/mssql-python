@@ -323,6 +323,9 @@ ParamType* AllocateParamBuffer(std::vector<std::shared_ptr<void>>& paramBuffers,
 template <typename ParamType>
 ParamType* AllocateParamBufferArray(std::vector<std::shared_ptr<void>>& paramBuffers,
                                     size_t count) {
+    if (count > std::numeric_limits<size_t>::max() / sizeof(ParamType)) {
+        ThrowStdException("Parameter buffer size is too large");
+    }
     std::shared_ptr<ParamType> buffer(new ParamType[count], std::default_delete<ParamType[]>());
     ParamType* raw = buffer.get();
     paramBuffers.push_back(buffer);
@@ -546,6 +549,10 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
         "with %zu parameters",
         (void*)hStmt, params.size());
 
+    if (params.size() != paramInfos.size()) {
+        ThrowStdException("Parameter count does not match parameter metadata count");
+    }
+
     // GH-627: resolve unknown NULL param SQL types before binding any param.
     PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
@@ -623,8 +630,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_BINARY: {
-                if (!py::isinstance<py::str>(param) && !py::isinstance<py::bytearray>(param) &&
-                    !py::isinstance<py::bytes>(param)) {
+                if (!py::isinstance<py::bytearray>(param) && !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
                 if (paramInfo.isDAE) {
@@ -2280,6 +2286,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     LOG("BindParameterArray: Starting column-wise array binding - "
         "param_count=%zu, param_set_size=%zu",
         columnwise_params.size(), paramSetSize);
+    if (columnwise_params.size() != paramInfos.size()) {
+        ThrowStdException("Parameter count does not match parameter metadata count");
+    }
 
     std::vector<std::shared_ptr<void>> tempBuffers;
 
@@ -2347,8 +2356,18 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_WCHAR array - "
                         "param_index=%d, count=%zu, column_size=%zu",
                         paramIndex, paramSetSize, info.columnSize);
+                    const size_t elementWidth = CheckedAddSize(
+                        info.columnSize, 1, "Wide-character parameter size is too large");
+                    const size_t bufferBytes = CheckedMultiplySize(
+                        elementWidth, sizeof(SQLWCHAR),
+                        "Wide-character parameter length is too large");
+                    if (bufferBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+                        ThrowStdException("Wide-character parameter length is too large");
+                    }
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers,
+                        CheckedMultiplySize(paramSetSize, elementWidth,
+                                            "Wide-character parameter buffer is too large"));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
@@ -2373,7 +2392,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = wcharArray;
-                    bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                    bufferLength = static_cast<SQLLEN>(bufferBytes);
                     break;
                 }
                 case SQL_C_TINYINT:
@@ -2444,8 +2463,15 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_CHAR/BINARY array - "
                         "param_index=%d, count=%zu, column_size=%zu, encoding='%s'",
                         paramIndex, paramSetSize, info.columnSize, charEncoding.c_str());
+                    const size_t elementWidth = CheckedAddSize(
+                        info.columnSize, 1, "Character parameter size is too large");
+                    if (elementWidth > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+                        ThrowStdException("Character parameter length is too large");
+                    }
                     char* charArray = AllocateParamBufferArray<char>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers,
+                        CheckedMultiplySize(paramSetSize, elementWidth,
+                                            "Character parameter buffer is too large"));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
@@ -2498,7 +2524,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = charArray;
-                    bufferLength = info.columnSize + 1;
+                    bufferLength = static_cast<SQLLEN>(elementWidth);
                     break;
                 }
                 case SQL_C_BIT: {
@@ -3263,6 +3289,9 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         return py::str("");
     }
     if (isWideChar) {
+        if (buffer.size() % sizeof(SQLWCHAR) != 0) {
+            ThrowStdException("Wide-character LOB data has an invalid byte length");
+        }
         size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
         std::vector<SQLWCHAR> alignedBuf(wcharCount);
         std::memcpy(alignedBuf.data(), buffer.data(), buffer.size());

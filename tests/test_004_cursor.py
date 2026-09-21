@@ -1730,6 +1730,34 @@ def test_arraysize(cursor):
     assert cursor.arraysize == 5, "Arraysize mismatch after change"
 
 
+@pytest.mark.parametrize("value", [0, -1, 2**31])
+def test_arraysize_rejects_out_of_range_values(value):
+    cursor = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    with pytest.raises(ValueError, match="arraysize"):
+        cursor.arraysize = value
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, "10"])
+def test_arraysize_rejects_non_integer_values(value):
+    cursor = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    with pytest.raises(TypeError, match="arraysize"):
+        cursor.arraysize = value
+
+
+@pytest.mark.parametrize(
+    "size_info",
+    [
+        (True,),
+        (mssql_python.SQL_WVARCHAR, True, 0),
+        (mssql_python.SQL_DECIMAL, 18, True),
+    ],
+)
+def test_setinputsizes_rejects_boolean_sizes(size_info):
+    cursor = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    with pytest.raises(ValueError):
+        cursor.setinputsizes([size_info])
+
+
 def test_description(cursor):
     """Test description"""
     cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1")
