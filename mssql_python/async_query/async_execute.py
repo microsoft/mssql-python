@@ -17,7 +17,8 @@ def _get_py_core_async_cursor(cursor: "AsyncCursor") -> Any:
 
 def _native_result_state(cursor: "AsyncCursor") -> tuple[Any, int]:
     py_core_cursor = _get_py_core_async_cursor(cursor)
-    return py_core_cursor.description, py_core_cursor.rowcount
+    with translate_py_core_exceptions():
+        return py_core_cursor.description, py_core_cursor.rowcount
 
 
 def _reconcile_failed_execution(
