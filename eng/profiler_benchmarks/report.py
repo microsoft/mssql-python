@@ -387,7 +387,7 @@ def render(reports, head, build_id, issues=()):
             f"{tasks} database task{'s' if tasks != 1 else ''} consistently slowed down across "
             f"{environments} measured environment{'s' if environments != 1 else ''}."
         )
-        alert, verdict = "[!CAUTION]", "Performance regression detected"
+        verdict = "⚠️ Performance regression detected"
     elif noisy:
         tasks = len({row["name"] for _, row in noisy})
         environments = len({leg for leg, _ in noisy})
@@ -396,7 +396,7 @@ def render(reports, head, build_id, issues=()):
             f"signals across {environments} measured environment"
             f"{'s' if environments != 1 else ''}."
         )
-        alert, verdict = "[!WARNING]", "Performance needs review"
+        verdict = "🔍 Performance needs review"
     elif improvements:
         tasks = len({row["name"] for _, row in improvements})
         environments = len({leg for leg, _ in improvements})
@@ -405,15 +405,15 @@ def render(reports, head, build_id, issues=()):
             f"{environments} measured environment{'s' if environments != 1 else ''}. "
             "No consistent slowdowns were detected."
         )
-        alert, verdict = "[!TIP]", "Performance improved"
+        verdict = "✅ Performance improved"
     elif not completed:
         opening = (
             "Performance could not be assessed because no environment produced a complete result."
         )
-        alert, verdict = "[!CAUTION]", "Performance unavailable"
+        verdict = "⛔ Performance unavailable"
     elif not missing:
         opening = f"No consistent slowdowns detected across all {len(LEGS)} environments."
-        alert, verdict = "[!NOTE]", "No regression detected"
+        verdict = "✅ No regression detected"
     else:
         completed_label = "environment" if len(completed) == 1 else "environments"
         missing_label = "environment" if missing == 1 else "environments"
@@ -421,7 +421,7 @@ def render(reports, head, build_id, issues=()):
             f"No consistent slowdowns in the {len(completed)} completed {completed_label}. "
             f"No result is available for {missing} {missing_label}."
         )
-        alert, verdict = "[!NOTE]", "No regression detected"
+        verdict = "✅ No regression detected"
 
     improvement_tasks = len({row["name"] for _, row in improvements})
     regression_tasks = len({row["name"] for _, row in regressions})
@@ -429,9 +429,9 @@ def render(reports, head, build_id, issues=()):
         MARKER,
         "## PR Performance Report",
         "",
-        f"> {alert}",
-        f"> ### {verdict}",
-        f"> **{opening}**",
+        f"### {verdict}",
+        "",
+        f"**{opening}**",
         "",
         f"<kbd>{improvement_tasks} IMPROVEMENT"
         f"{'S' if improvement_tasks != 1 else ''}</kbd> "
@@ -453,38 +453,37 @@ def render(reports, head, build_id, issues=()):
         lines += [
             "### Signal fingerprint",
             "",
-            "| Environment | "
-            + " | ".join(escape(TASK_NAMES[name]) for name in affected_tasks)
-            + " |",
-            "|---|" + "|".join("---:" for _ in affected_tasks) + "|",
+            "| Database task | "
+            + " | ".join(environment_name(leg) for leg in affected_legs)
+            + " | Spread |",
+            "|---|" + "|".join("---:" for _ in affected_legs) + "|---:|",
         ]
-        for leg in affected_legs:
+        for name in affected_tasks:
             cells = []
-            for name in affected_tasks:
+            rows = []
+            for leg in affected_legs:
                 row = by_signal.get((leg, name))
                 if row is None:
                     cells.append("No signal")
                 elif row["status"] == "improvement":
-                    cells.append(f"**▼ {abs(row['change_pct']):.1f}% faster**")
+                    cells.append(f"**{abs(row['change_pct']):.1f}% faster**")
                 elif row["status"] == "regression":
-                    cells.append(f"**▲ {abs(row['change_pct']):.1f}% slower**")
+                    cells.append(f"**{abs(row['change_pct']):.1f}% slower**")
                 else:
-                    cells.append(f"**▲ {abs(row['change_pct']):.1f}% inconsistent**")
-            lines.append(f"| {environment_name(leg)} | " + " | ".join(cells) + " |")
-        spreads = []
-        for name in affected_tasks:
-            rows = [row for _, row in highlighted if row["name"] == name]
+                    cells.append(f"**{abs(row['change_pct']):.1f}% inconsistent**")
+                if row is not None:
+                    rows.append(row)
             if len(rows) > 1 and len({row["status"] for row in rows}) == 1:
                 spread = max(abs(row["change_pct"]) for row in rows) - min(
                     abs(row["change_pct"]) for row in rows
                 )
-                spreads.append(f"**{spread:.1f} pp**")
+                spread_cell = f"**{spread:.1f} pp**"
             else:
-                spreads.append("Not comparable")
-        lines += [
-            "| Cross-environment spread | " + " | ".join(spreads) + " |",
-            "",
-        ]
+                spread_cell = "Not comparable"
+            lines.append(
+                f"| {escape(TASK_NAMES[name])} | " + " | ".join(cells) + f" | {spread_cell} |"
+            )
+        lines.append("")
     if regressions:
         lines.append(
             "The largest recorded phase increases for these tasks are shown below. "

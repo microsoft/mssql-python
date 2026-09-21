@@ -115,7 +115,7 @@ def test_consistent_slowdown_is_advisory_regression(report):
         row["status"] == "regression" and row["change_pct"] == pytest.approx(30) for row in rows
     )
     body = reporting.render([report], "c" * 40, 42)
-    assert "> ### Performance regression detected" in body
+    assert "### ⚠️ Performance regression detected" in body
     assert "20 database tasks consistently slowed down" in body
     assert "| Unix / SQL Server 2022 | Connection opening |" in body
     assert "Unavailable: Unix / SQL Server 2025 (incomplete benchmark)." in body
@@ -289,13 +289,13 @@ def test_impact_summary_handles_single_inconsistent_and_complete_clean_results(r
     for pair, scale in zip(clean["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
     noisy = reporting.render([clean], "c" * 40, 42)
-    assert "> ### Performance needs review" in noisy
+    assert "### 🔍 Performance needs review" in noisy
     assert "1 database task produced inconsistent slowdown signals" in noisy
     assert "<kbd>1 INCONSISTENT SLOWDOWN</kbd>" in noisy
 
     complete = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
     clean_body = reporting.render(complete, "c" * 40, 42)
-    assert "> ### No regression detected" in clean_body
+    assert "### ✅ No regression detected" in clean_body
     assert "**No consistent slowdowns detected across all 2 environments.**" in clean_body
     assert "**Coverage:** 2 of 2 environments completed." in clean_body
 
@@ -305,7 +305,7 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
     for pair in single["pairs"]:
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
     body = reporting.render([single], "c" * 40, 42)
-    assert "> ### Performance regression detected" in body
+    assert "### ⚠️ Performance regression detected" in body
     assert "**1 database task consistently slowed down across 1 measured environment.**" in body
     assert "<summary><b>Performance diagnostics</b></summary>" in body
     assert "<summary><b>All database tasks and timings</b></summary>" in body
@@ -341,15 +341,17 @@ def test_impact_summary_reports_consistent_improvements(report):
     assert rows[4]["status"] == "improvement"
     assert rows[4]["phases"] == [(-0.5, "ddbc::query")]
     body = reporting.render(reports, "c" * 40, 42)
-    assert "> ### Performance improved" in body
+    assert "### ✅ Performance improved" in body
     assert (
         "**2 database tasks consistently improved across 2 measured environments. "
         "No consistent slowdowns were detected.**"
     ) in body
     assert "<kbd>2 IMPROVEMENTS</kbd> <kbd>0 SLOWDOWNS</kbd> <kbd>2/2 ENVIRONMENTS</kbd>" in body
-    assert "| Unix / SQL Server 2022 | **▼ 30.0% faster** | **▼ 40.0% faster** |" in body
-    assert "| Unix / SQL Server 2025 | **▼ 28.0% faster** | **▼ 39.0% faster** |" in body
-    assert "| Cross-environment spread | **2.0 pp** | **1.0 pp** |" in body
+    assert "| Fetch-all queries | **30.0% faster** | **28.0% faster** | **2.0 pp** |" in body
+    assert (
+        "| Insertion with explicit input sizes | **40.0% faster** | "
+        "**39.0% faster** | **1.0 pp** |"
+    ) in body
     assert "<summary><b>Measured timings</b></summary>" in body
     assert "| Fetch-all queries |" in body and "| consistent improvement |" in body
     assert "ddbc::query -0.500 ms" in body
@@ -361,7 +363,7 @@ def test_regression_headline_keeps_precedence_over_improvement(report):
         pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
     body = reporting.render([mixed], "c" * 40, 42)
-    assert "> ### Performance regression detected" in body
+    assert "### ⚠️ Performance regression detected" in body
     assert "<kbd>1 IMPROVEMENT</kbd> <kbd>1 SLOWDOWN</kbd>" in body
 
 
@@ -372,7 +374,7 @@ def test_inconsistent_slowdown_keeps_precedence_over_improvement(report):
     for pair, scale in zip(mixed["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
     body = reporting.render([mixed], "c" * 40, 42)
-    assert "> ### Performance needs review" in body
+    assert "### 🔍 Performance needs review" in body
     assert "<kbd>1 IMPROVEMENT</kbd> <kbd>0 SLOWDOWNS</kbd>" in body
     assert "<kbd>1 INCONSISTENT SLOWDOWN</kbd>" in body
 
