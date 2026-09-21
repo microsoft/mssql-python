@@ -2356,9 +2356,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_WCHAR array - "
                         "param_index=%d, count=%zu, column_size=%zu",
                         paramIndex, paramSetSize, info.columnSize);
-                    const size_t elementWidth = CheckedAddSize(
+                    const size_t elementWidth = CheckedFetchAdd(
                         info.columnSize, 1, "Wide-character parameter size is too large");
-                    const size_t bufferBytes = CheckedMultiplySize(
+                    const size_t bufferBytes = CheckedFetchMultiply(
                         elementWidth, sizeof(SQLWCHAR),
                         "Wide-character parameter length is too large");
                     if (bufferBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
@@ -2366,7 +2366,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     }
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
                         tempBuffers,
-                        CheckedMultiplySize(paramSetSize, elementWidth,
+                        CheckedFetchMultiply(paramSetSize, elementWidth,
                                             "Wide-character parameter buffer is too large"));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
@@ -2463,14 +2463,14 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_CHAR/BINARY array - "
                         "param_index=%d, count=%zu, column_size=%zu, encoding='%s'",
                         paramIndex, paramSetSize, info.columnSize, charEncoding.c_str());
-                    const size_t elementWidth = CheckedAddSize(
+                    const size_t elementWidth = CheckedFetchAdd(
                         info.columnSize, 1, "Character parameter size is too large");
                     if (elementWidth > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
                         ThrowStdException("Character parameter length is too large");
                     }
                     char* charArray = AllocateParamBufferArray<char>(
                         tempBuffers,
-                        CheckedMultiplySize(paramSetSize, elementWidth,
+                        CheckedFetchMultiply(paramSetSize, elementWidth,
                                             "Character parameter buffer is too large"));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
