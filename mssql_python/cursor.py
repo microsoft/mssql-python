@@ -51,6 +51,7 @@ SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
+MAX_NATIVE_ROW_COUNT: int = 2_147_483_647
 # SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
 # encoding and must be rejected at detect time on both paths (see _map_sql_type).
 BIGINT_MIN: int = -(2**63)
@@ -385,9 +386,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ]
         ] = None
         self.rowcount: int = -1
-        self.arraysize: int = (
-            1  # Default number of rows to fetch at a time is 1, user can change it
-        )
+        self.arraysize = 1
         self.buffer_length: int = 1024  # Default buffer length for string data
         self._result_set_empty: bool = False  # Add this initialization
         self.last_executed_stmt: str = ""  # Stores the last statement executed by this cursor
@@ -1136,6 +1135,25 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "pyarrow is required for Arrow fetch methods. Please install pyarrow."
             ) from e
 
+    @staticmethod
+    def _validate_native_row_count(value: int, name: str, allow_zero: bool) -> int:
+        minimum = 0 if allow_zero else 1
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+        if value < minimum or value > MAX_NATIVE_ROW_COUNT:
+            raise ValueError(
+                f"{name} must be between {minimum} and {MAX_NATIVE_ROW_COUNT}, got {value}"
+            )
+        return value
+
+    @property
+    def arraysize(self) -> int:
+        return self._arraysize
+
+    @arraysize.setter
+    def arraysize(self, value: int) -> None:
+        self._arraysize = self._validate_native_row_count(value, "arraysize", allow_zero=False)
+
     def setinputsizes(self, sizes: List[Union[int, tuple]]) -> None:
         """
         Sets the type information to be used for parameters in execute and executemany.
@@ -1188,7 +1206,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         sql_type, column_size, decimal_digits = size_info
 
                     # Validate SQL type
-                    if not isinstance(sql_type, int) or sql_type not in valid_sql_types:
+                    if (
+                        isinstance(sql_type, bool)
+                        or not isinstance(sql_type, int)
+                        or sql_type not in valid_sql_types
+                    ):
                         raise ValueError(
                             f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant."
                         )
@@ -1196,12 +1218,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     sql_type = ODBC3_TEMPORAL_SQL_TYPES.get(sql_type, sql_type)
 
                     # Validate size and precision
-                    if not isinstance(column_size, int) or column_size < 0:
+                    if (
+                        isinstance(column_size, bool)
+                        or not isinstance(column_size, int)
+                        or column_size < 0
+                    ):
                         raise ValueError(
                             f"Invalid column size: {column_size}. Must be a non-negative integer."
                         )
 
-                    if not isinstance(decimal_digits, int) or decimal_digits < 0:
+                    if (
+                        isinstance(decimal_digits, bool)
+                        or not isinstance(decimal_digits, int)
+                        or decimal_digits < 0
+                    ):
                         raise ValueError(
                             f"Invalid decimal digits: {decimal_digits}. "
                             f"Must be a non-negative integer."
@@ -1220,7 +1250,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     sql_type = size_info
 
                     # Validate SQL type
-                    if not isinstance(sql_type, int) or sql_type not in valid_sql_types:
+                    if (
+                        isinstance(sql_type, bool)
+                        or not isinstance(sql_type, int)
+                        or sql_type not in valid_sql_types
+                    ):
                         raise ValueError(
                             f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant."
                         )
@@ -2852,8 +2886,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         if size is None:
             size = self.arraysize
+        else:
+            size = self._validate_native_row_count(size, "size", allow_zero=True)
 
-        if size <= 0:
+        if size == 0:
             return []
 
         char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
@@ -2989,6 +3025,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         self._check_closed()  # Check if the cursor is closed
         pyarrow = self._ensure_pyarrow()
+        batch_size = self._validate_native_row_count(batch_size, "batch_size", allow_zero=True)
 
         if not self._has_result_set and self.description:
             self._reset_rownumber()
@@ -2996,9 +3033,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         capsules = []
         char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
         char_c_type = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
-        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(
-            self.hstmt, capsules, max(batch_size, 0), char_c_type
-        )
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, batch_size, char_c_type)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
@@ -3383,7 +3418,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             logger.error("bulkcopy: Invalid table_name parameter")
             raise ValueError("table_name must be a non-empty string")
 
-        if not isinstance(batch_size, int):
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool):
             raise TypeError(
                 f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
             )

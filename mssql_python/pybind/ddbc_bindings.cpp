@@ -21,6 +21,7 @@
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
@@ -322,10 +323,35 @@ ParamType* AllocateParamBuffer(std::vector<std::shared_ptr<void>>& paramBuffers,
 template <typename ParamType>
 ParamType* AllocateParamBufferArray(std::vector<std::shared_ptr<void>>& paramBuffers,
                                     size_t count) {
+    if (count > std::numeric_limits<size_t>::max() / sizeof(ParamType)) {
+        ThrowStdException("Parameter buffer size is too large");
+    }
     std::shared_ptr<ParamType> buffer(new ParamType[count], std::default_delete<ParamType[]>());
     ParamType* raw = buffer.get();
     paramBuffers.push_back(buffer);
     return raw;
+}
+
+size_t CheckedAddSize(size_t left, size_t right, const char* errorMessage) {
+    if (left > std::numeric_limits<size_t>::max() - right) {
+        ThrowStdException(errorMessage);
+    }
+    return left + right;
+}
+
+size_t CheckedMultiplySize(size_t left, size_t right, const char* errorMessage) {
+    if (left != 0 && right > std::numeric_limits<size_t>::max() / left) {
+        ThrowStdException(errorMessage);
+    }
+    return left * right;
+}
+
+template <typename ElementType>
+std::unique_ptr<ElementType[]> AllocateUniqueArray(size_t count, const char* errorMessage) {
+    if (count > std::numeric_limits<size_t>::max() / sizeof(ElementType)) {
+        ThrowStdException(errorMessage);
+    }
+    return std::make_unique<ElementType[]>(count);
 }
 
 std::string DescribeChar(unsigned char ch) {
@@ -460,6 +486,10 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
         "with %zu parameters",
         (void*)hStmt, params.size());
 
+    if (params.size() != paramInfos.size()) {
+        ThrowStdException("Parameter count does not match parameter metadata count");
+    }
+
     // GH-627: resolve unknown NULL param SQL types before binding any param.
     PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
@@ -537,8 +567,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_BINARY: {
-                if (!py::isinstance<py::str>(param) && !py::isinstance<py::bytearray>(param) &&
-                    !py::isinstance<py::bytes>(param)) {
+                if (!py::isinstance<py::bytearray>(param) && !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
                 if (paramInfo.isDAE) {
@@ -2194,6 +2223,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     LOG("BindParameterArray: Starting column-wise array binding - "
         "param_count=%zu, param_set_size=%zu",
         columnwise_params.size(), paramSetSize);
+    if (columnwise_params.size() != paramInfos.size()) {
+        ThrowStdException("Parameter count does not match parameter metadata count");
+    }
 
     std::vector<std::shared_ptr<void>> tempBuffers;
 
@@ -2261,8 +2293,18 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_WCHAR array - "
                         "param_index=%d, count=%zu, column_size=%zu",
                         paramIndex, paramSetSize, info.columnSize);
+                    const size_t elementWidth = CheckedAddSize(
+                        info.columnSize, 1, "Wide-character parameter size is too large");
+                    const size_t bufferBytes = CheckedMultiplySize(
+                        elementWidth, sizeof(SQLWCHAR),
+                        "Wide-character parameter length is too large");
+                    if (bufferBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+                        ThrowStdException("Wide-character parameter length is too large");
+                    }
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers,
+                        CheckedMultiplySize(paramSetSize, elementWidth,
+                                            "Wide-character parameter buffer is too large"));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
@@ -2287,7 +2329,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = wcharArray;
-                    bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                    bufferLength = static_cast<SQLLEN>(bufferBytes);
                     break;
                 }
                 case SQL_C_TINYINT:
@@ -2358,8 +2400,15 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_CHAR/BINARY array - "
                         "param_index=%d, count=%zu, column_size=%zu, encoding='%s'",
                         paramIndex, paramSetSize, info.columnSize, charEncoding.c_str());
+                    const size_t elementWidth = CheckedAddSize(
+                        info.columnSize, 1, "Character parameter size is too large");
+                    if (elementWidth > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+                        ThrowStdException("Character parameter length is too large");
+                    }
                     char* charArray = AllocateParamBufferArray<char>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers,
+                        CheckedMultiplySize(paramSetSize, elementWidth,
+                                            "Character parameter buffer is too large"));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
@@ -2412,7 +2461,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = charArray;
-                    bufferLength = info.columnSize + 1;
+                    bufferLength = static_cast<SQLLEN>(elementWidth);
                     break;
                 }
                 case SQL_C_BIT: {
@@ -3177,6 +3226,9 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         return py::str("");
     }
     if (isWideChar) {
+        if (buffer.size() % sizeof(SQLWCHAR) != 0) {
+            ThrowStdException("Wide-character LOB data has an invalid byte length");
+        }
         size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
         std::vector<SQLWCHAR> alignedBuf(wcharCount);
         std::memcpy(alignedBuf.data(), buffer.data(), buffer.size());
@@ -4836,6 +4888,15 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                int arrowBatchSize,
                                int charCtype) {
     PERF_TIMER("FetchArrowBatch_wrap");
+    if (arrowBatchSize < 0) {
+        ThrowStdException("Arrow batch size must be non-negative");
+    }
+    const size_t batchSize = static_cast<size_t>(arrowBatchSize);
+    const size_t offsetCount = CheckedAddSize(batchSize, 1, "Arrow batch size is too large");
+    const size_t initialVarDataSize =
+        CheckedMultiplySize(batchSize, 42, "Arrow batch size is too large");
+    const size_t bitmapSize =
+        CheckedAddSize(batchSize, 7, "Arrow batch size is too large") / 8;
     // Fetch narrow char data as SQL_C_CHAR if on Linux/macOS and configured by the user
     charCtype = EffectiveCharCtypeForFetch(charCtype, "utf-8");
 
@@ -4908,8 +4969,9 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             case SQL_WLONGVARCHAR:
             case SQL_GUID:
                 format = "U";
-                arrowColumnProducer->varVal = std::make_unique<uint64_t[]>(arrowBatchSize + 1);
-                arrowColumnProducer->varData.resize(arrowBatchSize * 42);
+                arrowColumnProducer->varVal =
+                    AllocateUniqueArray<uint64_t>(offsetCount, "Arrow offset buffer is too large");
+                arrowColumnProducer->varData.resize(initialVarDataSize);
                 columnVarLen[i] = true;
                 // start at offset 0
                 arrowColumnProducer->varVal[0] = 0;
@@ -4920,8 +4982,9 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
                 format = "Z";
-                arrowColumnProducer->varVal = std::make_unique<uint64_t[]>(arrowBatchSize + 1);
-                arrowColumnProducer->varData.resize(arrowBatchSize * 42);
+                arrowColumnProducer->varVal =
+                    AllocateUniqueArray<uint64_t>(offsetCount, "Arrow offset buffer is too large");
+                arrowColumnProducer->varData.resize(initialVarDataSize);
                 columnVarLen[i] = true;
                 // start at offset 0
                 arrowColumnProducer->varVal[0] = 0;
@@ -4929,33 +4992,39 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 break;
             case SQL_TINYINT:
                 format = "C";
-                arrowColumnProducer->uint8Val = std::make_unique<uint8_t[]>(arrowBatchSize);
+                arrowColumnProducer->uint8Val =
+                    AllocateUniqueArray<uint8_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->uint8Val.get();
                 break;
             case SQL_SMALLINT:
                 format = "s";
-                arrowColumnProducer->int16Val = std::make_unique<int16_t[]>(arrowBatchSize);
+                arrowColumnProducer->int16Val =
+                    AllocateUniqueArray<int16_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int16Val.get();
                 break;
             case SQL_INTEGER:
                 format = "i";
-                arrowColumnProducer->int32Val = std::make_unique<int32_t[]>(arrowBatchSize);
+                arrowColumnProducer->int32Val =
+                    AllocateUniqueArray<int32_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int32Val.get();
                 break;
             case SQL_BIGINT:
                 format = "l";
-                arrowColumnProducer->int64Val = std::make_unique<int64_t[]>(arrowBatchSize);
+                arrowColumnProducer->int64Val =
+                    AllocateUniqueArray<int64_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int64Val.get();
                 break;
             case SQL_REAL:
                 format = "f";
-                arrowColumnProducer->float32Val = std::make_unique<float[]>(arrowBatchSize);
+                arrowColumnProducer->float32Val =
+                    AllocateUniqueArray<float>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->float32Val.get();
                 break;
             case SQL_FLOAT:
             case SQL_DOUBLE:
                 format = "g";
-                arrowColumnProducer->float64Val = std::make_unique<double[]>(arrowBatchSize);
+                arrowColumnProducer->float64Val =
+                    AllocateUniqueArray<double>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->float64Val.get();
                 break;
             case SQL_DECIMAL:
@@ -4968,7 +5037,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 arrowSchemaPrivateData[i]->format = std::make_unique<char[]>(formatLen);
                 std::memcpy(arrowSchemaPrivateData[i]->format.get(), formatStr.c_str(), formatLen);
                 format = arrowSchemaPrivateData[i]->format.get();
-                arrowColumnProducer->decimalVal = std::make_unique<Int128_t[]>(arrowBatchSize);
+                arrowColumnProducer->decimalVal =
+                    AllocateUniqueArray<Int128_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->decimalVal.get();
                 break;
             }
@@ -4976,28 +5046,33 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
                 format = "tsu:";
-                arrowColumnProducer->tsMicroVal = std::make_unique<int64_t[]>(arrowBatchSize);
+                arrowColumnProducer->tsMicroVal =
+                    AllocateUniqueArray<int64_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->tsMicroVal.get();
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
                 format = "tsu:+00:00";
-                arrowColumnProducer->tsMicroVal = std::make_unique<int64_t[]>(arrowBatchSize);
+                arrowColumnProducer->tsMicroVal =
+                    AllocateUniqueArray<int64_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->tsMicroVal.get();
                 break;
             case SQL_TYPE_DATE:
                 format = "tdD";
-                arrowColumnProducer->dateVal = std::make_unique<int32_t[]>(arrowBatchSize);
+                arrowColumnProducer->dateVal =
+                    AllocateUniqueArray<int32_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->dateVal.get();
                 break;
             case SQL_SS_TIME2:
                 format = "ttn";
-                arrowColumnProducer->timeNanoVal = std::make_unique<int64_t[]>(arrowBatchSize);
+                arrowColumnProducer->timeNanoVal =
+                    AllocateUniqueArray<int64_t>(batchSize, "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->timeNanoVal.get();
                 break;
             case SQL_BIT:
                 format = "b";
-                arrowColumnProducer->bitVal = std::make_unique<uint8_t[]>((arrowBatchSize + 7) / 8);
-                std::memset(arrowColumnProducer->bitVal.get(), 0, (arrowBatchSize + 7) / 8);
+                arrowColumnProducer->bitVal =
+                    AllocateUniqueArray<uint8_t>(bitmapSize, "Arrow bitmap is too large");
+                std::memset(arrowColumnProducer->bitVal.get(), 0, bitmapSize);
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->bitVal.get();
                 break;
             default:
@@ -5018,9 +5093,10 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             std::memcpy(arrowSchemaPrivateData[i]->format.get(), format.c_str(), formatLen);
         }
 
-        arrowColumnProducer->valid = std::make_unique<uint8_t[]>((arrowBatchSize + 7) / 8);
+        arrowColumnProducer->valid =
+            AllocateUniqueArray<uint8_t>(bitmapSize, "Arrow bitmap is too large");
         // Initialize validity bitmap to all valid
-        std::memset(arrowColumnProducer->valid.get(), 0xFF, (arrowBatchSize + 7) / 8);
+        std::memset(arrowColumnProducer->valid.get(), 0xFF, bitmapSize);
     }
 
     // Initialize column buffers

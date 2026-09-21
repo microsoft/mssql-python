@@ -202,6 +202,11 @@ class TestBulkcopyArrowValidation:
         with pytest.raises(ValueError, match="batch_size"):
             _bare_cursor().bulkcopy_arrow("t", pa.table({"a": [1]}), batch_size=-1)
 
+    def test_batch_size_bool_rejected(self):
+        for flag in (False, True):
+            with pytest.raises(TypeError, match="batch_size"):
+                _bare_cursor().bulkcopy_arrow("t", pa.table({"a": [1]}), batch_size=flag)
+
     def test_timeout_wrong_type(self):
         with pytest.raises(TypeError, match="timeout"):
             _bare_cursor().bulkcopy_arrow("t", pa.table({"a": [1]}), timeout="30")
