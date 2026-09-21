@@ -16,6 +16,71 @@ MODES = ("default", "custom", "date", "time", "datetime", "uuid")
 APIS = ("fetchone", "fetchmany", "fetchall", "iteration")
 
 
+def _assert_native_origin(package_file, native_file, root, *, require_source=False):
+    package_path = Path(package_file).resolve()
+    native_path = Path(native_file).resolve()
+    assert package_path.is_file(), f"Imported package does not exist: {package_path}"
+    assert native_path.is_file(), f"Imported native module does not exist: {native_path}"
+    assert (
+        native_path.parent == package_path.parent
+    ), f"Native module {native_path} is outside imported package {package_path.parent}"
+    assert native_path.name.startswith("ddbc_bindings.") and native_path.suffix in (
+        ".so",
+        ".pyd",
+    ), f"Expected the compiled native module, not its Python loader: {native_path}"
+    source_package = (root / "mssql_python" / "__init__.py").resolve()
+    # Explicit snapshots and source checkouts must not silently import an installed wheel.
+    if require_source or source_package.is_file():
+        assert (
+            package_path == source_package
+        ), f"Expected source package {source_package}, imported {package_path}"
+
+
+@pytest.mark.parametrize("layout", ("source", "explicit-source", "installed-wheel"))
+@pytest.mark.parametrize("suffix", (".so", ".pyd"))
+def test_native_origin_accepts_package_layout(tmp_path, layout, suffix):
+    root = tmp_path / "tests-root"
+    location = root if layout != "installed-wheel" else tmp_path / "site-packages"
+    package = location / "mssql_python" / "__init__.py"
+    package.parent.mkdir(parents=True)
+    package.touch()
+    native = package.with_name(f"ddbc_bindings.cp313-test{suffix}")
+    native.touch()
+    _assert_native_origin(package, native, root, require_source=layout == "explicit-source")
+
+
+@pytest.mark.parametrize(
+    "problem, message",
+    (
+        ("missing-native", "native module does not exist"),
+        ("foreign-native", "outside imported package"),
+        ("python-loader", "Expected the compiled native module"),
+        ("shadowed-source", "Expected source package"),
+        ("missing-explicit-source", "Expected source package"),
+    ),
+)
+def test_native_origin_rejects_mismatched_package(tmp_path, problem, message):
+    root = tmp_path / "tests-root"
+    package = tmp_path / "site-packages" / "mssql_python" / "__init__.py"
+    package.parent.mkdir(parents=True)
+    package.touch()
+    native = package.with_name("ddbc_bindings.cp313-test.so")
+    if problem == "foreign-native":
+        native = tmp_path / native.name
+    elif problem == "python-loader":
+        native = package.with_name("ddbc_bindings.py")
+    if problem != "missing-native":
+        native.touch()
+    if problem == "shadowed-source":
+        source_package = root / "mssql_python" / "__init__.py"
+        source_package.parent.mkdir(parents=True)
+        source_package.touch()
+    with pytest.raises(AssertionError, match=message):
+        _assert_native_origin(
+            package, native, root, require_source=problem == "missing-explicit-source"
+        )
+
+
 @pytest.mark.parametrize("mode", MODES)
 def test_fetch_temporal_constructors(mode):
     if not os.environ.get("DB_CONNECTION_STRING"):
@@ -51,7 +116,7 @@ def _drain(cursor, method):
         result.extend(tuple(row) for row in batch)
 
 
-def _probe(mode, root):
+def _probe(mode, root, *, require_source=False):
     originals = {
         "date": datetime.date,
         "time": datetime.time,
@@ -99,7 +164,12 @@ def _probe(mode, root):
     sys.path.insert(0, str(root))
     import mssql_python
 
-    assert Path(mssql_python.ddbc_bindings.module.__file__).resolve().is_relative_to(root)
+    _assert_native_origin(
+        mssql_python.__file__,
+        mssql_python.ddbc_bindings.module.__file__,
+        root,
+        require_source=require_source,
+    )
     mssql_python.native_uuid = True
     query = """
         SELECT CAST(v.d AS date) AS d, CAST(v.t AS time(7)) AS t,
@@ -259,4 +329,4 @@ def _probe(mode, root):
 
 if __name__ == "__main__":
     root = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else Path(__file__).resolve().parents[1]
-    _probe(sys.argv[1], root)
+    _probe(sys.argv[1], root, require_source=len(sys.argv) > 2)
