@@ -554,6 +554,33 @@ def test_publisher_can_finalize_exact_head_after_merge(monkeypatch):
     assert ("issues/comments/42", {"method": "PATCH", "data": {"body": "final"}}) in calls
 
 
+def test_pending_rerun_preserves_completed_report_for_same_head(monkeypatch):
+    calls = []
+    completed = reporting.MARKER + "\nfinal\n\nPR head: `head`"
+
+    def api(path, **kwargs):
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            return {
+                "state": "open",
+                "head": {"sha": "head"},
+                "base": {"sha": "base"},
+            }
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": completed,
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", publisher.pending_message("head"), "base")
+    assert not any(kwargs for path, kwargs in calls if path == "issues/comments/42")
+
+
 def test_publisher_finalizes_pending_comment_when_pr_is_abandoned(monkeypatch):
     posted = []
     monkeypatch.setattr(

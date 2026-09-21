@@ -151,6 +151,12 @@ def publish(pr_number, head, body, base=None):
                         data={"body": superseded_message()},
                     )
             return
+        if (
+            body == pending_message(head)
+            and comment["body"] != body
+            and f"PR head: `{head}`" in comment["body"]
+        ):
+            return
         if message == closed_message():
             if comment["body"] != pending_message(head):
                 return
@@ -335,7 +341,7 @@ def run(number, head, wait_minutes):
                 and item["resource"]["downloadUrl"]
             }
             # Artifact readiness is the report signal; unrelated matrix legs do
-            # not need to finish before the four profiler legs are assessed.
+            # not need to finish before the required profiler legs are assessed.
             if required <= usable:
                 assessment_ready = True
                 break
