@@ -51,7 +51,8 @@ SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
-MAX_NATIVE_ROW_COUNT: int = 2_147_483_647
+# Bound each native fetch allocation; Arrow initially reserves 42 bytes per variable-width row.
+MAX_NATIVE_ROW_COUNT: int = 1_000_000
 # SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
 # encoding and must be rejected at detect time on both paths (see _map_sql_type).
 BIGINT_MIN: int = -(2**63)

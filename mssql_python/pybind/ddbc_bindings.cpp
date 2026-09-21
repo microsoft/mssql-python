@@ -332,89 +332,76 @@ ParamType* AllocateParamBufferArray(std::vector<std::shared_ptr<void>>& paramBuf
     return raw;
 }
 
-size_t CheckedFetchAdd(size_t left, size_t right, const char* errorMessage) {
+size_t CheckedAddSize(size_t left, size_t right, const char* errorMessage) {
     if (left > std::numeric_limits<size_t>::max() - right) {
         ThrowStdException(errorMessage);
     }
     return left + right;
 }
 
-size_t CheckedFetchMultiply(size_t left, size_t right, const char* errorMessage) {
+size_t CheckedMultiplySize(size_t left, size_t right, const char* errorMessage) {
     if (left != 0 && right > std::numeric_limits<size_t>::max() / left) {
         ThrowStdException(errorMessage);
     }
     return left * right;
 }
 
-size_t CheckedFetchColumnSize(SQLULEN columnSize) {
-    if (columnSize > std::numeric_limits<size_t>::max()) {
-        ThrowStdException("Column size is too large");
+constexpr int MAX_NATIVE_ROW_COUNT = 1000000;
+constexpr size_t MAX_NATIVE_FETCH_BYTES = 256ULL * 1024 * 1024;
+
+void ValidateNativeRowCount(int value, const char* name, bool allowZero) {
+    const int minimum = allowZero ? 0 : 1;
+    if (value < minimum || value > MAX_NATIVE_ROW_COUNT) {
+        ThrowStdException(std::string(name) + " must be between " + std::to_string(minimum) +
+                          " and " + std::to_string(MAX_NATIVE_ROW_COUNT));
     }
-    return static_cast<size_t>(columnSize);
 }
 
 template <typename ElementType>
-void ResizeFetchBuffer(std::vector<ElementType>& buffer, size_t rowCount, size_t stride) {
-    const size_t count =
-        CheckedFetchMultiply(rowCount, stride, "Column fetch buffer is too large");
-    if (count > buffer.max_size()) {
-        ThrowStdException("Column fetch buffer is too large");
+std::unique_ptr<ElementType[]> AllocateUniqueArray(size_t count, const char* errorMessage) {
+    if (count > std::numeric_limits<size_t>::max() / sizeof(ElementType)) {
+        ThrowStdException(errorMessage);
     }
+    return std::make_unique<ElementType[]>(count);
+}
+
+void ReserveNativeFetchBytes(size_t& reservedBytes, size_t count, size_t elementSize) {
+    const size_t allocationBytes =
+        CheckedMultiplySize(count, elementSize, "Native fetch buffer size is too large");
+    const size_t totalBytes =
+        CheckedAddSize(reservedBytes, allocationBytes, "Native fetch buffer size is too large");
+    if (totalBytes > MAX_NATIVE_FETCH_BYTES) {
+        ThrowStdException("Native fetch buffers exceed the 256 MiB allocation limit");
+    }
+    reservedBytes = totalBytes;
+}
+
+template <typename ElementType>
+void ResizeNativeFetchBuffer(std::vector<ElementType>& buffer, size_t count,
+                             size_t& reservedBytes) {
+    ReserveNativeFetchBytes(reservedBytes, count, sizeof(ElementType));
     buffer.resize(count);
 }
 
-SQLLEN CheckedFetchBufferLength(size_t elementCount, size_t elementSize) {
-    const size_t byteCount =
-        CheckedFetchMultiply(elementCount, elementSize, "Column fetch stride is too large");
-    if (byteCount > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
-        ThrowStdException("Column fetch stride is too large");
+template <typename ElementType>
+void EnsureNativeFetchBufferSize(std::vector<ElementType>& buffer, size_t requiredSize,
+                                 size_t& reservedBytes) {
+    if (buffer.size() >= requiredSize) {
+        return;
     }
-    return static_cast<SQLLEN>(byteCount);
-}
-
-void EnsureArrowBufferSize(std::vector<uint8_t>& buffer, size_t start, size_t required) {
-    const size_t targetSize =
-        CheckedFetchAdd(start, required, "Arrow variable-length buffer is too large");
-    if (targetSize > buffer.max_size()) {
-        ThrowStdException("Arrow variable-length buffer is too large");
+    size_t newSize = std::max<size_t>(buffer.size(), 1);
+    while (newSize < requiredSize) {
+        newSize = CheckedMultiplySize(newSize, 2, "Native fetch buffer size is too large");
     }
-    size_t newSize = buffer.size();
-    while (newSize < targetSize) {
-        if (newSize == 0) {
-            newSize = 1;
-        } else if (newSize > buffer.max_size() / 2) {
-            newSize = targetSize;
-        } else {
-            newSize *= 2;
-        }
-    }
-    if (newSize != buffer.size()) {
-        buffer.resize(newSize);
-    }
+    ReserveNativeFetchBytes(reservedBytes, newSize - buffer.size(), sizeof(ElementType));
+    buffer.resize(newSize);
 }
 
 template <typename ElementType>
-size_t CheckedArrowSourceOffset(const std::vector<ElementType>& buffer, size_t rowIndex,
-                                size_t stride, size_t dataBytes) {
-    const size_t offset =
-        CheckedFetchMultiply(rowIndex, stride, "Arrow source offset is too large");
-    if (offset > buffer.size() || stride > buffer.size() - offset) {
-        ThrowStdException("Driver data length exceeds the allocated fetch buffer");
-    }
-    const size_t availableBytes =
-        CheckedFetchMultiply(stride, sizeof(ElementType), "Arrow source size is too large");
-    if (dataBytes > availableBytes) {
-        ThrowStdException("Driver data length exceeds the allocated fetch buffer");
-    }
-    return offset;
-}
-
-template <typename ElementType>
-std::unique_ptr<ElementType[]> AllocateFetchArray(size_t count) {
-    if (count > std::numeric_limits<size_t>::max() / sizeof(ElementType)) {
-        ThrowStdException("Arrow value buffer is too large");
-    }
-    return std::make_unique<ElementType[]>(count);
+std::unique_ptr<ElementType[]> AllocateArrowArray(size_t count, size_t& reservedBytes,
+                                                  const char* errorMessage) {
+    ReserveNativeFetchBytes(reservedBytes, count, sizeof(ElementType));
+    return AllocateUniqueArray<ElementType>(count, errorMessage);
 }
 
 std::string DescribeChar(unsigned char ch) {
@@ -2356,9 +2343,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_WCHAR array - "
                         "param_index=%d, count=%zu, column_size=%zu",
                         paramIndex, paramSetSize, info.columnSize);
-                    const size_t elementWidth = CheckedFetchAdd(
+                    const size_t elementWidth = CheckedAddSize(
                         info.columnSize, 1, "Wide-character parameter size is too large");
-                    const size_t bufferBytes = CheckedFetchMultiply(
+                    const size_t bufferBytes = CheckedMultiplySize(
                         elementWidth, sizeof(SQLWCHAR),
                         "Wide-character parameter length is too large");
                     if (bufferBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
@@ -2366,7 +2353,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     }
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
                         tempBuffers,
-                        CheckedFetchMultiply(paramSetSize, elementWidth,
+                        CheckedMultiplySize(paramSetSize, elementWidth,
                                             "Wide-character parameter buffer is too large"));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
@@ -2463,14 +2450,14 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_CHAR/BINARY array - "
                         "param_index=%d, count=%zu, column_size=%zu, encoding='%s'",
                         paramIndex, paramSetSize, info.columnSize, charEncoding.c_str());
-                    const size_t elementWidth = CheckedFetchAdd(
+                    const size_t elementWidth = CheckedAddSize(
                         info.columnSize, 1, "Character parameter size is too large");
                     if (elementWidth > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
                         ThrowStdException("Character parameter length is too large");
                     }
                     char* charArray = AllocateParamBufferArray<char>(
                         tempBuffers,
-                        CheckedFetchMultiply(paramSetSize, elementWidth,
+                        CheckedMultiplySize(paramSetSize, elementWidth,
                                             "Character parameter buffer is too large"));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
@@ -2479,6 +2466,12 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                             std::memset(charArray + i * (info.columnSize + 1), 0,
                                         info.columnSize + 1);
                         } else {
+                            if (info.paramCType == SQL_C_BINARY &&
+                                !py::isinstance<py::bytes>(columnValues[i]) &&
+                                !py::isinstance<py::bytearray>(columnValues[i])) {
+                                ThrowStdException(MakeParamMismatchErrorStr(info.paramCType,
+                                                                            paramIndex));
+                            }
                             std::string encodedStr;
 
                             if (py::isinstance<py::str>(columnValues[i])) {
@@ -4100,12 +4093,18 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
-                        SQLUSMALLINT numCols, int fetchSize, int charCtype = SQL_C_WCHAR) {
+                        SQLUSMALLINT numCols, int fetchSize, size_t& reservedBytes,
+                        int charCtype = SQL_C_WCHAR) {
     PERF_TIMER("SQLBindColums");
-    if (fetchSize < 0) {
-        ThrowStdException("Fetch size must be non-negative");
-    }
-    const size_t rowCount = static_cast<size_t>(fetchSize);
+    struct UnbindOnFailure {
+        SQLHSTMT hStmt;
+        bool active = true;
+        ~UnbindOnFailure() {
+            if (active) {
+                SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+            }
+        }
+    } unbindOnFailure{hStmt};
     SQLRETURN ret = SQL_SUCCESS;
     const bool useWideChar = (charCtype == SQL_C_WCHAR);
     // Bind columns based on their data types
@@ -4119,33 +4118,31 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
                 HandleZeroColumnSizeAtFetch(columnSize);
-                const size_t baseColumnSize = CheckedFetchColumnSize(columnSize);
                 if (useWideChar) {
                     // Bind VARCHAR columns as SQL_C_WCHAR so the ODBC driver
                     // returns UTF-16 data, avoiding code-page decode issues.
-                    const size_t fetchBufferSize = CheckedFetchAdd(
-                        baseColumnSize, 1, "Column fetch stride is too large");
-                    ResizeFetchBuffer(buffers.wcharBuffers[col - 1], rowCount, fetchBufferSize);
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    ResizeNativeFetchBuffer(buffers.wcharBuffers[col - 1],
+                                            CheckedMultiplySize(fetchSize, fetchBufferSize,
+                                                                "Native fetch buffer is too large"),
+                                            reservedBytes);
                     ret = SQLBindCol_ptr(
                         hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
-                        CheckedFetchBufferLength(fetchBufferSize, sizeof(SQLWCHAR)),
-                        buffers.indicators[col - 1].data());
+                        fetchBufferSize * sizeof(SQLWCHAR), buffers.indicators[col - 1].data());
                 } else {
                     // Original narrow-char path
 #if defined(__APPLE__) || defined(__linux__)
-                    const size_t fetchBufferSize = CheckedFetchAdd(
-                        CheckedFetchMultiply(baseColumnSize, 4,
-                                             "Column fetch stride is too large"),
-                        1, "Column fetch stride is too large");
+                    uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
 #else
-                    const size_t fetchBufferSize = CheckedFetchAdd(
-                        baseColumnSize, 1, "Column fetch stride is too large");
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 #endif
-                    ResizeFetchBuffer(buffers.charBuffers[col - 1], rowCount, fetchBufferSize);
+                    ResizeNativeFetchBuffer(buffers.charBuffers[col - 1],
+                                            CheckedMultiplySize(fetchSize, fetchBufferSize,
+                                                                "Native fetch buffer is too large"),
+                                            reservedBytes);
                     ret = SQLBindCol_ptr(
                         hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
-                        CheckedFetchBufferLength(fetchBufferSize, sizeof(SQLCHAR)),
-                        buffers.indicators[col - 1].data());
+                        fetchBufferSize * sizeof(SQLCHAR), buffers.indicators[col - 1].data());
                 }
                 break;
             }
@@ -4155,50 +4152,56 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                const size_t fetchBufferSize = CheckedFetchAdd(
-                    CheckedFetchColumnSize(columnSize), 1, "Column fetch stride is too large");
-                ResizeFetchBuffer(buffers.wcharBuffers[col - 1], rowCount, fetchBufferSize);
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                ResizeNativeFetchBuffer(buffers.wcharBuffers[col - 1],
+                                        CheckedMultiplySize(fetchSize, fetchBufferSize,
+                                                            "Native fetch buffer is too large"),
+                                        reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
-                                     CheckedFetchBufferLength(fetchBufferSize, sizeof(SQLWCHAR)),
+                                     fetchBufferSize * sizeof(SQLWCHAR),
                                      buffers.indicators[col - 1].data());
                 break;
             }
             case SQL_INTEGER:
-                buffers.intBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.intBuffers[col - 1], fetchSize, reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_SLONG, buffers.intBuffers[col - 1].data(),
                                      sizeof(SQLINTEGER), buffers.indicators[col - 1].data());
                 break;
             case SQL_SMALLINT:
-                buffers.smallIntBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.smallIntBuffers[col - 1], fetchSize, reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_SSHORT,
                                      buffers.smallIntBuffers[col - 1].data(), sizeof(SQLSMALLINT),
                                      buffers.indicators[col - 1].data());
                 break;
             case SQL_TINYINT:
-                buffers.charBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.charBuffers[col - 1], fetchSize, reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_TINYINT, buffers.charBuffers[col - 1].data(),
                                      sizeof(SQLCHAR), buffers.indicators[col - 1].data());
                 break;
             case SQL_BIT:
-                buffers.charBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.charBuffers[col - 1], fetchSize, reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_BIT, buffers.charBuffers[col - 1].data(),
                                      sizeof(SQLCHAR), buffers.indicators[col - 1].data());
                 break;
             case SQL_REAL:
-                buffers.realBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.realBuffers[col - 1], fetchSize, reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_FLOAT, buffers.realBuffers[col - 1].data(),
                                      sizeof(SQLREAL), buffers.indicators[col - 1].data());
                 break;
             case SQL_DECIMAL:
             case SQL_NUMERIC:
-                ResizeFetchBuffer(buffers.charBuffers[col - 1], rowCount, MAX_DIGITS_IN_NUMERIC);
+                ResizeNativeFetchBuffer(
+                    buffers.charBuffers[col - 1],
+                    CheckedMultiplySize(fetchSize, MAX_DIGITS_IN_NUMERIC,
+                                        "Native fetch buffer is too large"),
+                    reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
                                      MAX_DIGITS_IN_NUMERIC * sizeof(SQLCHAR),
                                      buffers.indicators[col - 1].data());
                 break;
             case SQL_DOUBLE:
             case SQL_FLOAT:
-                buffers.doubleBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.doubleBuffers[col - 1], fetchSize, reservedBytes);
                 ret =
                     SQLBindCol_ptr(hStmt, col, SQL_C_DOUBLE, buffers.doubleBuffers[col - 1].data(),
                                    sizeof(SQLDOUBLE), buffers.indicators[col - 1].data());
@@ -4206,31 +4209,32 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
-                buffers.timestampBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.timestampBuffers[col - 1], fetchSize,
+                                        reservedBytes);
                 ret = SQLBindCol_ptr(
                     hStmt, col, SQL_C_TYPE_TIMESTAMP, buffers.timestampBuffers[col - 1].data(),
                     sizeof(SQL_TIMESTAMP_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_BIGINT:
-                buffers.bigIntBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.bigIntBuffers[col - 1], fetchSize, reservedBytes);
                 ret =
                     SQLBindCol_ptr(hStmt, col, SQL_C_SBIGINT, buffers.bigIntBuffers[col - 1].data(),
                                    sizeof(SQLBIGINT), buffers.indicators[col - 1].data());
                 break;
             case SQL_TYPE_DATE:
-                buffers.dateBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.dateBuffers[col - 1], fetchSize, reservedBytes);
                 ret =
                     SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_DATE, buffers.dateBuffers[col - 1].data(),
                                    sizeof(SQL_DATE_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_SS_TIME2:
-                buffers.timeBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.timeBuffers[col - 1], fetchSize, reservedBytes);
                 ret =
                     SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIME2, buffers.timeBuffers[col - 1].data(),
                                    sizeof(SQL_SS_TIME2_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_GUID:
-                buffers.guidBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.guidBuffers[col - 1], fetchSize, reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_GUID, buffers.guidBuffers[col - 1].data(),
                                      sizeof(SQLGUID), buffers.indicators[col - 1].data());
                 break;
@@ -4241,17 +4245,19 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                     ResizeFetchBuffer(buffers.charBuffers[col - 1], rowCount,
-                                             CheckedFetchColumnSize(columnSize));
+                ResizeNativeFetchBuffer(buffers.charBuffers[col - 1],
+                                        CheckedMultiplySize(fetchSize, columnSize,
+                                                            "Native fetch buffer is too large"),
+                                        reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_BINARY, buffers.charBuffers[col - 1].data(),
-                                                 CheckedFetchBufferLength(CheckedFetchColumnSize(columnSize), 1),
-                                                 buffers.indicators[col - 1].data());
+                                     columnSize, buffers.indicators[col - 1].data());
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
-                buffers.datetimeoffsetBuffers[col - 1].resize(fetchSize);
+                ResizeNativeFetchBuffer(buffers.datetimeoffsetBuffers[col - 1], fetchSize,
+                                        reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIMESTAMPOFFSET,
                                      buffers.datetimeoffsetBuffers[col - 1].data(),
-                                     sizeof(DateTimeOffset),
+                                     sizeof(DateTimeOffset) * fetchSize,
                                      buffers.indicators[col - 1].data());
                 break;
             default:
@@ -4273,6 +4279,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             return ret;
         }
     }
+    unbindOnFailure.active = false;
     return ret;
 }
 
@@ -4295,11 +4302,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     if (ret == SQL_NO_DATA) {
         LOG("FetchBatchData: No data to fetch");
         return ret;
-    }
-    for (SQLUSMALLINT col = 0; col < numCols; ++col) {
-        if (numRowsFetched > buffers.indicators[col].size()) {
-            ThrowStdException("Driver returned more rows than the allocated fetch buffers");
-        }
     }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchBatchData: Error while fetching rows in batches - "
@@ -4483,9 +4485,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 PyList_SET_ITEM(row, col - 1, Py_None);
                 continue;
             }
-            if (dataLen < 0) {
-                ThrowStdException("Unexpected negative data length");
-            }
 
             // Performance: Use function pointer dispatch for simple types (fast
             // path) This eliminates the switch statement from hot loop -
@@ -4511,6 +4510,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 Py_INCREF(Py_None);
                 PyList_SET_ITEM(row, col - 1, Py_None);
                 continue;
+            } else if (dataLen < 0) {
+                // Negative value is unexpected, log column index, SQL type &
+                // raise exception
+                LOG("FetchBatchData: Unexpected negative data length - "
+                    "column=%d, SQL_type=%d, dataLen=%ld",
+                    col, dataType, (long)dataLen);
+                ThrowStdException("Unexpected negative data length, check logs for details");
             }
             assert(dataLen > 0 && "Data length must be > 0");
 
@@ -4520,9 +4526,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_NUMERIC: {
                     try {
                         SQLLEN decimalDataLen = buffers.indicators[col - 1][i];
-                        if (decimalDataLen > MAX_DIGITS_IN_NUMERIC) {
-                            ThrowStdException("Decimal data exceeds the allocated fetch buffer");
-                        }
                         const char* rawData = reinterpret_cast<const char*>(
                             &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]);
 
@@ -4760,6 +4763,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
                          const std::string& wcharEncoding = "utf-16le",
                          int charCtype = SQL_C_WCHAR) {
     PERF_TIMER("FetchMany_wrap");
+    ValidateNativeRowCount(fetchSize, "Fetch size", false);
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
@@ -4815,10 +4819,16 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     }
 
     // Initialize column buffers
+    size_t reservedBytes = 0;
+    ReserveNativeFetchBytes(
+        reservedBytes,
+        CheckedMultiplySize(static_cast<size_t>(numCols), static_cast<size_t>(fetchSize),
+                            "Native fetch indicator buffer is too large"),
+        sizeof(SQLLEN));
     ColumnBuffers buffers(numCols, fetchSize);
 
     // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype);
+    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, reservedBytes, charCtype);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchMany_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
@@ -4858,7 +4868,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 // @return SQLRETURN: SQL_SUCCESS on success, or error code on failure
 template <typename T>
 SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
-                     std::vector<T>& dataVec, SQLLEN* indicator) {
+                     std::vector<T>& dataVec, SQLLEN* indicator, size_t& reservedBytes) {
     size_t start = 0;
     size_t end = 0;
 
@@ -4876,31 +4886,17 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
             ThrowStdException("GetDataVar only supports SQL_C_CHAR, SQL_C_WCHAR, and SQL_C_BINARY");
     }
 
-    // Binary data has no terminator, but still needs storage to make progress.
-    const size_t initialSize = std::max<size_t>(sizeNullTerminator, 1);
-    if (dataVec.size() < initialSize) {
-        dataVec.resize(initialSize);
+    // Ensure initial buffer has space for at least the null terminator
+    if (dataVec.size() < sizeNullTerminator) {
+        ResizeNativeFetchBuffer(dataVec, sizeNullTerminator, reservedBytes);
     }
 
     while (true) {
-        if (start > dataVec.size()) {
-            ThrowStdException("Invalid variable-length fetch buffer offset");
-        }
-        const size_t availableBytes = CheckedFetchMultiply(
-            dataVec.size() - start, sizeof(T), "Variable-length fetch buffer is too large");
-        if (availableBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
-            ThrowStdException("Variable-length fetch buffer is too large");
-        }
         SQLLEN localInd = 0;
         SQLRETURN ret = SQLGetData_ptr(
             hStmt, colNumber, cType, reinterpret_cast<uint8_t*>(dataVec.data() + start),
-            static_cast<SQLLEN>(availableBytes),
+            sizeof(T) * (dataVec.size() - start),  // Available buffer size from start position
             &localInd);
-
-        // Indicator contents are undefined when the ODBC call fails.
-        if (ret == SQL_ERROR || ret == SQL_INVALID_HANDLE) {
-            return ret;
-        }
 
         // Handle NULL data
         if (localInd == SQL_NULL_DATA) {
@@ -4908,22 +4904,17 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
             return SQL_SUCCESS;
         }
 
+        // Check for errors (excluding SQL_SUCCESS_WITH_INFO which means more data available)
+        if (ret == SQL_ERROR || ret == SQL_INVALID_HANDLE) {
+            return ret;
+        }
+
         // SQL_SUCCESS or SQL_NO_DATA means we got all the data
         if (ret == SQL_SUCCESS || ret == SQL_NO_DATA) {
             if (localInd >= 0) {
-                const size_t prefixBytes = CheckedFetchMultiply(
-                    start, sizeof(T), "Variable-length fetch result is too large");
-                if (prefixBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max()) ||
-                    localInd > std::numeric_limits<SQLLEN>::max() -
-                                   static_cast<SQLLEN>(prefixBytes)) {
-                    ThrowStdException("Variable-length fetch result is too large");
-                }
-                *indicator = static_cast<SQLLEN>(prefixBytes) + localInd;
+                *indicator = static_cast<SQLLEN>(start) * sizeof(T) + localInd;
             } else {
-                if (localInd != SQL_NO_TOTAL) {
-                    ThrowStdException("Unexpected negative variable-length data indicator");
-                }
-                *indicator = localInd;
+                *indicator = localInd;  // Preserve SQL_NO_TOTAL or other negative values
             }
             break;
         }
@@ -4931,40 +4922,24 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
         // SQL_SUCCESS_WITH_INFO means buffer was too small, need to continue fetching
         if (ret == SQL_SUCCESS_WITH_INFO) {
             // Determine how much more space we need
-            if (localInd == SQL_NO_TOTAL) {
+            if (localInd < 0) {
                 // SQL_NO_TOTAL: driver doesn't know total size, double the buffer
-                end = CheckedFetchMultiply(dataVec.size(), 2,
-                                           "Variable-length fetch buffer is too large");
-            } else if (localInd < 0) {
-                ThrowStdException("Unexpected negative variable-length data indicator");
+                end = CheckedMultiplySize(dataVec.size(), 2,
+                                          "Native fetch buffer size is too large");
             } else {
                 // Driver returned total size: allocate exactly what we need
-                if (localInd % sizeof(T) != 0) {
-                    ThrowStdException("Variable-length data has an invalid byte length");
-                }
-                end = CheckedFetchAdd(
-                    CheckedFetchAdd(start, static_cast<size_t>(localInd) / sizeof(T),
-                                    "Variable-length fetch buffer is too large"),
-                    sizeNullTerminator, "Variable-length fetch buffer is too large");
+                assert(localInd % sizeof(T) == 0);
+                end = CheckedAddSize(
+                    CheckedAddSize(start, static_cast<size_t>(localInd) / sizeof(T),
+                                   "Native fetch buffer size is too large"),
+                    sizeNullTerminator, "Native fetch buffer size is too large");
             }
 
             // The next read starts where the null terminator would have been placed
-            if (end <= dataVec.size()) {
-                const size_t prefixBytes = CheckedFetchMultiply(
-                    start, sizeof(T), "Variable-length fetch result is too large");
-                if (localInd < 0 ||
-                    prefixBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max()) ||
-                    localInd > std::numeric_limits<SQLLEN>::max() -
-                                   static_cast<SQLLEN>(prefixBytes)) {
-                    ThrowStdException("Variable-length fetch made no progress");
-                }
-                *indicator = static_cast<SQLLEN>(prefixBytes) + localInd;
-                return SQL_SUCCESS;
-            }
-            if (end > dataVec.max_size()) {
-                ThrowStdException("Variable-length fetch buffer is too large");
-            }
             start = dataVec.size() - sizeNullTerminator;
+
+            // Resize buffer for next iteration
+            ReserveNativeFetchBytes(reservedBytes, end - dataVec.size(), sizeof(T));
             dataVec.resize(end);
         } else {
             // Unexpected return code
@@ -5010,16 +4985,13 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                int arrowBatchSize,
                                int charCtype) {
     PERF_TIMER("FetchArrowBatch_wrap");
-    if (arrowBatchSize < 0) {
-        ThrowStdException("Arrow batch size must be non-negative");
-    }
+    ValidateNativeRowCount(arrowBatchSize, "Arrow batch size", true);
     const size_t batchSize = static_cast<size_t>(arrowBatchSize);
-    const size_t offsetCount =
-        CheckedFetchAdd(batchSize, 1, "Arrow offset buffer is too large");
+    const size_t offsetCount = CheckedAddSize(batchSize, 1, "Arrow batch size is too large");
     const size_t initialVarDataSize =
-        CheckedFetchMultiply(batchSize, 42, "Arrow variable-length buffer is too large");
+        CheckedMultiplySize(batchSize, 42, "Arrow batch size is too large");
     const size_t bitmapSize =
-        CheckedFetchAdd(batchSize, 7, "Arrow bitmap is too large") / 8;
+        CheckedAddSize(batchSize, 7, "Arrow batch size is too large") / 8;
     // Fetch narrow char data as SQL_C_CHAR if on Linux/macOS and configured by the user
     charCtype = EffectiveCharCtypeForFetch(charCtype, "utf-8");
 
@@ -5049,6 +5021,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     std::vector<bool> columnNullable(numCols);
     std::vector<bool> columnVarLen(numCols, false);
     std::vector<int64_t> nullCounts(numCols, 0);
+    size_t reservedBytes = 0;
 
     std::vector<std::unique_ptr<ArrowArrayPrivateData>> arrowArrayPrivateData(numCols);
     std::vector<std::unique_ptr<ArrowSchemaPrivateData>> arrowSchemaPrivateData(numCols);
@@ -5063,6 +5036,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
         SQLSMALLINT nullable = colMeta["Nullable"].cast<SQLSMALLINT>();
 
         dataTypes[i] = dataType;
+        columnSizes[i] = columnSize;
         columnNullable[i] = (nullable != SQL_NO_NULLS);
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
@@ -5074,8 +5048,6 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 fetchSize = 1;  // LOBs require row-by-row fetch
             }
         }
-
-        columnSizes[i] = columnSize;
 
         std::string columnName = colMeta["ColumnName"].cast<std::string>();
         size_t nameLen = columnName.length() + 1;
@@ -5093,8 +5065,11 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             case SQL_WLONGVARCHAR:
             case SQL_GUID:
                 format = "U";
-                arrowColumnProducer->varVal = AllocateFetchArray<uint64_t>(offsetCount);
-                arrowColumnProducer->varData.resize(initialVarDataSize);
+                arrowColumnProducer->varVal =
+                    AllocateArrowArray<uint64_t>(offsetCount, reservedBytes,
+                                                 "Arrow offset buffer is too large");
+                ResizeNativeFetchBuffer(arrowColumnProducer->varData, initialVarDataSize,
+                                        reservedBytes);
                 columnVarLen[i] = true;
                 // start at offset 0
                 arrowColumnProducer->varVal[0] = 0;
@@ -5105,8 +5080,11 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
                 format = "Z";
-                arrowColumnProducer->varVal = AllocateFetchArray<uint64_t>(offsetCount);
-                arrowColumnProducer->varData.resize(initialVarDataSize);
+                arrowColumnProducer->varVal =
+                    AllocateArrowArray<uint64_t>(offsetCount, reservedBytes,
+                                                 "Arrow offset buffer is too large");
+                ResizeNativeFetchBuffer(arrowColumnProducer->varData, initialVarDataSize,
+                                        reservedBytes);
                 columnVarLen[i] = true;
                 // start at offset 0
                 arrowColumnProducer->varVal[0] = 0;
@@ -5114,33 +5092,45 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 break;
             case SQL_TINYINT:
                 format = "C";
-                arrowColumnProducer->uint8Val = AllocateFetchArray<uint8_t>(batchSize);
+                arrowColumnProducer->uint8Val =
+                    AllocateArrowArray<uint8_t>(batchSize, reservedBytes,
+                                                "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->uint8Val.get();
                 break;
             case SQL_SMALLINT:
                 format = "s";
-                arrowColumnProducer->int16Val = AllocateFetchArray<int16_t>(batchSize);
+                arrowColumnProducer->int16Val =
+                    AllocateArrowArray<int16_t>(batchSize, reservedBytes,
+                                                "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int16Val.get();
                 break;
             case SQL_INTEGER:
                 format = "i";
-                arrowColumnProducer->int32Val = AllocateFetchArray<int32_t>(batchSize);
+                arrowColumnProducer->int32Val =
+                    AllocateArrowArray<int32_t>(batchSize, reservedBytes,
+                                                "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int32Val.get();
                 break;
             case SQL_BIGINT:
                 format = "l";
-                arrowColumnProducer->int64Val = AllocateFetchArray<int64_t>(batchSize);
+                arrowColumnProducer->int64Val =
+                    AllocateArrowArray<int64_t>(batchSize, reservedBytes,
+                                                "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int64Val.get();
                 break;
             case SQL_REAL:
                 format = "f";
-                arrowColumnProducer->float32Val = AllocateFetchArray<float>(batchSize);
+                arrowColumnProducer->float32Val =
+                    AllocateArrowArray<float>(batchSize, reservedBytes,
+                                              "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->float32Val.get();
                 break;
             case SQL_FLOAT:
             case SQL_DOUBLE:
                 format = "g";
-                arrowColumnProducer->float64Val = AllocateFetchArray<double>(batchSize);
+                arrowColumnProducer->float64Val =
+                    AllocateArrowArray<double>(batchSize, reservedBytes,
+                                               "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->float64Val.get();
                 break;
             case SQL_DECIMAL:
@@ -5153,7 +5143,9 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 arrowSchemaPrivateData[i]->format = std::make_unique<char[]>(formatLen);
                 std::memcpy(arrowSchemaPrivateData[i]->format.get(), formatStr.c_str(), formatLen);
                 format = arrowSchemaPrivateData[i]->format.get();
-                arrowColumnProducer->decimalVal = AllocateFetchArray<Int128_t>(batchSize);
+                arrowColumnProducer->decimalVal =
+                    AllocateArrowArray<Int128_t>(batchSize, reservedBytes,
+                                                 "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->decimalVal.get();
                 break;
             }
@@ -5161,27 +5153,37 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
                 format = "tsu:";
-                arrowColumnProducer->tsMicroVal = AllocateFetchArray<int64_t>(batchSize);
+                arrowColumnProducer->tsMicroVal =
+                    AllocateArrowArray<int64_t>(batchSize, reservedBytes,
+                                                "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->tsMicroVal.get();
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
                 format = "tsu:+00:00";
-                arrowColumnProducer->tsMicroVal = AllocateFetchArray<int64_t>(batchSize);
+                arrowColumnProducer->tsMicroVal =
+                    AllocateArrowArray<int64_t>(batchSize, reservedBytes,
+                                                "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->tsMicroVal.get();
                 break;
             case SQL_TYPE_DATE:
                 format = "tdD";
-                arrowColumnProducer->dateVal = AllocateFetchArray<int32_t>(batchSize);
+                arrowColumnProducer->dateVal =
+                    AllocateArrowArray<int32_t>(batchSize, reservedBytes,
+                                                "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->dateVal.get();
                 break;
             case SQL_SS_TIME2:
                 format = "ttn";
-                arrowColumnProducer->timeNanoVal = AllocateFetchArray<int64_t>(batchSize);
+                arrowColumnProducer->timeNanoVal =
+                    AllocateArrowArray<int64_t>(batchSize, reservedBytes,
+                                                "Arrow value buffer is too large");
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->timeNanoVal.get();
                 break;
             case SQL_BIT:
                 format = "b";
-                arrowColumnProducer->bitVal = AllocateFetchArray<uint8_t>(bitmapSize);
+                arrowColumnProducer->bitVal =
+                    AllocateArrowArray<uint8_t>(bitmapSize, reservedBytes,
+                                                "Arrow bitmap is too large");
                 std::memset(arrowColumnProducer->bitVal.get(), 0, bitmapSize);
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->bitVal.get();
                 break;
@@ -5203,16 +5205,23 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             std::memcpy(arrowSchemaPrivateData[i]->format.get(), format.c_str(), formatLen);
         }
 
-        arrowColumnProducer->valid = AllocateFetchArray<uint8_t>(bitmapSize);
+        arrowColumnProducer->valid =
+            AllocateArrowArray<uint8_t>(bitmapSize, reservedBytes, "Arrow bitmap is too large");
         // Initialize validity bitmap to all valid
         std::memset(arrowColumnProducer->valid.get(), 0xFF, bitmapSize);
     }
 
     // Initialize column buffers
+    ReserveNativeFetchBytes(
+        reservedBytes,
+        CheckedMultiplySize(static_cast<size_t>(numCols), static_cast<size_t>(fetchSize),
+                            "Native fetch indicator buffer is too large"),
+        sizeof(SQLLEN));
     ColumnBuffers buffers(numCols, fetchSize);
 
     if (!hasLobColumns && fetchSize > 0) {
-        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype);
+        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, reservedBytes,
+                            charCtype);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error when binding columns");
             return ret;
@@ -5226,11 +5235,9 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
 
     while (idxRowArrow < arrowBatchSize) {
         int spaceLeftInArrowBatch = arrowBatchSize - idxRowArrow;
-        int currentFetchSize = fetchSize;
         if (fetchSize > spaceLeftInArrowBatch) {
             // Adjust fetch size for final batch to avoid overfetching
-            currentFetchSize = spaceLeftInArrowBatch;
-            fetchStateGuard.setRowArraySize(currentFetchSize);
+            fetchStateGuard.setRowArraySize(spaceLeftInArrowBatch);
         }
         {
             // Release GIL during the blocking ODBC fetch
@@ -5247,10 +5254,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
         }
         // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute.
         // It'll be populated by SQLFetch
-        if (numRowsFetched > static_cast<SQLULEN>(currentFetchSize) ||
-            numRowsFetched > static_cast<SQLULEN>(spaceLeftInArrowBatch)) {
-            ThrowStdException("Driver returned more rows than the allocated Arrow buffers");
-        }
+        assert(numRowsFetched + idxRowArrow <= static_cast<SQLULEN>(arrowBatchSize));
         for (SQLULEN idxRowSql = 0; idxRowSql < numRowsFetched; idxRowSql++) {
             for (SQLUSMALLINT idxCol = 0; idxCol < numCols; idxCol++) {
                 auto& arrowColumnProducer = arrowArrayPrivateData[idxCol];
@@ -5267,7 +5271,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         case SQL_LONGVARBINARY: {
                             ret = GetDataVar(hStmt, idxCol + 1, SQL_C_BINARY,
                                              buffers.charBuffers[idxCol],
-                                             buffers.indicators[idxCol].data());
+                                             buffers.indicators[idxCol].data(), reservedBytes);
                             if (!SQL_SUCCEEDED(ret)) {
                                 LOG("Error fetching BINARY LOB for column %d", idxCol + 1);
                                 return ret;
@@ -5280,7 +5284,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                             if (charCtype == SQL_C_CHAR) {
                                 ret = GetDataVar(hStmt, idxCol + 1, SQL_C_CHAR,
                                                  buffers.charBuffers[idxCol],
-                                                 buffers.indicators[idxCol].data());
+                                                 buffers.indicators[idxCol].data(), reservedBytes);
                                 if (!SQL_SUCCEEDED(ret)) {
                                     LOG("Error fetching CHAR LOB data for column %d", idxCol + 1);
                                     return ret;
@@ -5295,7 +5299,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         case SQL_WLONGVARCHAR: {
                             ret = GetDataVar(hStmt, idxCol + 1, SQL_C_WCHAR,
                                              buffers.wcharBuffers[idxCol],
-                                             buffers.indicators[idxCol].data());
+                                             buffers.indicators[idxCol].data(), reservedBytes);
                             if (!SQL_SUCCEEDED(ret)) {
                                 LOG("Error fetching WCHAR LOB data for column %d", idxCol + 1);
                                 return ret;
@@ -5516,20 +5520,17 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     case SQL_BINARY:
                     case SQL_VARBINARY:
                     case SQL_LONGVARBINARY: {
-                        SQLULEN processedColumnSize = columnSize;
-                        HandleZeroColumnSizeAtFetch(processedColumnSize);
-                        const size_t fetchBufferSize = hasLobColumns
-                                                           ? buffers.charBuffers[idxCol].size()
-                                                           : CheckedFetchColumnSize(
-                                                                 processedColumnSize);
+                        uint64_t fetchBufferSize = columnSize /* bytes are not null terminated */;
                         auto target_vec = &arrowColumnProducer->varData;
-                        const size_t start = arrowColumnProducer->varVal[idxRowArrow];
-                        const size_t sourceOffset = CheckedArrowSourceOffset(
-                            buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
-                        EnsureArrowBufferSize(*target_vec, start, dataLen);
+                        auto start = arrowColumnProducer->varVal[idxRowArrow];
+                        EnsureNativeFetchBufferSize(
+                            *target_vec,
+                            CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
+                            reservedBytes);
 
                         std::memcpy(&(*target_vec)[start],
-                                    &buffers.charBuffers[idxCol][sourceOffset], dataLen);
+                                    &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize],
+                                    dataLen);
                         arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
                         break;
                     }
@@ -5537,36 +5538,21 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     case SQL_VARCHAR:
                     case SQL_LONGVARCHAR: {
                         if (charCtype == SQL_C_CHAR) {
-                            SQLULEN processedColumnSize = columnSize;
-                            HandleZeroColumnSizeAtFetch(processedColumnSize);
 #if defined(__APPLE__) || defined(__linux__)
-                            const size_t fetchBufferSize = hasLobColumns
-                                                               ? buffers.charBuffers[idxCol].size()
-                                                               : CheckedFetchAdd(
-                                                                     CheckedFetchMultiply(
-                                                                         CheckedFetchColumnSize(
-                                                                             processedColumnSize),
-                                                                         4,
-                                                                         "Column fetch stride is too large"),
-                                                                     1,
-                                                                     "Column fetch stride is too large");
+                            uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
 #else
-                            const size_t fetchBufferSize = hasLobColumns
-                                                               ? buffers.charBuffers[idxCol].size()
-                                                               : CheckedFetchAdd(
-                                                                     CheckedFetchColumnSize(
-                                                                         processedColumnSize),
-                                                                     1,
-                                                                     "Column fetch stride is too large");
+                            uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 #endif
                             auto target_vec = &arrowColumnProducer->varData;
-                            const size_t start = arrowColumnProducer->varVal[idxRowArrow];
-                            const size_t sourceOffset = CheckedArrowSourceOffset(
-                                buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
-                            EnsureArrowBufferSize(*target_vec, start, dataLen);
+                            auto start = arrowColumnProducer->varVal[idxRowArrow];
+                            EnsureNativeFetchBufferSize(
+                                *target_vec,
+                                CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
+                                reservedBytes);
 
                             std::memcpy(&(*target_vec)[start],
-                                        &buffers.charBuffers[idxCol][sourceOffset], dataLen);
+                                        &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize],
+                                        dataLen);
                             arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
                             break;
                         }
@@ -5577,30 +5563,22 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     case SQL_WVARCHAR:
                     case SQL_WLONGVARCHAR: {
                         // We have previously fetched these as WCHARs, even for SQL_CHAR types.
-                        if (dataLen % sizeof(SQLWCHAR) != 0) {
-                            ThrowStdException("Wide-character data has an invalid byte length");
-                        }
-                        const size_t dataLenW = dataLen / sizeof(SQLWCHAR);
-                        SQLULEN processedColumnSize = columnSize;
-                        HandleZeroColumnSizeAtFetch(processedColumnSize);
-                        const size_t fetchBufferSize = hasLobColumns
-                                                           ? buffers.wcharBuffers[idxCol].size()
-                                                           : CheckedFetchAdd(
-                                                                 CheckedFetchColumnSize(
-                                                                     processedColumnSize),
-                                                                 1,
-                                                                 "Column fetch stride is too large");
-                        const size_t sourceOffset = CheckedArrowSourceOffset(
-                            buffers.wcharBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
-                        auto wcharSource = &buffers.wcharBuffers[idxCol][sourceOffset];
-                        const size_t start = arrowColumnProducer->varVal[idxRowArrow];
+                        assert(dataLen % sizeof(SQLWCHAR) == 0);
+                        auto dataLenW = dataLen / sizeof(SQLWCHAR);
+                        auto wcharSource =
+                            &buffers.wcharBuffers[idxCol][idxRowSql * (columnSize + 1)];
+                        auto start = arrowColumnProducer->varVal[idxRowArrow];
                         auto target_vec = &arrowColumnProducer->varData;
                         static_assert(sizeof(SQLWCHAR) == sizeof(char16_t));
                         static_assert(alignof(SQLWCHAR) == alignof(char16_t));
                         const auto* utf16Source = reinterpret_cast<const char16_t*>(wcharSource);
-                        const size_t maxUtf8Size = CheckedFetchMultiply(
-                            dataLenW, 3, "Arrow UTF-8 buffer is too large");
-                        EnsureArrowBufferSize(*target_vec, start, maxUtf8Size);
+                        size_t maxUtf8Size =
+                            CheckedMultiplySize(dataLenW, 3, "Arrow value buffer is too large");
+                        EnsureNativeFetchBufferSize(
+                            *target_vec,
+                            CheckedAddSize(start, maxUtf8Size,
+                                           "Arrow value buffer is too large"),
+                            reservedBytes);
 
                         size_t bytesWritten = simdutf::convert_utf16le_to_utf8_with_replacement(
                             utf16Source, dataLenW,
@@ -5614,10 +5592,13 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         // "550e8400-e29b-41d4-a716-446655440000") Each GUID is exactly 36 bytes in
                         // UTF-8
                         auto target_vec = &arrowColumnProducer->varData;
-                        const size_t start = arrowColumnProducer->varVal[idxRowArrow];
+                        auto start = arrowColumnProducer->varVal[idxRowArrow];
 
                         // Ensure buffer has space for the GUID string + null terminator
-                        EnsureArrowBufferSize(*target_vec, start, 37);
+                        EnsureNativeFetchBufferSize(
+                            *target_vec,
+                            CheckedAddSize(start, 37, "Arrow value buffer is too large"),
+                            reservedBytes);
 
                         // Get the GUID from the buffer
                         const SQLGUID& guidValue = buffers.guidBuffers[idxCol][idxRowSql];
@@ -5662,9 +5643,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     case SQL_DECIMAL:
                     case SQL_NUMERIC: {
                         // Relies on overloaded operators defined in Int128_t struct
-                        if (dataLen > MAX_DIGITS_IN_NUMERIC) {
-                            ThrowStdException("Decimal data exceeds the allocated fetch buffer");
-                        }
+                        assert(dataLen <= MAX_DIGITS_IN_NUMERIC);
                         Int128_t decimalValue(0, 0);
                         auto start = idxRowSql * MAX_DIGITS_IN_NUMERIC;
                         int sign = 1;
@@ -6061,10 +6040,16 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     }
     LOG("FetchAll_wrap: Fetching data in batch sizes of %d", fetchSize);
 
+    size_t reservedBytes = 0;
+    ReserveNativeFetchBytes(
+        reservedBytes,
+        CheckedMultiplySize(static_cast<size_t>(numCols), static_cast<size_t>(fetchSize),
+                            "Native fetch indicator buffer is too large"),
+        sizeof(SQLLEN));
     ColumnBuffers buffers(numCols, fetchSize);
 
     // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype);
+    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, reservedBytes, charCtype);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchAll_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
