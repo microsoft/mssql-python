@@ -56,10 +56,15 @@ def ado_build(**values):
     return build
 
 
-def pr_topology(head="c" * 40, base="a" * 40, merge_base=None):
+def pr_topology(head="c" * 40, base="a" * 40, merge_base=None, state="open", merged=False):
     def response(path):
         if path.startswith("pulls/"):
-            return {"state": "open", "head": {"sha": head}, "base": {"sha": base}}
+            return {
+                "state": state,
+                "merged": merged,
+                "head": {"sha": head},
+                "base": {"sha": base},
+            }
         if path.startswith("git/commits/"):
             commit_sha = path.removeprefix("git/commits/")
             source = commit_sha == "b" * 40
@@ -67,20 +72,6 @@ def pr_topology(head="c" * 40, base="a" * 40, merge_base=None):
                 "sha": commit_sha,
                 "parents": [{"sha": merge_base or base}, {"sha": head}] if source else [],
                 "tree": {"sha": ("d" if source else "e") * 40},
-            }
-        if path.startswith("git/trees/"):
-            tree_sha = path.removeprefix("git/trees/").split("?", 1)[0]
-            return {
-                "sha": tree_sha,
-                "truncated": False,
-                "tree": [
-                    {
-                        "path": file.relative_to(ROOT).as_posix(),
-                        "type": "blob",
-                        "sha": f"{index + 1:040x}",
-                    }
-                    for index, file in enumerate(reporting.suite_paths(ROOT))
-                ],
             }
         raise AssertionError(f"Unexpected GitHub path: {path}")
 
@@ -110,7 +101,6 @@ def report():
         base_commit="a" * 40,
         source_commit="b" * 40,
         head_commit="c" * 40,
-        suite_hash="d" * 64,
         build_id=42,
         samples=5,
         warmups=1,
@@ -127,7 +117,7 @@ def test_consistent_slowdown_is_advisory_regression(report):
     body = reporting.render([report], "c" * 40, 42)
     assert "20 consistent slowdown signals" in body
     assert "| Unix / SQL Server 2022 | Connection opening |" in body
-    assert "| Windows / SQL Server 2022 | No result available" in body
+    assert "| Unix / SQL Server 2025 | No result available" in body
     assert body.index("consistent slowdown signals") < body.index(
         "<summary>Build, commits and measurement details</summary>"
     )
@@ -224,14 +214,13 @@ def set_leg(report, leg):
         ("head_commit", "e" * 40),
         ("source_commit", "e" * 40),
         ("base_commit", "e" * 40),
-        ("suite_hash", "e" * 64),
     ],
 )
 def test_standalone_report_rejects_mixed_provenance(report, tmp_path, monkeypatch, key, value):
     first = tmp_path / "linux.json"
-    second = tmp_path / "windows.json"
+    second = tmp_path / "linux-2025.json"
     first.write_text(json.dumps(report), encoding="utf-8")
-    other = set_leg(report, "Windows-SQL2022")
+    other = set_leg(report, "Linux-SQL2025")
     other[key] = value
     second.write_text(json.dumps(other), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["report", str(first), str(second)])
@@ -258,12 +247,12 @@ def test_render_bounds_schema_valid_diagnostics(report):
         reporting.validate(item)
     body = reporting.render(reports, "c" * 40, 42)
     assert len(body) <= 60000
-    assert "80 diagnostic rows are available in the raw ADO artifacts" in body
+    assert "20 additional diagnostic rows are available in the raw ADO artifacts" in body
     assert "<summary>All database tasks and timings</summary>" in body
     assert "<summary>Build, commits and measurement details</summary>" in body
 
 
-@pytest.mark.parametrize("invalid", ["source commit", "base commit", "source tree"])
+@pytest.mark.parametrize("invalid", ["source commit", "base commit"])
 def test_assessment_binds_all_evidence_to_authenticated_commits(invalid):
     evidence = reporting.AssessmentEvidence(
         build=ado_build(),
@@ -275,16 +264,11 @@ def test_assessment_binds_all_evidence_to_authenticated_commits(invalid):
             "tree": {"sha": "d" * 40},
         },
         base_commit={"sha": "a" * 40, "tree": {"sha": "e" * 40}},
-        source_tree={"sha": "d" * 40, "truncated": False, "tree": []},
-        base_tree={"sha": "e" * 40, "truncated": False, "tree": []},
-        trusted_root=ROOT,
     )
     if invalid == "source commit":
         evidence.merge_commit["sha"] = "f" * 40
     elif invalid == "base commit":
         evidence.base_commit["sha"] = "f" * 40
-    else:
-        evidence = reporting.AssessmentEvidence(**{**evidence.__dict__, "source_tree": []})
     body = reporting.assess(evidence, {}, lambda url: pytest.fail("must not download"))
     assert "Performance could not be assessed" in body
     assert "Build provenance validation failed" in body
@@ -312,8 +296,8 @@ def test_impact_summary_handles_single_inconsistent_and_complete_clean_results(r
 
     complete = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
     clean_body = reporting.render(complete, "c" * 40, 42)
-    assert "**No consistent slowdowns detected across all 4 environments.**" in clean_body
-    assert "**Coverage:** 4 of 4 environments completed." in clean_body
+    assert "**No consistent slowdowns detected across all 2 environments.**" in clean_body
+    assert "**Coverage:** 2 of 2 environments completed." in clean_body
 
 
 def test_impact_summary_handles_single_regression_partial_and_no_results(report):
@@ -333,16 +317,56 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
         [clear_slowdowns(copy.deepcopy(report))],
         "c" * 40,
         42,
-        ["Windows-SQL2022 (missing)"],
+        ["Linux-SQL2025 (missing)"],
     )
     assert "No consistent slowdowns in the 1 completed environment." in partial
-    assert "No result is available for 3 environments." in partial
-    assert "| Windows / SQL Server 2022 | No result available (missing) |" in partial
+    assert "No result is available for 1 environment." in partial
+    assert "| Unix / SQL Server 2025 | No result available (missing) |" in partial
     assert "pending" not in partial.lower()
 
     unavailable = reporting.render([], "c" * 40, 42, ["Linux-SQL2022 (invalid artifact)"])
     assert "Performance could not be assessed" in unavailable
     assert "No consistent slowdowns" not in unavailable
+
+
+def test_impact_summary_reports_consistent_improvements(report):
+    single = clear_slowdowns(copy.deepcopy(report))
+    for pair in single["pairs"]:
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
+        pair["candidate"]["scenarios"]["fetchall"]["cpp"]["ddbc::query"] = dict(
+            calls=1, total_us=500, min_us=500, max_us=500
+        )
+    rows = reporting.comparisons(single)
+    assert rows[4]["status"] == "improvement"
+    assert rows[4]["phases"] == [(-0.5, "ddbc::query")]
+    body = reporting.render([single], "c" * 40, 42)
+    assert (
+        "**This PR consistently makes fetch-all queries faster on Unix / SQL Server 2022 "
+        "by 30.0%.**"
+    ) in body
+    assert "| Unix / SQL Server 2022 | Fetch-all queries |" in body
+    assert "| Fetch-all queries |" in body and "| consistent improvement |" in body
+    assert "ddbc::query -0.500 ms" in body
+
+
+def test_regression_headline_keeps_precedence_over_improvement(report):
+    mixed = clear_slowdowns(copy.deepcopy(report))
+    for pair in mixed["pairs"]:
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
+        pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
+    body = reporting.render([mixed], "c" * 40, 42)
+    assert "**This PR consistently slows row-by-row fetching" in body
+
+
+def test_inconsistent_slowdown_keeps_precedence_over_improvement(report):
+    mixed = clear_slowdowns(copy.deepcopy(report))
+    for pair in mixed["pairs"]:
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
+    for pair, scale in zip(mixed["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
+        pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
+    body = reporting.render([mixed], "c" * 40, 42)
+    assert "**Row-by-row fetching was slower" in body
+    assert "Inconsistent slowdowns to review:" in body
 
 
 @pytest.mark.parametrize(
@@ -493,11 +517,106 @@ def test_publisher_does_not_post_stale_head(monkeypatch):
 
     def api(path, **kwargs):
         calls.append((path, kwargs))
-        return {"state": "open", "head": {"sha": "new-head"}}
+        if path.startswith("pulls/"):
+            return {"state": "open", "head": {"sha": "new-head"}}
+        return []
 
     monkeypatch.setattr(publisher, "github", api)
     publisher.publish(123, "old-head", "anything")
-    assert len(calls) == 1 and calls[0][1] == {}
+    assert all(not kwargs for _, kwargs in calls)
+    assert not any(path == "issues/123/comments" and kwargs for path, kwargs in calls)
+
+
+def test_publisher_can_finalize_exact_head_after_merge(monkeypatch):
+    calls = []
+
+    def api(path, **kwargs):
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            return {
+                "state": "closed",
+                "merged": True,
+                "head": {"sha": "head"},
+                "base": {"sha": "base"},
+            }
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": publisher.pending_message("head"),
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(123, "head", "final", "base")
+    assert ("issues/comments/42", {"method": "PATCH", "data": {"body": "final"}}) in calls
+
+
+def test_pending_rerun_preserves_completed_report_for_same_head(monkeypatch):
+    calls = []
+    completed = reporting.MARKER + "\nfinal\n\nPR head: `head`"
+
+    def api(path, **kwargs):
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            return {
+                "state": "open",
+                "head": {"sha": "head"},
+                "base": {"sha": "base"},
+            }
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": completed,
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", publisher.pending_message("head"), "base")
+    assert not any(kwargs for path, kwargs in calls if path == "issues/comments/42")
+
+
+def test_publisher_finalizes_pending_comment_when_pr_is_abandoned(monkeypatch):
+    posted = []
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(publisher, "github", pr_topology(state="closed"))
+    publisher.run(123, "c" * 40, 1)
+    assert len(posted) == 2
+    assert "Pull request closed before assessment completed" in posted[-1]
+
+
+def test_publisher_preserves_completed_report_when_pr_is_abandoned(monkeypatch):
+    calls = []
+
+    def api(path, **kwargs):
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            return {
+                "state": "closed",
+                "merged": False,
+                "head": {"sha": "head"},
+                "base": {"sha": "base"},
+            }
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": "final report",
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", "new report", "base")
+    assert not any(kwargs for path, kwargs in calls if path == "issues/comments/42")
 
 
 def test_publisher_retries_transient_comment_failures(monkeypatch):
@@ -553,11 +672,6 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert ROOT / "eng/profiler_benchmarks/__init__.py" in reporting.suite_paths(ROOT)
-    assert ROOT / "eng/profiler_benchmarks/report.py" in reporting.suite_paths(ROOT)
-    assert ROOT / "eng/pipelines/pr-validation-pipeline.yml" in reporting.suite_paths(ROOT)
-    assert ROOT / "eng/scripts/setup_sql_container.py" in reporting.suite_paths(ROOT)
-    assert ROOT / "requirements.txt" in reporting.suite_paths(ROOT)
 
 
 def test_query_workload_executes_and_collects(monkeypatch):
@@ -604,52 +718,6 @@ def test_legacy_insert_workload_executes_both_variants(input_sizes):
     assert result["detail"] == "Rows: 100000"
     connection.rollback.assert_called_once()
     context.disable.assert_called_once()
-
-
-def test_suite_blobs_require_complete_authenticated_tree():
-    expected = [path.relative_to(ROOT).as_posix() for path in reporting.suite_paths(ROOT)]
-    tree = {
-        "truncated": False,
-        "tree": [
-            {"path": path, "type": "blob", "sha": f"{index + 1:040x}"}
-            for index, path in enumerate(expected)
-        ],
-    }
-    assert set(reporting.suite_blobs(tree, ROOT)) == set(expected)
-    tree["tree"].pop()
-    with pytest.raises(ValueError, match="missing"):
-        reporting.suite_blobs(tree, ROOT)
-    tree["tree"].append(None)
-    with pytest.raises(ValueError, match="Incomplete"):
-        reporting.suite_blobs(tree, ROOT)
-
-
-def test_publisher_finishes_unavailable_when_checked_suite_file_moves(monkeypatch):
-    posted = []
-    build = ado_build()
-    monkeypatch.setattr(
-        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
-    )
-    monkeypatch.setattr(publisher, "github", pr_topology())
-    artifacts = [
-        {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
-        for leg in reporting.LEGS
-    ]
-    monkeypatch.setattr(
-        publisher,
-        "api",
-        lambda url: {"value": artifacts if "/artifacts?" in url else [build]},
-    )
-    monkeypatch.setattr(
-        reporting,
-        "suite_blobs",
-        MagicMock(side_effect=ValueError("Benchmark suite missing from commit tree")),
-    )
-    publisher.run(123, "c" * 40, 1)
-    assert len(posted) == 2
-    assert "Performance assessment pending" in posted[0]
-    assert "Performance could not be assessed" in posted[1]
-    assert "required file changed" in posted[1]
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -841,7 +909,7 @@ def test_full_sample_budget_fits_slow_hosted_workers(
 
 def test_ci_deadlines_include_setup_queueing_and_publication():
     pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
-    for job in ("pytestonwindows", "PytestOnLinux"):
+    for job in ("PytestOnLinux",):
         section = pipeline.split(f"- job: {job}\n", 1)[1].split("\n- job:", 1)[0]
         job_minutes = int(re.search(r"^  timeoutInMinutes: (\d+)$", section, re.M)[1])
         benchmark_step = section.split(
@@ -908,6 +976,40 @@ def test_head_moving_while_listing_comments_prevents_publish(monkeypatch):
     assert reads == 2 and len(calls) == 3
 
 
+def test_head_moving_before_write_supersedes_unchanged_pending_comment(monkeypatch):
+    calls = []
+    reads = 0
+
+    def api(path, **kwargs):
+        nonlocal reads
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            reads += 1
+            return {
+                "state": "open",
+                "head": {"sha": "head" if reads == 1 else "new-head"},
+                "base": {"sha": "base"},
+            }
+        if path == "issues/comments/42" and not kwargs:
+            return {"id": 42, "body": publisher.pending_message("head")}
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": publisher.pending_message("head"),
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", "normal report", "base")
+    writes = [
+        kwargs["data"]["body"] for path, kwargs in calls if path == "issues/comments/42" and kwargs
+    ]
+    assert len(writes) == 1 and "Performance assessment superseded" in writes[0]
+
+
 def test_base_moving_while_listing_comments_prevents_publish(monkeypatch):
     calls = []
     reads = 0
@@ -930,6 +1032,108 @@ def test_base_moving_while_listing_comments_prevents_publish(monkeypatch):
     assert reads == 2 and len(calls) == 3
 
 
+def test_abandoned_while_listing_comments_replaces_pending_with_terminal_state(monkeypatch):
+    calls = []
+    reads = 0
+
+    def api(path, **kwargs):
+        nonlocal reads
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            reads += 1
+            return {
+                "state": "open" if reads == 1 else "closed",
+                "merged": False,
+                "head": {"sha": "head"},
+                "base": {"sha": "base"},
+            }
+        if path == "issues/comments/42" and not kwargs:
+            return {"id": 42, "body": publisher.pending_message("head")}
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": publisher.pending_message("head"),
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", "normal report", "base")
+    writes = [
+        kwargs["data"]["body"] for path, kwargs in calls if path == "issues/comments/42" and kwargs
+    ]
+    assert len(writes) == 1 and "Pull request closed before assessment completed" in writes[0]
+
+
+def test_abandoned_after_comment_write_is_immediately_terminalized(monkeypatch):
+    calls = []
+    reads = 0
+
+    def api(path, **kwargs):
+        nonlocal reads
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            reads += 1
+            return {
+                "state": "open" if reads < 3 else "closed",
+                "merged": False,
+                "head": {"sha": "head"},
+                "base": {"sha": "base"},
+            }
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": publisher.pending_message("head"),
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", "normal report", "base")
+    writes = [kwargs["data"]["body"] for path, kwargs in calls if path == "issues/comments/42"]
+    assert writes[0] == "normal report"
+    assert "Pull request closed before assessment completed" in writes[1]
+
+
+def test_head_change_after_comment_write_supersedes_only_unchanged_body(monkeypatch):
+    calls = []
+    reads = 0
+
+    def api(path, **kwargs):
+        nonlocal reads
+        calls.append((path, kwargs))
+        if path.startswith("pulls/"):
+            reads += 1
+            return {
+                "state": "open",
+                "head": {"sha": "head" if reads < 3 else "new-head"},
+                "base": {"sha": "base"},
+            }
+        if path == "issues/comments/42" and not kwargs:
+            return {"id": 42, "body": "normal report"}
+        if path.startswith("issues/") and "comments" in path:
+            return [
+                {
+                    "id": 42,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": publisher.pending_message("head"),
+                }
+            ]
+        return {}
+
+    monkeypatch.setattr(publisher, "github", api)
+    publisher.publish(1, "head", "normal report", "base")
+    writes = [
+        kwargs["data"]["body"] for path, kwargs in calls if path == "issues/comments/42" and kwargs
+    ]
+    assert writes[0] == "normal report"
+    assert "Performance assessment superseded" in writes[1]
+
+
 @pytest.mark.parametrize(
     "corrupt",
     [
@@ -937,8 +1141,6 @@ def test_base_moving_while_listing_comments_prevents_publish(monkeypatch):
         "zip",
         "timeout",
         "scenarios",
-        "suite",
-        "source",
         "base",
         "provenance",
         "recursion",
@@ -948,17 +1150,11 @@ def test_base_moving_while_listing_comments_prevents_publish(monkeypatch):
 )
 def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, monkeypatch, corrupt):
     posted = []
-    windows = copy.deepcopy(report)
-    windows["leg"] = "Windows-SQL2022"
-    for pair in windows["pairs"]:
-        for sample in pair.values():
-            sample["environment"]["os"] = "Windows"
+    linux_2025 = set_leg(report, "Linux-SQL2025")
     if corrupt == "scenarios":
         report["pairs"][0]["candidate"]["scenarios"] = list(reporting.CASES)
-    elif corrupt == "suite":
-        report["suite_hash"] = "e" * 64
     data = {
-        "Windows-SQL2022": zip_data([("report.json", json.dumps(windows))]),
+        "Linux-SQL2025": zip_data([("report.json", json.dumps(linux_2025))]),
         "Linux-SQL2022": (
             b"invalid ZIP"
             if corrupt == "zip"
@@ -1000,13 +1196,6 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     monkeypatch.setattr(
         publisher, "publish", lambda number, head, body, base=None: posted.append(body)
     )
-    monkeypatch.setattr(reporting, "suite_hash", lambda root: "d" * 64)
-    suite_versions = iter(({"suite": "source"}, {"suite": "base"}))
-    monkeypatch.setattr(
-        reporting,
-        "suite_blobs",
-        lambda *args: next(suite_versions) if corrupt == "source" else {"suite": "same"},
-    )
     monkeypatch.setattr(
         publisher,
         "github",
@@ -1034,50 +1223,117 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     monkeypatch.setattr(
         publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
     )
-    publisher.run(123, "c" * 40, 1)
+    publisher.run(123, "c" * 40, 4)
     assert len(posted) == 2
     assert posted[0].startswith(reporting.MARKER)
     if corrupt in ("base", "provenance"):
         assert "Build provenance validation failed" in posted[1]
         return
-    assert "| Windows / SQL Server 2025 | No result available" in posted[1]
-    if corrupt in ("suite", "source"):
-        assert "workload version differs from trusted base" in posted[1]
-        assert "consistent slowdown signals" not in posted[1]
-    elif corrupt in ("zip", "timeout", "scenarios", "recursion", "deflate"):
-        assert "### Windows / SQL Server 2022" in posted[1]
+    if corrupt in ("zip", "timeout", "scenarios", "recursion", "deflate"):
+        assert "### Unix / SQL Server 2025" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
         assert "| Unix / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
         assert posted[1].count("20 consistent slowdown signals") == 1
     else:
-        assert "### Windows / SQL Server 2022" in posted[1]
+        assert "**Coverage:** 2 of 2 environments completed." in posted[1]
+        assert "### Unix / SQL Server 2022" in posted[1]
+        assert "### Unix / SQL Server 2025" in posted[1]
         assert posted[1].count("40 consistent slowdown signals") == 1
 
 
 def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report, monkeypatch):
     canceled = ado_build(id=41, result="canceled")
     replacement = {**canceled, "id": 42, "result": "failed"}
-    builds = iter(([canceled], [replacement]))
+    builds = [[canceled], [replacement]]
     posted = []
     clock = [0]
 
     def api(url):
-        return {"value": next(builds)} if "/builds?" in url else {"value": []}
+        if "/builds?" in url:
+            return {"value": builds.pop(0) if len(builds) > 1 else builds[0]}
+        return {"value": []}
 
     monkeypatch.setattr(publisher, "api", api)
     monkeypatch.setattr(publisher, "github", pr_topology())
     monkeypatch.setattr(
         publisher, "publish", lambda number, head, body, base=None: posted.append(body)
     )
-    monkeypatch.setattr(reporting, "suite_blobs", lambda *args: {"suite": "same"})
     monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
     )
     publisher.run(123, "c" * 40, 4)
-    assert clock[0] == 240
+    assert clock[0] == 150
     assert len(posted) == 2
     assert "buildId=42" in posted[1]
+
+
+def test_publisher_ignores_cancelling_build_artifacts_and_uses_replacement(monkeypatch):
+    posted = []
+    clock = [0]
+    cancelling = ado_build(id=41, status="cancelling", result=None)
+    replacement = ado_build(id=42, status="inProgress", result=None)
+    builds = [[cancelling], [replacement]]
+    artifacts = [
+        {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
+        for leg in reporting.LEGS
+    ]
+
+    def api(url):
+        if "/builds?" in url:
+            return {"value": builds.pop(0) if len(builds) > 1 else builds[0]}
+        return {"value": artifacts}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(
+        reporting, "assess", lambda evidence, *args: f"buildId={evidence.build['id']}"
+    )
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 4)
+    assert clock[0] == 30
+    assert posted[-1] == "buildId=42"
+
+
+def test_publisher_restarts_artifact_grace_when_completed_build_resumes(monkeypatch):
+    posted = []
+    clock = [0]
+    builds = [
+        ado_build(),
+        ado_build(status="inProgress", result=None),
+        ado_build(),
+    ]
+    artifacts = [
+        {
+            "name": "profiler-Linux-SQL2022",
+            "resource": {"downloadUrl": "https://dev.azure.com/Linux-SQL2022"},
+        }
+    ]
+
+    def api(url):
+        if "/builds?" in url:
+            return {"value": [builds.pop(0) if len(builds) > 1 else builds[0]]}
+        return {"value": artifacts}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(reporting, "assess", lambda *args: "partial report")
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 2)
+    assert clock[0] == 180
+    assert posted[-1] == "partial report"
 
 
 @pytest.mark.parametrize("result", [None, "unknown"])
@@ -1100,18 +1356,18 @@ def test_publisher_rejects_unsupported_completed_results(monkeypatch, result):
 
 
 @pytest.mark.parametrize("status", [None, "notStarted", "inProgress"])
-def test_publisher_deadline_finishes_without_reading_unfinished_build_metadata(monkeypatch, status):
+def test_publisher_deadline_finishes_with_terminal_comment(monkeypatch, status):
     posted = []
     clock = [0]
-    build = ado_build(status=status, sourceVersion=None)
+    build = ado_build(status=status, result=None)
 
     def github(path):
-        assert path == "pulls/123", "Unfinished builds must not query merge topology"
-        return {"state": "open", "head": {"sha": "c" * 40}, "base": {"sha": "a" * 40}}
+        return pr_topology()(path)
 
     def api(url):
-        assert "/builds?" in url, "Unfinished builds must not query artifacts"
-        return {"value": [] if status is None else [build]}
+        if "/builds?" in url:
+            return {"value": [] if status is None else [build]}
+        return {"value": []}
 
     def sleep(seconds):
         clock[0] += seconds
@@ -1127,7 +1383,6 @@ def test_publisher_deadline_finishes_without_reading_unfinished_build_metadata(m
     assert clock[0] == 60 and len(posted) == 2
     assert "Performance assessment pending" in posted[0]
     assert "Performance assessment pending" not in posted[1]
-    assert "1-minute wait" in posted[1]
     assert "Performance could not be assessed" in posted[1]
 
 
@@ -1148,6 +1403,29 @@ def test_publisher_retries_transient_polling_failures_before_finalizing(monkeypa
     assert clock[0] == 60
     assert len(posted) == 2
     assert "Performance could not be assessed" in posted[1]
+
+
+def test_publisher_bounds_consecutive_artifact_service_failures(monkeypatch):
+    posted = []
+    clock = [0]
+
+    def api(url):
+        if "/artifacts?" in url:
+            raise URLError("temporary")
+        return {"value": [ado_build(status="inProgress", result=None)]}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 10)
+    assert clock[0] == 120
+    assert "Performance data services failed repeatedly" in posted[-1]
 
 
 def test_publisher_retries_malformed_pr_and_artifact_responses(monkeypatch):
@@ -1178,7 +1456,7 @@ def test_publisher_retries_malformed_pr_and_artifact_responses(monkeypatch):
 def test_artifact_polling_uses_remaining_publication_budget(monkeypatch):
     posted = []
     clock = [0]
-    build = ado_build()
+    build = ado_build(status="inProgress", result=None)
     artifacts = [
         {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
         for leg in reporting.LEGS
@@ -1201,11 +1479,121 @@ def test_artifact_polling_uses_remaining_publication_budget(monkeypatch):
     publisher.run(123, "c" * 40, 4)
     assert clock[0] == 150
     assert posted == [
-        publisher.HEADER
-        + "**Performance assessment pending.**\n\n"
-        + f"Waiting for the matching performance run for head `{'c' * 40}`.",
+        publisher.pending_message("c" * 40),
         "final report",
     ]
+
+
+def test_publisher_finishes_after_merge_before_aggregate_build(monkeypatch):
+    posted = []
+    build = ado_build(status="inProgress", result=None)
+    artifacts = [
+        {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
+        for leg in reporting.LEGS
+    ]
+
+    def api(url):
+        return {"value": artifacts} if "/artifacts?" in url else {"value": [build]}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology(state="closed", merged=True))
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(reporting, "assess", lambda *args: "final report")
+    sleeps = []
+    monkeypatch.setattr(publisher.time, "sleep", sleeps.append)
+    publisher.run(123, "c" * 40, 4)
+    assert sleeps == []
+    assert posted[-1] == "final report"
+
+
+def test_publisher_waits_for_usable_artifact_urls(monkeypatch):
+    posted = []
+    build = ado_build(status="inProgress", result=None)
+    valid = [
+        {"name": "profiler-" + leg, "resource": {"downloadUrl": "https://dev.azure.com/" + leg}}
+        for leg in reporting.LEGS
+    ]
+    invalid = copy.deepcopy(valid)
+    invalid[0]["resource"]["downloadUrl"] = ""
+    responses = [invalid, valid]
+
+    def api(url):
+        if "/artifacts?" in url:
+            return {"value": responses.pop(0)}
+        return {"value": [build]}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(reporting, "assess", lambda *args: "final report")
+    sleeps = []
+    monkeypatch.setattr(publisher.time, "sleep", sleeps.append)
+    publisher.run(123, "c" * 40, 4)
+    assert sleeps == [30]
+    assert posted[-1] == "final report"
+
+
+def test_completed_build_publishes_partial_result_after_artifact_grace(monkeypatch):
+    posted = []
+    clock = [0]
+    build = ado_build()
+    artifacts = [
+        {
+            "name": "profiler-Linux-SQL2022",
+            "resource": {"downloadUrl": "https://dev.azure.com/Linux-SQL2022"},
+        }
+    ]
+
+    def api(url):
+        return {"value": artifacts} if "/artifacts?" in url else {"value": [build]}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(reporting, "assess", lambda *args: "partial report")
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 1)
+    assert clock[0] == publisher.ARTIFACT_GRACE_SECONDS
+    assert posted[-1] == "partial report"
+
+
+def test_deadline_does_not_assess_partial_running_build(monkeypatch):
+    posted = []
+    clock = [0]
+    build = ado_build(status="inProgress", result=None)
+    artifacts = [
+        {
+            "name": "profiler-Linux-SQL2022",
+            "resource": {"downloadUrl": "https://dev.azure.com/Linux-SQL2022"},
+        }
+    ]
+
+    def api(url):
+        return {"value": artifacts} if "/artifacts?" in url else {"value": [build]}
+
+    monkeypatch.setattr(publisher, "api", api)
+    monkeypatch.setattr(publisher, "github", pr_topology())
+    monkeypatch.setattr(
+        publisher, "publish", lambda number, head, body, base=None: posted.append(body)
+    )
+    monkeypatch.setattr(
+        reporting, "assess", lambda *args: pytest.fail("running partial build must not assess")
+    )
+    monkeypatch.setattr(publisher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        publisher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    publisher.run(123, "c" * 40, 1)
+    assert "did not become ready within the 1-minute wait" in posted[-1]
 
 
 def test_artifact_symlink_and_oversized_json_are_rejected():
@@ -1237,25 +1625,19 @@ def test_ci_reuses_profiling_builds_without_changing_release_defaults():
         pipeline,
     )
     assert len(profiler_conditions) == 4
+    assert profiler_conditions.count("false") == 2
     assert all(
         "eq(variables['Build.Reason'], 'PullRequest')" in condition
         for condition in profiler_conditions
+        if condition != "false"
     )
     for release in (ROOT / "OneBranchPipelines").rglob("*.yml"):
         assert "ENABLE_PROFILING" not in release.read_text(encoding="utf-8")
     windows = pipeline.split("- job: pytestonwindows\n", 1)[1].split("\n- job:", 1)[0]
     assert "##vso[task.setvariable" not in windows
-    assert "ENABLE_PROFILING: 1" in windows
-    assert "ArtifactName: 'ddbc_bindings-profiling-$(sqlVersion)'" in windows
+    assert windows.count("condition: false") >= 5
     assert "ArtifactName: 'ddbc_bindings'" in windows
-    assert (
-        "condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), "
-        "ne(variables['sqlVersion'], 'LocalDB'))"
-    ) in windows
-    assert (
-        "condition: and(succeeded(), or(ne(variables['Build.Reason'], 'PullRequest'), "
-        "eq(variables['sqlVersion'], 'LocalDB')))"
-    ) in windows
+    assert "Hosted Windows timings varied more than the regression threshold" in windows
     macos = pipeline.split("- job: PytestOnMacOS\n", 1)[1].split("\n- job:", 1)[0]
     assert "timeoutInMinutes: 90" in macos
     assert "ENABLE_PROFILING" not in macos
