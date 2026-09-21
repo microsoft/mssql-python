@@ -329,7 +329,9 @@ jobs:
       cd mssql_python\pybind
       build.bat x64
     displayName: 'Build profiling .pyd file'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['sqlVersion'], 'LocalDB'))
+    # Hosted Windows timings varied more than the regression threshold on neutral
+    # PRs. Keep functional Windows CI, but exclude it from routine PR profiling.
+    condition: false
     env:
       ENABLE_PROFILING: 1
 
@@ -337,11 +339,11 @@ jobs:
       cd mssql_python\pybind
       build.bat x64
     displayName: 'Build .pyd file'
-    condition: and(succeeded(), or(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['sqlVersion'], 'LocalDB')))
+    condition: succeeded()
 
   - script: python -m eng.profiler_benchmarks.controller --check-build on
     displayName: 'Verify native configuration and recording OFF before pytest'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['sqlVersion'], 'LocalDB'))
+    condition: false
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -406,7 +408,7 @@ jobs:
         exit 1
       }
     displayName: 'Download and restore AdventureWorks2022 database'
-    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: false
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -496,7 +498,7 @@ jobs:
       python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "Windows-$(sqlVersion)" --output profiler-results
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Compare profiling builds on SQL Server 2022/2025'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: false
     continueOnError: true
     timeoutInMinutes: 100
     env:
@@ -509,7 +511,7 @@ jobs:
       targetPath: profiler-results
       artifact: 'profiler-Windows-$(sqlVersion)'
     displayName: 'Publish paired profiler measurements'
-    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: false
     continueOnError: true
 
   - task: CopyFiles@2
@@ -532,7 +534,7 @@ jobs:
       ArtifactName: 'ddbc_bindings-profiling-$(sqlVersion)'
       publishLocation: 'Container'
     displayName: 'Publish profiling build artifacts'
-    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['sqlVersion'], 'LocalDB'))
+    condition: false
 
   - task: PublishBuildArtifacts@1
     inputs:
@@ -540,7 +542,7 @@ jobs:
       ArtifactName: 'ddbc_bindings'
       publishLocation: 'Container'
     displayName: 'Publish build artifacts'
-    condition: and(succeeded(), or(ne(variables['Build.Reason'], 'PullRequest'), eq(variables['sqlVersion'], 'LocalDB')))
+    condition: succeeded()
 
   - task: PublishTestResults@2
     condition: succeededOrFailed()
