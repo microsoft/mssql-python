@@ -226,10 +226,9 @@ def test_arrow_empty_fetch(cursor: mssql_python.Cursor):
 
 
 def test_arrow_table_batchsize_negative(cursor: mssql_python.Cursor):
-    tbl = cursor.execute("select 1 a").arrow(batch_size=-42)
-    assert type(tbl) is pa.Table
-    assert tbl.num_rows == 0
-    assert tbl.num_columns == 1
+    cursor.execute("select 1 a")
+    with pytest.raises(ValueError, match="batch_size"):
+        cursor.arrow(batch_size=-42)
     assert cursor.fetchone()[0] == 1
 
 
