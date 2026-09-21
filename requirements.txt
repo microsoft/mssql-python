@@ -6,7 +6,8 @@ zstandard
 coverage
 unittest-xml-reporting
 psutil
-pyarrow
+# Python 3.15 preview wheels aren't published yet; Arrow tests remain a GA-readiness blocker.
+pyarrow; python_version < "3.15"
 polars
 
 # Runtime dependencies needed for tests
