@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from ..exceptions import OperationalError, ProgrammingError
 from ..logging import logger
 from ..row import Row
 from .exception_translator import translate_py_core_exceptions
@@ -16,22 +17,19 @@ def _get_py_core_async_cursor(cursor: "AsyncCursor") -> Any:
     return cursor._py_core_async_cursor  # pyright: ignore[reportPrivateUsage]
 
 
-def _native_result_state(cursor: "AsyncCursor") -> tuple[Any, int]:
-    py_core_cursor = _get_py_core_async_cursor(cursor)
-    with translate_py_core_exceptions():
-        return py_core_cursor.description, py_core_cursor.rowcount
+def _is_non_mutating_rejection(error: BaseException) -> bool:
+    """Return whether py-core guarantees rejection before result-state mutation."""
+    if isinstance(error, OperationalError) and str(error.__cause__).startswith(
+        "Connection is busy"
+    ):
+        return True
+    return isinstance(error, TypeError) or (
+        isinstance(error, ProgrammingError) and isinstance(error.__cause__, TypeError)
+    )
 
 
-def _reconcile_failed_execution(
-    cursor: "AsyncCursor", previous_native_state: tuple[Any, int]
-) -> None:
-    try:
-        if _native_result_state(cursor) == previous_native_state:
-            return
-    except Exception as error:
-        logger.debug("Async execution state inspection failed: %s", error)
-        cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
-        cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]
+def _reconcile_failed_execution(cursor: "AsyncCursor", error: BaseException) -> None:
+    if _is_non_mutating_rejection(error):
         return
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]
@@ -52,23 +50,24 @@ async def execute(
     if len(parameters) == 1 and isinstance(parameters[0], (tuple, list, Row)):
         parameters = tuple(parameters[0])
 
-    previous_native_state = _native_result_state(cursor)
     logger.debug(
         "AsyncCursor.execute: starting; param_count=%d; use_prepare=%s; reset_cursor=%s",
         len(parameters),
         use_prepare,
         reset_cursor,
     )
+    with translate_py_core_exceptions():
+        execute_awaitable = _get_py_core_async_cursor(cursor).execute(
+            operation,
+            *parameters,
+            use_prepare=use_prepare,
+            reset_cursor=reset_cursor,
+        )
     try:
         with translate_py_core_exceptions():
-            await _get_py_core_async_cursor(cursor).execute(
-                operation,
-                *parameters,
-                use_prepare=use_prepare,
-                reset_cursor=reset_cursor,
-            )
-    except (Exception, asyncio.CancelledError):
-        _reconcile_failed_execution(cursor, previous_native_state)
+            await execute_awaitable
+    except (Exception, asyncio.CancelledError) as error:
+        _reconcile_failed_execution(cursor, error)
         raise
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]
@@ -93,21 +92,22 @@ async def executemany(
     """Execute a statement for every parameter row using the py-core async cursor."""
     cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
     batch_count = len(seq_of_parameters)
-    previous_native_state = _native_result_state(cursor)
     logger.debug(
         "AsyncCursor.executemany: starting; batch_count=%d; use_prepare=%s",
         batch_count,
         use_prepare,
     )
+    with translate_py_core_exceptions():
+        executemany_awaitable = _get_py_core_async_cursor(cursor).executemany(
+            operation,
+            seq_of_parameters,
+            use_prepare=use_prepare,
+        )
     try:
         with translate_py_core_exceptions():
-            await _get_py_core_async_cursor(cursor).executemany(
-                operation,
-                seq_of_parameters,
-                use_prepare=use_prepare,
-            )
-    except (Exception, asyncio.CancelledError):
-        _reconcile_failed_execution(cursor, previous_native_state)
+            await executemany_awaitable
+    except (Exception, asyncio.CancelledError) as error:
+        _reconcile_failed_execution(cursor, error)
         raise
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]

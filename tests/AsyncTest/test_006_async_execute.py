@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, datetime, time
 from decimal import Decimal
 import pytest
@@ -111,28 +112,122 @@ async def test_failed_execution_clears_wrapper_state_when_native_discards_result
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ("execute", "executemany"))
-@pytest.mark.parametrize("failure_stage", ("inspection", "metadata"))
-async def test_reconciliation_failure_preserves_original_execution_error(method, failure_stage):
+async def test_cancelled_execution_with_same_state_starts_new_result_generation(method):
+    execution_started = asyncio.Event()
+
+    class CancelledNativeCursor:
+        description = [("id", int, None, None, None, None, True)]
+        rowcount = -1
+        value = 1
+
+        async def _execute(self):
+            self.description = [("id", int, None, None, None, None, True)]
+            self.rowcount = -1
+            self.value = 2
+            execution_started.set()
+            await asyncio.Event().wait()
+
+        async def execute(self, *_args, **_kwargs):
+            return await self._execute()
+
+        async def executemany(self, *_args, **_kwargs):
+            return await self._execute()
+
+        async def fetchone(self):
+            return (self.value,)
+
+    class StatefulAsyncCursor(AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("id", int, None, None, None, None, True)]
+            self._column_map = {"id": 0}
+            self._column_names = ("id",)
+            self._fetched_row_count = 1
+            self._fetch_rowcount = 1
+
+    cursor = StatefulAsyncCursor(CancelledNativeCursor())
+    cursor.seed_result_state()
+
+    execution = (
+        cursor.execute("SELECT id")
+        if method == "execute"
+        else cursor.executemany("SELECT id", [()])
+    )
+    execution_task = asyncio.create_task(execution)
+    await execution_started.wait()
+
+    execution_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution_task
+
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row.id == 2
+    assert cursor.rowcount == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ("execute", "executemany"))
+async def test_failed_execution_with_same_state_starts_new_result_generation(method):
+    class FailingNativeCursor:
+        description = [("id", int, None, None, None, None, True)]
+        rowcount = -1
+        value = 1
+
+        async def _execute(self):
+            self.description = [("id", int, None, None, None, None, True)]
+            self.rowcount = -1
+            self.value = 2
+            raise RuntimeError("execution failed")
+
+        async def execute(self, *_args, **_kwargs):
+            return await self._execute()
+
+        async def executemany(self, *_args, **_kwargs):
+            return await self._execute()
+
+        async def fetchone(self):
+            return (self.value,)
+
+    class StatefulAsyncCursor(AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("id", int, None, None, None, None, True)]
+            self._column_map = {"id": 0}
+            self._column_names = ("id",)
+            self._fetched_row_count = 1
+            self._fetch_rowcount = 1
+
+    cursor = StatefulAsyncCursor(FailingNativeCursor())
+    cursor.seed_result_state()
+
+    with pytest.raises(RuntimeError, match="execution failed"):
+        if method == "execute":
+            await cursor.execute("SELECT id")
+        else:
+            await cursor.executemany("SELECT id", [()])
+
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row.id == 2
+    assert cursor.rowcount == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ("execute", "executemany"))
+async def test_reconciliation_failure_preserves_original_execution_error(method):
     native_error = mssql_py_core.DatabaseError("query failed")
     native_error.sql_errors = [{"number": 50001}]
 
     class BrokenNativeCursor:
         broken = False
-        description_reads = 0
 
         @property
         def description(self):
-            self.description_reads += 1
-            if self.broken and (failure_stage == "inspection" or self.description_reads > 2):
-                raise RuntimeError("Connection is broken")
             if self.broken:
-                return None
+                raise RuntimeError("Connection is broken")
             return [("value", int, None, None, None, None, True)]
 
         @property
         def rowcount(self):
-            if self.broken and failure_stage == "inspection":
-                raise RuntimeError("Connection is broken")
             return -1 if self.broken else 1
 
         async def execute(self, *_args, **_kwargs):
