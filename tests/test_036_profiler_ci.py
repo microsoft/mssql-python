@@ -347,11 +347,11 @@ def test_impact_summary_reports_consistent_improvements(report):
         "No consistent slowdowns were detected.**"
     ) in body
     assert "<kbd>2 IMPROVEMENTS</kbd> <kbd>0 SLOWDOWNS</kbd> <kbd>2/2 ENVIRONMENTS</kbd>" in body
-    assert "| Fetch-all queries | **30.0% faster** | **28.0% faster** | **2.0 pp** |" in body
+    assert "| Fetch-all queries | **30.0% faster** | **28.0% faster** |" in body
     assert (
-        "| Insertion with explicit input sizes | **40.0% faster** | "
-        "**39.0% faster** | **1.0 pp** |"
+        "| Insertion with explicit input sizes | **40.0% faster** | " "**39.0% faster** |"
     ) in body
+    assert "Spread" not in body
     assert "<summary><b>Measured timings</b></summary>" in body
     assert "| Fetch-all queries |" in body and "| consistent improvement |" in body
     assert "ddbc::query -0.500 ms" in body

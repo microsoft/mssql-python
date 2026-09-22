@@ -455,12 +455,11 @@ def render(reports, head, build_id, issues=()):
             "",
             "| Database task | "
             + " | ".join(environment_name(leg) for leg in affected_legs)
-            + " | Spread |",
-            "|---|" + "|".join("---:" for _ in affected_legs) + "|---:|",
+            + " |",
+            "|---|" + "|".join("---:" for _ in affected_legs) + "|",
         ]
         for name in affected_tasks:
             cells = []
-            rows = []
             for leg in affected_legs:
                 row = by_signal.get((leg, name))
                 if row is None:
@@ -471,18 +470,7 @@ def render(reports, head, build_id, issues=()):
                     cells.append(f"**{abs(row['change_pct']):.1f}% slower**")
                 else:
                     cells.append(f"**{abs(row['change_pct']):.1f}% inconsistent**")
-                if row is not None:
-                    rows.append(row)
-            if len(rows) > 1 and len({row["status"] for row in rows}) == 1:
-                spread = max(abs(row["change_pct"]) for row in rows) - min(
-                    abs(row["change_pct"]) for row in rows
-                )
-                spread_cell = f"**{spread:.1f} pp**"
-            else:
-                spread_cell = "Not comparable"
-            lines.append(
-                f"| {escape(TASK_NAMES[name])} | " + " | ".join(cells) + f" | {spread_cell} |"
-            )
+            lines.append(f"| {escape(TASK_NAMES[name])} | " + " | ".join(cells) + " |")
         lines.append("")
     if regressions:
         lines.append(
