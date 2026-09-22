@@ -1683,10 +1683,16 @@ def test_profiler_documentation_preserves_standalone_benchmarks_and_failed_build
     assert "failed aggregate build can still publish" in contract
 
 
-def test_comment_workflow_executes_only_trusted_base_code():
+def test_comment_workflow_separates_same_repo_and_fork_trust():
     workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
+    assert "pull_request:" in workflow
     assert "pull_request_target:" in workflow
-    assert "ref: ${{ github.event.pull_request.base.sha }}" in workflow
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
+    assert "github.event.pull_request.head.repo.full_name != github.repository" in workflow
+    assert (
+        "github.event_name == 'pull_request' && github.event.pull_request.head.sha || "
+        "github.event.pull_request.base.sha"
+    ) in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in workflow
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
