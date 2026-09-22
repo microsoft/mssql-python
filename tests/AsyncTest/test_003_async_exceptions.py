@@ -66,6 +66,7 @@ def test_translation_preserves_native_diagnostic_attributes():
         (8134, public_exceptions.DataError),
         (2627, public_exceptions.IntegrityError),
         (156, public_exceptions.ProgrammingError),
+        (2714, public_exceptions.ProgrammingError),
         (50001, public_exceptions.DatabaseError),
     ),
 )

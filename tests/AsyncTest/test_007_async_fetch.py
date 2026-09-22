@@ -604,7 +604,10 @@ async def test_busy_fetch_rejection_preserves_result_state(fetch_method):
 @pytest.mark.asyncio
 async def test_partial_fetch_error_invalidates_result_state(async_cursor):
     await async_cursor.execute(
-        "SELECT 10 / n AS value FROM (VALUES (1), (2), (0)) AS v(n)",
+        "SET NOCOUNT ON; "
+        "DECLARE @values TABLE (ordinal INT PRIMARY KEY, n INT); "
+        "INSERT INTO @values VALUES (1, 1), (2, 2), (3, 0); "
+        "SELECT 10 / n AS value FROM @values ORDER BY ordinal",
         use_prepare=False,
     )
     assert await async_cursor.fetchone() == [10]
