@@ -1,5 +1,6 @@
 """Asynchronous statement execution through mssql-py-core."""
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -66,7 +67,7 @@ async def execute(
                 use_prepare=use_prepare,
                 reset_cursor=reset_cursor,
             )
-    except Exception:
+    except (Exception, asyncio.CancelledError):
         _reconcile_failed_execution(cursor, previous_native_state)
         raise
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
@@ -105,7 +106,7 @@ async def executemany(
                 seq_of_parameters,
                 use_prepare=use_prepare,
             )
-    except Exception:
+    except (Exception, asyncio.CancelledError):
         _reconcile_failed_execution(cursor, previous_native_state)
         raise
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]

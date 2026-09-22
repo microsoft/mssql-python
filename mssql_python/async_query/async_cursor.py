@@ -6,7 +6,9 @@ Warning:
     may change without notice.
 """
 
+import asyncio
 from collections.abc import Mapping, Sequence
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 import uuid
 
@@ -29,6 +31,9 @@ class AsyncCursor:
         self._py_core_async_cursor = py_core_async_cursor
         self._connection = connection
         self._closed = False
+        self._result_transition_lock = asyncio.Lock()
+        self._result_ready = asyncio.Event()
+        self._result_ready.set()
         self._result_generation = 0
         self._fetched_row_count = 0
         self._fetch_rowcount: int | None = None
@@ -75,6 +80,18 @@ class AsyncCursor:
         self._fetched_row_count = 0
         self._fetch_rowcount = None
 
+    @asynccontextmanager
+    async def _result_transition(self):
+        async with self._result_transition_lock:
+            self._result_ready.clear()
+            try:
+                yield
+            finally:
+                self._result_ready.set()
+
+    async def _wait_for_result_publication(self) -> None:
+        await self._result_ready.wait()
+
     def _reconcile_failed_result_operation(
         self, previous_native_description: Any, operation: str
     ) -> None:
@@ -115,13 +132,14 @@ class AsyncCursor:
         use_prepare: bool = True,
         reset_cursor: bool = True,
     ) -> "AsyncCursor":
-        return await async_execute.execute(
-            self,
-            operation,
-            *parameters,
-            use_prepare=use_prepare,
-            reset_cursor=reset_cursor,
-        )
+        async with self._result_transition():
+            return await async_execute.execute(
+                self,
+                operation,
+                *parameters,
+                use_prepare=use_prepare,
+                reset_cursor=reset_cursor,
+            )
 
     async def executemany(
         self,
@@ -130,12 +148,13 @@ class AsyncCursor:
         *,
         use_prepare: bool = True,
     ) -> None:
-        await async_execute.executemany(
-            self,
-            operation,
-            seq_of_parameters,
-            use_prepare=use_prepare,
-        )
+        async with self._result_transition():
+            await async_execute.executemany(
+                self,
+                operation,
+                seq_of_parameters,
+                use_prepare=use_prepare,
+            )
 
     async def fetchone(self) -> Row | None:
         return await async_fetch.fetchone(self)
@@ -147,19 +166,23 @@ class AsyncCursor:
         return await async_fetch.fetchall(self)
 
     async def nextset(self) -> bool:
-        with translate_py_core_exceptions():
-            previous_native_description = self._py_core_async_cursor.description
-        try:
+        async with self._result_transition():
             with translate_py_core_exceptions():
-                has_next = await self._py_core_async_cursor.nextset()
-        except Exception:
-            self._reconcile_failed_result_operation(previous_native_description, "nextset")
-            raise
-        self._reset_fetch_tracking()
-        self._clear_result_metadata()
-        if has_next:
-            self._initialize_result_metadata()
-        return has_next
+                previous_native_description = self._py_core_async_cursor.description
+            try:
+                with translate_py_core_exceptions():
+                    has_next = await self._py_core_async_cursor.nextset()
+            except asyncio.CancelledError:
+                self._reconcile_failed_result_operation(previous_native_description, "nextset")
+                raise
+            except Exception:
+                self._reconcile_failed_result_operation(previous_native_description, "nextset")
+                raise
+            self._reset_fetch_tracking()
+            self._clear_result_metadata()
+            if has_next:
+                self._initialize_result_metadata()
+            return has_next
 
     async def close(self) -> None:
         logger.debug("AsyncCursor.close: starting")
@@ -167,6 +190,7 @@ class AsyncCursor:
             await self._py_core_async_cursor.close()
         self._closed = True
         self._reset_fetch_tracking()
+        self._clear_result_metadata()
         logger.debug("AsyncCursor.close: completed")
 
     def setinputsizes(self, sizes: Any) -> None:

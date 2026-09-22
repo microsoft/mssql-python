@@ -164,6 +164,73 @@ async def test_busy_nextset_preserves_pending_fetch_state():
 
 
 @pytest.mark.asyncio
+async def test_pending_fetch_cannot_update_rowcount_after_successful_close():
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    class ClosingNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
+        rowcount = -1
+
+        async def execute(self, *_args, **_kwargs):
+            return self
+
+        async def fetchall(self):
+            fetch_started.set()
+            await release_fetch.wait()
+            return [(value,) for value in range(50_000)]
+
+        async def close(self):
+            self.description = None
+
+    cursor = AsyncCursor(ClosingNativeCursor())
+    fetch_task = None
+    try:
+        await cursor.execute("SELECT value")
+        fetch_task = asyncio.create_task(cursor.fetchall())
+        await fetch_started.wait()
+
+        await cursor.close()
+        release_fetch.set()
+        rows = await fetch_task
+
+        assert len(rows) == 50_000
+        assert cursor.description is None
+        assert cursor.rowcount == -1
+    finally:
+        release_fetch.set()
+        if fetch_task is not None and not fetch_task.done():
+            await fetch_task
+
+
+@pytest.mark.asyncio
+async def test_rejected_close_preserves_result_state():
+    class RejectingNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
+        rowcount = -1
+
+        async def execute(self, *_args, **_kwargs):
+            return self
+
+        async def fetchone(self):
+            return (1,)
+
+        async def close(self):
+            raise RuntimeError("Connection is busy with another cursor operation")
+
+    cursor = AsyncCursor(RejectingNativeCursor())
+    await cursor.execute("SELECT value")
+    assert await cursor.fetchone() == [1]
+    assert cursor.rowcount == 1
+
+    with pytest.raises(OperationalError, match="Connection is busy"):
+        await cursor.close()
+
+    assert cursor.description is not None
+    assert cursor.rowcount == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
 async def test_pending_fetch_uses_originating_metadata_after_successful_nextset(fetch_method):
     fetch_started = asyncio.Event()
@@ -227,6 +294,168 @@ async def test_pending_fetch_uses_originating_metadata_after_successful_nextset(
         if fetch_task is not None and not fetch_task.done():
             await fetch_task
         mssql_python.native_uuid = previous_native_uuid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
+async def test_fetch_waits_for_successful_nextset_metadata_publication(fetch_method):
+    native_advanced = asyncio.Event()
+    release_nextset = asyncio.Event()
+    fetch_entered = asyncio.Event()
+
+    class NavigatingNativeCursor:
+        description = [
+            ("OldGuid1", UUID, None, None, None, None, True),
+            ("OldGuid2", UUID, None, None, None, None, True),
+        ]
+        rowcount = -1
+
+        async def execute(self, *_args, **_kwargs):
+            return self
+
+        async def nextset(self):
+            self.description = [("new_value", int, None, None, None, None, True)]
+            native_advanced.set()
+            await release_nextset.wait()
+            return True
+
+        async def _fetch(self):
+            fetch_entered.set()
+            return (7,)
+
+        async def fetchone(self):
+            return await self._fetch()
+
+        async def fetchmany(self, _size):
+            return [await self._fetch()]
+
+        async def fetchall(self):
+            return [await self._fetch()]
+
+    cursor = AsyncCursor(NavigatingNativeCursor())
+    previous_native_uuid = mssql_python.native_uuid
+    nextset_task = None
+    fetch_task = None
+    try:
+        mssql_python.native_uuid = False
+        await cursor.execute("SELECT OldGuid1, OldGuid2")
+        nextset_task = asyncio.create_task(cursor.nextset())
+        await native_advanced.wait()
+
+        fetch_call = (
+            cursor.fetchmany(1) if fetch_method == "fetchmany" else getattr(cursor, fetch_method)()
+        )
+        fetch_task = asyncio.create_task(fetch_call)
+        await asyncio.sleep(0)
+        assert fetch_entered.is_set() is False
+
+        release_nextset.set()
+        assert await nextset_task is True
+        result = await fetch_task
+        assert result is not None
+        row = result if fetch_method == "fetchone" else result[0]
+        assert isinstance(row, Row)
+        assert row.new_value == 7
+        assert cursor.rowcount == 1
+    finally:
+        release_nextset.set()
+        if nextset_task is not None and not nextset_task.done():
+            await nextset_task
+        if fetch_task is not None and not fetch_task.done():
+            await fetch_task
+        mssql_python.native_uuid = previous_native_uuid
+
+
+@pytest.mark.asyncio
+async def test_cancelled_nextset_reconciles_before_releasing_fetch():
+    native_advanced = asyncio.Event()
+    hold_nextset = asyncio.Event()
+
+    class CancelledNativeCursor:
+        description = [("old_value", int, None, None, None, None, True)]
+        rowcount = -1
+
+        async def execute(self, *_args, **_kwargs):
+            return self
+
+        async def nextset(self):
+            self.description = [("new_value", int, None, None, None, None, True)]
+            native_advanced.set()
+            await hold_nextset.wait()
+
+        async def fetchone(self):
+            return (7,)
+
+    cursor = AsyncCursor(CancelledNativeCursor())
+    await cursor.execute("SELECT old_value")
+    nextset_task = asyncio.create_task(cursor.nextset())
+    await native_advanced.wait()
+    fetch_task = asyncio.create_task(cursor.fetchone())
+
+    nextset_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await nextset_task
+
+    row = await fetch_task
+    assert row is not None
+    assert row.new_value == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
+async def test_stale_fetch_failure_does_not_clear_new_result(fetch_method):
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    class NavigatingNativeCursor:
+        description = [("old_value", int, None, None, None, None, True)]
+        rowcount = -1
+
+        async def execute(self, *_args, **_kwargs):
+            return self
+
+        async def _fetch(self):
+            fetch_started.set()
+            await release_fetch.wait()
+            raise RuntimeError("old result fetch failed")
+
+        async def fetchone(self):
+            return await self._fetch()
+
+        async def fetchmany(self, _size):
+            return await self._fetch()
+
+        async def fetchall(self):
+            return await self._fetch()
+
+        async def nextset(self):
+            self.description = [("new_value", int, None, None, None, None, True)]
+            return True
+
+    cursor = AsyncCursor(NavigatingNativeCursor())
+    fetch_task = None
+    await cursor.execute("SELECT old_value")
+    try:
+        fetch_call = (
+            cursor.fetchmany(1) if fetch_method == "fetchmany" else getattr(cursor, fetch_method)()
+        )
+        fetch_task = asyncio.create_task(fetch_call)
+        await fetch_started.wait()
+
+        assert await cursor.nextset() is True
+        release_fetch.set()
+        with pytest.raises(RuntimeError, match="old result fetch failed"):
+            await fetch_task
+
+        assert cursor.description is not None
+        assert cursor.description[0][0] == "new_value"
+        assert cursor.rowcount == -1
+        assert await cursor.fetchmany(0) == []
+    finally:
+        release_fetch.set()
+        if fetch_task is not None and not fetch_task.done():
+            with pytest.raises(RuntimeError, match="old result fetch failed"):
+                await fetch_task
 
 
 @pytest.mark.asyncio
@@ -348,6 +577,38 @@ async def test_fetchmany_uses_arraysize(async_connection):
         assert [tuple(row) for row in await cursor.fetchall()] == [(3,)]
     finally:
         await cursor.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("size", "error_type"),
+    ((1.5, TypeError), (2**100, OverflowError)),
+)
+async def test_fetchmany_size_conversion_error_preserves_result_state(
+    async_cursor, size, error_type
+):
+    previous_native_uuid = mssql_python.native_uuid
+    try:
+        mssql_python.native_uuid = False
+        await async_cursor.execute(
+            "SELECT CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' "
+            "AS UNIQUEIDENTIFIER) AS MixedGuid UNION ALL "
+            "SELECT CAST('6F9619FF-8B86-D011-B42D-00C04FC964FE' AS UNIQUEIDENTIFIER)"
+        )
+        first = await async_cursor.fetchone()
+        assert first is not None
+        assert first.MixedGuid == "6F9619FF-8B86-D011-B42D-00C04FC964FF"
+        assert async_cursor.rowcount == 1
+
+        with pytest.raises(error_type):
+            await async_cursor.fetchmany(size)
+
+        second = await async_cursor.fetchone()
+        assert second is not None
+        assert second.MixedGuid == "6F9619FF-8B86-D011-B42D-00C04FC964FE"
+        assert async_cursor.rowcount == 2
+    finally:
+        mssql_python.native_uuid = previous_native_uuid
 
 
 @pytest.mark.asyncio

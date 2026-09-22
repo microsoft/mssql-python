@@ -33,7 +33,11 @@ def _snapshot_result(cursor: "AsyncCursor") -> _ResultSnapshot:
     )
 
 
-def _reconcile_failed_fetch(cursor: "AsyncCursor", operation: str, error: Exception) -> None:
+def _reconcile_failed_fetch(
+    cursor: "AsyncCursor", generation: int, operation: str, error: Exception
+) -> None:
+    if generation != cursor._result_generation:  # pyright: ignore[reportPrivateUsage]
+        return
     if isinstance(error, OperationalError) and str(error.__cause__).startswith(
         "Connection is busy"
     ):
@@ -57,12 +61,13 @@ def _wrap_row(snapshot: _ResultSnapshot, values: tuple[Any, ...]) -> Row:
 async def fetchone(cursor: "AsyncCursor") -> Row | None:
     """Fetch the next row through the py-core async cursor."""
     logger.debug("AsyncCursor.fetchone: starting")
+    await cursor._wait_for_result_publication()  # pyright: ignore[reportPrivateUsage]
     snapshot = _snapshot_result(cursor)
     try:
         with translate_py_core_exceptions():
             row = await _get_py_core_async_cursor(cursor).fetchone()
     except Exception as error:
-        _reconcile_failed_fetch(cursor, "fetchone", error)
+        _reconcile_failed_fetch(cursor, snapshot[0], "fetchone", error)
         raise
     cursor._record_fetch(  # pyright: ignore[reportPrivateUsage]
         snapshot[0], row is not None, row is None
@@ -78,6 +83,7 @@ async def fetchone(cursor: "AsyncCursor") -> Row | None:
 async def fetchmany(cursor: "AsyncCursor", size: int | None = None) -> list[Row]:
     """Fetch up to size rows, using cursor arraysize when size is omitted."""
     cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
+    await cursor._wait_for_result_publication()  # pyright: ignore[reportPrivateUsage]
     requested_size = cursor.arraysize if size is None else size
     logger.debug("AsyncCursor.fetchmany: starting; requested_size=%s", requested_size)
     if requested_size <= 0:
@@ -86,14 +92,16 @@ async def fetchmany(cursor: "AsyncCursor", size: int | None = None) -> list[Row]
         logger.debug("AsyncCursor.fetchmany: completed; row_count=0; rowcount=%d", cursor.rowcount)
         return []
     snapshot = _snapshot_result(cursor)
+    with translate_py_core_exceptions():
+        if size is None:
+            fetch_awaitable = _get_py_core_async_cursor(cursor).fetchmany()
+        else:
+            fetch_awaitable = _get_py_core_async_cursor(cursor).fetchmany(size)
     try:
         with translate_py_core_exceptions():
-            if size is None:
-                rows = await _get_py_core_async_cursor(cursor).fetchmany()
-            else:
-                rows = await _get_py_core_async_cursor(cursor).fetchmany(size)
+            rows = await fetch_awaitable
     except Exception as error:
-        _reconcile_failed_fetch(cursor, "fetchmany", error)
+        _reconcile_failed_fetch(cursor, snapshot[0], "fetchmany", error)
         raise
     cursor._record_fetch(snapshot[0], len(rows), not rows)  # pyright: ignore[reportPrivateUsage]
     logger.debug(
@@ -107,12 +115,13 @@ async def fetchmany(cursor: "AsyncCursor", size: int | None = None) -> list[Row]
 async def fetchall(cursor: "AsyncCursor") -> list[Row]:
     """Fetch all remaining rows through the py-core async cursor."""
     logger.debug("AsyncCursor.fetchall: starting")
+    await cursor._wait_for_result_publication()  # pyright: ignore[reportPrivateUsage]
     snapshot = _snapshot_result(cursor)
     try:
         with translate_py_core_exceptions():
             rows = await _get_py_core_async_cursor(cursor).fetchall()
     except Exception as error:
-        _reconcile_failed_fetch(cursor, "fetchall", error)
+        _reconcile_failed_fetch(cursor, snapshot[0], "fetchall", error)
         raise
     cursor._record_fetch(snapshot[0], len(rows), not rows)  # pyright: ignore[reportPrivateUsage]
     logger.debug(
