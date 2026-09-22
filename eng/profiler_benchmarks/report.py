@@ -42,6 +42,7 @@ CASES = tuple(TASK_NAMES)
 MAX_BYTES = 8 * 1024 * 1024
 MAX_COMMENT_CHARS = 60000
 MAX_DIAGNOSTIC_ROWS = 20
+MAX_FINGERPRINT_TASKS = 4
 MARKER = "<!-- mssql-python-profiler-ci -->"
 THRESHOLD = 0.20
 MIN_DELTA_MS = 1.0
@@ -376,52 +377,43 @@ def render(reports, head, build_id, issues=()):
     ]
     missing = len(LEGS) - len(completed)
 
-    if len(regressions) == 1:
-        leg, row = regressions[0]
-        opening = (
-            f"This PR consistently slows {TASK_NAMES[row['name']].lower()} on "
-            f"{environment_name(leg)} by {row['change_pct']:.1f}%."
-        )
-    elif regressions:
+    highlighted = [
+        (leg, row) for leg, (_, rows) in completed.items() for row in rows if row["status"] != "ok"
+    ]
+    if regressions:
         tasks = len({row["name"] for _, row in regressions})
         environments = len({leg for leg, _ in regressions})
         opening = (
-            f"This PR has {len(regressions)} consistent slowdown signals across "
-            f"{tasks} database tasks and {environments} environments."
+            f"{tasks} database task{'s' if tasks != 1 else ''} consistently slowed down across "
+            f"{environments} measured environment{'s' if environments != 1 else ''}."
         )
+        verdict = "⚠️ Performance regression detected"
     elif noisy:
-        if len(noisy) == 1:
-            leg, row = noisy[0]
-            opening = (
-                f"{TASK_NAMES[row['name']]} was slower on {environment_name(leg)}, "
-                "but the repeated comparisons were inconsistent."
-            )
-        else:
-            tasks = len({row["name"] for _, row in noisy})
-            environments = len({leg for leg, _ in noisy})
-            opening = (
-                f"No consistent slowdowns detected. {len(noisy)} inconsistent comparisons "
-                f"need review across {tasks} database tasks and {environments} environments."
-            )
-    elif len(improvements) == 1:
-        leg, row = improvements[0]
+        tasks = len({row["name"] for _, row in noisy})
+        environments = len({leg for leg, _ in noisy})
         opening = (
-            f"This PR consistently makes {TASK_NAMES[row['name']].lower()} faster on "
-            f"{environment_name(leg)} by {abs(row['change_pct']):.1f}%."
+            f"{tasks} database task{'s' if tasks != 1 else ''} produced inconsistent slowdown "
+            f"signals across {environments} measured environment"
+            f"{'s' if environments != 1 else ''}."
         )
+        verdict = "🔍 Performance needs review"
     elif improvements:
         tasks = len({row["name"] for _, row in improvements})
         environments = len({leg for leg, _ in improvements})
         opening = (
-            f"This PR has {len(improvements)} consistent improvement signals across "
-            f"{tasks} database tasks and {environments} environments."
+            f"{tasks} database task{'s' if tasks != 1 else ''} consistently improved across "
+            f"{environments} measured environment{'s' if environments != 1 else ''}. "
+            "No consistent slowdowns were detected."
         )
+        verdict = "✅ Performance improved"
     elif not completed:
         opening = (
             "Performance could not be assessed because no environment produced a complete result."
         )
+        verdict = "⛔ Performance unavailable"
     elif not missing:
         opening = f"No consistent slowdowns detected across all {len(LEGS)} environments."
+        verdict = "✅ No regression detected"
     else:
         completed_label = "environment" if len(completed) == 1 else "environments"
         missing_label = "environment" if missing == 1 else "environments"
@@ -429,22 +421,56 @@ def render(reports, head, build_id, issues=()):
             f"No consistent slowdowns in the {len(completed)} completed {completed_label}. "
             f"No result is available for {missing} {missing_label}."
         )
+        verdict = "✅ No regression detected"
 
-    lines = [MARKER, "## PR Performance Report", "", f"**{opening}**", ""]
-    highlighted = regressions or noisy or improvements
-    if highlighted:
-        if not regressions and noisy:
-            lines += ["Inconsistent slowdowns to review:", ""]
+    improvement_tasks = len({row["name"] for _, row in improvements})
+    regression_tasks = len({row["name"] for _, row in regressions})
+    lines = [
+        MARKER,
+        "## PR Performance Report",
+        "",
+        f"### {verdict}",
+        "",
+        f"**{opening}**",
+        "",
+        f"<kbd>{improvement_tasks} IMPROVEMENT"
+        f"{'S' if improvement_tasks != 1 else ''}</kbd> "
+        f"<kbd>{regression_tasks} SLOWDOWN"
+        f"{'S' if regression_tasks != 1 else ''}</kbd> "
+        f"<kbd>{len(completed)}/{len(LEGS)} ENVIRONMENTS</kbd>",
+        "",
+    ]
+    if noisy:
+        noisy_tasks = len({row["name"] for _, row in noisy})
         lines += [
-            "| Environment | Affected task | Before | After | Change |",
-            "|---|---|---:|---:|---:|",
+            f"<kbd>{noisy_tasks} INCONSISTENT SLOWDOWN" f"{'S' if noisy_tasks != 1 else ''}</kbd>",
+            "",
         ]
-        for leg, row in highlighted:
-            lines.append(
-                f"| {environment_name(leg)} | {TASK_NAMES[row['name']]} | "
-                f"{row['base_ms']:.3f} ms | {row['candidate_ms']:.3f} ms | "
-                f"{row['change_pct']:+.1f}% |"
-            )
+    affected_tasks = [name for name in CASES if any(row["name"] == name for _, row in highlighted)]
+    if highlighted and len(affected_tasks) <= MAX_FINGERPRINT_TASKS:
+        affected_legs = [leg for leg in LEGS if any(item_leg == leg for item_leg, _ in highlighted)]
+        by_signal = {(leg, row["name"]): row for leg, row in highlighted}
+        lines += [
+            "### Signal fingerprint",
+            "",
+            "| Database task | "
+            + " | ".join(environment_name(leg) for leg in affected_legs)
+            + " |",
+            "|---|" + "|".join("---:" for _ in affected_legs) + "|",
+        ]
+        for name in affected_tasks:
+            cells = []
+            for leg in affected_legs:
+                row = by_signal.get((leg, name))
+                if row is None:
+                    cells.append("No signal")
+                elif row["status"] == "improvement":
+                    cells.append(f"**{abs(row['change_pct']):.1f}% faster**")
+                elif row["status"] == "regression":
+                    cells.append(f"**{abs(row['change_pct']):.1f}% slower**")
+                else:
+                    cells.append(f"**{abs(row['change_pct']):.1f}% inconsistent**")
+            lines.append(f"| {escape(TASK_NAMES[name])} | " + " | ".join(cells) + " |")
         lines.append("")
     if regressions:
         lines.append(
@@ -461,24 +487,37 @@ def render(reports, head, build_id, issues=()):
     lines += [
         f"**Coverage:** {len(completed)} of {len(LEGS)} environments completed. "
         "Advisory result; does not block merging.",
-        "",
-        "| Environment | Status |",
-        "|---|---|",
     ]
-    for leg in LEGS:
-        report = by_leg.get(leg)
-        status = (
-            "Completed"
-            if leg in completed
-            else f"No result available ({escape(issue_reason(leg, issues))})"
-        )
-        lines.append(f"| {environment_name(leg)} | {status} |")
+    unavailable_legs = [
+        f"{environment_name(leg)} ({escape(issue_reason(leg, issues))})"
+        for leg in LEGS
+        if leg not in completed
+    ]
+    if unavailable_legs:
+        lines += ["", "Unavailable: " + "; ".join(unavailable_legs) + "."]
+
+    if highlighted:
+        lines += [
+            "",
+            "<details>",
+            "<summary><b>Measured timings</b></summary>",
+            "",
+            "| Environment | Database task | Before | After | Change |",
+            "|---|---|---:|---:|---:|",
+        ]
+        for leg, row in highlighted:
+            lines.append(
+                f"| {environment_name(leg)} | {TASK_NAMES[row['name']]} | "
+                f"{row['base_ms']:.3f} ms | {row['candidate_ms']:.3f} ms | "
+                f"**{row['change_pct']:+.1f}%** |"
+            )
+        lines += ["", "</details>"]
 
     diagnostics_start = len(lines)
     lines += [
         "",
         "<details>",
-        "<summary>Affected phases and call counts</summary>",
+        "<summary><b>Performance diagnostics</b></summary>",
         "",
         "Phase times are inclusive diagnostics and must not be added together. "
         "They identify where measured time changed, not why it changed.",
@@ -516,7 +555,7 @@ def render(reports, head, build_id, issues=()):
     lines += [
         "",
         "<details>",
-        "<summary>All database tasks and timings</summary>",
+        "<summary><b>All database tasks and timings</b></summary>",
     ]
 
     for leg, (report, rows) in completed.items():
@@ -542,7 +581,7 @@ def render(reports, head, build_id, issues=()):
         "</details>",
         "",
         "<details>",
-        "<summary>Build, commits and measurement details</summary>",
+        "<summary><b>Build and measurement details</b></summary>",
         "",
     ]
     lines += [
@@ -591,7 +630,7 @@ def render(reports, head, build_id, issues=()):
         lines[diagnostics_start:diagnostics_end] = [
             "",
             "<details>",
-            "<summary>Affected phases and call counts</summary>",
+            "<summary><b>Performance diagnostics</b></summary>",
             "",
             f"{total_diagnostics} diagnostic rows are available in the raw ADO artifacts.",
             "",

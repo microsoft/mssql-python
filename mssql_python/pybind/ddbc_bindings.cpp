@@ -12,6 +12,7 @@
 #include "param_detect.hpp"
 #include "py_ref.hpp"
 #include "py_type_cache.hpp"
+#include "fetch_temporal.hpp"
 #include "row_factory.hpp"
 #include "utf_utils.h"
 #include "fetch_text.hpp"
@@ -3767,8 +3768,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue),
                                      &indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
-                    row.append(PyTypeCache::get_date_class_obj()(dateValue.year, dateValue.month,
-                                                                   dateValue.day));
+                    row.append(
+                        FetchTemporal::date(dateValue.year, dateValue.month, dateValue.day));
                 } else {
                     row.append(py::none());
                 }
@@ -3780,7 +3781,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SS_TIME2, &t2, sizeof(t2), &indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
-                    row.append(PyTypeCache::get_time_class_obj()(
+                    row.append(FetchTemporal::time(
                         t2.hour, t2.minute, t2.second, t2.fraction / 1000));  // ns to µs
                 } else {
                     if (!SQL_SUCCEEDED(ret)) {
@@ -3804,7 +3805,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(PyTypeCache::get_datetime_class_obj()(
+                    row.append(FetchTemporal::datetime(
                         timestampValue.year, timestampValue.month, timestampValue.day,
                         timestampValue.hour, timestampValue.minute, timestampValue.second,
                         timestampValue.fraction / 1000  // Convert back ns to µs
@@ -4452,32 +4453,23 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
-                    PyObject* datetimeObj = PyTypeCache::get_datetime_class_obj()(
-                                                ts.year, ts.month, ts.day, ts.hour, ts.minute,
-                                                ts.second, ts.fraction / 1000)
-                                                .release()
-                                                .ptr();
-                    PyList_SET_ITEM(row, col - 1, datetimeObj);
+                    py::object datetimeObj = FetchTemporal::datetime(
+                        ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second,
+                        ts.fraction / 1000);
+                    PyList_SET_ITEM(row, col - 1, datetimeObj.release().ptr());
                     break;
                 }
                 case SQL_TYPE_DATE: {
-                    PyObject* dateObj =
-                        PyTypeCache::get_date_class_obj()(buffers.dateBuffers[col - 1][i].year,
-                                                            buffers.dateBuffers[col - 1][i].month,
-                                                            buffers.dateBuffers[col - 1][i].day)
-                            .release()
-                            .ptr();
-                    PyList_SET_ITEM(row, col - 1, dateObj);
+                    const SQL_DATE_STRUCT& value = buffers.dateBuffers[col - 1][i];
+                    py::object dateObj = FetchTemporal::date(value.year, value.month, value.day);
+                    PyList_SET_ITEM(row, col - 1, dateObj.release().ptr());
                     break;
                 }
                 case SQL_SS_TIME2: {
                     const SQL_SS_TIME2_STRUCT& t2 = buffers.timeBuffers[col - 1][i];
-                    PyObject* timeObj =
-                        PyTypeCache::get_time_class_obj()(t2.hour, t2.minute, t2.second,
-                                                            t2.fraction / 1000)  // ns to µs
-                            .release()
-                            .ptr();
-                    PyList_SET_ITEM(row, col - 1, timeObj);
+                    py::object timeObj =
+                        FetchTemporal::time(t2.hour, t2.minute, t2.second, t2.fraction / 1000);
+                    PyList_SET_ITEM(row, col - 1, timeObj.release().ptr());
                     break;
                 }
                 case SQL_SS_TIMESTAMPOFFSET: {
