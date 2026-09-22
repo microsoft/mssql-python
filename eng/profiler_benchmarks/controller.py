@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 import time
 
-from .report import LEGS, suite_hash
+from .report import LEGS
 from . import workloads
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -241,7 +241,6 @@ def run(args):
         source_commit=candidate,
         head_commit=head,
         build_id=int(os.environ.get("BUILD_BUILDID", "0")),
-        suite_hash=suite_hash(ROOT),
         samples=args.samples,
         warmups=args.warmups,
         pairs=[],
