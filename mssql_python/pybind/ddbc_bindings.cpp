@@ -2745,8 +2745,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                             if (PyBytes_GET_SIZE(b.ptr()) != 16) {
                                 LOG("BindParameterArray: GUID bytes wrong "
                                     "length - param_index=%d, row=%zu, "
-                                    "length=%d",
-                                    paramIndex, i, PyBytes_GET_SIZE(b.ptr()));
+                                    "length=%lld",
+                                    paramIndex, i,
+                                    static_cast<long long>(PyBytes_GET_SIZE(b.ptr())));
                                 ThrowStdException("UUID binary data must be "
                                                   "exactly 16 bytes long.");
                             }
@@ -2773,8 +2774,8 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         strLenOrIndArray[i] = sizeof(SQLGUID);
                     }
                     LOG("BindParameterArray: SQL_C_GUID bound - "
-                        "param_index=%d, null=%zu, bytes=%zu, uuid_obj=%zu",
-                        paramIndex);
+                        "param_index=%d, count=%zu",
+                        paramIndex, paramSetSize);
                     dataPtr = guidArray;
                     bufferLength = sizeof(SQLGUID);
                     break;
@@ -4541,7 +4542,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             }
             if (dataLen == SQL_NO_TOTAL) {
                 LOG("Cannot determine the length of the data. Returning NULL "
-                    "value instead. Column ID - {}",
+                    "value instead. Column ID - %d",
                     col);
                 Py_INCREF(Py_None);
                 PyList_SET_ITEM(row, col - 1, Py_None);
@@ -4567,7 +4568,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             if (dataLen == 0) {
                 // Handle zero-length (non-NULL) data for complex types
                 LOG("Column data length is 0 for complex datatype. Setting "
-                    "None to the result row. Column ID - {}",
+                    "None to the result row. Column ID - %d",
                     col);
                 Py_INCREF(Py_None);
                 PyList_SET_ITEM(row, col - 1, Py_None);
@@ -4602,7 +4603,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and set
                         // py::none()
-                        LOG("Error converting to decimal: {}", e.what());
+                        LOG("Error converting to decimal: %s", e.what());
                         Py_INCREF(Py_None);
                         PyList_SET_ITEM(row, col - 1, Py_None);
                     }
@@ -5202,7 +5203,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 errorString << "Unsupported data type for Arrow batch fetch for column - "
                             << columnName.c_str() << ", Type - " << dataType << ", column ID - "
                             << (i + 1);
-                LOG(errorString.str().c_str());
+                LOG("FetchArrowBatch: %s", errorString.str().c_str());
                 ThrowStdException(errorString.str());
                 break;
         }
@@ -5727,7 +5728,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         std::ostringstream errorString;
                         errorString << "Unsupported data type for column ID - " << (idxCol + 1)
                                     << ", Type - " << dataType;
-                        LOG(errorString.str().c_str());
+                        LOG("FetchArrowBatch: %s", errorString.str().c_str());
                         ThrowStdException(errorString.str());
                         break;
                     }
