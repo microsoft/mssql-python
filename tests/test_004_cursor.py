@@ -1758,6 +1758,18 @@ def test_setinputsizes_rejects_boolean_sizes(size_info):
         cursor.setinputsizes([size_info])
 
 
+def test_setinputsizes_rejects_excessive_column_size():
+    cursor = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    with pytest.raises(ValueError, match="column size"):
+        cursor.setinputsizes([(mssql_python.SQL_VARCHAR, 1 << 40, 0)])
+
+
+def test_executemany_rejects_excessive_cumulative_parameter_buffers(cursor):
+    cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 50_000_000, 0)] * 3)
+    with pytest.raises(RuntimeError, match="Parameter buffers exceed the 256 MiB allocation limit"):
+        cursor.executemany("SELECT ?, ?, ?", [("", "", "")])
+
+
 def test_executemany_rejects_text_for_binary_parameter(cursor):
     cursor.setinputsizes([(mssql_python.SQL_VARBINARY, 10, 0)])
     with pytest.raises(RuntimeError, match="object type does not match"):

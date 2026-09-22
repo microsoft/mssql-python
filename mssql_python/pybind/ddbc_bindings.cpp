@@ -388,12 +388,72 @@ size_t CheckedArrowSourceOffset(const std::vector<ElementType>& buffer, size_t r
 
 constexpr int MAX_NATIVE_ROW_COUNT = 1000000;
 constexpr size_t MAX_NATIVE_FETCH_BYTES = 256ULL * 1024 * 1024;
+constexpr size_t MAX_NATIVE_PARAMETER_BYTES = 256ULL * 1024 * 1024;
 
 void ValidateNativeRowCount(int value, const char* name, bool allowZero) {
     const int minimum = allowZero ? 0 : 1;
     if (value < minimum || value > MAX_NATIVE_ROW_COUNT) {
         ThrowStdException(std::string(name) + " must be between " + std::to_string(minimum) +
                           " and " + std::to_string(MAX_NATIVE_ROW_COUNT));
+    }
+}
+
+void ReserveNativeParameterBytes(size_t& reservedBytes, size_t count, size_t elementSize) {
+    const size_t allocationBytes =
+        CheckedMultiplySize(count, elementSize, "Parameter buffer size is too large");
+    reservedBytes =
+        CheckedAddSize(reservedBytes, allocationBytes, "Parameter buffer size is too large");
+    if (reservedBytes > MAX_NATIVE_PARAMETER_BYTES) {
+        ThrowStdException("Parameter buffers exceed the 256 MiB allocation limit");
+    }
+}
+
+size_t ParameterArrayElementSize(const ParamInfo& info) {
+    switch (info.paramCType) {
+        case SQL_C_LONG:
+            return sizeof(int);
+        case SQL_C_DOUBLE:
+            return sizeof(double);
+        case SQL_C_WCHAR:
+            return CheckedMultiplySize(
+                CheckedAddSize(info.columnSize, 1, "Wide-character parameter size is too large"),
+                sizeof(SQLWCHAR), "Wide-character parameter size is too large");
+        case SQL_C_TINYINT:
+        case SQL_C_UTINYINT:
+            return sizeof(unsigned char);
+        case SQL_C_SHORT:
+            return sizeof(short);
+        case SQL_C_CHAR:
+        case SQL_C_BINARY:
+            return CheckedAddSize(info.columnSize, 1, "Character parameter size is too large");
+        case SQL_C_BIT:
+            return sizeof(char);
+        case SQL_C_STINYINT:
+        case SQL_C_USHORT:
+            return sizeof(unsigned short);
+        case SQL_C_SBIGINT:
+        case SQL_C_SLONG:
+        case SQL_C_UBIGINT:
+        case SQL_C_ULONG:
+            return sizeof(int64_t);
+        case SQL_C_FLOAT:
+            return sizeof(float);
+        case SQL_C_TYPE_DATE:
+            return sizeof(SQL_DATE_STRUCT);
+        case SQL_C_TYPE_TIME:
+            return sizeof(SQL_TIME_STRUCT);
+        case SQL_C_TYPE_TIMESTAMP:
+            return sizeof(SQL_TIMESTAMP_STRUCT);
+        case SQL_C_SS_TIMESTAMPOFFSET:
+            return sizeof(DateTimeOffset);
+        case SQL_C_NUMERIC:
+            return sizeof(SQL_NUMERIC_STRUCT);
+        case SQL_C_GUID:
+            return sizeof(SQLGUID);
+        case SQL_C_DEFAULT:
+            return sizeof(char);
+        default:
+            ThrowStdException("Unsupported C type for parameter array allocation");
     }
 }
 
@@ -2322,6 +2382,12 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     try {
         // GH-627: resolve unknown NULL array param SQL types before binding any param.
         PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
+        size_t reservedParameterBytes = 0;
+        for (const ParamInfo& info : paramInfos) {
+            ReserveNativeParameterBytes(reservedParameterBytes, paramSetSize,
+                                        ParameterArrayElementSize(info));
+            ReserveNativeParameterBytes(reservedParameterBytes, paramSetSize, sizeof(SQLLEN));
+        }
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
             ParamInfo& info = paramInfos[paramIndex];
