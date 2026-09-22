@@ -136,7 +136,7 @@ stages:
             displayName: 'Start $(LINUX_TAG) $(ARCH) container'
           
           - script: |
-              set -euxo pipefail
+              set -euo pipefail
               export PATH=$PATH:`pwd`/docker
               CONTAINER="build-$(LINUX_TAG)-$(ARCH)"
 
@@ -170,7 +170,7 @@ stages:
               # manager is flaky under emulation (the header gate below is the real check).
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
                 docker exec "$CONTAINER" bash -lc '
-                  set -uxo pipefail
+                  set -uo pipefail
                   if command -v dnf >/dev/null 2>&1; then
                     dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache curl || true
                   elif command -v yum >/dev/null 2>&1; then
@@ -181,7 +181,7 @@ stages:
                 '
               else
                 docker exec "$CONTAINER" sh -lc '
-                  set -uxo pipefail
+                  set -uo pipefail
                   apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache curl || true
                   gcc --version || true
                   cmake --version || true
@@ -199,20 +199,20 @@ stages:
           # Start SQL Server container for pytest execution
           # Runs on host (not in build container) to be accessible from build container via network
           - script: |
-              set -euxo pipefail
+              set -euo pipefail
               
               echo "Starting SQL Server 2022 container for testing..."
               docker run -d --name sqlserver-$(LINUX_TAG)-$(ARCH) \
                 --platform linux/amd64 \
                 -e ACCEPT_EULA=Y \
-                -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+                -e MSSQL_SA_PASSWORD \
                 -p 1433:1433 \
                 mcr.microsoft.com/mssql/server:2022-latest
               
               echo "Waiting for SQL Server to be ready..."
               for i in {1..30}; do
-                if docker exec sqlserver-$(LINUX_TAG)-$(ARCH) /opt/mssql-tools18/bin/sqlcmd \
-                  -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+                if docker exec -e SQLCMDPASSWORD sqlserver-$(LINUX_TAG)-$(ARCH) /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U SA -C -Q "SELECT 1" >/dev/null 2>&1; then
                   echo "✓ SQL Server is ready!"
                   break
                 fi
@@ -226,6 +226,8 @@ stages:
             displayName: 'Start SQL Server container for testing'
             env:
               DB_PASSWORD: $(DB_PASSWORD)
+              MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+              SQLCMDPASSWORD: $(DB_PASSWORD)
           
           # =========================
           # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
@@ -256,7 +258,7 @@ stages:
           
           # Build wheels for all Python versions (3.10-3.14) and test each one
           - script: |
-              set -euxo pipefail
+              set -euo pipefail
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
               docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
               
@@ -269,8 +271,8 @@ stages:
                 
                 if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
                   # Manylinux (glibc-based) - use bash
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) bash -lc '
-                    set -euxo pipefail;
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) bash -lc '
+                    set -euo pipefail;
                     
                     # Step 1: Setup Python environment
                     PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
@@ -339,8 +341,8 @@ stages:
                   '
                 else
                   # Musllinux (musl libc-based) - use sh
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) sh -lc '
-                    set -euxo pipefail;
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) sh -lc '
+                    set -euo pipefail;
                     
                     # Step 1: Setup Python environment
                     PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
@@ -422,7 +424,7 @@ stages:
           
           # Copy built artifacts from container to host for publishing
           - script: |
-              set -euxo pipefail
+              set -euo pipefail
               
               # Copy all wheels (5 Python versions) to output directory
               echo "Copying wheels to host..."

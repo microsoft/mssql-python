@@ -65,7 +65,7 @@ from .connection_string_builder import _ConnectionStringBuilder
 from .cursor import Cursor
 
 # Row Objects
-from .row import Row
+from .row import Row, RowMapping
 
 # Logging Configuration (Simplified single-level DEBUG system)
 from .logging import logger, setup_logging, driver_logger
@@ -355,6 +355,7 @@ __all__ = [
     "TokenProvider",
     "Cursor",
     "Row",
+    "RowMapping",
     # Settings
     "Settings",
     "get_settings",

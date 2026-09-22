@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import audit, build
+from . import audit, build, inputs, provenance, publication, release
 from .contracts import Format
 
 _ELF_DESCRIPTION = """Masking-immune audit of the vendored Linux ODBC binaries in built conda packages.
@@ -37,8 +37,8 @@ out of each built ``.conda`` payload -- via the ``PT_DYNAMIC`` program header th
     caught too;
   * no ``krb5``/``openssl``/``libltdl`` is VENDORED inside the payload (they are
     serviced by conda, never bundled).
-    * the complete supported driver inventory is present: alpine/debian_ubuntu/rhel/suse
-        for x86_64 and alpine/debian_ubuntu/rhel for arm64 (no SUSE ARM64 driver is shipped).
+  * the complete glibc driver inventory is present: debian_ubuntu/rhel/suse for x86_64
+    and debian_ubuntu/rhel for arm64 (no SUSE ARM64 driver is shipped).
 
 Non-Linux packages (``win-*`` / ``osx-*``) have no such ELF payload and are skipped.
 An unreadable/malformed package FAILS (it is never silently treated as non-Linux).
@@ -182,7 +182,7 @@ def _audit(args: argparse.Namespace, kind: Format) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m eng.conda_tools",
         description="Build or audit Conda packages from the repository root.",
@@ -205,7 +205,43 @@ def main(argv: list[str] | None = None) -> int:
             ),
             kind,
         )
-    args = parser.parse_args(argv)
+    release.add_arguments(
+        commands.add_parser(
+            "validate", help="Validate release metadata.", description=release.__doc__
+        )
+    )
+    publication.add_arguments(
+        commands.add_parser(
+            "promote", help="Promote or recover staged archives.", description=publication.__doc__
+        )
+    )
+    commands.add_parser(
+        "provenance", help="Verify recorded producer sources.", description=provenance.__doc__
+    )
+    inputs.add_arguments(
+        commands.add_parser(
+            "fetch-wheels", help="Fetch and verify exact public wheel audit inputs."
+        )
+    )
+    commands.add_parser("probe-driver", help="Run the driver-load diagnostic in this interpreter.")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    if args.command == "validate":
+        return release.execute(args)
+    if args.command == "promote":
+        return publication.cli(args)
+    if args.command == "provenance":
+        return provenance.cli()
+    if args.command == "fetch-wheels":
+        return inputs.fetch_cli(args)
+    if args.command == "probe-driver":
+        from . import driver_load_probe
+
+        driver_load_probe.main()
+        return 0
     if args.command == "build":
         return build.execute(args)
     return _audit(args, args.command)

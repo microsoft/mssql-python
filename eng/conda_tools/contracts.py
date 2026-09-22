@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 import posixpath
 import re
-from typing import Any, Iterable, Literal, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
-from .archive import DistributionMetadata
+from .archive import DistributionMetadata, WheelMetadata, metadata_members
+from .archive import canonical_distribution_name as canonical_distribution_name
 from .formats.elf import ElfDynamicInfo, ElfFacts
 
 Format = Literal["elf", "pe", "macho"]
@@ -41,13 +42,11 @@ _SUBDIR_MACHINE = {"linux-64": _EM_X86_64, "linux-aarch64": _EM_AARCH64}
 _MACHINE_NAME = {_EM_X86_64: "x86_64", _EM_AARCH64: "aarch64"}
 _REQUIRED_DRIVER_TREES = {
     "linux-64": {
-        ("alpine", "x86_64"),
         ("debian_ubuntu", "x86_64"),
         ("rhel", "x86_64"),
         ("suse", "x86_64"),
     },
     "linux-aarch64": {
-        ("alpine", "arm64"),
         ("debian_ubuntu", "arm64"),
         ("rhel", "arm64"),
     },
@@ -98,10 +97,6 @@ _REQUIRED_DRIVER_LIBRARIES = frozenset(
 )
 
 
-def canonical_distribution_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
 def validate_distribution_identity(
     metadata: DistributionMetadata, distribution: str, version: str
 ) -> list[str]:
@@ -122,6 +117,15 @@ def validate_distribution_identity(
     return errors
 
 
+def validate_wheel_metadata_members(
+    members: Iterable[str], distribution: str, version: str
+) -> list[str]:
+    distribution = canonical_distribution_name(distribution).replace("-", "_")
+    expected = f"{distribution}-{version}.dist-info/METADATA"
+    entries = metadata_members(members, "METADATA")
+    return [] if entries == [expected] else [f"Expected one matching root METADATA at {expected}."]
+
+
 def validate_wheel_tags(filename: str, tags: Sequence[str]) -> list[str]:
     parts = filename.removesuffix(".whl").rsplit("-", 3)
     if not filename.endswith(".whl") or len(parts) != 4:
@@ -136,6 +140,20 @@ def validate_wheel_tags(filename: str, tags: Sequence[str]) -> list[str]:
     return [] if set(tags) == expected else ["WHEEL tags do not match the selected filename"]
 
 
+def _wheel_platform_matches_target(platforms: str, subdir: str) -> bool:
+    patterns = {
+        "win-64": r"win_amd64",
+        "win-arm64": r"win_arm64",
+        "linux-64": r"(?:linux|manylinux(?:1|2010|2014|_\d+_\d+))_x86_64",
+        "linux-aarch64": r"(?:linux|manylinux(?:1|2010|2014|_\d+_\d+))_aarch64",
+        "osx-64": r"macosx_\d+_\d+_(?:x86_64|universal2)",
+        "osx-arm64": r"macosx_\d+_\d+_(?:arm64|universal2)",
+    }
+    if subdir not in patterns:
+        raise ValueError(f"unknown Conda wheel target: {subdir}")
+    return any(re.fullmatch(patterns[subdir], platform) for platform in platforms.split("."))
+
+
 def binding_wheel_matches_target(
     filename: str, subdir: str, python_versions: Sequence[str] = ()
 ) -> bool:
@@ -145,25 +163,48 @@ def binding_wheel_matches_target(
     parts = filename.removesuffix(".whl").rsplit("-", 3)
     if not filename.endswith(".whl") or len(parts) != 4:
         raise ValueError(f"invalid binding wheel filename: {filename}")
-    python_tag, _, platforms = parts[1:]
-    if subdir:
-        patterns = {
-            "win-64": r"win_amd64",
-            "win-arm64": r"win_arm64",
-            "linux-64": r"(?:linux|manylinux(?:1|2010|2014|_\d+_\d+))_x86_64",
-            "linux-aarch64": r"(?:linux|manylinux(?:1|2010|2014|_\d+_\d+))_aarch64",
-            "osx-64": r"macosx_\d+_\d+_(?:x86_64|universal2)",
-            "osx-arm64": r"macosx_\d+_\d+_(?:arm64|universal2)",
-        }
-        if subdir not in patterns:
-            raise ValueError(f"unknown binding wheel target: {subdir}")
-        if not any(re.fullmatch(patterns[subdir], platform) for platform in platforms.split(".")):
-            return False
+    python_tag, abi, platforms = parts[1:]
+    if subdir and not _wheel_platform_matches_target(platforms, subdir):
+        return False
     if not re.fullmatch(r"cp3\d+", python_tag):
         raise ValueError(f"invalid binding wheel Python tag: {filename}")
-    return not python_versions or python_tag in {
+    if python_versions and python_tag not in {
         f"cp{version.replace('.', '')}" for version in python_versions
-    }
+    }:
+        return False
+    return abi == python_tag
+
+
+def odbc_wheel_matches_target(filename: str, subdir: str) -> bool:
+    parts = filename.removesuffix(".whl").rsplit("-", 3)
+    if not filename.endswith(".whl") or len(parts) != 4:
+        raise ValueError(f"invalid ODBC wheel filename: {filename}")
+    python_tag, abi, platforms = parts[1:]
+    return (
+        python_tag == "py3" and abi == "none" and _wheel_platform_matches_target(platforms, subdir)
+    )
+
+
+_RS_PLATFORMS = {
+    "win-64": "win_amd64",
+    "win-arm64": "win_arm64",
+    "osx-64": "macosx_15_0_universal2",
+    "osx-arm64": "macosx_15_0_universal2",
+    "linux-64": "manylinux_2_34_x86_64",
+    "linux-aarch64": "manylinux_2_34_aarch64",
+}
+
+
+def rs_wheel_matches_target(filename: str, python_tag: str, subdir: str) -> bool:
+    """Use the build's exact normal-CPython/abi3 and platform selection for RS inputs."""
+    parts = filename.removesuffix(".whl").rsplit("-", 3)
+    if not filename.endswith(".whl") or len(parts) != 4 or not re.fullmatch(r"cp3\d+", python_tag):
+        return False
+    py, abi, platform = parts[1:]
+    compatible_python = py == python_tag and abi == python_tag
+    if abi == "abi3" and re.fullmatch(r"cp3\d+", py):
+        compatible_python = int(py[2:]) <= int(python_tag[2:])
+    return compatible_python and _RS_PLATFORMS.get(subdir) in platform.split(".")
 
 
 def exact_dependency_pin(requirements: Iterable[str], distribution: str) -> str | None:
@@ -193,6 +234,57 @@ def owned_core_members(members: Iterable[str], records: Iterable[str]) -> list[s
     """Core ownership requires a file to be both declared in RECORD and actually present."""
     actual = set(members)
     return [name for name in records if name in actual and name.startswith("mssql_py_core/")]
+
+
+def _core_path(member: str, root: str = "") -> str | None:
+    # Account for wheel spread paths and aliases on case-insensitive extraction targets.
+    path = posixpath.normpath(member.replace("\\", "/")).lstrip("/").casefold()
+    if root:
+        prefix = posixpath.normpath(root.replace("\\", "/")).lstrip("/").casefold() + "/"
+        if not path.startswith(prefix):
+            return None
+        path = path[len(prefix) :]
+    path = re.sub(r"^[^/]+\.data/(?:purelib|platlib)/", "", path)
+    return path if path.startswith("mssql_py_core/") else None
+
+
+def validate_core_ownership(
+    members: Iterable[str],
+    ownership: Mapping[str, Iterable[str]],
+    provider: str,
+    *,
+    root: str = "",
+) -> list[str]:
+    """Require every actual core file to belong only to the selected provider's RECORD."""
+    core = [path for member in members if (path := _core_path(member, root)) is not None]
+    records = {
+        owner: {path for member in declared if (path := _core_path(member)) is not None}
+        for owner, declared in ownership.items()
+    }
+    errors = []
+    if len(core) != len(set(core)):
+        errors.append("duplicate mssql_py_core payload paths")
+    for member in sorted(set(core)):
+        owners = {owner for owner, paths in records.items() if member in paths}
+        if owners != {provider}:
+            errors.append(
+                f"{member}: mssql_py_core must be owned exclusively by {provider}; "
+                f"RECORD owners: {sorted(owners)}"
+            )
+    return errors
+
+
+def validate_wheel_core_ownership(metadata: WheelMetadata) -> list[str]:
+    distribution = canonical_distribution_name(metadata["name"])
+    provider = (
+        "mssql-python"
+        if distribution == "mssql-python"
+        and exact_dependency_pin(metadata["requires_dist"], "mssql-python-rs") is None
+        else "mssql-python-rs"
+    )
+    return validate_core_ownership(
+        metadata["members"], {distribution: metadata["record_members"]}, provider
+    )
 
 
 def binding_rs_version(
@@ -561,9 +653,9 @@ def validate_elf(
             )
         # musl/alpine variants (NEEDED libc.musl*) link differently -- their libodbcinst
         # statically resolves libltdl, so the glibc DT_NEEDED requirements below do not
-        # apply. There is no musl conda subdir (conda Linux is glibc-only); these variants
-        # ride along in the payload but are never the conda load target. The climb /
-        # presence / no-vendored checks still apply to them.
+        # apply. Older ODBC wheels also carry these variants, but they are never a
+        # conda load target (conda Linux is glibc-only). The climb / presence /
+        # no-vendored checks still apply when auditing those older payloads.
         is_musl = any("libc.musl" in n for n in needed)
         want = expected_climb_entry(name)
 
@@ -631,8 +723,8 @@ def validate_elf(
         )
     # Require the supported distro inventory for this architecture, then require EVERY
     # discovered driver lib dir to ship BOTH a driver and libodbcinst.so.2. The x86_64
-    # ODBC wheel supports alpine/debian_ubuntu/rhel/suse; the arm64 wheel supports
-    # alpine/debian_ubuntu/rhel (Microsoft does not ship a SUSE ARM64 driver tree).
+    # manylinux ODBC wheel supports debian_ubuntu/rhel/suse; the arm64 wheel supports
+    # debian_ubuntu/rhel (Microsoft does not ship a SUSE ARM64 driver tree).
     missing_trees = _REQUIRED_DRIVER_TREES[subdir] - driver_trees
     if missing_trees:
         errors.append(
