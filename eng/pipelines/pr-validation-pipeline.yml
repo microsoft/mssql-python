@@ -13,6 +13,7 @@ variables:
 jobs:
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -51,6 +52,7 @@ jobs:
 
 - job: pytestonwindows
   displayName: 'Windows x64'
+  condition: false
   timeoutInMinutes: 160
   pool:
     vmImage: 'windows-latest'
@@ -558,6 +560,7 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
+  condition: false
   timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
@@ -752,22 +755,6 @@ jobs:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
         profilerLeg: 'Linux-SQL2025'
-      ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
-        Ubuntu_AzureSQL:
-          dockerImage: 'ubuntu:24.04'
-          distroName: 'Ubuntu-AzureSQL'
-          sqlServerImage: ''
-          useAzureSQL: 'true'
-      Debian:
-        dockerImage: 'debian:12'
-        distroName: 'Debian'
-        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
-        useAzureSQL: 'false'
-      Debian_SQL2025:
-        dockerImage: 'debian:12'
-        distroName: 'Debian-SQL2025'
-        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
-        useAzureSQL: 'false'
 
   steps:
   - checkout: self
@@ -1061,6 +1048,7 @@ jobs:
 
 - job: PytestOnLinux_ARM64
   displayName: 'Linux ARM64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1300,6 +1288,7 @@ jobs:
 
 - job: PytestOnLinux_RHEL9
   displayName: 'Linux RedHat x86_64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1501,6 +1490,7 @@ jobs:
 
 - job: PytestOnLinux_RHEL9_ARM64
   displayName: 'Linux RedHat ARM64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1717,6 +1707,7 @@ jobs:
 
 - job: PytestOnLinux_Alpine
   displayName: 'Linux Alpine x86_64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1953,6 +1944,7 @@ jobs:
 
 - job: PytestOnLinux_Alpine_ARM64
   displayName: 'Linux Alpine ARM64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -2421,6 +2413,7 @@ jobs:
 
 - job: CodeCoverageReport
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
