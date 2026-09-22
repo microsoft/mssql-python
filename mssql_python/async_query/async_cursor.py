@@ -176,11 +176,12 @@ class AsyncCursor:
 
     async def close(self) -> None:
         logger.debug("AsyncCursor.close: starting")
-        with translate_py_core_exceptions():
-            await self._py_core_async_cursor.close()
-        self._closed = True
-        self._reset_fetch_tracking()
-        self._clear_result_metadata()
+        async with self._result_transition():
+            with translate_py_core_exceptions():
+                await self._py_core_async_cursor.close()
+            self._closed = True
+            self._reset_fetch_tracking()
+            self._clear_result_metadata()
         logger.debug("AsyncCursor.close: completed")
 
     def setinputsizes(self, sizes: Any) -> None:
