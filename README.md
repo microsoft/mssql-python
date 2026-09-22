@@ -16,11 +16,11 @@ The driver is compatible with all the Python versions >= 3.10
 >
 > - Package: `mssql-python-odbc`
 > - Import name: `mssql_python_odbc`
-> - Current version: **18.6.2.1**
+> - Source dependency version (release preparation): **18.6.2.2**
 >
-> `mssql-python` depends on `mssql-python-odbc==18.6.2.1`. The ODBC driver is loaded lazily when the first connection is created. `pip install mssql-python` transparently pulls the companion package alongside it — no separate install step is required.
+> Builds from this source pin `mssql-python-odbc==18.6.2.2`, a packaging-only revision that separates glibc (manylinux) and Alpine/musl (musllinux) wheel contents without changing the native driver binaries. This release preparation does not publish the package. Already-published `mssql-python` releases that pin `mssql-python-odbc==18.6.2.1` retain that dependency; they do not automatically adopt the new revision. The ODBC driver is loaded lazily when the first connection is created. `pip install mssql-python` transparently pulls the companion version required by the selected release — no separate install step is required.
 >
-> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. For pip installations, creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
+> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. For pip installations, creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure the exact `mssql-python-odbc` version specified in that release's dependency metadata is installed alongside it.
 >
 > The **temporary Conda candidate** instead combines the code and ODBC payload in one `mssql-python` Conda package. It does not require a separately installed Conda ODBC package. This is not an announcement of public channel availability or release qualification; see the [Conda installation, migration, and readiness guide](conda/README.md).
 >
