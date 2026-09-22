@@ -1,4 +1,4 @@
-"""Call-local fetch metadata must preserve public descriptions and fetch state."""
+"""Native fetch metadata must preserve public descriptions and result-set state."""
 
 import datetime as dt
 import os
@@ -382,6 +382,443 @@ def test_fetchmany_avoids_python_description_roundtrip(tmp_path):
                 stats = native.profiling.get_stats()
                 assert stats["ddbc::FetchMany_wrap"]["calls"] == 3
                 assert stats.get("ddbc::SQLDescribeCol_wrap", {}).get("calls", 0) == 0
+        """,
+        tmp_path,
+    )
+
+
+@pytest.mark.parametrize("method", ["one", "many"])
+def test_result_metadata_prepared_reexecution(metadata_cursor, method):
+    cursor = metadata_cursor
+    statement = cursor.hstmt
+    query = "SELECT CAST(? AS INT) AS n, CAST(? AS NVARCHAR(30)) AS text_value"
+    for value in range(4):
+        cursor.execute(query, (value, f"value-{value}"))
+        assert cursor.hstmt is statement
+        assert cursor.is_stmt_prepared[0]
+        profiling = hasattr(ddbc_bindings, "profiling")
+        if profiling:
+            ddbc_bindings.profiling.reset()
+            ddbc_bindings.profiling.enable()
+        try:
+            rows = [cursor.fetchone()] if method == "one" else cursor.fetchmany()
+        finally:
+            if profiling:
+                ddbc_bindings.profiling.disable()
+        _assert_rows(rows, [(value, f"value-{value}")])
+        if profiling:
+            assert (
+                ddbc_bindings.profiling.get_stats()["ddbc::SQLDescribeCol::driver_call"]["calls"]
+                == 2
+            )
+        assert cursor.fetchone() is None
+    cursor.execute("SELECT CAST(? AS DECIMAL(8,2)) AS amount", (Decimal("3.25"),))
+    _assert_rows(cursor.fetchall(), [(Decimal("3.25"),)])
+
+
+def test_result_metadata_catalog_replacement(metadata_cursor):
+    cursor = metadata_cursor
+    for _ in range(2):
+        cursor.execute("SELECT 42 AS previous_column")
+        _assert_rows(cursor.fetchmany(), [(42,)])
+        cursor.getTypeInfo(mssql_python.SQL_INTEGER)
+        description = cursor.description
+        assert len(description) > 1
+        row = cursor.fetchone()
+        assert row is not None and len(row) == len(description)
+        assert row[1] == mssql_python.SQL_INTEGER
+        cursor.fetchall()
+        cursor.execute("SELECT N'replaced' AS new_column, 5 AS extra")
+        _assert_rows(cursor.fetchmany(), [("replaced", 5)])
+
+
+def test_result_metadata_native_reset_and_replacement(tmp_path):
+    _isolated(
+        """
+        import os
+        import mssql_python as db
+        from mssql_python import ddbc_bindings as native
+        with db.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            stmt = connection._conn.alloc_statement_handle()
+            try:
+                for _ in range(3):
+                    assert native.DDBCSQLExecDirect(stmt, "SELECT 1 AS a") in (0, 1)
+                    rows = []
+                    assert native.DDBCSQLFetchMany(stmt, rows, 1) in (0, 1)
+                    assert rows == [[1]]
+                    assert native.DDBCSQLResetStmt(stmt) in (0, 1)
+                    assert native.DDBCSQLExecDirect(
+                        stmt, "SELECT CAST(2 AS BIGINT) AS b, N'new' AS c"
+                    ) in (0, 1)
+                    row = []
+                    assert native.DDBCSQLFetchOne(stmt, row) in (0, 1)
+                    assert row == [2, "new"]
+                    stmt._close_cursor()
+            finally:
+                stmt.free()
+        """,
+        tmp_path,
+    )
+
+
+@pytest.mark.parametrize("operation", ["commit", "rollback", "autocommit"])
+def test_result_metadata_transaction_recovery(metadata_cursor, operation):
+    cursor = metadata_cursor
+    connection = cursor.connection
+    cursor.execute(_query(["id"], 3))
+    _assert_rows(cursor.fetchmany(), [(1,)])
+    if operation == "autocommit":
+        connection.autocommit = True
+    else:
+        getattr(connection, operation)()
+    cursor.execute("SELECT CAST(5.75 AS DECIMAL(8,2)) AS changed, N'text' AS extra")
+    _assert_rows(cursor.fetchall(), [(Decimal("5.75"), "text")])
+
+
+@pytest.mark.parametrize("operation", ["commit", "rollback", "autocommit"])
+def test_result_metadata_transaction_preserved_cursor(metadata_cursor, operation):
+    cursor = metadata_cursor
+    connection = cursor.connection
+    info = (
+        mssql_python.SQL_CURSOR_ROLLBACK_BEHAVIOR
+        if operation == "rollback"
+        else mssql_python.SQL_CURSOR_COMMIT_BEHAVIOR
+    )
+    if connection.getinfo(info) != 2:  # SQL_CB_PRESERVE
+        pytest.skip("Driver does not preserve cursors; native helper coverage is required")
+    cursor.execute(_query(["id"], 3))
+    _assert_rows([cursor.fetchone()], [(1,)])
+    if operation == "autocommit":
+        connection.autocommit = True
+    else:
+        getattr(connection, operation)()
+    profiling = hasattr(ddbc_bindings, "profiling")
+    if profiling:
+        ddbc_bindings.profiling.reset()
+        ddbc_bindings.profiling.enable()
+    try:
+        _assert_rows([cursor.fetchone()], [(2,)])
+        _assert_rows(cursor.fetchmany(), [(3,)])
+    finally:
+        if profiling:
+            ddbc_bindings.profiling.disable()
+    if profiling:
+        assert (
+            ddbc_bindings.profiling.get_stats()["ddbc::SQLDescribeCol::driver_call"]["calls"] == 1
+        )
+
+
+def test_result_metadata_arrow_interleave(tmp_path):
+    pytest.importorskip("pyarrow")
+    _isolated(
+        """
+        import gc
+        import os
+        import mssql_python as db
+        with db.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                query = ("SELECT id, CAST(id AS BIGINT) AS big FROM "
+                         "(VALUES(1),(2),(3),(4),(5),(6)) s(id) ORDER BY id")
+                for _ in range(3):
+                    cursor.execute(query)
+                    assert tuple(cursor.fetchone()) == (1, 1)
+                    assert [tuple(r) for r in cursor.fetchmany(2)] == [(2, 2), (3, 3)]
+                    batch = cursor.arrow_batch(1)
+                    assert [c.to_pylist() for c in batch.columns] == [[4], [4]]
+                    gc.collect()
+                    assert tuple(cursor.fetchone()) == (5, 5)
+                    assert [tuple(r) for r in cursor.fetchall()] == [(6, 6)]
+                    assert cursor.fetchmany() == []
+        """,
+        tmp_path,
+    )
+
+
+@pytest.mark.parametrize("method", ["one", "many", "all"])
+def test_result_metadata_variant_type_and_size_changes(metadata_cursor, method):
+    cursor = metadata_cursor
+    cursor.execute(
+        "CREATE TABLE #metadata_mixed_variant (id INT, v SQL_VARIANT, txt NVARCHAR(MAX))"
+    )
+    cursor.execute(
+        "INSERT INTO #metadata_mixed_variant VALUES "
+        "(1,CAST(NULL AS SQL_VARIANT),N'first'),"
+        "(2,CAST(CAST('abc' AS VARCHAR(3)) AS SQL_VARIANT),NULL),"
+        "(3,CAST(CAST('abcdefgh' AS VARCHAR(8)) AS SQL_VARIANT),N'third'),"
+        "(4,CAST(CAST(17 AS INT) AS SQL_VARIANT),NULL),"
+        "(5,CAST(CAST(3.25 AS DECIMAL(8,2)) AS SQL_VARIANT),N'fifth'),"
+        "(6,CAST(NULL AS SQL_VARIANT),NULL),"
+        "(7,CAST(CAST(0x010200 AS VARBINARY(3)) AS SQL_VARIANT),N'last')"
+    )
+    cursor.execute("SELECT v, txt FROM #metadata_mixed_variant ORDER BY id")
+    if method == "one":
+        rows = list(cursor)
+    elif method == "many":
+        rows = []
+        while batch := cursor.fetchmany():
+            rows.extend(batch)
+    else:
+        rows = cursor.fetchall()
+    _assert_rows(
+        rows,
+        [
+            (None, "first"),
+            ("abc", None),
+            ("abcdefgh", "third"),
+            (17, None),
+            (Decimal("3.25"), "fifth"),
+            (None, None),
+            (b"\x01\x02\x00", "last"),
+        ],
+    )
+
+
+def test_result_metadata_one_then_malformed_name_many_does_not_advance(tmp_path):
+    _isolated(
+        """
+        import os
+        import mssql_python as db
+        from mssql_python import ddbc_bindings as native
+        with db.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DECLARE @s NVARCHAR(300) = N'SELECT id AS [' + "
+                    "CAST(0x00D8 AS NVARCHAR(1)) + "
+                    "N'] FROM (VALUES(1),(2),(3)) s(id) ORDER BY id'; EXEC(@s)"
+                )
+                # The low-level row path never decoded a supported column's name.
+                row = []
+                assert native.DDBCSQLFetchOne(cursor.hstmt, row) in (0, 1)
+                assert row == [1]
+                for _ in range(2):
+                    try:
+                        native.DDBCSQLFetchMany(cursor.hstmt, [], 1)
+                    except UnicodeDecodeError:
+                        pass
+                    else:
+                        raise AssertionError("many accepted the malformed column name")
+                row = []
+                profiling = hasattr(native, "profiling")
+                if profiling:
+                    native.profiling.reset()
+                    native.profiling.enable()
+                try:
+                    assert native.DDBCSQLFetchOne(cursor.hstmt, row) in (0, 1)
+                finally:
+                    if profiling:
+                        native.profiling.disable()
+                assert row == [2]
+                if profiling:
+                    assert native.profiling.get_stats()["ddbc::SQLDescribeCol::driver_call"]["calls"] == 1
+                cursor.execute("SELECT 4 AS valid_name, N'recovered' AS text_value")
+                assert tuple(cursor.fetchone()) == (4, "recovered")
+                assert cursor.fetchmany() == []
+        """,
+        tmp_path,
+    )
+
+
+@pytest.mark.skipif(
+    not hasattr(ddbc_bindings, "profiling"), reason="requires actual ODBC call instrumentation"
+)
+@pytest.mark.parametrize("method", ["one", "many"])
+def test_result_metadata_actual_description_counts(tmp_path, method):
+    _isolated(
+        f"""
+        import os
+        from decimal import Decimal
+        import mssql_python as db
+        from mssql_python import ddbc_bindings as native
+        with db.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                columns = ",".join(f"id AS c{{i}}" for i in range(24))
+                query = ("WITH n AS (SELECT TOP(10000) ROW_NUMBER() OVER "
+                         "(ORDER BY a.object_id,b.object_id) AS id "
+                         "FROM sys.all_objects a CROSS JOIN sys.all_objects b) "
+                         f"SELECT {{columns}} FROM n ORDER BY id")
+                cursor.execute(query)
+                native.profiling.reset()
+                native.profiling.enable()
+                try:
+                    for value in range(1, 10001):
+                        row = cursor.fetchone() if {method!r} == "one" else cursor.fetchmany()[0]
+                        assert tuple(row) == (value,) * 24
+                    assert cursor.fetchone() is None
+                    assert cursor.fetchmany() == []
+                finally:
+                    native.profiling.disable()
+                stats = native.profiling.get_stats()
+                assert stats["ddbc::SQLDescribeCol::driver_call"]["calls"] == 24, stats
+                assert stats.get("ddbc::SQLDescribeCol_wrap", {{}}).get("calls", 0) == 0
+                native.profiling.reset()
+                native.profiling.enable()
+                try:
+                    metadata = []
+                    assert native.DDBCSQLDescribeCol(cursor.hstmt, metadata) in (0, 1)
+                finally:
+                    native.profiling.disable()
+                assert len(metadata) == 24
+                assert native.profiling.get_stats()["ddbc::SQLDescribeCol::driver_call"]["calls"] == 24
+                cursor.execute(
+                    "SELECT CAST(3 AS INT) AS changed, CAST(N'x' AS NVARCHAR(1)) AS text_value; "
+                    "SELECT CAST(7.25 AS DECIMAL(8,2)) AS amount, "
+                    "CAST(N'next long value' AS NVARCHAR(40)) AS name"
+                )
+                assert tuple(cursor.fetchone()) == (3, "x")
+                assert cursor.nextset()
+                native.profiling.reset()
+                native.profiling.enable()
+                try:
+                    assert tuple(cursor.fetchmany()[0]) == (Decimal("7.25"), "next long value")
+                    assert cursor.fetchmany() == []
+                finally:
+                    native.profiling.disable()
+                assert native.profiling.get_stats()["ddbc::SQLDescribeCol::driver_call"]["calls"] == 2
+        """,
+        tmp_path,
+    )
+
+
+@pytest.mark.skipif(
+    not hasattr(ddbc_bindings, "profiling"), reason="requires actual ODBC call instrumentation"
+)
+@pytest.mark.parametrize("method", ["one", "many", "all"])
+def test_result_metadata_variant_descriptions_remain_per_row(tmp_path, method):
+    _isolated(
+        f"""
+        import os
+        import mssql_python as db
+        from mssql_python import ddbc_bindings as native
+        with db.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, v FROM (VALUES "
+                    "(1,CAST(NULL AS SQL_VARIANT)),"
+                    "(2,CAST('abc' AS SQL_VARIANT)),"
+                    "(3,CAST(17 AS SQL_VARIANT))) s(id,v) ORDER BY id"
+                )
+                native.profiling.reset()
+                native.profiling.enable()
+                try:
+                    if {method!r} == "one":
+                        rows = list(cursor)
+                    elif {method!r} == "all":
+                        rows = cursor.fetchall()
+                    else:
+                        rows = []
+                        while batch := cursor.fetchmany():
+                            rows.extend(batch)
+                finally:
+                    native.profiling.disable()
+                assert [tuple(row) for row in rows] == [(1,None),(2,"abc"),(3,17)]
+                stats = native.profiling.get_stats()
+                expected = 4 if {method!r} == "one" else 5
+                assert stats["ddbc::SQLDescribeCol::driver_call"]["calls"] == expected, stats
+                assert stats["ddbc::sql_variant::null_probe"]["calls"] == 3, stats
+                assert stats["ddbc::sql_variant::subtype"]["calls"] == 2, stats
+        """,
+        tmp_path,
+    )
+
+
+@pytest.mark.parametrize("method", ["one", "many", "all"])
+def test_result_metadata_all_null_rows(tmp_path, method):
+    _isolated(
+        f"""
+        import os
+        import mssql_python as db
+        from mssql_python import ddbc_bindings as native
+        with db.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT CAST(NULL AS INT) AS scalar_null")
+                scalar_null = []
+                scalar_status = native.DDBCSQLFetchOne(cursor.hstmt, scalar_null)
+                diagnostics = native.DDBCSQLGetAllDiagRecords(cursor.hstmt)
+                assert scalar_null == [None]
+                if scalar_status == 0:
+                    assert diagnostics == []
+                    recovery_descriptions = 0
+                else:
+                    assert scalar_status == -1
+                    assert len(diagnostics) == 1 and "22002" in diagnostics[0][0], diagnostics
+                    assert "Indicator variable required but not supplied" in diagnostics[0][1]
+                    recovery_descriptions = 4 if {method!r} == "many" else 2
+                values = ",".join(f"({{i}})" for i in range(1, 16))
+                cursor.execute(
+                    "SELECT CASE WHEN id%7=0 THEN NULL ELSE id END AS c0,"
+                    "CASE WHEN id%7=0 THEN CAST(NULL AS SQL_VARIANT) "
+                    "WHEN id%3=0 THEN CAST(id AS SQL_VARIANT) "
+                    "WHEN id%3=1 THEN CAST(N'row-'+CONVERT(NVARCHAR(12),id) AS SQL_VARIANT) "
+                    "ELSE CAST(CONVERT(FLOAT,id)*0.25 AS SQL_VARIANT) END AS c1 "
+                    f"FROM (VALUES{{values}}) s(id) ORDER BY id"
+                )
+                profiling = hasattr(native, "profiling")
+                if profiling:
+                    native.profiling.reset()
+                    native.profiling.enable()
+                try:
+                    if {method!r} == "one":
+                        rows = list(cursor)
+                    elif {method!r} == "all":
+                        rows = cursor.fetchall()
+                    else:
+                        rows = []
+                        while batch := cursor.fetchmany():
+                            rows.extend(batch)
+                finally:
+                    if profiling:
+                        native.profiling.disable()
+                expected = [
+                    (None,None) if i%7==0 else (i,(i,f"row-{{i}}",i*0.25)[i%3])
+                    for i in range(1,16)
+                ]
+                assert [tuple(row) for row in rows] == expected
+                assert [[type(value) for value in row] for row in rows] == [
+                    [type(value) for value in row] for row in expected
+                ]
+                if profiling:
+                    stats = native.profiling.get_stats()
+                    # Only drivers/builds reporting a real scalar NULL error
+                    # require the additional post-error cache repopulations.
+                    expected_describes = (16 if {method!r} == "one" else 17) + recovery_descriptions
+                    assert stats["ddbc::SQLDescribeCol::driver_call"]["calls"] == expected_describes, stats
+                    assert stats["ddbc::sql_variant::null_probe"]["calls"] == 15
+                    assert stats["ddbc::sql_variant::subtype"]["calls"] == 13
+        """,
+        tmp_path,
+    )
+
+
+def test_result_metadata_odbc_error_invalidates(tmp_path):
+    _isolated(
+        """
+        import os
+        import mssql_python as db
+        from mssql_python import ddbc_bindings as native
+        with db.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id FROM (VALUES(1),(2),(3)) s(id) ORDER BY id")
+                row = []
+                assert native.DDBCSQLFetchOne(cursor.hstmt, row) in (0, 1)
+                assert row == [1]
+                assert native.DDBCSQLGetData(
+                    cursor.hstmt, 2, [], "utf-16le", "utf-16le", db.SQL_WCHAR
+                ) == -1
+                diagnostics = native.DDBCSQLGetAllDiagRecords(cursor.hstmt)
+                assert any("07009" in state for state, _ in diagnostics), diagnostics
+                profiling = hasattr(native, "profiling")
+                if profiling:
+                    native.profiling.reset()
+                    native.profiling.enable()
+                try:
+                    row = []
+                    assert native.DDBCSQLFetchOne(cursor.hstmt, row) in (0, 1)
+                    assert row == [2]
+                finally:
+                    if profiling:
+                        native.profiling.disable()
+                if profiling:
+                    assert native.profiling.get_stats()["ddbc::SQLDescribeCol::driver_call"]["calls"] == 1
         """,
         tmp_path,
     )
