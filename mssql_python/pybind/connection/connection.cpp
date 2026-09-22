@@ -267,21 +267,7 @@ void Connection::checkError(SQLRETURN ret) const {
 }
 
 void Connection::clearResultMetadata() {
-    std::vector<SqlHandlePtr> handles;
-    {
-        std::lock_guard<std::mutex> lock(_childHandlesMutex);
-        handles.reserve(_childStatementHandles.size());
-        for (const auto& weakHandle : _childStatementHandles) {
-            if (auto handle = weakHandle.lock()) {
-                handles.push_back(std::move(handle));
-            }
-        }
-    }
-    // Releasing the last handle can acquire the connection cleanup gate.
-    // Keep that destruction outside the child-list lock.
-    for (const auto& handle : handles) {
-        handle->resultMetadata.clear();
-    }
+    ClearChildResultMetadata(_childHandlesMutex, _childStatementHandles);
 }
 
 void Connection::commit() {
