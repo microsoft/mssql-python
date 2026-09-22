@@ -17,6 +17,9 @@ class Row:
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
     and attribute access to column values.
 
+    Rows support user-defined attributes, ``vars(row)``, and weak references.
+    Internal fields use slots; ``vars(row)`` contains user-defined attributes.
+
     For dict-like access, use the read-only ``row._mapping`` view (a
     ``collections.abc.Mapping`` of column name -> value). Iterating the Row itself
     (for x in row) yields values, not keys — consistent with pyodbc.Row and
@@ -38,6 +41,33 @@ class Row:
             print(value)
     """
 
+    # Slot internal fields while preserving dynamic attributes and weak references.
+    __slots__ = (
+        "_values",
+        "_column_map",
+        "_cursor",
+        "_column_map_lower",
+        "_column_names",
+        "__dict__",
+        "__weakref__",
+    )
+
+    @staticmethod
+    def _fast_create(values, column_map, cursor, column_map_lower=None, column_names=None):
+        """Construct a Row bypassing __init__ — for the common fast path.
+
+        Used by fetchall/fetchmany when no output converters and no UUID
+        stringification are needed (the vast majority of queries). Skips
+        the entire if/elif/else chain and keyword argument overhead in __init__.
+        """
+        r = Row.__new__(Row)
+        r._values = values
+        r._column_map = column_map
+        r._cursor = cursor
+        r._column_map_lower = column_map_lower
+        r._column_names = column_names
+        return r
+
     def __init__(
         self,
         values,
@@ -54,7 +84,8 @@ class Row:
             values: List of values for this row
             column_map: Pre-built column name to index mapping (shared across rows)
             cursor: Optional cursor reference (for backward compatibility and lowercase access)
-            converter_map: Pre-computed converter map (shared across rows for performance)
+            converter_map: Pre-computed converter map (shared across rows for performance).
+                An empty sequence skips converters; None enables the connection fallback.
             uuid_str_indices: Tuple of column indices whose uuid.UUID values should be
                 converted to str. Pre-computed once per result set when native_uuid=False.
                 None means no conversion (native_uuid=True, the default).
@@ -67,22 +98,19 @@ class Row:
                 cursor snapshot; ``_mapping_keys()`` then reconstructs names from
                 ``column_map``.
         """
-        # Apply output converters if available using pre-computed converter map
         if converter_map:
             self._values = self._apply_output_converters_optimized(values, converter_map)
         elif (
-            cursor
+            converter_map is None
+            and cursor
             and hasattr(cursor.connection, "_output_converters")
             and cursor.connection._output_converters
         ):
-            # Fallback to original method for backward compatibility
+            # Support direct Row construction without a pre-computed converter map.
             self._values = self._apply_output_converters(values, cursor)
         else:
             self._values = values
 
-        # Convert UUID columns to str when native_uuid=False.
-        # uuid_str_indices is pre-computed once at execute() time, so this is
-        # O(num_uuid_columns) per row — zero cost when native_uuid=True (the default).
         if uuid_str_indices:
             self._stringify_uuids(uuid_str_indices)
 
