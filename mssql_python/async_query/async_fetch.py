@@ -1,5 +1,7 @@
 """Asynchronous result fetching through mssql-py-core."""
 
+import asyncio
+
 from typing import TYPE_CHECKING, Any
 
 from ..exceptions import OperationalError, ProgrammingError
@@ -34,7 +36,7 @@ def _snapshot_result(cursor: "AsyncCursor") -> _ResultSnapshot:
 
 
 def _reconcile_failed_fetch(
-    cursor: "AsyncCursor", generation: int, operation: str, error: Exception
+    cursor: "AsyncCursor", generation: int, operation: str, error: BaseException
 ) -> None:
     if generation != cursor._result_generation:  # pyright: ignore[reportPrivateUsage]
         return
@@ -66,7 +68,7 @@ async def fetchone(cursor: "AsyncCursor") -> Row | None:
     try:
         with translate_py_core_exceptions():
             row = await _get_py_core_async_cursor(cursor).fetchone()
-    except Exception as error:
+    except (Exception, asyncio.CancelledError) as error:
         _reconcile_failed_fetch(cursor, snapshot[0], "fetchone", error)
         raise
     cursor._record_fetch(  # pyright: ignore[reportPrivateUsage]
@@ -100,7 +102,7 @@ async def fetchmany(cursor: "AsyncCursor", size: int | None = None) -> list[Row]
     try:
         with translate_py_core_exceptions():
             rows = await fetch_awaitable
-    except Exception as error:
+    except (Exception, asyncio.CancelledError) as error:
         _reconcile_failed_fetch(cursor, snapshot[0], "fetchmany", error)
         raise
     cursor._record_fetch(snapshot[0], len(rows), not rows)  # pyright: ignore[reportPrivateUsage]
@@ -120,7 +122,7 @@ async def fetchall(cursor: "AsyncCursor") -> list[Row]:
     try:
         with translate_py_core_exceptions():
             rows = await _get_py_core_async_cursor(cursor).fetchall()
-    except Exception as error:
+    except (Exception, asyncio.CancelledError) as error:
         _reconcile_failed_fetch(cursor, snapshot[0], "fetchall", error)
         raise
     cursor._record_fetch(snapshot[0], len(rows), not rows)  # pyright: ignore[reportPrivateUsage]

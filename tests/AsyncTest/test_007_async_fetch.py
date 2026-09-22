@@ -367,27 +367,34 @@ async def test_fetch_waits_for_successful_nextset_metadata_publication(fetch_met
 
 
 @pytest.mark.asyncio
-async def test_cancelled_nextset_reconciles_before_releasing_fetch():
+async def test_cancelled_nextset_with_same_schema_starts_new_result_generation():
     native_advanced = asyncio.Event()
     hold_nextset = asyncio.Event()
 
     class CancelledNativeCursor:
-        description = [("old_value", int, None, None, None, None, True)]
+        description = [("id", int, None, None, None, None, True)]
         rowcount = -1
+        value = 1
 
         async def execute(self, *_args, **_kwargs):
             return self
 
         async def nextset(self):
-            self.description = [("new_value", int, None, None, None, None, True)]
+            self.description = [("id", int, None, None, None, None, True)]
+            self.value = 2
             native_advanced.set()
             await hold_nextset.wait()
 
         async def fetchone(self):
-            return (7,)
+            return (self.value,)
 
     cursor = AsyncCursor(CancelledNativeCursor())
-    await cursor.execute("SELECT old_value")
+    await cursor.execute("SELECT id")
+    first = await cursor.fetchone()
+    assert first is not None
+    assert first.id == 1
+    assert cursor.rowcount == 1
+
     nextset_task = asyncio.create_task(cursor.nextset())
     await native_advanced.wait()
     fetch_task = asyncio.create_task(cursor.fetchone())
@@ -398,7 +405,8 @@ async def test_cancelled_nextset_reconciles_before_releasing_fetch():
 
     row = await fetch_task
     assert row is not None
-    assert row.new_value == 7
+    assert row.id == 2
+    assert cursor.rowcount == 1
 
 
 @pytest.mark.asyncio
@@ -495,6 +503,56 @@ async def test_fetch_failure_reconciles_discarded_native_result(fetch_method):
             await cursor.fetchmany(1)
         else:
             await getattr(cursor, fetch_method)()
+
+    assert cursor.description is None
+    assert cursor.rowcount == -1
+    with pytest.raises(ProgrammingError, match="No active result set"):
+        await cursor.fetchmany(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
+async def test_cancelled_fetch_reconciles_discarded_native_result(fetch_method):
+    fetch_started = asyncio.Event()
+
+    class CancelledNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
+        rowcount = 1
+
+        async def _fetch(self):
+            self.description = None
+            self.rowcount = -1
+            fetch_started.set()
+            await asyncio.Event().wait()
+
+        async def fetchone(self):
+            return await self._fetch()
+
+        async def fetchmany(self, _size):
+            return await self._fetch()
+
+        async def fetchall(self):
+            return await self._fetch()
+
+    class StatefulAsyncCursor(AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("value", int, None, None, None, None, True)]
+            self._column_map = {"value": 0}
+            self._column_names = ("value",)
+            self._fetched_row_count = 1
+            self._fetch_rowcount = 1
+
+    cursor = StatefulAsyncCursor(CancelledNativeCursor())
+    cursor.seed_result_state()
+    fetch_call = (
+        cursor.fetchmany(1) if fetch_method == "fetchmany" else getattr(cursor, fetch_method)()
+    )
+    fetch_task = asyncio.create_task(fetch_call)
+    await fetch_started.wait()
+
+    fetch_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await fetch_task
 
     assert cursor.description is None
     assert cursor.rowcount == -1

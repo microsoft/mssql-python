@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 import uuid
 
+from ..exceptions import OperationalError
 from ..helpers import get_settings
 from ..logging import logger
 from ..row import Row
@@ -92,16 +93,10 @@ class AsyncCursor:
     async def _wait_for_result_publication(self) -> None:
         await self._result_ready.wait()
 
-    def _reconcile_failed_result_operation(
-        self, previous_native_description: Any, operation: str
-    ) -> None:
-        try:
-            if self._py_core_async_cursor.description == previous_native_description:
-                return
-        except Exception as error:
-            logger.debug("AsyncCursor.%s: result state inspection failed: %s", operation, error)
-            self._reset_fetch_tracking()
-            self._clear_result_metadata()
+    def _reconcile_failed_result_operation(self, operation: str, error: BaseException) -> None:
+        if isinstance(error, OperationalError) and str(error.__cause__).startswith(
+            "Connection is busy"
+        ):
             return
         self._reset_fetch_tracking()
         self._clear_result_metadata()
@@ -167,16 +162,11 @@ class AsyncCursor:
 
     async def nextset(self) -> bool:
         async with self._result_transition():
-            with translate_py_core_exceptions():
-                previous_native_description = self._py_core_async_cursor.description
             try:
                 with translate_py_core_exceptions():
                     has_next = await self._py_core_async_cursor.nextset()
-            except asyncio.CancelledError:
-                self._reconcile_failed_result_operation(previous_native_description, "nextset")
-                raise
-            except Exception:
-                self._reconcile_failed_result_operation(previous_native_description, "nextset")
+            except (Exception, asyncio.CancelledError) as error:
+                self._reconcile_failed_result_operation("nextset", error)
                 raise
             self._reset_fetch_tracking()
             self._clear_result_metadata()
