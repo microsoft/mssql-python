@@ -17,6 +17,9 @@ class Row:
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
     and attribute access to column values.
 
+    Rows support user-defined attributes, ``vars(row)``, and weak references.
+    Internal fields use slots; ``vars(row)`` contains user-defined attributes.
+
     For dict-like access, use the read-only ``row._mapping`` view (a
     ``collections.abc.Mapping`` of column name -> value). Iterating the Row itself
     (for x in row) yields values, not keys — consistent with pyodbc.Row and
@@ -38,9 +41,16 @@ class Row:
             print(value)
     """
 
-    # __slots__ eliminates per-instance __dict__ (~232 bytes/row savings),
-    # and makes attribute access ~30% faster (array index vs dict lookup).
-    __slots__ = ("_values", "_column_map", "_cursor", "_column_map_lower", "_column_names")
+    # Slot internal fields while preserving dynamic attributes and weak references.
+    __slots__ = (
+        "_values",
+        "_column_map",
+        "_cursor",
+        "_column_map_lower",
+        "_column_names",
+        "__dict__",
+        "__weakref__",
+    )
 
     @staticmethod
     def _fast_create(values, column_map, cursor, column_map_lower=None, column_names=None):

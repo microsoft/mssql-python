@@ -10,6 +10,7 @@ import datetime
 import subprocess
 import sys
 import uuid
+import weakref
 from unittest.mock import Mock, patch
 
 import pytest
@@ -19,6 +20,7 @@ from mssql_python.row import Row
 
 FETCH_METHODS = ("fetchone", "fetchmany", "fetchall")
 SQL_WVARCHAR = ConstantsDDBC.SQL_WVARCHAR.value
+SQL_SS_VARIANT = ConstantsDDBC.SQL_SS_VARIANT.value
 UUID_TEXT = "00112233-4455-6677-8899-AABBCCDDEEFF"
 MIXED_SELECT = (
     "SELECT CAST('abc' AS VARCHAR(10)) AS narrow, "
@@ -27,6 +29,23 @@ MIXED_SELECT = (
     "CAST(0x0102 AS VARBINARY(2)) AS binary_value, CAST(NULL AS NVARCHAR(10)) AS empty_value"
 )
 MIXED_CONVERTER_INPUTS = [b"a\x00b\x00c\x00", b"d\x00e\x00f\x00", b"\x01\x02"]
+VARIANT_SELECT = (
+    "SELECT value FROM (VALUES "
+    "(1, CAST(42 AS SQL_VARIANT)), "
+    "(2, CAST(CAST('20260102' AS DATE) AS SQL_VARIANT)), "
+    f"(3, CAST(CAST('{UUID_TEXT}' AS UNIQUEIDENTIFIER) AS SQL_VARIANT)), "
+    "(4, CAST(CAST(N'abc' AS NVARCHAR(10)) AS SQL_VARIANT)), "
+    "(5, CAST(CAST(0x0102 AS VARBINARY(2)) AS SQL_VARIANT)), "
+    "(6, CAST(NULL AS SQL_VARIANT))) AS v(n, value) ORDER BY n"
+)
+VARIANT_VALUES = [
+    42,
+    datetime.date(2026, 1, 2),
+    uuid.UUID(UUID_TEXT),
+    "abc",
+    b"\x01\x02",
+    None,
+]
 
 
 @pytest.fixture
@@ -354,6 +373,91 @@ def test_preconfigured_converter_keeps_existing_fallback_semantics(connection):
         assert [call.args[0] for call in converter.call_args_list] == MIXED_CONVERTER_INPUTS
 
 
+@pytest.mark.parametrize("method", FETCH_METHODS)
+@pytest.mark.parametrize("when", ("before_execute", "after_execute", "between_fetches"))
+def test_variant_string_fallback_is_value_gated(connection, method, when):
+    converter = Mock(return_value="converted")
+    with (
+        connection.cursor() as cursor,
+        patch.object(cursor, "_build_converter_map", wraps=cursor._build_converter_map) as builds,
+        patch.object(
+            connection, "get_output_converter", wraps=connection.get_output_converter
+        ) as lookups,
+    ):
+        if when == "before_execute":
+            connection.add_output_converter(SQL_WVARCHAR, converter)
+        cursor.execute(VARIANT_SELECT)
+        expected = VARIANT_VALUES[:3] + ["converted", "converted", None]
+        if when == "between_fetches":
+            assert cursor.fetchone()[0] == 42
+            expected = expected[1:]
+        if when != "before_execute":
+            connection.add_output_converter(SQL_WVARCHAR, converter)
+        rows = []
+        while batch := fetch_rows(cursor, method):
+            rows.extend(batch)
+        assert [row[0] for row in rows] == expected
+        assert [type(row[0]) for row in rows] == [type(value) for value in expected]
+        assert [call.args[0] for call in converter.call_args_list] == [
+            b"a\x00b\x00c\x00",
+            b"\x01\x02",
+        ]
+        assert builds.call_count == (1 if when == "before_execute" else 2)
+        assert lookups.call_count == 3
+
+
+@pytest.mark.parametrize("method", FETCH_METHODS)
+@pytest.mark.parametrize("explicit_type", ("sql", "python"))
+def test_late_variant_explicit_converter_precedence(connection, method, explicit_type):
+    fallback = Mock(return_value="fallback")
+    python_converter = Mock(return_value="python")
+    sql_converter = Mock(return_value="sql")
+    with connection.cursor() as cursor:
+        cursor.execute(VARIANT_SELECT)
+        connection.add_output_converter(SQL_WVARCHAR, fallback)
+        connection.add_output_converter(str, python_converter)
+        if explicit_type == "sql":
+            connection.add_output_converter(SQL_SS_VARIANT, sql_converter)
+        rows = []
+        while batch := fetch_rows(cursor, method):
+            rows.extend(batch)
+        assert [row[0] for row in rows] == [explicit_type] * 5 + [None]
+        selected = sql_converter if explicit_type == "sql" else python_converter
+        assert [call.args[0] for call in selected.call_args_list] == (
+            VARIANT_VALUES[:3] + [b"a\x00b\x00c\x00", b"\x01\x02"]
+        )
+        fallback.assert_not_called()
+        if explicit_type == "sql":
+            python_converter.assert_not_called()
+        else:
+            sql_converter.assert_not_called()
+
+
+def test_unknown_sql_type_string_fallback_is_value_gated(connection):
+    converter = Mock(return_value="converted")
+    connection.add_output_converter(SQL_WVARCHAR, converter)
+    with connection.cursor() as cursor:
+        cursor._initialize_description(
+            [
+                {
+                    "ColumnName": "value",
+                    "DataType": 123456,
+                    "ColumnSize": 100,
+                    "DecimalDigits": 0,
+                    "Nullable": ConstantsDDBC.SQL_NULLABLE.value,
+                }
+            ]
+        )
+        assert cursor.description[0][1] is str
+        converter_map = cursor._build_converter_map()
+        rows = [Row([value], {"value": 0}, converter_map=converter_map) for value in VARIANT_VALUES]
+        assert [row[0] for row in rows] == VARIANT_VALUES[:3] + ["converted", "converted", None]
+        assert [call.args[0] for call in converter.call_args_list] == [
+            b"a\x00b\x00c\x00",
+            b"\x01\x02",
+        ]
+
+
 def test_converter_cache_multiple_cursors_and_result_shapes(connection):
     converter = Mock(side_effect=lambda raw: "converted:" + raw.decode("utf-16-le"))
     with connection.cursor() as first, connection.cursor() as second:
@@ -496,6 +600,46 @@ def test_fast_row_without_column_snapshot_mapping(native):
     assert dict(row._mapping) == {"number": 1, "text": "abc"}
 
 
+def assert_row_instance_capabilities(row):
+    row.metadata = "initial"
+    assert vars(row)["metadata"] == "initial"
+    vars(row)["metadata"] = "updated"
+    assert row.metadata == "updated"
+    del row.metadata
+    assert not hasattr(row, "metadata")
+    assert row.number == row["number"] == row[0] == 42
+    assert dict(row._mapping) == {"number": 42}
+    reference = weakref.ref(row)
+    assert reference() is row
+    return reference
+
+
+@pytest.mark.parametrize("construction", ("direct", "python_fast", "native"))
+def test_constructed_row_preserves_instance_capabilities(construction):
+    values = [42]
+    column_map = {"number": 0}
+    if construction == "direct":
+        row = Row(values, column_map)
+    elif construction == "python_fast":
+        row = Row._fast_create(values, column_map, None)
+    else:
+        row = mssql_python.ddbc_bindings.construct_rows([values], Row, column_map, None)[0]
+    assert row._values is values
+    reference = assert_row_instance_capabilities(row)
+    del row
+    assert reference() is None
+
+
+@pytest.mark.parametrize("method", FETCH_METHODS)
+def test_fetched_row_preserves_instance_capabilities(connection, method):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 42 AS number")
+        row = fetch_rows(cursor, method)[0]
+    reference = assert_row_instance_capabilities(row)
+    del row
+    assert reference() is None
+
+
 @pytest.mark.parametrize("size", (0, 1, 3))
 def test_construct_rows_repeated_calls_release_references(size):
     values = [[index] for index in range(size)]
@@ -546,6 +690,19 @@ def test_construct_rows_releases_partial_batch_on_attribute_error():
         assert [sys.getrefcount(value) for value in tracked] == references
 
 
+def test_construct_rows_accepts_row_subclasses():
+    class CustomRow(Row):
+        __slots__ = ()
+
+    values = [42]
+    row = mssql_python.ddbc_bindings.construct_rows([values], CustomRow, {"number": 0}, None)[0]
+    assert type(row) is CustomRow
+    assert row._values is values
+    reference = assert_row_instance_capabilities(row)
+    del row
+    assert reference() is None
+
+
 @pytest.mark.parametrize(
     ("method", "bridge_name"),
     (
@@ -586,6 +743,32 @@ try:
     ddbc_bindings.construct_rows({rows}, {invalid_type}, {{}}, None)
 except TypeError as error:
     assert str(error) == "row_class must be a type", str(error)
+else:
+    raise AssertionError("Expected TypeError")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+
+
+@pytest.mark.parametrize(
+    "unrelated_type",
+    ("types.FunctionType", "types.CodeType", "types.SimpleNamespace", "object", "int", "dict"),
+)
+@pytest.mark.parametrize("rows", ("[]", "[[1]]"))
+def test_construct_rows_rejects_unrelated_types_in_subprocess(unrelated_type, rows):
+    code = f"""
+import sys
+import types
+if sys.platform == "win32":
+    import ctypes
+    ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
+from mssql_python import ddbc_bindings
+try:
+    ddbc_bindings.construct_rows({rows}, {unrelated_type}, {{}}, None)
+except TypeError as error:
+    assert str(error) == "row_class must be Row or a Row subclass", str(error)
 else:
     raise AssertionError("Expected TypeError")
 """

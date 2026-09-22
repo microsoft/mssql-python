@@ -62,6 +62,17 @@ ODBC3_TEMPORAL_SQL_TYPES = {
 }
 
 
+def _string_only_output_converter(converter):
+    """Gate fallback conversion on the fetched value, not its column metadata."""
+
+    def convert(value):
+        if isinstance(value, (str, bytes)):
+            return converter(value)
+        return value
+
+    return convert
+
+
 def _normalize_time_param(value, c_type):
     """Convert a datetime.time to its isoformat string when bound via text C-types.
 
@@ -1384,6 +1395,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns a list where each element is either a converter function or None.
         An empty tuple means no converters apply; None is reserved for uncached
         direct Row construction and its legacy connection lookup.
+        String fallback converters check each value's type because variant and
+        unknown SQL types can have str metadata but non-string values.
         This eliminates the need to look up converters for every row.
         """
         generation = self._connection._converters_generation
@@ -1411,13 +1424,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             #    (e.g. decimal.Decimal) - the pre-existing mssql-python key style.
             if converter is None:
                 converter = self.connection.get_output_converter(desc[1])
-            # 3) Legacy WVARCHAR fallback: only apply it when the column's mapped type
-            #    is str/bytes, so a registered SQL_WVARCHAR converter is never used as an
-            #    unconditional catch-all for INT/DECIMAL/DATE/etc. columns (GH #691). This
-            #    mirrors the isinstance(value, (str, bytes)) gate in
-            #    Row._apply_output_converters.
+            # 3) The WVARCHAR fallback must also check the value: SQL_VARIANT and
+            #    unknown types map to str but can return non-string Python values.
             if converter is None and desc[1] in (str, bytes):
                 converter = self.connection.get_output_converter(ddbc_sql_const.SQL_WVARCHAR.value)
+                if converter:
+                    converter = _string_only_output_converter(converter)
 
             converter_map.append(converter)
 

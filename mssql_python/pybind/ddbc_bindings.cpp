@@ -6056,7 +6056,7 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 //   - Keyword argument processing overhead per Row
 //   - Python function call frame setup per iteration
 //
-// Requires Row's value, column-map, cursor, lowercase-map, and column-name slots.
+// Accepts Row and its subclasses, whose internal fields can be assigned directly.
 // Semantically identical to _fast_create — no converter or UUID processing.
 // ---------------------------------------------------------------------------
 py::list construct_rows(const py::list& rows_data,
@@ -6069,6 +6069,11 @@ py::list construct_rows(const py::list& rows_data,
         throw py::type_error("row_class must be a type");
     }
     PyTypeObject* row_type = reinterpret_cast<PyTypeObject*>(row_class.ptr());
+    const py::object row_base = py::module_::import("mssql_python.row").attr("Row");
+    if (!PyType_Check(row_base.ptr()) ||
+        !PyType_IsSubtype(row_type, reinterpret_cast<PyTypeObject*>(row_base.ptr()))) {
+        throw py::type_error("row_class must be Row or a Row subclass");
+    }
     Py_ssize_t n = PyList_GET_SIZE(rows_data.ptr());
 
     // Keep Python-owned names local to this call and its interpreter.
