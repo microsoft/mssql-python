@@ -288,11 +288,14 @@ async def test_executemany_rejects_non_sequence_like_sync(async_cursor):
 )
 async def test_execute_binds_representative_sync_parameter_types(async_cursor, value, sql_type):
     result = await async_cursor.execute(
-        f"IF CAST(? AS {sql_type}) IS NULL THROW 50000, 'Unexpected NULL value', 1",
+        f"SELECT CAST(? AS {sql_type}) AS value",
         value,
     )
+    row = await async_cursor.fetchone()
 
     assert result is async_cursor
+    assert row is not None
+    assert tuple(row) == (value,)
 
 
 @pytest.mark.asyncio
