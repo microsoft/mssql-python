@@ -7,8 +7,8 @@
 #include "result_metadata.hpp"
 
 #include <cassert>
-#include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <new>
 #include <stdexcept>
 #include <thread>
@@ -183,7 +183,7 @@ static void TestLastOwner() {
 
 int main(int argc, char** argv) {
     if (argc != 2) {
-        std::fputs("Expected one native metadata test case\n", stderr);
+        std::cerr << "Expected one native metadata test case\n";
         return 2;
     }
     const char* name = argv[1];
@@ -200,9 +200,9 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(name, "last_owner") == 0) {
         TestLastOwner();
     } else {
-        std::fprintf(stderr, "Unknown native metadata test case: %s\n", name);
+        std::cerr << "Unknown native metadata test case: " << name << '\n';
         return 2;
     }
-    std::printf("%s passed\n", name);
+    std::cout << name << " passed\n";
     return 0;
 }

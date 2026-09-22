@@ -5,6 +5,9 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - 'mssql_python/pybind/result_metadata.hpp'
+      - 'mssql_python/pybind/ddbc_bindings.cpp'
+      - 'mssql_python/pybind/ddbc_bindings.h'
+      - 'mssql_python/pybind/connection/connection.h'
       - 'mssql_python/pybind/connection/connection.cpp'
       - 'tests/native/**'
       - '.github/workflows/native-metadata-tests.yml'
@@ -12,6 +15,9 @@ on:
     branches: [main]
     paths:
       - 'mssql_python/pybind/result_metadata.hpp'
+      - 'mssql_python/pybind/ddbc_bindings.cpp'
+      - 'mssql_python/pybind/ddbc_bindings.h'
+      - 'mssql_python/pybind/connection/connection.h'
       - 'mssql_python/pybind/connection/connection.cpp'
       - 'tests/native/**'
       - '.github/workflows/native-metadata-tests.yml'
