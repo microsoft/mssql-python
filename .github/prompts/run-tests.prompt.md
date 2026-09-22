@@ -122,6 +122,27 @@ Help the developer run tests to validate their changes. Follow this process base
 
 ## STEP 1: Choose What to Test
 
+### Native metadata invariants (no database)
+
+The standalone CMake tests in `tests/native` exercise the production metadata
+cache and child-handle invalidation helper without importing the Python package
+or connecting to SQL Server. They require a C++17 compiler, CMake, and ODBC
+headers (Windows SDK, `unixodbc-dev` on Linux, or `unixodbc` on macOS).
+The Native Metadata Tests workflow runs them on Windows, Linux, and macOS.
+
+```bash
+cmake -S tests/native -B build/native-metadata -DCMAKE_BUILD_TYPE=Release
+cmake --build build/native-metadata --config Release --parallel 2
+ctest --test-dir build/native-metadata -C Release --output-on-failure
+```
+
+Assertions remain enabled in Release. Cases cover stale-generation rejection,
+held snapshots, failure/EOF guards, concurrent invalidation, child isolation,
+reserve failure before strong-reference acquisition, and last-owner destruction
+outside the child-list lock. These native checks supplement, not replace, the
+live transaction tests, which skip when the driver does not preserve cursors.
+Native-only tests do not require the Python-test prerequisites above.
+
 ### Test Categories
 
 | Category | Description | When to Use |

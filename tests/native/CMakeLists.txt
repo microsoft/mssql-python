@@ -1,0 +1,31 @@
+cmake_minimum_required(VERSION 3.15)
+project(mssql_python_native_tests LANGUAGES CXX)
+
+enable_testing()
+find_package(Threads REQUIRED)
+
+add_executable(result_metadata_tests result_metadata_tests.cpp allocation_failure.cpp)
+target_compile_features(result_metadata_tests PRIVATE cxx_std_17)
+target_include_directories(result_metadata_tests PRIVATE ../../mssql_python/pybind)
+target_link_libraries(result_metadata_tests PRIVATE Threads::Threads)
+
+if(WIN32)
+    target_compile_definitions(result_metadata_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+else()
+    find_path(ODBC_INCLUDE_DIR sql.h PATHS /opt/homebrew/include /usr/local/include)
+    if(NOT ODBC_INCLUDE_DIR)
+        message(FATAL_ERROR "ODBC headers are required: install unixodbc-dev or unixodbc.")
+    endif()
+    target_include_directories(result_metadata_tests PRIVATE "${ODBC_INCLUDE_DIR}")
+endif()
+
+if(MSVC)
+    target_compile_options(result_metadata_tests PRIVATE /W4 /WX /UNDEBUG)
+else()
+    target_compile_options(result_metadata_tests PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+endif()
+
+foreach(case_name IN ITEMS snapshots failures concurrent children allocation last_owner)
+    add_test(NAME result_metadata_${case_name} COMMAND result_metadata_tests ${case_name})
+    set_tests_properties(result_metadata_${case_name} PROPERTIES TIMEOUT 20)
+endforeach()
