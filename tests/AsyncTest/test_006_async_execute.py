@@ -417,12 +417,10 @@ async def test_executemany_handles_sync_edge_value_batches(async_cursor):
         assert result is None
         assert async_cursor.rowcount == len(rows)
         await async_cursor.execute(
-            f"IF (SELECT COUNT(*) FROM {table_name}) <> 3 "
-            f"OR (SELECT COUNT(*) FROM {table_name} WHERE text_value = '') <> 1 "
-            f"OR (SELECT COUNT(*) FROM {table_name} WHERE text_value IS NULL) <> 1 "
-            f"OR (SELECT COUNT(*) FROM {table_name} WHERE binary_value = 0x) <> 1 "
-            "THROW 50000, 'Unexpected batch values', 1"
+            f"SELECT id, text_value, binary_value, integer_value, decimal_value, date_value "
+            f"FROM {table_name} ORDER BY id"
         )
+        assert [tuple(row) for row in await async_cursor.fetchall()] == rows
     finally:
         async_cursor.setinputsizes(None)
         await async_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
