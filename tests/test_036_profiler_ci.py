@@ -115,11 +115,12 @@ def test_consistent_slowdown_is_advisory_regression(report):
         row["status"] == "regression" and row["change_pct"] == pytest.approx(30) for row in rows
     )
     body = reporting.render([report], "c" * 40, 42)
-    assert "20 consistent slowdown signals" in body
+    assert "### ⚠️ Performance regression detected" in body
+    assert "20 database tasks consistently slowed down" in body
     assert "| Unix / SQL Server 2022 | Connection opening |" in body
-    assert "| Unix / SQL Server 2025 | No result available" in body
-    assert body.index("consistent slowdown signals") < body.index(
-        "<summary>Build, commits and measurement details</summary>"
+    assert "Unavailable: Unix / SQL Server 2025 (incomplete benchmark)." in body
+    assert body.index("consistently slowed down") < body.index(
+        "<summary><b>Build and measurement details</b></summary>"
     )
 
 
@@ -248,8 +249,8 @@ def test_render_bounds_schema_valid_diagnostics(report):
     body = reporting.render(reports, "c" * 40, 42)
     assert len(body) <= 60000
     assert "20 additional diagnostic rows are available in the raw ADO artifacts" in body
-    assert "<summary>All database tasks and timings</summary>" in body
-    assert "<summary>Build, commits and measurement details</summary>" in body
+    assert "<summary><b>All database tasks and timings</b></summary>" in body
+    assert "<summary><b>Build and measurement details</b></summary>" in body
 
 
 @pytest.mark.parametrize("invalid", ["source commit", "base commit"])
@@ -288,14 +289,13 @@ def test_impact_summary_handles_single_inconsistent_and_complete_clean_results(r
     for pair, scale in zip(clean["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
     noisy = reporting.render([clean], "c" * 40, 42)
-    assert (
-        "**Row-by-row fetching was slower on Unix / SQL Server 2022, "
-        "but the repeated comparisons were inconsistent.**"
-    ) in noisy
-    assert "Inconsistent slowdowns to review:" in noisy
+    assert "### 🔍 Performance needs review" in noisy
+    assert "1 database task produced inconsistent slowdown signals" in noisy
+    assert "<kbd>1 INCONSISTENT SLOWDOWN</kbd>" in noisy
 
     complete = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
     clean_body = reporting.render(complete, "c" * 40, 42)
+    assert "### ✅ No regression detected" in clean_body
     assert "**No consistent slowdowns detected across all 2 environments.**" in clean_body
     assert "**Coverage:** 2 of 2 environments completed." in clean_body
 
@@ -305,12 +305,11 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
     for pair in single["pairs"]:
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
     body = reporting.render([single], "c" * 40, 42)
-    assert (
-        "**This PR consistently slows row-by-row fetching on Unix / SQL Server 2022 " "by 30.0%.**"
-    ) in body
-    assert "<summary>Affected phases and call counts</summary>" in body
-    assert "<summary>All database tasks and timings</summary>" in body
-    assert "<summary>Build, commits and measurement details</summary>" in body
+    assert "### ⚠️ Performance regression detected" in body
+    assert "**1 database task consistently slowed down across 1 measured environment.**" in body
+    assert "<summary><b>Performance diagnostics</b></summary>" in body
+    assert "<summary><b>All database tasks and timings</b></summary>" in body
+    assert "<summary><b>Build and measurement details</b></summary>" in body
     assert "median of paired before-and-after ratios" in body
 
     partial = reporting.render(
@@ -321,7 +320,7 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
     )
     assert "No consistent slowdowns in the 1 completed environment." in partial
     assert "No result is available for 1 environment." in partial
-    assert "| Unix / SQL Server 2025 | No result available (missing) |" in partial
+    assert "Unavailable: Unix / SQL Server 2025 (missing)." in partial
     assert "pending" not in partial.lower()
 
     unavailable = reporting.render([], "c" * 40, 42, ["Linux-SQL2022 (invalid artifact)"])
@@ -330,21 +329,30 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
 
 
 def test_impact_summary_reports_consistent_improvements(report):
-    single = clear_slowdowns(copy.deepcopy(report))
-    for pair in single["pairs"]:
-        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
-        pair["candidate"]["scenarios"]["fetchall"]["cpp"]["ddbc::query"] = dict(
-            calls=1, total_us=500, min_us=500, max_us=500
-        )
-    rows = reporting.comparisons(single)
+    reports = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
+    for item, scales in zip(reports, ((0.7, 0.6), (0.72, 0.61))):
+        for pair in item["pairs"]:
+            pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= scales[0]
+            pair["candidate"]["scenarios"]["setinputsizes"]["wall_ms"] *= scales[1]
+            pair["candidate"]["scenarios"]["fetchall"]["cpp"]["ddbc::query"] = dict(
+                calls=1, total_us=500, min_us=500, max_us=500
+            )
+    rows = reporting.comparisons(reports[0])
     assert rows[4]["status"] == "improvement"
     assert rows[4]["phases"] == [(-0.5, "ddbc::query")]
-    body = reporting.render([single], "c" * 40, 42)
+    body = reporting.render(reports, "c" * 40, 42)
+    assert "### ✅ Performance improved" in body
     assert (
-        "**This PR consistently makes fetch-all queries faster on Unix / SQL Server 2022 "
-        "by 30.0%.**"
+        "**2 database tasks consistently improved across 2 measured environments. "
+        "No consistent slowdowns were detected.**"
     ) in body
-    assert "| Unix / SQL Server 2022 | Fetch-all queries |" in body
+    assert "<kbd>2 IMPROVEMENTS</kbd> <kbd>0 SLOWDOWNS</kbd> <kbd>2/2 ENVIRONMENTS</kbd>" in body
+    assert "| Fetch-all queries | **30.0% faster** | **28.0% faster** |" in body
+    assert (
+        "| Insertion with explicit input sizes | **40.0% faster** | " "**39.0% faster** |"
+    ) in body
+    assert "Spread" not in body
+    assert "<summary><b>Measured timings</b></summary>" in body
     assert "| Fetch-all queries |" in body and "| consistent improvement |" in body
     assert "ddbc::query -0.500 ms" in body
 
@@ -355,7 +363,8 @@ def test_regression_headline_keeps_precedence_over_improvement(report):
         pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
     body = reporting.render([mixed], "c" * 40, 42)
-    assert "**This PR consistently slows row-by-row fetching" in body
+    assert "### ⚠️ Performance regression detected" in body
+    assert "<kbd>1 IMPROVEMENT</kbd> <kbd>1 SLOWDOWN</kbd>" in body
 
 
 def test_inconsistent_slowdown_keeps_precedence_over_improvement(report):
@@ -365,8 +374,9 @@ def test_inconsistent_slowdown_keeps_precedence_over_improvement(report):
     for pair, scale in zip(mixed["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
     body = reporting.render([mixed], "c" * 40, 42)
-    assert "**Row-by-row fetching was slower" in body
-    assert "Inconsistent slowdowns to review:" in body
+    assert "### 🔍 Performance needs review" in body
+    assert "<kbd>1 IMPROVEMENT</kbd> <kbd>0 SLOWDOWNS</kbd>" in body
+    assert "<kbd>1 INCONSISTENT SLOWDOWN</kbd>" in body
 
 
 @pytest.mark.parametrize(
@@ -1232,13 +1242,13 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
     if corrupt in ("zip", "timeout", "scenarios", "recursion", "deflate"):
         assert "### Unix / SQL Server 2025" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
-        assert "| Unix / SQL Server 2022 | No result available (invalid artifact) |" in posted[1]
-        assert posted[1].count("20 consistent slowdown signals") == 1
+        assert "Unavailable: Unix / SQL Server 2022 (invalid artifact)." in posted[1]
+        assert posted[1].count("20 database tasks consistently slowed down") == 1
     else:
         assert "**Coverage:** 2 of 2 environments completed." in posted[1]
         assert "### Unix / SQL Server 2022" in posted[1]
         assert "### Unix / SQL Server 2025" in posted[1]
-        assert posted[1].count("40 consistent slowdown signals") == 1
+        assert posted[1].count("20 database tasks consistently slowed down") == 1
 
 
 def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report, monkeypatch):
@@ -1673,10 +1683,16 @@ def test_profiler_documentation_preserves_standalone_benchmarks_and_failed_build
     assert "failed aggregate build can still publish" in contract
 
 
-def test_comment_workflow_executes_only_trusted_base_code():
+def test_comment_workflow_separates_same_repo_and_fork_trust():
     workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
+    assert "pull_request:" in workflow
     assert "pull_request_target:" in workflow
-    assert "ref: ${{ github.event.pull_request.base.sha }}" in workflow
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
+    assert "github.event.pull_request.head.repo.full_name != github.repository" in workflow
+    assert (
+        "github.event_name == 'pull_request' && github.event.pull_request.head.sha || "
+        "github.event.pull_request.base.sha"
+    ) in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in workflow
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
