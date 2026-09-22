@@ -1,0 +1,57 @@
+name: Native Metadata Tests
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - 'mssql_python/pybind/result_metadata.hpp'
+      - 'mssql_python/pybind/fetch_bindings.hpp'
+      - 'mssql_python/pybind/ddbc_bindings.cpp'
+      - 'mssql_python/pybind/ddbc_bindings.h'
+      - 'mssql_python/pybind/connection/connection.h'
+      - 'mssql_python/pybind/connection/connection.cpp'
+      - 'tests/native/**'
+      - '.github/workflows/native-metadata-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mssql_python/pybind/result_metadata.hpp'
+      - 'mssql_python/pybind/fetch_bindings.hpp'
+      - 'mssql_python/pybind/ddbc_bindings.cpp'
+      - 'mssql_python/pybind/ddbc_bindings.h'
+      - 'mssql_python/pybind/connection/connection.h'
+      - 'mssql_python/pybind/connection/connection.cpp'
+      - 'tests/native/**'
+      - '.github/workflows/native-metadata-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  native-metadata:
+    name: Native metadata (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install ODBC headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unixodbc-dev
+      - name: Install ODBC headers (macOS)
+        if: runner.os == 'macOS'
+        run: brew install unixodbc
+      - name: Configure
+        run: cmake -S tests/native -B build/native-metadata -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/native-metadata --config Release --parallel 2
+      - name: Test
+        run: ctest --test-dir build/native-metadata -C Release --output-on-failure

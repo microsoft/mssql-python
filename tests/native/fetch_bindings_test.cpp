@@ -7,42 +7,18 @@
 #error "fetch_bindings_test requires assertions enabled"
 #endif
 
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 #include "fetch_bindings.hpp"
 #include <array>
 #include <cassert>
-#include <cstdlib>
+#include <cstddef>
 #include <new>
 
-namespace {
-size_t allocationCalls = 0;
-size_t liveAllocations = 0;
-long failAllocationAfter = -1;
-}
-
-void* operator new(std::size_t size) {
-    if (failAllocationAfter == 0) {
-        throw std::bad_alloc();
-    }
-    if (failAllocationAfter > 0) {
-        --failAllocationAfter;
-    }
-    void* pointer = std::malloc(size ? size : 1);
-    if (!pointer) {
-        throw std::bad_alloc();
-    }
-    ++allocationCalls;
-    ++liveAllocations;
-    return pointer;
-}
-
-void operator delete(void* pointer) noexcept {
-    if (pointer) {
-        --liveAllocations;
-    }
-    std::free(pointer);
-}
-
-void operator delete(void* pointer, std::size_t) noexcept { ::operator delete(pointer); }
+extern std::size_t allocationCalls;
+extern std::size_t liveAllocations;
+extern long failAllocationAfter;
 
 namespace {
 

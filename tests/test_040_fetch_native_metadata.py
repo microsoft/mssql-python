@@ -485,7 +485,7 @@ def test_result_metadata_transaction_preserved_cursor(metadata_cursor, operation
         else mssql_python.SQL_CURSOR_COMMIT_BEHAVIOR
     )
     if connection.getinfo(info) != 2:  # SQL_CB_PRESERVE
-        pytest.skip("Driver does not preserve cursors; native helper coverage is required")
+        pytest.skip("Driver does not preserve cursors; cache/helper coverage is in tests/native")
     cursor.execute(_query(["id"], 3))
     _assert_rows([cursor.fetchone()], [(1,)])
     if operation == "autocommit":
@@ -734,15 +734,9 @@ def test_result_metadata_all_null_rows(tmp_path, method):
                 scalar_null = []
                 scalar_status = native.DDBCSQLFetchOne(cursor.hstmt, scalar_null)
                 diagnostics = native.DDBCSQLGetAllDiagRecords(cursor.hstmt)
+                assert scalar_status == 0, (scalar_status, diagnostics)
                 assert scalar_null == [None]
-                if scalar_status == 0:
-                    assert diagnostics == []
-                    recovery_descriptions = 0
-                else:
-                    assert scalar_status == -1
-                    assert len(diagnostics) == 1 and "22002" in diagnostics[0][0], diagnostics
-                    assert "Indicator variable required but not supplied" in diagnostics[0][1]
-                    recovery_descriptions = 4 if {method!r} == "many" else 2
+                assert diagnostics == []
                 values = ",".join(f"({{i}})" for i in range(1, 16))
                 cursor.execute(
                     "SELECT CASE WHEN id%7=0 THEN NULL ELSE id END AS c0,"
@@ -778,9 +772,7 @@ def test_result_metadata_all_null_rows(tmp_path, method):
                 ]
                 if profiling:
                     stats = native.profiling.get_stats()
-                    # Only drivers/builds reporting a real scalar NULL error
-                    # require the additional post-error cache repopulations.
-                    expected_describes = (16 if {method!r} == "one" else 17) + recovery_descriptions
+                    expected_describes = 16 if {method!r} == "one" else 17
                     assert stats["ddbc::SQLDescribeCol::driver_call"]["calls"] == expected_describes, stats
                     assert stats["ddbc::sql_variant::null_probe"]["calls"] == 15
                     assert stats["ddbc::sql_variant::subtype"]["calls"] == 13

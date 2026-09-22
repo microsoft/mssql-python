@@ -9,6 +9,7 @@
 #include <mutex>
 #include <sql.h>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct FetchColumnMetadata {
@@ -56,6 +57,35 @@ class ResultMetadataCache {
     uint64_t generation_ = 0;
     std::shared_ptr<const ResultMetadata> metadata_;
 };
+
+template <typename Handle, typename AfterClear>
+void ClearChildResultMetadata(std::mutex& childHandlesMutex,
+                              const std::vector<std::weak_ptr<Handle>>& childHandles,
+                              AfterClear&& afterClear) {
+    std::vector<std::shared_ptr<Handle>> handles;
+    {
+        std::lock_guard<std::mutex> lock(childHandlesMutex);
+        handles.reserve(childHandles.size());
+        for (const auto& weakHandle : childHandles) {
+            if (auto handle = weakHandle.lock()) {
+                handles.push_back(std::move(handle));
+            }
+        }
+    }
+    // Releasing the last handle can acquire the connection cleanup gate.
+    // Keep that destruction outside the child-list lock.
+    for (const auto& handle : handles) {
+        handle->resultMetadata.clear();
+        afterClear(handle);
+    }
+}
+
+template <typename Handle>
+void ClearChildResultMetadata(std::mutex& childHandlesMutex,
+                              const std::vector<std::weak_ptr<Handle>>& childHandles) {
+    ClearChildResultMetadata(childHandlesMutex, childHandles,
+                             [](const std::shared_ptr<Handle>&) {});
+}
 
 class ResultMetadataFailureGuard {
   public:

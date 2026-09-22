@@ -1,0 +1,40 @@
+cmake_minimum_required(VERSION 3.15)
+project(mssql_python_native_tests LANGUAGES CXX)
+
+enable_testing()
+find_package(Threads REQUIRED)
+
+add_executable(result_metadata_tests result_metadata_tests.cpp allocation_failure.cpp)
+add_executable(fetch_bindings_tests fetch_bindings_test.cpp fetch_bindings_allocation.cpp)
+
+if(NOT WIN32)
+    find_path(ODBC_INCLUDE_DIR sql.h PATHS /opt/homebrew/include /usr/local/include)
+    if(NOT ODBC_INCLUDE_DIR)
+        message(FATAL_ERROR "ODBC headers are required: install unixodbc-dev or unixodbc.")
+    endif()
+endif()
+
+foreach(target IN ITEMS result_metadata_tests fetch_bindings_tests)
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    target_include_directories(${target} PRIVATE ../../mssql_python/pybind)
+    target_link_libraries(${target} PRIVATE Threads::Threads)
+    if(WIN32)
+        target_compile_definitions(${target} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    else()
+        target_include_directories(${target} PRIVATE "${ODBC_INCLUDE_DIR}")
+    endif()
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    endif()
+endforeach()
+
+foreach(case_name IN ITEMS snapshots failures concurrent children allocation last_owner
+                           child_callbacks child_callback_failure)
+    add_test(NAME result_metadata_${case_name} COMMAND result_metadata_tests ${case_name})
+    set_tests_properties(result_metadata_${case_name} PROPERTIES TIMEOUT 20)
+endforeach()
+
+add_test(NAME fetch_bindings_helpers COMMAND fetch_bindings_tests)
+set_tests_properties(fetch_bindings_helpers PROPERTIES TIMEOUT 20)
