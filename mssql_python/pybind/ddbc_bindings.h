@@ -33,6 +33,7 @@ using py::literals::operator""_a;
 #include <sql.h>
 #include <sqlext.h>
 #include "result_metadata.hpp"
+#include "fetch_bindings.hpp"
 
 //-------------------------------------------------------------------------------------------------
 // SQL Server specific ODBC constants
@@ -296,6 +297,14 @@ class SqlHandle {
     SQLSMALLINT type() const;
     void free();
     SQLRETURN freeHandle();
+    SQLRETURN detachFetchBindings(bool* hadPlan = nullptr) {
+        const bool present = fetchBindings.hasPlan();
+        if (hadPlan) {
+            *hadPlan = present;
+        }
+        return present ? detachPresentFetchBindings() : SQL_SUCCESS;
+    }
+    void requireDetachedFetchBindings();
     void close_cursor();
     // Cancel an in-progress statement (SQLCancel). Safe to call from a
     // thread other than the one running the fetch — this is the *only*
@@ -306,18 +315,15 @@ class SqlHandle {
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
 
-    // Mark this handle as implicitly freed (freed by parent handle)
-    // This prevents double-free attempts when the ODBC driver automatically
-    // frees child handles (e.g., STMT handles when DBC handle is freed)
+    // Record proven native statement release by a successful parent disconnect.
+    // This is not a logical close: retained driver pointers become releasable.
     //
     // SAFETY CONSTRAINTS:
     // - ONLY call this on SQL_HANDLE_STMT handles
-    // - ONLY call this when the parent DBC handle is about to be freed
+    // - ONLY call after SQLDisconnect has actually succeeded
     // - Calling on other handle types (ENV, DBC, DESC) will cause HANDLE LEAKS
-    // - The ODBC spec only guarantees automatic freeing of STMT handles by DBC parents
     //
-    // Current usage: Connection::disconnect() marks all tracked STMT handles
-    // before freeing the DBC handle.
+    // Connection::disconnect() calls this before freeing the DBC wrapper.
     void markImplicitlyFreed();
 
     // GH-610: Per-handle SQLDescribeParam result cache.
@@ -328,10 +334,13 @@ class SqlHandle {
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
     ResultMetadataCache resultMetadata;
+    FetchBindingSlot fetchBindings;
 
   private:
     // The caller must release the GIL before waiting for native cleanup.
     std::unique_lock<std::mutex> lockForCleanup() const;
+    SQLRETURN detachPresentFetchBindings();
+    SQLRETURN detachFetchBindingsNative();
     SQLSMALLINT _type;
     SQLHANDLE _handle;
     bool _implicitly_freed = false;  // Tracks if handle was freed by parent
@@ -397,51 +406,6 @@ void DDBCSetDecimalSeparator(const std::string& separator);
 // INTERNAL: Performance Optimization Helpers for Fetch Path
 // (Used internally by ddbc_bindings.cpp - not part of public API)
 //-------------------------------------------------------------------------------------------------
-
-// Struct to hold the SQL Server TIME2 structure (SQL_C_SS_TIME2)
-struct SQL_SS_TIME2_STRUCT {
-    SQLUSMALLINT hour;
-    SQLUSMALLINT minute;
-    SQLUSMALLINT second;
-    SQLUINTEGER fraction;  // Nanoseconds
-};
-
-// Struct to hold the DateTimeOffset structure
-struct DateTimeOffset {
-    SQLSMALLINT year;
-    SQLUSMALLINT month;
-    SQLUSMALLINT day;
-    SQLUSMALLINT hour;
-    SQLUSMALLINT minute;
-    SQLUSMALLINT second;
-    SQLUINTEGER fraction;         // Nanoseconds
-    SQLSMALLINT timezone_hour;    // Offset hours from UTC
-    SQLSMALLINT timezone_minute;  // Offset minutes from UTC
-};
-
-// Struct to hold data buffers and indicators for each column
-struct ColumnBuffers {
-    std::vector<std::vector<SQLCHAR>> charBuffers;
-    std::vector<std::vector<SQLWCHAR>> wcharBuffers;
-    std::vector<std::vector<SQLINTEGER>> intBuffers;
-    std::vector<std::vector<SQLSMALLINT>> smallIntBuffers;
-    std::vector<std::vector<SQLREAL>> realBuffers;
-    std::vector<std::vector<SQLDOUBLE>> doubleBuffers;
-    std::vector<std::vector<SQL_TIMESTAMP_STRUCT>> timestampBuffers;
-    std::vector<std::vector<SQLBIGINT>> bigIntBuffers;
-    std::vector<std::vector<SQL_DATE_STRUCT>> dateBuffers;
-    std::vector<std::vector<SQL_SS_TIME2_STRUCT>> timeBuffers;
-    std::vector<std::vector<SQLGUID>> guidBuffers;
-    std::vector<std::vector<SQLLEN>> indicators;
-    std::vector<std::vector<DateTimeOffset>> datetimeoffsetBuffers;
-
-    ColumnBuffers(SQLSMALLINT numCols, int fetchSize)
-        : charBuffers(numCols), wcharBuffers(numCols), intBuffers(numCols),
-          smallIntBuffers(numCols), realBuffers(numCols), doubleBuffers(numCols),
-          timestampBuffers(numCols), bigIntBuffers(numCols), dateBuffers(numCols),
-          timeBuffers(numCols), guidBuffers(numCols), datetimeoffsetBuffers(numCols),
-          indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
-};
 
 // Performance: Column processor function type for fast type conversion
 // Using function pointers eliminates switch statement overhead in the hot loop

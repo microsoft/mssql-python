@@ -115,7 +115,7 @@ void Connection::connect(const py::dict& attrs_before) {
 
 void Connection::disconnect(bool rollbackBeforeDisconnect) {
     PERF_TIMER("Connection::disconnect");
-    clearResultMetadata();
+    clearResultMetadata(false);
     // Determine GIL state once, up front. disconnect() runs both from
     // pybind11-bound methods (GIL held) and from GIL-less destructor / shutdown
     // paths: Connection::~Connection() dropping the last shared_ptr, or teardown
@@ -169,10 +169,10 @@ void Connection::disconnect(bool rollbackBeforeDisconnect) {
                 // Also cover children whose weak_ptr expired as their destructor
                 // began waiting for this gate: they cannot appear in the snapshot.
                 _cleanupState->disconnected = true;
-                std::lock_guard<std::mutex> lock(_childHandlesMutex);
                 for (const auto& handle : childHandles) {
                     handle->markImplicitlyFreed();
                 }
+                std::lock_guard<std::mutex> lock(_childHandlesMutex);
                 _childStatementHandles.clear();
                 _allocationsSinceCompaction = 0;
             }
@@ -266,7 +266,7 @@ void Connection::checkError(SQLRETURN ret) const {
     }
 }
 
-void Connection::clearResultMetadata() {
+void Connection::clearResultMetadata(bool detachFetchBindings) {
     std::vector<SqlHandlePtr> handles;
     {
         std::lock_guard<std::mutex> lock(_childHandlesMutex);
@@ -281,6 +281,9 @@ void Connection::clearResultMetadata() {
     // Keep that destruction outside the child-list lock.
     for (const auto& handle : handles) {
         handle->resultMetadata.clear();
+        if (detachFetchBindings && handle->fetchBindings.hasPlan()) {
+            handle->requireDetachedFetchBindings();
+        }
     }
 }
 

@@ -103,7 +103,7 @@ class Connection {
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;
     void applyAttrsBefore(const py::dict& attrs_before);
-    void clearResultMetadata();
+    void clearResultMetadata(bool detachFetchBindings = true);
 
     std::u16string _connStr;
     bool _fromPool = false;
