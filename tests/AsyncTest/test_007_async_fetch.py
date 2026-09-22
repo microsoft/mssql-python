@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -6,7 +7,7 @@ from uuid import UUID
 pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 import mssql_python
-from mssql_python import DataError, Row
+from mssql_python import DataError, OperationalError, ProgrammingError, Row
 from mssql_python.async_query import AsyncCursor
 
 
@@ -68,11 +69,13 @@ async def test_fetch_and_result_navigation_preserve_native_values(async_connecti
 
 
 @pytest.mark.asyncio
-async def test_nextset_failure_clears_previous_result_state():
+async def test_nextset_failure_after_native_state_change_clears_previous_result_state():
     class FailingNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
         rowcount = -1
 
         async def nextset(self):
+            self.description = None
             raise RuntimeError("nextset failed")
 
     class StatefulAsyncCursor(AsyncCursor):
@@ -102,6 +105,232 @@ async def test_nextset_failure_clears_previous_result_state():
     assert cursor.description is None
     assert cursor.rowcount == -1
     assert cursor.result_maps() == ({}, None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_busy_nextset_preserves_pending_fetch_state():
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+    guid_values = (
+        UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff"),
+        UUID("6f9619ff-8b86-d011-b42d-00c04fc964fe"),
+    )
+
+    class BusyNativeCursor:
+        description = [("MixedGuid", UUID, None, None, None, None, True)]
+        rowcount = -1
+
+        async def execute(self, *_args, **_kwargs):
+            return self
+
+        async def fetchone(self):
+            return (guid_values[0],)
+
+        async def fetchall(self):
+            fetch_started.set()
+            await release_fetch.wait()
+            return [(guid_values[1],)]
+
+        async def nextset(self):
+            raise RuntimeError("Connection is busy with another cursor operation")
+
+    cursor = AsyncCursor(BusyNativeCursor())
+    previous_native_uuid = mssql_python.native_uuid
+    fetch_task = None
+    try:
+        mssql_python.native_uuid = False
+        await cursor.execute("SELECT MixedGuid")
+        first = await cursor.fetchone()
+        assert first is not None
+        assert first.MixedGuid == str(guid_values[0]).upper()
+        assert cursor.rowcount == 1
+
+        fetch_task = asyncio.create_task(cursor.fetchall())
+        await fetch_started.wait()
+
+        with pytest.raises(OperationalError, match="Connection is busy"):
+            await cursor.nextset()
+
+        release_fetch.set()
+        remaining = await fetch_task
+
+        assert remaining[0].MixedGuid == str(guid_values[1]).upper()
+        assert cursor.rowcount == 2
+    finally:
+        release_fetch.set()
+        if fetch_task is not None and not fetch_task.done():
+            await fetch_task
+        mssql_python.native_uuid = previous_native_uuid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
+async def test_pending_fetch_uses_originating_metadata_after_successful_nextset(fetch_method):
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+    old_guid = UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
+
+    class NavigatingNativeCursor:
+        description = [("OldGuid", UUID, None, None, None, None, True)]
+        rowcount = -1
+
+        async def execute(self, *_args, **_kwargs):
+            return self
+
+        async def _fetch(self):
+            fetch_started.set()
+            await release_fetch.wait()
+            return (old_guid,)
+
+        async def fetchone(self):
+            return await self._fetch()
+
+        async def fetchmany(self, _size):
+            return [await self._fetch()]
+
+        async def fetchall(self):
+            return [await self._fetch()]
+
+        async def nextset(self):
+            self.description = [
+                ("identifier", int, None, None, None, None, True),
+                ("NewGuid", UUID, None, None, None, None, True),
+            ]
+            return True
+
+    cursor = AsyncCursor(NavigatingNativeCursor())
+    previous_native_uuid = mssql_python.native_uuid
+    fetch_task = None
+    try:
+        mssql_python.native_uuid = False
+        await cursor.execute("SELECT OldGuid")
+        fetch_call = (
+            cursor.fetchmany(1) if fetch_method == "fetchmany" else getattr(cursor, fetch_method)()
+        )
+        fetch_task = asyncio.create_task(fetch_call)
+        await fetch_started.wait()
+
+        assert await cursor.nextset() is True
+        release_fetch.set()
+        result = await fetch_task
+        assert result is not None
+        row = result if fetch_method == "fetchone" else result[0]
+        assert isinstance(row, Row)
+
+        assert row.OldGuid == str(old_guid).upper()
+        assert row["OldGuid"] == str(old_guid).upper()
+        assert cursor.description is not None
+        assert [column[0] for column in cursor.description] == ["identifier", "NewGuid"]
+        assert cursor.rowcount == -1
+    finally:
+        release_fetch.set()
+        if fetch_task is not None and not fetch_task.done():
+            await fetch_task
+        mssql_python.native_uuid = previous_native_uuid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
+async def test_fetch_failure_reconciles_discarded_native_result(fetch_method):
+    class FailingNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
+        rowcount = 1
+
+        async def _fail(self):
+            self.description = None
+            self.rowcount = -1
+            raise RuntimeError("fetch failed")
+
+        async def fetchone(self):
+            return await self._fail()
+
+        async def fetchmany(self, _size):
+            return await self._fail()
+
+        async def fetchall(self):
+            return await self._fail()
+
+    class StatefulAsyncCursor(AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("value", int, None, None, None, None, True)]
+            self._column_map = {"value": 0}
+            self._column_names = ("value",)
+            self._fetched_row_count = 1
+            self._fetch_rowcount = 1
+
+    cursor = StatefulAsyncCursor(FailingNativeCursor())
+    cursor.seed_result_state()
+
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        if fetch_method == "fetchmany":
+            await cursor.fetchmany(1)
+        else:
+            await getattr(cursor, fetch_method)()
+
+    assert cursor.description is None
+    assert cursor.rowcount == -1
+    with pytest.raises(ProgrammingError, match="No active result set"):
+        await cursor.fetchmany(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
+async def test_busy_fetch_rejection_preserves_result_state(fetch_method):
+    class BusyNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
+        rowcount = 1
+
+        async def _reject(self):
+            raise RuntimeError("Connection is busy with another cursor operation")
+
+        async def fetchone(self):
+            return await self._reject()
+
+        async def fetchmany(self, _size):
+            return await self._reject()
+
+        async def fetchall(self):
+            return await self._reject()
+
+    class StatefulAsyncCursor(AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("value", int, None, None, None, None, True)]
+            self._column_map = {"value": 0}
+            self._column_names = ("value",)
+            self._fetched_row_count = 1
+            self._fetch_rowcount = 1
+
+    cursor = StatefulAsyncCursor(BusyNativeCursor())
+    cursor.seed_result_state()
+
+    with pytest.raises(OperationalError, match="Connection is busy"):
+        if fetch_method == "fetchmany":
+            await cursor.fetchmany(1)
+        else:
+            await getattr(cursor, fetch_method)()
+
+    assert cursor.description is not None
+    assert cursor.description[0][0] == "value"
+    assert cursor.rowcount == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_fetch_error_invalidates_result_state(async_cursor):
+    await async_cursor.execute(
+        "SELECT 10 / n AS value FROM (VALUES (1), (2), (0)) AS v(n)",
+        use_prepare=False,
+    )
+    assert await async_cursor.fetchone() == [10]
+    assert async_cursor.rowcount == 1
+
+    with pytest.raises(DataError) as caught:
+        await async_cursor.fetchall()
+
+    assert getattr(caught.value, "sql_errors")[0]["number"] == 8134
+    assert async_cursor.description is None
+    assert async_cursor.rowcount == -1
+    with pytest.raises(ProgrammingError, match="No active result set"):
+        await async_cursor.fetchmany(0)
 
 
 @pytest.mark.asyncio

@@ -29,6 +29,7 @@ class AsyncCursor:
         self._py_core_async_cursor = py_core_async_cursor
         self._connection = connection
         self._closed = False
+        self._result_generation = 0
         self._fetched_row_count = 0
         self._fetch_rowcount: int | None = None
         self._description: list[tuple[Any, ...]] | None = None
@@ -38,6 +39,7 @@ class AsyncCursor:
         self._uuid_str_indices: tuple[int, ...] | None = None
 
     def _clear_result_metadata(self) -> None:
+        self._result_generation += 1
         self._description = None
         self._column_map = {}
         self._column_map_lower = None
@@ -73,13 +75,33 @@ class AsyncCursor:
         self._fetched_row_count = 0
         self._fetch_rowcount = None
 
+    def _reconcile_failed_result_operation(
+        self, previous_native_description: Any, operation: str
+    ) -> None:
+        try:
+            if self._py_core_async_cursor.description == previous_native_description:
+                return
+        except Exception as error:
+            logger.debug("AsyncCursor.%s: result state inspection failed: %s", operation, error)
+            self._reset_fetch_tracking()
+            self._clear_result_metadata()
+            return
+        self._reset_fetch_tracking()
+        self._clear_result_metadata()
+        try:
+            self._initialize_result_metadata()
+        except Exception as error:
+            logger.debug("AsyncCursor.%s: metadata recovery failed: %s", operation, error)
+
     def _check_closed(self) -> None:
         if self._closed or (self._connection is not None and self._connection.closed):
             message = "Cursor is closed" if self._closed else "Connection is closed"
             with translate_py_core_exceptions():
                 raise RuntimeError(message)
 
-    def _record_fetch(self, count: int, exhausted: bool) -> None:
+    def _record_fetch(self, generation: int, count: int, exhausted: bool) -> None:
+        if generation != self._result_generation:
+            return
         if count:
             self._fetched_row_count += count
             self._fetch_rowcount = self._fetched_row_count
@@ -125,10 +147,16 @@ class AsyncCursor:
         return await async_fetch.fetchall(self)
 
     async def nextset(self) -> bool:
+        with translate_py_core_exceptions():
+            previous_native_description = self._py_core_async_cursor.description
+        try:
+            with translate_py_core_exceptions():
+                has_next = await self._py_core_async_cursor.nextset()
+        except Exception:
+            self._reconcile_failed_result_operation(previous_native_description, "nextset")
+            raise
         self._reset_fetch_tracking()
         self._clear_result_metadata()
-        with translate_py_core_exceptions():
-            has_next = await self._py_core_async_cursor.nextset()
         if has_next:
             self._initialize_result_metadata()
         return has_next
