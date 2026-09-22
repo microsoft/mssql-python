@@ -12,6 +12,7 @@
 #include "param_detect.hpp"
 #include "py_ref.hpp"
 #include "py_type_cache.hpp"
+#include "row_factory.hpp"
 #include "utf_utils.h"
 #include "fetch_text.hpp"
 
@@ -6045,70 +6046,6 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 #endif
 
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
-// ---------------------------------------------------------------------------
-// construct_rows — Build Row objects entirely in C++.
-//
-// Replaces the Python list comprehension:
-//   [Row._fast_create(rd, column_map, cursor, column_map_lower, column_names) for rd in rows_data]
-//
-// By doing tp_alloc + slot assignment in a tight C loop, this avoids:
-//   - Python bytecode dispatch (FOR_ITER, LOAD_FAST, CALL_FUNCTION)
-//   - Keyword argument processing overhead per Row
-//   - Python function call frame setup per iteration
-//
-// Accepts Row and its subclasses, whose internal fields can be assigned directly.
-// Semantically identical to _fast_create — no converter or UUID processing.
-// ---------------------------------------------------------------------------
-py::list construct_rows(const py::list& rows_data,
-                        const py::object& row_class,
-                        const py::object& column_map,
-                        const py::object& cursor_obj,
-                        const py::object& column_map_lower,
-                        const py::object& column_names) {
-    if (!PyType_Check(row_class.ptr())) {
-        throw py::type_error("row_class must be a type");
-    }
-    PyTypeObject* row_type = reinterpret_cast<PyTypeObject*>(row_class.ptr());
-    const py::object row_base = py::module_::import("mssql_python.row").attr("Row");
-    if (!PyType_Check(row_base.ptr()) ||
-        !PyType_IsSubtype(row_type, reinterpret_cast<PyTypeObject*>(row_base.ptr()))) {
-        throw py::type_error("row_class must be Row or a Row subclass");
-    }
-    Py_ssize_t n = PyList_GET_SIZE(rows_data.ptr());
-
-    // Keep Python-owned names local to this call and its interpreter.
-    py::str attr_values("_values");
-    py::str attr_column_map("_column_map");
-    py::str attr_cursor("_cursor");
-    py::str attr_column_map_lower("_column_map_lower");
-    py::str attr_column_names("_column_names");
-
-    py::list result(n);
-
-    for (Py_ssize_t i = 0; i < n; ++i) {
-        // Allocate Row without calling __init__
-        PyObject* row = row_type->tp_alloc(row_type, 0);
-        if (!row) throw py::error_already_set();
-
-        PyObject* row_data = PyList_GET_ITEM(rows_data.ptr(), i);
-
-        // Set __slots__ via GenericSetAttr (uses descriptor offsets — fast path)
-        if (PyObject_GenericSetAttr(row, attr_values.ptr(), row_data) < 0 ||
-            PyObject_GenericSetAttr(row, attr_column_map.ptr(), column_map.ptr()) < 0 ||
-            PyObject_GenericSetAttr(row, attr_cursor.ptr(), cursor_obj.ptr()) < 0 ||
-            PyObject_GenericSetAttr(row, attr_column_map_lower.ptr(), column_map_lower.ptr()) < 0 ||
-            PyObject_GenericSetAttr(row, attr_column_names.ptr(), column_names.ptr()) < 0) {
-            Py_DECREF(row);
-            throw py::error_already_set();
-        }
-
-        // PyList_SET_ITEM steals the reference — don't Py_DECREF row
-        PyList_SET_ITEM(result.ptr(), i, row);
-    }
-
-    return result;
-}
-
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
 
@@ -6324,7 +6261,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.attr("__version__") = "1.0.0";
 
     // Fast Row construction in C++ — replaces Python list comprehension
-    m.def("construct_rows", &construct_rows,
+    m.def("construct_rows", &RowFactory::construct_rows,
           "Build Row objects in C++ for fetchall/fetchmany fast path",
           py::arg("rows_data"), py::arg("row_class"),
           py::arg("column_map"), py::arg("cursor"),
