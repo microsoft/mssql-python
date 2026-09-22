@@ -53,6 +53,7 @@ MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
 # Bound each native fetch allocation; Arrow initially reserves 42 bytes per variable-width row.
 MAX_NATIVE_ROW_COUNT: int = 1_000_000
+MAX_NATIVE_PARAMETER_SIZE: int = 256 * 1024 * 1024
 # SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
 # encoding and must be rejected at detect time on both paths (see _map_sql_type).
 BIGINT_MIN: int = -(2**63)
@@ -1223,9 +1224,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         isinstance(column_size, bool)
                         or not isinstance(column_size, int)
                         or column_size < 0
+                        or column_size > MAX_NATIVE_PARAMETER_SIZE
                     ):
                         raise ValueError(
-                            f"Invalid column size: {column_size}. Must be a non-negative integer."
+                            f"Invalid column size: {column_size}. Must be a non-negative integer "
+                            f"no greater than {MAX_NATIVE_PARAMETER_SIZE}."
                         )
 
                     if (
