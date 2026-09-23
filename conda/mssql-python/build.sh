@@ -11,6 +11,13 @@ set -euo pipefail
 [ -d /usr/aarch64-linux-gnu ] && export QEMU_LD_PREFIX="${QEMU_LD_PREFIX:-/usr/aarch64-linux-gnu}"
 
 odbc_ver="${MSSQL_ODBC_VERSION:?MSSQL_ODBC_VERSION not set}"
+rs_ver="${MSSQL_RS_VERSION-}"
+rs_whl=""
+if [ -n "$rs_ver" ]; then
+  selection="$WHEELS_DIR/rs-wheel-cp${CONDA_PY}.txt"
+  [ -s "$selection" ] || { echo "ERROR: missing validated RS wheel selection for cp${CONDA_PY}." >&2; exit 1; }
+  IFS= read -r rs_whl < "$selection"
+fi
 
 # Native / QEMU-emulated legs: the host Python runs, so pip installs both wheels. Cross
 # osx-arm64 (built on Intel): the arm64 Python can't execute, so extract both wheels
@@ -18,7 +25,12 @@ odbc_ver="${MSSQL_ODBC_VERSION:?MSSQL_ODBC_VERSION not set}"
 if "$PYTHON" -c "import sys" >/dev/null 2>&1; then
   "$PYTHON" -m pip install --no-deps --no-index --find-links "$WHEELS_DIR" "$PKG_NAME==$PKG_VERSION" -vv
   "$PYTHON" -m pip install --no-deps --no-index --find-links "$WHEELS_DIR" "mssql-python-odbc==$odbc_ver" -vv
+  if [ -n "$rs_ver" ]; then
+    "$PYTHON" -m pip install --no-deps --no-index "$WHEELS_DIR/$rs_whl" -vv
+  fi
+  core_suffix="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
 else
+  core_suffix=".cpython-${CONDA_PY}-darwin.so"
   echo "Host Python '$PYTHON' is not executable on this agent (non-emulated cross-build);"
   echo "extracting both wheels into \$SP_DIR without running Python."
   mkdir -p "$SP_DIR"
@@ -26,7 +38,9 @@ else
   # universal2 wheels are cpXY-specific (compiled ddbc_bindings), so filter on the
   # target CONDA_PY to never grab another interpreter's wheel (mirrors bld.bat).
   code_whl=""
-  for w in "$WHEELS_DIR/${pkg_underscore}-${PKG_VERSION}-cp${CONDA_PY}-"*.whl; do
+  # Match macosx explicitly (like the odbc glob below) so a stray Linux cpXY wheel staged in
+  # the same dir can never be picked up on this macOS-only cross branch.
+  for w in "$WHEELS_DIR/${pkg_underscore}-${PKG_VERSION}-cp${CONDA_PY}-"*macosx*.whl; do
     [ -e "$w" ] && { code_whl="$w"; break; }
   done
   [ -n "$code_whl" ] || { echo "ERROR: no ${PKG_NAME}==${PKG_VERSION} cp${CONDA_PY} wheel in '$WHEELS_DIR'" >&2; exit 1; }
@@ -50,6 +64,33 @@ else
   }
   echo "Extracting '$odbc_whl' -> '$SP_DIR'"
   unzip -oq "$odbc_whl" -d "$SP_DIR"
+  if [ -n "$rs_ver" ]; then
+    unzip -oq "$WHEELS_DIR/$rs_whl" -d "$SP_DIR"
+  fi
+fi
+
+if [ -n "$rs_ver" ]; then
+  cp "$selection" "$SP_DIR/mssql_python_rs-${rs_ver}.dist-info/conda-wheel-source.txt"
+  case "${target_platform:-${CONDA_SUBDIR:-}}" in
+    linux-64) rs_libs=("linux/glibc/x86_64/lib/mssqlodbc.so") ;;
+    linux-aarch64) rs_libs=("linux/glibc/arm64/lib/mssqlodbc.so") ;;
+    osx-*) rs_libs=("macos/arm64/lib/mssqlodbc.dylib" "macos/x86_64/lib/mssqlodbc.dylib") ;;
+    *) echo "ERROR: missing or unsupported RS target platform." >&2; exit 1 ;;
+  esac
+  for library in "${rs_libs[@]}"; do
+    [ -f "$SP_DIR/mssql_py_core/libs/$library" ] || {
+      echo "ERROR: required RS private runtime library '$library' is missing." >&2; exit 1;
+    }
+  done
+fi
+
+# Both install paths require bulk copy; the platform audits still check binary headers.
+if [ ! -f "$SP_DIR/mssql_py_core/__init__.py" ] || {
+  [ ! -f "$SP_DIR/mssql_py_core/mssql_py_core${core_suffix}" ] &&
+  [ ! -f "$SP_DIR/mssql_py_core/mssql_py_core.abi3.so" ]
+}; then
+  echo "ERROR: required mssql_py_core initializer or compatible extension is missing. Use a corrected upstream wheel; refusing reduced functionality." >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -62,8 +103,25 @@ fi
 # libmsodbcsql* + libodbcinst.so.2 so they resolve THIS env's $PREFIX/lib. Safe to
 # patch -- the Linux .so are malware-scanned, not code-signed (only Windows .dll /
 # macOS .dylib are, and those are never touched). Linux-only: the glob is a no-op on
-# macOS. audit_bundled_binaries.py asserts the same exact climb.
+# macOS. The ELF audit (eng.conda_tools elf) asserts the same exact climb.
 prefix_lib="$PREFIX/lib"
+patch_rpath() {
+  local so="$1" climb want got
+  climb="$("$PYTHON" -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$prefix_lib" "$(dirname "$so")")"
+  want="\$ORIGIN:\$ORIGIN/$climb"
+  got="$(patchelf --print-rpath "$so" 2>/dev/null || true)"
+  if [ "$got" = "$want" ]; then
+    echo "RPATH-OK (already baked) $(basename "$so") -> $got"
+    return
+  fi
+  patchelf --set-rpath "$want" "$so"
+  got="$(patchelf --print-rpath "$so")"
+  if [ "$got" != "$want" ]; then
+    echo "ERROR: patch did not yield the exact expected RUNPATH ('$got' != '$want')." >&2
+    exit 1
+  fi
+  echo "RPATH-PATCHED $(basename "$so") -> $got"
+}
 shopt -s nullglob
 have_linux_payload=0
 [ -d "$SP_DIR/mssql_python_odbc/libs/linux" ] && have_linux_payload=1
@@ -72,31 +130,22 @@ have_linux_payload=0
 msodbc_seen=0
 odbcinst_seen=0
 for libdir in "$SP_DIR"/mssql_python_odbc/libs/linux/*/*/lib; do
-  # Exact climb from this driver dir up to $PREFIX/lib (from the real layout, never a
-  # hard-coded ../ count).
-  climb="$("$PYTHON" -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$prefix_lib" "$libdir")"
-  want="\$ORIGIN:\$ORIGIN/$climb"
   for so in "$libdir"/libmsodbcsql-*.so.* "$libdir"/libodbcinst.so.2; do
     [ -e "$so" ] || continue
     case "$(basename "$so")" in
       libmsodbcsql-*.so.*) msodbc_seen=$((msodbc_seen + 1)) ;;
       libodbcinst.so.2)    odbcinst_seen=$((odbcinst_seen + 1)) ;;
     esac
-    got="$(patchelf --print-rpath "$so" 2>/dev/null || true)"
-    if [ "$got" = "$want" ]; then
-      echo "RPATH-OK (already baked) $(basename "$so") -> $got"
-      continue
-    fi
-    patchelf --set-rpath "$want" "$so"
-    got="$(patchelf --print-rpath "$so")"
-    # Assert the EXACT intended RUNPATH, not just "no absolute entry".
-    if [ "$got" != "$want" ]; then
-      echo "ERROR: patch did not yield the exact expected RUNPATH ('$got' != '$want')." >&2
-      exit 1
-    fi
-    echo "RPATH-PATCHED $(basename "$so") -> $got"
+    patch_rpath "$so"
   done
 done
+# RS has its own OpenSSL-3-linked native core and private driver, not an ODBC
+# Driver 18 distro tree. Keep both payloads and service their dependencies from this prefix.
+if [ -n "$rs_ver" ] && [ "$have_linux_payload" = "1" ]; then
+  for so in "$SP_DIR"/mssql_py_core/mssql_py_core*.so "$SP_DIR"/mssql_py_core/libs/linux/glibc/*/lib/mssqlodbc.so; do
+    patch_rpath "$so"
+  done
+fi
 shopt -u nullglob
 # A Linux payload missing the driver OR the driver manager is a bypass hole (a bare
 # `conda build` skipping the orchestrator audit would ship un-asserted binaries).

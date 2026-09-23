@@ -540,6 +540,7 @@ class Connection:
                 "ctype": ConstantsDDBC.SQL_WCHAR.value,
             },
         }
+        self._decoding_generation = 0
 
         # Auth type for acquiring fresh tokens at bulk copy time.
         # We intentionally do NOT cache the token — a fresh one is acquired
@@ -782,6 +783,7 @@ class Connection:
 
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
+        self._converters_generation = 0
         self._converters_lock = threading.Lock()
 
         # Initialize encoding/decoding settings lock for thread safety
@@ -1320,6 +1322,9 @@ class Connection:
         """
         Sets the text decoding used when reading SQL_CHAR and SQL_WCHAR from the database.
 
+        Existing cursors refresh their cached SQL_CHAR/SQL_WCHAR decoding settings
+        before their next fetch.
+
         This method configures how text data is decoded when reading from the database.
         In Python 3, all text is Unicode (str), so this primarily affects the encoding
         used to decode bytes from the database.
@@ -1443,6 +1448,7 @@ class Connection:
         # Store the decoding settings for the specified sqltype (thread-safe with lock)
         with self._encoding_lock:
             self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
+            self._decoding_generation += 1
 
         # Log with sanitized values for security
         sqltype_name = {
@@ -1647,6 +1653,8 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Changes apply on the next fetch, including for an already executed result set.
+
         ⚠️ WARNING: Registering an output converter will cause the supplied Python function
         to be executed on every matching database value. Do not register converters from
         untrusted sources, as this can result in arbitrary code execution and security
@@ -1687,6 +1695,7 @@ class Connection:
         """
         with self._converters_lock:
             self._output_converters[sqltype] = func
+            self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "add_output_converter"):
                 self._conn.add_output_converter(sqltype, func)
@@ -1717,6 +1726,8 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Existing cursors use the updated converters on their next fetch.
+
         Args:
             sqltype (int or type): The SQL type value to remove the converter for
 
@@ -1726,6 +1737,7 @@ class Connection:
         with self._converters_lock:
             if sqltype in self._output_converters:
                 del self._output_converters[sqltype]
+                self._converters_generation += 1
                 # Pass to the underlying connection if native implementation supports it
                 if hasattr(self._conn, "remove_output_converter"):
                     self._conn.remove_output_converter(sqltype)
@@ -1737,11 +1749,14 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Existing cursors stop applying converters on their next fetch.
+
         Returns:
             None
         """
         with self._converters_lock:
             self._output_converters.clear()
+            self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()
@@ -2179,21 +2194,35 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
-                if not self.autocommit:
-                    # If autocommit is disabled, rollback any uncommitted changes
-                    # This is important to ensure no partial transactions remain
-                    # For autocommit True, this is not necessary as each statement is
-                    # committed immediately
+                autocommit_error = None
+                rollback_error = None
+                manual_commit = False
+                try:
+                    manual_commit = not self._conn.get_autocommit()
+                except RuntimeError as e:
+                    autocommit_error = e
+                if manual_commit:
+                    # End caller work before native close. Pooled connections are
+                    # additionally restored to autocommit by native check-in,
+                    # which atomically discards them if sanitation fails.
                     logger.debug("Rolling back uncommitted changes before closing connection.")
                     try:
                         self._conn.rollback()
                     except RuntimeError as e:
-                        # Handle C++ layer RuntimeError with proper DB-API exception mapping
-                        _raise_connection_error(e)
+                        rollback_error = e
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
-                self._conn.close()
-                self._conn = None
+                try:
+                    self._conn.close(manual_commit and rollback_error is None)
+                except RuntimeError as e:
+                    _raise_connection_error(e)
+                finally:
+                    self._conn = None
+                if rollback_error is not None:
+                    # Preserve prior DB-API error mapping after deterministic cleanup.
+                    _raise_connection_error(rollback_error)
+                if autocommit_error is not None:
+                    _raise_connection_error(autocommit_error)
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical
