@@ -255,6 +255,13 @@ endif()
 
 message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
+# Single-config POSIX generators ignore `cmake --build --config Release`.
+# Make the optimized release mode explicit instead of relying on simdutf to
+# populate this project-wide cache variable as a FetchContent side effect.
+if(UNIX AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 include(FetchContent)
 message(STATUS "Downloading simdutf v8.2.0 source archive with FetchContent")
 set(simdutf_fetchcontent_args
@@ -382,6 +389,42 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
             -Wint-to-pointer-cast  # GCC-specific warning for integer-to-pointer casts
         )
     endif()
+endif()
+
+# Harden the Python extension against exploitation of a separate memory-safety
+# defect. Mach-O receives stack protection; ELF-specific flags stay Linux-only.
+if(UNIX)
+    target_compile_options(ddbc_bindings PRIVATE -fstack-protector-strong)
+endif()
+
+if(UNIX AND NOT APPLE)
+    include(CheckCXXSourceCompiles)
+    set(DDBC_REQUIRED_FLAGS_SAVED "${CMAKE_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_FLAGS
+        "${CMAKE_REQUIRED_FLAGS} -O2 -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3"
+    )
+    check_cxx_source_compiles("
+        #include <features.h>
+        #if !defined(__USE_FORTIFY_LEVEL) || __USE_FORTIFY_LEVEL < 3
+        #error _FORTIFY_SOURCE=3 is unavailable
+        #endif
+        int main() { return 0; }
+    " DDBC_SUPPORTS_FORTIFY_SOURCE_3)
+    set(CMAKE_REQUIRED_FLAGS "${DDBC_REQUIRED_FLAGS_SAVED}")
+    if(DDBC_SUPPORTS_FORTIFY_SOURCE_3)
+        set(DDBC_FORTIFY_LEVEL 3)
+    else()
+        set(DDBC_FORTIFY_LEVEL 2)
+    endif()
+    target_compile_options(ddbc_bindings PRIVATE
+        $<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE>
+        $<$<NOT:$<CONFIG:Debug>>:-D_FORTIFY_SOURCE=${DDBC_FORTIFY_LEVEL}>
+    )
+    target_link_options(ddbc_bindings PRIVATE
+        -Wl,-z,relro
+        -Wl,-z,now
+        -Wl,-z,noexecstack
+    )
 endif()
 
 # Add macOS-specific string conversion fix
