@@ -91,7 +91,10 @@ class AsyncCursor:
                 self._result_ready.set()
 
     async def _wait_for_result_publication(self) -> None:
-        await self._result_ready.wait()
+        while True:
+            await self._result_ready.wait()
+            if self._result_ready.is_set():
+                return
 
     def _reconcile_failed_result_operation(self, operation: str, error: BaseException) -> None:
         if isinstance(error, OperationalError) and str(error.__cause__).startswith(
