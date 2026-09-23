@@ -181,10 +181,22 @@ class AsyncCursor:
         logger.debug("AsyncCursor.close: starting")
         async with self._result_transition():
             with translate_py_core_exceptions():
-                await self._py_core_async_cursor.close()
-            self._closed = True
-            self._reset_fetch_tracking()
-            self._clear_result_metadata()
+                close_awaitable = self._py_core_async_cursor.close()
+            close_accepted = True
+            try:
+                with translate_py_core_exceptions():
+                    await close_awaitable
+            except (Exception, asyncio.CancelledError) as error:
+                if isinstance(error, OperationalError) and str(error.__cause__).startswith(
+                    "Connection is busy"
+                ):
+                    close_accepted = False
+                raise
+            finally:
+                if close_accepted:
+                    self._closed = True
+                    self._reset_fetch_tracking()
+                    self._clear_result_metadata()
         logger.debug("AsyncCursor.close: completed")
 
     def setinputsizes(self, sizes: Any) -> None:

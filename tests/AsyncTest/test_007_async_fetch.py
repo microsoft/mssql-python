@@ -298,9 +298,12 @@ async def test_pending_fetch_uses_originating_metadata_after_successful_nextset(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
-async def test_fetch_waits_for_successful_nextset_metadata_publication(fetch_method):
-    native_advanced = asyncio.Event()
-    release_nextset = asyncio.Event()
+@pytest.mark.parametrize("transition_count", (1, 2))
+async def test_fetch_waits_for_successful_nextset_metadata_publication(
+    fetch_method, transition_count
+):
+    native_advanced = [asyncio.Event() for _ in range(transition_count)]
+    release_nextset = [asyncio.Event() for _ in range(transition_count)]
     fetch_entered = asyncio.Event()
 
     class NavigatingNativeCursor:
@@ -309,14 +312,18 @@ async def test_fetch_waits_for_successful_nextset_metadata_publication(fetch_met
             ("OldGuid2", UUID, None, None, None, None, True),
         ]
         rowcount = -1
+        transition_index = 0
 
         async def execute(self, *_args, **_kwargs):
             return self
 
         async def nextset(self):
-            self.description = [("new_value", int, None, None, None, None, True)]
-            native_advanced.set()
-            await release_nextset.wait()
+            transition_index = self.transition_index
+            self.transition_index += 1
+            if self.transition_index == transition_count:
+                self.description = [("new_value", int, None, None, None, None, True)]
+            native_advanced[transition_index].set()
+            await release_nextset[transition_index].wait()
             return True
 
         async def _fetch(self):
@@ -333,14 +340,19 @@ async def test_fetch_waits_for_successful_nextset_metadata_publication(fetch_met
             return [await self._fetch()]
 
     cursor = AsyncCursor(NavigatingNativeCursor())
+
+    async def advance_results():
+        for _ in range(transition_count):
+            assert await cursor.nextset() is True
+
     previous_native_uuid = mssql_python.native_uuid
     nextset_task = None
     fetch_task = None
     try:
         mssql_python.native_uuid = False
         await cursor.execute("SELECT OldGuid1, OldGuid2")
-        nextset_task = asyncio.create_task(cursor.nextset())
-        await native_advanced.wait()
+        nextset_task = asyncio.create_task(advance_results())
+        await asyncio.wait_for(native_advanced[0].wait(), timeout=5)
 
         fetch_call = (
             cursor.fetchmany(1) if fetch_method == "fetchmany" else getattr(cursor, fetch_method)()
@@ -349,8 +361,14 @@ async def test_fetch_waits_for_successful_nextset_metadata_publication(fetch_met
         await asyncio.sleep(0)
         assert fetch_entered.is_set() is False
 
-        release_nextset.set()
-        assert await nextset_task is True
+        for transition_index in range(transition_count - 1):
+            release_nextset[transition_index].set()
+            await asyncio.wait_for(native_advanced[transition_index + 1].wait(), timeout=5)
+            await asyncio.sleep(0)
+            assert fetch_entered.is_set() is False
+
+        release_nextset[-1].set()
+        await nextset_task
         result = await fetch_task
         assert result is not None
         row = result if fetch_method == "fetchone" else result[0]
@@ -358,11 +376,12 @@ async def test_fetch_waits_for_successful_nextset_metadata_publication(fetch_met
         assert row.new_value == 7
         assert cursor.rowcount == 1
     finally:
-        release_nextset.set()
-        if nextset_task is not None and not nextset_task.done():
-            await nextset_task
-        if fetch_task is not None and not fetch_task.done():
-            await fetch_task
+        for release in release_nextset:
+            release.set()
+        if nextset_task is not None:
+            await asyncio.gather(nextset_task, return_exceptions=True)
+        if fetch_task is not None:
+            await asyncio.gather(fetch_task, return_exceptions=True)
         mssql_python.native_uuid = previous_native_uuid
 
 

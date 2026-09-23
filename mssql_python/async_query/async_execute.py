@@ -23,7 +23,7 @@ def _is_non_mutating_rejection(error: BaseException) -> bool:
         "Connection is busy"
     ):
         return True
-    return isinstance(error, TypeError) or (
+    return isinstance(error, (TypeError, KeyError)) or (
         isinstance(error, ProgrammingError) and isinstance(error.__cause__, TypeError)
     )
 

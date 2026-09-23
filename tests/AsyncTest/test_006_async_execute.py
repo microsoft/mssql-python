@@ -8,6 +8,7 @@ from mssql_python.constants import ConstantsDDBC
 
 mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
+import mssql_python
 from mssql_python.async_query import AsyncConnection, AsyncCursor, async_execute
 from mssql_python import DatabaseError, OperationalError, ProgrammingError
 from mssql_python.row import Row
@@ -71,6 +72,41 @@ async def test_rejected_execution_preserves_pending_result_state(method, error, 
     assert row == [2]
     assert row.value == 2
     assert cursor.rowcount == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ("execute", "executemany"))
+async def test_missing_named_parameter_preserves_result_snapshot(async_cursor, monkeypatch, method):
+    monkeypatch.setattr(mssql_python, "lowercase", False)
+    monkeypatch.setattr(mssql_python, "native_uuid", False)
+    await async_cursor.execute(
+        "SELECT CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' AS UNIQUEIDENTIFIER) "
+        "AS MixedGuid FROM (VALUES (1), (2)) AS numbered(ordinal) ORDER BY ordinal"
+    )
+    first = await async_cursor.fetchone()
+    assert first is not None
+    assert isinstance(first.MixedGuid, str)
+    assert async_cursor.rowcount == 1
+    previous_description = async_cursor.description
+    previous_generation = getattr(async_cursor, "_result_generation")
+
+    monkeypatch.setattr(mssql_python, "lowercase", True)
+    monkeypatch.setattr(mssql_python, "native_uuid", True)
+    with pytest.raises(KeyError, match="missing"):
+        if method == "execute":
+            await async_cursor.execute("SELECT %(missing)s", {"other": 1})
+        else:
+            await async_cursor.executemany("SELECT %(missing)s", [{"other": 1}])
+
+    assert async_cursor.description is previous_description
+    assert getattr(async_cursor, "_result_generation") == previous_generation
+    assert async_cursor.rowcount == 1
+    second = await async_cursor.fetchone()
+    assert second is not None
+    assert second.MixedGuid == first.MixedGuid
+    assert isinstance(second.MixedGuid, str)
+    assert list(second._mapping) == ["MixedGuid"]
+    assert async_cursor.rowcount == 2
 
 
 @pytest.mark.asyncio
