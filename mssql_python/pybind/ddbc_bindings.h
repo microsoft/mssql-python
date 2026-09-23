@@ -456,12 +456,14 @@ struct ColumnInfoExt {
     bool isUtf8;               // Pre-computed from charEncoding (avoids string compare per cell)
     bool useWideChar;          // True when charCtype == SQL_C_WCHAR (VARCHAR fetched as UTF-16)
     std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
+    PyObject* messages = nullptr;  // Borrowed from the enclosing native fetch call.
 };
 
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
 // outside namespace
 py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, bool isWideChar,
-                              bool isBinary, const std::string& charEncoding = "utf-8");
+                              bool isBinary, const std::string& charEncoding = "utf-8",
+                              py::handle messages = {});
 
 // Specialized column processors for each data type (eliminates switch in hot
 // loop)
@@ -633,7 +635,8 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         } else {
             // LOB / truncated: stream with SQL_C_WCHAR
             PyList_SET_ITEM(row, col - 1,
-                            FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-16le")
+                            FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-16le",
+                                               py::handle(colInfo->messages))
                                 .release()
                                 .ptr());
         }
@@ -683,11 +686,11 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         }
     } else {
         // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(
-            row, col - 1,
-            FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false, colInfo->charEncoding)
-                .release()
-                .ptr());
+        PyList_SET_ITEM(row, col - 1,
+                        FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false,
+                                           colInfo->charEncoding, py::handle(colInfo->messages))
+                            .release()
+                            .ptr());
     }
 }
 
@@ -751,7 +754,10 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     } else {
         // Slow path: LOB data requires separate fetch call
         PyList_SET_ITEM(row, col - 1,
-                        FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false).release().ptr());
+                        FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-8",
+                                           py::handle(colInfo->messages))
+                            .release()
+                            .ptr());
     }
 }
 
@@ -790,9 +796,11 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
         }
     } else {
         // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(
-            row, col - 1,
-            FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "").release().ptr());
+        PyList_SET_ITEM(row, col - 1,
+                        FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "",
+                                           py::handle(colInfo->messages))
+                            .release()
+                            .ptr());
     }
 }
 

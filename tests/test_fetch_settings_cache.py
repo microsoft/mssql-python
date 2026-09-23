@@ -175,7 +175,9 @@ def test_wchar_decoding_forwarded_to_live_fetch_bridge(connection, method, bridg
                 expected_reads += 2
             assert fetch_rows(cursor, method)[0].txt == "\u00e9"
             assert fetch.call_count == index
-            assert fetch.call_args.args[-3:] == ("utf-16le", encoding, mssql_python.SQL_WCHAR)
+            assert fetch.call_args.args[-4:-1] == ("utf-16le", encoding, mssql_python.SQL_WCHAR)
+            assert fetch.call_args.args[-1] is cursor.messages
+            assert fetch.call_args.kwargs == {}
             assert reads.call_count == expected_reads
             previous_encoding = encoding
         assert [call.args[0] for call in reads.call_args_list] == [
@@ -726,7 +728,9 @@ def test_char_decoding_ctype_refresh(connection, method, bridge_name):
             cursor.execute("SELECT CONVERT(VARCHAR(1), 0xE9) AS txt")
             connection.setdecoding(mssql_python.SQL_CHAR, encoding=encoding, ctype=ctype)
             assert fetch_rows(cursor, method)[0].txt == "\u00e9"
-            assert fetch.call_args.args[-3:] == (encoding, "utf-16le", ctype)
+            assert fetch.call_args.args[-4:-1] == (encoding, "utf-16le", ctype)
+            assert fetch.call_args.args[-1] is cursor.messages
+            assert fetch.call_args.kwargs == {}
         assert reads.call_count == 8
 
 
@@ -839,12 +843,14 @@ def test_fetch_drains_diagnostics_independent_of_final_status(
     connection, method, bridge_name, status
 ):
     bridge = getattr(mssql_python.ddbc_bindings, bridge_name)
-    warning = ("01000", 0, "injected fetch warning")
+    warning = ("[01000] (0)", "injected fetch warning")
     with connection.cursor() as cursor:
         cursor.execute("SELECT CAST(N'abc' AS NVARCHAR(MAX)) AS txt")
 
         def fetch_with_final_status(*args):
             bridge(*args)
+            assert args[-1] is cursor.messages
+            args[-1].append(warning)
             return status
 
         with (
@@ -856,8 +862,8 @@ def test_fetch_drains_diagnostics_independent_of_final_status(
             ) as diagnostics,
         ):
             fetch_rows(cursor, method)
-            diagnostics.assert_called_once_with(cursor.hstmt)
-            assert warning in cursor.messages
+            diagnostics.assert_not_called()
+            assert cursor.messages == [warning]
 
 
 @pytest.mark.parametrize(
