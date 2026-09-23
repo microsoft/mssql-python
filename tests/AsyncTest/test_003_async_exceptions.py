@@ -6,7 +6,7 @@ import pytest
 mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python import exceptions as public_exceptions
-from mssql_python.async_query import AsyncConnection
+from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
 from mssql_python.async_query.exception_translator import (
     translate_py_core_exception,
     translate_py_core_exceptions,
@@ -188,7 +188,7 @@ async def test_closed_cursor_executemany_checks_state_before_parameters(async_co
 
 @pytest.mark.asyncio
 async def test_connection_close_invalidates_cursor_fetchmany_fast_path(async_connection_string):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
     cursor = connection.cursor()
     await connection.close()
 
@@ -280,7 +280,7 @@ async def test_execute_programming_error_preserves_diagnostics_and_cursor_is_reu
 async def test_executemany_integrity_error_reports_row_and_preserves_partial_progress(
     async_connection_string,
 ):
-    connection = await AsyncConnection.connect(async_connection_string, autocommit=True)
+    connection = await _AsyncConnection.connect(async_connection_string, autocommit=True)
     cursor = connection.cursor()
     table_name = f"async_exception_{uuid4().hex}"
     try:
@@ -306,7 +306,7 @@ async def test_executemany_integrity_error_reports_row_and_preserves_partial_pro
 
 @pytest.mark.asyncio
 async def test_timeout_is_operational_error_and_cursor_is_reusable(async_connection_string):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
     connection.timeout = 1
     cursor = connection.cursor()
     try:
@@ -340,4 +340,4 @@ async def test_busy_connection_is_operational_error(async_connection):
 
 def test_async_connection_exposes_public_exception_classes():
     for name in EXCEPTION_NAMES:
-        assert getattr(AsyncConnection, name) is getattr(public_exceptions, name)
+        assert getattr(_AsyncConnection, name) is getattr(public_exceptions, name)

@@ -5,7 +5,7 @@ import pytest
 mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python import OperationalError, setup_logging
-from mssql_python.async_query import AsyncConnection
+from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
 from mssql_python.async_query import exception_translator
 from mssql_python.connection_string_parser import (
     _ConnectionStringParser,  # pyright: ignore[reportPrivateUsage]
@@ -54,7 +54,7 @@ async def test_connect_logging_does_not_include_client_context(
 ):
     log_path = enable_file_logging(tmp_path, "async-connect.log")
 
-    connection = await AsyncConnection.connect(async_connection_string, autocommit=True)
+    connection = await _AsyncConnection.connect(async_connection_string, autocommit=True)
     await connection.close()
 
     messages = read_log(log_path)
@@ -73,7 +73,7 @@ async def test_default_logger_combines_python_and_py_core_operation_logs(
     tmp_path,
 ):
     log_path = enable_file_logging(tmp_path, "async-operations.log")
-    connection = await AsyncConnection.connect(async_connection_string, autocommit=True)
+    connection = await _AsyncConnection.connect(async_connection_string, autocommit=True)
     cursor = connection.cursor()
     try:
         await cursor.execute("SELECT CAST(? AS INT) AS value UNION ALL SELECT 2", 1)
@@ -139,7 +139,7 @@ async def test_context_logging_records_error_presence_without_error_details(
     async_connection_string,
     tmp_path,
 ):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
     log_path = enable_file_logging(tmp_path, "async-context.log")
     secret_message = "sensitive user exception"
 

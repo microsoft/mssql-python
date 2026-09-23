@@ -7,14 +7,15 @@ from mssql_python import (
     InterfaceError,
     NotSupportedError,
 )
-from mssql_python.async_query import AsyncConnection, AsyncCursor
+from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
+from mssql_python.async_query import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 from mssql_python.async_query._connection_context import build_async_connection_context
 from mssql_python.helpers import connstr_to_pycore_params
 
 
 @pytest.mark.asyncio
 async def test_connect_accepts_login_options_with_real_py_core(async_connection_string):
-    connection = await AsyncConnection.connect(
+    connection = await _AsyncConnection.connect(
         async_connection_string,
         autocommit=True,
         timeout=12,
@@ -24,14 +25,14 @@ async def test_connect_accepts_login_options_with_real_py_core(async_connection_
         assert connection.autocommit is True
         assert connection.closed is False
         assert connection.is_connected() is True
-        assert repr(connection) == "AsyncConnection(connected)"
+        assert repr(connection) == "_AsyncConnection(connected)"
     finally:
         await connection.close()
 
 
 @pytest.mark.asyncio
 async def test_connect_defaults_autocommit_to_false(async_connection_string):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
     try:
         assert connection.autocommit is False
     finally:
@@ -268,7 +269,7 @@ def test_async_connection_rejects_missing_server():
 @pytest.mark.asyncio
 async def test_connection_exposes_complete_native_surface(async_connection):
     cursor = async_connection.cursor()
-    assert isinstance(cursor, AsyncCursor)
+    assert isinstance(cursor, _AsyncCursor)
     assert async_connection.timeout == 0
     async_connection.timeout = 12
     assert async_connection.timeout == 12
@@ -279,7 +280,7 @@ async def test_connection_exposes_complete_native_surface(async_connection):
     with pytest.raises(AttributeError):
         setattr(async_connection, "closed", True)
     assert async_connection.is_connected() is True
-    assert repr(async_connection) == "AsyncConnection(connected)"
+    assert repr(async_connection) == "_AsyncConnection(connected)"
 
     await cursor.close()
     assert await async_connection.commit() is None
@@ -290,7 +291,7 @@ async def test_connection_exposes_complete_native_surface(async_connection):
 async def test_async_context_manager_returns_wrapper_and_closes_connection(
     async_connection_string,
 ):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
 
     async with connection as entered:
         assert entered is connection
@@ -302,19 +303,19 @@ async def test_async_context_manager_returns_wrapper_and_closes_connection(
 
 @pytest.mark.asyncio
 async def test_close_can_be_called_repeatedly(async_connection_string):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
 
     await connection.close()
     await connection.close()
 
     assert connection.closed is True
     assert connection.is_connected() is False
-    assert repr(connection) == "AsyncConnection(closed)"
+    assert repr(connection) == "_AsyncConnection(closed)"
 
 
 @pytest.mark.asyncio
 async def test_operations_after_close_translate_native_errors(async_connection_string):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
     await connection.close()
 
     with pytest.raises(InterfaceError, match="Connection is closed") as cursor_error:
@@ -338,7 +339,7 @@ async def test_operations_after_close_translate_native_errors(async_connection_s
 async def test_context_manager_preserves_block_exception_and_closes_connection(
     async_connection_string,
 ):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
 
     with pytest.raises(ValueError, match="user_error_42"):
         async with connection:

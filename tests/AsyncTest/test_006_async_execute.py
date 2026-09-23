@@ -9,7 +9,9 @@ from mssql_python.constants import ConstantsDDBC
 mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 import mssql_python
-from mssql_python.async_query import AsyncConnection, AsyncCursor, async_execute
+from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
+from mssql_python.async_query import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
+from mssql_python.async_query import async_execute
 from mssql_python import DatabaseError, OperationalError, ProgrammingError
 from mssql_python.row import Row
 
@@ -51,7 +53,7 @@ async def test_rejected_execution_preserves_pending_result_state(method, error, 
             self.rowcount = 2
             return (2,)
 
-    class StatefulAsyncCursor(AsyncCursor):
+    class StatefulAsyncCursor(_AsyncCursor):
         def seed_result_state(self):
             self._description = [("value", int, None, None, None, None, True)]
             self._column_map = {"value": 0}
@@ -126,7 +128,7 @@ async def test_failed_execution_clears_wrapper_state_when_native_discards_result
             self.rowcount = -1
             raise RuntimeError("execution failed")
 
-    class StatefulAsyncCursor(AsyncCursor):
+    class StatefulAsyncCursor(_AsyncCursor):
         def seed_result_state(self):
             self._description = [("value", int, None, None, None, None, True)]
             self._column_map = {"value": 0}
@@ -172,7 +174,7 @@ async def test_cancelled_execution_with_same_state_starts_new_result_generation(
         async def fetchone(self):
             return (self.value,)
 
-    class StatefulAsyncCursor(AsyncCursor):
+    class StatefulAsyncCursor(_AsyncCursor):
         def seed_result_state(self):
             self._description = [("id", int, None, None, None, None, True)]
             self._column_map = {"id": 0}
@@ -224,7 +226,7 @@ async def test_failed_execution_with_same_state_starts_new_result_generation(met
         async def fetchone(self):
             return (self.value,)
 
-    class StatefulAsyncCursor(AsyncCursor):
+    class StatefulAsyncCursor(_AsyncCursor):
         def seed_result_state(self):
             self._description = [("id", int, None, None, None, None, True)]
             self._column_map = {"id": 0}
@@ -274,7 +276,7 @@ async def test_reconciliation_failure_preserves_original_execution_error(method)
             self.broken = True
             raise native_error
 
-    cursor = AsyncCursor(BrokenNativeCursor())
+    cursor = _AsyncCursor(BrokenNativeCursor())
 
     with pytest.raises(DatabaseError) as caught:
         if method == "execute":
@@ -293,11 +295,11 @@ async def test_execute_returns_public_cursor_and_binds_parameters(
     async_connection,
     use_prepare,
 ):
-    assert isinstance(async_connection, AsyncConnection)
+    assert isinstance(async_connection, _AsyncConnection)
 
     cursor = async_connection.cursor()
     try:
-        assert isinstance(cursor, AsyncCursor)
+        assert isinstance(cursor, _AsyncCursor)
 
         result = await cursor.execute(
             "IF CAST(? AS INT) <> 7 THROW 50000, 'Unexpected parameter value', 1",

@@ -20,7 +20,7 @@ from . import async_execute, async_fetch
 from .exception_translator import translate_py_core_exceptions
 
 
-class AsyncCursor:
+class _AsyncCursor:
     """Thin Python wrapper over ``mssql_py_core.PyAsyncCursor``.
 
     Warning:
@@ -129,7 +129,7 @@ class AsyncCursor:
         *parameters: Any,
         use_prepare: bool = True,
         reset_cursor: bool = True,
-    ) -> "AsyncCursor":
+    ) -> "_AsyncCursor":
         async with self._result_transition():
             return await async_execute.execute(
                 self,
