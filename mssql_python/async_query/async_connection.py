@@ -46,8 +46,8 @@ class AsyncConnection:
     ProgrammingError = ProgrammingError
     NotSupportedError = NotSupportedError
 
-    def __init__(self, native_connection: Any) -> None:
-        self._native_connection = native_connection
+    def __init__(self, py_core_async_connection: Any) -> None:
+        self._py_core_async_connection = py_core_async_connection
 
     @classmethod
     async def connect(
@@ -58,54 +58,61 @@ class AsyncConnection:
         python_logger: Optional[Any] = None,
     ) -> "AsyncConnection":
         """Establish an asynchronous connection from an ODBC connection string."""
+        logger_bridge = python_logger
+        if logger_bridge is None and logger.is_debug_enabled:
+            logger_bridge = logger
         logger.debug(
-            "AsyncConnection.connect: starting; autocommit=%s; custom_logger=%s",
+            "AsyncConnection.connect: starting; autocommit=%s; logger_source=%s",
             autocommit,
-            python_logger is not None,
+            (
+                "custom"
+                if python_logger is not None
+                else "mssql_python" if logger_bridge is not None else "disabled"
+            ),
         )
         with translate_py_core_exceptions():
             client_context_dict = build_async_connection_context(connection_str, timeout)
             py_core = load_py_core()
-            native_connection = await py_core.PyAsyncConnection.connect(
+            py_core_async_connection = await py_core.PyAsyncConnection.connect(
                 client_context_dict,
-                python_logger=python_logger,
+                python_logger=logger_bridge,
                 autocommit=autocommit,
             )
         logger.debug("AsyncConnection.connect: connected")
-        return cls(native_connection)
+        return cls(py_core_async_connection)
 
     def cursor(self) -> AsyncCursor:
         """Create a public asynchronous cursor sharing this connection."""
         with translate_py_core_exceptions():
-            native_cursor = self._native_connection.cursor()
+            py_core_async_cursor = self._py_core_async_connection.cursor()
         logger.debug("AsyncConnection.cursor: cursor created")
-        return AsyncCursor(native_cursor)
+        return AsyncCursor(py_core_async_cursor, self)
 
     async def commit(self) -> None:
         """Commit the active transaction, if any."""
         logger.debug("AsyncConnection.commit: starting")
         with translate_py_core_exceptions():
-            await self._native_connection.commit()
+            await self._py_core_async_connection.commit()
         logger.debug("AsyncConnection.commit: completed")
 
     async def rollback(self) -> None:
         """Roll back the active transaction, if any."""
         logger.debug("AsyncConnection.rollback: starting")
         with translate_py_core_exceptions():
-            await self._native_connection.rollback()
+            await self._py_core_async_connection.rollback()
         logger.debug("AsyncConnection.rollback: completed")
 
     async def close(self) -> None:
-        """Close the native connection."""
+        """Close the py-core async connection."""
         logger.debug("AsyncConnection.close: starting")
         with translate_py_core_exceptions():
-            await self._native_connection.close()
+            await self._py_core_async_connection.close()
         logger.debug("AsyncConnection.close: completed")
 
     async def __aenter__(self) -> "AsyncConnection":
         logger.debug("AsyncConnection.__aenter__: entering context")
         with translate_py_core_exceptions():
-            await self._native_connection.__aenter__()
+            await self._py_core_async_connection.__aenter__()
         logger.debug("AsyncConnection.__aenter__: context entered")
         return self
 
@@ -115,7 +122,7 @@ class AsyncConnection:
             exc_type is not None,
         )
         with translate_py_core_exceptions():
-            result = await self._native_connection.__aexit__(exc_type, exc_value, traceback)
+            result = await self._py_core_async_connection.__aexit__(exc_type, exc_value, traceback)
         logger.debug("AsyncConnection.__aexit__: context exited")
         return result
 
@@ -123,30 +130,30 @@ class AsyncConnection:
     def timeout(self) -> int:
         """Default query timeout inherited by subsequently created cursors."""
         with translate_py_core_exceptions():
-            return self._native_connection.timeout
+            return self._py_core_async_connection.timeout
 
     @timeout.setter
     def timeout(self, value: int) -> None:
         with translate_py_core_exceptions():
-            self._native_connection.timeout = value
+            self._py_core_async_connection.timeout = value
         logger.debug("AsyncConnection.timeout: updated")
 
     @property
     def autocommit(self) -> bool:
         """Whether the connection was opened in autocommit mode."""
         with translate_py_core_exceptions():
-            return self._native_connection.autocommit
+            return self._py_core_async_connection.autocommit
 
     @property
     def closed(self) -> bool:
-        """Whether close has been initiated on the native connection."""
+        """Whether close has been initiated on the py-core async connection."""
         with translate_py_core_exceptions():
-            return self._native_connection.closed
+            return self._py_core_async_connection.closed
 
     def is_connected(self) -> bool:
-        """Return whether the native connection remains open."""
+        """Return whether the py-core async connection remains open."""
         with translate_py_core_exceptions():
-            return self._native_connection.is_connected()
+            return self._py_core_async_connection.is_connected()
 
     def __repr__(self) -> str:
         state = "closed" if self.closed else "connected"
