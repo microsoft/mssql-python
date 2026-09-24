@@ -3426,7 +3426,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     CaptureFetchDiagnostics(
                         hStmt, ret, messages,
                         ret == SQL_SUCCESS_WITH_INFO &&
-                            (dataLen == SQL_NO_TOTAL || dataLen >= fetchBufferSize));
+                            (dataLen == SQL_NO_TOTAL ||
+                             dataLen >= static_cast<SQLLEN>(fetchBufferSize)));
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
@@ -3508,7 +3509,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     CaptureFetchDiagnostics(
                         hStmt, ret, messages,
                         ret == SQL_SUCCESS_WITH_INFO &&
-                            (dataLen == SQL_NO_TOTAL || dataLen >= dataBuffer.size()));
+                            (dataLen == SQL_NO_TOTAL ||
+                             dataLen >= static_cast<SQLLEN>(dataBuffer.size())));
                     if (SQL_SUCCEEDED(ret)) {
                         // columnSize is in chars, dataLen is in bytes
                         if (dataLen > 0) {
@@ -3603,7 +3605,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     CaptureFetchDiagnostics(
                         hStmt, ret, messages,
                         ret == SQL_SUCCESS_WITH_INFO &&
-                            (dataLen == SQL_NO_TOTAL || dataLen >= fetchBufferSize));
+                            (dataLen == SQL_NO_TOTAL ||
+                             dataLen >= static_cast<SQLLEN>(fetchBufferSize)));
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
@@ -3930,7 +3933,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                          &dataLen);
                     CaptureFetchDiagnostics(hStmt, ret, messages,
                                             ret == SQL_SUCCESS_WITH_INFO &&
-                                                (dataLen == SQL_NO_TOTAL || dataLen > columnSize));
+                                                (dataLen == SQL_NO_TOTAL ||
+                                                 dataLen > static_cast<SQLLEN>(columnSize)));
 
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
