@@ -295,20 +295,6 @@ def comparisons(report):
                 before = [s[layer].get(label) for s in base]
                 after = [s[layer].get(label) for s in candidate]
                 if not all(before) or not all(after):
-                    if name.startswith("lob_") and "SQLGetDiagRec" in label:
-                        # Missing instrumentation is not evidence of zero driver calls.
-                        old_calls = (
-                            f"{statistics.median(s['calls'] for s in before):g}"
-                            if all(before)
-                            else "unavailable"
-                        )
-                        new_calls = (
-                            f"{statistics.median(s['calls'] for s in after):g}"
-                            if all(after)
-                            else "unavailable"
-                        )
-                        changed_counts.append(f"{label} ({old_calls} -> {new_calls} calls)")
-                        continue
                     changed_counts.append(f"{label} (added, removed, or intermittent)")
                     continue
                 before_calls = statistics.median(s["calls"] for s in before)

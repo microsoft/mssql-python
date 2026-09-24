@@ -749,29 +749,6 @@ def test_lob_workload_rejects_invalid_results_and_always_disables(problem):
     context.disable.assert_called_once()
 
 
-def test_lob_regression_reports_native_diagnostic_counts_without_assuming_missing_is_zero(report):
-    name = "lob_varchar_256k_fetchall"
-    label = "ddbc::AppendDiagRecords::SQLGetDiagRec_call"
-    for pair in report["pairs"]:
-        for scenario in pair["candidate"]["scenarios"].values():
-            scenario["wall_ms"] = 10
-        scenario = pair["candidate"]["scenarios"][name]
-        scenario["wall_ms"] = 100
-        scenario["cpp"][label] = dict(calls=128, total_us=1280, min_us=10, max_us=10)
-    reporting.validate(report)
-    result = next(row for row in reporting.comparisons(report) if row["name"] == name)
-    assert result["status"] == "regression"
-    assert f"{label} (unavailable -> 128 calls)" in result["counts"]
-    body = reporting.render([report], "c" * 40, 42)
-    assert "Performance regression detected" in body
-    assert "256 KiB VARCHAR(MAX)" in body
-    for pair in report["pairs"]:
-        pair["candidate"]["scenarios"][name]["wall_ms"] = 10
-    assert (
-        next(row for row in reporting.comparisons(report) if row["name"] == name)["status"] == "ok"
-    )
-
-
 def test_query_workload_executes_and_collects(monkeypatch):
     cursor = MagicMock()
     cursor.fetchall.return_value = [(1,), (2,)]
