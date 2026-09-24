@@ -944,9 +944,32 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
     all_records = [(f"[{state}] ({number})", message) for state, number, message in records]
     wanted = [all_records[index] for index in (0, 2, 4)]
     rec_calls, field_calls, callback_errors = [], [], []
+    observed_handles, delegated_records = [], []
+    phase, target_handle = "observe", None
 
-    @rec_type
+    def guarded(callback_type):
+        def decorate(function):
+            def boundary(*args):
+                try:
+                    return function(*args)
+                except BaseException as failure:
+                    # ctypes otherwise prints and suppresses exceptions crossing the C boundary.
+                    callback_errors.append(type(failure).__name__)
+                    return error
+
+            return callback_type(boundary)
+
+        return decorate
+
+    @guarded(rec_type)
     def read_record(handle_type, handle, number, state, native_error, message, capacity, length):
+        if phase == "observe":
+            observed_handles.append((handle_type, handle))
+        if phase != "inject" or (handle_type, handle) != target_handle:
+            delegated_records.append((handle_type, handle, number))
+            return original_read_record(
+                handle_type, handle, number, state, native_error, message, capacity, length
+            )
         rec_calls.append(number)
         if not handle or handle_type != ConstantsDDBC.SQL_HANDLE_STMT.value or number < 1:
             callback_errors.append("invalid record lookup")
@@ -970,8 +993,14 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
         length[0] = len(encoded) // 2
         return success
 
-    @field_type
+    @guarded(field_type)
     def read_state(handle_type, handle, number, identifier, output, capacity, length):
+        if phase != "inject" or (handle_type, handle) != target_handle:
+            if original_read_state is None:
+                return error
+            return original_read_state(
+                handle_type, handle, number, identifier, output, capacity, length
+            )
         field_calls.append(number)
         # SQL_DIAG_SQLSTATE uses bytes, including the sixth SQLWCHAR terminator.
         if (
@@ -1002,15 +1031,28 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
         raise AssertionError(
             f"Connection failed: {type(failure).__name__}; connection details withheld"
         ) from None
-    with connection, connection.cursor() as cursor:
+    with connection, connection.cursor() as cursor, connection.cursor() as other_cursor:
         cursor.execute("SELECT CAST(REPLICATE(CAST('x' AS VARCHAR(MAX)), 8193) AS VARBINARY(MAX))")
         original_rec, original_field = rec_pointer.value, field_pointer.value
         assert original_rec, "Driver diagnostic records must be available"
+        original_read_record = rec_type(original_rec)
+        original_read_state = field_type(original_field) if original_field else None
         try:
             rec_pointer.value = ctypes.cast(read_record, ctypes.c_void_p).value
+            # Learn this cursor's raw handle while forwarding the diagnostic call unchanged.
+            assert mssql_python.ddbc_bindings.DDBCSQLGetAllDiagRecords(cursor.hstmt) == []
+            assert not callback_errors, callback_errors
+            assert len(observed_handles) == 1
+            target_handle = observed_handles[0]
+            assert target_handle[0] == ConstantsDDBC.SQL_HANDLE_STMT.value and target_handle[1]
+            phase = "inject"
             field_pointer.value = (
                 None if mode == "missing" else ctypes.cast(read_state, ctypes.c_void_p).value
             )
+            delegated_records.clear()
+            assert mssql_python.ddbc_bindings.DDBCSQLGetAllDiagRecords(other_cursor.hstmt) == []
+            assert len(delegated_records) == 1
+            assert delegated_records[0][1] != target_handle[1]
             # One real SQLGetData continuation runs the compiled native mixed-record filter.
             assert tuple(cursor.fetchone()) == (b"x" * 8193,)
             assert not callback_errors, callback_errors
@@ -1027,6 +1069,12 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
             assert not callback_errors, callback_errors
             assert rec_calls == [1, 2, 3, 4, 5, 6]
             assert field_calls == []
+            delegated_records.clear()
+            phase = "delegate"
+            assert cursor.fetchone() is None
+            assert not callback_errors, callback_errors
+            assert delegated_records == [(*target_handle, 1)]
+            assert cursor.messages == wanted
         finally:
             rec_pointer.value, field_pointer.value = original_rec, original_field
         cursor.execute("SELECT 42")
