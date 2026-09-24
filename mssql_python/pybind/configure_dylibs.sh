@@ -12,7 +12,7 @@ if [ ! -f "$ODBC_VERSION_FILE" ]; then
   exit 1
 fi
 
-DRIVER_MAJOR=$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+)\.[0-9]+\.[0-9]+(\.[0-9]+)?['\"].*/\1/p" "$ODBC_VERSION_FILE" | head -1)
+DRIVER_MAJOR=$(sed -nE "s/^__version__[[:space:]]*=[[:space:]]*['\"]([0-9]+)\.[0-9]+\.[0-9]+['\"].*/\1/p" "$ODBC_VERSION_FILE" | head -1)
 if [ -z "$DRIVER_MAJOR" ]; then
   echo "Error: failed to parse __version__ from $ODBC_VERSION_FILE"
   exit 1
