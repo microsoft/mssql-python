@@ -171,6 +171,12 @@ def test_posix_hardening_flags_are_explicit():
         assert flag in cmake
 
 
+def test_python_headers_precede_standard_library_headers():
+    header = (_ROOT / "mssql_python" / "pybind" / "ddbc_bindings.h").read_text(encoding="utf-8")
+
+    assert header.index("#include <Python.h>") < header.index("#include <cstring>")
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="ELF hardening applies to Linux")
 def test_linux_extension_has_linker_hardening():
     from mssql_python import ddbc_bindings

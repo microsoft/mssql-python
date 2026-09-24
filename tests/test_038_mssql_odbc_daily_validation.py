@@ -14,6 +14,7 @@ RUNNER = ROOT / "eng" / "scripts" / "run-mssql-odbc-tests.sh"
 PIPELINE = ROOT / "eng" / "pipelines" / "mssql-odbc-daily-validation-pipeline.yml"
 PR_PIPELINE = ROOT / "eng" / "pipelines" / "pr-validation-pipeline.yml"
 PREFLIGHT = ROOT / "eng" / "scripts" / "verify_mssql_odbc_provider.py"
+RS_WHEEL_SELECTOR = ROOT / "eng" / "scripts" / "select_mssql_python_rs_wheel.py"
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "runner requires Linux GNU timeout and bash")
@@ -167,6 +168,53 @@ class PipelineContractTests(unittest.TestCase):
 
         self.assertIn("scientific-python-nightly-wheels", requirements)
         self.assertIn('pyarrow==26.0.0.dev296; python_version >= "3.15"', requirements)
+
+    def test_rs_wheel_selection_accepts_abi3_on_newer_python(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wheels = Path(directory)
+            abi3 = wheels / "mssql_python_rs-0.2.0-cp310-abi3-win_amd64.whl"
+            abi3.touch()
+
+            selected = subprocess.run(
+                [
+                    sys.executable,
+                    str(RS_WHEEL_SELECTOR),
+                    str(wheels),
+                    "0.2.0",
+                    "cp315",
+                    "win_amd64",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertEqual(Path(selected.stdout.strip()), abi3)
+
+    def test_rs_wheel_selection_prefers_exact_python_wheel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wheels = Path(directory)
+            (wheels / "mssql_python_rs-0.2.0-cp310-abi3-win_amd64.whl").touch()
+            exact = wheels / "mssql_python_rs-0.2.0-cp315-cp315-win_amd64.whl"
+            exact.touch()
+
+            selected = subprocess.run(
+                [
+                    sys.executable,
+                    str(RS_WHEEL_SELECTOR),
+                    str(wheels),
+                    "0.2.0",
+                    "cp315",
+                    "win_amd64",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertEqual(Path(selected.stdout.strip()), exact)
 
 
 if __name__ == "__main__":
