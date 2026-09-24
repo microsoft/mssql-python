@@ -12,6 +12,7 @@ from xml.etree import ElementTree
 ROOT = Path(__file__).parents[1]
 RUNNER = ROOT / "eng" / "scripts" / "run-mssql-odbc-tests.sh"
 PIPELINE = ROOT / "eng" / "pipelines" / "mssql-odbc-daily-validation-pipeline.yml"
+PR_PIPELINE = ROOT / "eng" / "pipelines" / "pr-validation-pipeline.yml"
 PREFLIGHT = ROOT / "eng" / "scripts" / "verify_mssql_odbc_provider.py"
 
 
@@ -149,6 +150,23 @@ class PipelineContractTests(unittest.TestCase):
         )
 
         self.assertEqual(version.strip(), "0.2.0-nightly.20260924")
+
+    def test_python_315_validation_uses_only_preview_matrix_legs(self):
+        pipeline = PR_PIPELINE.read_text(encoding="utf-8")
+        active_python_versions = {
+            line.split(":", 1)[1].strip(" '\"")
+            for line in pipeline.splitlines()
+            if line.lstrip().startswith("pythonVersion:")
+        }
+
+        self.assertEqual(active_python_versions, {"3.15.0-rc.2"})
+        self.assertIn("python:3.15.0rc2-bookworm", pipeline)
+
+    def test_python_315_validation_installs_pyarrow_nightly(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+
+        self.assertIn("scientific-python-nightly-wheels", requirements)
+        self.assertIn('pyarrow==26.0.0.dev296; python_version >= "3.15"', requirements)
 
 
 if __name__ == "__main__":
