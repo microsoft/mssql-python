@@ -2961,13 +2961,26 @@ def test_executemany_DecimalMix_List(cursor, db_connection):
 
 
 def test_nextset(cursor):
-    """Test nextset"""
-    cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1;")
-    assert cursor.nextset() is False, "Nextset should return False"
+    """Test metadata invalidation when re-executing and skipping unread results."""
     cursor.execute(
-        "SELECT * FROM #pytest_all_data_types WHERE id = 2; SELECT * FROM #pytest_all_data_types WHERE id = 3;"
+        "SELECT id AS first_id FROM #pytest_all_data_types WHERE id IN (1, 2) ORDER BY id;"
     )
+    first_row = cursor.fetchmany(1)[0]
+    assert first_row.first_id == 1
+    # Equal column counts must not hide changed types or names.
+    cursor.execute(
+        "SELECT CAST(id AS NVARCHAR(10)) AS second_id FROM #pytest_all_data_types "
+        "WHERE id IN (2, 3) ORDER BY id; "
+        "SELECT id AS third_id FROM #pytest_all_data_types WHERE id = 3;"
+    )
+    second_row = cursor.fetchmany(1)[0]
+    assert second_row.second_id == "2"
     assert cursor.nextset() is True, "Nextset should return True"
+    assert cursor.fetchmany(1)[0].third_id == 3
+    assert cursor.description[0][0] == "third_id"
+    assert first_row.first_id == 1
+    assert second_row.second_id == "2"
+    assert cursor.nextset() is False, "Nextset should return False"
 
 
 def test_delete_table(cursor, db_connection):
