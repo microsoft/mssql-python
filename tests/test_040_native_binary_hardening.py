@@ -165,6 +165,7 @@ def test_posix_hardening_flags_are_explicit():
     assert "-U_FORTIFY_SOURCE" in cmake
     assert "DDBC_SUPPORTS_FORTIFY_SOURCE_3" in cmake
     assert "-D_FORTIFY_SOURCE=${DDBC_FORTIFY_LEVEL}" in cmake
+    assert "-include Python.h" in cmake
     assert "$<NOT:$<CONFIG:Debug>>" in cmake
     assert "if(UNIX AND NOT APPLE)" in cmake
     for flag in ("-Wl,-z,relro", "-Wl,-z,now", "-Wl,-z,noexecstack"):

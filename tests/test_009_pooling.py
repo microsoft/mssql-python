@@ -1351,7 +1351,6 @@ def test_cursor_cyclic_finalizer_with_concurrent_native_disconnect(conn_str, exp
                     collect_barrier.wait()
                     assert free_entered.wait(10), "Cursor finalizer did not enter free"
                     assert not errors, errors
-                    assert cursor_ref() is None, "GC did not clear the cursor weakref"
                     assert not connection._cursors, "Connection.close would still see the cursor"
 
                     if not explicit_close:
@@ -1369,6 +1368,7 @@ def test_cursor_cyclic_finalizer_with_concurrent_native_disconnect(conn_str, exp
                         native = None
                     collect_barrier.wait()
 
+                    assert cursor_ref() is None, "GC did not clear the cursor weakref"
                     assert finalizer_statement.calls == 1
                     assert finalizer_statement.completed, errors
                     assert not errors, errors

@@ -394,7 +394,12 @@ endif()
 # Harden the Python extension against exploitation of a separate memory-safety
 # defect. Mach-O receives stack protection; ELF-specific flags stay Linux-only.
 if(UNIX)
-    target_compile_options(ddbc_bindings PRIVATE -fstack-protector-strong)
+    # Python 3.15 defines newer POSIX feature levels than glibc's C++ headers.
+    # Force Python.h to be processed first in every translation unit.
+    target_compile_options(ddbc_bindings PRIVATE
+        -include Python.h
+        -fstack-protector-strong
+    )
 endif()
 
 if(UNIX AND NOT APPLE)

@@ -662,6 +662,8 @@ jobs:
     matrix:
       # Existing distro legs use Python 3.10-3.14 and are intentionally
       # excluded while this branch validates only Python 3.15.
+      # profilerLeg: 'Linux-SQL2022'
+      # profilerLeg: 'Linux-SQL2025'
       Debian_Python315Preview:
         dockerImage: 'python:3.15.0rc2-bookworm'
         distroName: 'Debian-Python315Preview'
@@ -772,6 +774,7 @@ jobs:
     displayName: 'Install Python dependencies in $(distroName) container'
 
   - script: |
+      set -e
       # Build pybind bindings in the container
       PROFILER_BUILD=0
       if [ "$(Build.Reason)" = "PullRequest" ] &&
