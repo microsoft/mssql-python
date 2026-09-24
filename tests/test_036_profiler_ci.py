@@ -1756,7 +1756,10 @@ def test_comment_workflow_separates_same_repo_and_fork_trust():
     workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
     assert "pull_request:" in workflow
     assert "pull_request_target:" in workflow
-    assert "profiler-report-${{ github.event.pull_request.number }}-${{ github.event_name }}" in workflow
+    assert (
+        "profiler-report-${{ github.event.pull_request.number }}-${{ github.event_name }}"
+        in workflow
+    )
     assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "github.event.pull_request.head.repo.full_name != github.repository" in workflow
     assert (
