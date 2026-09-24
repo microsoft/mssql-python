@@ -9,9 +9,11 @@ real ``.conda`` needed) plus one optional round-trip through the metadata reader
 """
 
 import argparse
+import fnmatch
 import importlib.util
 import io
 import json
+import re
 import sys
 import tarfile
 import types
@@ -49,6 +51,29 @@ _REQUIRED = ["win-64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 _ALLOWED = ["win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 _PYTHONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 _MP_VER = "1.13.0"
+
+
+@pytest.mark.parametrize(
+    "changed_paths, expected",
+    [
+        (["README.md", "mssql_python_odbc/__init__.py", "tests/test_026_odbc_provider.py"], False),
+        (["conda/mssql-python/build.sh"], True),
+        (["eng/conda_tools/inputs.py"], True),
+        (["OneBranchPipelines/conda-build-pipeline.yml"], True),
+        (["OneBranchPipelines/conda-release-pipeline.yml"], True),
+        (["tests/test_027_conda_release_metadata.py"], True),
+        ([".github/workflows/conda-audit.yml"], True),
+    ],
+)
+def test_conda_audit_trigger_excludes_odbc_only_releases(changed_paths, expected):
+    workflow = (_ROOT / ".github" / "workflows" / "conda-audit.yml").read_text(encoding="utf-8")
+    trigger = workflow.split("\npermissions:", 1)[0]
+    paths = re.findall(r"(?m)^      - '([^']+)'$", trigger)
+    assert paths
+    assert (
+        any(fnmatch.fnmatchcase(path, pattern) for path in changed_paths for pattern in paths)
+        is expected
+    )
 
 
 @pytest.mark.parametrize(

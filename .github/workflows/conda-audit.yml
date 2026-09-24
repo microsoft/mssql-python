@@ -12,6 +12,7 @@
 # (they are not code-signed, so the patch breaks no signature; an already-baked climb
 # is a byte-for-byte no-op). This gate builds one real linux-64 conda package from the
 # shipped PyPI wheels and audits the resulting climb (see conda/mssql-python/build.sh).
+# Standalone ODBC provider version bumps do not trigger this conda-specific gate.
 name: conda-audit
 
 on:
@@ -43,7 +44,6 @@ on:
       - 'requirements.txt'
       - 'setup.py'
       - 'mssql_python/__init__.py'
-      - 'mssql_python_odbc/__init__.py'
       - '.github/workflows/conda-audit.yml'
 
 permissions:
