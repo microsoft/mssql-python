@@ -8,7 +8,7 @@ pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 import mssql_python
 from mssql_python import DataError, OperationalError, ProgrammingError, Row
-from mssql_python.async_query import AsyncCursor
+from mssql_python.async_query import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.asyncio
@@ -17,7 +17,7 @@ async def test_fetched_row_matches_dbapi_row_equality_semantics():
         async def fetchone(self):
             return (7,)
 
-    cursor = AsyncCursor(NativeCursor())
+    cursor = _AsyncCursor(NativeCursor())
 
     row = await cursor.fetchone()
 
@@ -78,7 +78,7 @@ async def test_nextset_failure_after_native_state_change_clears_previous_result_
             self.description = None
             raise RuntimeError("nextset failed")
 
-    class StatefulAsyncCursor(AsyncCursor):
+    class StatefulAsyncCursor(_AsyncCursor):
         def seed_result_state(self):
             self._description = [("value", int, None, None, None, None, True)]
             self._column_map = {"value": 0}
@@ -134,7 +134,7 @@ async def test_busy_nextset_preserves_pending_fetch_state():
         async def nextset(self):
             raise RuntimeError("Connection is busy with another cursor operation")
 
-    cursor = AsyncCursor(BusyNativeCursor())
+    cursor = _AsyncCursor(BusyNativeCursor())
     previous_native_uuid = mssql_python.native_uuid
     fetch_task = None
     try:
@@ -183,7 +183,7 @@ async def test_pending_fetch_cannot_update_rowcount_after_successful_close():
         async def close(self):
             self.description = None
 
-    cursor = AsyncCursor(ClosingNativeCursor())
+    cursor = _AsyncCursor(ClosingNativeCursor())
     fetch_task = None
     try:
         await cursor.execute("SELECT value")
@@ -218,7 +218,7 @@ async def test_rejected_close_preserves_result_state():
         async def close(self):
             raise RuntimeError("Connection is busy with another cursor operation")
 
-    cursor = AsyncCursor(RejectingNativeCursor())
+    cursor = _AsyncCursor(RejectingNativeCursor())
     await cursor.execute("SELECT value")
     assert await cursor.fetchone() == [1]
     assert cursor.rowcount == 1
@@ -265,7 +265,7 @@ async def test_pending_fetch_uses_originating_metadata_after_successful_nextset(
             ]
             return True
 
-    cursor = AsyncCursor(NavigatingNativeCursor())
+    cursor = _AsyncCursor(NavigatingNativeCursor())
     previous_native_uuid = mssql_python.native_uuid
     fetch_task = None
     try:
@@ -339,7 +339,7 @@ async def test_fetch_waits_for_successful_nextset_metadata_publication(
         async def fetchall(self):
             return [await self._fetch()]
 
-    cursor = AsyncCursor(NavigatingNativeCursor())
+    cursor = _AsyncCursor(NavigatingNativeCursor())
 
     async def advance_results():
         for _ in range(transition_count):
@@ -407,7 +407,7 @@ async def test_cancelled_nextset_with_same_schema_starts_new_result_generation()
         async def fetchone(self):
             return (self.value,)
 
-    cursor = AsyncCursor(CancelledNativeCursor())
+    cursor = _AsyncCursor(CancelledNativeCursor())
     await cursor.execute("SELECT id")
     first = await cursor.fetchone()
     assert first is not None
@@ -459,7 +459,7 @@ async def test_stale_fetch_failure_does_not_clear_new_result(fetch_method):
             self.description = [("new_value", int, None, None, None, None, True)]
             return True
 
-    cursor = AsyncCursor(NavigatingNativeCursor())
+    cursor = _AsyncCursor(NavigatingNativeCursor())
     fetch_task = None
     await cursor.execute("SELECT old_value")
     try:
@@ -506,7 +506,7 @@ async def test_fetch_failure_reconciles_discarded_native_result(fetch_method):
         async def fetchall(self):
             return await self._fail()
 
-    class StatefulAsyncCursor(AsyncCursor):
+    class StatefulAsyncCursor(_AsyncCursor):
         def seed_result_state(self):
             self._description = [("value", int, None, None, None, None, True)]
             self._column_map = {"value": 0}
@@ -553,7 +553,7 @@ async def test_cancelled_fetch_reconciles_discarded_native_result(fetch_method):
         async def fetchall(self):
             return await self._fetch()
 
-    class StatefulAsyncCursor(AsyncCursor):
+    class StatefulAsyncCursor(_AsyncCursor):
         def seed_result_state(self):
             self._description = [("value", int, None, None, None, None, True)]
             self._column_map = {"value": 0}
@@ -598,7 +598,7 @@ async def test_busy_fetch_rejection_preserves_result_state(fetch_method):
         async def fetchall(self):
             return await self._reject()
 
-    class StatefulAsyncCursor(AsyncCursor):
+    class StatefulAsyncCursor(_AsyncCursor):
         def seed_result_state(self):
             self._description = [("value", int, None, None, None, None, True)]
             self._column_map = {"value": 0}
