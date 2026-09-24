@@ -52,7 +52,7 @@ def test_load_py_core_reports_missing_async_types(monkeypatch):
     "name", ("SQL_MONEY", "SQL_SMALLMONEY", "SQL_XML", "SQL_JSON", "SQL_VECTOR")
 )
 def test_async_type_hints_match_native_exports(name):
-    py_core = native.load_py_core()
+py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
     assert getattr(async_query, name) == getattr(py_core, name)
     assert isinstance(getattr(async_query, name), int)
     assert name in async_query.__all__
