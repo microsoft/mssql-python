@@ -143,12 +143,12 @@ class PipelineContractTests(unittest.TestCase):
         self.assertIn('exit "$cleanup_rc"', pipeline)
         self.assertIn("grep -q 'MSSQL_ODBC_PREFLIGHT_OK'", pipeline)
 
-    def test_stable_rs_transport_is_pinned(self):
+    def test_rs_transport_is_pinned(self):
         version = (ROOT / "eng" / "versions" / "mssql-python-rs-nuget.version").read_text(
             encoding="ascii"
         )
 
-        self.assertEqual(version.strip(), "0.1.0")
+        self.assertEqual(version.strip(), "0.2.0-nightly.20260924")
 
 
 if __name__ == "__main__":
