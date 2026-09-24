@@ -3101,42 +3101,6 @@ SQLRETURN DescribeColumns(SqlHandlePtr StatementHandle, AppendColumn&& appendCol
     return SQL_SUCCESS;
 }
 
-SQLRETURN GetResultMetadata(const SqlHandlePtr& statement, SQLSMALLINT columnCount,
-                            std::shared_ptr<const ResultMetadata>& metadata) {
-    const auto snapshot = statement->resultMetadata.snapshot();
-    const bool matches = snapshot.metadata && columnCount >= 0 &&
-                         snapshot.metadata->columns.size() == static_cast<size_t>(columnCount);
-    if (matches && snapshot.metadata->namesValidated) {
-        metadata = snapshot.metadata;
-        return SQL_SUCCESS;
-    }
-    auto pending = matches ? std::make_shared<ResultMetadata>(*snapshot.metadata)
-                           : std::make_shared<ResultMetadata>();
-    if (!matches) {
-        SQLRETURN ret = DescribeColumns(
-            statement, [&](std::u16string name, SQLSMALLINT type, SQLULEN size,
-                           SQLSMALLINT digits, SQLSMALLINT nullable) {
-                // Preserve eager name validation before advancing the result set.
-                py::cast(name);
-                pending->columns.push_back(
-                    {std::move(name), type, type == SQL_SS_VARIANT ? 0 : size, digits, nullable});
-            });
-        if (!SQL_SUCCEEDED(ret)) {
-            return ret;
-        }
-    } else {
-        // Row-wise fetches originally read names without decoding them. A later
-        // many/all fetch must still validate those names before its first advance.
-        for (const auto& column : pending->columns) {
-            py::cast(column.name);
-        }
-    }
-    pending->namesValidated = true;
-    statement->resultMetadata.publish(snapshot.generation, pending);
-    metadata = std::move(pending);
-    return SQL_SUCCESS;
-}
-
 }  // namespace
 
 // Wrap SQLDescribeCol
@@ -3446,8 +3410,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     dupeSqlWCharAsUtf16Le(
                         uncachedColumnName, std::min(static_cast<size_t>(columnNameLen),
                                                     std::size(uncachedColumnName) - 1)),
-                    dataType, dataType == SQL_SS_VARIANT ? 0 : columnSize, decimalDigits,
-                    nullable});
+                    dataType, dataType == SQL_SS_VARIANT ? 0 : columnSize});
             }
         }
 
@@ -4827,12 +4790,37 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
 
     // Retrieve column metadata
-    std::shared_ptr<const ResultMetadata> metadata;
-    ret = GetResultMetadata(StatementHandle, numCols, metadata);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("FetchMany_wrap: Failed to get column descriptions - SQLRETURN=%d", ret);
-        return ret;
+    auto snapshot = StatementHandle->resultMetadata.snapshot();
+    auto metadata = std::move(snapshot.metadata);
+    const bool matches = metadata && numCols >= 0 &&
+                         metadata->columns.size() == static_cast<size_t>(numCols);
+    if (!matches || !metadata->namesValidated) {
+        auto pending = matches ? std::make_shared<ResultMetadata>(*metadata)
+                               : std::make_shared<ResultMetadata>();
+        if (!matches) {
+            ret = DescribeColumns(
+                StatementHandle, [&](std::u16string name, SQLSMALLINT type, SQLULEN size,
+                                     SQLSMALLINT, SQLSMALLINT) {
+                    // Preserve eager name validation before advancing the result set.
+                    py::cast(name);
+                    pending->columns.push_back(
+                        {std::move(name), type, type == SQL_SS_VARIANT ? 0 : size});
+                });
+            if (!SQL_SUCCEEDED(ret)) {
+                LOG("FetchMany_wrap: Failed to get column descriptions - SQLRETURN=%d", ret);
+                return ret;
+            }
+        } else {
+            // Row-wise fetches read names without decoding them. Validate before advancing.
+            for (const auto& column : pending->columns) {
+                py::cast(column.name);
+            }
+        }
+        pending->namesValidated = true;
+        StatementHandle->resultMetadata.publish(snapshot.generation, pending);
+        metadata = std::move(pending);
     }
+    ret = SQL_SUCCESS;
     const auto& columnNames = metadata->columns;
     if (numCols < 0 || columnNames.size() != static_cast<size_t>(numCols)) {
         LOG("FetchMany_wrap: Column metadata count does not match result column count");
@@ -4841,11 +4829,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
     std::vector<SQLUSMALLINT> lobColumns;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
-        const auto& colMeta = GetFetchColumnMetadata(columnNames, i);
-        SQLSMALLINT dataType = GetFetchColumnType(colMeta);
-        SQLULEN columnSize = GetFetchColumnSize(colMeta);
-
-        if (IsLobOrVariantColumn(dataType, columnSize)) {
+        const auto& column = columnNames.at(i);
+        if (IsLobOrVariantColumn(column.dataType, column.columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
@@ -5991,13 +5976,11 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         metadata->namesValidated = true;
         metadata->columns.reserve(numCols);
         for (SQLSMALLINT i = 0; i < numCols; ++i) {
-            const auto column = GetFetchColumnMetadata(columnNames, i);
-            SQLSMALLINT type = GetFetchColumnType(column);
+            const auto column = columnNames[i].cast<py::dict>();
+            SQLSMALLINT type = column["DataType"].cast<SQLSMALLINT>();
             metadata->columns.push_back({
                 column["ColumnName"].cast<std::u16string>(), type,
-                type == SQL_SS_VARIANT ? 0 : GetFetchColumnSize(column),
-                column["DecimalDigits"].cast<SQLSMALLINT>(),
-                column["Nullable"].cast<SQLSMALLINT>()});
+                type == SQL_SS_VARIANT ? 0 : column["ColumnSize"].cast<SQLULEN>()});
         }
         StatementHandle->resultMetadata.publish(metadataSnapshot.generation, std::move(metadata));
         while (true) {
