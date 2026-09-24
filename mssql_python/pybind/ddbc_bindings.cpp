@@ -3024,9 +3024,9 @@ SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle, py::handle messa
     }
 
     SQLSMALLINT columnCount;
-    // TODO: Handle the return code
     SQLRETURN ret = SQLNumResultCols_ptr(statementHandle->get(), &columnCount);
     CaptureFetchDiagnostics(statementHandle->get(), ret, messages);
+    CheckFetchError(statementHandle, ret);
     return columnCount;
 }
 
@@ -3353,8 +3353,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             if (!SQL_SUCCEEDED(ret)) {
                 LOG_ERROR("SQLGetData: Failed to probe sql_variant column %d - SQLRETURN=%d", i,
                           ret);
-                row.append(py::none());
-                continue;
+                return ret;
             }
             if (indicator == SQL_NULL_DATA) {
                 row.append(py::none());
