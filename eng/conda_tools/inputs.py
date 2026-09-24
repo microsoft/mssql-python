@@ -128,7 +128,7 @@ def _published_wheel(
 
 
 def fetch_wheels(
-    expected_versions: dict[str, str],
+    source_versions: dict[str, str],
     wheel_dir: Path,
     requirements_file: Path,
     python_tag: str,
@@ -143,7 +143,7 @@ def fetch_wheels(
     if not re.fullmatch(r"cp3\d+", python_tag):
         raise ValueError(f"Expected a normal CPython target tag, not {python_tag!r}.")
     wheel_dir.mkdir(parents=True, exist_ok=True)
-    versions = {name: expected_versions[name] for name in ("mssql-python", "mssql-python-odbc")}
+    versions = {name: source_versions[name] for name in ("mssql-python", "mssql-python-odbc")}
     requirements: list[str] = []
     hashes = _download_published(versions, requirements, wheel_dir, requirements_file)
     binding = _published_wheel(
@@ -174,9 +174,9 @@ def fetch_wheels(
         owned = contracts.owned_core_members(binding["members"], binding["record_members"])
         violations = contracts.validate_core_layout(owned, python_tag, subdir)
     else:
-        if expected_versions.get("mssql-python-rs") != rs_version:
+        if source_versions.get("mssql-python-rs") != rs_version:
             raise ValueError(
-                "Published binding RS requirement differs from the selected version pin."
+                "Published binding RS requirement differs from the maintained source pin."
             )
         versions["mssql-python-rs"] = rs_version
         hashes.update(
@@ -283,11 +283,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--wheel-dir", type=Path, required=True)
     parser.add_argument("--requirements-file", type=Path, required=True)
     parser.add_argument(
-        "--published-versions-file",
-        type=Path,
-        help="Explicit JSON published audit baseline; defaults to current source release versions.",
-    )
-    parser.add_argument(
         "--python-tag",
         required=True,
         help="Expected normal CPython tag (e.g. cp311), not a pip cross-target override.",
@@ -301,31 +296,18 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def fetch_cli(args: argparse.Namespace) -> int:
     try:
-        if args.published_versions_file is not None:
-            selected = parse_release_versions(
-                args.published_versions_file.read_text(encoding="utf-8")
-            )
-        else:
-            selected = read_release_versions(lambda path: Path(path).read_text(encoding="utf-8"))
+        source = read_release_versions(lambda path: Path(path).read_text(encoding="utf-8"))
         versions = fetch_wheels(
-            selected, args.wheel_dir, args.requirements_file, args.python_tag, args.conda_subdir
+            source, args.wheel_dir, args.requirements_file, args.python_tag, args.conda_subdir
         )
-        if args.published_versions_file is not None and versions != selected:
-            raise ValueError("Published audit baseline differs from the actual wheel components.")
         rs_required = "mssql-python-rs" in versions
         if output := os.environ.get("GITHUB_OUTPUT"):
             with open(output, "a", encoding="utf-8") as destination:
                 destination.write(f"rsRequired={str(rs_required).lower()}\n")
-                destination.write(f"rsVersion={versions.get('mssql-python-rs', '')}\n")
     except (*archive.READ_ERRORS, subprocess.CalledProcessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     print("PUBLIC_WHEEL_INPUT_OK: " + json.dumps(versions, sort_keys=True))
-    if args.published_versions_file is not None:
-        print(
-            f"Published audit baseline: {args.published_versions_file}; "
-            "NOT current-source release qualification."
-        )
     print(
         "Published RS-dependent input contract verified; no installed Conda runtime claim."
         if rs_required

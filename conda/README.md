@@ -249,28 +249,16 @@ members. This detects unowned or cross-owned additions; it cannot recover file o
 after an overwrite of an already owned path, which is why the raw pre-extraction gate
 is required.
 
-The GitHub conda audit passes
-`fetch-wheels --published-versions-file conda/published-wheel-versions.json` to select an
-explicit, compatible published-wheel baseline independently of upcoming source release
-versions. Update these audit pins only after the binding and its exact ODBC dependency
-(and RS provider, if required) are published on PyPI. Include `mssql-python-rs` only when
-the published binding requires it; its verified baseline version is also passed to the
-Conda build, not the current source RS pin. This gate checks conda repackaging of the
-published baseline, not the new release artifacts.
-
-Without that option, `fetch-wheels` still uses the current maintained source versions.
-Both modes require exact versions, hash-required binary-only PyPI downloads, and actual
-wheel metadata/ownership. Pip selects for its executing interpreter;
+`fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
+downloads, and actual wheel metadata/ownership. Pip selects for its executing interpreter;
 the requested Python/platform must match the binding, ODBC and selected RS wheel tags
 before the command accepts the inputs. These arguments validate the download, rather
 than enabling cross-target pip resolution. An authentic published embedded-core
 binding is explicitly reported as a **historical published packaging control, not
 current-source RS qualification**. An RS-dependent published binding requires its exact
-provider and selected version pin; unavailable releases, malformed declarations, or
-mismatches fail with no older-version or TLS fallback. An invalid or unavailable baseline
-never falls back to source versions or a latest-release lookup. The source-bound ADO
-release validation is unchanged; public availability does not gate its recorded artifact
-path. Neither a public input check nor static archive checks
+provider and source pin; unavailable releases, malformed declarations, or mismatches
+fail with no older-version or TLS fallback. Public availability does not gate the
+recorded ADO artifact path. Neither a public input check nor static archive checks
 establish installed SQL/runtime qualification.
 
 The driver-load probe's sole implementation is
