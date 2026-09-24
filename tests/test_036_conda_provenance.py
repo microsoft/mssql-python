@@ -93,6 +93,7 @@ def _source_dependencies(sources, dependencies):
     )
 
 
+@pytest.mark.parametrize("use_baseline", [False, True])
 @pytest.mark.parametrize(
     "problem",
     [
@@ -145,7 +146,7 @@ def _source_dependencies(sources, dependencies):
     ],
 )
 def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
-    tmp_path, monkeypatch, problem
+    tmp_path, monkeypatch, capsys, problem, use_baseline
 ):
     versions = {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
     with_rs = problem == "valid-rs" or problem.startswith("rs-")
@@ -316,12 +317,51 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
         "cp313",
         "win-64",
     )
-    if problem in {"success", "valid-parentheses", "valid-rs", "new-source-legacy"}:
+    succeeds = problem in {"success", "valid-parentheses", "valid-rs", "new-source-legacy"}
+    if use_baseline:
+        baseline = tmp_path / "published versions.json"
+        baseline.write_text(json.dumps({name: source[name] for name in versions}), encoding="utf-8")
+
+        def source_versions_are_not_a_baseline(read):
+            pytest.fail("Published audit must not read upcoming source versions.")
+
+        monkeypatch.setattr(inputs, "read_release_versions", source_versions_are_not_a_baseline)
+        output = tmp_path / "outputs"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        assert cli.main(
+            [
+                "fetch-wheels",
+                "--published-versions-file",
+                str(baseline),
+                "--wheel-dir",
+                str(arguments[1]),
+                "--requirements-file",
+                str(arguments[2]),
+                "--python-tag",
+                "cp313",
+                "--conda-subdir",
+                "win-64",
+            ]
+        ) == (0 if succeeds else 1)
+        captured = capsys.readouterr()
+        if succeeds:
+            assert "PUBLIC_WHEEL_INPUT_OK: " + json.dumps(versions, sort_keys=True) in captured.out
+            assert "NOT current-source release qualification" in captured.out
+            assert output.read_text() == (
+                f"rsRequired={str(with_rs).lower()}\n"
+                f"rsVersion={versions.get('mssql-python-rs', '')}\n"
+            )
+        else:
+            assert "ERROR:" in captured.err
+            assert "PUBLIC_WHEEL_INPUT_OK" not in captured.out
+            assert not output.exists()
+    elif succeeds:
         assert inputs.fetch_wheels(*arguments) == versions
-        assert sum(call[0] == "pip" for call in calls) == (2 if with_rs else 1)
     else:
         with pytest.raises(ValueError):
             inputs.fetch_wheels(*arguments)
+    if succeeds:
+        assert sum(call[0] == "pip" for call in calls) == (2 if with_rs else 1)
     if not with_rs:
         assert ("GET", "mssql-python-rs") not in calls
 
@@ -554,7 +594,91 @@ def test_public_cli_reports_qualified_profile_without_importing_runtime(
         == 0
     )
     assert ("NOT current-source RS qualification" in capsys.readouterr().out) == (not with_rs)
-    assert output.read_text() == f"rsRequired={str(with_rs).lower()}\n"
+    assert output.read_text() == (
+        f"rsRequired={str(with_rs).lower()}\n" f"rsVersion={versions.get('mssql-python-rs', '')}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "{",
+        "null",
+        "[]",
+        "{}",
+        '{"mssql-python":"1.15.0"}',
+        '{"mssql-python":"1.15.0","mssql-python-odbc":"18.6.*"}',
+        '{"mssql-python":"1.15.0","mssql-python-odbc":"18.6.2.1","unexpected":"1.0"}',
+    ],
+)
+def test_invalid_public_baseline_never_falls_back_to_source_versions(
+    tmp_path, monkeypatch, capsys, raw
+):
+    baseline = tmp_path / "published.json"
+    if raw is not None:
+        baseline.write_text(raw, encoding="utf-8")
+
+    def unexpected(*args):
+        pytest.fail("An invalid baseline must fail before source reads or downloads.")
+
+    monkeypatch.setattr(inputs, "read_release_versions", unexpected)
+    monkeypatch.setattr(inputs, "fetch_wheels", unexpected)
+    output = tmp_path / "outputs"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    assert (
+        cli.main(
+            [
+                "fetch-wheels",
+                "--published-versions-file",
+                str(baseline),
+                "--wheel-dir",
+                str(tmp_path / "wheels"),
+                "--requirements-file",
+                str(tmp_path / "pins"),
+                "--python-tag",
+                "cp313",
+                "--conda-subdir",
+                "win-64",
+            ]
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert "ERROR:" in captured.err
+    assert "PUBLIC_WHEEL_INPUT_OK" not in captured.out
+    assert not output.exists()
+
+
+def test_public_baseline_rejects_unused_rs_pin(tmp_path, monkeypatch, capsys):
+    versions = {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
+    baseline = tmp_path / "published.json"
+    baseline.write_text(json.dumps({**versions, "mssql-python-rs": "0.2.0"}), encoding="utf-8")
+    monkeypatch.setattr(inputs, "fetch_wheels", lambda *args: versions)
+    output = tmp_path / "outputs"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    assert (
+        cli.main(
+            [
+                "fetch-wheels",
+                "--published-versions-file",
+                str(baseline),
+                "--wheel-dir",
+                str(tmp_path / "wheels"),
+                "--requirements-file",
+                str(tmp_path / "pins"),
+                "--python-tag",
+                "cp313",
+                "--conda-subdir",
+                "win-64",
+            ]
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert "baseline differs from the actual wheel components" in captured.err
+    assert "PUBLIC_WHEEL_INPUT_OK" not in captured.out
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("problem", ["input-error", "bug", "output-error"])

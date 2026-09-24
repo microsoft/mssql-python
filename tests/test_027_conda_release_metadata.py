@@ -58,6 +58,7 @@ _MP_VER = "1.13.0"
     [
         (["README.md", "mssql_python_odbc/__init__.py", "tests/test_026_odbc_provider.py"], False),
         (["conda/mssql-python/build.sh"], True),
+        (["conda/published-wheel-versions.json"], True),
         (["eng/conda_tools/inputs.py"], True),
         (["OneBranchPipelines/conda-build-pipeline.yml"], True),
         (["OneBranchPipelines/conda-release-pipeline.yml"], True),
@@ -74,6 +75,24 @@ def test_conda_audit_trigger_excludes_odbc_only_releases(changed_paths, expected
         any(fnmatch.fnmatchcase(path, pattern) for path in changed_paths for pattern in paths)
         is expected
     )
+
+
+def test_conda_audit_uses_published_versions_for_fetch_and_rs_build():
+    from eng.conda_tools import inputs
+
+    workflow = (_ROOT / ".github" / "workflows" / "conda-audit.yml").read_text(encoding="utf-8")
+    baseline = inputs.parse_release_versions(
+        (_ROOT / "conda" / "published-wheel-versions.json").read_text(encoding="utf-8")
+    )
+    assert set(baseline) in (
+        {"mssql-python", "mssql-python-odbc"},
+        {"mssql-python", "mssql-python-odbc", "mssql-python-rs"},
+    )
+    assert '--published-versions-file "$PWD/conda/published-wheel-versions.json"' in workflow
+    assert "RS_VERSION: ${{ steps.public-wheels.outputs.rsVersion }}" in workflow
+    assert 'printf \'%s\\n\' "$RS_VERSION" > "$RUNNER_TEMP/public-rs.version"' in workflow
+    assert '--rs-version-file "$RUNNER_TEMP/public-rs.version"' in workflow
+    assert "$PWD/eng/versions/mssql-python-rs.version" not in workflow
 
 
 @pytest.mark.parametrize(

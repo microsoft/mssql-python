@@ -85,10 +85,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          # Exact maintained release versions and PyPI digests, never an older/latest fallback.
+          # Explicit published audit baseline, independent of upcoming source release versions.
+          # Exact versions and PyPI digests, never an older/latest fallback.
           # Fetch RS only if binding METADATA requires it, using its distribution (not NuGet) pin.
           # Embedded-core public wheels are historical controls, not current-source RS proof.
           python -m eng.conda_tools fetch-wheels \
+            --published-versions-file "$PWD/conda/published-wheel-versions.json" \
             --wheel-dir "$PWD/wheels" --requirements-file "$PWD/wheel-inputs.txt" \
             --python-tag cp311 --conda-subdir linux-64
           echo "Downloaded:"; ls -1 wheels
@@ -97,12 +99,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         env:
           RS_REQUIRED: ${{ steps.public-wheels.outputs.rsRequired }}
+          RS_VERSION: ${{ steps.public-wheels.outputs.rsVersion }}
         run: |
           set -euo pipefail
           # The verified public dependency/ownership facts select the actual input set.
           rsArgs=()
           if [[ "$RS_REQUIRED" == "true" ]]; then
-            rsArgs=(--rs-wheel-dir "$PWD/wheels" --rs-version-file "$PWD/eng/versions/mssql-python-rs.version")
+            if [[ -z "$RS_VERSION" ]]; then
+              echo "Missing verified public RS version"; exit 1
+            fi
+            printf '%s\n' "$RS_VERSION" > "$RUNNER_TEMP/public-rs.version"
+            rsArgs=(--rs-wheel-dir "$PWD/wheels" --rs-version-file "$RUNNER_TEMP/public-rs.version")
           elif [[ "$RS_REQUIRED" != "false" ]]; then
             echo "Missing verified public wheel profile"; exit 1
           fi
