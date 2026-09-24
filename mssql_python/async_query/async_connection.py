@@ -11,7 +11,7 @@ from typing import Any, Optional
 from ..logging import logger
 from ._native import load_py_core
 from ._connection_context import build_async_connection_context
-from .async_cursor import AsyncCursor
+from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 from .exception_translator import (
     DataError,
     DatabaseError,
@@ -27,7 +27,7 @@ from .exception_translator import (
 )
 
 
-class AsyncConnection:
+class _AsyncConnection:
     """Thin Python wrapper over ``mssql_py_core.PyAsyncConnection``.
 
     Warning:
@@ -56,7 +56,7 @@ class AsyncConnection:
         autocommit: bool = False,
         timeout: int = 0,
         python_logger: Optional[Any] = None,
-    ) -> "AsyncConnection":
+    ) -> "_AsyncConnection":
         """Establish an asynchronous connection from an ODBC connection string."""
         logger_bridge = python_logger
         if logger_bridge is None and logger.is_debug_enabled:
@@ -81,12 +81,12 @@ class AsyncConnection:
         logger.debug("AsyncConnection.connect: connected")
         return cls(py_core_async_connection)
 
-    def cursor(self) -> AsyncCursor:
+    def cursor(self) -> _AsyncCursor:
         """Create a public asynchronous cursor sharing this connection."""
         with translate_py_core_exceptions():
             py_core_async_cursor = self._py_core_async_connection.cursor()
         logger.debug("AsyncConnection.cursor: cursor created")
-        return AsyncCursor(py_core_async_cursor, self)
+        return _AsyncCursor(py_core_async_cursor, self)
 
     async def commit(self) -> None:
         """Commit the active transaction, if any."""
@@ -109,7 +109,7 @@ class AsyncConnection:
             await self._py_core_async_connection.close()
         logger.debug("AsyncConnection.close: completed")
 
-    async def __aenter__(self) -> "AsyncConnection":
+    async def __aenter__(self) -> "_AsyncConnection":
         logger.debug("AsyncConnection.__aenter__: entering context")
         with translate_py_core_exceptions():
             await self._py_core_async_connection.__aenter__()
@@ -157,4 +157,4 @@ class AsyncConnection:
 
     def __repr__(self) -> str:
         state = "closed" if self.closed else "connected"
-        return f"AsyncConnection({state})"
+        return f"_AsyncConnection({state})"
