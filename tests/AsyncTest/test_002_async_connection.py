@@ -2,7 +2,11 @@ import pytest
 
 pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
-from mssql_python import ConnectionStringParseError, InterfaceError, NotSupportedError
+from mssql_python import (
+    ConnectionStringParseError,
+    InterfaceError,
+    NotSupportedError,
+)
 from mssql_python.async_query import AsyncConnection, AsyncCursor
 from mssql_python.async_query._connection_context import build_async_connection_context
 from mssql_python.helpers import connstr_to_pycore_params
@@ -309,18 +313,25 @@ async def test_close_can_be_called_repeatedly(async_connection_string):
 
 
 @pytest.mark.asyncio
-async def test_operations_after_close_preserve_native_errors(async_connection_string):
+async def test_operations_after_close_translate_native_errors(async_connection_string):
     connection = await AsyncConnection.connect(async_connection_string)
     await connection.close()
 
-    with pytest.raises(RuntimeError, match="Connection is closed"):
+    with pytest.raises(InterfaceError, match="Connection is closed") as cursor_error:
         connection.cursor()
-    with pytest.raises(RuntimeError, match="Connection is closed"):
+    assert isinstance(cursor_error.value.__cause__, RuntimeError)
+
+    with pytest.raises(InterfaceError, match="Connection is closed") as commit_error:
         await connection.commit()
-    with pytest.raises(RuntimeError, match="Connection is closed"):
+    assert isinstance(commit_error.value.__cause__, RuntimeError)
+
+    with pytest.raises(InterfaceError, match="Connection is closed") as rollback_error:
         await connection.rollback()
-    with pytest.raises(RuntimeError, match="Connection is closed"):
+    assert isinstance(rollback_error.value.__cause__, RuntimeError)
+
+    with pytest.raises(InterfaceError, match="Connection is closed") as enter_error:
         await connection.__aenter__()
+    assert isinstance(enter_error.value.__cause__, RuntimeError)
 
 
 @pytest.mark.asyncio
