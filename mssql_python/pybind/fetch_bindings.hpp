@@ -91,60 +91,8 @@ class FetchBindingPlan {
                charEncoding == charCodec && wcharEncoding == wcharCodec && charCtype == cType;
     }
 
-    template <typename Bind, typename Set, typename Get>
-    SQLRETURN attach(SQLHSTMT stmt, Bind bind, Set set, Get get) {
-        reusable = false;
-        needsReset = true;
-        SQLRETURN ret = set(stmt, SQL_ATTR_ROW_ARRAY_SIZE,
-                            reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(fetchSize)), 0);
-        if (!SQL_SUCCEEDED(ret)) {
-            return ret;
-        }
-        SQLULEN activeSize = 0;
-        ret = get(stmt, SQL_ATTR_ROW_ARRAY_SIZE, &activeSize, 0, nullptr);
-        if (!SQL_SUCCEEDED(ret)) {
-            return ret;
-        }
-        if (activeSize != static_cast<SQLULEN>(fetchSize)) {
-            throw std::runtime_error("ODBC changed the requested fetch row-array size");
-        }
-        driverMayReference = true;
-        ret = set(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &rowsFetched, 0);
-        if (!SQL_SUCCEEDED(ret)) {
-            return ret;
-        }
-        for (const auto& column : bindings) {
-            ret = bind(stmt, column.column, column.cType, column.data, column.bufferLength,
-                       column.indicators);
-            if (!SQL_SUCCEEDED(ret)) {
-                return ret;
-            }
-        }
-        reusable = true;
-        return ret;
-    }
-
-    template <typename Unbind, typename Set>
-    SQLRETURN detach(SQLHSTMT stmt, Unbind unbind, Set set) {
-        reusable = false;
-        if (!needsReset) {
-            return SQL_SUCCESS;
-        }
-        SQLRETURN ret = unbind(stmt);
-        if (!SQL_SUCCEEDED(ret)) {
-            return ret;
-        }
-        ret = set(stmt, SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0);
-        if (!SQL_SUCCEEDED(ret)) {
-            return ret;
-        }
-        driverMayReference = false;
-        ret = set(stmt, SQL_ATTR_ROW_ARRAY_SIZE, reinterpret_cast<SQLPOINTER>(1), 0);
-        if (SQL_SUCCEEDED(ret)) {
-            needsReset = false;
-        }
-        return ret;
-    }
+    SQLRETURN attach(SQLHSTMT stmt);
+    SQLRETURN detach(SQLHSTMT stmt);
 
     void resetValues() {
         rowsFetched = 0;
