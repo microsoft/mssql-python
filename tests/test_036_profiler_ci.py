@@ -687,20 +687,16 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
+    assert len(reporting.CASES) == 21
+    assert [name for name in reporting.CASES if name.startswith("lob_")] == [
+        "lob_varchar_256k_fetchall",
+    ]
 
 
-@pytest.mark.parametrize("sql_type", ("varchar", "nvarchar", "varbinary"))
-@pytest.mark.parametrize("size", (8190, 8192, 8194, 65536, 262144))
-@pytest.mark.parametrize("api", ("fetchone", "fetchmany", "fetchall"))
-def test_lob_workload_validates_payload_and_times_only_fetch(sql_type, size, api, monkeypatch):
-    expected = (
-        b"\x00x" * (size // 2)
-        if sql_type == "varbinary"
-        else "\u00e9" * (size // 2) if sql_type == "nvarchar" else "x" * size
-    )
+def test_lob_workload_validates_payload_and_times_only_fetch(monkeypatch):
+    size = 256 * 1024
+    expected = "x" * size
     cursor = MagicMock()
-    cursor.fetchone.return_value = (expected,)
-    cursor.fetchmany.return_value = [(expected,)]
     cursor.fetchall.return_value = [(expected,)]
     cursor.messages = []
     connection = MagicMock()
@@ -710,18 +706,17 @@ def test_lob_workload_validates_payload_and_times_only_fetch(sql_type, size, api
 
     def enable():
         cursor.execute.assert_called_once()
-        for method in ("fetchone", "fetchmany", "fetchall"):
-            getattr(cursor, method).assert_not_called()
+        cursor.fetchall.assert_not_called()
 
     context.enable.side_effect = enable
     monkeypatch.setattr(benchmark_workloads.time, "perf_counter", MagicMock(side_effect=[1, 1.1]))
-    result = benchmark_workloads.lob_fetch(connection, context, sql_type, size, api)
+    result = benchmark_workloads.lob_fetch(connection, context)
     assert "(MAX)" in cursor.execute.call_args.args[0]
     assert result["wall_ms"] == pytest.approx(100)
-    assert result["detail"] == f"Rows: 1; type: {sql_type}; payload bytes: {size}; API: {api}"
-    getattr(cursor, api).assert_called_once_with(*((1,) if api == "fetchmany" else ()))
-    for other in {"fetchone", "fetchmany", "fetchall"} - {api}:
-        getattr(cursor, other).assert_not_called()
+    assert result["detail"] == f"Rows: 1; type: varchar; payload bytes: {size}; API: fetchall"
+    cursor.fetchall.assert_called_once_with()
+    cursor.fetchone.assert_not_called()
+    cursor.fetchmany.assert_not_called()
     context.collect.assert_called_once()
     context.disable.assert_called_once()
 
@@ -731,12 +726,12 @@ def test_lob_workload_validates_payload_and_times_only_fetch(sql_type, size, api
 )
 def test_lob_workload_rejects_invalid_results_and_always_disables(problem):
     cursor = MagicMock()
-    cursor.fetchall.return_value = [("x" * 65536,)]
+    cursor.fetchall.return_value = [("x" * 262144,)]
     cursor.messages = []
     if problem == "truncated":
-        cursor.fetchall.return_value = [("x" * 65535,)]
+        cursor.fetchall.return_value = [("x" * 262143,)]
     elif problem == "wrong-type":
-        cursor.fetchall.return_value = [(b"x" * 65536,)]
+        cursor.fetchall.return_value = [(b"x" * 262144,)]
     elif problem == "missing":
         cursor.fetchall.return_value = []
     elif problem == "extra":
@@ -750,12 +745,12 @@ def test_lob_workload_rejects_invalid_results_and_always_disables(problem):
     context = MagicMock()
     context.collect.return_value = ({}, {})
     with pytest.raises(RuntimeError if problem == "error" else AssertionError):
-        benchmark_workloads.lob_fetch(connection, context, "varchar", 65536, "fetchall")
+        benchmark_workloads.lob_fetch(connection, context)
     context.disable.assert_called_once()
 
 
 def test_lob_regression_reports_native_diagnostic_counts_without_assuming_missing_is_zero(report):
-    name = "lob_varchar_256k_fetchone"
+    name = "lob_varchar_256k_fetchall"
     label = "ddbc::AppendDiagRecords::SQLGetDiagRec_call"
     for pair in report["pairs"]:
         for scenario in pair["candidate"]["scenarios"].values():

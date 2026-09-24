@@ -12,19 +12,19 @@ python -m eng.profiler_benchmarks.controller --base main --candidate HEAD \
 python -m eng.profiler_benchmarks.report profiler-results/report.json
 ```
 
-The fixed registry has 38 tasks. `--scenarios` runs a local subset, but subset
+The fixed registry has 21 tasks. `--scenarios` runs a local subset, but subset
 reports remain incomplete and cannot produce a verdict.
 
 ## Large-value fetch coverage
 
-Eighteen tasks fetch one 64 KiB or 256 KiB value from `VARCHAR(MAX)`,
-`NVARCHAR(MAX)`, or `VARBINARY(MAX)` through `fetchone()`, `fetchmany(1)`, and
-`fetchall()`. Unlike a million short rows, these values require LOB continuation
-calls. Task names have the form `lob_varchar_256k_fetchone`.
+One task, `lob_varchar_256k_fetchall`, fetches one 256 KiB `VARCHAR(MAX)` value
+through `fetchall()`. Unlike a million short rows, this value requires LOB
+continuation calls. Unicode/binary variants, other fetch APIs, and chunk-boundary
+combinations belong in functional regression coverage or targeted performance
+investigations rather than multiplying routine CI tasks.
 
-Payload sizes describe SQL data bytes (NVARCHAR uses two bytes per BMP character),
-not row counts or a promise about the driver's internal chunk count. Unicode text
-and binary embedded NULs are checked. Query execution/setup and exact payload/type
+The payload size describes SQL data bytes, not row counts or a promise about the
+driver's internal chunk count. Query execution/setup and exact payload/type
 validation are outside the timed fetch window. An unexpected warning or truncated
 value fails the workload rather than producing a successful performance verdict.
 
@@ -38,6 +38,11 @@ not these clean-payload timings.
 Both revisions run the same new workloads, so the first comparison can include a
 base that predates them. Older artifacts missing these tasks remain incomplete or
 invalid; they must not produce a full-coverage verdict.
+
+The added task runs 24 times across routine CI: two revisions, six pairs including
+warmup, and two environments. It needs no benchmark table or additional build.
+Measure its incremental duration on each runner; do not infer the cost from task
+count alone.
 
 ## Measurement contract
 

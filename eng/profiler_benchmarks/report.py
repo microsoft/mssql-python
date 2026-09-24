@@ -37,18 +37,8 @@ TASK_NAMES = {
     "large_fetch": "Large joined-result fetching",
     "fetch_1_2m": "1.2-million-row fetching",
     "cte": "Common table expression queries",
+    "lob_varchar_256k_fetchall": "256 KiB VARCHAR(MAX) / fetchall()",
 }
-TASK_NAMES.update(
-    {
-        f"lob_{sql_type}_{size_kib}k_{api}": (
-            f"{size_kib} KiB {sql_type.upper()}(MAX) / "
-            f"{'fetchmany(1)' if api == 'fetchmany' else api + '()'}"
-        )
-        for sql_type in ("varchar", "nvarchar", "varbinary")
-        for size_kib in (64, 256)
-        for api in ("fetchone", "fetchmany", "fetchall")
-    }
-)
 CASES = tuple(TASK_NAMES)
 MAX_BYTES = 8 * 1024 * 1024
 MAX_COMMENT_CHARS = 60000
