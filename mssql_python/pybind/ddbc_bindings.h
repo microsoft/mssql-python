@@ -144,6 +144,8 @@ typedef SQLRETURN(SQL_API* SQLCancelFunc)(SQLHSTMT);
 // Diagnostic APIs
 typedef SQLRETURN(SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*,
                                               SQLINTEGER*, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
+typedef SQLRETURN(SQL_API* SQLGetDiagFieldFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLSMALLINT,
+                                                SQLPOINTER, SQLSMALLINT, SQLSMALLINT*);
 
 typedef SQLRETURN(SQL_API* SQLDescribeParamFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT*, SQLULEN*,
                                                  SQLSMALLINT*, SQLSMALLINT*);
@@ -202,6 +204,7 @@ extern SQLCancelFunc SQLCancel_ptr;
 
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
+extern SQLGetDiagFieldFunc SQLGetDiagField_ptr;
 
 extern SQLDescribeParamFunc SQLDescribeParam_ptr;
 

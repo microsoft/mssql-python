@@ -260,6 +260,7 @@ SQLCancelFunc SQLCancel_ptr = nullptr;
 
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
+SQLGetDiagFieldFunc SQLGetDiagField_ptr = nullptr;
 
 // DAE APIs
 SQLParamDataFunc SQLParamData_ptr = nullptr;
@@ -1473,6 +1474,9 @@ DriverHandle LoadDriverOrThrowException() {
     SQLCancel_ptr = GetFunctionPointer<SQLCancelFunc>(handle, "SQLCancel");
 
     SQLGetDiagRec_ptr = GetFunctionPointer<SQLGetDiagRecFunc>(handle, "SQLGetDiagRecW");
+    SQLGetDiagField_ptr = GetFunctionPointer<SQLGetDiagFieldFunc>(handle, "SQLGetDiagFieldW");
+    if (!SQLGetDiagField_ptr)
+        LOG("SQLGetDiagFieldW unavailable; using full diagnostic records");
 
     SQLParamData_ptr = GetFunctionPointer<SQLParamDataFunc>(handle, "SQLParamData");
     SQLPutData_ptr = GetFunctionPointer<SQLPutDataFunc>(handle, "SQLPutData");
@@ -1901,6 +1905,24 @@ static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::h
     // Iterate through all available diagnostic records
     for (SQLSMALLINT recNumber = 1;; recNumber++) {
         SQLWCHAR sqlState[6] = {0};
+        if (internalTruncation && SQLGetDiagField_ptr) {
+            SQLRETURN stateReturn;
+            {
+                PERF_TIMER("AppendDiagRecords::SQLGetDiagField_call");
+                stateReturn = SQLGetDiagField_ptr(handleType, rawHandle, recNumber,
+                                                  SQL_DIAG_SQLSTATE, sqlState,
+                                                  static_cast<SQLSMALLINT>(sizeof(sqlState)),
+                                                  nullptr);
+            }
+            if (stateReturn == SQL_NO_DATA)
+                break;
+            // Skip only this continuation record, without retrieving its message text.
+            if (stateReturn == SQL_SUCCESS && std::equal(sqlState, sqlState + 6, u"01004"))
+                continue;
+            if (stateReturn != SQL_SUCCESS)
+                LOG("AppendDiagRecords: SQLSTATE lookup returned %d; reading full record %d",
+                    stateReturn, recNumber);
+        }
         SQLWCHAR message[SQL_MAX_MESSAGE_LENGTH_SQLSERVER] = {0};
         SQLINTEGER nativeError = 0;
         SQLSMALLINT messageLen = 0;
