@@ -9,6 +9,7 @@ from mssql_python.constants import ConstantsDDBC
 mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 import mssql_python
+import mssql_python.async_query as async_query
 from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
 from mssql_python.async_query import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 from mssql_python.async_query import async_execute
@@ -397,9 +398,10 @@ async def test_executemany_matches_sync_contract(
 
 
 @pytest.mark.asyncio
-async def test_executemany_rejects_non_sequence_like_sync(async_cursor):
+@pytest.mark.parametrize("parameters", (None, 42))
+async def test_executemany_rejects_non_iterable(async_cursor, parameters):
     with pytest.raises(TypeError):
-        await async_cursor.executemany("SELECT CAST(? AS INT)", iter([(1,), (2,)]))
+        await async_cursor.executemany("SELECT CAST(? AS INT)", parameters)
 
 
 @pytest.mark.asyncio
@@ -514,6 +516,62 @@ async def test_executemany_empty_sequence_sets_rowcount_zero(async_cursor):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mapped", (False, True))
+@pytest.mark.parametrize("use_prepare", (False, True))
+async def test_executemany_consumes_iterable_once(async_cursor, mapped, use_prepare):
+    consumed = []
+
+    class ParameterRows:
+        def __iter__(self):
+            assert not consumed
+            for value in (1, 2):
+                consumed.append(value)
+                yield {"value": value} if mapped else (value,)
+
+        def __len__(self):
+            raise AssertionError("Parameter iterable must not require a length")
+
+    operation = "SELECT CAST(%(value)s AS INT)" if mapped else "SELECT CAST(? AS INT)"
+    assert (
+        await async_cursor.executemany(operation, ParameterRows(), use_prepare=use_prepare) is None
+    )
+    assert consumed == [1, 2]
+    assert await async_cursor.fetchall() == [[1]]
+    assert await async_cursor.nextset() is True
+    assert await async_cursor.fetchall() == [[2]]
+    assert await async_cursor.nextset() is False
+
+
+@pytest.mark.asyncio
+async def test_executemany_empty_generator(async_cursor):
+    assert await async_cursor.executemany("SELECT ?", (row for row in ())) is None
+    assert async_cursor.rowcount == 0
+    assert async_cursor.description is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", (ValueError("iteration failed"), RuntimeError("iteration failed"))
+)
+async def test_executemany_iterator_failure_preserves_result(async_cursor, failure):
+    await async_cursor.execute("SELECT 1 AS value UNION ALL SELECT 2 ORDER BY value")
+    assert await async_cursor.fetchone() == [1]
+    description = async_cursor.description
+
+    def rows():
+        yield (3,)
+        raise failure
+
+    with pytest.raises(type(failure)) as caught:
+        await async_cursor.executemany("SELECT ?", rows())
+    assert caught.value is failure
+    assert async_cursor.description is description
+    assert async_cursor.rowcount == 1
+    assert await async_cursor.fetchone() == [2]
+    assert async_cursor.rowcount == 2
+
+
+@pytest.mark.asyncio
 async def test_executemany_handles_sync_edge_value_batches(async_cursor):
     table_name = f"async_many_values_{uuid4().hex}"
     try:
@@ -560,6 +618,108 @@ async def test_executemany_handles_sync_edge_value_batches(async_cursor):
     finally:
         async_cursor.setinputsizes(None)
         await async_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize("batch", (False, True))
+@pytest.mark.parametrize("rows", ([(1, "first"), (2, None)], [], None))
+async def test_async_tvp_execute_and_executemany(
+    async_cursor, async_connection, use_prepare, batch, rows
+):
+    type_name = f"dbo.AsyncTvp_{uuid4().hex}"
+    await async_cursor.execute(f"CREATE TYPE {type_name} AS TABLE (id INT, value NVARCHAR(50))")
+    try:
+        await async_connection.commit()
+        value = async_query._TableValuedParameter(
+            type_name,
+            [(4, 0, 0), (-9, 50, 0)] if rows is not None else None,
+            rows,
+        )
+        operation = "SELECT id, value FROM ? ORDER BY id"
+        if batch:
+            assert (
+                await async_cursor.executemany(
+                    operation, ((value,) for _ in range(2)), use_prepare=use_prepare
+                )
+                is None
+            )
+        else:
+            assert (
+                await async_cursor.execute(operation, value, use_prepare=use_prepare)
+                is async_cursor
+            )
+        assert [tuple(row) for row in await async_cursor.fetchall()] == (rows or [])
+        if batch:
+            assert await async_cursor.nextset() is True
+            assert [tuple(row) for row in await async_cursor.fetchall()] == (rows or [])
+        assert await async_cursor.nextset() is False
+    finally:
+        await async_cursor.execute(f"DROP TYPE IF EXISTS {type_name}")
+        await async_connection.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize(
+    ("token", "sql_type", "value", "operation", "expected"),
+    (
+        (
+            "SQL_MONEY",
+            "money",
+            Decimal("123.45"),
+            "SELECT SQL_VARIANT_PROPERTY(CAST(? AS sql_variant), 'BaseType')",
+            "money",
+        ),
+        (
+            "SQL_SMALLMONEY",
+            "smallmoney",
+            Decimal("123.45"),
+            "SELECT SQL_VARIANT_PROPERTY(CAST(? AS sql_variant), 'BaseType')",
+            "smallmoney",
+        ),
+        (
+            "SQL_XML",
+            "xml",
+            "<root />",
+            "DECLARE @value xml = ?; SELECT @value.exist('/root')",
+            1,
+        ),
+        (
+            "SQL_JSON",
+            "json",
+            {"answer": 42},
+            "SELECT JSON_VALUE(%(payload)s, '$.answer')",
+            "42",
+        ),
+        (
+            "SQL_VECTOR",
+            "vector",
+            [1.0, 2.0, 3.0],
+            "SELECT VECTOR_DISTANCE('euclidean', ?, CAST('[1,2,3]' AS VECTOR(3)))",
+            0.0,
+        ),
+    ),
+)
+async def test_async_exported_type_hints(
+    async_cursor, use_prepare, token, sql_type, value, operation, expected
+):
+    if sql_type in ("json", "vector"):
+        await async_cursor.execute(f"SELECT TYPE_ID('{sql_type}')")
+        row = await async_cursor.fetchone()
+        assert row is not None
+        if row[0] is None:
+            pytest.skip(f"SQL Server does not expose the {sql_type} type")
+    hint = getattr(async_query, token)
+    async_cursor.setinputsizes([(hint, 3, 0)] if sql_type == "vector" else [hint])
+    try:
+        parameters = {"payload": value} if sql_type == "json" else (value,)
+        await async_cursor.execute(operation, parameters, use_prepare=use_prepare)
+        row = await async_cursor.fetchone()
+        assert row is not None
+        assert row[0] == expected
+    finally:
+        async_cursor.setinputsizes(None)
 
 
 @pytest.mark.asyncio
