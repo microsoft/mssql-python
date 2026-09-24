@@ -10,10 +10,10 @@ from ..row import Row
 from .exception_translator import translate_py_core_exceptions
 
 if TYPE_CHECKING:
-    from .async_cursor import AsyncCursor
+    from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 
 
-def _get_py_core_async_cursor(cursor: "AsyncCursor") -> Any:
+def _get_py_core_async_cursor(cursor: "_AsyncCursor") -> Any:
     return cursor._py_core_async_cursor  # pyright: ignore[reportPrivateUsage]
 
 
@@ -28,7 +28,7 @@ def _is_non_mutating_rejection(error: BaseException) -> bool:
     )
 
 
-def _reconcile_failed_execution(cursor: "AsyncCursor", error: BaseException) -> None:
+def _reconcile_failed_execution(cursor: "_AsyncCursor", error: BaseException) -> None:
     if _is_non_mutating_rejection(error):
         return
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
@@ -40,12 +40,12 @@ def _reconcile_failed_execution(cursor: "AsyncCursor", error: BaseException) -> 
 
 
 async def execute(
-    cursor: "AsyncCursor",
+    cursor: "_AsyncCursor",
     operation: str,
     *parameters: Any,
     use_prepare: bool = True,
     reset_cursor: bool = True,
-) -> "AsyncCursor":
+) -> "_AsyncCursor":
     """Execute a statement using the py-core async cursor."""
     if len(parameters) == 1 and isinstance(parameters[0], (tuple, list, Row)):
         parameters = tuple(parameters[0])
@@ -83,7 +83,7 @@ async def execute(
 
 
 async def executemany(
-    cursor: "AsyncCursor",
+    cursor: "_AsyncCursor",
     operation: str,
     seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
     *,
