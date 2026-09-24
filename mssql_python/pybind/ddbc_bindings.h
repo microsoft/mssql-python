@@ -32,6 +32,7 @@ using py::literals::operator""_a;
 
 #include <sql.h>
 #include <sqlext.h>
+#include "result_metadata.hpp"
 
 //-------------------------------------------------------------------------------------------------
 // SQL Server specific ODBC constants
@@ -329,6 +330,7 @@ class SqlHandle {
     // thread-safe by spec (same assumption as the rest of the driver).
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
+    ResultMetadataCache resultMetadata;
 
   private:
     // The caller must release the GIL before waiting for native cleanup.
