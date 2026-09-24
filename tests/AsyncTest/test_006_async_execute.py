@@ -13,7 +13,7 @@ import mssql_python.async_query as async_query
 from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
 from mssql_python.async_query import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 from mssql_python.async_query import async_execute
-from mssql_python import DatabaseError, OperationalError, ProgrammingError
+from mssql_python import DataError, DatabaseError, OperationalError, ProgrammingError
 from mssql_python.row import Row
 
 
@@ -392,6 +392,8 @@ async def test_executemany_matches_sync_contract(
         )
         assert result is None
         assert cursor.rowcount == 2
+        await cursor.execute(f"SELECT id, value FROM {table_name} ORDER BY id")
+        assert [tuple(row) for row in await cursor.fetchall()] == [(1, "one"), (2, "two")]
     finally:
         await cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         await cursor.close()
@@ -465,6 +467,225 @@ async def test_execute_reset_cursor_false_supports_repeated_execution(async_curs
         )
 
         assert result is async_cursor
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize("reset_cursor", (False, True))
+async def test_string_execution_reuse_preserves_values_and_lengths(
+    async_cursor, use_prepare, reset_cursor
+):
+    values = ["", None, "a\x00b", "caf\u00e9", "\u4e2d\u6587", "e\u0301"]
+    values.extend("x" * size for size in (3999, 4000, 4001, 7999, 8000, 8001))
+    values.extend(
+        (
+            "\U0001f600" * 1999 + "x",
+            "\U0001f600" * 2000,
+            "\U0001f600" * 2000 + "x",
+            "short again  ",
+            None,
+            "",
+        )
+    )
+    for value in values:
+        await async_cursor.execute(
+            "SELECT CAST(? AS NVARCHAR(MAX)) AS value, "
+            "DATALENGTH(CAST(? AS NVARCHAR(MAX))) AS byte_length",
+            value,
+            value,
+            use_prepare=use_prepare,
+            reset_cursor=reset_cursor,
+        )
+        row = await async_cursor.fetchone()
+        assert row is not None
+        assert row[0] == value
+        assert row[1] == (None if value is None else len(value.encode("utf-16-le")))
+        assert async_cursor.description is not None
+        assert async_cursor.description[0][1] is str
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize("mapped", (False, True))
+async def test_string_batches_match_individual_execution(async_cursor, use_prepare, mapped):
+    values = [
+        None,
+        "",
+        " ",
+        "\t\n",
+        "a\x00b",
+        "caf\u00e9",
+        "\u4e2d\u6587",
+        "\U0001f600",
+        "\u03a9" * 4001,
+        "x" * 8001,
+        "end  ",
+    ]
+    operation = (
+        "SELECT CAST(%(value)s AS NVARCHAR(MAX)) AS value"
+        if mapped
+        else "SELECT CAST(? AS NVARCHAR(MAX)) AS value"
+    )
+    individual = []
+    for value in values:
+        parameters = {"value": value} if mapped else (value,)
+        await async_cursor.execute(operation, parameters, use_prepare=use_prepare)
+        individual.append(tuple(await async_cursor.fetchone()))
+
+    rows = ({"value": value} if mapped else (value,) for value in values)
+    assert await async_cursor.executemany(operation, rows, use_prepare=use_prepare) is None
+    for index, value in enumerate(values):
+        assert async_cursor.rowcount == -1
+        assert [tuple(row) for row in await async_cursor.fetchall()] == [(value,)]
+        assert individual[index] == (value,)
+        assert async_cursor.rowcount == 1
+        assert await async_cursor.nextset() is (index + 1 < len(values))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize(
+    ("hint", "expected_type", "values"),
+    (
+        ((-9, 100, 0), "nvarchar", (None, "", "\u4e2d\u6587\U0001f600  ")),
+        ((12, 100, 0), "varchar", (None, "", "caf\u00e9  ")),
+        ((-8, 100, 0), "nchar", (None, "", "\u4e2d\u6587\U0001f600  ")),
+        ((1, 100, 0), "char", (None, "", "caf\u00e9  ")),
+    ),
+)
+async def test_string_setinputsizes_type_null_and_consumption(
+    async_cursor, use_prepare, hint, expected_type, values
+):
+    for value in values:
+        async_cursor.setinputsizes([hint, hint])
+        await async_cursor.execute(
+            "SELECT ?, CONVERT(VARCHAR(30), SQL_VARIANT_PROPERTY(?, 'BaseType'))",
+            value,
+            value,
+            use_prepare=use_prepare,
+        )
+        row = await async_cursor.fetchone()
+        expected_value = value
+        if value is not None and expected_type in ("char", "nchar"):
+            units = len(value.encode("utf-16-le")) // 2 if expected_type == "nchar" else len(value)
+            expected_value = value + " " * (100 - units)
+        assert tuple(row) == (expected_value, None if value is None else expected_type)
+        assert async_cursor.description[0][1] is str
+    await async_cursor.execute(
+        "SELECT CONVERT(VARCHAR(30), SQL_VARIANT_PROPERTY(?, 'BaseType'))",
+        42,
+        use_prepare=use_prepare,
+    )
+    assert (await async_cursor.fetchone())[0] == "tinyint"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+async def test_string_setinputsizes_preserved_after_local_rejection(async_cursor, use_prepare):
+    async_cursor.setinputsizes([(12, 100, 0)])
+    with pytest.raises(TypeError, match="Failed to convert parameter to string"):
+        await async_cursor.execute("SELECT ?", object(), use_prepare=use_prepare)
+    await async_cursor.execute(
+        "SELECT CONVERT(VARCHAR(30), SQL_VARIANT_PROPERTY(?, 'BaseType'))",
+        "retained",
+        use_prepare=use_prepare,
+    )
+    assert (await async_cursor.fetchone())[0] == "varchar"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize("batch", (False, True))
+@pytest.mark.parametrize("value_kind", ("null", "empty", "large"))
+@pytest.mark.parametrize(
+    ("hint", "sql_type", "encoding"),
+    (
+        (-1, "VARCHAR(MAX)", "ascii"),
+        (-10, "NVARCHAR(MAX)", "utf-16-le"),
+    ),
+)
+async def test_string_long_hints_preserve_null_and_payload(
+    async_cursor, use_prepare, batch, value_kind, hint, sql_type, encoding
+):
+    value = None if value_kind == "null" else ""
+    if value_kind == "large":
+        value = "x" * 8001 + "  " if encoding == "ascii" else "\U0001f600" * 2001 + "  "
+    await async_cursor.execute(
+        f"CREATE TABLE #async_long_hint (id INT, value {sql_type})", use_prepare=False
+    )
+    try:
+        async_cursor.setinputsizes([4, hint])
+        try:
+            if batch:
+                await async_cursor.executemany(
+                    "INSERT INTO #async_long_hint VALUES (?, ?)",
+                    [(1, value)],
+                    use_prepare=use_prepare,
+                )
+            else:
+                await async_cursor.execute(
+                    "INSERT INTO #async_long_hint VALUES (?, ?)",
+                    1,
+                    value,
+                    use_prepare=use_prepare,
+                )
+        except DatabaseError as error:
+            if not (
+                hint == -10
+                and isinstance(error.__cause__, mssql_py_core.DatabaseError)
+                and [item["number"] for item in getattr(error, "sql_errors", [])] == [4002]
+            ):
+                raise
+            async_cursor.setinputsizes(None)
+            await async_cursor.execute("SELECT 1")
+            assert tuple(await async_cursor.fetchone()) == (1,)
+            pytest.xfail("py-core SQL_WLONGVARCHAR emits invalid TDS (SQL 4002)")
+        assert async_cursor.rowcount == 1
+        await async_cursor.execute(
+            "SELECT value, DATALENGTH(value) FROM #async_long_hint ORDER BY id"
+        )
+        assert [tuple(row) for row in await async_cursor.fetchall()] == [
+            (value, None if value is None else len(value.encode(encoding))),
+        ]
+    finally:
+        async_cursor.setinputsizes(None)
+        await async_cursor.execute("DROP TABLE IF EXISTS #async_long_hint", use_prepare=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize(
+    ("sql_type", "capacity", "encoding"),
+    (("VARCHAR(8000)", 8000, "ascii"), ("NVARCHAR(4000)", 4000, "utf-16-le")),
+)
+async def test_string_column_capacity_and_overflow(
+    async_cursor, use_prepare, sql_type, capacity, encoding
+):
+    values = ["x" * (capacity - 1), "x" * capacity]
+    if encoding == "utf-16-le":
+        values.append("\U0001f600" * (capacity // 2))
+    await async_cursor.execute(
+        f"CREATE TABLE #async_capacity (id INT, value {sql_type})", use_prepare=False
+    )
+    try:
+        await async_cursor.executemany(
+            "INSERT INTO #async_capacity VALUES (?, ?)", enumerate(values), use_prepare=use_prepare
+        )
+        with pytest.raises(DataError):
+            await async_cursor.execute(
+                "INSERT INTO #async_capacity VALUES (?, ?)",
+                len(values),
+                "x" * (capacity + 1),
+                use_prepare=use_prepare,
+            )
+        await async_cursor.execute(
+            "SELECT value, DATALENGTH(value) FROM #async_capacity ORDER BY id"
+        )
+        assert [tuple(row) for row in await async_cursor.fetchall()] == [
+            (value, len(value.encode(encoding))) for value in values
+        ]
+    finally:
+        await async_cursor.execute("DROP TABLE IF EXISTS #async_capacity", use_prepare=False)
 
 
 @pytest.mark.asyncio
@@ -623,7 +844,15 @@ async def test_executemany_handles_sync_edge_value_batches(async_cursor):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_prepare", (False, True))
 @pytest.mark.parametrize("batch", (False, True))
-@pytest.mark.parametrize("rows", ([(1, "first"), (2, None)], [], None))
+@pytest.mark.parametrize(
+    "rows",
+    (
+        [(1, "first"), (2, None)],
+        [],
+        None,
+        [(1, ""), (2, "\u4e2d\u6587  "), (3, "\U0001f600" * 25), (4, "a\x00b")],
+    ),
+)
 async def test_async_tvp_execute_and_executemany(
     async_cursor, async_connection, use_prepare, batch, rows
 ):
@@ -741,3 +970,61 @@ async def test_executemany_handles_multiple_all_null_columns(async_cursor):
         )
     finally:
         await async_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize("batch", (False, True))
+@pytest.mark.parametrize("named", (False, True))
+@pytest.mark.parametrize(
+    ("sql_type", "unicode_values"),
+    (
+        ("VARCHAR(128)", False),
+        ("NVARCHAR(128)", True),
+        ("VARCHAR(MAX)", False),
+        ("NVARCHAR(MAX)", True),
+        ("TEXT", False),
+        ("NTEXT", True),
+    ),
+)
+async def test_string_roundtrip_matrix(
+    async_cursor, use_prepare, batch, named, sql_type, unicode_values
+):
+    class StringValue(str):
+        pass
+
+    values = [None, "", " ", "\t\r\n", "a\x00b", "trailing  ", StringValue("subclass")]
+    if unicode_values:
+        values.extend(["caf\u00e9", "\u4e2d\u6587", "\U0001f600\U0001f680", "e\u0301"])
+    rows = list(enumerate(values))
+    parameters = (
+        [{"id": identifier, "value": value} for identifier, value in rows] if named else rows
+    )
+    markers = "%(id)s, %(value)s" if named else "?, ?"
+    await async_cursor.execute(
+        f"CREATE TABLE #async_strings (id INT, value {sql_type})", use_prepare=False
+    )
+    try:
+        operation = f"INSERT INTO #async_strings VALUES ({markers})"
+        if batch:
+            assert (
+                await async_cursor.executemany(operation, iter(parameters), use_prepare=use_prepare)
+                is None
+            )
+            assert async_cursor.rowcount == len(rows)
+        else:
+            for parameter in parameters:
+                await async_cursor.execute(operation, parameter, use_prepare=use_prepare)
+                assert async_cursor.rowcount == 1
+        await async_cursor.execute(
+            "SELECT id, value, DATALENGTH(value) FROM #async_strings ORDER BY id"
+        )
+        fetched = await async_cursor.fetchall()
+        assert [tuple(row)[:2] for row in fetched] == rows
+        encoding = "utf-16-le" if unicode_values else "ascii"
+        assert [row[2] for row in fetched] == [
+            None if value is None else len(value.encode(encoding)) for value in values
+        ]
+        assert all(row[1] is None or isinstance(row[1], str) for row in fetched)
+    finally:
+        await async_cursor.execute("DROP TABLE IF EXISTS #async_strings", use_prepare=False)

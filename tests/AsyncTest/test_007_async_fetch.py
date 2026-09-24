@@ -918,6 +918,81 @@ async def test_fetchmany_handles_mixed_large_lob_sizes(async_cursor):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
+@pytest.mark.parametrize("use_prepare", (False, True))
+async def test_string_lob_fetch_and_nextset(async_cursor, fetch_method, use_prepare):
+    large = "\u6771\u4eac\U0001f600" * 12500 + "  "
+    await async_cursor.execute(
+        "SELECT CAST('x' AS CHAR(4)) AS fixed_ascii, CAST(N'\u6771' AS NCHAR(3)) AS fixed_unicode, "
+        "CAST(? AS NVARCHAR(MAX)) AS large_value; "
+        "SELECT CAST(NULL AS NVARCHAR(MAX)) AS empty_value UNION ALL SELECT N''",
+        large,
+        use_prepare=use_prepare,
+    )
+    result = await getattr(async_cursor, fetch_method)()
+    row = result if fetch_method == "fetchone" else result[0]
+    assert tuple(row) == ("x   ", "\u6771  ", large)
+    assert row.large_value == large
+    assert async_cursor.rowcount == 1
+    assert await async_cursor.nextset() is True
+    assert async_cursor.description is not None
+    assert async_cursor.description[0][0] == "empty_value"
+    assert [tuple(row) for row in await async_cursor.fetchall()] == [(None,), ("",)]
+    assert await async_cursor.nextset() is False
+    assert row.large_value == large
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fetch_method", ("fetchone", "fetchmany", "fetchall"))
+@pytest.mark.parametrize(
+    ("collation", "capacity", "value", "encoding"),
+    (
+        ("SQL_Latin1_General_CP1_CI_AS", 10, "caf\u00e9 Ren\u00e9!", "cp1252"),
+        ("Latin1_General_100_CI_AS_SC_UTF8", 12, "\u4e2d\u6587\U0001f600  ", "utf-8"),
+    ),
+)
+async def test_string_varchar_collation_exact_capacity(
+    async_cursor, fetch_method, collation, capacity, value, encoding
+):
+    assert len(value.encode(encoding)) == capacity
+    await async_cursor.execute(
+        f"CREATE TABLE #async_collation (value VARCHAR({capacity}) COLLATE {collation})",
+        use_prepare=False,
+    )
+    try:
+        await async_cursor.execute("INSERT INTO #async_collation VALUES (?)", value)
+        await async_cursor.execute("SELECT value, DATALENGTH(value) FROM #async_collation")
+        result = await getattr(async_cursor, fetch_method)()
+        row = result if fetch_method == "fetchone" else result[0]
+        assert tuple(row) == (value, capacity)
+        assert isinstance(row[0], str)
+    finally:
+        await async_cursor.execute("DROP TABLE IF EXISTS #async_collation", use_prepare=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+async def test_string_nextset_discards_unread_lob_rows(async_cursor, use_prepare):
+    large = "\u4e2d\U0001f600" * 20000
+    await async_cursor.execute(
+        "SELECT CAST(? AS NVARCHAR(MAX)) AS large_value FROM (VALUES (1), (2), (3)) AS ids(id); "
+        "SELECT N'after' AS small_value",
+        large,
+        use_prepare=use_prepare,
+    )
+    first = await async_cursor.fetchone()
+    assert first.large_value == large
+    assert async_cursor.rowcount == 1
+    assert await async_cursor.nextset() is True
+    assert async_cursor.rowcount == -1
+    assert async_cursor.description[0][0] == "small_value"
+    assert [tuple(row) for row in await async_cursor.fetchall()] == [("after",)]
+    assert async_cursor.rowcount == 1
+    assert await async_cursor.nextset() is False
+    assert first.large_value == large
+
+
+@pytest.mark.asyncio
 async def test_fetch_roundtrips_representative_sync_result_types(async_cursor):
     expected = (
         True,
