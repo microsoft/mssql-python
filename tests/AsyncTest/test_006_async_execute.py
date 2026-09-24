@@ -771,25 +771,44 @@ async def test_executemany_empty_generator(async_cursor):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize("yield_before_failure", (False, True))
 @pytest.mark.parametrize(
     "failure", (ValueError("iteration failed"), RuntimeError("iteration failed"))
 )
-async def test_executemany_iterator_failure_preserves_result(async_cursor, failure):
-    await async_cursor.execute("SELECT 1 AS value UNION ALL SELECT 2 ORDER BY value")
-    assert await async_cursor.fetchone() == [1]
-    description = async_cursor.description
-
+async def test_executemany_iterator_failure_preserves_result(
+    async_cursor, failure, yield_before_failure, use_prepare
+):
     def rows():
-        yield (3,)
+        if yield_before_failure:
+            yield (3,)
         raise failure
 
-    with pytest.raises(type(failure)) as caught:
-        await async_cursor.executemany("SELECT ?", rows())
-    assert caught.value is failure
-    assert async_cursor.description is description
-    assert async_cursor.rowcount == 1
-    assert await async_cursor.fetchone() == [2]
-    assert async_cursor.rowcount == 2
+    await async_cursor.execute(
+        "CREATE TABLE #async_iterator_failure (value INT)", use_prepare=False
+    )
+    try:
+        await async_cursor.execute("SELECT 1 AS value UNION ALL SELECT 2 ORDER BY value")
+        assert await async_cursor.fetchone() == [1]
+        description = async_cursor.description
+
+        with pytest.raises(type(failure)) as caught:
+            await async_cursor.executemany(
+                "INSERT INTO #async_iterator_failure VALUES (?)",
+                rows(),
+                use_prepare=use_prepare,
+            )
+        assert caught.value is failure
+        assert async_cursor.description is description
+        assert async_cursor.rowcount == 1
+        assert await async_cursor.fetchone() == [2]
+        assert async_cursor.rowcount == 2
+        await async_cursor.execute("SELECT COUNT(*) FROM #async_iterator_failure")
+        assert await async_cursor.fetchone() == [0]
+    finally:
+        await async_cursor.execute(
+            "DROP TABLE IF EXISTS #async_iterator_failure", use_prepare=False
+        )
 
 
 @pytest.mark.asyncio
