@@ -133,6 +133,51 @@ def legacy_insertmany(conn, ctx, input_sizes=False):
             conn.rollback()
 
 
+def lob_fetch(conn, ctx, sql_type, payload_bytes, api):
+    """Fetch one multi-chunk value; setup and exact-value validation are not timed."""
+    if sql_type == "nvarchar":
+        expression = f"REPLICATE(CAST(NCHAR(233) AS NVARCHAR(MAX)), {payload_bytes // 2})"
+        expected = "\u00e9" * (payload_bytes // 2)
+    elif sql_type == "varbinary":
+        expression = (
+            "CONVERT(VARBINARY(MAX), "
+            f"REPLICATE(CAST(CHAR(0) + 'x' AS VARCHAR(MAX)), {payload_bytes // 2}))"
+        )
+        expected = b"\x00x" * (payload_bytes // 2)
+    else:
+        expression = f"REPLICATE(CAST('x' AS VARCHAR(MAX)), {payload_bytes})"
+        expected = "x" * payload_bytes
+
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT {expression} AS payload")
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            if api == "fetchone":
+                row = cursor.fetchone()
+            elif api == "fetchmany":
+                rows = cursor.fetchmany(1)
+            else:
+                rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            if api != "fetchone":
+                assert len(rows) == 1
+                row = rows[0]
+            assert row is not None and len(row) == 1
+            assert type(row[0]) is type(expected) and row[0] == expected
+            assert not cursor.messages, "Clean LOB fetch unexpectedly produced diagnostics"
+            return dict(
+                title="Multi-chunk LOB fetch",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Rows: 1; type: {sql_type}; payload bytes: {payload_bytes}; API: {api}",
+            )
+        finally:
+            ctx.disable()
+
+
 def registry():
     """Keep every PR #552 scenario, including its existing timing boundaries."""
     result = dict(scenarios.SCENARIOS)
@@ -145,4 +190,11 @@ def registry():
         setinputsizes=(partial(legacy_insertmany, input_sizes=True), False),
     )
     result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
+    for sql_type in ("varchar", "nvarchar", "varbinary"):
+        for size_kib in (64, 256):
+            for api in ("fetchone", "fetchmany", "fetchall"):
+                result[f"lob_{sql_type}_{size_kib}k_{api}"] = (
+                    partial(lob_fetch, sql_type=sql_type, payload_bytes=size_kib * 1024, api=api),
+                    False,
+                )
     return result

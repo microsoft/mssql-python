@@ -38,6 +38,17 @@ TASK_NAMES = {
     "fetch_1_2m": "1.2-million-row fetching",
     "cte": "Common table expression queries",
 }
+TASK_NAMES.update(
+    {
+        f"lob_{sql_type}_{size_kib}k_{api}": (
+            f"{size_kib} KiB {sql_type.upper()}(MAX) / "
+            f"{'fetchmany(1)' if api == 'fetchmany' else api + '()'}"
+        )
+        for sql_type in ("varchar", "nvarchar", "varbinary")
+        for size_kib in (64, 256)
+        for api in ("fetchone", "fetchmany", "fetchall")
+    }
+)
 CASES = tuple(TASK_NAMES)
 MAX_BYTES = 8 * 1024 * 1024
 MAX_COMMENT_CHARS = 60000
@@ -294,6 +305,20 @@ def comparisons(report):
                 before = [s[layer].get(label) for s in base]
                 after = [s[layer].get(label) for s in candidate]
                 if not all(before) or not all(after):
+                    if name.startswith("lob_") and "SQLGetDiagRec" in label:
+                        # Missing instrumentation is not evidence of zero driver calls.
+                        old_calls = (
+                            f"{statistics.median(s['calls'] for s in before):g}"
+                            if all(before)
+                            else "unavailable"
+                        )
+                        new_calls = (
+                            f"{statistics.median(s['calls'] for s in after):g}"
+                            if all(after)
+                            else "unavailable"
+                        )
+                        changed_counts.append(f"{label} ({old_calls} -> {new_calls} calls)")
+                        continue
                     changed_counts.append(f"{label} (added, removed, or intermittent)")
                     continue
                 before_calls = statistics.median(s["calls"] for s in before)
