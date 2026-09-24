@@ -2685,20 +2685,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 f"{row_index}, column {i} (value type: {type(val).__name__})"
                             )
                             # Split str(val) from the decimal parse so we only chain a
-                            # cause we know is value-free. decimal.DecimalException
-                            # messages (e.g. ConversionSyntax) never echo the input, so
-                            # they are safe to preserve for debugging. str(val) itself
-                            # or any other error could carry the value in its message
-                            # and surface through __cause__ / formatted tracebacks, so
-                            # those are re-raised with the chain suppressed (from None).
+                            # cause. Python 3.15's pure-Python decimal implementation
+                            # can retain the rejected input in traceback state, so every
+                            # conversion failure suppresses chaining.
                             try:
                                 val_text = str(val)
                             except Exception:  # pylint: disable=broad-exception-caught
                                 raise ValueError(err_msg) from None
                             try:
                                 processed_row[i] = format(decimal.Decimal(val_text), "f")
-                            except decimal.DecimalException as e:
-                                raise ValueError(err_msg) from e
+                            except decimal.DecimalException:
+                                raise ValueError(err_msg) from None
                             except Exception:  # pylint: disable=broad-exception-caught
                                 raise ValueError(err_msg) from None
                 processed_parameters.append(processed_row)
