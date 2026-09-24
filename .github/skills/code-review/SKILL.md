@@ -8,7 +8,7 @@ description: "General repository code review for microsoft/mssql-python, based s
 The sole source of repository-specific rules for this skill is
 [copilot-instructions.md](../../copilot-instructions.md).
 Read that file before reviewing. The checklist below organizes its guidance
-for review; it does not introduce personal Scout policies or a performance-only
+for review; it does not introduce policies beyond the repository instructions or a performance-only review methodology.
 review methodology. If this summary drifts, use the source instructions.
 
 ## Apply the instructions to the changed area
