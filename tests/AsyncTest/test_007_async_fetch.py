@@ -925,7 +925,9 @@ async def test_string_lob_fetch_and_nextset(async_cursor, fetch_method, use_prep
     await async_cursor.execute(
         "SELECT CAST('x' AS CHAR(4)) AS fixed_ascii, CAST(N'\u6771' AS NCHAR(3)) AS fixed_unicode, "
         "CAST(? AS NVARCHAR(MAX)) AS large_value; "
-        "SELECT CAST(NULL AS NVARCHAR(MAX)) AS empty_value UNION ALL SELECT N''",
+        "SELECT empty_value FROM "
+        "(VALUES (0, CAST(NULL AS NVARCHAR(MAX))), (1, N'')) AS values_(ordinal, empty_value) "
+        "ORDER BY ordinal",
         large,
         use_prepare=use_prepare,
     )
