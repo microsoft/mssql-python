@@ -120,9 +120,9 @@ class _ArrowReader:
         the single ODBC entry point (with the diag-record functions) that the
         spec marks as safe to call from a different thread than the one
         owning the statement.
-      * Diagnostics are drained *before* the cursor is closed, so records
-        produced by a cancelled fetch are not lost; a second drain after
-        close picks up anything ``SQL_CLOSE`` itself emits.
+      * Cancellation/error diagnostics are drained before closing the cursor.
+        Natural exhaustion uses the native fetch's captured diagnostics; a
+        drain after close picks up anything ``SQL_CLOSE`` itself emits.
       * Cached ``pyarrow.ArrowInvalid`` avoids per-read imports on the
         post-close error path.
       * ``__del__`` is guarded against interpreter finalization.
@@ -138,7 +138,14 @@ class _ArrowReader:
     The parent ``Cursor`` is **not** closed; it remains fully usable.
     """
 
-    __slots__ = ("_cursor", "_inner", "_generator", "_closed", "_arrow_invalid")
+    __slots__ = (
+        "_cursor",
+        "_inner",
+        "_generator",
+        "_closed",
+        "_arrow_invalid",
+        "_close_requested",
+    )
 
     def __init__(
         self,
@@ -146,11 +153,13 @@ class _ArrowReader:
         inner: "pyarrow.RecordBatchReader",
         generator,
         arrow_invalid_exc: type,
+        close_requested: list[bool],
     ) -> None:
         self._cursor = cursor
         self._inner = inner
         self._generator = generator
         self._closed = False
+        self._close_requested = close_requested
         # Cache the exception class so post-close reads in a hot loop don't
         # re-import pyarrow.
         self._arrow_invalid = arrow_invalid_exc
@@ -285,6 +294,7 @@ class _ArrowReader:
         # Mark closed first so any racing read raises immediately, even if
         # the cleanup steps below fail and we end up retried later.
         self._closed = True
+        self._close_requested[0] = True
 
         # SQLCancel (cross-thread safe) — unblocks a fetch running on another
         # thread so that the generator's finally clause can then run
@@ -1137,6 +1147,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         driver's internal state when no records exist.  SQL_ERROR is
         handled separately by check_error() which extracts diagnostics
         and raises.
+
+        Composite native fetches capture intermediate diagnostics directly
+        into self.messages before subsequent ODBC calls can replace them.
         """
         if self.hstmt and ret in (
             ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value,
@@ -2835,13 +2848,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     char_enc,
                     wchar_enc,
                     self._cached_char_ctype,
+                    self.messages,
                 )
 
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-            with perf_phase("py::fetchone::diag_records"):
-                # The native bridge's final status can mask earlier fetch warnings.
-                if self.hstmt:
-                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
                 # No more data available
@@ -2914,12 +2924,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     char_enc,
                     wchar_enc,
                     self._cached_char_ctype,
+                    self.messages,
                 )
 
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-            with perf_phase("py::fetchmany::diag_records"):
-                if self.hstmt:
-                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -2990,14 +2998,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     char_enc,
                     wchar_enc,
                     self._cached_char_ctype,
+                    self.messages,
                 )
 
             # Check for errors
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-
-            with perf_phase("py::fetchall::diag_records"):
-                if self.hstmt:
-                    self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -3062,14 +3067,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
         char_c_type = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
         ret = ddbc_bindings.DDBCSQLFetchArrowBatch(
-            self.hstmt, capsules, max(batch_size, 0), char_c_type
+            self.hstmt, capsules, max(batch_size, 0), char_c_type, self.messages
         )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
-
-        if self.hstmt:
-            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
         # Update rownumber for the number of rows actually fetched
         num_fetched = batch.num_rows
@@ -3145,11 +3147,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # can null out after cleanup, so a GC'd reader does not keep the
         # cursor pinned.
         cursor_ref = [self]
+        close_requested = [False]
 
         def batch_generator():
+            exhausted = False
             try:
                 while (batch := cursor_ref[0].arrow_batch(batch_size)).num_rows > 0:
                     yield batch
+                exhausted = True
             finally:
                 # Symmetric server-side teardown — runs on exhaustion,
                 # GeneratorExit (from close()), or an exception inside the
@@ -3157,12 +3162,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 cur = cursor_ref[0]
                 cursor_ref[0] = None
                 if not cur.closed and cur.hstmt is not None:
-                    # 1) Drain diagnostics produced by the (possibly cancelled)
-                    #    fetch *before* SQL_CLOSE so we don't lose them.
-                    try:
-                        cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                    except Exception as e:  # pylint: disable=broad-exception-caught
-                        logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
+                    # Natural EOF was captured natively. A close/cancel request
+                    # (including a racing one) or an error still needs the drain.
+                    if not exhausted or close_requested[0]:
+                        try:
+                            cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                        except Exception as e:  # pylint: disable=broad-exception-caught
+                            logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
 
                     # 2) Release the server-side cursor & locks while keeping the
                     #    HSTMT and prepared plan intact, so the parent Cursor can
@@ -3205,7 +3211,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         gen = batch_generator()
         inner = pyarrow.RecordBatchReader.from_batches(schema, gen)
-        return _ArrowReader(self, inner, gen, pyarrow.ArrowInvalid)
+        return _ArrowReader(self, inner, gen, pyarrow.ArrowInvalid, close_requested)
 
     def nextset(self) -> Optional[bool]:
         """
@@ -4071,7 +4077,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, stmt_handle, retcode)
 
         # Capture any diagnostic messages
-        if stmt_handle:
+        if stmt_handle and retcode in (
+            ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value,
+            ddbc_sql_const.SQL_NO_DATA.value,
+        ):
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(stmt_handle))
 
     def tables(
