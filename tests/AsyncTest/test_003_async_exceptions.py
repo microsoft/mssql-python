@@ -312,7 +312,6 @@ async def test_string_truncation_diagnostics_partial_progress_and_recovery(
     async_cursor, use_prepare, batch, supplementary
 ):
     value = "\U0001f600" * 3 if supplementary else "abcdef"
-    await async_cursor.execute("DBCC TRACEON(460) WITH NO_INFOMSGS", use_prepare=False)
     await async_cursor.execute(
         "CREATE TABLE #async_truncation (id INT, value NVARCHAR(5))", use_prepare=False
     )
@@ -358,7 +357,6 @@ async def test_string_truncation_diagnostics_partial_progress_and_recovery(
             pytest.xfail("py-core truncation diagnostic decoder rejects split UTF-16 surrogate")
     finally:
         await async_cursor.execute("DROP TABLE IF EXISTS #async_truncation", use_prepare=False)
-        await async_cursor.execute("DBCC TRACEOFF(460) WITH NO_INFOMSGS", use_prepare=False)
 
 
 @pytest.mark.asyncio
