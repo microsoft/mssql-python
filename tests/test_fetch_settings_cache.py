@@ -2,11 +2,12 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 
-Regression and operation-count tests for connection settings cached by fetch APIs.
+Regression and operation-count tests for fetch settings and diagnostic preservation.
 All integration queries are read-only and each test owns its connection.
 """
 
 import datetime
+from pathlib import Path
 import subprocess
 import sys
 import uuid
@@ -864,6 +865,172 @@ def test_fetch_drains_diagnostics_independent_of_final_status(
             fetch_rows(cursor, method)
             diagnostics.assert_not_called()
             assert cursor.messages == [warning]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native diagnostic function-pointer globals",
+)
+@pytest.mark.parametrize("mode", ("available", "missing", "error", "info", "unterminated"))
+def test_native_mixed_fetch_diagnostics(conn_str, mode):
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING is required")
+    # Driver pointers are process-global: never replace them in the pytest process.
+    code = (
+        "import runpy, sys; "
+        "runpy.run_path(sys.argv[1])['_check_native_mixed_fetch_diagnostics']"
+        "(sys.argv[2], sys.argv[3])"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(Path(__file__).resolve()),
+            mode,
+            str(Path(mssql_python.ddbc_bindings.module.__file__).resolve()),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+
+
+def _check_native_mixed_fetch_diagnostics(mode, expected_native):
+    import ctypes
+    import os
+
+    native = Path(mssql_python.ddbc_bindings.module.__file__).resolve()
+    assert native == Path(expected_native)
+    library = ctypes.CDLL(str(native))
+    rec_pointer = ctypes.c_void_p.in_dll(library, "SQLGetDiagRec_ptr")
+    field_pointer = ctypes.c_void_p.in_dll(library, "SQLGetDiagField_ptr")
+    smallint = ctypes.c_short
+    wchar_pointer = ctypes.POINTER(ctypes.c_uint16)
+    smallint_pointer = ctypes.POINTER(smallint)
+    rec_type = ctypes.CFUNCTYPE(
+        smallint,
+        smallint,
+        ctypes.c_void_p,
+        smallint,
+        wchar_pointer,
+        ctypes.POINTER(ctypes.c_int32),
+        wchar_pointer,
+        smallint,
+        smallint_pointer,
+    )
+    field_type = ctypes.CFUNCTYPE(
+        smallint,
+        smallint,
+        ctypes.c_void_p,
+        smallint,
+        smallint,
+        ctypes.c_void_p,
+        smallint,
+        smallint_pointer,
+    )
+    success = ConstantsDDBC.SQL_SUCCESS.value
+    info = ConstantsDDBC.SQL_SUCCESS_WITH_INFO.value
+    no_data = ConstantsDDBC.SQL_NO_DATA.value
+    error = ConstantsDDBC.SQL_ERROR.value
+    records = [
+        ("01000", 11, "before truncation \u00e9"),
+        ("01004", 0, "internal first chunk"),
+        ("01S07", 22, "between truncations"),
+        ("01004", 0, "internal second chunk"),
+        ("01000", 33, "after truncation"),
+    ]
+    all_records = [(f"[{state}] ({number})", message) for state, number, message in records]
+    wanted = [all_records[index] for index in (0, 2, 4)]
+    rec_calls, field_calls, callback_errors = [], [], []
+
+    @rec_type
+    def read_record(handle_type, handle, number, state, native_error, message, capacity, length):
+        rec_calls.append(number)
+        if not handle or handle_type != ConstantsDDBC.SQL_HANDLE_STMT.value or number < 1:
+            callback_errors.append("invalid record lookup")
+            return error
+        if number > len(records):
+            return no_data
+        sqlstate, code, text = records[number - 1]
+        encoded = text.encode("utf-16le")
+        if (
+            not state
+            or not native_error
+            or not message
+            or not length
+            or capacity <= len(encoded) // 2
+        ):
+            callback_errors.append("invalid record output buffer")
+            return error
+        ctypes.memmove(state, (sqlstate + "\0").encode("utf-16le"), 12)
+        ctypes.memmove(message, encoded + b"\0\0", len(encoded) + 2)
+        native_error[0] = code
+        length[0] = len(encoded) // 2
+        return success
+
+    @field_type
+    def read_state(handle_type, handle, number, identifier, output, capacity, length):
+        field_calls.append(number)
+        # SQL_DIAG_SQLSTATE uses bytes, including the sixth SQLWCHAR terminator.
+        if (
+            not handle
+            or handle_type != ConstantsDDBC.SQL_HANDLE_STMT.value
+            or number < 1
+            or identifier != 4
+            or not output
+            or capacity != 12
+        ):
+            callback_errors.append("invalid SQLSTATE lookup or byte capacity")
+            return error
+        if mode == "error":
+            return error
+        if number > len(records):
+            return no_data
+        sqlstate = records[number - 1][0] + "\0"
+        if mode == "info":
+            sqlstate = "01004\0"
+        elif mode == "unterminated":
+            sqlstate = "01004X"
+        ctypes.memmove(output, sqlstate.encode("utf-16le"), 12)
+        return info if mode == "info" else success
+
+    try:
+        connection = mssql_python.connect(os.environ["DB_CONNECTION_STRING"], timeout=5)
+    except mssql_python.Error as failure:
+        raise AssertionError(
+            f"Connection failed: {type(failure).__name__}; connection details withheld"
+        ) from None
+    with connection, connection.cursor() as cursor:
+        cursor.execute("SELECT CAST(REPLICATE(CAST('x' AS VARCHAR(MAX)), 8193) AS VARBINARY(MAX))")
+        original_rec, original_field = rec_pointer.value, field_pointer.value
+        assert original_rec, "Driver diagnostic records must be available"
+        try:
+            rec_pointer.value = ctypes.cast(read_record, ctypes.c_void_p).value
+            field_pointer.value = (
+                None if mode == "missing" else ctypes.cast(read_state, ctypes.c_void_p).value
+            )
+            # One real SQLGetData continuation runs the compiled native mixed-record filter.
+            assert tuple(cursor.fetchone()) == (b"x" * 8193,)
+            assert not callback_errors, callback_errors
+            assert cursor.messages == wanted
+            assert field_calls == ([] if mode == "missing" else [1, 2, 3, 4, 5, 6])
+            if mode == "available":
+                assert rec_calls == [1, 3, 5]
+            else:
+                assert rec_calls == list(range(1, 7 if mode in ("missing", "error") else 6))
+
+            rec_calls.clear()
+            field_calls.clear()
+            assert mssql_python.ddbc_bindings.DDBCSQLGetAllDiagRecords(cursor.hstmt) == all_records
+            assert not callback_errors, callback_errors
+            assert rec_calls == [1, 2, 3, 4, 5, 6]
+            assert field_calls == []
+        finally:
+            rec_pointer.value, field_pointer.value = original_rec, original_field
+        cursor.execute("SELECT 42")
+        assert tuple(cursor.fetchone()) == (42,)
 
 
 @pytest.mark.parametrize(
