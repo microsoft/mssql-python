@@ -71,6 +71,8 @@ struct FetchColumnBinding {
     SQLLEN* indicators;
 };
 
+using FetchBindingDiagnostics = std::vector<std::pair<std::string, std::string>>;
+
 // Only the statement's fetch operation mutates a plan. Cancellation invalidates
 // the metadata generation instead; a shared lease protects lifetime, not mutation.
 class FetchBindingPlan {
@@ -91,8 +93,8 @@ class FetchBindingPlan {
                charEncoding == charCodec && wcharEncoding == wcharCodec && charCtype == cType;
     }
 
-    SQLRETURN attach(SQLHSTMT stmt);
-    SQLRETURN detach(SQLHSTMT stmt);
+    SQLRETURN attach(SQLHSTMT stmt, FetchBindingDiagnostics* diagnostics = nullptr);
+    SQLRETURN detach(SQLHSTMT stmt, FetchBindingDiagnostics* diagnostics = nullptr);
 
     void resetValues() {
         rowsFetched = 0;
