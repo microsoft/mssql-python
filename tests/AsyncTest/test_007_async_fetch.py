@@ -955,6 +955,12 @@ async def test_string_varchar_collation_exact_capacity(
     async_cursor, fetch_method, collation, capacity, value, encoding
 ):
     assert len(value.encode(encoding)) == capacity
+    if encoding == "utf-8":
+        await async_cursor.execute(
+            "SELECT 1 FROM sys.fn_helpcollations() WHERE name = ?", collation
+        )
+        if await async_cursor.fetchone() is None:
+            pytest.skip(f"SQL Server does not support the {collation} collation")
     await async_cursor.execute(
         f"CREATE TABLE #async_collation (value VARCHAR({capacity}) COLLATE {collation})",
         use_prepare=False,
