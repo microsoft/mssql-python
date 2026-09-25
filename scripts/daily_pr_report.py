@@ -124,7 +124,11 @@ def main() -> int:
     try:
         send_to_teams(webhook_url, report)
     except requests.RequestException as exc:
-        LOGGER.error("Failed to post the report to Teams: %s", exc)
+        status = getattr(exc.response, "status_code", None)
+        if status is None:
+            LOGGER.error("Failed to post the report to Teams: %s", type(exc).__name__)
+        else:
+            LOGGER.error("Failed to post the report to Teams (HTTP status %s)", status)
         return 1
 
     LOGGER.info("Daily PR report completed successfully.")
