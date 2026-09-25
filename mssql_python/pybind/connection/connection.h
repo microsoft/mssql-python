@@ -32,13 +32,19 @@ class Connection {
   public:
     Connection(const std::u16string& connStr, bool fromPool);
 
-    ~Connection();
+    ~Connection() noexcept;
 
     // Establish the connection using the stored connection string.
     void connect(const py::dict& attrs_before = py::dict());
 
     // Disconnect and free the connection handle.
-    void disconnect();
+    void disconnect(bool rollbackBeforeDisconnect = false);
+
+    // Roll back and disconnect without Python callbacks or escaping exceptions.
+    void disconnectNoThrow() noexcept;
+
+    // Relinquish native handles without ODBC calls during interpreter finalization.
+    void abandonDuringFinalization() noexcept;
 
     // Commit the current transaction.
     void commit();
@@ -53,6 +59,7 @@ class Connection {
     bool getAutocommit() const;
     bool isAlive() const;
     bool reset();
+    void prepareForPool();
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;
 
@@ -101,6 +108,11 @@ class Connection {
     std::u16string _connStr;
     bool _fromPool = false;
     bool _autocommit = true;
+    // Only successful rollback + AUTOCOMMIT_ON establishes this proof. A new
+    // login or deferred SQL_ATTR_RESET_CONNECTION alone does not establish it.
+    mutable bool _poolClean = false;
+    // Escaped raw handles and arbitrary/deferred attributes cannot be tracked.
+    mutable bool _poolProofDisabled = false;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
     // POSIX-epoch expiry (seconds) of the access token this connection last
@@ -130,7 +142,12 @@ class Connection {
     // Prevents data races between allocStatementHandle() and disconnect(),
     // or concurrent GC finalizers running from different threads
     mutable std::mutex _childHandlesMutex;
+    // Child wrappers retain this gate even after the Connection is destroyed.
+    const std::shared_ptr<ConnectionCleanupState> _cleanupState =
+        std::make_shared<ConnectionCleanupState>();
 };
+
+class ConnectionPool;
 
 class ConnectionHandle {
   public:
@@ -140,7 +157,7 @@ class ConnectionHandle {
                      const py::object& tokenFactory = py::object());
     ~ConnectionHandle();
 
-    void close();
+    void close(bool rollbackBeforeDisconnect = false);
     void commit();
     void rollback();
     void setAutocommit(bool enabled);
@@ -160,4 +177,7 @@ class ConnectionHandle {
     // Entra access-token auth so distinct identities never share a pool.
     // Empty is never stored; the ctor falls back to _connStr.
     std::u16string _poolKey;
+    // Identifies the exact pool generation that issued _conn. A weak reference
+    // prevents a checked-out connection from keeping a disabled pool alive.
+    std::weak_ptr<ConnectionPool> _originPool;
 };

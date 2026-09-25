@@ -57,6 +57,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- Pooled check-in skips transaction sanitation only after a prior successful
+  native rollback/autocommit restore and no subsequent statement allocation or
+  uncertain operation. Used connections still roll back explicit transactions
+  before parking; sanitation uses one native attribute probe and one GIL release.
+  Raw-handle exposure and arbitrary connection attributes disable the fast path;
+  successfully applied scalar login timeouts (including `connect(timeout=30)`)
+  do not permanently disable it.
 - Fetches reuse owned native metadata for stable columns within a result set;
   `fetchmany()` avoids the Python metadata-dictionary roundtrip. Re-execution,
   result transitions and statement/connection cleanup invalidate this metadata.
@@ -104,6 +111,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-754:** Pooled connections are now rolled back and restored to autocommit
+  mode before being parked. This prevents an empty transaction from remaining
+  visible on an idle SQL Server session after `Connection.close()`. Abandoned
+  native connections also roll back pending work before disconnecting during
+  normal object destruction. Statement-handle allocation and cleanup are
+  synchronized with disconnect, including cleanup invoked by cursor finalizers.
 - Bounded text fetched as UTF-16 now preserves leading U+FEFF and U+FFFE as
   payload rather than treating them as byte-order markers. This corrects
   row-wise `fetchone()`, `fetchmany()`, and `fetchall()` results, including
