@@ -600,6 +600,9 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
     }
 
     if (colInfo->useWideChar) {
+        if (dataLen % sizeof(SQLWCHAR) != 0) {
+            ThrowStdException("Wide-character data has an invalid byte length");
+        }
         // Wide-char path: data was bound as SQL_C_WCHAR, lives in wcharBuffers
         uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
         if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
@@ -712,6 +715,9 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     }
 
     uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+    if (dataLen % sizeof(SQLWCHAR) != 0) {
+        ThrowStdException("Wide-character data has an invalid byte length");
+    }
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
