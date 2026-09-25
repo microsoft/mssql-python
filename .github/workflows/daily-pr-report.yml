@@ -4,7 +4,6 @@ on:
   schedule:
     # 09:00 IST == 03:30 UTC (GitHub Actions cron is UTC only)
     - cron: "30 3 * * *"
-  workflow_dispatch:
 
 permissions:
   contents: read
