@@ -13,7 +13,6 @@ variables:
 jobs:
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
-  condition: false  # Python 3.13; excluded from the Python 3.15 validation branch.
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -58,15 +57,15 @@ jobs:
   
   strategy:
     matrix:
-      # SQLServer2022:
-      #   sqlVersion: 'SQL2022'
-      #   pythonVersion: '3.13'
-      # SQLServer2025:
-      #   sqlVersion: 'SQL2025'
-      #   pythonVersion: '3.14'
-      # LocalDB_Python314:
-      #   sqlVersion: 'LocalDB'
-      #   pythonVersion: '3.14'
+      SQLServer2022:
+        sqlVersion: 'SQL2022'
+        pythonVersion: '3.13'
+      SQLServer2025:
+        sqlVersion: 'SQL2025'
+        pythonVersion: '3.14'
+      LocalDB_Python314:
+        sqlVersion: 'LocalDB'
+        pythonVersion: '3.14'
       LocalDB_Python315Preview:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.15.0-rc.2'
@@ -491,14 +490,14 @@ jobs:
 
   strategy:
     matrix:
-      # SQL2022:
-      #   sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
-      #   sqlVersion: 'SQL2022'
-      #   pythonVersion: '3.13'
-      # SQL2025:
-      #   sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
-      #   sqlVersion: 'SQL2025'
-      #   pythonVersion: '3.14'
+      SQL2022:
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        sqlVersion: 'SQL2022'
+        pythonVersion: '3.13'
+      SQL2025:
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        sqlVersion: 'SQL2025'
+        pythonVersion: '3.14'
       SQL2025_Python315Preview:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
@@ -660,10 +659,34 @@ jobs:
 
   strategy:
     matrix:
-      # Existing distro legs use Python 3.10-3.14 and are intentionally
-      # excluded while this branch validates only Python 3.15.
-      # profilerLeg: 'Linux-SQL2022'
-      # profilerLeg: 'Linux-SQL2025'
+      Ubuntu:
+        dockerImage: 'ubuntu:24.04'
+        distroName: 'Ubuntu'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        useAzureSQL: 'false'
+        profilerLeg: 'Linux-SQL2022'
+      Ubuntu_SQL2025:
+        dockerImage: 'ubuntu:24.04'
+        distroName: 'Ubuntu-SQL2025'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        useAzureSQL: 'false'
+        profilerLeg: 'Linux-SQL2025'
+      ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
+        Ubuntu_AzureSQL:
+          dockerImage: 'ubuntu:24.04'
+          distroName: 'Ubuntu-AzureSQL'
+          sqlServerImage: ''
+          useAzureSQL: 'true'
+      Debian:
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        useAzureSQL: 'false'
+      Debian_SQL2025:
+        dockerImage: 'debian:12'
+        distroName: 'Debian-SQL2025'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        useAzureSQL: 'false'
       Debian_Python315Preview:
         dockerImage: 'python:3.15.0rc2-bookworm'
         distroName: 'Debian-Python315Preview'
@@ -972,14 +995,18 @@ jobs:
 
   strategy:
     matrix:
-      # Ubuntu_ARM64:
-      #   dockerImage: 'ubuntu:22.04'
-      #   distroName: 'Ubuntu'
-      #   archName: 'arm64'
-      # Debian_ARM64:
-      #   dockerImage: 'python:3.11-bookworm'
-      #   distroName: 'Debian'
-      #   archName: 'arm64'
+      Ubuntu_ARM64:
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+        archName: 'arm64'
+      Debian_ARM64:
+        # Python 3.11 is preinstalled (byte-compiled natively at image-build
+        # time) so we never run the apt python3 post-install byte-compilation
+        # that SIGSEGVs (exit 139) under QEMU user-mode emulation. Still Debian
+        # 12 (bookworm) underneath, so the msodbcsql18 debian/12 repo applies.
+        dockerImage: 'python:3.11-bookworm'
+        distroName: 'Debian'
+        archName: 'arm64'
       Debian_Python315Preview_ARM64:
         dockerImage: 'python:3.15.0rc2-bookworm'
         distroName: 'Debian-Python315Preview'
@@ -1203,7 +1230,6 @@ jobs:
 
 - job: PytestOnLinux_RHEL9
   displayName: 'Linux RedHat x86_64'
-  condition: false  # Python 3.12; excluded from the Python 3.15 validation branch.
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1402,7 +1428,6 @@ jobs:
 
 - job: PytestOnLinux_RHEL9_ARM64
   displayName: 'Linux RedHat ARM64'
-  condition: false  # Python 3.12; excluded from the Python 3.15 validation branch.
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1616,7 +1641,6 @@ jobs:
 
 - job: PytestOnLinux_Alpine
   displayName: 'Linux Alpine x86_64'
-  condition: false  # Distro Python is not 3.15; excluded from this validation branch.
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1850,7 +1874,6 @@ jobs:
 
 - job: PytestOnLinux_Alpine_ARM64
   displayName: 'Linux Alpine ARM64'
-  condition: false  # Distro Python is not 3.15; excluded from this validation branch.
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -2316,7 +2339,6 @@ jobs:
 
 - job: CodeCoverageReport
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
-  condition: false  # Uses the hosted default Python; excluded from this validation branch.
   pool:
     vmImage: 'ubuntu-latest'
 

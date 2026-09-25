@@ -152,7 +152,7 @@ class PipelineContractTests(unittest.TestCase):
 
         self.assertEqual(version.strip(), "0.2.0-nightly.20260924")
 
-    def test_python_315_validation_uses_only_preview_matrix_legs(self):
+    def test_python_315_validation_adds_preview_matrix_legs(self):
         pipeline = PR_PIPELINE.read_text(encoding="utf-8")
         active_python_versions = {
             line.split(":", 1)[1].strip(" '\"")
@@ -160,7 +160,7 @@ class PipelineContractTests(unittest.TestCase):
             if line.lstrip().startswith("pythonVersion:")
         }
 
-        self.assertEqual(active_python_versions, {"3.15.0-rc.2"})
+        self.assertEqual(active_python_versions, {"3.13", "3.14", "3.15.0-rc.2"})
         self.assertIn("python:3.15.0rc2-bookworm", pipeline)
 
     def test_python_315_validation_installs_pyarrow_nightly(self):
