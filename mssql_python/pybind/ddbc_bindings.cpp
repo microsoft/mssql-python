@@ -1668,8 +1668,8 @@ SqlHandle::~SqlHandle() {
                 // A failed free leaves a live handle. Detach if possible before
                 // the last plan owner applies its native-only emergency policy.
                 SQLRETURN detached = detachFetchBindings();
-                std::fprintf(stderr, "mssql-python: native handle cleanup failed (%d), "
-                                     "fetch buffer detach returned %d\n", ret, detached);
+                std::cerr << "mssql-python: native handle cleanup failed (" << ret
+                          << "), fetch buffer detach returned " << detached << '\n';
             }
         }
     } catch (...) {
@@ -2204,8 +2204,9 @@ static void AppendFetchBindingDiagnostics(py::handle messages,
     } catch (const std::exception& error) {
         if (!preserveFailure)
             throw;
-        std::fprintf(stderr, "mssql-python: failed to append fetch binding diagnostics: %s\n",
-                     error.what());
+        std::fputs("mssql-python: failed to append fetch binding diagnostics: ", stderr);
+        std::fputs(error.what(), stderr);
+        std::fputc('\n', stderr);
     }
 }
 
