@@ -59,7 +59,9 @@ def fetch_open_pull_requests(repo: str, token: str) -> List[Dict[str, Any]]:
         if len(batch) < PER_PAGE:
             break
     else:
-        LOGGER.warning("Stopped paginating after %d pages; report may be truncated.", MAX_PAGES)
+        raise ValueError(
+            f"Stopped after {MAX_PAGES} pages; refusing to send a truncated report."
+        )
 
     LOGGER.info("Found %d open pull request(s) in %s", len(pulls), repo)
     return pulls
