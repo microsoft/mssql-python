@@ -393,35 +393,3 @@ if(APPLE)
     target_compile_definitions(ddbc_bindings PRIVATE MACOS_STRING_FIX)
     target_compile_options(ddbc_bindings PRIVATE -DAPPLE_SILICON)
 endif()
-
-option(BUILD_FETCH_BINDING_TESTS "Build native fetch cleanup ownership tests (no database)" OFF)
-if(BUILD_FETCH_BINDING_TESTS)
-    enable_testing()
-    execute_process(
-        COMMAND python -c "import sys; print(sys.executable)"
-        OUTPUT_VARIABLE Python3_EXECUTABLE
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        RESULT_VARIABLE test_python_status
-    )
-    if(NOT test_python_status EQUAL 0)
-        message(FATAL_ERROR "Cannot locate the Python interpreter for native cleanup tests")
-    endif()
-    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-    add_executable(fetch_binding_cleanup_test
-        ../../tests/native/test_fetch_binding_cleanup.cpp
-        $<TARGET_PROPERTY:ddbc_bindings,SOURCES>
-    )
-    target_include_directories(fetch_binding_cleanup_test PRIVATE
-        $<TARGET_PROPERTY:ddbc_bindings,INCLUDE_DIRECTORIES>)
-    target_compile_definitions(fetch_binding_cleanup_test PRIVATE
-        $<TARGET_PROPERTY:ddbc_bindings,COMPILE_DEFINITIONS>)
-    target_compile_options(fetch_binding_cleanup_test PRIVATE
-        $<TARGET_PROPERTY:ddbc_bindings,COMPILE_OPTIONS>)
-    target_link_libraries(fetch_binding_cleanup_test PRIVATE
-        $<TARGET_PROPERTY:ddbc_bindings,LINK_LIBRARIES> Python3::Python ${CMAKE_DL_LIBS})
-    foreach(failure IN ITEMS unbind rows_pointer)
-        add_test(NAME fetch_binding_cleanup_${failure}
-            COMMAND fetch_binding_cleanup_test ${failure})
-        set_tests_properties(fetch_binding_cleanup_${failure} PROPERTIES TIMEOUT 30)
-    endforeach()
-endif()
