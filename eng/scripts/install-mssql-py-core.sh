@@ -89,7 +89,7 @@ print(f'cp{v.major}{v.minor} {platform.system().lower()} {platform.machine().low
             ;;
     esac
 
-    WHEEL_PATTERN="mssql_python_rs-${DISTRIBUTION_VERSION}-${PY_VERSION}-${PY_VERSION}-${WHEEL_PLATFORM}.whl"
+    WHEEL_PATTERN="mssql_python_rs-${DISTRIBUTION_VERSION}-cp310-abi3-${WHEEL_PLATFORM}.whl"
     echo "Wheel pattern: $WHEEL_PATTERN"
 }
 
