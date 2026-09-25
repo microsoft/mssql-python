@@ -116,6 +116,23 @@ python main.py
 
 ## TASK
 
+### Native fetch cleanup ownership regressions (no database)
+
+After configuring the native extension with the normal platform/compiler settings,
+enable `-DBUILD_FETCH_BINDING_TESTS=ON` in the same CMake build directory. Build
+the `fetch_binding_cleanup_test` target in Release, then run
+`ctest --test-dir <build-directory> -C Release --output-on-failure -R "^fetch_binding_cleanup_"`.
+
+These opt-in tests compile the actual native sources with the extension's settings
+and embed the selected Python interpreter. They require Python development headers
+and its embedding library, but no SQL Server, connection string, or profiling build.
+Only the existing ODBC function pointers are replaced, in the test executable.
+Runtime checks remain enabled under `NDEBUG` and verify retained buffer ownership,
+non-reuse, original-error preservation, and destruction after successful cleanup
+following injected unbind and rows-fetched-pointer reset failures. Ubuntu PR CI runs
+them before uninstalling the ODBC development headers. Normal wheel builds leave
+the option OFF.
+
 Help the developer run tests to validate their changes. Follow this process based on what they need.
 
 ---

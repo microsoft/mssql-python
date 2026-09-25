@@ -885,6 +885,9 @@ jobs:
           source /opt/venv/bin/activate
           cd /workspace
           python -m eng.profiler_benchmarks.controller --check-build on
+          cmake -S mssql_python/pybind -B mssql_python/pybind/build -DBUILD_FETCH_BINDING_TESTS=ON
+          cmake --build mssql_python/pybind/build --config Release --target fetch_binding_cleanup_test
+          ctest --test-dir mssql_python/pybind/build -C Release --output-on-failure -R '^fetch_binding_cleanup_'
         "
       fi
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
