@@ -98,9 +98,7 @@ def test_pooled_positive_login_timeout_reaches_native_attrs():
                 autocommit=True,
             )
             assert create.call_args.args[1] is True
-            assert create.call_args.args[2] == {
-                ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30
-            }
+            assert create.call_args.args[2] == {ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30}
             assert connection.timeout == 0  # Query timeout is independent.
             connection.close()
     assert create.call_count == 3
