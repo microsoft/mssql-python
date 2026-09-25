@@ -1767,7 +1767,7 @@ def test_setinputsizes_rejects_excessive_column_size():
 def test_executemany_rejects_excessive_cumulative_parameter_buffers(cursor):
     cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 50_000_000, 0)] * 3)
     with pytest.raises(RuntimeError, match="Parameter buffers exceed the 256 MiB allocation limit"):
-        cursor.executemany("SELECT ?, ?, ?", [("", "", "")])
+        cursor.executemany("SELECT ?, ?, ?", [(None, None, None)])
 
 
 def test_executemany_rejects_text_for_binary_parameter(cursor):
@@ -1781,6 +1781,11 @@ def test_fetchmany_rejects_excessive_native_buffer(cursor):
     with pytest.raises(RuntimeError, match="256 MiB allocation limit"):
         cursor.fetchmany(100_000)
     assert cursor.fetchone()[0] == "x"
+
+
+def test_fetchall_clamps_wide_result_batch_to_native_buffer_budget(cursor):
+    cursor.execute("SELECT " + ", ".join("CAST(N'x' AS NVARCHAR(4000))" for _ in range(34)))
+    assert cursor.fetchall() == [("x",) * 34]
 
 
 def test_description(cursor):

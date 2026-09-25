@@ -202,6 +202,10 @@ class TestBulkcopyArrowValidation:
         with pytest.raises(ValueError, match="batch_size"):
             _bare_cursor().bulkcopy_arrow("t", pa.table({"a": [1]}), batch_size=-1)
 
+    def test_batch_size_exceeds_native_row_limit(self):
+        with pytest.raises(ValueError, match="batch_size"):
+            _bare_cursor().bulkcopy_arrow("t", pa.table({"a": [1]}), batch_size=1_000_001)
+
     def test_batch_size_bool_rejected(self):
         for flag in (False, True):
             with pytest.raises(TypeError, match="batch_size"):

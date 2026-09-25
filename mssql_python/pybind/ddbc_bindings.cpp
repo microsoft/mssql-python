@@ -415,6 +415,7 @@ size_t ParameterArrayElementSize(const ParamInfo& info) {
         default:
             ThrowStdException("Unsupported C type for parameter array allocation");
     }
+    return 0;
 }
 
 template <typename ElementType>
@@ -4736,77 +4737,96 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 // Given a list of columns that are a part of single row in the result set,
 // calculates the max size of the row
 // TODO: Move to anonymous namespace, since it is not used outside this file
-size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
-    size_t rowSize = 0;
+size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols,
+                        int charCtype = SQL_C_WCHAR) {
+    size_t rowSize = CheckedMultiplySize(numCols, sizeof(SQLLEN),
+                                         "Native fetch indicator row size is too large");
     for (SQLUSMALLINT col = 1; col <= numCols; col++) {
         auto columnMeta = columnNames[col - 1].cast<py::dict>();
         SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
         SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+        size_t columnBytes = 0;
 
         switch (dataType) {
             case SQL_CHAR:
             case SQL_VARCHAR:
-            case SQL_LONGVARCHAR:
-                rowSize += columnSize;
+            case SQL_LONGVARCHAR: {
+                HandleZeroColumnSizeAtFetch(columnSize);
+                if (charCtype == SQL_C_WCHAR) {
+                    columnBytes = CheckedMultiplySize(
+                        CheckedAddSize(columnSize, 1, "Native fetch row size is too large"),
+                        sizeof(SQLWCHAR), "Native fetch row size is too large");
+                } else {
+#if defined(__APPLE__) || defined(__linux__)
+                    columnBytes = CheckedAddSize(
+                        CheckedMultiplySize(columnSize, 4,
+                                            "Native fetch row size is too large"),
+                        1, "Native fetch row size is too large");
+#else
+                    columnBytes =
+                        CheckedAddSize(columnSize, 1, "Native fetch row size is too large");
+#endif
+                }
                 break;
+            }
             case SQL_SS_XML:
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR:
-                rowSize += columnSize * sizeof(SQLWCHAR);
+                HandleZeroColumnSizeAtFetch(columnSize);
+                columnBytes = CheckedMultiplySize(
+                    CheckedAddSize(columnSize, 1, "Native fetch row size is too large"),
+                    sizeof(SQLWCHAR), "Native fetch row size is too large");
                 break;
             case SQL_INTEGER:
-                rowSize += sizeof(SQLINTEGER);
+                columnBytes = sizeof(SQLINTEGER);
                 break;
             case SQL_SMALLINT:
-                rowSize += sizeof(SQLSMALLINT);
+                columnBytes = sizeof(SQLSMALLINT);
                 break;
             case SQL_REAL:
-                rowSize += sizeof(SQLREAL);
+                columnBytes = sizeof(SQLREAL);
                 break;
             case SQL_FLOAT:
-                rowSize += sizeof(SQLFLOAT);
+                columnBytes = sizeof(SQLFLOAT);
                 break;
             case SQL_DOUBLE:
-                rowSize += sizeof(SQLDOUBLE);
+                columnBytes = sizeof(SQLDOUBLE);
                 break;
             case SQL_DECIMAL:
             case SQL_NUMERIC:
-                rowSize += MAX_DIGITS_IN_NUMERIC;
+                columnBytes = MAX_DIGITS_IN_NUMERIC;
                 break;
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
-                rowSize += sizeof(SQL_TIMESTAMP_STRUCT);
+                columnBytes = sizeof(SQL_TIMESTAMP_STRUCT);
                 break;
             case SQL_BIGINT:
-                rowSize += sizeof(SQLBIGINT);
+                columnBytes = sizeof(SQLBIGINT);
                 break;
             case SQL_TYPE_DATE:
-                rowSize += sizeof(SQL_DATE_STRUCT);
+                columnBytes = sizeof(SQL_DATE_STRUCT);
                 break;
             case SQL_SS_TIME2:
-                rowSize += sizeof(SQL_SS_TIME2_STRUCT);
+                columnBytes = sizeof(SQL_SS_TIME2_STRUCT);
                 break;
             case SQL_GUID:
-                rowSize += sizeof(SQLGUID);
+                columnBytes = sizeof(SQLGUID);
                 break;
             case SQL_TINYINT:
             case SQL_BIT:
-                rowSize += sizeof(SQLCHAR);
+                columnBytes = sizeof(SQLCHAR);
                 break;
             case SQL_SS_UDT:
-                rowSize += (static_cast<SQLLEN>(columnSize) == SQL_NO_TOTAL || columnSize == 0)
-                               ? SQL_MAX_LOB_SIZE
-                               : columnSize;
-                break;
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
-                rowSize += columnSize;
+                HandleZeroColumnSizeAtFetch(columnSize);
+                columnBytes = columnSize;
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
-                rowSize += sizeof(DateTimeOffset);
+                columnBytes = sizeof(DateTimeOffset);
                 break;
             default:
                 std::string columnName = columnMeta["ColumnName"].cast<std::string>();
@@ -4817,6 +4837,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 ThrowStdException(errorString.str());
                 break;
         }
+        rowSize = CheckedAddSize(rowSize, columnBytes, "Native fetch row size is too large");
     }
     return rowSize;
 }
@@ -5075,8 +5096,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     // Fetch narrow char data as SQL_C_CHAR if on Linux/macOS and configured by the user
     charCtype = EffectiveCharCtypeForFetch(charCtype, "utf-8");
 
-    // An overly large fetch size doesn't seem to help performance
-    int fetchSize = 64;
+    // An overly large fetch size doesn't seem to help performance.
+    int fetchSize = arrowBatchSize > 0 ? std::min(arrowBatchSize, 64) : 1;
 
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
@@ -5291,15 +5312,28 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
         std::memset(arrowColumnProducer->valid.get(), 0xFF, bitmapSize);
     }
 
-    // Initialize column buffers
-    ReserveNativeFetchBytes(
-        reservedBytes,
-        CheckedMultiplySize(static_cast<size_t>(numCols), static_cast<size_t>(fetchSize),
-                            "Native fetch indicator buffer is too large"),
-        sizeof(SQLLEN));
-    ColumnBuffers buffers(numCols, fetchSize);
+    if (arrowBatchSize > 0 && !hasLobColumns) {
+        const size_t rowSize = calculateRowSize(columnNames, numCols, charCtype);
+        const size_t remainingBytes = MAX_NATIVE_FETCH_BYTES - reservedBytes;
+        const size_t rowsWithinBudget = remainingBytes / rowSize;
+        if (rowsWithinBudget == 0) {
+            ThrowStdException("Native fetch buffers exceed the 256 MiB allocation limit");
+        }
+        fetchSize = static_cast<int>(std::min<size_t>(fetchSize, rowsWithinBudget));
+    }
 
-    if (!hasLobColumns && fetchSize > 0) {
+    const int bufferFetchSize = arrowBatchSize > 0 ? fetchSize : 0;
+    if (bufferFetchSize > 0) {
+        ReserveNativeFetchBytes(
+            reservedBytes,
+            CheckedMultiplySize(static_cast<size_t>(numCols),
+                                static_cast<size_t>(bufferFetchSize),
+                                "Native fetch indicator buffer is too large"),
+            sizeof(SQLLEN));
+    }
+    ColumnBuffers buffers(numCols, bufferFetchSize);
+
+    if (!hasLobColumns && bufferFetchSize > 0) {
         ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, reservedBytes,
                             charCtype);
         if (!SQL_SUCCEEDED(ret)) {
@@ -6090,14 +6124,12 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     }
 
     // No LOBs detected - use binding path with batch fetching
-    // Define a memory limit (1 GB)
-    const size_t memoryLimit = 1ULL * 1024 * 1024 * 1024;
-    size_t totalRowSize = calculateRowSize(columnNames, numCols);
+    size_t totalRowSize = calculateRowSize(columnNames, numCols, charCtype);
 
-    // Calculate fetch size based on the total row size and memory limit
+    // Calculate fetch size from the same storage budget enforced during binding.
     size_t numRowsInMemLimit;
     if (totalRowSize > 0) {
-        numRowsInMemLimit = static_cast<size_t>(memoryLimit / totalRowSize);
+        numRowsInMemLimit = MAX_NATIVE_FETCH_BYTES / totalRowSize;
     } else {
         // Handle case where totalRowSize is 0 to avoid division by zero.
         // This can happen for NVARCHAR(MAX) cols. SQLDescribeCol returns 0
@@ -6128,6 +6160,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     } else {
         fetchSize = 1000;
     }
+    fetchSize = static_cast<int>(
+        std::min<size_t>(fetchSize, std::max<size_t>(numRowsInMemLimit, 1)));
     LOG("FetchAll_wrap: Fetching data in batch sizes of %d", fetchSize);
 
     size_t reservedBytes = 0;

@@ -1224,7 +1224,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         isinstance(column_size, bool)
                         or not isinstance(column_size, int)
                         or column_size < 0
-                        or column_size > MAX_NATIVE_PARAMETER_SIZE
+                        or (
+                            sql_type
+                            not in (
+                                ddbc_sql_const.SQL_DECIMAL.value,
+                                ddbc_sql_const.SQL_NUMERIC.value,
+                            )
+                            and column_size > MAX_NATIVE_PARAMETER_SIZE
+                        )
                     ):
                         raise ValueError(
                             f"Invalid column size: {column_size}. Must be a non-negative integer "
@@ -3426,8 +3433,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise TypeError(
                 f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
             )
-        if batch_size < 0:
-            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
+        if batch_size < 0 or batch_size > MAX_NATIVE_ROW_COUNT:
+            raise ValueError(
+                f"batch_size must be between 0 and {MAX_NATIVE_ROW_COUNT}, got {batch_size}"
+            )
 
         if not isinstance(timeout, int) or isinstance(timeout, bool):
             raise TypeError(f"timeout must be a non-negative integer, got {type(timeout).__name__}")
