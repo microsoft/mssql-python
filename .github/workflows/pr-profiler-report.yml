@@ -14,7 +14,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: profiler-report-${{ github.event.pull_request.number }}
+  group: profiler-report-${{ github.event.pull_request.number }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:

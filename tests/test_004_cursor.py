@@ -2961,13 +2961,26 @@ def test_executemany_DecimalMix_List(cursor, db_connection):
 
 
 def test_nextset(cursor):
-    """Test nextset"""
-    cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1;")
-    assert cursor.nextset() is False, "Nextset should return False"
+    """Test metadata invalidation when re-executing and skipping unread results."""
     cursor.execute(
-        "SELECT * FROM #pytest_all_data_types WHERE id = 2; SELECT * FROM #pytest_all_data_types WHERE id = 3;"
+        "SELECT id AS first_id FROM #pytest_all_data_types WHERE id IN (1, 2) ORDER BY id;"
     )
+    first_row = cursor.fetchmany(1)[0]
+    assert first_row.first_id == 1
+    # Equal column counts must not hide changed types or names.
+    cursor.execute(
+        "SELECT CAST(id AS NVARCHAR(10)) AS second_id FROM #pytest_all_data_types "
+        "WHERE id IN (2, 3) ORDER BY id; "
+        "SELECT id AS third_id FROM #pytest_all_data_types WHERE id = 3;"
+    )
+    second_row = cursor.fetchmany(1)[0]
+    assert second_row.second_id == "2"
     assert cursor.nextset() is True, "Nextset should return True"
+    assert cursor.fetchmany(1)[0].third_id == 3
+    assert cursor.description[0][0] == "third_id"
+    assert first_row.first_id == 1
+    assert second_row.second_id == "2"
+    assert cursor.nextset() is False, "Nextset should return False"
 
 
 def test_delete_table(cursor, db_connection):
@@ -7425,29 +7438,71 @@ def test_cursor_messages_format(cursor):
 
 
 def test_cursor_messages_with_warnings(cursor, db_connection):
-    """Test that warning messages are captured correctly"""
+    """Fetch warnings, including EOF diagnostics, survive batch cleanup exactly once."""
+    original_ansi_warnings = cursor.execute("SELECT SESSIONPROPERTY('ANSI_WARNINGS')").fetchval()
     try:
-        # Create a test case that might generate a warning
-        cursor.execute("CREATE TABLE #test_messages_warnings (id INT, value DECIMAL(5,2))")
-        db_connection.commit()
+        cursor.execute("SET ANSI_WARNINGS ON")
+        expected_messages = None
+        for method in ("fetchone", "fetchmany", "fetchall"):
+            # Stream beyond the driver's initial packet before evaluating the aggregate.
+            cursor.execute("""
+                SELECT TOP (8192) 1 AS id, CAST(REPLICATE('x', 128) AS VARCHAR(128)) AS txt
+                FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b
+                UNION ALL
+                SELECT SUM(v), CAST('aggregate' AS VARCHAR(128))
+                FROM (VALUES (2), (NULL)) AS warning_source(v)
+                UNION ALL
+                SELECT 3, CAST('after warning' AS VARCHAR(128))
+                OPTION (MAXDOP 1)
+                """)
+            fetched = []
+            warning_snapshot = list(cursor.messages) if cursor.messages else None
+            first_warning_phase = "execute" if warning_snapshot is not None else None
+            while True:
+                if method == "fetchone":
+                    row = cursor.fetchone()
+                    rows = [] if row is None else [row]
+                elif method == "fetchmany":
+                    rows = cursor.fetchmany(1)
+                else:
+                    rows = cursor.fetchall()
+                if cursor.messages:
+                    assert len(cursor.messages) == 1, "Warning must not be duplicated"
+                    assert cursor.messages[0][0] == "[01003] (8153)"
+                    if warning_snapshot is None:
+                        warning_snapshot = list(cursor.messages)
+                        first_warning_phase = "fetch returned rows" if rows else "exhaustion"
+                if warning_snapshot is not None:
+                    assert cursor.messages == warning_snapshot
+                if not rows:
+                    break
+                fetched.extend(tuple(row) for row in rows)
 
-        # Clear messages
-        del cursor.messages[:]
-
-        # Try to insert a value that might cause truncation warning
-        cursor.execute("INSERT INTO #test_messages_warnings VALUES (1, 123.456)")
-
-        # Check if any warning was captured
-        # Note: This might be implementation-dependent
-        # Some drivers might not report this as a warning
-        if len(cursor.messages) > 0:
+            # SQL Server can defer 8153 until EOF; this verifies that terminal
+            # warning, not an intermediate SQLFetch/SQLGetData warning.
+            print(f"{method}: warning first observed at {first_warning_phase}")
+            assert len(fetched) == 8194
+            assert fetched.count((1, "x" * 128)) == 8192
+            assert fetched.count((2, "aggregate")) == 1
+            assert fetched.count((3, "after warning")) == 1
+            assert len(cursor.messages) == 1
+            assert cursor.messages[0][0] == "[01003] (8153)"
             assert (
-                "truncat" in cursor.messages[0][1].lower()
-                or "convert" in cursor.messages[0][1].lower()
-            ), "Warning message should mention truncation or conversion"
-
+                "null value is eliminated by an aggregate or other set operation"
+                in cursor.messages[0][1].lower()
+            )
+            if expected_messages is None:
+                expected_messages = list(cursor.messages)
+            assert cursor.messages == expected_messages, "Warning identity/order must be stable"
+            if method == "fetchone":
+                assert cursor.fetchone() is None
+            elif method == "fetchmany":
+                assert cursor.fetchmany(1) == []
+            else:
+                assert cursor.fetchall() == []
+            assert cursor.messages == expected_messages, "Repeated EOF must not replay the warning"
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #test_messages_warnings")
+        cursor.execute("SET ANSI_WARNINGS " + ("ON" if original_ansi_warnings else "OFF"))
         db_connection.commit()
 
 
