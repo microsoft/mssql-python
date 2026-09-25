@@ -225,11 +225,25 @@ def test_arrow_empty_fetch(cursor: mssql_python.Cursor):
         _test_arrow_test_data(cursor, [col_data], fetch_length=0)
 
 
+def test_arrow_wide_schema_only_and_single_row_fit_native_buffer_budget(
+    cursor: mssql_python.Cursor,
+):
+    columns = ", ".join(f"CAST(N'x' AS NVARCHAR(4000)) AS col_{index}" for index in range(600))
+    cursor.execute(f"SELECT {columns}")
+
+    schema_batch = cursor.arrow_batch(0)
+    assert schema_batch.num_rows == 0
+    assert schema_batch.num_columns == 600
+
+    data_batch = cursor.arrow_batch(1)
+    assert data_batch.num_rows == 1
+    assert data_batch.num_columns == 600
+
+
 def test_arrow_table_batchsize_negative(cursor: mssql_python.Cursor):
-    tbl = cursor.execute("select 1 a").arrow(batch_size=-42)
-    assert type(tbl) is pa.Table
-    assert tbl.num_rows == 0
-    assert tbl.num_columns == 1
+    cursor.execute("select 1 a")
+    with pytest.raises(ValueError, match="batch_size"):
+        cursor.arrow(batch_size=-42)
     assert cursor.fetchone()[0] == 1
 
 

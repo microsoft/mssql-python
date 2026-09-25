@@ -1730,6 +1730,64 @@ def test_arraysize(cursor):
     assert cursor.arraysize == 5, "Arraysize mismatch after change"
 
 
+@pytest.mark.parametrize("value", [0, -1, 1_000_001])
+def test_arraysize_rejects_out_of_range_values(value):
+    cursor = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    with pytest.raises(ValueError, match="arraysize"):
+        cursor.arraysize = value
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, "10"])
+def test_arraysize_rejects_non_integer_values(value):
+    cursor = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    with pytest.raises(TypeError, match="arraysize"):
+        cursor.arraysize = value
+
+
+@pytest.mark.parametrize(
+    "size_info",
+    [
+        (True,),
+        (mssql_python.SQL_WVARCHAR, True, 0),
+        (mssql_python.SQL_DECIMAL, 18, True),
+    ],
+)
+def test_setinputsizes_rejects_boolean_sizes(size_info):
+    cursor = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    with pytest.raises(ValueError):
+        cursor.setinputsizes([size_info])
+
+
+def test_setinputsizes_rejects_excessive_column_size():
+    cursor = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    with pytest.raises(ValueError, match="column size"):
+        cursor.setinputsizes([(mssql_python.SQL_VARCHAR, 1 << 40, 0)])
+
+
+def test_executemany_rejects_excessive_cumulative_parameter_buffers(cursor):
+    cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 50_000_000, 0)] * 3)
+    with pytest.raises(RuntimeError, match="Parameter buffers exceed the 256 MiB allocation limit"):
+        cursor.executemany("SELECT ?, ?, ?", [(None, None, None)])
+
+
+def test_executemany_rejects_text_for_binary_parameter(cursor):
+    cursor.setinputsizes([(mssql_python.SQL_VARBINARY, 10, 0)])
+    with pytest.raises(RuntimeError, match="object type does not match"):
+        cursor.executemany("SELECT CAST(? AS VARBINARY(10))", [("text",)])
+
+
+def test_fetchmany_rejects_excessive_native_buffer(cursor):
+    cursor.execute("SELECT CAST('x' AS VARCHAR(8000))")
+    with pytest.raises(RuntimeError, match="256 MiB allocation limit"):
+        cursor.fetchmany(100_000)
+    assert cursor.fetchone()[0] == "x"
+
+
+def test_fetchall_clamps_wide_result_batch_to_native_buffer_budget(cursor):
+    cursor.execute("SELECT " + ", ".join("CAST(N'x' AS NVARCHAR(4000))" for _ in range(34)))
+    assert cursor.fetchall() == [("x",) * 34]
+
+
 def test_description(cursor):
     """Test description"""
     cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1")
