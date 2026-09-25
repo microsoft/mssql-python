@@ -491,7 +491,8 @@ def test_fetchmany_reuses_bindings_until_transition(transition):
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Windows does not export the ODBC function-pointer globals"
 )
-def test_fetchmany_failed_unbind_blocks_reuse_until_cleanup_succeeds():
+@pytest.mark.parametrize("failure_point", ("unbind", "rows_fetched_ptr"))
+def test_fetchmany_failed_cleanup_blocks_reuse_until_cleanup_succeeds(failure_point):
     """A failed detach must not permit fetching or replacing the retained binding plan."""
     script = textwrap.dedent("""
         import ctypes
@@ -505,8 +506,17 @@ def test_fetchmany_failed_unbind_blocks_reuse_until_cleanup_succeeds():
         assert hasattr(native, "profiling")
         assert os.path.realpath(native.module.__file__) == sys.argv[2]
         library = ctypes.CDLL(sys.argv[2])
-        free_stmt = ctypes.c_void_p.in_dll(library, "SQLFreeStmt_ptr")
-        callback_type = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_void_p, ctypes.c_ushort)
+        failure_point = sys.argv[3]
+        if failure_point == "unbind":
+            pointer_name = "SQLFreeStmt_ptr"
+            callback_type = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_void_p, ctypes.c_ushort)
+        else:
+            pointer_name = "SQLSetStmtAttr_ptr"
+            callback_type = ctypes.CFUNCTYPE(
+                ctypes.c_short, ctypes.c_void_p, ctypes.c_int32,
+                ctypes.c_void_p, ctypes.c_int32,
+            )
+        pointer = ctypes.c_void_p.in_dll(library, pointer_name)
 
         def counts(expected, fetches):
             stats = native.profiling.get_stats()
@@ -528,20 +538,25 @@ def test_fetchmany_failed_unbind_blocks_reuse_until_cleanup_succeeds():
             try:
                 assert [tuple(row) for row in cursor.fetchmany(2)] == [(1,), (2,)]
                 counts((1, 1, 0), 1)
-                original = free_stmt.value
+                original = pointer.value
                 assert original
                 original_call = callback_type(original)
                 failures = []
 
                 @callback_type
-                def fail_unbind(handle, option):
-                    if option == 2:  # SQL_UNBIND
+                def fail_cleanup(handle, operation, *args):
+                    # Fail only SQL_UNBIND or clearing SQL_ATTR_ROWS_FETCHED_PTR.
+                    should_fail = (
+                        operation == 2 if failure_point == "unbind"
+                        else operation == 26 and args[0] is None
+                    )
+                    if should_fail:
                         failures.append(handle)
-                        return -1  # SQL_ERROR, without releasing the driver's bindings
-                    return original_call(handle, option)
+                        return -1  # SQL_ERROR, leaving the driver's pointers unchanged
+                    return original_call(handle, operation, *args)
 
                 try:
-                    free_stmt.value = ctypes.cast(fail_unbind, ctypes.c_void_p).value
+                    pointer.value = ctypes.cast(fail_cleanup, ctypes.c_void_p).value
                     for attempt, size in enumerate((3, 2), 1):
                         rows = []
                         ret = native.DDBCSQLFetchMany(
@@ -552,7 +567,7 @@ def test_fetchmany_failed_unbind_blocks_reuse_until_cleanup_succeeds():
                         assert len(failures) == attempt, failures
                         counts((1, 1, attempt), 1)
                 finally:
-                    free_stmt.value = original
+                    pointer.value = original
 
                 assert [tuple(row) for row in cursor.fetchmany(2)] == [(3,), (4,)]
                 counts((2, 2, 3), 2)
@@ -570,6 +585,7 @@ def test_fetchmany_failed_unbind_blocks_reuse_until_cleanup_succeeds():
             script,
             os.path.dirname(os.path.dirname(perf_timer.__file__)),
             os.path.realpath(ddbc.module.__file__),
+            failure_point,
         ],
         capture_output=True,
         text=True,
