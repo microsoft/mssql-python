@@ -1546,14 +1546,134 @@ void DriverLoader::loadDriver() {
     }
 }
 
+static void CaptureFetchBindingDiagnostics(SQLHSTMT stmt, SQLRETURN ret,
+                                          FetchBindingDiagnostics* diagnostics);
+static void AppendFetchBindingDiagnostics(py::handle messages,
+                                         const FetchBindingDiagnostics& diagnostics,
+                                         bool preserveFailure = false);
+
+SQLRETURN FetchBindingPlan::attach(SQLHSTMT stmt, FetchBindingDiagnostics* diagnostics) {
+    reusable = false;
+    needsReset = true;
+    SQLRETURN ret;
+    {
+        PERF_TIMER("fetch_bindings::SQLSetStmtAttr::ROW_ARRAY_SIZE");
+        ret = SQLSetStmtAttr_ptr(
+            stmt, SQL_ATTR_ROW_ARRAY_SIZE,
+            reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(fetchSize)), 0);
+    }
+    CaptureFetchBindingDiagnostics(stmt, ret, diagnostics);
+    if (!SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
+    SQLULEN activeSize = 0;
+    {
+        PERF_TIMER("fetch_bindings::SQLGetStmtAttr");
+        ret = SQLGetStmtAttr_ptr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, &activeSize, 0, nullptr);
+    }
+    CaptureFetchBindingDiagnostics(stmt, ret, diagnostics);
+    if (!SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
+    if (activeSize != static_cast<SQLULEN>(fetchSize)) {
+        throw std::runtime_error("ODBC changed the requested fetch row-array size");
+    }
+    driverMayReference = true;
+    {
+        PERF_TIMER("fetch_bindings::SQLSetStmtAttr::ROWS_FETCHED_PTR");
+        ret = SQLSetStmtAttr_ptr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &rowsFetched, 0);
+    }
+    CaptureFetchBindingDiagnostics(stmt, ret, diagnostics);
+    if (!SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
+    for (const auto& column : bindings) {
+        {
+            PERF_TIMER("fetch_bindings::SQLBindCol");
+            ret = SQLBindCol_ptr(stmt, column.column, column.cType, column.data,
+                                column.bufferLength, column.indicators);
+        }
+        CaptureFetchBindingDiagnostics(stmt, ret, diagnostics);
+        if (!SQL_SUCCEEDED(ret)) {
+            return ret;
+        }
+    }
+    reusable = true;
+    return ret;
+}
+
+SQLRETURN FetchBindingPlan::detach(SQLHSTMT stmt, FetchBindingDiagnostics* diagnostics) {
+    reusable = false;
+    if (!needsReset) {
+        return SQL_SUCCESS;
+    }
+    SQLRETURN ret;
+    {
+        PERF_TIMER("fetch_bindings::SQL_UNBIND");
+        ret = SQLFreeStmt_ptr(stmt, SQL_UNBIND);
+    }
+    CaptureFetchBindingDiagnostics(stmt, ret, diagnostics);
+    if (!SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
+    {
+        PERF_TIMER("fetch_bindings::SQLSetStmtAttr::ROWS_FETCHED_PTR");
+        ret = SQLSetStmtAttr_ptr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0);
+    }
+    CaptureFetchBindingDiagnostics(stmt, ret, diagnostics);
+    if (!SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
+    driverMayReference = false;
+    {
+        PERF_TIMER("fetch_bindings::SQLSetStmtAttr::ROW_ARRAY_SIZE");
+        ret = SQLSetStmtAttr_ptr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, reinterpret_cast<SQLPOINTER>(1), 0);
+    }
+    CaptureFetchBindingDiagnostics(stmt, ret, diagnostics);
+    if (SQL_SUCCEEDED(ret)) {
+        needsReset = false;
+    }
+    return ret;
+}
+
+namespace {
+
+inline SQLRETURN BeginResultTransition(const SqlHandlePtr& stmt) {
+    stmt->resultMetadata.clear();
+    return stmt->detachFetchBindings();
+}
+
+void ThrowFetchCleanupError(SQLSMALLINT type, SQLHANDLE handle, SQLRETURN ret,
+                            const char* operation) {
+    const auto error = SQLReadError(type, handle, ret);
+    std::string message = std::string(operation) + ": " + error.ddbcErrorMsg;
+    if (error.sqlState.size() == 5) {
+        message = "SQLSTATE:" + error.sqlState + ":" + message;
+    }
+    ThrowStdException(message);
+}
+
+}  // namespace
+
 // SqlHandle definition
 SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
                      std::shared_ptr<ConnectionCleanupState> cleanupState)
     : _type(type), _handle(rawHandle), _cleanupState(std::move(cleanupState)) {}
 
 SqlHandle::~SqlHandle() {
-    if (_handle) {
-        free();
+    try {
+        if (_handle) {
+            SQLRETURN ret = freeHandle();
+            if (!SQL_SUCCEEDED(ret)) {
+                // A failed free leaves a live handle. Detach if possible before
+                // the last plan owner applies its native-only emergency policy.
+                SQLRETURN detached = detachFetchBindings();
+                std::cerr << "mssql-python: native handle cleanup failed (" << ret
+                          << "), fetch buffer detach returned " << detached << '\n';
+            }
+        }
+    } catch (...) {
+        std::fputs("mssql-python: unexpected failure during native handle cleanup\n", stderr);
     }
 }
 
@@ -1574,7 +1694,7 @@ SQLSMALLINT SqlHandle::type() const {
 
 void SqlHandle::markImplicitlyFreed() {
     // SAFETY: Only STMT handles should be marked as implicitly freed.
-    // When a DBC handle is freed, the ODBC driver automatically frees all child STMT handles.
+    // Successful SQLDisconnect frees the connection's child statements.
     // Other handle types (ENV, DBC, DESC) are NOT automatically freed by parents.
     // Calling this on wrong handle types will cause silent handle leaks.
     if (_type != SQL_HANDLE_STMT) {
@@ -1586,6 +1706,7 @@ void SqlHandle::markImplicitlyFreed() {
         return;  // Refuse to mark - let normal free() handle it
     }
     resultMetadata.clear();
+    fetchBindings.nativeReleased();
     _implicitly_freed = true;
 }
 
@@ -1597,7 +1718,72 @@ void SqlHandle::markImplicitlyFreed() {
  * If you need destruction logs, use explicit close() methods instead.
  */
 void SqlHandle::free() {
-    freeHandle();
+    const bool hadFetchBindings = fetchBindings.hasPlan();
+    SQLRETURN ret = freeHandle();
+    if (hadFetchBindings && !SQL_SUCCEEDED(ret)) {
+        ThrowFetchCleanupError(_type, _handle, ret, "Freeing statement with retained fetch buffers");
+    }
+}
+
+SQLRETURN SqlHandle::detachFetchBindingsNative(FetchBindingDiagnostics* diagnostics) {
+    auto plan = fetchBindings.snapshot();
+    if (!plan) {
+        return SQL_SUCCESS;
+    }
+    if (_implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
+        fetchBindings.nativeReleased();
+        return SQL_SUCCESS;
+    }
+    if (!_handle || !SQLFreeStmt_ptr || !SQLSetStmtAttr_ptr) {
+        return SQL_INVALID_HANDLE;
+    }
+    SQLRETURN ret = plan->detach(_handle, diagnostics);
+    if (SQL_SUCCEEDED(ret)) {
+        fetchBindings.remove(plan);
+    }
+    return ret;
+}
+
+SQLRETURN SqlHandle::detachPresentFetchBindings(py::handle messages) {
+    auto plan = fetchBindings.snapshot();
+    if (!plan) {
+        return SQL_SUCCESS;
+    }
+    if (is_python_finalizing()) {
+        return SQL_ERROR;
+    }
+    FetchBindingDiagnostics diagnostics;
+    auto* sink = messages && !messages.is_none() ? &diagnostics : nullptr;
+    auto detachNative = [this, sink]() {
+        auto cleanupLock = lockForCleanup();
+        return detachFetchBindingsNative(sink);
+    };
+    SQLRETURN ret;
+    try {
+        if (PyGILState_Check()) {
+            py::gil_scoped_release release;
+            ret = detachNative();
+        } else {
+            ret = detachNative();
+        }
+    } catch (...) {
+        resultMetadata.clear();
+        AppendFetchBindingDiagnostics(messages, diagnostics, true);
+        throw;
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        resultMetadata.clear();
+    }
+    // No Python objects or callbacks while the native cleanup gate is held.
+    AppendFetchBindingDiagnostics(messages, diagnostics, !SQL_SUCCEEDED(ret));
+    return ret;
+}
+
+void SqlHandle::requireDetachedFetchBindings() {
+    SQLRETURN ret = detachFetchBindings();
+    if (!SQL_SUCCEEDED(ret)) {
+        ThrowFetchCleanupError(_type, _handle, ret, "Detaching retained fetch buffers");
+    }
 }
 
 SQLRETURN SqlHandle::freeHandle() {
@@ -1625,11 +1811,13 @@ SQLRETURN SqlHandle::freeHandle() {
         describeCache.clear();
         if (_implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
             _handle = nullptr;
+            fetchBindings.nativeReleased();
             return SQL_SUCCESS;
         }
         SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
         if (SQL_SUCCEEDED(ret)) {
             _handle = nullptr;
+            fetchBindings.nativeReleased();
         }
         return ret;
     };
@@ -1656,6 +1844,12 @@ void SqlHandle::close_cursor() {
         if (!SQLFreeStmt_ptr) {
             ThrowStdException("SQLFreeStmt function not loaded");
         }
+        if (fetchBindings.hasPlan()) {
+            SQLRETURN detached = detachFetchBindingsNative();
+            if (!SQL_SUCCEEDED(detached)) {
+                return detached;
+            }
+        }
         return SQLFreeStmt_ptr(_handle, SQL_CLOSE);
     };
     SQLRETURN ret;
@@ -1666,7 +1860,7 @@ void SqlHandle::close_cursor() {
         ret = closeNative();
     }
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
-        ThrowStdException("SQLFreeStmt(SQL_CLOSE) failed");
+        ThrowFetchCleanupError(_type, _handle, ret, "SQLFreeStmt(SQL_CLOSE)/fetch cleanup failed");
     }
 }
 
@@ -1706,7 +1900,9 @@ SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
     if (statementHandle->isImplicitlyFreed()) {
         return SQL_INVALID_HANDLE;
     }
-    statementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(statementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLFreeStmt_ptr) {
         DriverLoader::getInstance().loadDriver();
     }
@@ -1728,7 +1924,9 @@ SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
 
 SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataType) {
     PERF_TIMER("SQLGetTypeInfo_Wrapper");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLGetTypeInfo_ptr) {
         ThrowStdException("SQLGetTypeInfo function not loaded");
     }
@@ -1741,7 +1939,9 @@ SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataT
 SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
                              const py::object& schemaObj, const py::object& procedureObj) {
     PERF_TIMER("SQLProcedures_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLProcedures_ptr) {
         ThrowStdException("SQLProcedures function not loaded");
     }
@@ -1766,7 +1966,9 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pk
                               const py::object& fkCatalogObj, const py::object& fkSchemaObj,
                               const py::object& fkTableObj) {
     PERF_TIMER("SQLForeignKeys_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLForeignKeys_ptr) {
         ThrowStdException("SQLForeignKeys function not loaded");
     }
@@ -1799,7 +2001,9 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, const py::object& pk
 SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, const py::object& catalogObj,
                               const py::object& schemaObj, const std::u16string& table) {
     PERF_TIMER("SQLPrimaryKeys_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLPrimaryKeys_ptr) {
         ThrowStdException("SQLPrimaryKeys function not loaded");
     }
@@ -1822,7 +2026,9 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, const py::object& cat
                              const py::object& schemaObj, const std::u16string& table,
                              SQLUSMALLINT unique, SQLUSMALLINT reserved) {
     PERF_TIMER("SQLStatistics_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLStatistics_ptr) {
         ThrowStdException("SQLStatistics function not loaded");
     }
@@ -1845,7 +2051,9 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
                           const py::object& schemaObj, const py::object& tableObj,
                           const py::object& columnObj) {
     PERF_TIMER("SQLColumns_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLColumns_ptr) {
         ThrowStdException("SQLColumns function not loaded");
     }
@@ -1911,8 +2119,16 @@ ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN re
     return errorInfo;
 }
 
+static void AppendDiagRecord(py::handle records, const std::string& state,
+                             const std::string& message) {
+    py::tuple record = py::make_tuple(py::str(state), py::str(message));
+    if (PyList_Append(records.ptr(), record.ptr()) < 0)
+        throw py::error_already_set();
+}
+
 static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::handle records,
-                              bool internalTruncation = false) {
+                              bool internalTruncation = false,
+                              FetchBindingDiagnostics* nativeRecords = nullptr) {
     // Iterate through all available diagnostic records
     for (SQLSMALLINT recNumber = 1;; recNumber++) {
         SQLWCHAR sqlState[6] = {0};
@@ -1962,10 +2178,35 @@ static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::h
         // Format the state string
         std::string stateWithError = "[" + stateStr + "] (" + std::to_string(nativeError) + ")";
 
-        // Create the tuple with converted strings
-        py::tuple record = py::make_tuple(py::str(stateWithError), py::str(msgStr));
-        if (PyList_Append(records.ptr(), record.ptr()) < 0)
-            throw py::error_already_set();
+        if (nativeRecords)
+            nativeRecords->emplace_back(std::move(stateWithError), std::move(msgStr));
+        else
+            AppendDiagRecord(records, stateWithError, msgStr);
+    }
+}
+
+static void CaptureFetchBindingDiagnostics(SQLHSTMT stmt, SQLRETURN ret,
+                                          FetchBindingDiagnostics* diagnostics) {
+    if (diagnostics && (ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA))
+        AppendDiagRecords(stmt, SQL_HANDLE_STMT, {}, false, diagnostics);
+}
+
+static void AppendFetchBindingDiagnostics(py::handle messages,
+                                         const FetchBindingDiagnostics& diagnostics,
+                                         bool preserveFailure) {
+    try {
+        for (const auto& record : diagnostics)
+            AppendDiagRecord(messages, record.first, record.second);
+    } catch (py::error_already_set& error) {
+        if (!preserveFailure)
+            throw;
+        error.discard_as_unraisable("fetch binding diagnostics");
+    } catch (const std::exception& error) {
+        if (!preserveFailure)
+            throw;
+        std::fputs("mssql-python: failed to append fetch binding diagnostics: ", stderr);
+        std::fputs(error.what(), stderr);
+        std::fputc('\n', stderr);
     }
 }
 
@@ -2000,7 +2241,9 @@ static void CheckFetchError(const SqlHandlePtr& handle, SQLRETURN ret) {
 // Wrap SQLExecDirect
 SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::u16string& Query) {
     PERF_TIMER("SQLExecDirect_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     LOG("SQLExecDirect: Executing query directly - statement_handle=%p, "
         "query_length=%zu chars",
         (void*)StatementHandle->get(), Query.length());
@@ -2037,7 +2280,9 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
                          const std::u16string& schema, const std::u16string& table,
                          const std::u16string& tableType) {
     PERF_TIMER("SQLTables_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLTables_ptr) {
         LOG("SQLTables: Function pointer not initialized, loading driver");
         DriverLoader::getInstance().loadDriver();
@@ -2084,7 +2329,9 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         return SQL_INVALID_HANDLE;
     }
 
-    statementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(statementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     SQLHANDLE hStmt = statementHandle->get();
 
     // Configure forward-only / read-only cursor (matches slow path semantics).
@@ -2886,7 +3133,9 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                               std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
                               const py::dict& encodingSettings) {
     PERF_TIMER("SQLExecuteMany_wrap");
-    statementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(statementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     LOG("SQLExecuteMany: Starting batch execution - param_count=%zu, "
         "param_set_size=%zu",
         columnwise_params.size(), paramSetSize);
@@ -3171,7 +3420,9 @@ SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT ident
                                  const std::u16string& table, SQLSMALLINT scope,
                                  SQLSMALLINT nullable) {
     PERF_TIMER("SQLSpecialColumns_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     if (!SQLSpecialColumns_ptr) {
         ThrowStdException("SQLSpecialColumns function not loaded");
     }
@@ -3193,6 +3444,9 @@ SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT ident
 // Wrap SQLFetch to retrieve rows
 SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
     PERF_TIMER("SQLFetch_wrap");
+    if (SQLRETURN ret = StatementHandle->detachFetchBindings(); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     LOG("SQLFetch: Fetching next row for statement_handle=%p", (void*)StatementHandle->get());
     if (!SQLFetch_ptr) {
         LOG("SQLFetch: Function pointer not initialized, loading driver");
@@ -3397,6 +3651,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                           const std::string& wcharEncoding = "utf-16le",
                           int charCtype = SQL_C_WCHAR, py::handle messages = {}) {
     PERF_TIMER("SQLGetData_wrap");
+    if (SQLRETURN ret = StatementHandle->detachFetchBindings(nullptr, messages);
+        !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
     (void)wcharEncoding;  // Suppress unused parameter warning
@@ -4206,9 +4464,16 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    // Unbind any columns from previous fetch operations to avoid memory
-    // corruption
-    SQLFreeStmt_ptr(StatementHandle->get(), SQL_UNBIND);
+    bool hadFetchPlan;
+    if (SQLRETURN ret = StatementHandle->detachFetchBindings(&hadFetchPlan); !SQL_SUCCEEDED(ret)) {
+        ThrowFetchCleanupError(SQL_HANDLE_STMT, StatementHandle->get(), ret,
+                               "Detaching retained fetch buffers before scroll");
+        return ret;
+    }
+    if (!hadFetchPlan) {
+        PERF_TIMER("fetch_bindings::SQL_UNBIND");
+        SQLFreeStmt_ptr(StatementHandle->get(), SQL_UNBIND);
+    }
 
     // Perform scroll operation
     SQLRETURN ret = SQL_ERROR;
@@ -4236,10 +4501,20 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 template <typename Metadata>
 SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& columnNames,
                         SQLUSMALLINT numCols, int fetchSize, int charCtype = SQL_C_WCHAR,
-                        py::handle messages = {}) {
+                        py::handle messages = {},
+                        std::vector<FetchColumnBinding>* bindings = nullptr) {
     PERF_TIMER("SQLBindColums");
     SQLRETURN ret = SQL_SUCCESS;
     const bool useWideChar = (charCtype == SQL_C_WCHAR);
+    auto bindColumn = [bindings](SQLHSTMT stmt, SQLUSMALLINT column, SQLSMALLINT cType,
+                                 SQLPOINTER data, SQLLEN length, SQLLEN* indicators) -> SQLRETURN {
+        if (bindings) {
+            bindings->push_back({column, cType, data, length, indicators});
+            return SQL_SUCCESS;
+        }
+        PERF_TIMER("fetch_bindings::SQLBindCol");
+        return SQLBindCol_ptr(stmt, column, cType, data, length, indicators);
+    };
     // Bind columns based on their data types
     for (SQLUSMALLINT col = 1; col <= numCols; col++) {
         const auto& columnMeta = GetFetchColumnMetadata(columnNames, col - 1);
@@ -4256,7 +4531,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
                     // returns UTF-16 data, avoiding code-page decode issues.
                     uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
                     buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
-                    ret = SQLBindCol_ptr(
+                    ret = bindColumn(
                         hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
                         fetchBufferSize * sizeof(SQLWCHAR), buffers.indicators[col - 1].data());
                 } else {
@@ -4267,7 +4542,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
                     uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 #endif
                     buffers.charBuffers[col - 1].resize(fetchSize * fetchBufferSize);
-                    ret = SQLBindCol_ptr(
+                    ret = bindColumn(
                         hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
                         fetchBufferSize * sizeof(SQLCHAR), buffers.indicators[col - 1].data());
                 }
@@ -4281,41 +4556,41 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
                 HandleZeroColumnSizeAtFetch(columnSize);
                 uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
                 buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
+                ret = bindColumn(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
                                      fetchBufferSize * sizeof(SQLWCHAR),
                                      buffers.indicators[col - 1].data());
                 break;
             }
             case SQL_INTEGER:
                 buffers.intBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_SLONG, buffers.intBuffers[col - 1].data(),
+                ret = bindColumn(hStmt, col, SQL_C_SLONG, buffers.intBuffers[col - 1].data(),
                                      sizeof(SQLINTEGER), buffers.indicators[col - 1].data());
                 break;
             case SQL_SMALLINT:
                 buffers.smallIntBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_SSHORT,
+                ret = bindColumn(hStmt, col, SQL_C_SSHORT,
                                      buffers.smallIntBuffers[col - 1].data(), sizeof(SQLSMALLINT),
                                      buffers.indicators[col - 1].data());
                 break;
             case SQL_TINYINT:
                 buffers.charBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_TINYINT, buffers.charBuffers[col - 1].data(),
+                ret = bindColumn(hStmt, col, SQL_C_TINYINT, buffers.charBuffers[col - 1].data(),
                                      sizeof(SQLCHAR), buffers.indicators[col - 1].data());
                 break;
             case SQL_BIT:
                 buffers.charBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_BIT, buffers.charBuffers[col - 1].data(),
+                ret = bindColumn(hStmt, col, SQL_C_BIT, buffers.charBuffers[col - 1].data(),
                                      sizeof(SQLCHAR), buffers.indicators[col - 1].data());
                 break;
             case SQL_REAL:
                 buffers.realBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_FLOAT, buffers.realBuffers[col - 1].data(),
+                ret = bindColumn(hStmt, col, SQL_C_FLOAT, buffers.realBuffers[col - 1].data(),
                                      sizeof(SQLREAL), buffers.indicators[col - 1].data());
                 break;
             case SQL_DECIMAL:
             case SQL_NUMERIC:
                 buffers.charBuffers[col - 1].resize(fetchSize * MAX_DIGITS_IN_NUMERIC);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
+                ret = bindColumn(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
                                      MAX_DIGITS_IN_NUMERIC * sizeof(SQLCHAR),
                                      buffers.indicators[col - 1].data());
                 break;
@@ -4323,38 +4598,38 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
             case SQL_FLOAT:
                 buffers.doubleBuffers[col - 1].resize(fetchSize);
                 ret =
-                    SQLBindCol_ptr(hStmt, col, SQL_C_DOUBLE, buffers.doubleBuffers[col - 1].data(),
+                    bindColumn(hStmt, col, SQL_C_DOUBLE, buffers.doubleBuffers[col - 1].data(),
                                    sizeof(SQLDOUBLE), buffers.indicators[col - 1].data());
                 break;
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
                 buffers.timestampBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(
+                ret = bindColumn(
                     hStmt, col, SQL_C_TYPE_TIMESTAMP, buffers.timestampBuffers[col - 1].data(),
                     sizeof(SQL_TIMESTAMP_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_BIGINT:
                 buffers.bigIntBuffers[col - 1].resize(fetchSize);
                 ret =
-                    SQLBindCol_ptr(hStmt, col, SQL_C_SBIGINT, buffers.bigIntBuffers[col - 1].data(),
+                    bindColumn(hStmt, col, SQL_C_SBIGINT, buffers.bigIntBuffers[col - 1].data(),
                                    sizeof(SQLBIGINT), buffers.indicators[col - 1].data());
                 break;
             case SQL_TYPE_DATE:
                 buffers.dateBuffers[col - 1].resize(fetchSize);
                 ret =
-                    SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_DATE, buffers.dateBuffers[col - 1].data(),
+                    bindColumn(hStmt, col, SQL_C_TYPE_DATE, buffers.dateBuffers[col - 1].data(),
                                    sizeof(SQL_DATE_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_SS_TIME2:
                 buffers.timeBuffers[col - 1].resize(fetchSize);
                 ret =
-                    SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIME2, buffers.timeBuffers[col - 1].data(),
+                    bindColumn(hStmt, col, SQL_C_SS_TIME2, buffers.timeBuffers[col - 1].data(),
                                    sizeof(SQL_SS_TIME2_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_GUID:
                 buffers.guidBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_GUID, buffers.guidBuffers[col - 1].data(),
+                ret = bindColumn(hStmt, col, SQL_C_GUID, buffers.guidBuffers[col - 1].data(),
                                      sizeof(SQLGUID), buffers.indicators[col - 1].data());
                 break;
             case SQL_SS_UDT:
@@ -4365,12 +4640,12 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
                 buffers.charBuffers[col - 1].resize(fetchSize * columnSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_BINARY, buffers.charBuffers[col - 1].data(),
+                ret = bindColumn(hStmt, col, SQL_C_BINARY, buffers.charBuffers[col - 1].data(),
                                      columnSize, buffers.indicators[col - 1].data());
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
                 buffers.datetimeoffsetBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIMESTAMPOFFSET,
+                ret = bindColumn(hStmt, col, SQL_C_SS_TIMESTAMPOFFSET,
                                      buffers.datetimeoffsetBuffers[col - 1].data(),
                                      sizeof(DateTimeOffset) * fetchSize,
                                      buffers.indicators[col - 1].data());
@@ -4400,12 +4675,12 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
 
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
-template <typename Metadata>
+template <bool CheckCapacity = false, typename Metadata>
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
                          const std::vector<SQLUSMALLINT>& lobColumns,
                          const std::string& charEncoding = "utf-16le", int charCtype = SQL_C_WCHAR,
-                         py::handle messages = {}) {
+                         py::handle messages = {}, SQLULEN rowCapacity = 0) {
     PERF_TIMER("FetchBatchData");
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
@@ -4425,6 +4700,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             "SQLRETURN=%d",
             ret);
         return ret;
+    }
+    if constexpr (CheckCapacity) {
+        if (numRowsFetched > rowCapacity) {
+            ThrowStdException("ODBC returned more rows than the bound fetch buffer capacity");
+        }
     }
     // Pre-cache column metadata to avoid repeated dictionary lookups.
     // The vectors below are consumed later by construct_rows, so they are
@@ -4933,13 +5213,24 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
     SQLRETURN ret = SQL_ERROR;
     ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
+    if (fetchSize <= 0) {
+        ThrowStdException("Native fetchmany requires a positive fetch size");
+    }
+    auto plan = StatementHandle->fetchBindings.snapshot();
+    const auto metadataSnapshot = StatementHandle->resultMetadata.snapshot();
+    if (plan && !plan->matches(metadataSnapshot, fetchSize, charEncoding, wcharEncoding, charCtype)) {
+        ret = StatementHandle->detachFetchBindings(nullptr, messages);
+        if (!SQL_SUCCEEDED(ret)) {
+            return ret;
+        }
+        plan.reset();
+    }
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle, messages);
 
     // Retrieve column metadata
-    auto snapshot = StatementHandle->resultMetadata.snapshot();
-    auto metadata = std::move(snapshot.metadata);
+    auto metadata = metadataSnapshot.metadata;
     const bool matches = metadata && numCols >= 0 &&
                          metadata->columns.size() == static_cast<size_t>(numCols);
     if (!matches || !metadata->namesValidated) {
@@ -4965,7 +5256,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             }
         }
         pending->namesValidated = true;
-        StatementHandle->resultMetadata.publish(snapshot.generation, pending);
+        StatementHandle->resultMetadata.publish(metadataSnapshot.generation, pending);
         metadata = std::move(pending);
     }
     ret = SQL_SUCCESS;
@@ -4987,6 +5278,12 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLULEN numRowsFetched = 0;
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
+        if (plan) {
+            ret = StatementHandle->detachFetchBindings(nullptr, messages);
+            if (!SQL_SUCCEEDED(ret)) {
+                return ret;
+            }
+        }
         LOG("FetchMany_wrap: LOB columns detected (%zu columns), using per-row "
             "SQLGetData path",
             lobColumns.size());
@@ -5012,6 +5309,60 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         return SQL_SUCCESS;
     }
 
+    if (StatementHandle->fetchBindings.eligible()) {
+        const ResultMetadataCache::Snapshot snapshot{metadataSnapshot.generation, metadata};
+        if (plan && plan->metadata != metadata) {
+            ret = StatementHandle->detachFetchBindings(nullptr, messages);
+            if (!SQL_SUCCEEDED(ret)) {
+                return ret;
+            }
+            plan.reset();
+        }
+        if (!plan) {
+            {
+                PERF_TIMER("fetch_bindings::plan_allocation");
+                plan = std::shared_ptr<FetchBindingPlan>(
+                    new FetchBindingPlan(snapshot, fetchSize, charEncoding, wcharEncoding, charCtype),
+                    FetchBindingPlan::Deleter{});
+            }
+            ret = SQLBindColums(hStmt, plan->buffers, columnNames, numCols, fetchSize, charCtype,
+                               messages, &plan->bindings);
+            if (!SQL_SUCCEEDED(ret)) {
+                return ret;
+            }
+            StatementHandle->fetchBindings.install(plan);
+            FetchBindingDiagnostics diagnostics;
+            try {
+                ret = plan->attach(hStmt, messages && !messages.is_none() ? &diagnostics : nullptr);
+            } catch (...) {
+                AppendFetchBindingDiagnostics(messages, diagnostics, true);
+                throw;
+            }
+            AppendFetchBindingDiagnostics(messages, diagnostics, !SQL_SUCCEEDED(ret));
+            if (!SQL_SUCCEEDED(ret)) {
+                return ret;
+            }
+        }
+        plan->resetValues();
+        ret = FetchBatchData<true>(hStmt, plan->buffers, columnNames, rows, numCols, plan->rowsFetched,
+                                   lobColumns, charEncoding, charCtype, messages, fetchSize);
+        if (ret == SQL_NO_DATA ||
+            (SQL_SUCCEEDED(ret) &&
+             StatementHandle->resultMetadata.snapshot().generation != metadataSnapshot.generation)) {
+            SQLRETURN detached = StatementHandle->detachFetchBindings(nullptr, messages);
+            if (!SQL_SUCCEEDED(detached)) {
+                ret = detached;
+            }
+        }
+        return ret;
+    }
+
+    if (plan) {
+        ret = StatementHandle->detachFetchBindings(nullptr, messages);
+        if (!SQL_SUCCEEDED(ret)) {
+            return ret;
+        }
+    }
     // Initialize column buffers
     ColumnBuffers buffers(numCols, fetchSize);
     FetchStateGuard fetchStateGuard(StatementHandle, messages);
@@ -5144,6 +5495,10 @@ int32_t days_from_civil(int y, int m, int d) {
 SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules, int arrowBatchSize,
                                int charCtype, py::handle messages = {}) {
     PERF_TIMER("FetchArrowBatch_wrap");
+    if (SQLRETURN ret = StatementHandle->detachFetchBindings(nullptr, messages);
+        !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     // Fetch narrow char data as SQL_C_CHAR if on Linux/macOS and configured by the user
     charCtype = EffectiveCharCtypeForFetch(charCtype, "utf-8");
 
@@ -6076,6 +6431,10 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
                         const std::string& wcharEncoding = "utf-16le", int charCtype = SQL_C_WCHAR,
                         py::handle messages = {}) {
     PERF_TIMER("FetchAll_wrap");
+    if (SQLRETURN ret = StatementHandle->detachFetchBindings(nullptr, messages);
+        !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
@@ -6247,13 +6606,20 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
     ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
     SQLHSTMT hStmt = StatementHandle->get();
 
-    // Unbind any columns from previous fetch operations (e.g., fetchmany)
-    // to avoid conflicts with SQLGetData. SQLGetData cannot be used on
-    // columns that are already bound.
-    ret = SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
-    CaptureFetchDiagnostics(hStmt, ret, messages);
-    if (!SQL_SUCCEEDED(ret))
+    bool hadFetchPlan;
+    ret = StatementHandle->detachFetchBindings(&hadFetchPlan, messages);
+    if (!SQL_SUCCEEDED(ret)) {
         return ret;
+    }
+    if (!hadFetchPlan) {
+        {
+            PERF_TIMER("fetch_bindings::SQL_UNBIND");
+            ret = SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+        }
+        CaptureFetchDiagnostics(hStmt, ret, messages);
+        if (!SQL_SUCCEEDED(ret))
+            return ret;
+    }
 
     // Assume hStmt is already allocated and a query has been executed
     {
@@ -6280,7 +6646,9 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
 // Wrap SQLMoreResults
 SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
     PERF_TIMER("SQLMoreResults_wrap");
-    StatementHandle->resultMetadata.clear();
+    if (SQLRETURN ret = BeginResultTransition(StatementHandle); !SQL_SUCCEEDED(ret)) {
+        return ret;
+    }
     LOG("SQLMoreResults_wrap: Check for more results");
     if (!SQLMoreResults_ptr) {
         LOG("SQLMoreResults_wrap: Function pointer not initialized. Loading "
@@ -6505,8 +6873,23 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           "Set the decimal separator character");
     m.def(
         "DDBCSQLSetStmtAttr",
-        [](SqlHandlePtr stmt, SQLINTEGER attr, py::object value) {
-            stmt->resultMetadata.clear();
+        [](SqlHandlePtr stmt, SQLINTEGER attr, py::object value) -> SQLRETURN {
+            if (SQLRETURN ret = BeginResultTransition(stmt); !SQL_SUCCEEDED(ret)) {
+                return ret;
+            }
+            switch (attr) {
+                case SQL_ATTR_ROW_ARRAY_SIZE:
+                case SQL_ATTR_ROW_BIND_TYPE:
+                case SQL_ATTR_ROW_BIND_OFFSET_PTR:
+                case SQL_ATTR_ROWS_FETCHED_PTR:
+                case SQL_ATTR_ROW_STATUS_PTR:
+                case SQL_ATTR_APP_ROW_DESC:
+                case SQL_ATTR_USE_BOOKMARKS:
+                    stmt->fetchBindings.disableReuse();
+                    break;
+                default:
+                    break;
+            }
             SQLPOINTER ptr_value;
             if (py::isinstance<py::int_>(value)) {
                 // For integer attributes like SQL_ATTR_QUERY_TIMEOUT

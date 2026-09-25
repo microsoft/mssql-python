@@ -396,6 +396,207 @@ def test_cpp_profiling_captures_query():
 
 @_needs_cpp
 @_needs_db
+@pytest.mark.parametrize("transition", ["size", "encoding", "result"])
+def test_fetchmany_reuses_bindings_until_transition(transition):
+    """Release + ENABLE_PROFILING=ON: count actual calls, isolated from other cursors."""
+    script = textwrap.dedent("""
+        import os
+        import sys
+
+        sys.path.insert(0, sys.argv[2])
+        import mssql_python as db
+        from mssql_python import ddbc_bindings as native
+
+        assert hasattr(native, "profiling")
+        transition = sys.argv[1]
+        query = (
+            "SELECT n, CAST(n AS VARCHAR(10)) AS txt "
+            "FROM (VALUES (1), (2), (3), (4), (5), (6)) AS v(n) ORDER BY n"
+        )
+
+        def counts(plans, binds, unbinds):
+            stats = native.profiling.get_stats()
+            for name, expected in (
+                ("plan_allocation", plans), ("SQLBindCol", binds), ("SQL_UNBIND", unbinds)
+            ):
+                key = "ddbc::fetch_bindings::" + name
+                if expected:
+                    assert key in stats, (key, stats)
+                    assert stats[key]["calls"] == expected, (key, stats)
+                else:
+                    assert key not in stats, (key, stats)
+
+        def fetch(cursor, size, first):
+            expected = [(n, str(n)) for n in range(first, min(first + size, 7))]
+            assert [tuple(row) for row in cursor.fetchmany(size)] == expected
+
+        try:
+            connection = db.connect(os.environ["DB_CONNECTION_STRING"], timeout=5)
+        except db.Error:
+            raise RuntimeError("SQL connection failed") from None
+        with connection, connection.cursor() as cursor:
+            connection.setdecoding(db.SQL_CHAR, encoding="ascii", ctype=db.SQL_CHAR)
+            cursor.execute(query)
+            native.profiling.reset()
+            native.profiling.enable()
+            try:
+                fetch(cursor, 1, 1)
+                counts(1, 2, 0)
+                fetch(cursor, 1, 2)
+                counts(1, 2, 0)
+                size, first = 1, 3
+                if transition == "size":
+                    size = 2
+                elif transition == "encoding":
+                    connection.setdecoding(
+                        db.SQL_CHAR, encoding="latin-1", ctype=db.SQL_CHAR
+                    )
+                else:
+                    cursor.execute(query)
+                    first = 1
+                fetch(cursor, size, first)
+                counts(2, 4, 1)
+                first += size
+                fetch(cursor, size, first)
+                counts(2, 4, 1)
+                first += size
+                while first <= 6:
+                    fetch(cursor, size, first)
+                    counts(2, 4, 1)
+                    first += size
+                assert cursor.fetchmany(size) == []
+                counts(2, 4, 2)
+            finally:
+                native.profiling.disable()
+                native.profiling.reset()
+        """)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-E",
+            "-c",
+            script,
+            transition,
+            os.path.dirname(os.path.dirname(perf_timer.__file__)),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@_needs_cpp
+@_needs_db
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows does not export the ODBC function-pointer globals"
+)
+@pytest.mark.parametrize("failure_point", ("unbind", "rows_fetched_ptr"))
+def test_fetchmany_failed_cleanup_blocks_reuse_until_cleanup_succeeds(failure_point):
+    """A failed detach must not permit fetching or replacing the retained binding plan."""
+    script = textwrap.dedent("""
+        import ctypes
+        import os
+        import sys
+
+        sys.path.insert(0, sys.argv[1])
+        import mssql_python as db
+        from mssql_python import ddbc_bindings as native
+
+        assert hasattr(native, "profiling")
+        assert os.path.realpath(native.module.__file__) == sys.argv[2]
+        library = ctypes.CDLL(sys.argv[2])
+        failure_point = sys.argv[3]
+        if failure_point == "unbind":
+            pointer_name = "SQLFreeStmt_ptr"
+            callback_type = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_void_p, ctypes.c_ushort)
+        else:
+            pointer_name = "SQLSetStmtAttr_ptr"
+            callback_type = ctypes.CFUNCTYPE(
+                ctypes.c_short, ctypes.c_void_p, ctypes.c_int32,
+                ctypes.c_void_p, ctypes.c_int32,
+            )
+        pointer = ctypes.c_void_p.in_dll(library, pointer_name)
+
+        def counts(expected, fetches):
+            stats = native.profiling.get_stats()
+            actual = tuple(
+                stats.get("ddbc::fetch_bindings::" + name, {}).get("calls", 0)
+                for name in ("plan_allocation", "SQLBindCol", "SQL_UNBIND")
+            )
+            assert actual == expected, (actual, expected, stats)
+            assert stats["ddbc::FetchBatchData::SQLFetchScroll_call"]["calls"] == fetches, stats
+
+        try:
+            connection = db.connect(os.environ["DB_CONNECTION_STRING"], timeout=5)
+        except db.Error:
+            raise RuntimeError("SQL connection failed") from None
+        with connection, connection.cursor() as cursor:
+            cursor.execute("SELECT n FROM (VALUES (1), (2), (3), (4)) AS v(n) ORDER BY n")
+            native.profiling.reset()
+            native.profiling.enable()
+            try:
+                assert [tuple(row) for row in cursor.fetchmany(2)] == [(1,), (2,)]
+                counts((1, 1, 0), 1)
+                original = pointer.value
+                assert original
+                original_call = callback_type(original)
+                failures = []
+
+                @callback_type
+                def fail_cleanup(handle, operation, *args):
+                    # Fail only SQL_UNBIND or clearing SQL_ATTR_ROWS_FETCHED_PTR.
+                    should_fail = (
+                        operation == 2 if failure_point == "unbind"
+                        else operation == 26 and args[0] is None
+                    )
+                    if should_fail:
+                        failures.append(handle)
+                        return -1  # SQL_ERROR, leaving the driver's pointers unchanged
+                    return original_call(handle, operation, *args)
+
+                try:
+                    pointer.value = ctypes.cast(fail_cleanup, ctypes.c_void_p).value
+                    for attempt, size in enumerate((3, 2), 1):
+                        rows = []
+                        ret = native.DDBCSQLFetchMany(
+                            cursor.hstmt, rows, size, cursor._cached_char_encoding,
+                            cursor._cached_wchar_encoding, cursor._cached_char_ctype,
+                        )
+                        assert ret == -1 and rows == [], (ret, rows)
+                        assert len(failures) == attempt, failures
+                        counts((1, 1, attempt), 1)
+                finally:
+                    pointer.value = original
+
+                assert [tuple(row) for row in cursor.fetchmany(2)] == [(3,), (4,)]
+                counts((2, 2, 3), 2)
+                assert cursor.fetchmany(2) == []
+                counts((2, 2, 4), 3)
+            finally:
+                native.profiling.disable()
+                native.profiling.reset()
+        """)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-E",
+            "-c",
+            script,
+            os.path.dirname(os.path.dirname(perf_timer.__file__)),
+            os.path.realpath(ddbc.module.__file__),
+            failure_point,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "retaining fetch buffers" not in result.stderr, result.stderr
+
+
+@_needs_cpp
+@_needs_db
 def test_cpp_timeline_captures_events():
     import mssql_python
 
