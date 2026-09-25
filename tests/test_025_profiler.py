@@ -508,13 +508,14 @@ def test_fetchmany_failed_unbind_blocks_reuse_until_cleanup_succeeds():
         free_stmt = ctypes.c_void_p.in_dll(library, "SQLFreeStmt_ptr")
         callback_type = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_void_p, ctypes.c_ushort)
 
-        def counts(expected):
+        def counts(expected, fetches):
             stats = native.profiling.get_stats()
             actual = tuple(
                 stats.get("ddbc::fetch_bindings::" + name, {}).get("calls", 0)
                 for name in ("plan_allocation", "SQLBindCol", "SQL_UNBIND")
             )
             assert actual == expected, (actual, expected, stats)
+            assert stats["ddbc::FetchBatchData::SQLFetchScroll_call"]["calls"] == fetches, stats
 
         try:
             connection = db.connect(os.environ["DB_CONNECTION_STRING"], timeout=5)
@@ -526,7 +527,7 @@ def test_fetchmany_failed_unbind_blocks_reuse_until_cleanup_succeeds():
             native.profiling.enable()
             try:
                 assert [tuple(row) for row in cursor.fetchmany(2)] == [(1,), (2,)]
-                counts((1, 1, 0))
+                counts((1, 1, 0), 1)
                 original = free_stmt.value
                 assert original
                 original_call = callback_type(original)
@@ -549,14 +550,14 @@ def test_fetchmany_failed_unbind_blocks_reuse_until_cleanup_succeeds():
                         )
                         assert ret == -1 and rows == [], (ret, rows)
                         assert len(failures) == attempt, failures
-                        counts((1, 1, attempt))
+                        counts((1, 1, attempt), 1)
                 finally:
                     free_stmt.value = original
 
                 assert [tuple(row) for row in cursor.fetchmany(2)] == [(3,), (4,)]
-                counts((2, 2, 3))
+                counts((2, 2, 3), 2)
                 assert cursor.fetchmany(2) == []
-                counts((2, 2, 4))
+                counts((2, 2, 4), 3)
             finally:
                 native.profiling.disable()
                 native.profiling.reset()
