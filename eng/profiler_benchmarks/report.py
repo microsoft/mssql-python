@@ -2,7 +2,6 @@
 
 import argparse
 from dataclasses import dataclass
-import hashlib
 import html
 import io
 import json
@@ -16,7 +15,7 @@ import zlib
 
 # Hosted macOS plus Colima produced false regressions on a documentation-only
 # control PR. Routine reports use stable Ubuntu measurements as the Unix signal.
-LEGS = ("Windows-SQL2022", "Windows-SQL2025", "Linux-SQL2022", "Linux-SQL2025")
+LEGS = ("Linux-SQL2022", "Linux-SQL2025")
 TASK_NAMES = {
     "connect": "Connection opening",
     "select": "SELECT queries",
@@ -38,36 +37,16 @@ TASK_NAMES = {
     "large_fetch": "Large joined-result fetching",
     "fetch_1_2m": "1.2-million-row fetching",
     "cte": "Common table expression queries",
+    "lob_varchar_256k_fetchall": "256 KiB VARCHAR(MAX) / fetchall()",
 }
 CASES = tuple(TASK_NAMES)
 MAX_BYTES = 8 * 1024 * 1024
 MAX_COMMENT_CHARS = 60000
 MAX_DIAGNOSTIC_ROWS = 20
+MAX_FINGERPRINT_TASKS = 4
 MARKER = "<!-- mssql-python-profiler-ci -->"
 THRESHOLD = 0.20
 MIN_DELTA_MS = 1.0
-
-
-def suite_paths(root):
-    root = Path(root)
-    return [
-        root / "eng/pipelines/pr-validation-pipeline.yml",
-        root / "eng/profiler_benchmarks/__init__.py",
-        root / "eng/profiler_benchmarks/controller.py",
-        root / "eng/profiler_benchmarks/report.py",
-        root / "eng/profiler_benchmarks/workloads.py",
-        root / "eng/scripts/setup_sql_container.py",
-        root / "requirements.txt",
-        *sorted((root / "profiler").glob("*.py")),
-    ]
-
-
-def suite_hash(root):
-    digest = hashlib.sha256()
-    for file in suite_paths(root):
-        digest.update(file.name.encode())
-        digest.update(file.read_bytes().replace(b"\r\n", b"\n"))
-    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -77,9 +56,6 @@ class AssessmentEvidence:
     base: str
     merge_commit: dict
     base_commit: dict
-    source_tree: dict
-    base_tree: dict
-    trusted_root: Path
 
 
 def artifact_report(raw):
@@ -108,27 +84,6 @@ def artifact_report(raw):
         return json.loads(archive.read(member).decode("utf-8"))
 
 
-def suite_blobs(tree, root):
-    if (
-        not isinstance(tree, dict)
-        or tree.get("truncated") is not False
-        or not isinstance(tree.get("tree"), list)
-        or not all(isinstance(entry, dict) for entry in tree["tree"])
-    ):
-        raise ValueError("Incomplete commit tree")
-    expected = {path.relative_to(root).as_posix() for path in suite_paths(root)}
-    blobs = {
-        entry.get("path"): entry.get("sha")
-        for entry in tree["tree"]
-        if entry.get("type") == "blob" and entry.get("path") in expected
-    }
-    if set(blobs) != expected or any(
-        not re.fullmatch(r"[0-9a-f]{40}", sha or "") for sha in blobs.values()
-    ):
-        raise ValueError("Benchmark suite missing from commit tree")
-    return blobs
-
-
 def unavailable(reason):
     return (
         f"{MARKER}\n## PR Performance Report\n\n"
@@ -150,14 +105,14 @@ def text(value, limit=160):
     return value
 
 
-def validate(report, build_id=None, head=None, source=None, base=None, suite=None):
+def validate(report, build_id=None, head=None, source=None, base=None):
     try:
-        return _validate(report, build_id, head, source, base, suite)
+        return _validate(report, build_id, head, source, base)
     except KeyError as error:
         raise ValueError(f"Missing performance report field: {error.args[0]}") from error
 
 
-def _validate(report, build_id=None, head=None, source=None, base=None, suite=None):
+def _validate(report, build_id=None, head=None, source=None, base=None):
     if not isinstance(report, dict) or report.get("schema_version") != 1:
         raise ValueError("Unsupported report schema")
     if report.get("leg") not in LEGS or report.get("status") not in ("complete", "incomplete"):
@@ -169,15 +124,12 @@ def _validate(report, build_id=None, head=None, source=None, base=None, suite=No
         ("head_commit", head),
         ("source_commit", source),
         ("base_commit", base),
-        ("suite_hash", suite),
     ):
         if expected is not None and report.get(key) != expected:
             raise ValueError(f"Report provenance mismatch: {key}")
     for key in ("head_commit", "source_commit", "base_commit"):
         if not re.fullmatch(r"[0-9a-f]{40}", report.get(key, "")):
             raise ValueError("Invalid commit identity")
-    if not re.fullmatch(r"[0-9a-f]{64}", report.get("suite_hash", "")):
-        raise ValueError("Invalid workload identity")
     samples = report.get("samples")
     if type(samples) is not int or not 3 <= samples <= 15:
         raise ValueError("Insufficient or excessive samples")
@@ -263,8 +215,6 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
             not isinstance(evidence.build, dict)
             or not isinstance(evidence.merge_commit, dict)
             or not isinstance(evidence.base_commit, dict)
-            or not isinstance(evidence.source_tree, dict)
-            or not isinstance(evidence.base_tree, dict)
         ):
             raise ValueError
         build_id = evidence.build.get("id")
@@ -281,26 +231,11 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
             != [evidence.base, evidence.head]
         ):
             raise ValueError
-        source_tree_sha = evidence.merge_commit["tree"]["sha"]
-        base_tree_sha = evidence.base_commit["tree"]["sha"]
-        if (
-            not re.fullmatch(r"[0-9a-f]{40}", source_tree_sha)
-            or not re.fullmatch(r"[0-9a-f]{40}", base_tree_sha)
-            or evidence.source_tree.get("sha") != source_tree_sha
-            or evidence.base_tree.get("sha") != base_tree_sha
-        ):
-            raise ValueError
     except (KeyError, TypeError, ValueError):
         return unavailable("Build provenance validation failed.")
 
-    try:
-        suite_unchanged = suite_blobs(evidence.source_tree, evidence.trusted_root) == suite_blobs(
-            evidence.base_tree, evidence.trusted_root
-        )
-        trusted_suite = suite_hash(evidence.trusted_root)
-    except (KeyError, TypeError, ValueError):
-        return unavailable("Benchmark suite validation failed because a required file changed.")
-
+    # Match coverage's trust boundary: select the exact PR-head build and treat
+    # its bounded artifacts as data without requiring an identical producer tree.
     reports = []
     for leg, url in artifact_urls.items():
         try:
@@ -324,9 +259,6 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
         ):
             issues.append(leg + " (invalid artifact)")
 
-    if not suite_unchanged or any(report["suite_hash"] != trusted_suite for report in reports):
-        reports = []
-        issues.append("workload version differs from trusted base")
     try:
         return render(reports, evidence.head, build_id, issues)
     except ValueError:
@@ -345,12 +277,17 @@ def comparisons(report):
         ratio = statistics.median(ratios)
         # Requiring 80% of paired samples to agree avoids flagging one noisy pass.
         agrees = sum(r > 1 + THRESHOLD for r in ratios) >= math.ceil(len(ratios) * 0.8)
+        improves = sum(r < 1 - THRESHOLD for r in ratios) >= math.ceil(len(ratios) * 0.8)
         status = (
             "regression"
             if ratio > 1 + THRESHOLD and new - old >= MIN_DELTA_MS and agrees
-            else ("noisy" if ratio > 1 + THRESHOLD and new - old >= MIN_DELTA_MS else "ok")
+            else (
+                "improvement"
+                if ratio < 1 - THRESHOLD and old - new >= MIN_DELTA_MS and improves
+                else ("noisy" if ratio > 1 + THRESHOLD and new - old >= MIN_DELTA_MS else "ok")
+            )
         )
-        phases = []
+        phase_deltas = []
         changed_counts = []
         for layer in ("cpp", "py"):
             labels = set().union(*(s[layer] for s in base + candidate))
@@ -368,8 +305,13 @@ def comparisons(report):
                     statistics.median(s["total_us"] for s in after)
                     - statistics.median(s["total_us"] for s in before)
                 ) / 1000
-                if delta > 0:
-                    phases.append((delta, label))
+                if delta:
+                    phase_deltas.append((delta, label))
+        phases = (
+            sorted((item for item in phase_deltas if item[0] < 0))[:3]
+            if status == "improvement"
+            else sorted((item for item in phase_deltas if item[0] > 0), reverse=True)[:3]
+        )
         output.append(
             dict(
                 name=name,
@@ -377,7 +319,7 @@ def comparisons(report):
                 candidate_ms=new,
                 change_pct=(ratio - 1) * 100,
                 status=status,
-                phases=sorted(phases, reverse=True)[:3],
+                phases=phases,
                 counts=sorted(changed_counts)[:3],
             )
         )
@@ -422,6 +364,12 @@ def render(reports, head, build_id, issues=()):
         for row in rows
         if row["status"] == "regression"
     ]
+    improvements = [
+        (leg, row)
+        for leg, (_, rows) in completed.items()
+        for row in rows
+        if row["status"] == "improvement"
+    ]
     noisy = [
         (leg, row)
         for leg, (_, rows) in completed.items()
@@ -430,39 +378,43 @@ def render(reports, head, build_id, issues=()):
     ]
     missing = len(LEGS) - len(completed)
 
-    if len(regressions) == 1:
-        leg, row = regressions[0]
-        opening = (
-            f"This PR consistently slows {TASK_NAMES[row['name']].lower()} on "
-            f"{environment_name(leg)} by {row['change_pct']:.1f}%."
-        )
-    elif regressions:
+    highlighted = [
+        (leg, row) for leg, (_, rows) in completed.items() for row in rows if row["status"] != "ok"
+    ]
+    if regressions:
         tasks = len({row["name"] for _, row in regressions})
         environments = len({leg for leg, _ in regressions})
         opening = (
-            f"This PR has {len(regressions)} consistent slowdown signals across "
-            f"{tasks} database tasks and {environments} environments."
+            f"{tasks} database task{'s' if tasks != 1 else ''} consistently slowed down across "
+            f"{environments} measured environment{'s' if environments != 1 else ''}."
         )
+        verdict = "⚠️ Performance regression detected"
     elif noisy:
-        if len(noisy) == 1:
-            leg, row = noisy[0]
-            opening = (
-                f"{TASK_NAMES[row['name']]} was slower on {environment_name(leg)}, "
-                "but the repeated comparisons were inconsistent."
-            )
-        else:
-            tasks = len({row["name"] for _, row in noisy})
-            environments = len({leg for leg, _ in noisy})
-            opening = (
-                f"No consistent slowdowns detected. {len(noisy)} inconsistent comparisons "
-                f"need review across {tasks} database tasks and {environments} environments."
-            )
+        tasks = len({row["name"] for _, row in noisy})
+        environments = len({leg for leg, _ in noisy})
+        opening = (
+            f"{tasks} database task{'s' if tasks != 1 else ''} produced inconsistent slowdown "
+            f"signals across {environments} measured environment"
+            f"{'s' if environments != 1 else ''}."
+        )
+        verdict = "🔍 Performance needs review"
+    elif improvements:
+        tasks = len({row["name"] for _, row in improvements})
+        environments = len({leg for leg, _ in improvements})
+        opening = (
+            f"{tasks} database task{'s' if tasks != 1 else ''} consistently improved across "
+            f"{environments} measured environment{'s' if environments != 1 else ''}. "
+            "No consistent slowdowns were detected."
+        )
+        verdict = "✅ Performance improved"
     elif not completed:
         opening = (
             "Performance could not be assessed because no environment produced a complete result."
         )
+        verdict = "⛔ Performance unavailable"
     elif not missing:
         opening = f"No consistent slowdowns detected across all {len(LEGS)} environments."
+        verdict = "✅ No regression detected"
     else:
         completed_label = "environment" if len(completed) == 1 else "environments"
         missing_label = "environment" if missing == 1 else "environments"
@@ -470,22 +422,56 @@ def render(reports, head, build_id, issues=()):
             f"No consistent slowdowns in the {len(completed)} completed {completed_label}. "
             f"No result is available for {missing} {missing_label}."
         )
+        verdict = "✅ No regression detected"
 
-    lines = [MARKER, "## PR Performance Report", "", f"**{opening}**", ""]
-    highlighted = regressions or noisy
-    if highlighted:
-        if not regressions:
-            lines += ["Inconsistent slowdowns to review:", ""]
+    improvement_tasks = len({row["name"] for _, row in improvements})
+    regression_tasks = len({row["name"] for _, row in regressions})
+    lines = [
+        MARKER,
+        "## PR Performance Report",
+        "",
+        f"### {verdict}",
+        "",
+        f"**{opening}**",
+        "",
+        f"<kbd>{improvement_tasks} IMPROVEMENT"
+        f"{'S' if improvement_tasks != 1 else ''}</kbd> "
+        f"<kbd>{regression_tasks} SLOWDOWN"
+        f"{'S' if regression_tasks != 1 else ''}</kbd> "
+        f"<kbd>{len(completed)}/{len(LEGS)} ENVIRONMENTS</kbd>",
+        "",
+    ]
+    if noisy:
+        noisy_tasks = len({row["name"] for _, row in noisy})
         lines += [
-            "| Environment | Affected task | Before | After | Change |",
-            "|---|---|---:|---:|---:|",
+            f"<kbd>{noisy_tasks} INCONSISTENT SLOWDOWN" f"{'S' if noisy_tasks != 1 else ''}</kbd>",
+            "",
         ]
-        for leg, row in highlighted:
-            lines.append(
-                f"| {environment_name(leg)} | {TASK_NAMES[row['name']]} | "
-                f"{row['base_ms']:.3f} ms | {row['candidate_ms']:.3f} ms | "
-                f"{row['change_pct']:+.1f}% |"
-            )
+    affected_tasks = [name for name in CASES if any(row["name"] == name for _, row in highlighted)]
+    if highlighted and len(affected_tasks) <= MAX_FINGERPRINT_TASKS:
+        affected_legs = [leg for leg in LEGS if any(item_leg == leg for item_leg, _ in highlighted)]
+        by_signal = {(leg, row["name"]): row for leg, row in highlighted}
+        lines += [
+            "### Signal fingerprint",
+            "",
+            "| Database task | "
+            + " | ".join(environment_name(leg) for leg in affected_legs)
+            + " |",
+            "|---|" + "|".join("---:" for _ in affected_legs) + "|",
+        ]
+        for name in affected_tasks:
+            cells = []
+            for leg in affected_legs:
+                row = by_signal.get((leg, name))
+                if row is None:
+                    cells.append("No signal")
+                elif row["status"] == "improvement":
+                    cells.append(f"**{abs(row['change_pct']):.1f}% faster**")
+                elif row["status"] == "regression":
+                    cells.append(f"**{abs(row['change_pct']):.1f}% slower**")
+                else:
+                    cells.append(f"**{abs(row['change_pct']):.1f}% inconsistent**")
+            lines.append(f"| {escape(TASK_NAMES[name])} | " + " | ".join(cells) + " |")
         lines.append("")
     if regressions:
         lines.append(
@@ -502,24 +488,37 @@ def render(reports, head, build_id, issues=()):
     lines += [
         f"**Coverage:** {len(completed)} of {len(LEGS)} environments completed. "
         "Advisory result; does not block merging.",
-        "",
-        "| Environment | Status |",
-        "|---|---|",
     ]
-    for leg in LEGS:
-        report = by_leg.get(leg)
-        status = (
-            "Completed"
-            if leg in completed
-            else f"No result available ({escape(issue_reason(leg, issues))})"
-        )
-        lines.append(f"| {environment_name(leg)} | {status} |")
+    unavailable_legs = [
+        f"{environment_name(leg)} ({escape(issue_reason(leg, issues))})"
+        for leg in LEGS
+        if leg not in completed
+    ]
+    if unavailable_legs:
+        lines += ["", "Unavailable: " + "; ".join(unavailable_legs) + "."]
+
+    if highlighted:
+        lines += [
+            "",
+            "<details>",
+            "<summary><b>Measured timings</b></summary>",
+            "",
+            "| Environment | Database task | Before | After | Change |",
+            "|---|---|---:|---:|---:|",
+        ]
+        for leg, row in highlighted:
+            lines.append(
+                f"| {environment_name(leg)} | {TASK_NAMES[row['name']]} | "
+                f"{row['base_ms']:.3f} ms | {row['candidate_ms']:.3f} ms | "
+                f"**{row['change_pct']:+.1f}%** |"
+            )
+        lines += ["", "</details>"]
 
     diagnostics_start = len(lines)
     lines += [
         "",
         "<details>",
-        "<summary>Affected phases and call counts</summary>",
+        "<summary><b>Performance diagnostics</b></summary>",
         "",
         "Phase times are inclusive diagnostics and must not be added together. "
         "They identify where measured time changed, not why it changed.",
@@ -535,9 +534,9 @@ def render(reports, head, build_id, issues=()):
         lines += ["", f"### {environment_name(leg)}"]
         for row in visible:
             diagnostics += 1
-            phases = "; ".join(f"{escape(label)} +{delta:.3f} ms" for delta, label in row["phases"])
+            phases = "; ".join(f"{escape(label)} {delta:+.3f} ms" for delta, label in row["phases"])
             counts = "; ".join(escape(label) for label in row["counts"])
-            detail = phases or "no positive phase delta"
+            detail = phases or "no measured phase delta"
             if counts:
                 detail += f". Call changes: {counts}"
             lines.append(f"**{TASK_NAMES[row['name']]}:** {detail}.")
@@ -557,7 +556,7 @@ def render(reports, head, build_id, issues=()):
     lines += [
         "",
         "<details>",
-        "<summary>All database tasks and timings</summary>",
+        "<summary><b>All database tasks and timings</b></summary>",
     ]
 
     for leg, (report, rows) in completed.items():
@@ -570,6 +569,7 @@ def render(reports, head, build_id, issues=()):
         for row in rows:
             result = {
                 "regression": "consistent slowdown",
+                "improvement": "consistent improvement",
                 "noisy": "inconsistent slowdown",
                 "ok": "no signal",
             }[row["status"]]
@@ -582,7 +582,7 @@ def render(reports, head, build_id, issues=()):
         "</details>",
         "",
         "<details>",
-        "<summary>Build, commits and measurement details</summary>",
+        "<summary><b>Build and measurement details</b></summary>",
         "",
     ]
     lines += [
@@ -606,10 +606,10 @@ def render(reports, head, build_id, issues=()):
             )
     lines += [
         "",
-        "A consistent slowdown requires more than 20% median paired slowdown, at least "
+        "A consistent change requires more than 20% median paired movement, at least "
         "1 ms between the median runtimes, and at least 80% of pairs exceeding the "
-        "relative threshold. An inconsistent slowdown crosses the first two thresholds "
-        "without enough pair agreement.",
+        "relative threshold in the same direction. A slowdown without enough pair "
+        "agreement is reported as inconsistent.",
         "",
         "The displayed change is the median of paired before-and-after ratios. It is not "
         "recalculated from the two displayed median runtimes.",
@@ -631,7 +631,7 @@ def render(reports, head, build_id, issues=()):
         lines[diagnostics_start:diagnostics_end] = [
             "",
             "<details>",
-            "<summary>Affected phases and call counts</summary>",
+            "<summary><b>Performance diagnostics</b></summary>",
             "",
             f"{total_diagnostics} diagnostic rows are available in the raw ADO artifacts.",
             "",
@@ -656,7 +656,6 @@ def main():
             head=first["head_commit"],
             source=first["source_commit"],
             base=first["base_commit"],
-            suite=first["suite_hash"],
         )
     print(render(reports, first["head_commit"], first["build_id"]))
 

@@ -64,6 +64,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `connect()` behaves exactly as before.
 
 ### Changed
+- Fetches reuse owned native metadata for stable columns within a result set;
+  `fetchmany()` avoids the Python metadata-dictionary roundtrip. Re-execution,
+  result transitions and statement/connection cleanup invalidate this metadata.
+  Public descriptions stay fresh, name-validation timing is preserved, and
+  `sql_variant` columns retain per-row descriptions and per-value probes.
+  Fetch buffers, decoding settings and converted values are not cached.
+- DATE, TIME, and TIMESTAMP fetch conversion uses checked CPython constructors
+  for the standard datetime types, while preserving cached substitute constructors,
+  their positional arguments and exceptions, and fractional-second truncation.
+  DATETIMEOFFSET, UUID, and Decimal conversion are unchanged.
 - `mssql-python` now depends on `mssql-python-rs==0.1.0` for `mssql_py_core`
   instead of embedding files owned by that separately published distribution.
 - **GH-769 deprecation policy:** The misplaced `GetInfoConstants` members
@@ -101,6 +111,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-754:** Pooled connections are now rolled back and restored to autocommit
+  mode before being parked. This prevents an empty transaction from remaining
+  visible on an idle SQL Server session after `Connection.close()`. Abandoned
+  native connections also roll back pending work before disconnecting during
+  normal object destruction. Statement-handle allocation and cleanup are
+  synchronized with disconnect, including cleanup invoked by cursor finalizers.
 - Bounded text fetched as UTF-16 now preserves leading U+FEFF and U+FFFE as
   payload rather than treating them as byte-order markers. This corrects
   row-wise `fetchone()`, `fetchmany()`, and `fetchall()` results, including
