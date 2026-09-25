@@ -1,7 +1,7 @@
 """Asynchronous statement execution through mssql-py-core."""
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..exceptions import OperationalError, ProgrammingError
@@ -85,29 +85,42 @@ async def execute(
 async def executemany(
     cursor: "_AsyncCursor",
     operation: str,
-    seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
+    seq_of_parameters: Iterable[Sequence[Any] | Mapping[str, Any]],
     *,
     use_prepare: bool = True,
 ) -> None:
-    """Execute a statement for every parameter row using the py-core async cursor."""
+    """Execute parameter rows from a synchronous iterable through py-core.
+
+    Py-core consumes and validates the iterable before dispatch; this is not
+    streaming execution. Asynchronous iterables are not supported.
+    """
     cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
-    batch_count = len(seq_of_parameters)
+    iteration_failed = False
+
+    def parameter_rows():
+        nonlocal iteration_failed
+        try:
+            yield from seq_of_parameters
+        except BaseException:
+            iteration_failed = True
+            raise
+
     logger.debug(
-        "AsyncCursor.executemany: starting; batch_count=%d; use_prepare=%s",
-        batch_count,
+        "AsyncCursor.executemany: starting; use_prepare=%s",
         use_prepare,
     )
     with translate_py_core_exceptions():
         executemany_awaitable = _get_py_core_async_cursor(cursor).executemany(
             operation,
-            seq_of_parameters,
+            parameter_rows(),
             use_prepare=use_prepare,
         )
     try:
         with translate_py_core_exceptions():
             await executemany_awaitable
     except (Exception, asyncio.CancelledError) as error:
-        _reconcile_failed_execution(cursor, error)
+        if not iteration_failed:
+            _reconcile_failed_execution(cursor, error)
         raise
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]
