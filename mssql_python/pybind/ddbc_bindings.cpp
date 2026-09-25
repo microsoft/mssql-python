@@ -12,6 +12,8 @@
 #include "param_detect.hpp"
 #include "py_ref.hpp"
 #include "py_type_cache.hpp"
+#include "fetch_temporal.hpp"
+#include "row_factory.hpp"
 #include "utf_utils.h"
 #include "fetch_text.hpp"
 
@@ -2729,8 +2731,9 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                             if (PyBytes_GET_SIZE(b.ptr()) != 16) {
                                 LOG("BindParameterArray: GUID bytes wrong "
                                     "length - param_index=%d, row=%zu, "
-                                    "length=%d",
-                                    paramIndex, i, PyBytes_GET_SIZE(b.ptr()));
+                                    "length=%lld",
+                                    paramIndex, i,
+                                    static_cast<long long>(PyBytes_GET_SIZE(b.ptr())));
                                 ThrowStdException("UUID binary data must be "
                                                   "exactly 16 bytes long.");
                             }
@@ -2757,8 +2760,8 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         strLenOrIndArray[i] = sizeof(SQLGUID);
                     }
                     LOG("BindParameterArray: SQL_C_GUID bound - "
-                        "param_index=%d, null=%zu, bytes=%zu, uuid_obj=%zu",
-                        paramIndex);
+                        "param_index=%d, count=%zu",
+                        paramIndex, paramSetSize);
                     dataPtr = guidArray;
                     bufferLength = sizeof(SQLGUID);
                     break;
@@ -3618,8 +3621,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_INTEGER: {
                 SQLINTEGER intValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, NULL);
-                if (SQL_SUCCEEDED(ret)) {
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     row.append(static_cast<int>(intValue));
                 } else {
                     row.append(py::none());
@@ -3628,7 +3632,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_SMALLINT: {
                 SQLSMALLINT smallIntValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<int>(smallIntValue));
                 } else {
@@ -3641,7 +3650,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_REAL: {
                 SQLREAL realValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(realValue);
                 } else {
@@ -3714,7 +3728,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_DOUBLE:
             case SQL_FLOAT: {
                 SQLDOUBLE doubleValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(doubleValue);
                 } else {
@@ -3727,7 +3746,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_BIGINT: {
                 SQLBIGINT bigintValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<long long>(bigintValue));
                 } else {
@@ -3740,11 +3764,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TYPE_DATE: {
                 SQL_DATE_STRUCT dateValue;
-                ret =
-                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
-                if (SQL_SUCCEEDED(ret)) {
-                    row.append(PyTypeCache::get_date_class_obj()(dateValue.year, dateValue.month,
-                                                                   dateValue.day));
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue),
+                                     &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                    row.append(
+                        FetchTemporal::date(dateValue.year, dateValue.month, dateValue.day));
                 } else {
                     row.append(py::none());
                 }
@@ -3756,7 +3781,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SS_TIME2, &t2, sizeof(t2), &indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
-                    row.append(PyTypeCache::get_time_class_obj()(
+                    row.append(FetchTemporal::time(
                         t2.hour, t2.minute, t2.second, t2.fraction / 1000));  // ns to µs
                 } else {
                     if (!SQL_SUCCEEDED(ret)) {
@@ -3772,10 +3797,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME: {
                 SQL_TIMESTAMP_STRUCT timestampValue;
+                SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
-                                     sizeof(timestampValue), NULL);
+                                     sizeof(timestampValue), &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(PyTypeCache::get_datetime_class_obj()(
+                    row.append(FetchTemporal::datetime(
                         timestampValue.year, timestampValue.month, timestampValue.day,
                         timestampValue.hour, timestampValue.minute, timestampValue.second,
                         timestampValue.fraction / 1000  // Convert back ns to µs
@@ -3877,7 +3907,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TINYINT: {
                 SQLCHAR tinyIntValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<int>(tinyIntValue));
                 } else {
@@ -3890,7 +3925,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_BIT: {
                 SQLCHAR bitValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, &indicator);
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(static_cast<bool>(bitValue));
                 } else {
@@ -4342,7 +4382,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             }
             if (dataLen == SQL_NO_TOTAL) {
                 LOG("Cannot determine the length of the data. Returning NULL "
-                    "value instead. Column ID - {}",
+                    "value instead. Column ID - %d",
                     col);
                 Py_INCREF(Py_None);
                 PyList_SET_ITEM(row, col - 1, Py_None);
@@ -4368,7 +4408,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             if (dataLen == 0) {
                 // Handle zero-length (non-NULL) data for complex types
                 LOG("Column data length is 0 for complex datatype. Setting "
-                    "None to the result row. Column ID - {}",
+                    "None to the result row. Column ID - %d",
                     col);
                 Py_INCREF(Py_None);
                 PyList_SET_ITEM(row, col - 1, Py_None);
@@ -4403,7 +4443,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and set
                         // py::none()
-                        LOG("Error converting to decimal: {}", e.what());
+                        LOG("Error converting to decimal: %s", e.what());
                         Py_INCREF(Py_None);
                         PyList_SET_ITEM(row, col - 1, Py_None);
                     }
@@ -4413,32 +4453,23 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
-                    PyObject* datetimeObj = PyTypeCache::get_datetime_class_obj()(
-                                                ts.year, ts.month, ts.day, ts.hour, ts.minute,
-                                                ts.second, ts.fraction / 1000)
-                                                .release()
-                                                .ptr();
-                    PyList_SET_ITEM(row, col - 1, datetimeObj);
+                    py::object datetimeObj = FetchTemporal::datetime(
+                        ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second,
+                        ts.fraction / 1000);
+                    PyList_SET_ITEM(row, col - 1, datetimeObj.release().ptr());
                     break;
                 }
                 case SQL_TYPE_DATE: {
-                    PyObject* dateObj =
-                        PyTypeCache::get_date_class_obj()(buffers.dateBuffers[col - 1][i].year,
-                                                            buffers.dateBuffers[col - 1][i].month,
-                                                            buffers.dateBuffers[col - 1][i].day)
-                            .release()
-                            .ptr();
-                    PyList_SET_ITEM(row, col - 1, dateObj);
+                    const SQL_DATE_STRUCT& value = buffers.dateBuffers[col - 1][i];
+                    py::object dateObj = FetchTemporal::date(value.year, value.month, value.day);
+                    PyList_SET_ITEM(row, col - 1, dateObj.release().ptr());
                     break;
                 }
                 case SQL_SS_TIME2: {
                     const SQL_SS_TIME2_STRUCT& t2 = buffers.timeBuffers[col - 1][i];
-                    PyObject* timeObj =
-                        PyTypeCache::get_time_class_obj()(t2.hour, t2.minute, t2.second,
-                                                            t2.fraction / 1000)  // ns to µs
-                            .release()
-                            .ptr();
-                    PyList_SET_ITEM(row, col - 1, timeObj);
+                    py::object timeObj =
+                        FetchTemporal::time(t2.hour, t2.minute, t2.second, t2.fraction / 1000);
+                    PyList_SET_ITEM(row, col - 1, timeObj.release().ptr());
                     break;
                 }
                 case SQL_SS_TIMESTAMPOFFSET: {
@@ -5005,7 +5036,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 errorString << "Unsupported data type for Arrow batch fetch for column - "
                             << columnName.c_str() << ", Type - " << dataType << ", column ID - "
                             << (i + 1);
-                LOG(errorString.str().c_str());
+                LOG("FetchArrowBatch: %s", errorString.str().c_str());
                 ThrowStdException(errorString.str());
                 break;
         }
@@ -5530,7 +5561,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         std::ostringstream errorString;
                         errorString << "Unsupported data type for column ID - " << (idxCol + 1)
                                     << ", Type - " << dataType;
-                        LOG(errorString.str().c_str());
+                        LOG("FetchArrowBatch: %s", errorString.str().c_str());
                         ThrowStdException(errorString.str());
                         break;
                     }
@@ -6221,6 +6252,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
+
+    // Fast Row construction in C++ — replaces Python list comprehension
+    m.def("construct_rows", &RowFactory::construct_rows,
+          "Build Row objects in C++ for fetchall/fetchmany fast path",
+          py::arg("rows_data"), py::arg("row_class"),
+          py::arg("column_map"), py::arg("cursor"),
+          py::arg("column_map_lower") = py::none(),
+          py::arg("column_names") = py::none());
 
     // Expose logger bridge function to Python
     m.def("update_log_level", &mssql_python::logging::LoggerBridge::updateLevel,

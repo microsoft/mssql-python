@@ -377,10 +377,13 @@ if(MSVC)
 endif()
 
 # Add warning flags for GCC/Clang on Linux and macOS
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
     target_compile_options(ddbc_bindings PRIVATE 
         -Werror        # Treat warnings as errors
         -Wattributes   # Enable attribute warnings (cross-compiler)
+        -Wformat=2     # Check nonliteral formats and printf argument types
+        -Werror=format-security  # Explicitly keep format-security diagnostics fatal
     )
     
     # GCC-specific warning flags
