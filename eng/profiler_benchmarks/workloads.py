@@ -1,6 +1,8 @@
 """Fixed workloads shared by the base and candidate profiler benchmark builds."""
 
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from threading import Barrier, Event
 import time
 
 from profiler import scenarios
@@ -163,6 +165,80 @@ def lob_fetch(conn, ctx):
             ctx.disable()
 
 
+def _connect_close(connection_string):
+    from mssql_python import connect
+
+    connect(connection_string).close()
+
+
+def _prewarm_pool(connection_string, connections):
+    from mssql_python import connect
+
+    opened = []
+    try:
+        for _ in range(connections):
+            opened.append(connect(connection_string))
+    finally:
+        for connection in opened:
+            connection.close()
+
+
+def pooled_connect_close(connection_string, ctx, connections=1000):
+    """Measure steady-state pooled checkout/check-in, including close."""
+    _prewarm_pool(connection_string, 1)
+    ctx.enable()
+    try:
+        start = time.perf_counter()
+        for _ in range(connections):
+            _connect_close(connection_string)
+        wall_ms = (time.perf_counter() - start) * 1000
+        cpp, py = ctx.collect()
+        return dict(
+            title="Pooled connection lifecycle",
+            wall_ms=wall_ms,
+            cpp=cpp,
+            py=py,
+            detail=f"Connections: {connections}; workers: 1",
+        )
+    finally:
+        ctx.disable()
+
+
+def pooled_parallel_connect_close(connection_string, ctx, workers=10, connections_per_worker=100):
+    """Measure concurrent steady-state pooled checkout/check-in."""
+    _prewarm_pool(connection_string, workers)
+    ready = Barrier(workers + 1)
+    start_workers = Event()
+
+    def worker():
+        ready.wait()
+        start_workers.wait()
+        for _ in range(connections_per_worker):
+            _connect_close(connection_string)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(worker) for _ in range(workers)]
+        ready.wait()
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            start_workers.set()
+            for future in futures:
+                future.result()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            return dict(
+                title="Parallel pooled connection lifecycle",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Connections: {workers * connections_per_worker}; workers: {workers}",
+            )
+        finally:
+            start_workers.set()
+            ctx.disable()
+
+
 def registry():
     """Keep every PR #552 scenario, including its existing timing boundaries."""
     result = dict(scenarios.SCENARIOS)
@@ -176,4 +252,6 @@ def registry():
     )
     result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
     result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
+    result["pooled_connect_close"] = (pooled_connect_close, False)
+    result["pooled_parallel_connect_close"] = (pooled_parallel_connect_close, False)
     return result

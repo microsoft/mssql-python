@@ -687,9 +687,13 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert len(reporting.CASES) == 21
+    assert len(reporting.CASES) == 23
     assert [name for name in reporting.CASES if name.startswith("lob_")] == [
         "lob_varchar_256k_fetchall",
+    ]
+    assert [name for name in reporting.CASES if name.startswith("pooled_")] == [
+        "pooled_connect_close",
+        "pooled_parallel_connect_close",
     ]
 
 
@@ -746,6 +750,48 @@ def test_lob_workload_rejects_invalid_results_and_always_disables(problem):
     context.collect.return_value = ({}, {})
     with pytest.raises(RuntimeError if problem == "error" else AssertionError):
         benchmark_workloads.lob_fetch(connection, context)
+    context.disable.assert_called_once()
+
+
+def test_pooled_connect_close_prewarms_and_times_repeated_lifecycles(monkeypatch):
+    context = MagicMock()
+    context.collect.return_value = ({"cpp": {}}, {"py": {}})
+    prewarm = MagicMock()
+    connect_close = MagicMock()
+    monkeypatch.setattr(benchmark_workloads, "_prewarm_pool", prewarm)
+    monkeypatch.setattr(benchmark_workloads, "_connect_close", connect_close)
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", MagicMock(side_effect=[1, 1.1]))
+
+    result = benchmark_workloads.pooled_connect_close("connection", context, connections=3)
+
+    prewarm.assert_called_once_with("connection", 1)
+    assert connect_close.call_count == 3
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["detail"] == "Connections: 3; workers: 1"
+    context.enable.assert_called_once()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+
+
+def test_parallel_pooled_connect_close_prewarms_and_runs_each_worker(monkeypatch):
+    context = MagicMock()
+    context.collect.return_value = ({"cpp": {}}, {"py": {}})
+    prewarm = MagicMock()
+    connect_close = MagicMock()
+    monkeypatch.setattr(benchmark_workloads, "_prewarm_pool", prewarm)
+    monkeypatch.setattr(benchmark_workloads, "_connect_close", connect_close)
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", MagicMock(side_effect=[1, 1.1]))
+
+    result = benchmark_workloads.pooled_parallel_connect_close(
+        "connection", context, workers=2, connections_per_worker=3
+    )
+
+    prewarm.assert_called_once_with("connection", 2)
+    assert connect_close.call_count == 6
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["detail"] == "Connections: 6; workers: 2"
+    context.enable.assert_called_once()
+    context.collect.assert_called_once()
     context.disable.assert_called_once()
 
 
