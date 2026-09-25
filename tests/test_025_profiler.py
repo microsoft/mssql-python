@@ -435,7 +435,7 @@ def test_fetchmany_reuses_bindings_until_transition(transition):
         except db.Error:
             raise RuntimeError("SQL connection failed") from None
         with connection, connection.cursor() as cursor:
-            connection.setdecoding(db.SQL_CHAR, encoding="utf-16le", ctype=db.SQL_WCHAR)
+            connection.setdecoding(db.SQL_CHAR, encoding="ascii", ctype=db.SQL_CHAR)
             cursor.execute(query)
             native.profiling.reset()
             native.profiling.enable()
@@ -449,7 +449,7 @@ def test_fetchmany_reuses_bindings_until_transition(transition):
                     size = 2
                 elif transition == "encoding":
                     connection.setdecoding(
-                        db.SQL_CHAR, encoding="utf-16-le", ctype=db.SQL_WCHAR
+                        db.SQL_CHAR, encoding="latin-1", ctype=db.SQL_CHAR
                     )
                 else:
                     cursor.execute(query)
