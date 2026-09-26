@@ -1565,7 +1565,13 @@ class TestCustomTokenProviderConnect:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_concurrent_connections_with_same_token_provider(self, mock_ddbc_conn):
         """Concurrent connect() calls with one token provider should succeed."""
-        mock_ddbc_conn.return_value = MagicMock()
+
+        def create_native_connection(*_args, **_kwargs):
+            native_connection = MagicMock()
+            native_connection.get_autocommit.return_value = True
+            return native_connection
+
+        mock_ddbc_conn.side_effect = create_native_connection
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
         from mssql_python import connect

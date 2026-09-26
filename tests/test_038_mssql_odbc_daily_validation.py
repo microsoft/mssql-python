@@ -12,7 +12,9 @@ from xml.etree import ElementTree
 ROOT = Path(__file__).parents[1]
 RUNNER = ROOT / "eng" / "scripts" / "run-mssql-odbc-tests.sh"
 PIPELINE = ROOT / "eng" / "pipelines" / "mssql-odbc-daily-validation-pipeline.yml"
+PR_PIPELINE = ROOT / "eng" / "pipelines" / "pr-validation-pipeline.yml"
 PREFLIGHT = ROOT / "eng" / "scripts" / "verify_mssql_odbc_provider.py"
+RS_WHEEL_SELECTOR = ROOT / "eng" / "scripts" / "select_mssql_python_rs_wheel.py"
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "runner requires Linux GNU timeout and bash")
@@ -143,12 +145,76 @@ class PipelineContractTests(unittest.TestCase):
         self.assertIn('exit "$cleanup_rc"', pipeline)
         self.assertIn("grep -q 'MSSQL_ODBC_PREFLIGHT_OK'", pipeline)
 
-    def test_stable_rs_transport_is_pinned(self):
+    def test_rs_transport_is_pinned(self):
         version = (ROOT / "eng" / "versions" / "mssql-python-rs-nuget.version").read_text(
             encoding="ascii"
         )
 
-        self.assertEqual(version.strip(), "0.1.0")
+        self.assertEqual(version.strip(), "0.2.0-nightly.20260924")
+
+    def test_python_315_validation_adds_preview_matrix_legs(self):
+        pipeline = PR_PIPELINE.read_text(encoding="utf-8")
+        active_python_versions = {
+            line.split(":", 1)[1].strip(" '\"")
+            for line in pipeline.splitlines()
+            if line.lstrip().startswith("pythonVersion:")
+        }
+
+        self.assertEqual(active_python_versions, {"3.13", "3.14", "3.15.0-rc.2"})
+        self.assertIn("python:3.15.0rc2-bookworm", pipeline)
+
+    def test_python_315_validation_installs_pyarrow_nightly(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+
+        self.assertIn("scientific-python-nightly-wheels", requirements)
+        self.assertIn('pyarrow==26.0.0.dev296; python_version >= "3.15"', requirements)
+
+    def test_rs_wheel_selection_accepts_abi3_on_newer_python(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wheels = Path(directory)
+            abi3 = wheels / "mssql_python_rs-0.2.0-cp310-abi3-win_amd64.whl"
+            abi3.touch()
+
+            selected = subprocess.run(
+                [
+                    sys.executable,
+                    str(RS_WHEEL_SELECTOR),
+                    str(wheels),
+                    "0.2.0",
+                    "cp315",
+                    "win_amd64",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertEqual(Path(selected.stdout.strip()), abi3)
+
+    def test_rs_wheel_selection_prefers_exact_python_wheel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wheels = Path(directory)
+            (wheels / "mssql_python_rs-0.2.0-cp310-abi3-win_amd64.whl").touch()
+            exact = wheels / "mssql_python_rs-0.2.0-cp315-cp315-win_amd64.whl"
+            exact.touch()
+
+            selected = subprocess.run(
+                [
+                    sys.executable,
+                    str(RS_WHEEL_SELECTOR),
+                    str(wheels),
+                    "0.2.0",
+                    "cp315",
+                    "win_amd64",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertEqual(Path(selected.stdout.strip()), exact)
 
 
 if __name__ == "__main__":
