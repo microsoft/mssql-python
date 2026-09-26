@@ -393,3 +393,21 @@ if(APPLE)
     target_compile_definitions(ddbc_bindings PRIVATE MACOS_STRING_FIX)
     target_compile_options(ddbc_bindings PRIVATE -DAPPLE_SILICON)
 endif()
+
+# Exercise the real connection/pool/handle code against deterministic ODBC
+# function pointers, without shipping test hooks in the extension.
+option(BUILD_NATIVE_POOL_TESTS "Build database-free native pool sanitation tests" OFF)
+if(BUILD_NATIVE_POOL_TESTS)
+    find_package(Python3 COMPONENTS Development REQUIRED)
+    get_target_property(pool_test_sources ddbc_bindings SOURCES)
+    add_executable(pool_sanitation_tests ${pool_test_sources}
+        ../../tests/native/pool_sanitation.cpp)
+    foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS)
+        set_property(TARGET pool_sanitation_tests PROPERTY ${property}
+            $<TARGET_PROPERTY:ddbc_bindings,${property}>)
+    endforeach()
+    target_link_libraries(pool_sanitation_tests PRIVATE
+        Python3::Python simdutf::simdutf ${CMAKE_DL_LIBS})
+    enable_testing()
+    add_test(NAME pool_sanitation COMMAND pool_sanitation_tests)
+endif()
