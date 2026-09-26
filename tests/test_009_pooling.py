@@ -199,6 +199,13 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
                     None,
                     None,
                 ),
+                (
+                    "explicit transaction with noexec",
+                    True,
+                    "BEGIN TRANSACTION; SELECT 1; SET NOEXEC ON",
+                    None,
+                    None,
+                ),
             )
             expected_spid = None
             for name, autocommit, sql, params, action in scenarios:

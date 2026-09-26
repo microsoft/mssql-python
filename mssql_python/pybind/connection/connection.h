@@ -111,6 +111,9 @@ class Connection {
     // Only successful rollback + AUTOCOMMIT_ON establishes this proof. A new
     // login or deferred SQL_ATTR_RESET_CONNECTION alone does not establish it.
     mutable bool _poolClean = false;
+    // True only after check-in has triggered the driver reset and restored the
+    // default isolation level. This permits checkout to skip a duplicate reset.
+    mutable bool _poolSessionReset = false;
     // Escaped raw handles and arbitrary/deferred attributes cannot be tracked.
     mutable bool _poolProofDisabled = false;
     SqlHandlePtr _dbcHandle;

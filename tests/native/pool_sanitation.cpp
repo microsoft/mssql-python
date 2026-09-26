@@ -18,6 +18,7 @@ struct Handle {
     bool autocommit = true;
     bool transaction = false;
     bool pendingWork = false;
+    bool resetPending = false;
     SQLULEN loginTimeout = 0;
 };
 
@@ -95,6 +96,8 @@ SQLRETURN SQL_API setAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value, S
             handle.transaction = handle.pendingWork = false;
         }
         handle.autocommit = value != nullptr;
+    } else if (attribute == SQL_ATTR_RESET_CONNECTION) {
+        handle.resetPending = true;
     } else if (attribute == SQL_ATTR_LOGIN_TIMEOUT && length == SQL_IS_INTEGER) {
         handle.loginTimeout = reinterpret_cast<SQLULEN>(value);
     }
@@ -123,6 +126,19 @@ SQLRETURN SQL_API endTran(SQLSMALLINT, SQLHANDLE dbc, SQLSMALLINT completion) {
         handle.pendingWork = false;
         // Model the empty manual-mode transaction that motivated PR #777.
         handle.transaction = true;
+    }
+    return ret;
+}
+
+SQLRETURN SQL_API executeDirect(SQLHSTMT statement, SQLWCHAR*, SQLINTEGER) {
+    auto& handle = *handles.at(handles.at(statement)->parent);
+    if (handle.resetPending) {
+        handle.transaction = handle.pendingWork = false;
+        handle.resetPending = false;
+    }
+    auto ret = record("rollback_batch");
+    if (SQL_SUCCEEDED(ret)) {
+        handle.transaction = handle.pendingWork = false;
     }
     return ret;
 }
@@ -234,6 +250,7 @@ int main() {
     SQLDriverConnect_ptr = login;
     SQLSetConnectAttr_ptr = setAttr;
     SQLGetConnectAttr_ptr = getAttr;
+    SQLExecDirect_ptr = executeDirect;
     SQLEndTran_ptr = endTran;
     SQLDisconnect_ptr = disconnect;
     SQLGetInfo_ptr = getInfo;
@@ -251,9 +268,11 @@ int main() {
             auto connection = acquire();
             calls.clear();
             connection->close();
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             for (int i = 0; i < 100; ++i) {
+                calls.clear();
                 connection = acquire();
+                expectCalls({"alive"});
                 connection->setAutocommit(true);
                 calls.clear();
                 connection->close(true);
@@ -273,7 +292,7 @@ int main() {
                     "Login timeout was not applied exactly once");
             calls.clear();
             connection->close(true);
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             for (int i = 0; i < 100; ++i) {
                 connection = acquire(true, attrs);
                 connection->setAutocommit(true);
@@ -294,7 +313,7 @@ int main() {
             connection->setAttr(SQL_ATTR_LOGIN_TIMEOUT, py::int_(30));
             calls.clear();
             connection->close();
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             checkParked();
             connection = acquire();
             calls.clear();
@@ -324,7 +343,7 @@ int main() {
                 connection = acquire();
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             });
         }
         for (const py::object& value : std::vector<py::object>{
@@ -336,11 +355,11 @@ int main() {
                 connection->setAttr(SQL_ATTR_LOGIN_TIMEOUT, value);
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
                 connection = acquire();
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             });
         }
         for (const py::object& value : std::vector<py::object>{
@@ -351,11 +370,11 @@ int main() {
                 expectFailure([&] { connection->setAttr(SQL_ATTR_LOGIN_TIMEOUT, value); });
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
                 connection = acquire();
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             });
         }
         run("failed login-timeout application releases capacity without login", [] {
@@ -369,7 +388,7 @@ int main() {
                     "Failed timeout application did not release pool capacity");
             calls.clear();
             connection->close();
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
         });
         run("manual mode rolls back once and parks in autocommit", [] {
             warm();
@@ -387,7 +406,7 @@ int main() {
             statement.reset();
             calls.clear();
             connection->close();
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             connection = acquire();
             calls.clear();
             connection->close();
@@ -400,7 +419,7 @@ int main() {
             expectFailure([&] { connection->allocStatementHandle(); });
             calls.clear();
             connection->close();
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
         });
         run("explicit transaction and retained statement alias across leases", [] {
             warm();
@@ -418,7 +437,7 @@ int main() {
             startWork(statement);
             calls.clear();
             connection->close();
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             checkParked();
             statement.reset();
             connection = acquire();
@@ -441,7 +460,7 @@ int main() {
             connection->close();
             checkParked();
         });
-        for (const auto* operation : {"get", "off", "rollback", "on"}) {
+        for (const auto* operation : {"get", "reset", "allocate_statement", "rollback_batch", "free"}) {
             run(operation, [operation] {
                 auto connection = acquire();
                 auto statement = connection->allocStatementHandle();
@@ -452,9 +471,25 @@ int main() {
                 expectFailure([&] { connection->close(); });
                 require(std::find(calls.begin(), calls.end(), "disconnect") != calls.end(),
                         "Failed sanitation did not disconnect");
-                if (std::string(operation) != "on") {
+                require(commits == 0, "Failure cleanup committed work");
+                connection = acquire();
+                require(logins == 2, "Discard did not release capacity / replace DBC");
+                connection->close();
+                checkParked();
+            });
+        }
+        for (const auto* operation : {"rollback", "on"}) {
+            run("manual-mode sanitation failure", [operation] {
+                auto connection = acquire();
+                connection->setAutocommit(false);
+                calls.clear();
+                failNext = operation;
+                expectFailure([&] { connection->close(); });
+                require(std::find(calls.begin(), calls.end(), "disconnect") != calls.end(),
+                        "Failed manual-mode sanitation did not disconnect");
+                if (std::string(operation) == "rollback") {
                     require(std::find(calls.begin(), calls.end(), "on") == calls.end(),
-                            "Enabled autocommit after failed sanitation");
+                            "Enabled autocommit after failed rollback");
                 }
                 require(commits == 0, "Failure cleanup committed work");
                 connection = acquire();
@@ -472,7 +507,7 @@ int main() {
                 connection = acquire();
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             });
         }
         run("ordinary getinfo invalidates the current lease only", [] {
@@ -481,7 +516,7 @@ int main() {
             connection->getInfo(SQL_DBMS_NAME);
             calls.clear();
             connection->close();
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             connection = acquire();
             calls.clear();
             connection->close();
@@ -495,7 +530,7 @@ int main() {
             connection = acquire();
             calls.clear();
             connection->close();
-            expectCalls({"get", "off", "rollback", "on"});
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
         });
         for (bool fail : {false, true}) {
             run("generic set_attr including failure disables proof", [fail] {
@@ -510,14 +545,14 @@ int main() {
                 calls.clear();
                 connection->close();
                 if (fail) {
-                    expectCalls({"get", "off", "rollback", "on"});
+                    expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
                 } else {
                     expectCalls({"get", "rollback", "on"});
                 }
                 connection = acquire();
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             });
         }
         for (const auto* operation : {"commit", "rollback", "on", "off", "get"}) {
@@ -538,18 +573,20 @@ int main() {
                 });
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             });
         }
         for (const auto* operation : {"reset", "isolation"}) {
             run("failed deferred reset replaces the physical connection", [operation] {
-                warm();
-                failNext = operation;
                 auto connection = acquire();
+                connection->setAutocommit(false);
+                connection->close();
+                failNext = operation;
+                connection = acquire();
                 require(logins == 2, "Failed reset was reused");
                 calls.clear();
                 connection->close();
-                expectCalls({"get", "off", "rollback", "on"});
+                expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             });
         }
         run("abandonment rolls back and releases capacity", [] {
