@@ -282,7 +282,7 @@ def test_close_cleans_up_after_rollback_failure():
 
     mock_conn = MagicMock()
     mock_conn.get_autocommit.return_value = False
-    mock_conn.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+    mock_conn.close.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
 
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
         conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
@@ -290,8 +290,8 @@ def test_close_cleans_up_after_rollback_failure():
     with pytest.raises(OperationalError, match="Communication link failure"):
         conn.close()
 
-    mock_conn.rollback.assert_called_once_with()
-    mock_conn.close.assert_called_once_with(False)
+    mock_conn.rollback.assert_not_called()
+    mock_conn.close.assert_called_once_with(rollback_before_disconnect=True)
     assert conn._conn is None
     assert conn.closed
 
@@ -301,7 +301,7 @@ def test_close_cleans_up_after_autocommit_read_failure():
     from unittest.mock import MagicMock, patch
 
     mock_conn = MagicMock()
-    mock_conn.get_autocommit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+    mock_conn.close.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
 
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
         conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
@@ -310,13 +310,14 @@ def test_close_cleans_up_after_autocommit_read_failure():
         conn.close()
 
     mock_conn.rollback.assert_not_called()
-    mock_conn.close.assert_called_once_with(False)
+    mock_conn.get_autocommit.assert_not_called()
+    mock_conn.close.assert_called_once_with(rollback_before_disconnect=True)
     assert conn._conn is None
     assert conn.closed
 
 
-def test_close_reports_successful_rollback_to_native_cleanup():
-    """Native pool cleanup must not repeat a successful Python rollback."""
+def test_close_delegates_manual_transaction_cleanup_to_native():
+    """Only native close probes the mode and rolls back, without Python hints."""
     from unittest.mock import MagicMock, patch
 
     mock_conn = MagicMock()
@@ -327,8 +328,9 @@ def test_close_reports_successful_rollback_to_native_cleanup():
 
     conn.close()
 
-    mock_conn.rollback.assert_called_once_with()
-    mock_conn.close.assert_called_once_with(True)
+    mock_conn.get_autocommit.assert_not_called()
+    mock_conn.rollback.assert_not_called()
+    mock_conn.close.assert_called_once_with(rollback_before_disconnect=True)
 
 
 def test_autocommit_close_delegates_transaction_cleanup_to_native():
@@ -347,12 +349,13 @@ def test_autocommit_close_delegates_transaction_cleanup_to_native():
     conn.close()
 
     mock_conn.rollback.assert_not_called()
-    mock_conn.close.assert_called_once_with(False)
+    mock_conn.get_autocommit.assert_not_called()
+    mock_conn.close.assert_called_once_with(rollback_before_disconnect=True)
 
 
 @pytest.mark.parametrize("preclose_failure", ["autocommit", "rollback"])
-def test_native_close_error_takes_precedence_over_preclose_failure(preclose_failure):
-    """The native close error wins, but the wrapper still releases its handle."""
+def test_native_close_error_does_not_need_python_preclose_calls(preclose_failure):
+    """Native cleanup is authoritative even if Python probes would have failed."""
     from unittest.mock import MagicMock, patch
 
     mock_conn = MagicMock()
@@ -369,9 +372,31 @@ def test_native_close_error_takes_precedence_over_preclose_failure(preclose_fail
     with pytest.raises(OperationalError, match="Native close failed"):
         conn.close()
 
-    mock_conn.close.assert_called_once_with(False)
+    mock_conn.close.assert_called_once_with(rollback_before_disconnect=True)
+    mock_conn.get_autocommit.assert_not_called()
+    mock_conn.rollback.assert_not_called()
     assert conn._conn is None
     assert conn.closed
+
+
+def test_cursor_cleanup_failure_still_calls_native_close():
+    from unittest.mock import MagicMock, patch
+
+    native = MagicMock()
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=native):
+        conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
+    broken = MagicMock(closed=False)
+    broken.close.side_effect = RuntimeError("cursor cleanup failed")
+    healthy = MagicMock(closed=False)
+    conn._cursors = {broken, healthy}
+
+    conn.close()
+
+    broken.close.assert_called_once_with()
+    healthy.close.assert_called_once_with()
+    native.close.assert_called_once_with(rollback_before_disconnect=True)
+    assert conn.closed
+    assert conn._conn is None
 
 
 def test_truncate_error_message_successful_cases():
