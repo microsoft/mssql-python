@@ -37,6 +37,7 @@ TASK_NAMES = {
     "large_fetch": "Large joined-result fetching",
     "fetch_1_2m": "1.2-million-row fetching",
     "cte": "Common table expression queries",
+    "lob_varchar_256k_fetchall": "256 KiB VARCHAR(MAX) / fetchall()",
 }
 CASES = tuple(TASK_NAMES)
 MAX_BYTES = 8 * 1024 * 1024

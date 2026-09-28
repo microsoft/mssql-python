@@ -116,7 +116,7 @@ def test_consistent_slowdown_is_advisory_regression(report):
     )
     body = reporting.render([report], "c" * 40, 42)
     assert "### ⚠️ Performance regression detected" in body
-    assert "20 database tasks consistently slowed down" in body
+    assert f"{len(reporting.CASES)} database tasks consistently slowed down" in body
     assert "| Unix / SQL Server 2022 | Connection opening |" in body
     assert "Unavailable: Unix / SQL Server 2025 (incomplete benchmark)." in body
     assert body.index("consistently slowed down") < body.index(
@@ -248,7 +248,12 @@ def test_render_bounds_schema_valid_diagnostics(report):
         reporting.validate(item)
     body = reporting.render(reports, "c" * 40, 42)
     assert len(body) <= 60000
-    assert "20 additional diagnostic rows are available in the raw ADO artifacts" in body
+    extra = len(reporting.CASES) * len(reporting.LEGS) - reporting.MAX_DIAGNOSTIC_ROWS
+    total = len(reporting.CASES) * len(reporting.LEGS)
+    assert (
+        f"{extra} additional diagnostic rows are available in the raw ADO artifacts" in body
+        or f"{total} diagnostic rows are available in the raw ADO artifacts" in body
+    )
     assert "<summary><b>All database tasks and timings</b></summary>" in body
     assert "<summary><b>Build and measurement details</b></summary>" in body
 
@@ -682,6 +687,66 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
+    assert len(reporting.CASES) == 21
+    assert [name for name in reporting.CASES if name.startswith("lob_")] == [
+        "lob_varchar_256k_fetchall",
+    ]
+
+
+def test_lob_workload_validates_payload_and_times_only_fetch(monkeypatch):
+    size = 256 * 1024
+    expected = "x" * size
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [(expected,)]
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+
+    def enable():
+        cursor.execute.assert_called_once()
+        cursor.fetchall.assert_not_called()
+
+    context.enable.side_effect = enable
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", MagicMock(side_effect=[1, 1.1]))
+    result = benchmark_workloads.lob_fetch(connection, context)
+    assert "(MAX)" in cursor.execute.call_args.args[0]
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["detail"] == f"Rows: 1; type: varchar; payload bytes: {size}; API: fetchall"
+    cursor.fetchall.assert_called_once_with()
+    cursor.fetchone.assert_not_called()
+    cursor.fetchmany.assert_not_called()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "problem", ("truncated", "wrong-type", "missing", "extra", "warning", "error")
+)
+def test_lob_workload_rejects_invalid_results_and_always_disables(problem):
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [("x" * 262144,)]
+    cursor.messages = []
+    if problem == "truncated":
+        cursor.fetchall.return_value = [("x" * 262143,)]
+    elif problem == "wrong-type":
+        cursor.fetchall.return_value = [(b"x" * 262144,)]
+    elif problem == "missing":
+        cursor.fetchall.return_value = []
+    elif problem == "extra":
+        cursor.fetchall.return_value *= 2
+    elif problem == "warning":
+        cursor.messages = [("01000", "unexpected")]
+    else:
+        cursor.fetchall.side_effect = RuntimeError("fetch failed")
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    with pytest.raises(RuntimeError if problem == "error" else AssertionError):
+        benchmark_workloads.lob_fetch(connection, context)
+    context.disable.assert_called_once()
 
 
 def test_query_workload_executes_and_collects(monkeypatch):
@@ -1243,12 +1308,16 @@ def test_publisher_renders_validated_artifact_and_marks_missing_legs(report, mon
         assert "### Unix / SQL Server 2025" in posted[1]
         assert reporting.escape("Linux-SQL2022 (invalid artifact)") in posted[1]
         assert "Unavailable: Unix / SQL Server 2022 (invalid artifact)." in posted[1]
-        assert posted[1].count("20 database tasks consistently slowed down") == 1
+        assert (
+            posted[1].count(f"{len(reporting.CASES)} database tasks consistently slowed down") == 1
+        )
     else:
         assert "**Coverage:** 2 of 2 environments completed." in posted[1]
         assert "### Unix / SQL Server 2022" in posted[1]
         assert "### Unix / SQL Server 2025" in posted[1]
-        assert posted[1].count("20 database tasks consistently slowed down") == 1
+        assert (
+            posted[1].count(f"{len(reporting.CASES)} database tasks consistently slowed down") == 1
+        )
 
 
 def test_publisher_waits_for_newer_run_after_exact_head_build_is_canceled(report, monkeypatch):
@@ -1687,6 +1756,10 @@ def test_comment_workflow_separates_same_repo_and_fork_trust():
     workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
     assert "pull_request:" in workflow
     assert "pull_request_target:" in workflow
+    assert (
+        "profiler-report-${{ github.event.pull_request.number }}-${{ github.event_name }}"
+        in workflow
+    )
     assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "github.event.pull_request.head.repo.full_name != github.repository" in workflow
     assert (

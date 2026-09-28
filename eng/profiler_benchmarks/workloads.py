@@ -133,6 +133,36 @@ def legacy_insertmany(conn, ctx, input_sizes=False):
             conn.rollback()
 
 
+def lob_fetch(conn, ctx):
+    """Fetch one multi-chunk value; setup and exact-value validation are not timed."""
+    payload_bytes = 256 * 1024
+    expression = f"REPLICATE(CAST('x' AS VARCHAR(MAX)), {payload_bytes})"
+    expected = "x" * payload_bytes
+
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT {expression} AS payload")
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert len(rows) == 1
+            row = rows[0]
+            assert row is not None and len(row) == 1
+            assert type(row[0]) is type(expected) and row[0] == expected
+            assert not cursor.messages, "Clean LOB fetch unexpectedly produced diagnostics"
+            return dict(
+                title="Multi-chunk LOB fetch",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Rows: 1; type: varchar; payload bytes: {payload_bytes}; API: fetchall",
+            )
+        finally:
+            ctx.disable()
+
+
 def registry():
     """Keep every PR #552 scenario, including its existing timing boundaries."""
     result = dict(scenarios.SCENARIOS)
@@ -145,4 +175,5 @@ def registry():
         setinputsizes=(partial(legacy_insertmany, input_sizes=True), False),
     )
     result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
+    result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
     return result
