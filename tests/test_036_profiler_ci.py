@@ -1,6 +1,7 @@
 """Contract tests for paired performance comparisons and data-only PR reporting."""
 
 import copy
+from collections import namedtuple
 from http.client import IncompleteRead
 import importlib.util
 import io
@@ -687,10 +688,232 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert len(reporting.CASES) == 21
+    assert len(reporting.CASES) == 24
     assert [name for name in reporting.CASES if name.startswith("lob_")] == [
         "lob_varchar_256k_fetchall",
     ]
+    assert [name for name in reporting.CASES if name.startswith("catalog_")] == [
+        "catalog_columns_2",
+        "catalog_columns_118",
+        "catalog_columns_2111",
+    ]
+
+
+@pytest.fixture
+def catalog_workload(monkeypatch):
+    def build(row_count=118):
+        prefix = "profcat" + "a" * 32
+        row_type = namedtuple(
+            "CatalogRow",
+            "table_cat table_schem table_name column_name data_type type_name column_size "
+            "buffer_length decimal_digits num_prec_radix nullable remarks column_def "
+            "sql_data_type sql_datetime_sub char_octet_length ordinal_position is_nullable "
+            + " ".join(f"provider_{i}" for i in range(11)),
+        )
+        rows = [
+            row_type(
+                "catalog_db",
+                "dbo",
+                f"{prefix}{index // 704:02d}",
+                f"c{index % 704:04d}",
+                4,
+                "int",
+                10,
+                4,
+                0,
+                10,
+                1,
+                None,
+                None,
+                4,
+                None,
+                None,
+                index % 704 + 1,
+                "YES",
+                *([None] * 11),
+            )
+            for index in range(row_count)
+        ]
+        setup, cursor, reference = MagicMock(), MagicMock(), MagicMock()
+        for item in (setup, cursor, reference):
+            item.__enter__.return_value = item
+        setup.execute.return_value.fetchone.return_value = ("catalog_db",)
+        cursor.fetchall.return_value = rows
+        cursor.fetchone.return_value = None
+        cursor.description = [
+            (name, str, None, None, None, None, True) for name in row_type._fields
+        ]
+        cursor.messages = reference.messages = []
+        reference.description = copy.deepcopy(cursor.description)
+        reference.__iter__.side_effect = lambda: iter(rows)
+        connection = MagicMock(autocommit=False)
+        connection.cursor.side_effect = [setup, cursor, reference]
+        context = MagicMock()
+        counters = {
+            name: dict(calls=1, total_us=10, min_us=10, max_us=10)
+            for name in ("ddbc::SQLColumns_wrap", "ddbc::FetchAll_wrap")
+        }
+        context.collect.return_value = (counters, {})
+        clock = MagicMock(side_effect=[1, 1.1])
+        events = MagicMock()
+        for name, mock in (
+            ("cursor", connection.cursor),
+            ("setup", setup.execute),
+            ("enable", context.enable),
+            ("clock", clock),
+            ("columns", cursor.columns),
+            ("fetchall", cursor.fetchall),
+            ("collect", context.collect),
+            ("disable", context.disable),
+            ("eof", cursor.fetchone),
+            ("reference", reference.columns),
+            ("rollback", connection.rollback),
+        ):
+            events.attach_mock(mock, name)
+        monkeypatch.setattr(benchmark_workloads, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
+        monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+        return SimpleNamespace(
+            connection=connection,
+            context=context,
+            setup=setup,
+            cursor=cursor,
+            reference=reference,
+            rows=rows,
+            prefix=prefix,
+            events=events,
+        )
+
+    return build
+
+
+@pytest.mark.parametrize("row_count", (2, 118, 2111))
+def test_catalog_workload_measures_columns_and_drain_only(catalog_workload, row_count):
+    case = catalog_workload(row_count)
+    workload, needs_table = benchmark_workloads.registry()[f"catalog_columns_{row_count}"]
+    assert needs_table is False
+    result = workload(case.connection, case.context)
+    statements = [call.args[0] for call in case.setup.execute.call_args_list]
+    assert statements[0] == "SELECT DB_NAME()"
+    table_count = (row_count + 703) // 704
+    assert len(statements) == table_count + 1
+    assert [len(re.findall(r"\[c\d{4}\] INT NULL", sql)) for sql in statements[1:]] == [
+        min(704, row_count - start) for start in range(0, row_count, 704)
+    ]
+    assert all(
+        sql.startswith(f"CREATE TABLE [dbo].[{case.prefix}{i:02d}] (")
+        for i, sql in enumerate(statements[1:])
+    )
+    case.cursor.columns.assert_called_once_with(
+        catalog="catalog_db", schema="dbo", table=case.prefix + "%", column=None
+    )
+    assert case.reference.columns.call_args == case.cursor.columns.call_args
+    case.cursor.fetchall.assert_called_once_with()
+    case.cursor.fetchone.assert_called_once_with()
+    case.cursor.fetchmany.assert_not_called()
+    case.reference.fetchall.assert_not_called()
+    case.connection.commit.assert_not_called()
+    case.connection.rollback.assert_called_once_with()
+    names = [call[0] for call in case.events.mock_calls]
+    clocks = [index for index, name in enumerate(names) if name == "clock"]
+    assert names[clocks[0] + 1 : clocks[1]] == ["columns", "fetchall"]
+    assert names.index("enable") > max(i for i, name in enumerate(names) if name == "setup")
+    assert names[clocks[1] + 1 :] == [
+        "collect",
+        "disable",
+        "eof",
+        "cursor",
+        "reference",
+        "rollback",
+    ]
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["detail"] == (
+        f"Rows: {row_count}; tables: {table_count}; type: INT NULL; API: columns+fetchall"
+    )
+
+
+@pytest.mark.parametrize(
+    "problem",
+    (
+        "missing",
+        "order",
+        "type",
+        "schema",
+        "width",
+        "facts",
+        "eof",
+        "warning",
+        "reference-warning",
+        "columns-error",
+        "fetch-error",
+        "counter",
+    ),
+)
+def test_catalog_workload_rejects_invalid_results_and_rolls_back(catalog_workload, problem):
+    case = catalog_workload()
+    if problem == "missing":
+        case.cursor.fetchall.return_value = case.rows[:-1]
+    elif problem == "order":
+        case.cursor.fetchall.return_value = list(reversed(case.rows))
+    elif problem == "type":
+        case.reference.__iter__.side_effect = lambda: iter(
+            [case.rows[0]._replace(buffer_length=4.0), *case.rows[1:]]
+        )
+    elif problem == "schema":
+        case.reference.description[0] = ("changed", *case.reference.description[0][1:])
+    elif problem == "width":
+        case.cursor.description = case.cursor.description[:-1]
+    elif problem == "facts":
+        case.cursor.fetchall.return_value = [row._replace(nullable=0) for row in case.rows]
+    elif problem == "eof":
+        case.cursor.fetchone.return_value = case.rows[0]
+    elif problem == "warning":
+        case.cursor.messages = [("01000", "unexpected")]
+    elif problem == "reference-warning":
+        case.reference.messages = [("01000", "unexpected")]
+    elif problem in ("columns-error", "fetch-error"):
+        method = case.cursor.columns if problem == "columns-error" else case.cursor.fetchall
+        method.side_effect = RuntimeError("catalog failure")
+    else:
+        case.context.collect.return_value[0]["ddbc::SQLColumns_wrap"]["calls"] = 2
+    with pytest.raises(RuntimeError if problem.endswith("-error") else AssertionError):
+        benchmark_workloads.catalog_columns(case.connection, case.context, 118)
+    case.context.disable.assert_called_once()
+    case.connection.rollback.assert_called_once()
+
+
+def test_catalog_workload_rolls_back_partial_setup(catalog_workload):
+    case = catalog_workload(2111)
+    case.setup.execute.side_effect = [
+        SimpleNamespace(fetchone=lambda: ("catalog_db",)),
+        None,
+        RuntimeError("DDL failed"),
+    ]
+    with pytest.raises(RuntimeError, match="DDL failed"):
+        benchmark_workloads.catalog_columns(case.connection, case.context, 2111)
+    assert case.setup.execute.call_count == 3
+    case.context.enable.assert_not_called()
+    case.cursor.columns.assert_not_called()
+    case.connection.rollback.assert_called_once()
+
+
+def test_catalog_workload_rejects_autocommit(catalog_workload):
+    case = catalog_workload()
+    case.connection.autocommit = True
+    with pytest.raises(ValueError, match="transactional"):
+        benchmark_workloads.catalog_columns(case.connection, case.context, 118)
+    case.connection.cursor.assert_not_called()
+
+
+def test_catalog_tasks_appear_in_pr_report(report):
+    reporting.validate(report)
+    body = reporting.render([report], "c" * 40, 42)
+    for count in (2, 118, 2111):
+        name = f"catalog_columns_{count}"
+        assert f"| {reporting.TASK_NAMES[name]} |" in body
+        incomplete = copy.deepcopy(report)
+        del incomplete["pairs"][0]["candidate"]["scenarios"][name]
+        with pytest.raises(ValueError, match="Scenario set incomplete"):
+            reporting.validate(incomplete)
 
 
 def test_lob_workload_validates_payload_and_times_only_fetch(monkeypatch):

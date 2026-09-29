@@ -12,12 +12,32 @@ python -m eng.profiler_benchmarks.controller --base main --candidate HEAD \
 python -m eng.profiler_benchmarks.report profiler-results/report.json
 ```
 
-The fixed registry has 21 tasks. `--scenarios` runs a local subset, but subset
+The fixed registry has 24 tasks. `--scenarios` runs a local subset, but subset
 reports remain incomplete and cannot produce a verdict.
 
 `lob_varchar_256k_fetchall` fetches one 256 KiB `VARCHAR(MAX)` value to exercise
 multi-chunk streaming. Query setup and exact payload validation are outside the
 timed fetch window.
+
+`catalog_columns_2`, `catalog_columns_118`, and `catalog_columns_2111` time
+`columns()` plus the complete `fetchall()` drain on a fresh cursor. Each task
+creates UUID-prefixed tables in the current database's `dbo` schema, with exactly
+2, 118, or 2,111 nullable `INT` columns in total (at most 704 per table). It needs
+permission to create tables and uses the profiler-owned connection with autocommit
+off, not a caller's connection with pending writes. Its DDL is uncommitted and
+rolled back on success or failure. Fixture setup, cursor creation, EOF checks, and
+comparison of all 29 provider fields, raw descriptions, ordered cells and Python
+types with an independent rowwise drain are outside the measurement window.
+The rowwise oracle runs after timing,
+so it does not prime the measured catalog allocation. Native call counters verify
+one `SQLColumns` and one `FetchAll` call in the measured window.
+
+These tasks cover small results, growth through both initial tiers, and reuse of
+the maximum tier. They measure instrumented latency, not allocation bytes, and
+are not the same fixtures as the standalone catalog experiments. Ordinary SELECT
+fetch-all remains a separate control. The unchanged advisory thresholds below can
+leave smaller catalog slowdowns labeled "no signal"; that is not proof of no
+regression.
 
 ## Measurement contract
 

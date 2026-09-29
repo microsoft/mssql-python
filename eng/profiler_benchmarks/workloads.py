@@ -2,6 +2,7 @@
 
 from functools import partial
 import time
+from uuid import uuid4
 
 from profiler import scenarios
 
@@ -163,6 +164,78 @@ def lob_fetch(conn, ctx):
             ctx.disable()
 
 
+def catalog_columns(conn, ctx, row_count):
+    """Use the profiler-owned transaction; time only SQLColumns and its complete drain."""
+    if conn.autocommit:
+        raise ValueError("Catalog benchmarks require a transactional connection")
+    prefix = "profcat" + uuid4().hex
+    tables = [
+        (f"{prefix}{index:02d}", min(704, row_count - start))
+        for index, start in enumerate(range(0, row_count, 704))
+    ]
+    expected = [
+        (table, f"c{column:04d}", column + 1) for table, count in tables for column in range(count)
+    ]
+    try:
+        with conn.cursor() as setup:
+            catalog = setup.execute("SELECT DB_NAME()").fetchone()[0]
+            for table, count in tables:
+                definitions = ", ".join(f"[c{column:04d}] INT NULL" for column in range(count))
+                setup.execute(f"CREATE TABLE [dbo].[{table}] ({definitions})")
+        filters = dict(catalog=catalog, schema="dbo", table=prefix + "%", column=None)
+        with conn.cursor() as cursor:
+            try:
+                ctx.enable()
+                start = time.perf_counter()
+                cursor.columns(**filters)
+                rows = cursor.fetchall()
+                wall_ms = (time.perf_counter() - start) * 1000
+                cpp, py = ctx.collect()
+            finally:
+                ctx.disable()
+            description = cursor.description
+            assert len(rows) == row_count
+            assert len(description) == 29 and all(len(row) == 29 for row in rows)
+            assert [
+                (row.table_name, row.column_name, row.ordinal_position) for row in rows
+            ] == expected
+            assert all(
+                row.table_cat == catalog
+                and row.table_schem == "dbo"
+                and type(row.data_type) is int
+                and row.data_type == 4  # SQL_INTEGER
+                and row.column_size == 10
+                and row.nullable == 1
+                and row.column_def is None
+                for row in rows
+            )
+            assert cursor.fetchone() is None
+            assert not cursor.messages, "Clean catalog fetch unexpectedly produced diagnostics"
+        # A separate rowwise oracle runs only after the measured first allocation.
+        with conn.cursor() as reference:
+            reference.columns(**filters)
+            assert type(reference.description) is type(description)
+            assert reference.description == description
+            expected_rows = [tuple(row) for row in reference]
+            assert [tuple(row) for row in rows] == expected_rows
+            assert [[type(value) for value in row] for row in rows] == [
+                [type(value) for value in row] for row in expected_rows
+            ]
+            assert not reference.messages, "Rowwise catalog oracle produced diagnostics"
+        assert cpp["ddbc::SQLColumns_wrap"]["calls"] == 1
+        assert cpp["ddbc::FetchAll_wrap"]["calls"] == 1
+        return dict(
+            title="SQLColumns metadata",
+            wall_ms=wall_ms,
+            cpp=cpp,
+            py=py,
+            detail=f"Rows: {row_count}; tables: {len(tables)}; type: INT NULL; API: columns+fetchall",
+        )
+    finally:
+        # Fixture DDL is never committed; rollback also removes partially created fixtures.
+        conn.rollback()
+
+
 def registry():
     """Keep every PR #552 scenario, including its existing timing boundaries."""
     result = dict(scenarios.SCENARIOS)
@@ -176,4 +249,8 @@ def registry():
     )
     result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
     result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
+    result.update(
+        (f"catalog_columns_{count}", (partial(catalog_columns, row_count=count), False))
+        for count in (2, 118, 2111)
+    )
     return result
