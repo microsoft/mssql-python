@@ -13729,6 +13729,10 @@ def test_columns_specific_table(cursor, db_connection):
 
         # Verify we got results
         assert len(cols) == 9, "Should find exactly 9 columns in columns_test"
+        assert [col.ordinal_position for col in cols] == list(range(1, 10))
+        assert cursor.rowcount == 9
+        assert cursor.rownumber == 8
+        assert cursor.fetchone() is None
 
         # Verify all column names are present (case insensitive)
         col_names = [col.column_name.lower() for col in cols]
@@ -14055,7 +14059,24 @@ def test_columns_table_pattern(cursor):
     """Test columns with table name pattern"""
     try:
         # Get columns with table pattern
+        arraysize = cursor.arraysize
         cols = cursor.columns(table="columns_%", schema="pytest_cols_schema").fetchall()
+        description = cursor.description
+        assert len(cols) == 18
+        assert cursor.rowcount == 18
+        assert cursor.rownumber == 17
+        assert cursor.fetchone() is None
+        assert cursor.arraysize == arraysize
+
+        # Compare all ordered cells and types with the independent row-wise fetch path.
+        cursor.columns(table="columns_%", schema="pytest_cols_schema")
+        assert type(cursor.description) is type(description)
+        assert cursor.description == description
+        expected = [tuple(row) for row in cursor]
+        assert [tuple(row) for row in cols] == expected
+        assert [[type(value) for value in row] for row in cols] == [
+            [type(value) for value in row] for row in expected
+        ]
 
         # Should find columns from both test tables
         tables_found = set()
@@ -14067,6 +14088,33 @@ def test_columns_table_pattern(cursor):
         assert (
             "columns_special_test" in tables_found
         ), "Should find columns_special_test with pattern columns_%"
+
+        # Cross both catalog batch-growth boundaries without creating another table.
+        extra_columns = [f"fetch_growth_{i:03d}" for i in range(100)]
+        cursor.execute(
+            "ALTER TABLE pytest_cols_schema.columns_special_test ADD "
+            + ", ".join(f"[{name}] INT NULL" for name in extra_columns)
+        )
+        try:
+            expanded = cursor.columns(table="columns_%", schema="pytest_cols_schema").fetchall()
+            assert cursor.description == description
+            assert len(expanded) == 118
+            assert cursor.rowcount == 118
+            assert cursor.rownumber == 117
+            assert cursor.fetchone() is None
+            assert cursor.arraysize == arraysize
+
+            cursor.columns(table="columns_%", schema="pytest_cols_schema")
+            expected = [tuple(row) for row in cursor]
+            assert [tuple(row) for row in expanded] == expected
+            assert [[type(value) for value in row] for row in expanded] == [
+                [type(value) for value in row] for row in expected
+            ]
+        finally:
+            cursor.execute(
+                "ALTER TABLE pytest_cols_schema.columns_special_test DROP COLUMN "
+                + ", ".join(f"[{name}]" for name in extra_columns)
+            )
 
     finally:
         # Clean up happens in test_columns_cleanup
@@ -17649,6 +17697,26 @@ def test_columns_fetchone(cursor, db_connection, catalog_fetch_schema):
     assert row is not None, "fetchone() should return a row from columns()"
     assert hasattr(row, "column_name")
     assert row.table_name.lower() == "fetch_test"
+    rows = [row] + cursor.fetchmany(1) + cursor.fetchall()
+    assert [item.column_name for item in rows] == ["id", "name", "value", "ts"]
+    assert [item.ordinal_position for item in rows] == [1, 2, 3, 4]
+    assert cursor.rowcount == 4
+    assert cursor.rownumber == 3
+    assert cursor.fetchone() is None
+    statement = cursor.hstmt
+    operation = "SELECT ? AS ordinary; SELECT ? AS next_result"
+    cursor.execute(operation, (1, 2))
+    assert cursor.hstmt is statement
+    assert cursor.fetchall()[0].ordinary == 1
+    assert cursor.nextset() is True
+    assert cursor.fetchall()[0].next_result == 2
+    assert cursor.nextset() is False
+    cursor.execute(operation, (3, 4), reset_cursor=False)
+    assert cursor.hstmt is statement
+    assert cursor.fetchall()[0].ordinary == 3
+    assert cursor.nextset() is True
+    assert cursor.fetchall()[0].next_result == 4
+    assert cursor.nextset() is False
 
 
 def test_primarykeys_fetchone(cursor, db_connection, catalog_fetch_schema):

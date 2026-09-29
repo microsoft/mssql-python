@@ -30,11 +30,12 @@ class ResultMetadataCache {
     struct Snapshot {
         uint64_t generation;
         std::shared_ptr<const ResultMetadata> metadata;
+        bool catalogResult;  // SQLColumns allocation hint, reset with the result generation.
     };
 
     Snapshot snapshot() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return {generation_, metadata_};
+        return {generation_, metadata_, catalogResult_};
     }
 
     void publish(uint64_t generation, std::shared_ptr<const ResultMetadata> metadata) {
@@ -44,16 +45,18 @@ class ResultMetadataCache {
         }
     }
 
-    void clear() {
+    void clear(bool catalogResult = false) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++generation_;
         metadata_.reset();
+        catalogResult_ = catalogResult;
     }
 
   private:
     mutable std::mutex mutex_;
     uint64_t generation_ = 0;
     std::shared_ptr<const ResultMetadata> metadata_;
+    bool catalogResult_ = false;
 };
 
 class ResultMetadataFailureGuard {

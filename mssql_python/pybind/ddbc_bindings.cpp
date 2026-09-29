@@ -1886,7 +1886,9 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
                           const py::object& schemaObj, const py::object& tableObj,
                           const py::object& columnObj) {
     PERF_TIMER("SQLColumns_wrap");
-    StatementHandle->resultMetadata.clear();
+    StatementHandle->resultMetadata.clear(true);
+    SQLRETURN ret = SQL_ERROR;
+    ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
     if (!SQLColumns_ptr) {
         ThrowStdException("SQLColumns function not loaded");
     }
@@ -1897,16 +1899,19 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, const py::object& catalo
     std::u16string column = columnObj.is_none() ? u"" : columnObj.cast<std::u16string>();
 
     // Release the GIL during the blocking ODBC catalog call
-    py::gil_scoped_release release;
-    return SQLColumns_ptr(StatementHandle->get(),
-                          catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
-                          catalog.empty() ? 0 : SQL_NTS,
-                          schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
-                          schema.empty() ? 0 : SQL_NTS,
-                          table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
-                          table.empty() ? 0 : SQL_NTS,
-                          column.empty() ? nullptr : reinterpretU16stringAsSqlWChar(column),
-                          column.empty() ? 0 : SQL_NTS);
+    {
+        py::gil_scoped_release release;
+        ret = SQLColumns_ptr(StatementHandle->get(),
+                             catalog.empty() ? nullptr : reinterpretU16stringAsSqlWChar(catalog),
+                             catalog.empty() ? 0 : SQL_NTS,
+                             schema.empty() ? nullptr : reinterpretU16stringAsSqlWChar(schema),
+                             schema.empty() ? 0 : SQL_NTS,
+                             table.empty() ? nullptr : reinterpretU16stringAsSqlWChar(table),
+                             table.empty() ? 0 : SQL_NTS,
+                             column.empty() ? nullptr : reinterpretU16stringAsSqlWChar(column),
+                             column.empty() ? 0 : SQL_NTS);
+    }
+    return ret;
 }
 
 // Helper function to check for driver errors
@@ -6232,32 +6237,45 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     } else {
         fetchSize = 1000;
     }
-    LOG("FetchAll_wrap: Fetching data in batch sizes of %d", fetchSize);
-
-    ColumnBuffers buffers(numCols, fetchSize);
-    SQLULEN numRowsFetched = 0;
-    FetchStateGuard fetchStateGuard(StatementHandle, messages);
-
-    // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("FetchAll_wrap: Error when binding columns - SQLRETURN=%d", ret);
-        return ret;
+    const int maxFetchSize = fetchSize;
+    // SQLColumns declares wide fields even for small catalogs. Start at the
+    // existing 10-row tier, then grow through the same tiers as batches fill.
+    if (metadataSnapshot.catalogResult) {
+        fetchSize = std::min(fetchSize, 10);
     }
-
-    fetchStateGuard.configure(&numRowsFetched, fetchSize);
 
     while (ret != SQL_NO_DATA) {
-        ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
-                             charEncoding, charCtype, messages);
-        CheckFetchError(StatementHandle, ret);
-        if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
-            LOG("FetchAll_wrap: Error when fetching data - SQLRETURN=%d", ret);
+        LOG("FetchAll_wrap: Fetching data in batch sizes of %d", fetchSize);
+        ColumnBuffers buffers(numCols, fetchSize);
+        SQLULEN numRowsFetched = 0;
+        FetchStateGuard fetchStateGuard(StatementHandle, messages);
+
+        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("FetchAll_wrap: Error when binding columns - SQLRETURN=%d", ret);
             return ret;
         }
-    }
 
-    fetchStateGuard.close();
+        fetchStateGuard.configure(&numRowsFetched, fetchSize);
+
+        while (ret != SQL_NO_DATA) {
+            ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched,
+                                 lobColumns, charEncoding, charCtype, messages);
+            CheckFetchError(StatementHandle, ret);
+            if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
+                LOG("FetchAll_wrap: Error when fetching data - SQLRETURN=%d", ret);
+                return ret;
+            }
+            if (SQL_SUCCEEDED(ret) && numRowsFetched == static_cast<SQLULEN>(fetchSize) &&
+                fetchSize < maxFetchSize) {
+                break;
+            }
+        }
+
+        // Unbind while these buffers are still alive, before allocating the next tier.
+        fetchStateGuard.close();
+        fetchSize = std::min(fetchSize * 10, maxFetchSize);
+    }
 
     return ret;
 }
