@@ -1183,15 +1183,21 @@ class Connection:
 
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
-        Sets the text encoding for SQL statements and text parameters.
+        Records the requested text encoding settings for compatibility.
 
-        Since Python 3 only has str (which is Unicode), this method configures
-        how text is encoded when sending to the database.
+        SQL statements and str parameters are always sent as UTF-16LE; text
+        parameters are bound as SQL_C_WCHAR on every platform. This applies to
+        execute() and executemany(), with or without setinputsizes(). This method
+        does not change that behavior or enforce the requested codec.
+
+        Requests other than UTF-16LE with SQL_WCHAR emit UserWarning. The requested
+        settings are still returned by getencoding(), not the effective binding.
+        Use setdecoding() separately to configure how results are read.
 
         Args:
-            encoding (str, optional): The encoding to use. This must be a valid Python
+            encoding (str, optional): The requested encoding. This must be a valid Python
                 encoding that converts text to bytes. If None, defaults to 'utf-16le'.
-            ctype (int, optional): The C data type to use when passing data:
+            ctype (int, optional): The requested C data type:
                 SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for
                 UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used
                 for all other encodings.
@@ -1203,12 +1209,15 @@ class Connection:
             ProgrammingError: If the encoding is not valid or not supported.
             InterfaceError: If the connection is closed.
 
-        Example:
-            # For databases that only communicate with UTF-8
-            cnxn.setencoding(encoding='utf-8')
+        Warns:
+            UserWarning: If the requested encoding or ctype cannot be honored.
 
-            # For explicitly using SQL_CHAR
-            cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+        Example:
+            # Restore the supported default.
+            cnxn.setencoding()
+
+            # Warns: parameters still use UTF-16LE / SQL_C_WCHAR.
+            cnxn.setencoding(encoding='cp1252', ctype=mssql_python.SQL_CHAR)
         """
         logger.debug(
             "setencoding: Configuring encoding=%s, ctype=%s",
@@ -1276,20 +1285,35 @@ class Connection:
         if ctype == ConstantsDDBC.SQL_WCHAR.value:
             _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
 
+        if encoding != "utf-16le" or ctype != ConstantsDDBC.SQL_WCHAR.value:
+            warnings.warn(
+                "setencoding() does not change SQL statement encoding or text parameter binding: "
+                "statements and str parameters always use UTF-16LE, and text parameters are "
+                "bound as SQL_C_WCHAR. The requested settings are retained by getencoding() "
+                "for compatibility but are not applied. Use setencoding() with no arguments "
+                "to restore the supported defaults.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Store the encoding settings (thread-safe with lock)
         with self._encoding_lock:
             self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
         logger.info(
-            "Text encoding set to %s with ctype %s",
+            "Requested text encoding stored as %s with ctype %s",
             sanitize_user_input(encoding),
             sanitize_user_input(str(ctype)),
         )
 
     def getencoding(self) -> Dict[str, Union[str, int]]:
         """
-        Gets the current text encoding settings (thread-safe).
+        Gets the requested text encoding settings (thread-safe).
+
+        These settings are retained for compatibility. They do not describe the
+        effective binding: SQL statements and str parameters always use UTF-16LE,
+        and text parameters are bound as SQL_C_WCHAR.
 
         Returns:
             dict: A dictionary containing 'encoding' and 'ctype' keys.
