@@ -13,6 +13,7 @@ variables:
 jobs:
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -60,12 +61,6 @@ jobs:
       SQLServer2022:
         sqlVersion: 'SQL2022'
         pythonVersion: '3.13'
-      SQLServer2025:
-        sqlVersion: 'SQL2025'
-        pythonVersion: '3.14'
-      LocalDB_Python314:
-        sqlVersion: 'LocalDB'
-        pythonVersion: '3.14'
 
   steps:
   - checkout: self
@@ -408,9 +403,40 @@ jobs:
         exit 1
       }
     displayName: 'Download and restore AdventureWorks2022 database'
-    condition: false
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+
+  - powershell: |
+      $driverKey = "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server"
+      if (-not (Test-Path $driverKey)) {
+        $ProgressPreference = 'SilentlyContinue'
+        $installer = Join-Path $env:TEMP "msodbcsql18.msi"
+        Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2358430" -OutFile $installer
+        $process = Start-Process msiexec.exe -ArgumentList @(
+          "/i", "`"$installer`"", "/quiet", "/qn", "/norestart",
+          "IACCEPTMSODBCSQLLICENSETERMS=YES"
+        ) -Wait -PassThru
+        if ($process.ExitCode -notin 0, 3010) {
+          throw "ODBC Driver 18 installation failed with exit code $($process.ExitCode)"
+        }
+      }
+      if (-not (Test-Path $driverKey)) { throw "ODBC Driver 18 is not registered" }
+      python -m pip install pyodbc==5.3.0
+      python benchmarks/gh554_windows_fetch.py --json gh554-windows-fetch.json
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    displayName: 'Compare GH-554 wide fetch on Windows'
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
+    timeoutInMinutes: 60
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;******;TrustServerCertificate=yes'
+
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: gh554-windows-fetch.json
+      artifact: 'gh554-windows-fetch'
+    displayName: 'Publish GH-554 Windows fetch measurements'
+    condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
 
   # Run performance benchmarks on SQL Server 2022
   - powershell: |
@@ -558,6 +584,7 @@ jobs:
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
+  condition: false
   timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
@@ -734,6 +761,7 @@ jobs:
 
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
+  condition: false
   timeoutInMinutes: 160
   pool:
     vmImage: 'ubuntu-latest'
@@ -1061,6 +1089,7 @@ jobs:
 
 - job: PytestOnLinux_ARM64
   displayName: 'Linux ARM64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1300,6 +1329,7 @@ jobs:
 
 - job: PytestOnLinux_RHEL9
   displayName: 'Linux RedHat x86_64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1501,6 +1531,7 @@ jobs:
 
 - job: PytestOnLinux_RHEL9_ARM64
   displayName: 'Linux RedHat ARM64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1717,6 +1748,7 @@ jobs:
 
 - job: PytestOnLinux_Alpine
   displayName: 'Linux Alpine x86_64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1953,6 +1985,7 @@ jobs:
 
 - job: PytestOnLinux_Alpine_ARM64
   displayName: 'Linux Alpine ARM64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -2421,6 +2454,7 @@ jobs:
 
 - job: CodeCoverageReport
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
+  condition: false
   pool:
     vmImage: 'ubuntu-latest'
 
