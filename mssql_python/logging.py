@@ -15,7 +15,7 @@ import datetime
 import re
 import platform
 import atexit
-from typing import Optional
+from typing import Any, Optional, TextIO
 
 # Single DEBUG level - all or nothing philosophy
 # If you need logging, you need to see everything
@@ -33,9 +33,10 @@ ALLOWED_LOG_EXTENSIONS = {".txt", ".log", ".csv"}
 class ThreadIDFilter(logging.Filter):
     """Filter that adds thread_id to all log records."""
 
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
         """Add thread_id (OS native) attribute to log record."""
         # Use OS native thread ID for debugging compatibility
+        thread_id: int | None
         try:
             thread_id = threading.get_native_id()
         except AttributeError:
@@ -75,7 +76,7 @@ class MSSQLLogger:
                     cls._instance = super(MSSQLLogger, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the logger (only once) - thread-safe"""
         # Use separate lock for initialization check to prevent race condition
         # This ensures hasattr check and assignment are atomic
@@ -96,10 +97,10 @@ class MSSQLLogger:
 
         # Output mode and handlers
         self._output_mode = FILE  # Default to file only
-        self._file_handler = None
-        self._stdout_handler = None
-        self._log_file = None
-        self._custom_log_path = None  # Custom log file path (if specified)
+        self._file_handler: RotatingFileHandler | None = None
+        self._stdout_handler: logging.StreamHandler[TextIO] | None = None
+        self._log_file: str | None = None
+        self._custom_log_path: str | None = None  # Custom log file path (if specified)
         self._handlers_initialized = False
         self._handler_lock = threading.RLock()  # Reentrant lock for handler operations
         self._cleanup_registered = False  # Track if atexit cleanup is registered
@@ -122,7 +123,7 @@ class MSSQLLogger:
         # Don't setup full handlers yet - do it lazily when setLevel is called
         # This prevents creating log files when user changes output mode before enabling logging
 
-    def _setup_handlers(self):
+    def _setup_handlers(self) -> None:
         """
         Setup handlers based on output mode.
         Creates file handler and/or stdout handler as needed.
@@ -159,7 +160,7 @@ class MSSQLLogger:
         # Create CSV formatter
         # Custom formatter to extract source from message and format as CSV
         class CSVFormatter(logging.Formatter):
-            def format(self, record):
+            def format(self, record: logging.LogRecord) -> str:
                 # Check if this is from py-core (via py_core_log method)
                 if hasattr(record, "funcName") and record.funcName == "py-core":
                     source = "py-core"
@@ -234,14 +235,14 @@ class MSSQLLogger:
             self._stdout_handler.setFormatter(formatter)
             self._logger.addHandler(self._stdout_handler)
 
-    def _reconfigure_handlers(self):
+    def _reconfigure_handlers(self) -> None:
         """
         Reconfigure handlers when output mode changes.
         Closes existing handlers and creates new ones based on current output mode.
         """
         self._setup_handlers()
 
-    def _cleanup_handlers(self):
+    def _cleanup_handlers(self) -> None:
         """
         Cleanup all handlers on process exit.
         Registered with atexit to ensure proper file handle cleanup.
@@ -321,7 +322,7 @@ class MSSQLLogger:
 
         return resolved
 
-    def _write_log_header(self):
+    def _write_log_header(self) -> None:
         """
         Write CSV header and metadata to the log file.
         Called once when log file is created.
@@ -375,7 +376,9 @@ class MSSQLLogger:
                 pass  # Even stderr notification failed
             # Don't crash - logging continues without header
 
-    def py_core_log(self, level: int, msg: str, filename: str = "cursor.rs", lineno: int = 0):
+    def py_core_log(
+        self, level: int, msg: str, filename: str = "cursor.rs", lineno: int = 0
+    ) -> None:
         """
         Logging method for py-core (Rust/TDS) code with custom source location.
 
@@ -413,7 +416,9 @@ class MSSQLLogger:
             except:
                 pass
 
-    def _log(self, level: int, msg: str, add_prefix: bool = True, *args, **kwargs):
+    def _log(
+        self, level: int, msg: str, add_prefix: bool = True, *args: object, **kwargs: Any
+    ) -> None:
         """
         Internal logging method with exception safety.
 
@@ -472,19 +477,19 @@ class MSSQLLogger:
 
     # Convenience methods for logging
 
-    def debug(self, msg: str, *args, **kwargs):
+    def debug(self, msg: str, *args: object, **kwargs: Any) -> None:
         """Log at DEBUG level (all diagnostic messages)"""
         self._log(logging.DEBUG, msg, True, *args, **kwargs)
 
-    def info(self, msg: str, *args, **kwargs):
+    def info(self, msg: str, *args: object, **kwargs: Any) -> None:
         """Log at INFO level"""
         self._log(logging.INFO, msg, True, *args, **kwargs)
 
-    def warning(self, msg: str, *args, **kwargs):
+    def warning(self, msg: str, *args: object, **kwargs: Any) -> None:
         """Log at WARNING level"""
         self._log(logging.WARNING, msg, True, *args, **kwargs)
 
-    def error(self, msg: str, *args, **kwargs):
+    def error(self, msg: str, *args: object, **kwargs: Any) -> None:
         """Log at ERROR level"""
         self._log(logging.ERROR, msg, True, *args, **kwargs)
 
@@ -492,7 +497,7 @@ class MSSQLLogger:
 
     def _setLevel(
         self, level: int, output: Optional[str] = None, log_file_path: Optional[str] = None
-    ):
+    ) -> None:
         """
         Internal method to set logging level (use setup_logging() instead).
 
@@ -567,30 +572,30 @@ class MSSQLLogger:
 
     # Handler management
 
-    def addHandler(self, handler: logging.Handler):
+    def addHandler(self, handler: logging.Handler) -> None:
         """Add a handler to the logger (thread-safe)"""
         with self._handler_lock:
             self._logger.addHandler(handler)
 
-    def removeHandler(self, handler: logging.Handler):
+    def removeHandler(self, handler: logging.Handler) -> None:
         """Remove a handler from the logger (thread-safe)"""
         with self._handler_lock:
             self._logger.removeHandler(handler)
 
     @property
-    def handlers(self) -> list:
+    def handlers(self) -> list[logging.Handler]:
         """Get list of handlers attached to the logger (thread-safe)"""
         with self._handler_lock:
             return self._logger.handlers[:]  # Return copy to prevent external modification
 
-    def reset_handlers(self):
+    def reset_handlers(self) -> None:
         """
         Reset/recreate handlers.
         Useful when log file has been deleted or needs to be recreated.
         """
         self._setup_handlers()
 
-    def _notify_cpp_level_change(self, level: int):
+    def _notify_cpp_level_change(self, level: int) -> None:
         """
         Notify C++ bridge that log level has changed.
         This updates the cached level in C++ for fast checks.
@@ -616,7 +621,7 @@ class MSSQLLogger:
         return self._output_mode
 
     @output.setter
-    def output(self, mode: str):
+    def output(self, mode: str) -> None:
         """
         Set the output mode.
 
@@ -669,7 +674,7 @@ driver_logger = logger._logger
 # ============================================================================
 
 
-def setup_logging(output: str = "file", log_file_path: Optional[str] = None):
+def setup_logging(output: str = "file", log_file_path: Optional[str] = None) -> MSSQLLogger:
     """
     Enable DEBUG logging for troubleshooting.
 

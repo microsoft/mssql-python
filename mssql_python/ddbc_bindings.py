@@ -11,9 +11,17 @@ import sys
 import platform
 import sysconfig
 import warnings
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ._ddbc_types import *
+    from ._ddbc_types import (
+        _get_odbc_driver_path as _get_odbc_driver_path,
+        _set_odbc_provider as _set_odbc_provider,
+    )
 
 
-def normalize_architecture(platform_name_param, architecture_param):
+def normalize_architecture(platform_name_param: str, architecture_param: str) -> str:
     """
     Normalize architecture names for the given platform.
 
@@ -74,7 +82,7 @@ def normalize_architecture(platform_name_param, architecture_param):
     )
 
 
-def get_interpreter_architecture(platform_name_param):
+def get_interpreter_architecture(platform_name_param: str) -> str:
     """
     Get the raw architecture string of the running interpreter.
 
@@ -98,7 +106,7 @@ def get_interpreter_architecture(platform_name_param):
     return platform.machine().lower()
 
 
-def get_module_architecture(platform_name_param):
+def get_module_architecture(platform_name_param: str) -> str:
     """
     Get the architecture token used in the compiled ddbc_bindings filename.
 
@@ -128,7 +136,12 @@ def get_module_architecture(platform_name_param):
     return architecture_name
 
 
-def find_module_path(module_dir_param, python_version_param, architecture_param, extension_param):
+def find_module_path(
+    module_dir_param: str,
+    python_version_param: str,
+    architecture_param: str,
+    extension_param: str,
+) -> str:
     """
     Find the compiled ddbc_bindings module file for the running interpreter.
 
@@ -205,6 +218,8 @@ module_path = find_module_path(module_dir, python_version, architecture, extensi
 # Use the original module name 'ddbc_bindings' that the C extension was compiled with
 module_name = "ddbc_bindings"
 spec = importlib.util.spec_from_file_location(module_name, module_path)
+if spec is None or spec.loader is None:
+    raise ImportError(f"Cannot create a loader for ddbc_bindings at {module_path}")
 module = importlib.util.module_from_spec(spec)
 sys.modules[module_name] = module
 spec.loader.exec_module(module)

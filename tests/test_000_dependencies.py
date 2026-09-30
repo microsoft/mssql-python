@@ -4,6 +4,7 @@ This file tests that all required dependencies are present for the current platf
 """
 
 import pytest
+import ast
 import platform
 import os
 import re
@@ -18,6 +19,43 @@ from mssql_python.ddbc_bindings import (
     get_module_architecture,
     normalize_architecture,
 )
+
+
+def test_native_typing_exports_match_extension() -> None:
+    from mssql_python import ddbc_bindings
+
+    declarations = Path(ddbc_bindings.__file__).with_name("_ddbc_types.pyi")
+    tree = ast.parse(declarations.read_text(encoding="utf-8"))
+    exports = next(
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+    )
+    names = ast.literal_eval(exports) + ["_set_odbc_provider", "_get_odbc_driver_path"]
+    missing = [name for name in names if not hasattr(ddbc_bindings, name)]
+    assert not missing, f"Native declarations missing at runtime: {missing}"
+
+
+def test_constant_typing_exports_match_runtime() -> None:
+    from mssql_python import constants
+
+    tree = ast.parse(Path(constants.__file__).read_text(encoding="utf-8"))
+    declarations = {
+        node.target.id
+        for block in tree.body
+        if isinstance(block, ast.If)
+        and isinstance(block.test, ast.Name)
+        and block.test.id == "TYPE_CHECKING"
+        for node in block.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    expected = {
+        name
+        for name in constants.__all__
+        if isinstance(getattr(constants, name), int) and name != "SQL_WMETADATA"
+    }
+    assert declarations == expected
 
 
 class DependencyTester:
@@ -805,6 +843,20 @@ def test_ddbc_bindings_import_error_scenarios():
     for platform_name, arch in test_cases:
         with pytest.raises((ImportError, OSError)):
             normalize_architecture(platform_name, arch)
+
+
+@pytest.mark.parametrize("missing_spec", [True, False])
+def test_ddbc_bindings_missing_loader(monkeypatch: pytest.MonkeyPatch, missing_spec: bool) -> None:
+    import importlib.machinery
+    import importlib.util
+    import runpy
+    import mssql_python
+
+    spec = None if missing_spec else importlib.machinery.ModuleSpec("ddbc_bindings", None)
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *args, **kwargs: spec)
+    loader_path = Path(mssql_python.__file__).with_name("ddbc_bindings.py")
+    with pytest.raises(ImportError, match="Cannot create a loader for ddbc_bindings"):
+        runpy.run_path(str(loader_path))
 
 
 def test_ddbc_bindings_exact_module_match_is_silent(tmp_path, capsys):
