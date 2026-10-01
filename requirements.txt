@@ -22,7 +22,10 @@ autopep8
 flake8
 pylint
 cpplint
-mypy
+mypy==2.3.1
 
 # Type checking stubs
 types-setuptools
+types-psutil
+pandas-stubs
+pyarrow-stubs

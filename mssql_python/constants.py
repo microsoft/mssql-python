@@ -5,7 +5,7 @@ This module contains the constants used in the DDBC module.
 """
 
 from enum import Enum
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
 
 class ConstantsDDBC(Enum):
@@ -384,7 +384,7 @@ class SQLTypes:
     """Constants for valid SQL data types to use with setinputsizes"""
 
     @classmethod
-    def get_valid_types(cls) -> set:
+    def get_valid_types(cls) -> set[int]:
         """Returns a set of all valid SQL type constants"""
 
         return {
@@ -423,7 +423,7 @@ class SQLTypes:
 
     # Could also add category methods for convenience
     @classmethod
-    def get_string_types(cls) -> set:
+    def get_string_types(cls) -> set[int]:
         """Returns a set of string SQL type constants"""
 
         return {
@@ -436,7 +436,7 @@ class SQLTypes:
         }
 
     @classmethod
-    def get_numeric_types(cls) -> set:
+    def get_numeric_types(cls) -> set[int]:
         """Returns a set of numeric SQL type constants"""
 
         return {
@@ -492,7 +492,7 @@ ATTRIBUTE_SET_TIMING = {
 }
 
 
-def get_attribute_set_timing(attribute):
+def get_attribute_set_timing(attribute: int) -> AttributeSetTime:
     """
     Get when an attribute can be set (before connection, after, or either).
 
@@ -658,6 +658,168 @@ _DDBC_PUBLIC_API = {
     "SQL_MODE_READ_ONLY",
 }
 
+# Declarations for the integer aliases populated dynamically below.
+if TYPE_CHECKING:
+    SQL_SMALLINT: int
+    SQL_CHAR: int
+    SQL_WCHAR: int
+    SQL_WVARCHAR: int
+    SQL_BIT: int
+    SQL_TINYINT: int
+    SQL_BIGINT: int
+    SQL_BINARY: int
+    SQL_VARBINARY: int
+    SQL_LONGVARBINARY: int
+    SQL_LONGVARCHAR: int
+    SQL_NUMERIC: int
+    SQL_DECIMAL: int
+    SQL_INTEGER: int
+    SQL_FLOAT: int
+    SQL_REAL: int
+    SQL_DOUBLE: int
+    SQL_TIMESTAMP: int
+    SQL_DATE: int
+    SQL_TIME: int
+    SQL_VARCHAR: int
+    SQL_TYPE_DATE: int
+    SQL_TYPE_TIME: int
+    SQL_TYPE_TIMESTAMP: int
+    SQL_GUID: int
+    SQL_XML: int
+    SQL_WLONGVARCHAR: int
+    SQL_SS_TIME2: int
+    SQL_SS_XML: int
+    SQL_SS_VARIANT: int
+    SQL_ATTR_ACCESS_MODE: int
+    SQL_ATTR_CONNECTION_TIMEOUT: int
+    SQL_ATTR_CURRENT_CATALOG: int
+    SQL_ATTR_LOGIN_TIMEOUT: int
+    SQL_ATTR_PACKET_SIZE: int
+    SQL_ATTR_TXN_ISOLATION: int
+    SQL_TXN_ISOLATION_LEVEL: int
+    SQL_TXN_READ_UNCOMMITTED: int
+    SQL_TXN_READ_COMMITTED: int
+    SQL_TXN_REPEATABLE_READ: int
+    SQL_TXN_SERIALIZABLE: int
+    SQL_MODE_READ_WRITE: int
+    SQL_MODE_READ_ONLY: int
+    SQL_CONCURRENCY: int
+    SQL_ROWSET_SIZE: int
+    SQL_ROW_NUMBER: int
+    SQL_IC_UPPER: int
+    SQL_IC_LOWER: int
+    SQL_IC_SENSITIVE: int
+    SQL_IC_MIXED: int
+    SQL_SC_SQL92_ENTRY: int
+    SQL_SC_FIPS127_2_TRANSITIONAL: int
+    SQL_SC_SQL92_INTERMEDIATE: int
+    SQL_SC_SQL92_FULL: int
+    SQL_SQL92_ENTRY_SQL: int
+    SQL_SQL92_INTERMEDIATE_SQL: int
+    SQL_SQL92_FULL_SQL: int
+    SQL_DRIVER_NAME: int
+    SQL_DRIVER_VER: int
+    SQL_DRIVER_ODBC_VER: int
+    SQL_DRIVER_HLIB: int
+    SQL_DRIVER_HENV: int
+    SQL_DRIVER_HDBC: int
+    SQL_DATA_SOURCE_NAME: int
+    SQL_DATABASE_NAME: int
+    SQL_SERVER_NAME: int
+    SQL_USER_NAME: int
+    SQL_SQL_CONFORMANCE: int
+    SQL_KEYWORDS: int
+    SQL_IDENTIFIER_CASE: int
+    SQL_IDENTIFIER_QUOTE_CHAR: int
+    SQL_SPECIAL_CHARACTERS: int
+    SQL_SUBQUERIES: int
+    SQL_EXPRESSIONS_IN_ORDERBY: int
+    SQL_CORRELATION_NAME: int
+    SQL_SEARCH_PATTERN_ESCAPE: int
+    SQL_CATALOG_TERM: int
+    SQL_CATALOG_NAME_SEPARATOR: int
+    SQL_SCHEMA_TERM: int
+    SQL_TABLE_TERM: int
+    SQL_PROCEDURES: int
+    SQL_ACCESSIBLE_TABLES: int
+    SQL_ACCESSIBLE_PROCEDURES: int
+    SQL_CATALOG_NAME: int
+    SQL_CATALOG_USAGE: int
+    SQL_SCHEMA_USAGE: int
+    SQL_COLUMN_ALIAS: int
+    SQL_DESCRIBE_PARAMETER: int
+    SQL_TXN_CAPABLE: int
+    SQL_TXN_ISOLATION_OPTION: int
+    SQL_DEFAULT_TXN_ISOLATION: int
+    SQL_MULTIPLE_ACTIVE_TXN: int
+    SQL_NUMERIC_FUNCTIONS: int
+    SQL_STRING_FUNCTIONS: int
+    SQL_DATETIME_FUNCTIONS: int
+    SQL_TIMEDATE_FUNCTIONS: int
+    SQL_SYSTEM_FUNCTIONS: int
+    SQL_CONVERT_FUNCTIONS: int
+    SQL_LIKE_ESCAPE_CLAUSE: int
+    SQL_MAX_COLUMN_NAME_LEN: int
+    SQL_MAX_TABLE_NAME_LEN: int
+    SQL_MAX_SCHEMA_NAME_LEN: int
+    SQL_MAX_CATALOG_NAME_LEN: int
+    SQL_MAX_IDENTIFIER_LEN: int
+    SQL_MAX_STATEMENT_LEN: int
+    SQL_MAX_CHAR_LITERAL_LEN: int
+    SQL_MAX_BINARY_LITERAL_LEN: int
+    SQL_MAX_COLUMNS_IN_TABLE: int
+    SQL_MAX_COLUMNS_IN_SELECT: int
+    SQL_MAX_COLUMNS_IN_GROUP_BY: int
+    SQL_MAX_COLUMNS_IN_ORDER_BY: int
+    SQL_MAX_COLUMNS_IN_INDEX: int
+    SQL_MAX_TABLES_IN_SELECT: int
+    SQL_MAX_CONCURRENT_ACTIVITIES: int
+    SQL_MAX_DRIVER_CONNECTIONS: int
+    SQL_MAX_ROW_SIZE: int
+    SQL_MAX_USER_NAME_LEN: int
+    SQL_ACTIVE_CONNECTIONS: int
+    SQL_ACTIVE_STATEMENTS: int
+    SQL_DATA_SOURCE_READ_ONLY: int
+    SQL_NEED_LONG_DATA_LEN: int
+    SQL_GETDATA_EXTENSIONS: int
+    SQL_CURSOR_COMMIT_BEHAVIOR: int
+    SQL_CURSOR_ROLLBACK_BEHAVIOR: int
+    SQL_CURSOR_SENSITIVITY: int
+    SQL_BOOKMARK_PERSISTENCE: int
+    SQL_DYNAMIC_CURSOR_ATTRIBUTES1: int
+    SQL_DYNAMIC_CURSOR_ATTRIBUTES2: int
+    SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1: int
+    SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2: int
+    SQL_STATIC_CURSOR_ATTRIBUTES1: int
+    SQL_STATIC_CURSOR_ATTRIBUTES2: int
+    SQL_KEYSET_CURSOR_ATTRIBUTES1: int
+    SQL_KEYSET_CURSOR_ATTRIBUTES2: int
+    SQL_SCROLL_OPTIONS: int
+    SQL_SCROLL_CONCURRENCY: int
+    SQL_FETCH_DIRECTION: int
+    SQL_STATIC_SENSITIVITY: int
+    SQL_BATCH_SUPPORT: int
+    SQL_BATCH_ROW_COUNT: int
+    SQL_PARAM_ARRAY_ROW_COUNTS: int
+    SQL_PARAM_ARRAY_SELECTS: int
+    SQL_PROCEDURE_TERM: int
+    SQL_POSITIONED_STATEMENTS: int
+    SQL_GROUP_BY: int
+    SQL_OJ_CAPABILITIES: int
+    SQL_ORDER_BY_COLUMNS_IN_SELECT: int
+    SQL_OUTER_JOINS: int
+    SQL_QUOTED_IDENTIFIER_CASE: int
+    SQL_CONCAT_NULL_BEHAVIOR: int
+    SQL_NULL_COLLATION: int
+    SQL_ALTER_TABLE: int
+    SQL_UNION: int
+    SQL_DDL_INDEX: int
+    SQL_MULT_RESULT_SETS: int
+    SQL_OWNER_USAGE: int
+    SQL_QUALIFIER_USAGE: int
+    SQL_TIMEDATE_ADD_INTERVALS: int
+    SQL_TIMEDATE_DIFF_INTERVALS: int
+
 # Get current module's globals for dynamic export
 _module_globals = globals()
 _exported_names = []
@@ -669,9 +831,9 @@ for _name, _member in ConstantsDDBC.__members__.items():
         _exported_names.append(_name)
 
 # Export GetInfoConstants members not already exported from ConstantsDDBC.
-for _name, _member in GetInfoConstants.__members__.items():
+for _name, _info_member in GetInfoConstants.__members__.items():
     if _name not in _DDBC_PUBLIC_API:
-        _module_globals[_name] = _member.value
+        _module_globals[_name] = _info_member.value
         _exported_names.append(_name)
 
 # AuthType enum is exported as a class only (not individual members)
@@ -697,4 +859,4 @@ __all__ = [
 ]
 
 # Clean up temporary variables
-del _module_globals, _exported_names, _name, _member
+del _module_globals, _exported_names, _name, _member, _info_member

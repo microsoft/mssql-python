@@ -150,6 +150,7 @@ print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
 package_data = {
     "mssql_python": [
         "py.typed",
+        "*.pyi",
         "ddbc_bindings.cp*.pyd",
         "ddbc_bindings.cp*.so",
         # msvcp140.dll (VC++ runtime) is copied next to the compiled extension by

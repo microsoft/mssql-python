@@ -15,7 +15,7 @@ class STRING(str):
     This type object is used to describe columns in a database that are string-based (e.g. CHAR).
     """
 
-    def __new__(cls):
+    def __new__(cls) -> "STRING":
         return str.__new__(cls, "")
 
 
@@ -25,7 +25,7 @@ class BINARY(bytearray):
     binary columns in a database (e.g. LONG, RAW, BLOBs).
     """
 
-    def __new__(cls):
+    def __new__(cls) -> "BINARY":
         return bytearray.__new__(cls)
 
 
@@ -34,7 +34,7 @@ class NUMBER(float):
     This type object is used to describe numeric columns in a database.
     """
 
-    def __new__(cls):
+    def __new__(cls) -> "NUMBER":
         return float.__new__(cls, 0.0)
 
 
@@ -52,10 +52,10 @@ class DATETIME(datetime.datetime):
         minute: int = 0,
         second: int = 0,
         microsecond: int = 0,
-        tzinfo=None,
+        tzinfo: datetime.tzinfo | None = None,
         *,
         fold: int = 0,
-    ):
+    ) -> "DATETIME":
         return datetime.datetime.__new__(
             cls, year, month, day, hour, minute, second, microsecond, tzinfo, fold=fold
         )
@@ -66,7 +66,7 @@ class ROWID(int):
     This type object is used to describe the "Row ID" column in a database.
     """
 
-    def __new__(cls):
+    def __new__(cls) -> "ROWID":
         return int.__new__(cls, 0)
 
 

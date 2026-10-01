@@ -111,6 +111,18 @@ PARAM_TEST_DATA = [
 ]
 
 
+@pytest.mark.parametrize("nonfinite", ["NaN", "sNaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_compute_column_type_rejects_nonfinite_precision(nonfinite: str, reverse: bool) -> None:
+    cur = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    cur.closed = True
+    values = [decimal.Decimal("1.25"), decimal.Decimal(nonfinite)]
+    if reverse:
+        values.reverse()
+    with pytest.raises(ValueError, match="non-finite Decimal"):
+        cur._compute_column_type(values)
+
+
 def test_package_sources_compile_with_warnings_as_errors():
     """Every package source must compile when warnings are promoted to errors."""
     package_dir = Path(__file__).parents[1] / "mssql_python"
@@ -3656,6 +3668,8 @@ def test_row_mapping_none_column_map():
     assert mapping.get("missing", "fallback") == "fallback"
     assert mapping.get("missing") is None
     assert ("missing" in mapping) is False
+    with pytest.raises(AttributeError, match="missing"):
+        _ = row.missing
 
 
 def test_row_mapping_dedup_fallback():

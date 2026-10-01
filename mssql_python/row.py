@@ -7,9 +7,14 @@ from a cursor fetch operation.
 
 import decimal
 import uuid as _uuid
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from typing import Any, TYPE_CHECKING
 from mssql_python.logging import logger
+
+if TYPE_CHECKING:
+    from mssql_python.cursor import Cursor
+
+OutputConverter = Callable[[Any], Any]
 
 
 class Row:
@@ -41,6 +46,8 @@ class Row:
             print(value)
     """
 
+    _values: Sequence[Any]
+
     # Slot internal fields while preserving dynamic attributes and weak references.
     __slots__ = (
         "_values",
@@ -53,7 +60,13 @@ class Row:
     )
 
     @staticmethod
-    def _fast_create(values, column_map, cursor, column_map_lower=None, column_names=None):
+    def _fast_create(
+        values: Sequence[Any],
+        column_map: Mapping[str, int] | None,
+        cursor: "Cursor | None",
+        column_map_lower: Mapping[str, int] | None = None,
+        column_names: tuple[str, ...] | None = None,
+    ) -> "Row":
         """Construct a Row bypassing __init__ — for the common fast path.
 
         Used by fetchall/fetchmany when no output converters and no UUID
@@ -70,14 +83,14 @@ class Row:
 
     def __init__(
         self,
-        values,
-        column_map,
-        cursor=None,
-        converter_map=None,
-        uuid_str_indices=None,
-        column_map_lower=None,
-        column_names=None,
-    ):
+        values: Sequence[Any],
+        column_map: Mapping[str, int] | None,
+        cursor: "Cursor | None" = None,
+        converter_map: Sequence[OutputConverter | None] | None = None,
+        uuid_str_indices: tuple[int, ...] | None = None,
+        column_map_lower: Mapping[str, int] | None = None,
+        column_names: tuple[str, ...] | None = None,
+    ) -> None:
         """
         Initialize a Row object with values and pre-built column map.
         Args:
@@ -125,7 +138,7 @@ class Row:
         # test constructions); _mapping_keys() then reconstructs names from _column_map.
         self._column_names = column_names
 
-    def _stringify_uuids(self, indices):
+    def _stringify_uuids(self, indices: tuple[int, ...]) -> None:
         """
         Convert uuid.UUID values at the given column indices to uppercase str in-place.
 
@@ -143,7 +156,7 @@ class Row:
             if v is not None and isinstance(v, _uuid.UUID):
                 vals[i] = str(v).upper()
 
-    def _apply_output_converters(self, values, cursor):
+    def _apply_output_converters(self, values: Sequence[Any], cursor: "Cursor") -> Sequence[Any]:
         """
         Apply output converters to raw values.
 
@@ -194,7 +207,9 @@ class Row:
 
         return converted_values
 
-    def _apply_output_converters_optimized(self, values, converter_map):
+    def _apply_output_converters_optimized(
+        self, values: Sequence[Any], converter_map: Sequence[OutputConverter | None]
+    ) -> list[Any]:
         """
         Apply output converters using pre-computed converter map for optimal performance.
 
@@ -220,7 +235,7 @@ class Row:
 
         return converted_values
 
-    def __getitem__(self, index) -> Any:
+    def __getitem__(self, index: int | str | slice) -> Any:
         """Allow accessing by numeric index (row[0]) or column name (row["col"])."""
         if type(index) is int:
             return self._values[index]
@@ -253,7 +268,7 @@ class Row:
         """
         # Handle lowercase attribute access - if lowercase is enabled,
         # try to match attribute names case-insensitively
-        if name in self._column_map:
+        if self._column_map is not None and name in self._column_map:
             return self._values[self._column_map[name]]
 
         # O(1) case-insensitive lookup when lowercase is enabled
@@ -292,7 +307,7 @@ class Row:
         """
         return RowMapping(self)
 
-    def _mapping_keys(self) -> tuple:
+    def _mapping_keys(self) -> tuple[str, ...]:
         """Canonical, order-preserving column names backing ``_mapping``.
 
         Prefers the names snapshotted once by the cursor for the result set, which
@@ -307,13 +322,13 @@ class Row:
         if self._column_names is not None:
             return self._column_names
         if self._column_map:
-            idx_to_name: dict = {}
+            idx_to_name: dict[int, str] = {}
             for name, idx in self._column_map.items():
                 idx_to_name.setdefault(idx, name)
             return tuple(idx_to_name[i] for i in sorted(idx_to_name))
         return ()
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         """
         Support comparison with lists for test compatibility.
         This is the key change needed to fix the tests.
@@ -328,7 +343,7 @@ class Row:
         """Return the number of values in the row"""
         return len(self._values)
 
-    def __iter__(self) -> Any:
+    def __iter__(self) -> Iterator[Any]:
         """Allow iteration through values"""
         return iter(self._values)
 
@@ -359,7 +374,7 @@ class Row:
         return repr(tuple(self._values))
 
 
-class RowMapping(Mapping):
+class RowMapping(Mapping[str, Any]):
     """Read-only ``Mapping`` view over a :class:`Row` (column name -> value).
 
     Created via :attr:`Row._mapping`. Keys are the row's canonical column names,
@@ -384,7 +399,7 @@ class RowMapping(Mapping):
             return self._row[key]
         raise KeyError(key)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         seen = set()
         for name in self._row._mapping_keys():
             if name not in seen:
