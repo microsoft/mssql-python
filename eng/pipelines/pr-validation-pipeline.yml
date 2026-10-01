@@ -66,6 +66,9 @@ jobs:
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
+      LocalDB_Python315Preview:
+        sqlVersion: 'LocalDB'
+        pythonVersion: '3.15.0-rc.2'
 
   steps:
   - checkout: self
@@ -74,6 +77,7 @@ jobs:
     inputs:
       versionSpec: '$(pythonVersion)'
       addToPath: true
+      allowUnstable: true
       githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python $(pythonVersion)'
 
@@ -582,6 +586,10 @@ jobs:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
         pythonVersion: '3.14'
+      SQL2025_Python315Preview:
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        sqlVersion: 'SQL2025'
+        pythonVersion: '3.15.0-rc.2'
 
   steps:
   - checkout: self
@@ -591,6 +599,7 @@ jobs:
     inputs:
       versionSpec: '$(pythonVersion)'
       addToPath: true
+      allowUnstable: true
     displayName: 'Use Python $(pythonVersion) on macOS'
 
   - task: Cache@2
@@ -768,6 +777,11 @@ jobs:
         distroName: 'Debian-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
+      Debian_Python315Preview:
+        dockerImage: 'python:3.15.0rc2-bookworm'
+        distroName: 'Debian-Python315Preview'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        useAzureSQL: 'false'
 
   steps:
   - checkout: self
@@ -797,7 +811,16 @@ jobs:
 
   - script: |
       # Install dependencies in the container
-      if [ "$(distroName)" = "Ubuntu" ]; then
+      if [ "$(distroName)" = "Debian-Python315Preview" ]; then
+        docker exec test-container-$(distroName) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=UTC
+          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+          apt-get update &&
+          apt-get install -y cmake curl wget gnupg build-essential
+          python3 --version
+        "
+      elif [ "$(distroName)" = "Ubuntu" ]; then
         docker exec test-container-$(distroName) bash -c "
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
@@ -866,6 +889,7 @@ jobs:
     displayName: 'Install Python dependencies in $(distroName) container'
 
   - script: |
+      set -e
       # Build pybind bindings in the container
       PROFILER_BUILD=0
       if [ "$(Build.Reason)" = "PullRequest" ] &&
@@ -1077,6 +1101,10 @@ jobs:
         # 12 (bookworm) underneath, so the msodbcsql18 debian/12 repo applies.
         dockerImage: 'python:3.11-bookworm'
         distroName: 'Debian'
+        archName: 'arm64'
+      Debian_Python315Preview_ARM64:
+        dockerImage: 'python:3.15.0rc2-bookworm'
+        distroName: 'Debian-Python315Preview'
         archName: 'arm64'
 
   steps:
