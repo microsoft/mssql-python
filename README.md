@@ -160,13 +160,15 @@ SQL type does not switch to narrow C buffers; SQL Server performs the conversion
 to the destination column's character set.
 
 `Connection.setencoding()` retains requested settings for compatibility, but does
-not change statement encoding or parameter binding. Requests other than
-`encoding="utf-16le", ctype=SQL_WCHAR` emit `UserWarning`, including an explicitly
-requested or automatically selected `SQL_CHAR`. `getencoding()` returns the
-requested settings, not the effective binding. For example, requesting ASCII does
-not cause non-ASCII parameters to raise encoding errors. Use `setencoding()` with
-no arguments to restore the supported defaults. `setdecoding()` independently
-controls how result data is read.
+not change statement encoding or parameter binding. Requests that pass validation
+but differ from `encoding="utf-16le", ctype=SQL_WCHAR` emit `UserWarning`, including
+an explicitly requested or automatically selected `SQL_CHAR`. Invalid codec names,
+invalid ctypes, and incompatible combinations (such as UTF-8 with `SQL_WCHAR`)
+raise `ProgrammingError` before any warning is emitted or settings are stored.
+`getencoding()` returns the requested settings, not the effective binding. For
+example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
+raise encoding errors. Use `setencoding()` with no arguments to restore the
+supported defaults. `setdecoding()` independently controls how result data is read.
 
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:

@@ -1190,9 +1190,12 @@ class Connection:
         execute() and executemany(), with or without setinputsizes(). This method
         does not change that behavior or enforce the requested codec.
 
-        Requests other than UTF-16LE with SQL_WCHAR emit UserWarning. The requested
-        settings are still returned by getencoding(), not the effective binding.
-        Use setdecoding() separately to configure how results are read.
+        Requests that pass validation but differ from UTF-16LE with SQL_WCHAR emit
+        UserWarning. Invalid codec names, invalid ctypes, and incompatible
+        combinations (such as UTF-8 with SQL_WCHAR) raise ProgrammingError before
+        any warning is emitted or settings are stored. Accepted settings are still
+        returned by getencoding(), not the effective binding. Use setdecoding()
+        separately to configure how results are read.
 
         Args:
             encoding (str, optional): The requested encoding. This must be a valid Python
@@ -1206,11 +1209,13 @@ class Connection:
             None
 
         Raises:
-            ProgrammingError: If the encoding is not valid or not supported.
+            ProgrammingError: If the encoding or ctype is invalid, or their
+                combination is incompatible.
             InterfaceError: If the connection is closed.
 
         Warns:
-            UserWarning: If the requested encoding or ctype cannot be honored.
+            UserWarning: If the request passes validation but its encoding or
+                ctype cannot be honored.
 
         Example:
             # Restore the supported default.

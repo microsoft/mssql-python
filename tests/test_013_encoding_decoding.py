@@ -106,6 +106,7 @@ from mssql_python import db_connection
 import pytest
 import sys
 import warnings
+from unittest.mock import patch
 import mssql_python
 from mssql_python import connect, SQL_CHAR, SQL_WCHAR, SQL_WMETADATA
 from mssql_python.exceptions import (
@@ -175,6 +176,27 @@ def test_setencoding_warning_as_error_preserves_settings(conn_str):
             warnings.simplefilter("error", UserWarning)
             with pytest.raises(UserWarning, match="UTF-16LE.*SQL_C_WCHAR"):
                 conn.setencoding("ascii", SQL_CHAR)
+        assert conn.getencoding() == original
+
+
+@pytest.mark.parametrize(
+    "encoding, ctype, error",
+    [
+        ("invalid-encoding-name", SQL_CHAR, "Unsupported encoding"),
+        ("utf-8", 999, "Invalid ctype"),
+        ("utf-8", SQL_WCHAR, "SQL_WCHAR only supports UTF-16 encodings"),
+        ("ascii", SQL_WCHAR, "SQL_WCHAR only supports UTF-16 encodings"),
+        ("utf-16", SQL_WCHAR, "Byte Order Mark not supported"),
+    ],
+)
+def test_setencoding_invalid_request_raises_without_warning(conn_str, encoding, ctype, error):
+    with connect(conn_str) as conn:
+        original = conn.getencoding()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with pytest.raises(ProgrammingError, match=error):
+                conn.setencoding(encoding, ctype)
+        assert not caught
         assert conn.getencoding() == original
 
 
@@ -5973,6 +5995,7 @@ def test_setencoding_warning_preserves_unicode_binding(
 ):
     """Unsupported settings warn, but do not change existing Unicode binding."""
     text = "caf\u00e9 \u4f60\u597d" * (1000 if large else 1)
+    ddbc = mssql_python.ddbc_bindings
     with connect(conn_str) as conn:
         with conn.cursor() as cursor:
             cursor.execute("CREATE TABLE #encoding_warning (data NVARCHAR(MAX))")
@@ -5981,14 +6004,27 @@ def test_setencoding_warning_preserves_unicode_binding(
             if use_inputsizes:
                 sql_type = mssql_python.SQL_WLONGVARCHAR if large else mssql_python.SQL_WVARCHAR
                 cursor.setinputsizes([(sql_type, len(text), 0)])
-            if method == "executemany":
-                cursor.executemany("INSERT INTO #encoding_warning VALUES (?)", [(text,), (text,)])
-                expected = [text, text]
-            else:
-                cursor.execute("INSERT INTO #encoding_warning VALUES (?)", text)
-                expected = [text]
-            cursor.execute("SELECT data FROM #encoding_warning")
-            assert [row[0] for row in cursor.fetchall()] == expected
+            with (
+                patch.object(ddbc, "DDBCSQLExecute", wraps=ddbc.DDBCSQLExecute) as execute,
+                patch.object(ddbc, "SQLExecuteMany", wraps=ddbc.SQLExecuteMany) as executemany,
+            ):
+                if method == "executemany":
+                    cursor.executemany(
+                        "INSERT INTO #encoding_warning VALUES (?)", [(text,), (text,)]
+                    )
+                    expected = [text, text]
+                    # Streaming batches must use execute()'s UTF-16 DAE path.
+                    assert execute.call_count == (2 if large else 0)
+                    assert executemany.call_count == (0 if large else 1)
+                else:
+                    cursor.execute("INSERT INTO #encoding_warning VALUES (?)", text)
+                    expected = [text]
+                    assert execute.call_count == 1
+                    executemany.assert_not_called()
+            cursor.execute("SELECT data, CONVERT(VARBINARY(MAX), data) FROM #encoding_warning")
+            rows = cursor.fetchall()
+            assert [row[0] for row in rows] == expected
+            assert [row[1] for row in rows] == [value.encode("utf-16le") for value in expected]
 
 
 def test_dae_sql_c_char_with_various_data_types(db_connection):
@@ -6017,33 +6053,6 @@ def test_dae_sql_c_char_with_various_data_types(db_connection):
         assert len(rows) == 2
         assert rows[0][1] == 10000
         assert rows[1][1] == 10000
-
-    finally:
-        cursor.close()
-
-
-def test_dae_encoding_error_handling(db_connection):
-    """Test DAE encoding error handling (lines 1751-1755)."""
-    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_dae_error (id INT, data VARCHAR(MAX))")
-
-        # Large non-ASCII string to trigger both DAE and encoding error
-        large_unicode = "你好" * 5000
-
-        error_raised = False
-        try:
-            cursor.execute("INSERT INTO #test_dae_error (id, data) VALUES (?, ?)", 1, large_unicode)
-        except (UnicodeEncodeError, RuntimeError, Exception) as e:
-            error_raised = True
-            error_msg = str(e).lower()
-            assert any(word in error_msg for word in ["encode", "ascii", "failed"])
-
-        # Should raise error in strict mode
-        if not error_raised:
-            pass  # Some implementations may handle differently
 
     finally:
         cursor.close()
@@ -6412,25 +6421,6 @@ def test_cpp_dae_bytes_encoding(db_connection):
         cursor.execute("INSERT INTO #test_cpp_dae_bytes VALUES (?)", large_bytes)
         cursor.execute("SELECT LEN(data) FROM #test_cpp_dae_bytes")
         assert cursor.fetchone()[0] == 10000
-    finally:
-        cursor.close()
-
-
-def test_cpp_dae_encoding_error(db_connection):
-    """encoding error in Data-At-Execution."""
-    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_cpp_dae_err (data VARCHAR(MAX))")
-        # Large non-ASCII string to trigger DAE + encoding error
-        large_unicode = "你好世界 " * 3000
-        try:
-            cursor.execute("INSERT INTO #test_cpp_dae_err VALUES (?)", large_unicode)
-            # No error is OK - some implementations may handle it
-        except Exception as e:
-            # Expected: catch block lines 1753-1756
-            error_msg = str(e).lower()
-            assert "encode" in error_msg or "ascii" in error_msg
     finally:
         cursor.close()
 
