@@ -8,7 +8,7 @@ unittest-xml-reporting
 psutil
 --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple
 pyarrow; python_version < "3.15"
-pyarrow==26.0.0.dev296; python_version >= "3.15"
+pyarrow==26.0.0.dev323; python_version >= "3.15"
 polars
 
 # Runtime dependencies needed for tests

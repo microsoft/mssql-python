@@ -166,8 +166,7 @@ class PipelineContractTests(unittest.TestCase):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
         self.assertIn("scientific-python-nightly-wheels", requirements)
-        self.assertIn('pyarrow==26.0.0.dev296; python_version >= "3.15"', requirements)
-
+        self.assertIn('pyarrow==26.0.0.dev323; python_version >= "3.15"', requirements)
 
 
 if __name__ == "__main__":
