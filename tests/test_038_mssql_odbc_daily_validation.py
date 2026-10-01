@@ -148,7 +148,7 @@ class PipelineContractTests(unittest.TestCase):
             encoding="ascii"
         )
 
-        self.assertEqual(version.strip(), "0.1.0")
+        self.assertEqual(version.strip(), "0.1.0-dev.20260921.176911")
 
 
 if __name__ == "__main__":
