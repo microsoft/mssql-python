@@ -452,6 +452,45 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
     }
 }
 
+static SQLRETURN PreResolveUdtTypes(SQLHANDLE hStmt, std::vector<ParamInfo>& paramInfos) {
+    bool hasUdt = false;
+    for (const auto& info : paramInfos) {
+        if (info.paramSQLType == SQL_SS_UDT) {
+            hasUdt = true;
+            break;
+        }
+    }
+    if (!hasUdt) return SQL_SUCCESS;
+
+    // UDT identity lives in the IPD, not in the scalar describe cache. Describe
+    // unbound records on each execution, including reused statements and DAE rows.
+    SQLRETURN rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    if (!SQL_SUCCEEDED(rc)) {
+        LOG("PreResolveUdtTypes: SQL_RESET_PARAMS failed, rc=%d", rc);
+        return rc;
+    }
+    for (size_t i = 0; i < paramInfos.size(); ++i) {
+        if (paramInfos[i].paramSQLType != SQL_SS_UDT) continue;
+        SQLSMALLINT type, digits, nullable;
+        SQLULEN size;
+        {
+            py::gil_scoped_release release;
+            rc = SQLDescribeParam_ptr(hStmt, static_cast<SQLUSMALLINT>(i + 1),
+                                      &type, &size, &digits, &nullable);
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            LOG("PreResolveUdtTypes: SQLDescribeParam failed for param[%zu], rc=%d", i, rc);
+            return rc;
+        }
+        // ODBC requires SQL_SS_LENGTH_UNLIMITED (0), not a byte count above
+        // 8000, for large UDTs. Type detection has already selected streaming.
+        if (paramInfos[i].columnSize > MAX_INLINE_BINARY) {
+            paramInfos[i].columnSize = 0;
+        }
+    }
+    return SQL_SUCCESS;
+}
+
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
 // each of them with appropriate arguments
 SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
@@ -463,6 +502,8 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
         "with %zu parameters",
         (void*)hStmt, params.size());
 
+    SQLRETURN describeRc = PreResolveUdtTypes(hStmt, paramInfos);
+    if (!SQL_SUCCEEDED(describeRc)) return describeRc;
     // GH-627: resolve unknown NULL param SQL types before binding any param.
     PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
@@ -2257,6 +2298,8 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     std::vector<std::shared_ptr<void>> tempBuffers;
 
     try {
+        SQLRETURN describeRc = PreResolveUdtTypes(hStmt, paramInfos);
+        if (!SQL_SUCCEEDED(describeRc)) return describeRc;
         // GH-627: resolve unknown NULL array param SQL types before binding any param.
         PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {

@@ -89,7 +89,8 @@ print(f'cp{v.major}{v.minor} {platform.system().lower()} {platform.machine().low
             ;;
     esac
 
-    echo "Wheel target: $PY_VERSION | $WHEEL_PLATFORM"
+    WHEEL_PATTERN="mssql_python_rs-${DISTRIBUTION_VERSION}-cp310-abi3-${WHEEL_PLATFORM}.whl"
+    echo "Wheel pattern: $WHEEL_PATTERN"
 }
 
 download_nupkg() {
@@ -157,12 +158,11 @@ find_matching_wheel() {
         exit 1
     fi
 
-    if ! MATCHING_WHEEL=$(
-        "$PYTHON" "$SCRIPT_DIR/select_mssql_python_rs_wheel.py" \
-            "$wheels_dir" "$DISTRIBUTION_VERSION" "$PY_VERSION" "$WHEEL_PLATFORM"
-    ); then
+    MATCHING_WHEEL=$(find "$wheels_dir" -name "$WHEEL_PATTERN" -print -quit)
+    if [ -z "$MATCHING_WHEEL" ]; then
         echo "Available wheels:"
         ls "$wheels_dir"/*.whl 2>/dev/null || echo "  (none)"
+        echo "ERROR: No wheel found matching: $WHEEL_PATTERN"
         exit 1
     fi
 

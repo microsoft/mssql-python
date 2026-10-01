@@ -74,7 +74,8 @@ function Get-PlatformInfo {
     # aarch64 -> arm64 so a Windows arm64 target resolves win_arm64, not win_aarch64.
     $script:WheelPlatform = "win_$($archTag -replace 'x86_64','amd64' -replace 'aarch64','arm64')"
 
-    Write-Host "Wheel target: $script:PyVersion | $script:WheelPlatform"
+    $script:WheelPattern = "mssql_python_rs-$script:DistributionVersion-cp310-abi3-$script:WheelPlatform.whl"
+    Write-Host "Wheel pattern: $script:WheelPattern"
 }
 
 function Get-NupkgFromFeed {
@@ -120,14 +121,12 @@ function Find-MatchingWheel {
         throw "No 'wheels' directory found in NuGet package"
     }
 
-    $matchingWheelPath = & python "$ScriptDir\select_mssql_python_rs_wheel.py" `
-        $wheelsDir $script:DistributionVersion $script:PyVersion $script:WheelPlatform
-    if ($LASTEXITCODE -ne 0) {
+    $script:MatchingWheel = Get-ChildItem $wheelsDir -Filter $script:WheelPattern | Select-Object -First 1
+    if (-not $script:MatchingWheel) {
         Write-Host "Available wheels:"
         Get-ChildItem $wheelsDir -Filter *.whl | ForEach-Object { Write-Host "  $_" }
-        throw "No compatible mssql-python-rs wheel found"
+        throw "No wheel found matching: $script:WheelPattern"
     }
-    $script:MatchingWheel = Get-Item $matchingWheelPath
 
     Write-Host "Found: $($script:MatchingWheel.Name)"
 }
