@@ -1328,7 +1328,15 @@ def _check_native_fetchone_full_column_count_cache(mode, expected_native):
                 assert cursor.fetchone() is None
                 assert count_calls == []
                 cursor.execute(query)
-                with connection.cursor() as other:
+                try:
+                    other_connection = mssql_python.connect(
+                        os.environ["DB_CONNECTION_STRING"], timeout=5
+                    )
+                except mssql_python.Error as failure:
+                    raise AssertionError(
+                        f"Connection failed: {type(failure).__name__}; connection details withheld"
+                    ) from None
+                with other_connection, other_connection.cursor() as other:
                     other.execute("SELECT CAST(N'other' AS NVARCHAR(10))")
                     count_calls.clear()
                     assert cursor.fetchone()[0] == 1
