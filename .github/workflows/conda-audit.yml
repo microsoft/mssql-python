@@ -12,6 +12,9 @@
 # (they are not code-signed, so the patch breaks no signature; an already-baked climb
 # is a byte-for-byte no-op). This gate builds one real linux-64 conda package from the
 # shipped PyPI wheels and audits the resulting climb (see conda/mssql-python/build.sh).
+#
+# PR triggers are conda-specific: general package/version changes and shared wheel
+# build infrastructure do not run this gate unless the PR also changes a path below.
 name: conda-audit
 
 on:
@@ -19,15 +22,9 @@ on:
     paths:
       - 'conda/**'
       - 'eng/conda_tools/**'
-      - 'eng/scripts/download_mssql_python_rs_wheels.py'
-      - 'eng/scripts/resolve_nuget_feed.py'
-      - 'eng/scripts/mssql_python_build_safety.py'
-      - 'eng/versions/mssql-python-rs*.version'
       - 'OneBranchPipelines/conda-build-pipeline.yml'
       - 'OneBranchPipelines/steps/conda-build-validate-step*.yml'
       - 'OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml'
-      - 'OneBranchPipelines/jobs/consolidate-artifacts-job.yml'
-      - 'OneBranchPipelines/variables/*.yml'
       - 'OneBranchPipelines/conda-release-pipeline.yml'
       - 'OneBranchPipelines/steps/conda-release-step.yml'
       - 'OneBranchPipelines/steps/conda-publish-step.yml'
@@ -38,12 +35,7 @@ on:
       - 'tests/test_034_conda_verify_cwd.py'
       - 'tests/test_035_conda_macho_assert.py'
       - 'tests/test_036_conda_provenance.py'
-      - 'tests/test_037_rs_wheel_download.py'
       - 'tests/test_038_conda_archive_limits.py'
-      - 'requirements.txt'
-      - 'setup.py'
-      - 'mssql_python/__init__.py'
-      - 'mssql_python_odbc/__init__.py'
       - '.github/workflows/conda-audit.yml'
 
 permissions:

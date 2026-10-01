@@ -1,5 +1,8 @@
 """Asynchronous query support backed directly by mssql-py-core.
 
+The internal entry points are ``_AsyncConnection`` and ``_AsyncCursor``.
+Their methods retain DB-API names, but the classes are not stable public API.
+
 Warning:
     Async query execution APIs are under active development and are not intended
     for production use. Their signatures, behavior, error handling, and compatibility
@@ -7,8 +10,8 @@ Warning:
 """
 
 from ._native import load_py_core
-from .async_connection import AsyncConnection
-from .async_cursor import AsyncCursor
+from .async_connection import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
+from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 from .exception_translator import (
     DataError,
     DatabaseError,
@@ -23,8 +26,6 @@ from .exception_translator import (
 )
 
 __all__ = [
-    "AsyncConnection",
-    "AsyncCursor",
     "DataError",
     "DatabaseError",
     "Error",

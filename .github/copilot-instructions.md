@@ -42,7 +42,8 @@ black --check --line-length=100 mssql_python/ tests/     # BLOCKING in CI
 python -m pytest -v                                       # 'stress' marker excluded by default
 ```
 
-- **`pr-format-check` (BLOCKING):** PR title must start with one of `FEAT: FIX: DOC: CHORE: STYLE: REFACTOR: RELEASE:`; the body must link a work item/issue and have a `### Summary` of at least 10 characters.
+- **`pr-format-check` (BLOCKING):** PR title must start with one of `FEAT: FIX: DOC: CHORE: STYLE: REFACTOR: PERF: RELEASE: AI:`; the body must link a work item/issue and have a `### Summary` of at least 10 characters.
+- Use `AI:` for AI tooling, agents, skills, prompts, and AI-assisted development workflows, not merely because AI helped write an ordinary fix or feature.
 - `flake8`, `pylint`, `mypy`, `clang-format`, and `cpplint` run but are **informational**, not blocking.
 - The authoritative cross-platform validation runs on **Azure DevOps** (broader OS / Python / arch coverage than the GitHub checks); consult the specific pipeline in `eng/pipelines/` for the exact matrix rather than assuming full coverage. A coverage bot posts a report comment on the PR.
 

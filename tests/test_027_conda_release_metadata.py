@@ -9,6 +9,7 @@ real ``.conda`` needed) plus one optional round-trip through the metadata reader
 """
 
 import argparse
+import ast
 import importlib.util
 import io
 import json
@@ -17,6 +18,7 @@ import tarfile
 import types
 import warnings
 import zipfile
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import pytest
@@ -76,6 +78,111 @@ def test_collection_does_not_require_pyyaml(source_present, tmp_path, monkeypatc
         with pytest.raises(pytest.skip.Exception, match="conda source not present"):
             spec.loader.exec_module(module)
     assert yaml_imports == []
+
+
+@pytest.fixture
+def conda_audit_paths():
+    workflow = (_ROOT / ".github" / "workflows" / "conda-audit.yml").read_text(encoding="utf-8")
+    block = workflow.split("on:\n  pull_request:\n    paths:\n", 1)[1].split("\n\n", 1)[0]
+    # This workflow uses a quoted scalar list; keep these source-only tests independent of YAML.
+    return [ast.literal_eval(line.removeprefix("      - ")) for line in block.splitlines()]
+
+
+def test_conda_audit_path_allowlist(conda_audit_paths):
+    assert set(conda_audit_paths) == {
+        "conda/**",
+        "eng/conda_tools/**",
+        "OneBranchPipelines/conda-build-pipeline.yml",
+        "OneBranchPipelines/steps/conda-build-validate-step*.yml",
+        "OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml",
+        "OneBranchPipelines/conda-release-pipeline.yml",
+        "OneBranchPipelines/steps/conda-release-step.yml",
+        "OneBranchPipelines/steps/conda-publish-step.yml",
+        "tests/test_027_conda_release_metadata.py",
+        "tests/test_029_bundled_binary_audit.py",
+        "tests/test_030_pe_machine_assert.py",
+        "tests/test_033_driver_load_probe.py",
+        "tests/test_034_conda_verify_cwd.py",
+        "tests/test_035_conda_macho_assert.py",
+        "tests/test_036_conda_provenance.py",
+        "tests/test_038_conda_archive_limits.py",
+        ".github/workflows/conda-audit.yml",
+    }
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "conda/mssql-python/meta.yaml",
+        "conda/mssql-python/build.sh",
+        "conda/mssql-python/bld.bat",
+        "conda/requirements-audit.txt",
+        "conda/README.md",
+        "eng/conda_tools/inputs.py",
+        "eng/conda_tools/formats/elf.py",
+        "OneBranchPipelines/conda-build-pipeline.yml",
+        "OneBranchPipelines/steps/conda-build-validate-step.yml",
+        "OneBranchPipelines/steps/conda-build-validate-step-posix.yml",
+        "OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml",
+        "OneBranchPipelines/conda-release-pipeline.yml",
+        "OneBranchPipelines/steps/conda-release-step.yml",
+        "OneBranchPipelines/steps/conda-publish-step.yml",
+        "tests/test_027_conda_release_metadata.py",
+        "tests/test_029_bundled_binary_audit.py",
+        "tests/test_030_pe_machine_assert.py",
+        "tests/test_033_driver_load_probe.py",
+        "tests/test_034_conda_verify_cwd.py",
+        "tests/test_035_conda_macho_assert.py",
+        "tests/test_036_conda_provenance.py",
+        "tests/test_038_conda_archive_limits.py",
+        ".github/workflows/conda-audit.yml",
+    ],
+)
+def test_conda_audit_triggers_for_conda_changes(conda_audit_paths, changed_path):
+    assert any(fnmatchcase(changed_path, pattern) for pattern in conda_audit_paths)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "README.md",
+        "requirements.txt",
+        "setup.py",
+        "pyproject.toml",
+        "mssql_python/__init__.py",
+        "mssql_python_odbc/__init__.py",
+        "tests/test_026_odbc_provider.py",
+        "eng/scripts/download_mssql_python_rs_wheels.py",
+        "eng/scripts/resolve_nuget_feed.py",
+        "eng/scripts/mssql_python_build_safety.py",
+        "eng/versions/mssql-python-rs.version",
+        "eng/versions/mssql-python-rs-nuget.version",
+        "OneBranchPipelines/jobs/consolidate-artifacts-job.yml",
+        "OneBranchPipelines/variables/build-variables.yml",
+        "OneBranchPipelines/variables/common-variables.yml",
+        "OneBranchPipelines/variables/onebranch-variables.yml",
+        "OneBranchPipelines/variables/signing-variables.yml",
+        "OneBranchPipelines/variables/symbol-variables.yml",
+        "tests/test_037_rs_wheel_download.py",
+    ],
+)
+def test_conda_audit_ignores_general_changes(conda_audit_paths, changed_path):
+    assert not any(fnmatchcase(changed_path, pattern) for pattern in conda_audit_paths)
+
+
+@pytest.mark.parametrize("conda_change", [False, True], ids=["version-only", "mixed"])
+def test_conda_audit_release_change_sets(conda_audit_paths, conda_change):
+    changed_paths = [
+        "README.md",
+        "mssql_python_odbc/__init__.py",
+        "tests/test_026_odbc_provider.py",
+    ]
+    if conda_change:
+        changed_paths.append("conda/mssql-python/meta.yaml")
+    assert (
+        any(fnmatchcase(path, pattern) for path in changed_paths for pattern in conda_audit_paths)
+        == conda_change
+    )
 
 
 @pytest.mark.parametrize(

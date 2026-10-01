@@ -53,6 +53,19 @@ from `requirements-audit.txt` with `--require-hashes --only-binary=:all:`.
 This audit-only lock is separate from the Windows publisher lock; it does not pin
 the hosted runner image or every input to the later Conda build.
 
+The `conda-audit` PR gate triggers only for `conda/`, `eng/conda_tools/`, Conda-specific
+OneBranch pipelines/steps/jobs, their native/probe/archive/provenance and release tests,
+and the workflow itself. General package metadata/version changes and shared wheel-build
+infrastructure do not trigger it on their own; mixed PRs with a Conda change still do.
+This scope does not change the unit-test runner, source-version wheel selection, or
+failure handling when a required wheel is unpublished.
+
+Run the source-only trigger regressions without a native build, SQL Server, or PyYAML:
+
+```text
+python -m pytest --noconftest tests/test_027_conda_release_metadata.py -k conda_audit -q
+```
+
 Direct recipe builds must set `MSSQL_PYTHON_VERSION` to the exact selected code-wheel
 version before rendering/building. The shared orchestrator derives and supplies it
 automatically; omitted input fails recipe rendering instead of choosing a release.
