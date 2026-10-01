@@ -6306,8 +6306,12 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
     }
     CaptureFetchDiagnostics(hStmt, ret, messages);
     if (SQL_SUCCEEDED(ret)) {
-        // Retrieve column count
-        SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle, messages);
+        const auto snapshot = StatementHandle->resultMetadata.snapshot();
+        SQLSMALLINT colCount = snapshot.fullColumnCount;
+        if (colCount < 0) {
+            colCount = SQLNumResultCols_wrap(StatementHandle, messages);
+            StatementHandle->resultMetadata.publishFullColumnCount(snapshot.generation, colCount);
+        }
         ret = SQLGetData_wrap(StatementHandle, colCount, row, charEncoding, wcharEncoding,
                               charCtype, messages);
         if (!SQL_SUCCEEDED(ret)) {
