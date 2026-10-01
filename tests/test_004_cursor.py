@@ -21,7 +21,7 @@ import threading
 import mssql_python
 import uuid
 import re
-from unittest.mock import patch
+from unittest.mock import call, patch
 from conftest import is_azure_sql_connection
 
 # Setup test table
@@ -5697,26 +5697,57 @@ def test_nextset_diagnostics(cursor, db_connection):
 
 
 def test_fetchval_basic_functionality(cursor, db_connection):
-    """Test basic fetchval functionality with simple queries"""
-    try:
+    """Test basic fetchval functionality and per-call debug logging guards."""
+    with patch("mssql_python.cursor.logger") as mock_logger:
+        entry = call("fetchval: Fetching single value from first column")
+        debug = mock_logger.debug
+        mock_logger.is_debug_enabled = False
         # Test with COUNT query
         cursor.execute("SELECT COUNT(*) FROM sys.databases")
+        debug.reset_mock()
         count = cursor.fetchval()
         assert isinstance(count, int), "fetchval should return integer for COUNT(*)"
         assert count > 0, "COUNT(*) should return positive number"
+        assert cursor.fetchval() is None
+        debug.assert_not_called()
 
         # Test with literal value
+        mock_logger.is_debug_enabled = True
         cursor.execute("SELECT 42")
+        debug.reset_mock()
         value = cursor.fetchval()
         assert value == 42, "fetchval should return the literal value"
+        assert debug.call_args_list == [entry, call("fetchval: Value retrieved successfully")]
+        debug.reset_mock()
+        assert cursor.fetchval() is None
+        assert debug.call_args_list == [entry, call("fetchval: No value available (no rows)")]
 
         # Test with string literal
         cursor.execute("SELECT 'Hello World'")
-        text = cursor.fetchval()
-        assert text == "Hello World", "fetchval should return string literal"
+        mock_logger.is_debug_enabled = False
+        debug.reset_mock()
+        fetchone = cursor.fetchone
 
-    except Exception as e:
-        pytest.fail(f"Basic fetchval functionality test failed: {e}")
+        def fetchone_with_logging_change():
+            row = fetchone()
+            mock_logger.is_debug_enabled = not mock_logger.is_debug_enabled
+            return row
+
+        with patch.object(cursor, "fetchone", side_effect=fetchone_with_logging_change):
+            text = cursor.fetchval()
+            assert text == "Hello World", "fetchval should return string literal"
+            debug.assert_called_once_with("fetchval: Value retrieved successfully")
+            debug.reset_mock()
+            assert cursor.fetchval() is None
+            assert debug.call_args_list == [entry]
+
+        cursor.execute("DECLARE @value int")
+        non_result = call("fetchval: No result set available (non-SELECT statement)")
+        for enabled in (False, True):
+            mock_logger.is_debug_enabled = enabled
+            debug.reset_mock()
+            assert cursor.fetchval() is None
+            assert debug.call_args_list == ([entry, non_result] if enabled else [])
 
 
 def test_fetchval_different_data_types(cursor, db_connection):
