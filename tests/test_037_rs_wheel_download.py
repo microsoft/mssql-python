@@ -59,7 +59,7 @@ def test_downloads_only_matching_wheels_and_clears_stale_output(tmp_path, monkey
     (output / "stale.whl").write_bytes(b"stale")
     content = _package(
         [
-            "wheels/mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl",
+            "wheels/mssql_python_rs-0.1.0-cp310-abi3-win_amd64.whl",
             "symbols/debug.pdb",
         ],
         "0.1.0-dev.20260914.174990",
@@ -70,7 +70,7 @@ def test_downloads_only_matching_wheels_and_clears_stale_output(tmp_path, monkey
         "https://example.test/index.json", version_file, transport_file, output
     )
 
-    assert [wheel.name for wheel in wheels] == ["mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl"]
+    assert [wheel.name for wheel in wheels] == ["mssql_python_rs-0.1.0-cp310-abi3-win_amd64.whl"]
     assert sorted(path.name for path in output.iterdir()) == [wheels[0].name, "transport.json"]
     receipt = json.loads((output / "transport.json").read_text())
     assert receipt == {
@@ -97,7 +97,7 @@ def test_rejects_wheel_with_unexpected_version(tmp_path, monkeypatch):
     version_file.write_text("0.1.0", encoding="ascii")
     transport_file = tmp_path / "transport-version"
     transport_file.write_text("0.1.0-dev.1", encoding="ascii")
-    content = _package(["wheels/mssql_python_rs-0.1.1-cp313-cp313-win_amd64.whl"])
+    content = _package(["wheels/mssql_python_rs-0.1.1-cp310-abi3-win_amd64.whl"])
     _mock_download(monkeypatch, module, content)
 
     with pytest.raises(ValueError, match="Unexpected wheel name"):
@@ -115,7 +115,7 @@ def test_rejects_duplicate_wheel_filename(tmp_path, monkeypatch):
     version_file.write_text("0.1.0", encoding="ascii")
     transport_file = tmp_path / "transport-version"
     transport_file.write_text("0.1.0-dev.1", encoding="ascii")
-    wheel = "wheels/mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl"
+    wheel = "wheels/mssql_python_rs-0.1.0-cp310-abi3-win_amd64.whl"
     with pytest.warns(UserWarning, match="Duplicate name"):
         content = _package([wheel, wheel])
     _mock_download(monkeypatch, module, content)
@@ -185,7 +185,7 @@ def test_rejects_symlink_output_without_deleting_target(tmp_path, monkeypatch):
     else:
         output.symlink_to(target, target_is_directory=True)
 
-    content = _package(["wheels/mssql_python_rs-0.1.0-cp313-cp313-win_amd64.whl"])
+    content = _package(["wheels/mssql_python_rs-0.1.0-cp310-abi3-win_amd64.whl"])
     _mock_download(monkeypatch, module, content)
 
     with pytest.raises(ValueError, match="symbolic link|junction"):
@@ -204,3 +204,15 @@ def test_stress_jobs_resolve_dependency_from_pinned_transport():
     assert pipeline.count("download_mssql_python_rs_wheels.py --output-dir") == 2
     assert pipeline.count("--find-links=$(Pipeline.Workspace)\\mssql-python-rs-wheels") == 1
     assert pipeline.count("--find-links=$(Pipeline.Workspace)/mssql-python-rs-wheels") == 1
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    ["install-mssql-py-core.ps1", "install-mssql-py-core.sh"],
+)
+def test_local_installers_select_stable_abi_wheel(script_name):
+    script = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+
+    assert "cp310-abi3" in script
+    assert "PyVersion-$script:PyVersion" not in script
+    assert "PY_VERSION}-${PY_VERSION" not in script
