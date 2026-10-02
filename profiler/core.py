@@ -150,7 +150,11 @@ class Profiler:
             # into the next scenario — one guard here covers all scenarios (and any
             # future ones) instead of a try/finally in every scenario body.
             try:
-                if name == "connect":
+                if name in (
+                    "connect",
+                    "pooled_connect_close",
+                    "pooled_parallel_connect_close",
+                ):
                     result = fn(self.conn_str, self._ctx)
                 elif name == "insertmanyvalues":
                     self._ensure_connection()

@@ -12,12 +12,16 @@ python -m eng.profiler_benchmarks.controller --base main --candidate HEAD \
 python -m eng.profiler_benchmarks.report profiler-results/report.json
 ```
 
-The fixed registry has 21 tasks. `--scenarios` runs a local subset, but subset
+The fixed registry has 23 tasks. `--scenarios` runs a local subset, but subset
 reports remain incomplete and cannot produce a verdict.
 
 `lob_varchar_256k_fetchall` fetches one 256 KiB `VARCHAR(MAX)` value to exercise
 multi-chunk streaming. Query setup and exact payload validation are outside the
 timed fetch window.
+
+The pooling workloads prewarm the required physical connections, then measure
+1,000 checkout/check-in cycles with connection close inside the timed window.
+The parallel variant uses ten ready worker threads so thread startup is excluded.
 
 ## Measurement contract
 
