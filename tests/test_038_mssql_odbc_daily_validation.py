@@ -159,7 +159,7 @@ class PipelineContractTests(unittest.TestCase):
             if line.lstrip().startswith("pythonVersion:")
         }
 
-        self.assertEqual(active_python_versions, {"3.13", "3.14", "3.15.0-rc.2"})
+        self.assertEqual(active_python_versions, {"3.13", "3.14", "3.15.0-rc.3"})
         self.assertIn("python:3.15.0rc2-bookworm", pipeline)
 
     def test_python_315_validation_installs_pyarrow_nightly(self):

@@ -68,7 +68,7 @@ jobs:
         pythonVersion: '3.14'
       LocalDB_Python315Preview:
         sqlVersion: 'LocalDB'
-        pythonVersion: '3.15.0-rc.2'
+        pythonVersion: '3.15.0-rc.3'
 
   steps:
   - checkout: self
@@ -589,7 +589,7 @@ jobs:
       SQL2025_Python315Preview:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
-        pythonVersion: '3.15.0-rc.2'
+        pythonVersion: '3.15.0-rc.3'
 
   steps:
   - checkout: self
