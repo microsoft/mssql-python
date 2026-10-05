@@ -337,8 +337,11 @@ stages:
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
                       echo "Running pytest for ${PYBIN}...";
+                      # Release-lock tests validate repository workflows and lock files,
+                      # not the installed wheel; run them in source-checkout validation.
                       DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 \
+                          --ignore=tests/test_release_build_dependencies.py || {
                           echo "ERROR: Tests failed for ${PYBIN}";
                           exit 1;
                         };
@@ -415,8 +418,11 @@ stages:
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
                       echo "Running pytest for ${PYBIN}...";
+                      # Release-lock tests validate repository workflows and lock files,
+                      # not the installed wheel; run them in source-checkout validation.
                       DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 \
+                          --ignore=tests/test_release_build_dependencies.py || {
                           echo "ERROR: Tests failed for ${PYBIN}";
                           exit 1;
                         };
