@@ -29,7 +29,7 @@ from mssql_python.exceptions import (
     DatabaseError,
 )
 from mssql_python.row import Row
-from mssql_python.perf_timer import perf_phase
+from mssql_python.perf_timer import perf_phase, perf_start, perf_stop
 from mssql_python import get_settings
 from mssql_python.parameter_helper import (
     detect_and_convert_parameters,
@@ -42,6 +42,9 @@ if TYPE_CHECKING:
     from mssql_python.connection import Connection
 else:
     pyarrow = None
+
+_DEFAULT_ROW_TYPE = Row
+_DEFAULT_FAST_ROW_CREATE = Row._fast_create
 
 # Constants for string handling
 MAX_INLINE_CHAR: int = (
@@ -2855,7 +2858,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         row_data = []
         try:
-            with perf_phase("py::fetchone::cpp_call"):
+            started = perf_start()
+            try:
                 ret = ddbc_bindings.DDBCSQLFetchOne(
                     self.hstmt,
                     row_data,
@@ -2864,6 +2868,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self._cached_char_ctype,
                     self.messages,
                 )
+            finally:
+                if started:
+                    perf_stop("py::fetchone::cpp_call", started)
 
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
@@ -2884,7 +2891,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Get column and converter maps
             column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
-            with perf_phase("py::fetchone::row_wrap"):
+            started = perf_start()
+            try:
                 if not converter_map and not self._uuid_str_indices:
                     return Row._fast_create(
                         row_data, column_map, self, column_map_lower, self._cached_result_columns
@@ -2898,6 +2906,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     column_map_lower=column_map_lower,
                     column_names=self._cached_result_columns,
                 )
+            finally:
+                if started:
+                    perf_stop("py::fetchone::row_wrap", started)
         except Exception:
             # On error, don't increment rownumber - rethrow the error
             raise
@@ -2930,7 +2941,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            with perf_phase("py::fetchmany::cpp_call"):
+            started = perf_start()
+            try:
                 ret = ddbc_bindings.DDBCSQLFetchMany(
                     self.hstmt,
                     rows_data,
@@ -2940,6 +2952,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self._cached_char_ctype,
                     self.messages,
                 )
+            finally:
+                if started:
+                    perf_stop("py::fetchmany::cpp_call", started)
 
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
@@ -2960,8 +2975,25 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
-            with perf_phase("py::fetchmany::row_wrap"):
+            started = perf_start()
+            try:
                 if not converter_map and not uuid_idx:
+                    if (
+                        type(size) is int
+                        and size == 1
+                        and len(rows_data) == 1
+                        and Row is _DEFAULT_ROW_TYPE
+                        and Row._fast_create is _DEFAULT_FAST_ROW_CREATE
+                    ):
+                        return [
+                            Row._fast_create(
+                                rows_data[0],
+                                column_map,
+                                self,
+                                column_map_lower,
+                                self._cached_result_columns,
+                            )
+                        ]
                     return ddbc_bindings.construct_rows(
                         rows_data,
                         Row,
@@ -2982,6 +3014,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     )
                     for row_data in rows_data
                 ]
+            finally:
+                if started:
+                    perf_stop("py::fetchmany::row_wrap", started)
         except Exception:
             # On error, don't increment rownumber - rethrow the error
             raise

@@ -144,6 +144,37 @@ without re-entering a held counter lock. Python samples triggered recursively du
 profiler bookkeeping are intentionally omitted; the cleanup itself still runs.
 Ordinary nested workload timers and other threads are not suppressed.
 
+## Single-row fetch attribution
+
+`fetchone()` and the default iterator/`fetchval()` path share the native
+single-row helper. Full result column counts are cached per metadata generation,
+separately from prefix `SQLGetData` metadata. Direct `DDBCSQLNumResultCols` calls
+remain uncached. `fetchval()` still calls `fetchone()` and constructs the full
+row, including converters for columns beyond the first.
+
+`FetchSingleRow::SQL_UNBIND` counts attempted unbinds in that helper. A successful
+unbind can be reused within the same generation, but does not certify row-array
+attributes. Binding (including Arrow and partial binds), cleanup, and generation
+changes invalidate reuse.
+
+`FetchMany::single_numeric_row` identifies the native `fetchmany(1)` route for
+all-numeric results (integer, bit, real, float/double). It retains eager count/name
+validation, row-array configuration and cleanup, and uses `SQLFetchScroll` plus
+per-column `SQLGetData`. Mixed INT/NVARCHAR, text, LOB, decimal, temporal, UUID and
+variant results retain their existing native routes. Numeric width can therefore
+change the tradeoff; do not generalize a narrow-row result.
+
+The Python one-row wrapping shortcut is independent of native eligibility. It
+requires a built-in `int` request of one, exactly one returned row, the canonical
+`Row` and factory, and no converter or UUID work. One-row tails of larger requests
+and substituted factories retain batch wrapping. The existing
+`py::fetchone::{cpp_call,row_wrap}` and `py::fetchmany::{cpp_call,row_wrap}` phases
+use paired start/stop calls, avoiding context-manager entry/exit when disabled.
+
+Use profiling-enabled builds to check operation counts and normal uninstrumented
+Release builds for latency comparisons. These routes are optimization hypotheses,
+not a measured speedup; source-only checks do not establish native correctness.
+
 ## Adding a timer
 
 To time a new spot in the code:

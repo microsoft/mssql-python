@@ -4250,6 +4250,7 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 
     // Unbind any columns from previous fetch operations to avoid memory
     // corruption
+    StatementHandle->unboundGeneration.reset();
     SQLFreeStmt_ptr(StatementHandle->get(), SQL_UNBIND);
 
     // Perform scroll operation
@@ -4276,10 +4277,13 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
 template <typename Metadata>
-SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& columnNames,
+SQLRETURN SQLBindColums(SqlHandlePtr handle, ColumnBuffers& buffers, const Metadata& columnNames,
                         SQLUSMALLINT numCols, int fetchSize, int charCtype = SQL_C_WCHAR,
                         py::handle messages = {}) {
     PERF_TIMER("SQLBindColums");
+    // Invalidate before the first bind, including partial/failed binding.
+    handle->unboundGeneration.reset();
+    SQLHSTMT hStmt = handle->get();
     SQLRETURN ret = SQL_SUCCESS;
     const bool useWideChar = (charCtype == SQL_C_WCHAR);
     // Bind columns based on their data types
@@ -4927,6 +4931,7 @@ struct FetchStateGuard {
                     ret = SQLSetStmtAttr_ptr(handle->get(), SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0);
                     break;
                 default:
+                    handle->unboundGeneration.reset();
                     ret = SQLFreeStmt_ptr(handle->get(), SQL_UNBIND);
                     break;
             }
@@ -4947,6 +4952,10 @@ struct FetchStateGuard {
         }
     }
 };
+
+SQLRETURN FetchSingleRow(SqlHandlePtr handle, py::list& row, const std::string& charEncoding,
+                         const std::string& wcharEncoding, int charCtype, py::handle messages,
+                         SQLSMALLINT knownColumnCount = -1, bool scroll = false);
 
 // FetchMany_wrap - Fetches multiple rows of data from the result set.
 //
@@ -5017,6 +5026,40 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         ThrowStdException("Column metadata count does not match result column count");
     }
 
+    // Only types with identical bound and SQLGetData conversions are eligible.
+    // Keep other types on the existing path, including their pre-fetch failures.
+    const bool singleNumericRow = fetchSize == 1 && numCols > 0 &&
+        std::all_of(columnNames.begin(), columnNames.end(), [](const auto& column) {
+            switch (column.dataType) {
+                case SQL_INTEGER:
+                case SQL_SMALLINT:
+                case SQL_BIGINT:
+                case SQL_TINYINT:
+                case SQL_BIT:
+                case SQL_REAL:
+                case SQL_DOUBLE:
+                case SQL_FLOAT:
+                    return true;
+                default:
+                    return false;
+            }
+        });
+    if (singleNumericRow) {
+        PERF_TIMER("FetchMany::single_numeric_row");
+        FetchStateGuard fetchStateGuard(StatementHandle, messages);
+        // No rows-fetched pointer is needed for a single unbound row.
+        fetchStateGuard.configure(nullptr, 1);
+        py::list row;
+        ret = FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype,
+                             messages, numCols, true);
+        CheckFetchError(StatementHandle, ret);
+        if (SQL_SUCCEEDED(ret)) {
+            rows.append(row);
+        }
+        fetchStateGuard.close();
+        return ret;
+    }
+
     std::vector<SQLUSMALLINT> lobColumns;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         const auto& column = columnNames.at(i);
@@ -5059,7 +5102,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     FetchStateGuard fetchStateGuard(StatementHandle, messages);
 
     // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
+    ret = SQLBindColums(StatementHandle, buffers, columnNames, numCols, fetchSize, charCtype,
+                        messages);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchMany_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
@@ -5380,7 +5424,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     FetchStateGuard fetchStateGuard(StatementHandle, messages);
 
     if (!hasLobColumns && fetchSize > 0) {
-        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
+        ret = SQLBindColums(StatementHandle, buffers, columnNames, numCols, fetchSize, charCtype,
+                            messages);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error when binding columns");
             return ret;
@@ -6238,7 +6283,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     FetchStateGuard fetchStateGuard(StatementHandle, messages);
 
     // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
+    ret = SQLBindColums(StatementHandle, buffers, columnNames, numCols, fetchSize, charCtype,
+                        messages);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchAll_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
@@ -6285,31 +6331,46 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
+    return FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype, messages);
+}
+
+SQLRETURN FetchSingleRow(SqlHandlePtr StatementHandle, py::list& row,
+                         const std::string& charEncoding, const std::string& wcharEncoding,
+                         int charCtype, py::handle messages, SQLSMALLINT knownColumnCount,
+                         bool scroll) {
     SQLRETURN ret = SQL_ERROR;
     ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
     SQLHSTMT hStmt = StatementHandle->get();
 
-    // Unbind any columns from previous fetch operations (e.g., fetchmany)
-    // to avoid conflicts with SQLGetData. SQLGetData cannot be used on
-    // columns that are already bound.
-    ret = SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
-    CaptureFetchDiagnostics(hStmt, ret, messages);
-    if (!SQL_SUCCEEDED(ret))
-        return ret;
+    const auto generation = StatementHandle->resultMetadata.snapshot().generation;
+    if (StatementHandle->unboundGeneration != generation) {
+        StatementHandle->unboundGeneration.reset();
+        {
+            PERF_TIMER("FetchSingleRow::SQL_UNBIND");
+            ret = SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+        }
+        CaptureFetchDiagnostics(hStmt, ret, messages);
+        if (!SQL_SUCCEEDED(ret))
+            return ret;
+        StatementHandle->unboundGeneration = generation;
+    }
 
     // Assume hStmt is already allocated and a query has been executed
     {
         // Release the GIL during the blocking ODBC fetch
         py::gil_scoped_release release;
-        ret = SQLFetch_ptr(hStmt);
+        ret = scroll ? SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0) : SQLFetch_ptr(hStmt);
     }
     CaptureFetchDiagnostics(hStmt, ret, messages);
     if (SQL_SUCCEEDED(ret)) {
-        const auto snapshot = StatementHandle->resultMetadata.snapshot();
-        SQLSMALLINT colCount = snapshot.fullColumnCount;
+        SQLSMALLINT colCount = knownColumnCount;
         if (colCount < 0) {
-            colCount = SQLNumResultCols_wrap(StatementHandle, messages);
-            StatementHandle->resultMetadata.publishFullColumnCount(snapshot.generation, colCount);
+            const auto snapshot = StatementHandle->resultMetadata.snapshot();
+            colCount = snapshot.fullColumnCount;
+            if (colCount < 0) {
+                colCount = SQLNumResultCols_wrap(StatementHandle, messages);
+                StatementHandle->resultMetadata.publishFullColumnCount(snapshot.generation, colCount);
+            }
         }
         ret = SQLGetData_wrap(StatementHandle, colCount, row, charEncoding, wcharEncoding,
                               charCtype, messages);
