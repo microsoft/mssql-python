@@ -1142,6 +1142,12 @@ pyarrow==25.0.1 \
     --hash=sha256:eb6203482ff3746a5632303a7279ae0b5a304c46985b49ed1378cb350ea6728d \
     --hash=sha256:f3831aaa25c67a99f99dc8b05873cb9d64560390372e2aa197ce9dd4a3f06a44 \
     --hash=sha256:f729cfdbd36fd99d543b67a914d2de044c84ebe45be8b34902b299b608c15c8f
+    # via
+    #   -r eng/../requirements.txt
+    #   pyarrow-stubs
+pyarrow-stubs==20.0.0.20260819 \
+    --hash=sha256:150710a72248bc834bf048d3092713f070904a4af76d40289c43afb3ee189823 \
+    --hash=sha256:297e60b6e5314739c082b4757d090d8be6047465510eb0684ca954ef7ea58be3
     # via -r eng/../requirements.txt
 pybind11==3.1.0 \
     --hash=sha256:a1cc06b524ab3edca51f8ad3895f9c4fa20b8b19283173dff4ae781449dc9639 \

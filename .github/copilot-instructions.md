@@ -22,6 +22,10 @@ Paths you will touch:
 
 ## Development workflow
 
+For local editing, commit, or push tasks, follow
+[local formatting setup](instructions/local-formatting.instructions.md) to install
+the hooks when needed and use the same pinned formatting check as CI.
+
 Validated, step-by-step guides live in `.github/prompts/` — use them instead of rediscovering commands:
 
 - `setup-dev-env.prompt.md` — venv, dependencies, ODBC headers, `DB_CONNECTION_STRING`, SQL Server.
@@ -38,7 +42,7 @@ Core facts:
 ## Validation gate (run before you finish — this mirrors CI)
 
 ```bash
-black --check --line-length=100 mssql_python/ tests/     # BLOCKING in CI
+python -m pre_commit run black-check --all-files --hook-stage pre-push  # BLOCKING in CI
 python -m pytest -v                                       # 'stress' and 'typing' excluded by default
 ```
 

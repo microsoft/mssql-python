@@ -2425,12 +2425,22 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 Used by executemany to correct the SQL_VARCHAR column size when
                 the sample value's formatted string is shorter than another
                 value's (e.g. positive sample vs negative row value) (GH-557).
+
+        Raises:
+            ValueError: If any Decimal value is NaN or infinite.
         """
         non_nulls = [v for v in column if v is not None]
         if not non_nulls:
             return None, None, None, 0
 
-        int_values = [v for v in non_nulls if isinstance(v, int)]
+        int_values: list[int] = []
+        for v in non_nulls:
+            if isinstance(v, int):
+                int_values.append(v)
+            elif isinstance(v, decimal.Decimal) and not v.is_finite():
+                raise ValueError(
+                    "Cannot infer precision/scale from non-finite Decimal (NaN/Infinity)"
+                )
         if int_values:
             min_val, max_val = min(int_values), max(int_values)
             sample_value: Any = max(int_values, key=abs)

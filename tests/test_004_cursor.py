@@ -113,14 +113,36 @@ PARAM_TEST_DATA = [
 
 @pytest.mark.parametrize("nonfinite", ["NaN", "sNaN", "Infinity", "-Infinity"])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_compute_column_type_rejects_nonfinite_precision(nonfinite: str, reverse: bool) -> None:
+@pytest.mark.parametrize(
+    "other_values",
+    [[], [None], [decimal.Decimal("1.25")], [decimal.Decimal("0")], [0], [5], [True], [5, None]],
+)
+def test_compute_column_type_rejects_nonfinite_precision(
+    nonfinite: str, reverse: bool, other_values: list[object]
+) -> None:
     cur = mssql_python.Cursor.__new__(mssql_python.Cursor)
     cur.closed = True
-    values = [decimal.Decimal("1.25"), decimal.Decimal(nonfinite)]
+    values = [*other_values, decimal.Decimal(nonfinite)]
     if reverse:
         values.reverse()
     with pytest.raises(ValueError, match="non-finite Decimal"):
         cur._compute_column_type(values)
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    [
+        ([], (None, None, None, 0)),
+        ([None], (None, None, None, 0)),
+        ([-2, None, 5], (5, -2, 5, 0)),
+        ([None, decimal.Decimal("1.25")], (decimal.Decimal("1.25"), None, None, 4)),
+        ([5, decimal.Decimal("1.25")], (5, 5, 5, 0)),
+    ],
+)
+def test_compute_column_type_finite_values(values, expected):
+    cur = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    cur.closed = True
+    assert cur._compute_column_type(values) == expected
 
 
 def test_package_sources_compile_with_warnings_as_errors():
