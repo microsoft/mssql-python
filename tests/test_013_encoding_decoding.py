@@ -6837,6 +6837,33 @@ def test_shift_jis_encoding_japanese(db_connection):
         cursor.close()
 
 
+def test_euc_kr_encoding_korean_varchar(conn_str):
+    """Preserve Korean VARCHAR storage with the legacy SQL_CHAR/EUC-KR settings."""
+    korean_strings = ["안녕하세요", "서울", "한글"]
+    with connect(conn_str) as conn:
+        with pytest.warns(UserWarning, match="UTF-16LE.*SQL_C_WCHAR"):
+            conn.setencoding(encoding="euc-kr", ctype=SQL_CHAR)
+        conn.setdecoding(SQL_CHAR, encoding="euc-kr", ctype=SQL_CHAR)
+
+        with conn.cursor() as cursor:
+            # CP949 contains the EUC-KR characters used here; avoid the database's default code page.
+            cursor.execute(
+                "CREATE TABLE #test_euc_kr_varchar "
+                "(id INT, data VARCHAR(200) COLLATE Korean_Wansung_CI_AS)"
+            )
+            for index, text in enumerate(korean_strings):
+                cursor.execute("INSERT INTO #test_euc_kr_varchar VALUES (?, ?)", index, text)
+
+            cursor.execute(
+                "SELECT data, CONVERT(VARBINARY(200), data), CONVERT(NVARCHAR(200), data) "
+                "FROM #test_euc_kr_varchar ORDER BY id"
+            )
+            rows = cursor.fetchall()
+            # Keep the narrow fetch, but verify fidelity without Windows ANSI code-page conversion.
+            assert [row[1] for row in rows] == [text.encode("euc-kr") for text in korean_strings]
+            assert [row[2] for row in rows] == korean_strings
+
+
 def test_euc_kr_encoding_korean(db_connection):
     """Test EUC-KR encoding/decoding round-trip with Korean characters using NVARCHAR."""
     # Set encoding for INSERT (EUC-KR) and decoding for SELECT (UTF-16LE from NVARCHAR)

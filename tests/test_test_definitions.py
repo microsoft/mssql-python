@@ -13,7 +13,10 @@ def _scope_test_definitions(scope):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name.startswith("test_"):
                 yield node
-        elif not isinstance(node, (ast.ClassDef, ast.Lambda)):
+        elif isinstance(node, ast.ClassDef):
+            if node.name.startswith("Test"):
+                yield node
+        elif not isinstance(node, ast.Lambda):
             yield from _scope_test_definitions(node)
 
 
@@ -43,6 +46,14 @@ def test_test_names_are_unique_within_each_scope():
 
 @pytest.mark.parametrize("in_class", [False, True], ids=["module", "class"])
 @pytest.mark.parametrize(
+    "definition, name",
+    [
+        ("async def test_example():\n    pass\n", "test_example"),
+        ("class TestExample:\n    def test_method(self):\n        pass\n", "TestExample"),
+    ],
+    ids=["function", "test-class"],
+)
+@pytest.mark.parametrize(
     "block",
     [
         "if enabled:\n{test}",
@@ -57,23 +68,44 @@ def test_test_names_are_unique_within_each_scope():
     ],
     ids=["if", "else", "try", "except", "finally", "with", "for", "while", "nested"],
 )
-def test_duplicate_guard_checks_control_flow(block, in_class):
+def test_duplicate_guard_checks_control_flow(block, in_class, definition, name):
     nested = "    " if block.startswith("if enabled:\n    with") else ""
-    definition = "async def test_example():\n    pass\n"
     source = block.format(test=indent(definition, "    " + nested))
-    source += "\ndef test_example():\n    pass\n"
-    scope_name = "TestExample" if in_class else "<module>"
+    source += "\n" + definition
+    scope_name = "TestContainer" if in_class else "<module>"
     if in_class:
-        source = "class TestExample:\n" + indent(source, "    ")
+        source = "class TestContainer:\n" + indent(source, "    ")
 
     tree = ast.parse(source)
     definitions = sorted(
         node.lineno
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.name == name
     )
     assert _duplicate_test_names(tree) == [
-        f"{definitions[1]}: test_example replaces line {definitions[0]} in {scope_name}"
+        f"{definitions[1]}: {name} replaces line {definitions[0]} in {scope_name}"
+    ]
+
+
+@pytest.mark.parametrize("in_class", [False, True], ids=["module", "class"])
+def test_duplicate_guard_checks_redefined_test_classes(in_class):
+    source = (
+        "class TestExample:\n"
+        "    def test_first(self):\n"
+        "        pass\n"
+        "class TestExample:\n"
+        "    def test_second(self):\n"
+        "        pass\n"
+    )
+    if in_class:
+        source = "class TestContainer:\n" + indent(source, "    ")
+    assert _duplicate_test_names(ast.parse(source)) == [
+        (
+            "5: TestExample replaces line 2 in TestContainer"
+            if in_class
+            else "4: TestExample replaces line 1 in <module>"
+        )
     ]
 
 
@@ -85,6 +117,8 @@ def test_example():
 
 def helper():
     def test_example():
+        pass
+    class TestNested:
         pass
     return lambda: None
 
@@ -100,6 +134,9 @@ if enabled:
     class TestSecond:
         async def test_example(self):
             pass
+        class TestNested:
+            def test_example(self):
+                pass
 """)
     assert _duplicate_test_names(tree) == []
 
