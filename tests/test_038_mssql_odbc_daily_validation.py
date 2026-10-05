@@ -13,6 +13,7 @@ ROOT = Path(__file__).parents[1]
 RUNNER = ROOT / "eng" / "scripts" / "run-mssql-odbc-tests.sh"
 PIPELINE = ROOT / "eng" / "pipelines" / "mssql-odbc-daily-validation-pipeline.yml"
 PREFLIGHT = ROOT / "eng" / "scripts" / "verify_mssql_odbc_provider.py"
+RELEASE_PIPELINE = ROOT / "OneBranchPipelines" / "stages" / "build-linux-single-stage.yml"
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "runner requires Linux GNU timeout and bash")
@@ -59,7 +60,12 @@ class RunnerTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            status = (results / "runner.status").read_text(encoding="utf-8").strip()
+            status_file = results / "runner.status"
+            self.assertTrue(
+                status_file.is_file(),
+                f"runner did not write {status_file}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            status = status_file.read_text(encoding="utf-8").strip()
             reports = {
                 path.name: ElementTree.parse(path).getroot() for path in results.glob("*.xml")
             }
@@ -107,6 +113,19 @@ class RunnerTests(unittest.TestCase):
 
 
 class PipelineContractTests(unittest.TestCase):
+    def test_release_wheel_fixture_includes_runner_contract_files(self):
+        pipeline = RELEASE_PIPELINE.read_text(encoding="utf-8")
+
+        for path in (
+            "eng/scripts/run-mssql-odbc-tests.sh",
+            "eng/scripts/verify_mssql_odbc_provider.py",
+            "eng/pipelines/mssql-odbc-daily-validation-pipeline.yml",
+            "eng/versions/mssql-python-rs-nuget.version",
+            "OneBranchPipelines/stages/build-linux-single-stage.yml",
+        ):
+            self.assertEqual(pipeline.count(f"/workspace/{path}"), 2)
+        self.assertNotIn("cp -r /workspace/eng ", pipeline)
+
     def test_runner_uses_busybox_compatible_timeout_options(self):
         runner = RUNNER.read_text(encoding="utf-8")
 
