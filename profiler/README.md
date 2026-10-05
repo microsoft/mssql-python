@@ -152,12 +152,12 @@ separately from prefix `SQLGetData` metadata. Direct `DDBCSQLNumResultCols` call
 remain uncached. `fetchval()` still calls `fetchone()` and constructs the full
 row, including converters for columns beyond the first.
 
-`FetchSingleRow::SQL_UNBIND` counts attempted unbinds in that helper. A successful
+`ddbc::FetchSingleRow::SQL_UNBIND` counts attempted unbinds in that helper. A successful
 unbind can be reused within the same generation, but does not certify row-array
 attributes. Binding (including Arrow and partial binds), cleanup, and generation
 changes invalidate reuse.
 
-`FetchMany::single_numeric_row` identifies the native `fetchmany(1)` route for
+`ddbc::FetchMany::single_numeric_row` identifies the native `fetchmany(1)` route for
 all-numeric results (integer, bit, real, float/double). It retains eager count/name
 validation, row-array configuration and cleanup, and uses `SQLFetchScroll` plus
 per-column `SQLGetData`. Mixed INT/NVARCHAR, text, LOB, decimal, temporal, UUID and

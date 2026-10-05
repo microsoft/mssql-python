@@ -258,63 +258,63 @@ def test_single_row_native_transitions_in_subprocess(conn_str):
                 assert retained[0] == 1
                 assert next(cursor)[0] == 2
                 assert cursor.fetchval() == 3
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == 1
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == 1
                 assert cursor.fetchmany(1)[0][0] == 4
-                assert "SQLBindColums" not in p.get_stats()
-                assert p.get_stats()["FetchMany::single_numeric_row"]["calls"] == 1
+                assert "ddbc::SQLBindColums" not in p.get_stats()
+                assert p.get_stats()["ddbc::FetchMany::single_numeric_row"]["calls"] == 1
                 # Cleanup deliberately forgets the unbound marker.
                 assert cursor.fetchone()[0] == 5
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == 2
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == 2
                 assert [r[0] for r in cursor.fetchmany(2)] == [6, 7]
-                assert p.get_stats()["SQLBindColums"]["calls"] == 1
+                assert p.get_stats()["ddbc::SQLBindColums"]["calls"] == 1
                 assert cursor.fetchone()[0] == 8
                 assert cursor.fetchone() is None
                 assert cursor.fetchone() is None
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == 3
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == 3
                 assert tuple(retained) == (1, 11)
                 assert retained.a == 1
                 assert not cursor.messages
 
                 cursor.execute(query)
                 assert cursor.fetchone()[0] == 1
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == 4
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == 4
                 # Public statement-attribute changes must invalidate the marker.
                 assert ddbc.DDBCSQLSetStmtAttr(cursor.hstmt, 0, 0) == 0  # SQL_ATTR_QUERY_TIMEOUT
                 assert cursor.fetchone()[0] == 2
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == 5
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == 5
                 cursor.execute("SELECT 21 AS a; SELECT 22 AS a")
                 assert cursor.fetchone()[0] == 21
                 assert cursor.nextset()
                 assert cursor.fetchone()[0] == 22
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == 7
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == 7
 
                 cursor.execute("SELECT CAST(N'text' AS NVARCHAR(10)) AS a")
                 assert cursor.fetchmany(1)[0][0] == "text"
-                assert p.get_stats()["SQLBindColums"]["calls"] == 2
+                assert p.get_stats()["ddbc::SQLBindColums"]["calls"] == 2
                 cursor.execute(query)
                 assert cursor.fetchone()[0] == 1
                 cursor.skip(1)
-                before = p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"]
+                before = p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"]
                 assert cursor.fetchone()[0] == 3
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == before + 1
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == before + 1
                 batch = cursor.arrow_batch(2)
                 assert batch.to_pydict() == {"a": [4, 5], "b": [14, 15]}
-                before = p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"]
+                before = p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"]
                 assert cursor.fetchone()[0] == 6
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == before + 1
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == before + 1
                 assert batch.to_pydict() == {"a": [4, 5], "b": [14, 15]}
                 # Cancel invalidates the result generation; execute recovers the handle.
                 cursor.hstmt._cancel()
                 cursor.execute(query)
-                before = p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"]
+                before = p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"]
                 assert cursor.fetchone()[0] == 1
-                assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == before + 1
+                assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == before + 1
                 cursor.close()
                 with connection.cursor() as replacement:
                     replacement.execute(query)
-                    before = p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"]
+                    before = p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"]
                     assert replacement.fetchone()[0] == 1
-                    assert p.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == before + 1
+                    assert p.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == before + 1
                 p.disable()
         """)
     environment = os.environ.copy()
@@ -569,8 +569,13 @@ def test_single_row_native_failure_recovery_in_subprocess(conn_str, failure):
                                 cursor.fetchone()
                             else:
                                 cursor.fetchmany(2 if failure == "partial_bind" else 1)
-                        except (mssql_python.Error, UnicodeError) as error:
-                            if failure == "column_name":
+                        except (mssql_python.Error, UnicodeError, RuntimeError) as error:
+                            if failure == "partial_bind":
+                                assert type(error) is RuntimeError
+                                assert str(error) == (
+                                    "Failed to bind column - b, Type - 4, column ID - 2"
+                                )
+                            elif failure == "column_name":
                                 assert isinstance(error, UnicodeError)
                             else:
                                 assert isinstance(error, mssql_python.Error)
@@ -587,9 +592,9 @@ def test_single_row_native_failure_recovery_in_subprocess(conn_str, failure):
                     2 if failure in ("cleanup", "rows_fetched_cleanup", "getdata") else 1
                 )
                 assert cursor.fetchone()[0] == expected, failure
-                before = ddbc.profiling.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"]
+                before = ddbc.profiling.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"]
                 assert cursor.fetchone()[0] == expected + 1
-                assert ddbc.profiling.get_stats()["FetchSingleRow::SQL_UNBIND"]["calls"] == before
+                assert ddbc.profiling.get_stats()["ddbc::FetchSingleRow::SQL_UNBIND"]["calls"] == before
                 ddbc.profiling.disable()
         """)
     environment = os.environ.copy()
