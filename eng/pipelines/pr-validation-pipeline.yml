@@ -7,6 +7,8 @@ trigger:
       - main
 
 variables:
+  # Bound compiler concurrency, including builds running under ARM64 emulation.
+  unixBuildParallelism: '2'
   # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
   arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
 
@@ -44,6 +46,8 @@ jobs:
       chmod +x build.sh
       ./build.sh
     displayName: 'Build C++ extension for CodeQL analysis'
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
 
   - task: CodeQL3000Finalize@0
     condition: always()
@@ -667,6 +671,7 @@ jobs:
       fi
     displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
     env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
       DB_PASSWORD: $(DB_PASSWORD)
       MSSQL_SA_PASSWORD: $(DB_PASSWORD)
       SQLCMDPASSWORD: $(DB_PASSWORD)
@@ -872,7 +877,7 @@ jobs:
         [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]]; then
         PROFILER_BUILD=1
       fi
-      docker exec -e ENABLE_PROFILING="$PROFILER_BUILD" test-container-$(distroName) bash -c "
+      docker exec -e CMAKE_BUILD_PARALLEL_LEVEL -e ENABLE_PROFILING="$PROFILER_BUILD" test-container-$(distroName) bash -c "
         set -e
         source /opt/venv/bin/activate
         cd mssql_python/pybind
@@ -888,6 +893,8 @@ jobs:
         "
       fi
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -993,6 +1000,7 @@ jobs:
         export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
         
         docker exec \
+          -e CMAKE_BUILD_PARALLEL_LEVEL \
           -e BUILD_BUILDID \
           -e SYSTEM_PULLREQUEST_SOURCECOMMITID \
           -e DB_PASSWORD \
@@ -1019,6 +1027,7 @@ jobs:
     continueOnError: true
     timeoutInMinutes: 100
     env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
       DB_PASSWORD: $(DB_PASSWORD)
       BUILD_BUILDID: $(Build.BuildId)
       SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
@@ -1208,7 +1217,7 @@ jobs:
 
   - script: |
       # Build pybind bindings in the ARM64 container
-      docker exec test-container-$(distroName)-$(archName) bash -c "
+      docker exec -e CMAKE_BUILD_PARALLEL_LEVEL test-container-$(distroName)-$(archName) bash -c "
         set -euo pipefail
         if [ ! -f /opt/venv/bin/activate ]; then
           echo '/opt/venv/bin/activate is missing. Python dependency setup did not complete.'
@@ -1222,6 +1231,8 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1413,7 +1424,7 @@ jobs:
 
   - script: |
       # Build pybind bindings in the container
-      docker exec test-container-rhel9 bash -c "
+      docker exec -e CMAKE_BUILD_PARALLEL_LEVEL test-container-rhel9 bash -c "
         source myvenv/bin/activate
         ls /usr/include/python3.12
         # Set compiler environment variables
@@ -1425,6 +1436,8 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 container'
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1629,7 +1642,7 @@ jobs:
 
   - script: |
       # Build pybind bindings in the ARM64 container
-      docker exec test-container-rhel9-arm64 bash -c "
+      docker exec -e CMAKE_BUILD_PARALLEL_LEVEL test-container-rhel9-arm64 bash -c "
         source myvenv/bin/activate
         ls /usr/include/python3.12
         # Set compiler environment variables
@@ -1641,6 +1654,8 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1853,7 +1868,7 @@ jobs:
 
   - script: |
       # Build pybind bindings in the Alpine x86_64 container
-      docker exec test-container-alpine bash -c "
+      docker exec -e CMAKE_BUILD_PARALLEL_LEVEL test-container-alpine bash -c "
         # Activate virtual environment
         source /workspace/venv/bin/activate
         
@@ -1862,6 +1877,8 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine x86_64 container'
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -2095,7 +2112,7 @@ jobs:
 
   - script: |
       # Build pybind bindings in the Alpine ARM64 container
-      docker exec test-container-alpine-arm64 bash -c "
+      docker exec -e CMAKE_BUILD_PARALLEL_LEVEL test-container-alpine-arm64 bash -c "
         # Activate virtual environment
         source /workspace/venv/bin/activate
         
@@ -2104,6 +2121,8 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -2454,6 +2473,8 @@ jobs:
       cd mssql_python/pybind
       ./build.sh codecov
     displayName: 'Build pybind bindings with coverage'
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: $(unixBuildParallelism)
 
   - template: steps/install-mssql-py-core.yml
     parameters:

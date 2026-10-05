@@ -91,6 +91,18 @@ If you are a Microsoft organization member (internal contributor):
 2. **Link the ADO Work Item**: Include the ADO work item link in your PR description using the format: `https://sqlclientdrivers.visualstudio.com/.../workitems/edit/ID`
 3. **Follow PR Guidelines**: Ensure your PR title follows the required prefix format and includes a meaningful summary.
 
+## Native build concurrency in PR validation
+
+PR validation sets `CMAKE_BUILD_PARALLEL_LEVEL` to the pipeline's
+`unixBuildParallelism` value (two workers) for Linux and macOS native builds,
+including CodeQL, coverage, and both sides of Unix profiler comparisons.
+Container steps explicitly forward this environment variable to Docker.
+Windows, release builds, test selection, and local build defaults are unchanged.
+For a local serial/parallel comparison, set `CMAKE_BUILD_PARALLEL_LEVEL=1` or `2`
+when invoking `mssql_python/pybind/build.sh` from its directory. The script
+cleans its build directory each time; compare identical source, dependencies,
+and build modes, and measure whole-job time separately from compilation time.
+
 ## Pull Request Requirements
 
 All pull requests must include:
