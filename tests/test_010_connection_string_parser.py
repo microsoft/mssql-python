@@ -334,7 +334,8 @@ class TestConnectionStringParserErrors:
         parser = _ConnectionStringParser(validate_keywords=True)
 
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse(f"Server=localhost;{keyword}=value")
+            # Parser-only input: no connection is opened.
+            parser._parse(f"Server=localhost;{keyword}=value")  # DevSkim: ignore DS162092
 
         assert f"Unknown keyword '{keyword.lower()}'" in str(exc_info.value)
 
