@@ -124,9 +124,18 @@ pip install pybind11
 # Test dependencies
 pip install pytest pytest-cov
 
-# Linting/formatting (optional)
-pip install black flake8 autopep8
+# Install the shared local/CI formatting tools
+python -m pip install -r requirements-lint.txt
+python -m pre_commit install --install-hooks
 ```
+
+Both commit and push hooks are required for contributors. Commit hooks format
+staged Python files; push hooks run the same full-directory Black check as CI.
+If formatting changes a file, review and stage it before retrying the commit.
+Run `python -m pre_commit run black-check --all-files --hook-stage pre-push`
+before opening a PR. See `CONTRIBUTING.md` for setup and enforcement details.
+Copilot should follow `.github/instructions/local-formatting.instructions.md`
+to check for existing hooks and custom hooks paths before installing.
 
 ### 3.4 Install Package in Development Mode
 
@@ -737,10 +746,12 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 # Complete setup from scratch
 python3 -m venv myvenv && \
 source myvenv/bin/activate && \
-pip install --upgrade pip && \
-pip install -r requirements.txt && \
-pip install pybind11 pytest pytest-cov && \
-pip install -e . && \
+python -m pip install --upgrade pip && \
+python -m pip install -r requirements.txt && \
+python -m pip install -r requirements-lint.txt && \
+python -m pre_commit install --install-hooks && \
+python -m pip install pybind11 pytest pytest-cov && \
+python -m pip install -e . && \
 echo "✅ Setup complete!"
 ```
 
@@ -752,6 +763,7 @@ echo "✅ Setup complete!"
 | `pytest` | Testing | Running tests |
 | `pytest-cov` | Coverage | Coverage reports |
 | `azure-identity` | Azure auth | Runtime (in requirements.txt) |
+| `pre-commit` | Pinned Black hooks | Commits and pushes (in requirements-lint.txt) |
 
 ---
 
