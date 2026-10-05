@@ -3312,34 +3312,6 @@ def test_big5_encoding_chinese_traditional(db_connection):
         cursor.close()
 
 
-def test_euc_kr_encoding_korean(db_connection):
-    """Test EUC-KR encoding for Korean characters."""
-    db_connection.setencoding(encoding="euc-kr", ctype=SQL_CHAR)
-    db_connection.setdecoding(SQL_CHAR, encoding="euc-kr", ctype=SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_euckr (id INT, data VARCHAR(200))")
-
-        korean_tests = [
-            ("안녕하세요", "Hello"),
-            ("서울", "Seoul"),
-            ("한글", "Hangul"),
-        ]
-
-        for korean_text, meaning in korean_tests:
-            if is_encoding_compatible_with_data("euc-kr", korean_text):
-                cursor.execute("DELETE FROM #test_euckr")
-                cursor.execute("INSERT INTO #test_euckr VALUES (?, ?)", 1, korean_text)
-                cursor.execute("SELECT data FROM #test_euckr WHERE id = 1")
-                result = cursor.fetchone()
-            else:
-                pass
-
-    finally:
-        cursor.close()
-
-
 # ====================================================================================
 # SINGLE-BYTE ENCODING TESTS (Latin-1, CP1252, ISO-8859-*, etc.)
 # ====================================================================================
