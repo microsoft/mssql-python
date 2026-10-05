@@ -687,10 +687,80 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert len(reporting.CASES) == 21
+    assert len(reporting.CASES) == 22
+    assert workloads.registry()["scalar_fetchval"] == (workloads.scalar_fetchval, True)
     assert [name for name in reporting.CASES if name.startswith("lob_")] == [
         "lob_varchar_256k_fetchall",
     ]
+
+
+def test_scalar_fetchval_workload_times_only_fetch_and_reaches_eof(monkeypatch, report):
+    monkeypatch.setattr("mssql_python.logging.logger", SimpleNamespace(is_debug_enabled=False))
+    cursor = MagicMock()
+    cursor.fetchval.side_effect = [*range(10_000), None]
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+
+    def clock():
+        cursor.execute.assert_called_once_with(
+            "SELECT TOP (10000) int_col FROM #perf_test ORDER BY id"
+        )
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        assert cursor.fetchval.call_count in (0, 10_001)
+        return 1.1 if cursor.fetchval.call_count else 1.0
+
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.scalar_fetchval(connection, "#perf_test", context)
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["detail"] == "Rows: 10000; type: int; API: fetchval; debug: disabled"
+    assert cursor.fetchval.call_count == 10_001
+    cursor.fetchone.assert_not_called()
+    cursor.fetchall.assert_not_called()
+    cursor.fetchmany.assert_not_called()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+    assert reporting.TASK_NAMES["scalar_fetchval"] in reporting.render([report], "c" * 40, 42)
+
+
+@pytest.mark.parametrize(
+    "problem", ("wrong-value", "wrong-type", "missing", "extra", "warning", "error", "debug")
+)
+def test_scalar_fetchval_workload_rejects_invalid_measurements(monkeypatch, problem):
+    monkeypatch.setattr(
+        "mssql_python.logging.logger", SimpleNamespace(is_debug_enabled=problem == "debug")
+    )
+    values = [*range(10_000), None]
+    cursor = MagicMock()
+    cursor.messages = []
+    if problem == "wrong-value":
+        values[0] = -1
+    elif problem == "wrong-type":
+        values[0] = 0.0
+    elif problem == "missing":
+        values[0] = None
+    elif problem == "extra":
+        values[-1] = 10_000
+    elif problem == "warning":
+        cursor.messages = [("01000", "unexpected")]
+    cursor.fetchval.side_effect = RuntimeError("fetch failed") if problem == "error" else values
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    error = {"debug": ValueError, "error": RuntimeError}.get(problem, AssertionError)
+    with pytest.raises(error):
+        benchmark_workloads.scalar_fetchval(connection, "#perf_test", context)
+    if problem == "debug":
+        connection.cursor.assert_not_called()
+        context.enable.assert_not_called()
+    else:
+        context.disable.assert_called_once()
+        connection.cursor.return_value.__exit__.assert_called_once()
 
 
 def test_lob_workload_validates_payload_and_times_only_fetch(monkeypatch):
