@@ -49,6 +49,7 @@ def _clean_profiling_state():
         ddbc.profiling.disable()
         ddbc.profiling.disable_timeline()
         ddbc.profiling.reset()
+        ddbc.profiling.set_sample_every(1)
     yield
     perf_timer.disable()
     perf_timer.disable_timeline()
@@ -57,6 +58,7 @@ def _clean_profiling_state():
         ddbc.profiling.disable()
         ddbc.profiling.disable_timeline()
         ddbc.profiling.reset()
+        ddbc.profiling.set_sample_every(1)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +370,47 @@ def test_cpp_get_stats_empty_when_reset():
     ddbc.profiling.reset()
     assert ddbc.profiling.get_stats() == {}
     assert ddbc.profiling.get_timeline() == []
+
+
+@_needs_cpp
+def test_cpp_sampling_metadata_and_invalid_configuration():
+    config = ddbc.profiling.get_config()
+    assert config == {
+        "sample_every": 1,
+        "sampling": "all",
+        "counts_are_samples": False,
+        "totals_are_scaled": False,
+        "timers_are_inclusive": True,
+        "events_have_zero_duration": True,
+    }
+    with pytest.raises(ValueError):
+        ddbc.profiling.set_sample_every(0)
+    ddbc.profiling.enable()
+    with pytest.raises(RuntimeError, match="Disable profiling"):
+        ddbc.profiling.set_sample_every(16)
+    assert ddbc.profiling.get_config() == config
+
+
+@_needs_cpp
+def test_cpp_sampling_records_only_samples_and_resets_configuration_windows():
+    ddbc.profiling.set_sample_every(16)
+    ddbc.profiling.enable()
+    ddbc.profiling.enable_timeline()
+    for _ in range(10000):
+        ddbc.DDBCSQLResetStmt(None)  # Invalid handle: no driver or database needed.
+    ddbc.profiling.disable()
+    stats = ddbc.profiling.get_stats()["ddbc::SQLResetStmt_wrap"]
+    assert 400 < stats["calls"] < 850
+    assert stats["calls"] == len(ddbc.profiling.get_timeline())
+    assert stats["total_us"] == pytest.approx(stats["avg_us"] * stats["calls"])
+    assert ddbc.profiling.get_config()["counts_are_samples"] is True
+    ddbc.profiling.set_sample_every(1)
+    assert ddbc.profiling.get_stats() == {}
+    assert ddbc.profiling.get_timeline() == []
+    ddbc.profiling.enable()
+    for _ in range(10):
+        ddbc.DDBCSQLResetStmt(None)
+    assert ddbc.profiling.get_stats()["ddbc::SQLResetStmt_wrap"]["calls"] == 10
 
 
 @_needs_cpp

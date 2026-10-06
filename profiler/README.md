@@ -31,6 +31,40 @@ Recording supports worker threads; independent concurrent profiling sessions are
 not supported. Enabled instrumentation adds bookkeeping overhead, so compare runs
 using the same profiling configuration.
 
+### Sparse native sampling for contention experiments
+
+In profiling builds, `ddbc_bindings.profiling.set_sample_every(N)` selects roughly
+one in N native timers/events using a thread-local PRNG, not periodic sampling.
+The default is 1 (all calls), preserving existing behavior. Call it while
+profiling is disabled; it clears aggregates and timeline to avoid mixing rates.
+`reset()` and `reset_stats_only()` retain the chosen rate. Capture
+`profiling.get_config()` alongside each report; the standalone reporter does not
+automatically attach this metadata. Python-layer timers are not sampled.
+
+With N > 1, `calls` means **recorded samples**, never total invocations.
+Durations, counts, averages, extrema and timelines are not extrapolated.
+Timers remain inclusive, overlapping, thread-summed intervals, not exclusive
+wall time. The global recording mutex remains: sampling reduces acquisitions,
+not all observer effects. Compile-OFF builds emit no timers/events or sampler
+checks. Compare production-OFF, compile-ON/runtime-OFF and runtime-ON separately.
+
+Targeted contention names (all prefixed `ddbc::`):
+
+- `SQLResetStmt_wrap`, `SQLResetStmt::odbc_sequence`, and
+  `SQLResetStmt::{SQL_CLOSE_call,SQL_RESET_PARAMS_call,SQL_ATTR_PARAMSET_SIZE_call}`.
+- `Connection::setAutocommit::SQLSetConnectAttr_call` and
+  `SQLExecDirect::SQLExecDirect_call` time raw calls while the GIL is released.
+- `Connection::setAutocommit::{proof_eligible,full_path}` are zero-duration
+  events, not spans. Eligibility is native sanitation proof, not a Python cache.
+- `CaptureFetchDiagnostics::{no_data,success_with_info}` and
+  `AppendDiagRecords::{state_no_data,record_no_data,record_error,record_read,
+  internal_truncation,record_appended}` are zero-duration outcome events.
+  Their enclosing names without suffixes are inclusive spans.
+
+The existing `FetchBatchData::SQLFetchScroll_call` is also a raw ODBC span.
+No independent GIL reacquisition span is provided: differences between nested,
+independently sampled timings cannot be called GIL wait or exclusive time.
+
 ## How the timers are named
 
 Every timer has a prefix telling you which layer it belongs to:

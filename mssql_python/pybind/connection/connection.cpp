@@ -333,6 +333,12 @@ void Connection::setAutocommit(bool enable) {
         ThrowStdException("Connection handle not allocated");
     }
     clearResultMetadata();
+#ifdef ENABLE_PROFILING
+    if (enable && _dbcHandle->get() && _poolClean && !_poolProofDisabled) {
+        PERF_EVENT("Connection::setAutocommit::proof_eligible");
+    }
+#endif
+    PERF_EVENT("Connection::setAutocommit::full_path");
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);
     SQLRETURN ret;
@@ -342,6 +348,7 @@ void Connection::setAutocommit(bool enable) {
         // Python thread (e.g. an in-process SSH tunnel via paramiko +
         // sshtunnel), since that thread also needs the GIL to run.
         py::gil_scoped_release release;
+        PERF_TIMER("Connection::setAutocommit::SQLSetConnectAttr_call");
         ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
                                     reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
     }

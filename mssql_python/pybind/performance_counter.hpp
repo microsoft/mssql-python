@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -53,14 +54,8 @@ class PerformanceCounter {
 private:
     std::unordered_map<std::string, PerfStats> counters_;
     std::vector<TimelineEvent> timeline_;
-    // Intentional design decision: a single global mutex guards the counters.
-    // It is only taken when profiling is enabled (record() early-returns before
-    // the lock when disabled), so the default OFF path pays nothing. The target
-    // use case is single-threaded diagnostics (a user reproduces a slow query
-    // and sends a dump), where the lock is uncontended and negligible against
-    // microsecond-scale timers. Multithreaded profiling would contend this lock;
-    // if that ever becomes a real need, switch to thread_local accumulation
-    // merged at get_stats(). Not worth the added complexity today.
+    // A single mutex still guards recording. Opt-in sparse sampling avoids
+    // clocks, allocation and this lock for rejected samples under contention.
     std::mutex mutex_;
     // Config flags are atomic so enable()/disable()/enable_timeline() can be
     // called from a different thread than the one running timers (timers execute
@@ -72,6 +67,7 @@ private:
     // Reject samples crossing an aggregate-window boundary. Timeline restarts
     // keep the aggregate window and are handled separately in record().
     std::atomic<uint64_t> generation_{0};
+    std::atomic<uint32_t> sample_every_{1};
 
 public:
     static PerformanceCounter& instance() {
@@ -92,6 +88,58 @@ public:
     }
     bool is_enabled() const { return enabled_; }
     uint64_t current_generation() const { return generation_.load(std::memory_order_relaxed); }
+
+    void set_sample_every(uint32_t every) {
+        if (every == 0)
+            throw std::invalid_argument("sample_every must be at least 1");
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (enabled_)
+            throw std::runtime_error("Disable profiling before changing sample_every");
+        // Never mix sampling probabilities in one aggregate or timeline.
+        generation_.fetch_add(1, std::memory_order_relaxed);
+        counters_.clear();
+        timeline_.clear();
+        sample_every_.store(every, std::memory_order_relaxed);
+    }
+
+    py::dict get_config() const {
+        const auto every = sample_every_.load(std::memory_order_relaxed);
+        py::dict config;
+        config["sample_every"] = every;
+        config["sampling"] = every == 1 ? "all" : "thread_local_prng";
+        config["counts_are_samples"] = every != 1;
+        config["totals_are_scaled"] = false;
+        config["timers_are_inclusive"] = true;
+        config["events_have_zero_duration"] = true;
+        return config;
+    }
+
+    bool should_sample() const {
+        if (!enabled_) return false;
+        const auto every = sample_every_.load(std::memory_order_relaxed);
+        if (every == 1) return true;
+        // SplitMix64: independent decisions per span/event, not every Nth
+        // operation (which aliases repeated operation sequences). Only thread
+        // initialization uses a shared atomic; the hot PRNG state is local.
+        static std::atomic<uint64_t> seeds{0};
+        thread_local uint64_t state =
+            seeds.fetch_add(1, std::memory_order_relaxed) * UINT64_C(0xd1342543de82ef95);
+        uint64_t bits = (state += UINT64_C(0x9e3779b97f4a7c15));
+        bits = (bits ^ (bits >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+        bits = (bits ^ (bits >> 27)) * UINT64_C(0x94d049bb133111eb);
+        bits ^= bits >> 31;
+        return bits % every == 0;
+    }
+
+    void event(const char* name) noexcept {
+        const auto generation = current_generation();
+        if (!should_sample()) return;
+        try {
+            record(name, 0, std::chrono::steady_clock::now(), generation);
+        } catch (...) {
+            // Profiling must never affect driver error semantics.
+        }
+    }
 
     void enable_timeline() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -203,13 +251,14 @@ private:
     bool active_;
     // Window generation captured at construction, handed back to record() so a
     // sample that outlived its window is dropped rather than mis-attributed.
-    uint64_t startGeneration_{0};
+    uint64_t startGeneration_;
 
 public:
     explicit ScopedTimer(const char* name)
-        : name_(name), active_(PerformanceCounter::instance().is_enabled()) {
+        : name_(name), active_(false),
+          startGeneration_(PerformanceCounter::instance().current_generation()) {
+        active_ = PerformanceCounter::instance().should_sample();
         if (active_) {
-            startGeneration_ = PerformanceCounter::instance().current_generation();
             start_ = std::chrono::steady_clock::now();
         }
     }
@@ -246,6 +295,8 @@ public:
 // Profiling builds pass -DENABLE_PROFILING -> the RAII ScopedTimer is emitted.
 #ifdef ENABLE_PROFILING
     #define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)("ddbc::" name)
+    #define PERF_EVENT(name) mssql_profiling::PerformanceCounter::instance().event("ddbc::" name)
 #else
     #define PERF_TIMER(name) do {} while(0)
+    #define PERF_EVENT(name) do {} while(0)
 #endif

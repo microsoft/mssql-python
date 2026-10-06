@@ -1741,6 +1741,7 @@ void SqlHandle::cancel() {
 }
 
 SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
+    PERF_TIMER("SQLResetStmt_wrap");
     if (!statementHandle || !statementHandle->get()) {
         return SQL_INVALID_HANDLE;
     }
@@ -1756,11 +1757,17 @@ SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
     SQLRETURN rc;
     {
         py::gil_scoped_release release;
-        rc = SQLFreeStmt_ptr(hStmt, SQL_CLOSE);
+        PERF_TIMER("SQLResetStmt::odbc_sequence");
+        {
+            PERF_TIMER("SQLResetStmt::SQL_CLOSE_call");
+            rc = SQLFreeStmt_ptr(hStmt, SQL_CLOSE);
+        }
         if (SQL_SUCCEEDED(rc)) {
+            PERF_TIMER("SQLResetStmt::SQL_RESET_PARAMS_call");
             rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
         }
         if (SQL_SUCCEEDED(rc) && SQLSetStmtAttr_ptr) {
+            PERF_TIMER("SQLResetStmt::SQL_ATTR_PARAMSET_SIZE_call");
             rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0);
         }
     }
@@ -1954,6 +1961,7 @@ ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN re
 
 static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::handle records,
                               bool internalTruncation = false) {
+    PERF_TIMER("AppendDiagRecords");
     // Iterate through all available diagnostic records
     for (SQLSMALLINT recNumber = 1;; recNumber++) {
         SQLWCHAR sqlState[6] = {0};
@@ -1966,11 +1974,15 @@ static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::h
                                                   static_cast<SQLSMALLINT>(sizeof(sqlState)),
                                                   nullptr);
             }
-            if (stateReturn == SQL_NO_DATA)
+            if (stateReturn == SQL_NO_DATA) {
+                PERF_EVENT("AppendDiagRecords::state_no_data");
                 break;
+            }
             // Skip only this continuation record, without retrieving its message text.
-            if (stateReturn == SQL_SUCCESS && std::equal(sqlState, sqlState + 6, u"01004"))
+            if (stateReturn == SQL_SUCCESS && std::equal(sqlState, sqlState + 6, u"01004")) {
+                PERF_EVENT("AppendDiagRecords::internal_truncation");
                 continue;
+            }
             if (stateReturn != SQL_SUCCESS)
                 LOG("AppendDiagRecords: SQLSTATE lookup returned %d; reading full record %d",
                     stateReturn, recNumber);
@@ -1986,13 +1998,22 @@ static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::h
                                            message, SQL_MAX_MESSAGE_LENGTH_SQLSERVER, &messageLen);
         }
 
-        if (diagReturn == SQL_NO_DATA || !SQL_SUCCEEDED(diagReturn))
+        if (diagReturn == SQL_NO_DATA) {
+            PERF_EVENT("AppendDiagRecords::record_no_data");
             break;
+        }
+        if (!SQL_SUCCEEDED(diagReturn)) {
+            PERF_EVENT("AppendDiagRecords::record_error");
+            break;
+        }
+        PERF_EVENT("AppendDiagRecords::record_read");
 
         std::u16string sqlStateUtf16 = dupeSqlWCharAsUtf16Le(sqlState, 5);
         // A continuation/probe can also carry unrelated warnings; filter each record.
-        if (internalTruncation && sqlStateUtf16 == u"01004")
+        if (internalTruncation && sqlStateUtf16 == u"01004") {
+            PERF_EVENT("AppendDiagRecords::internal_truncation");
             continue;
+        }
         std::u16string messageUtf16 = dupeSqlWCharAsUtf16Le(
             message, std::min(static_cast<size_t>(messageLen),
                               static_cast<size_t>(SQL_MAX_MESSAGE_LENGTH_SQLSERVER - 1)));
@@ -2007,6 +2028,7 @@ static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::h
         py::tuple record = py::make_tuple(py::str(stateWithError), py::str(msgStr));
         if (PyList_Append(records.ptr(), record.ptr()) < 0)
             throw py::error_already_set();
+        PERF_EVENT("AppendDiagRecords::record_appended");
     }
 }
 
@@ -2028,8 +2050,17 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
 // Called only with the GIL held, immediately after the originating ODBC call.
 static void CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret, py::handle messages,
                                     bool internalTruncation = false) {
-    if ((ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA) && messages && !messages.is_none())
+    if ((ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA) && messages && !messages.is_none()) {
+        PERF_TIMER("CaptureFetchDiagnostics");
+#ifdef ENABLE_PROFILING
+        if (ret == SQL_NO_DATA) {
+            PERF_EVENT("CaptureFetchDiagnostics::no_data");
+        } else {
+            PERF_EVENT("CaptureFetchDiagnostics::success_with_info");
+        }
+#endif
         AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
+    }
 }
 
 static void CheckFetchError(const SqlHandlePtr& handle, SQLRETURN ret) {
@@ -2065,6 +2096,7 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::u16string&
         // threads (e.g. asyncio event loop, heartbeat threads) can run while
         // SQL Server executes the query. See issue #540.
         py::gil_scoped_release release;
+        PERF_TIMER("SQLExecDirect::SQLExecDirect_call");
         ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
     }
     if (!SQL_SUCCEEDED(ret)) {
@@ -6607,6 +6639,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                   "Enable performance profiling");
     profiling.def("disable", []() { mssql_profiling::PerformanceCounter::instance().disable(); },
                   "Disable performance profiling");
+    profiling.def("set_sample_every", [](uint32_t every) {
+        mssql_profiling::PerformanceCounter::instance().set_sample_every(every);
+    }, py::arg("every"),
+       "Record about 1/every spans/events using a thread-local PRNG (1 records all). "
+       "Requires profiling disabled; clears statistics and timeline. No extrapolation.");
+    profiling.def("get_config", []() {
+        return mssql_profiling::PerformanceCounter::instance().get_config();
+    }, "Sampling metadata: counts/times are unscaled recorded samples; timers are inclusive.");
     profiling.def("get_stats", []() { return mssql_profiling::PerformanceCounter::instance().get_stats(); },
                   "Get profiling statistics");
     profiling.def("get_timeline", []() { return mssql_profiling::PerformanceCounter::instance().get_timeline(); },

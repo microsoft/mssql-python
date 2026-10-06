@@ -4,12 +4,16 @@
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 #include <pybind11/embed.h>
 #include <algorithm>
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include <thread>
 #include <unordered_map>
+
+SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle);
 
 namespace {
 struct Handle {
@@ -168,6 +172,15 @@ SQLRETURN SQL_API getInfo(SQLHDBC dbc, SQLUSMALLINT, SQLPOINTER value,
     return SQL_SUCCESS;
 }
 
+SQLRETURN SQL_API freeStatement(SQLHSTMT, SQLUSMALLINT option) {
+    return record(option == SQL_CLOSE ? "statement_close" : "statement_reset_params");
+}
+
+SQLRETURN SQL_API setStatementAttr(SQLHSTMT, SQLINTEGER attribute, SQLPOINTER, SQLINTEGER) {
+    require(attribute == SQL_ATTR_PARAMSET_SIZE, "Unexpected statement attribute");
+    return record("statement_paramset_size");
+}
+
 SQLRETURN SQL_API diagnostic(SQLSMALLINT, SQLHANDLE, SQLSMALLINT recordNumber,
                             SQLWCHAR* state, SQLINTEGER* native, SQLWCHAR* message,
                             SQLSMALLINT, SQLSMALLINT* length) {
@@ -255,6 +268,8 @@ int main() {
     SQLDisconnect_ptr = disconnect;
     SQLGetInfo_ptr = getInfo;
     SQLGetDiagRec_ptr = diagnostic;
+    SQLFreeStmt_ptr = freeStatement;
+    SQLSetStmtAttr_ptr = setStatementAttr;
 
     int passed = 0;
     auto run = [&](const char* name, const std::function<void()>& test) {
@@ -264,6 +279,85 @@ int main() {
         std::cout << "PASS " << name << '\n';
     };
     try {
+        run("profiler generation rejects in-flight timers across all aggregate boundaries", [] {
+            auto& counter = mssql_profiling::PerformanceCounter::instance();
+            counter.disable();
+            counter.set_sample_every(1);
+            for (int boundary = 0; boundary < 3; ++boundary) {
+                counter.enable();
+                {
+                    mssql_profiling::ScopedTimer timer("old");
+                    if (boundary == 0) {
+                        counter.reset();
+                    } else if (boundary == 1) {
+                        counter.reset_stats_only();
+                    } else {
+                        counter.disable();
+                        counter.enable();
+                    }
+                }
+                require(counter.get_stats().empty(), "Old timer crossed aggregate boundary");
+            }
+            counter.disable();
+            {
+                mssql_profiling::ScopedTimer disabled("disabled");
+                counter.enable();
+            }
+            require(counter.get_stats().empty(), "Disabled timer recorded after enable");
+            counter.disable();
+        });
+        run("profiler concurrent recording and sparse events stay unscaled", [] {
+            auto& counter = mssql_profiling::PerformanceCounter::instance();
+            counter.disable();
+            for (uint32_t every : {1u, 16u}) {
+                counter.set_sample_every(every);
+                counter.enable();
+                std::vector<std::thread> workers;
+                for (int thread = 0; thread < 8; ++thread) {
+                    workers.emplace_back([&counter] {
+                        for (int i = 0; i < 10000; ++i) {
+                            counter.event("event");
+                        }
+                    });
+                }
+                for (auto& worker : workers) worker.join();
+                counter.disable();
+                auto entry = counter.get_stats()["event"].cast<py::dict>();
+                auto count = entry["calls"].cast<int64_t>();
+                require(every == 1 ? count == 80000 : count > 3500 && count < 6500,
+                        "Unexpected sample count (or periodic/whole-call counting)");
+                require(entry["total_us"].cast<double>() == 0.0,
+                        "Events acquired duration or were extrapolated");
+            }
+            counter.set_sample_every(1);
+        });
+        run("statement reset retains all three ODBC steps and metadata invalidation", [] {
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
+            auto generation = statement->resultMetadata.snapshot().generation;
+            statement->resultMetadata.publish(generation, std::make_shared<ResultMetadata>());
+            calls.clear();
+            require(SQLResetStmt_wrap(statement) == SQL_SUCCESS, "Statement reset failed");
+            expectCalls({"statement_close", "statement_reset_params", "statement_paramset_size"});
+            const auto snapshot = statement->resultMetadata.snapshot();
+            require(!snapshot.metadata && snapshot.generation == generation + 1,
+                    "Statement reset lost metadata invalidation");
+            statement.reset();
+            connection->close();
+        });
+        for (const auto* operation : {"statement_close", "statement_reset_params",
+                                      "statement_paramset_size"}) {
+            run("statement reset preserves first failure", [operation] {
+                auto connection = acquire();
+                auto statement = connection->allocStatementHandle();
+                calls.clear();
+                failNext = operation;
+                require(SQLResetStmt_wrap(statement) == SQL_ERROR, "Reset swallowed failure");
+                require(calls.back() == operation, "ODBC work continued after reset failure");
+                statement.reset();
+                connection->close();
+            });
+        }
         run("new login is not clean proof; repeated empty leases skip all sanitation", [] {
             auto connection = acquire();
             calls.clear();
