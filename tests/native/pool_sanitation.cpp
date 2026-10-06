@@ -14,6 +14,11 @@
 #include <unordered_map>
 
 SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle);
+SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle, py::handle messages);
+SQLRETURN FetchOne_wrap(SqlHandlePtr statementHandle, py::list& row,
+                       const std::string& charEncoding, const std::string& wcharEncoding,
+                       int charCtype, py::handle messages);
+py::list SQLGetAllDiagRecords(SqlHandlePtr handle);
 
 namespace {
 struct Handle {
@@ -173,7 +178,8 @@ SQLRETURN SQL_API getInfo(SQLHDBC dbc, SQLUSMALLINT, SQLPOINTER value,
 }
 
 SQLRETURN SQL_API freeStatement(SQLHSTMT, SQLUSMALLINT option) {
-    return record(option == SQL_CLOSE ? "statement_close" : "statement_reset_params");
+    return record(option == SQL_CLOSE ? "statement_close" :
+                  option == SQL_RESET_PARAMS ? "statement_reset_params" : "statement_unbind");
 }
 
 SQLRETURN SQL_API setStatementAttr(SQLHSTMT, SQLINTEGER attribute, SQLPOINTER, SQLINTEGER) {
@@ -194,6 +200,111 @@ SQLRETURN SQL_API diagnostic(SQLSMALLINT, SQLHANDLE, SQLSMALLINT recordNumber,
     *native = 0;
     *length = 6;
     return SQL_SUCCESS;
+}
+
+struct DiagnosticRecord {
+    std::u16string state;
+    std::u16string message;
+    SQLRETURN result = SQL_SUCCESS;
+};
+std::vector<DiagnosticRecord> fetchRecords;
+SQLRETURN fetchResult = SQL_SUCCESS_WITH_INFO;
+SQLRETURN numberResult = SQL_SUCCESS;
+SQLINTEGER diagnosticCount = 0;
+bool writeDiagnosticCount = true;
+SQLRETURN stateResult = SQL_SUCCESS;
+
+SQLRETURN SQL_API fetchDiagnostic(SQLSMALLINT type, SQLHANDLE, SQLSMALLINT number,
+                                 SQLWCHAR* state, SQLINTEGER* native, SQLWCHAR* message,
+                                 SQLSMALLINT capacity, SQLSMALLINT* length) {
+    require(type == SQL_HANDLE_STMT && number > 0, "Invalid record lookup");
+    record("diag_record");
+    if (static_cast<size_t>(number) > fetchRecords.size()) return SQL_NO_DATA;
+    const auto& item = fetchRecords[number - 1];
+    require(item.state.size() == 5, "Invalid test SQLSTATE");
+    std::copy(item.state.begin(), item.state.end(), state);
+    state[5] = 0;
+    *native = 42;
+    const auto size = std::min(item.message.size(), static_cast<size_t>(capacity - 1));
+    std::copy_n(item.message.begin(), size, message);
+    message[size] = 0;
+    *length = static_cast<SQLSMALLINT>(item.message.size());
+    return item.result;
+}
+
+SQLRETURN SQL_API fetchDiagnosticField(SQLSMALLINT type, SQLHANDLE, SQLSMALLINT number,
+                                      SQLSMALLINT identifier, SQLPOINTER value,
+                                      SQLSMALLINT capacity, SQLSMALLINT* length) {
+    require(type == SQL_HANDLE_STMT, "Wrong diagnostic handle type");
+    if (identifier == SQL_DIAG_NUMBER) {
+        record("diag_number");
+        require(number == 0 && capacity == 0 && length == nullptr,
+                "SQL_DIAG_NUMBER must read the numeric header field");
+        if (writeDiagnosticCount) *static_cast<SQLINTEGER*>(value) = diagnosticCount;
+        return numberResult;
+    }
+    record("diag_state");
+    require(identifier == SQL_DIAG_SQLSTATE && number > 0, "Unexpected diagnostic field");
+    if (stateResult != SQL_SUCCESS) return stateResult;
+    if (static_cast<size_t>(number) > fetchRecords.size()) return SQL_NO_DATA;
+    const auto& state = fetchRecords[number - 1].state;
+    require(capacity >= static_cast<SQLSMALLINT>(6 * sizeof(SQLWCHAR)), "SQLSTATE buffer too small");
+    std::copy(state.begin(), state.end(), static_cast<SQLWCHAR*>(value));
+    static_cast<SQLWCHAR*>(value)[5] = 0;
+    return SQL_SUCCESS;
+}
+
+SQLRETURN SQL_API fetchColumnCount(SQLHSTMT, SQLSMALLINT* count) {
+    record("column_count");
+    *count = 0;
+    return fetchResult;
+}
+
+SQLRETURN SQL_API fetchNullLob(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
+                               SQLLEN* length) {
+    record("get_lob");
+    *length = SQL_NULL_DATA;
+    return fetchResult;
+}
+
+SQLRETURN SQL_API fetchNoData(SQLHANDLE) {
+    record("fetch_no_data");
+    return SQL_NO_DATA;
+}
+
+struct FetchDiagnosticScope {
+    SQLGetDiagRecFunc oldRecord = SQLGetDiagRec_ptr;
+    SQLGetDiagFieldFunc oldField = SQLGetDiagField_ptr;
+    SQLNumResultColsFunc oldCount = SQLNumResultCols_ptr;
+    SQLGetDataFunc oldData = SQLGetData_ptr;
+    SQLFetchFunc oldFetch = SQLFetch_ptr;
+
+    FetchDiagnosticScope() {
+        fetchRecords.clear();
+        fetchResult = SQL_SUCCESS_WITH_INFO;
+        numberResult = stateResult = SQL_SUCCESS;
+        diagnosticCount = 0;
+        writeDiagnosticCount = true;
+        SQLGetDiagRec_ptr = fetchDiagnostic;
+        SQLGetDiagField_ptr = fetchDiagnosticField;
+        SQLNumResultCols_ptr = fetchColumnCount;
+        SQLGetData_ptr = fetchNullLob;
+        SQLFetch_ptr = fetchNoData;
+    }
+    ~FetchDiagnosticScope() {
+        SQLGetDiagRec_ptr = oldRecord;
+        SQLGetDiagField_ptr = oldField;
+        SQLNumResultCols_ptr = oldCount;
+        SQLGetData_ptr = oldData;
+        SQLFetch_ptr = oldFetch;
+    }
+};
+
+void expectMessage(const py::list& messages, size_t index, const std::string& state,
+                   const std::string& text) {
+    auto message = messages[index].cast<py::tuple>();
+    require(message[0].cast<std::string>() == "[" + state + "] (42)" &&
+            message[1].cast<std::string>() == text, "Diagnostic message changed");
 }
 
 void expectCalls(std::initializer_list<const char*> expected) {
@@ -358,6 +469,153 @@ int main() {
                 connection->close();
             });
         }
+        for (SQLRETURN origin : {SQLRETURN(SQL_SUCCESS_WITH_INFO), SQLRETURN(SQL_NO_DATA)}) {
+            run("successful zero-record header avoids enumeration without clearing messages", [origin] {
+                auto connection = acquire();
+                auto statement = connection->allocStatementHandle();
+                FetchDiagnosticScope diagnostics;
+                fetchResult = origin;
+                py::list messages;
+                messages.append(py::make_tuple("existing", "preserved"));
+                calls.clear();
+                require(SQLNumResultCols_wrap(statement, messages) == 0, "Column count changed");
+                expectCalls({"column_count", "diag_number"});
+                require(messages.size() == 1, "Zero-record gate cleared existing messages");
+                statement.reset();
+                connection->close();
+            });
+        }
+        for (int scenario = 0; scenario < 9; ++scenario) {
+            run("missing unsupported info unknown and nonzero headers retain enumeration", [scenario] {
+                auto connection = acquire();
+                auto statement = connection->allocStatementHandle();
+                FetchDiagnosticScope diagnostics;
+                fetchRecords = {{u"01000", u"PRINT message"},
+                                {u"01004", u"visible truncation", SQL_SUCCESS_WITH_INFO}};
+                switch (scenario) {
+                    case 0: SQLGetDiagField_ptr = nullptr; break;
+                    case 1: numberResult = SQL_ERROR; break;
+                    case 2: numberResult = SQL_SUCCESS_WITH_INFO; break;
+                    case 3: diagnosticCount = -1; break;
+                    case 4: writeDiagnosticCount = false; break;
+                    case 5: diagnosticCount = 2; break;
+                    case 6: numberResult = SQL_NO_DATA; break;
+                    case 7: numberResult = SQL_INVALID_HANDLE; break;
+                    case 8: diagnosticCount = 1; break;  // Never cap enumeration at the header.
+                }
+                py::list messages;
+                calls.clear();
+                SQLNumResultCols_wrap(statement, messages);
+                if (scenario == 0) {
+                    expectCalls({"column_count", "diag_record", "diag_record", "diag_record"});
+                } else {
+                    expectCalls({"column_count", "diag_number", "diag_record", "diag_record",
+                                 "diag_record"});
+                }
+                require(messages.size() == 2, "Fallback lost warning or PRINT records");
+                expectMessage(messages, 0, "01000", "PRINT message");
+                expectMessage(messages, 1, "01004", "visible truncation");
+                statement.reset();
+                connection->close();
+            });
+        }
+        for (bool empty : {false, true}) {
+            run("actual SQLFetch NO_DATA preserves return and any messages", [empty] {
+                auto connection = acquire();
+                auto statement = connection->allocStatementHandle();
+                FetchDiagnosticScope diagnostics;
+                if (!empty) {
+                    diagnosticCount = 1;
+                    fetchRecords = {{u"01000", u"final PRINT"}};
+                }
+                py::list rows, messages;
+                calls.clear();
+                auto ret = FetchOne_wrap(statement, rows, "utf-16le", "utf-16le",
+                                         SQL_C_WCHAR, messages);
+                require(ret == SQL_NO_DATA && rows.empty(), "NO_DATA result changed");
+                if (empty) {
+                    expectCalls({"statement_unbind", "fetch_no_data", "diag_number"});
+                    require(messages.empty(), "Empty diagnostics created a message");
+                } else {
+                    expectCalls({"statement_unbind", "fetch_no_data", "diag_number",
+                                 "diag_record", "diag_record"});
+                    require(messages.size() == 1, "NO_DATA lost its PRINT record");
+                    expectMessage(messages, 0, "01000", "final PRINT");
+                }
+                statement.reset();
+                connection->close();
+            });
+        }
+        for (int scenario = 0; scenario < 4; ++scenario) {
+            run("LOB continuation filters only internal truncation and retains unrelated warnings", [scenario] {
+                auto connection = acquire();
+                auto statement = connection->allocStatementHandle();
+                FetchDiagnosticScope diagnostics;
+                diagnosticCount = 3;
+                fetchRecords = {{u"01004", u"internal truncation"},
+                                {u"01000", u"PRINT message"},
+                                {u"01S02", u"option changed", SQL_SUCCESS_WITH_INFO}};
+                if (scenario == 1) SQLGetDiagField_ptr = nullptr;
+                if (scenario == 2) stateResult = SQL_ERROR;
+                if (scenario == 3) stateResult = SQL_SUCCESS_WITH_INFO;
+                py::list messages;
+                calls.clear();
+                auto value = FetchLobColumnData(statement->get(), 1, SQL_C_WCHAR,
+                                                true, false, "utf-16le", messages);
+                require(value.is_none() && messages.size() == 2,
+                        "LOB continuation lost warnings or exposed internal truncation");
+                expectMessage(messages, 0, "01000", "PRINT message");
+                expectMessage(messages, 1, "01S02", "option changed");
+                require(std::count(calls.begin(), calls.end(), "diag_number") ==
+                            (scenario == 1 ? 0 : 1),
+                        "LOB header probe count changed");
+                statement.reset();
+                connection->close();
+            });
+        }
+        run("no probe for success absent messages or explicit diagnostic enumeration", [] {
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
+            FetchDiagnosticScope diagnostics;
+            py::list messages;
+            fetchResult = SQL_SUCCESS;
+            calls.clear();
+            SQLNumResultCols_wrap(statement, messages);
+            expectCalls({"column_count"});
+            fetchResult = SQL_SUCCESS_WITH_INFO;
+            calls.clear();
+            SQLNumResultCols_wrap(statement, {});
+            SQLNumResultCols_wrap(statement, py::none());
+            expectCalls({"column_count", "column_count"});
+            fetchRecords = {{u"01000", u"explicit diagnostic"}};
+            calls.clear();
+            messages = SQLGetAllDiagRecords(statement);
+            expectCalls({"diag_record", "diag_record"});
+            expectMessage(messages, 0, "01000", "explicit diagnostic");
+            statement.reset();
+            connection->close();
+        });
+#ifdef ENABLE_PROFILING
+        run("diagnostic profiler counts header probes and zero skips", [] {
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
+            FetchDiagnosticScope diagnostics;
+            auto& counter = mssql_profiling::PerformanceCounter::instance();
+            counter.reset();
+            counter.enable();
+            py::list messages;
+            SQLNumResultCols_wrap(statement, messages);
+            counter.disable();
+            auto stats = counter.get_stats();
+            require(stats["ddbc::CaptureFetchDiagnostics::SQL_DIAG_NUMBER_call"]["calls"].cast<int>() == 1 &&
+                    stats["ddbc::CaptureFetchDiagnostics::diag_number_zero"]["calls"].cast<int>() == 1 &&
+                    !stats.contains("ddbc::AppendDiagRecords::SQLGetDiagRec_call"),
+                    "Header probe and avoided enumeration counters disagree");
+            statement.reset();
+            connection->close();
+            counter.reset();
+        });
+#endif
         run("new login is not clean proof; repeated empty leases skip all sanitation", [] {
             auto connection = acquire();
             calls.clear();

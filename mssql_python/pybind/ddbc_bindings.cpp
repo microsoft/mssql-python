@@ -2047,6 +2047,33 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
     return records;
 }
 
+static bool FetchDiagnosticsAreEmpty(SQLHSTMT hStmt) {
+    if (!SQLGetDiagField_ptr) {
+        PERF_EVENT("CaptureFetchDiagnostics::diag_number_missing");
+        return false;
+    }
+    // SQL_DIAG_NUMBER is a SQLINTEGER header field (record 0). Diagnostic
+    // reads do not replace the originating diagnostics. Fail open to the
+    // original enumeration unless an unqualified success proves zero records.
+    SQLINTEGER count = -1;
+    SQLRETURN ret;
+    {
+        PERF_TIMER("CaptureFetchDiagnostics::SQL_DIAG_NUMBER_call");
+        ret = SQLGetDiagField_ptr(SQL_HANDLE_STMT, hStmt, 0, SQL_DIAG_NUMBER,
+                                 &count, 0, nullptr);
+    }
+    if (ret != SQL_SUCCESS || count < 0) {
+        PERF_EVENT("CaptureFetchDiagnostics::diag_number_fallback");
+        return false;
+    }
+    if (count == 0) {
+        PERF_EVENT("CaptureFetchDiagnostics::diag_number_zero");
+        return true;
+    }
+    PERF_EVENT("CaptureFetchDiagnostics::diag_number_nonzero");
+    return false;
+}
+
 // Called only with the GIL held, immediately after the originating ODBC call.
 static void CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret, py::handle messages,
                                     bool internalTruncation = false) {
@@ -2059,7 +2086,8 @@ static void CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret, py::handle me
             PERF_EVENT("CaptureFetchDiagnostics::success_with_info");
         }
 #endif
-        AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
+        if (!FetchDiagnosticsAreEmpty(hStmt))
+            AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
     }
 }
 

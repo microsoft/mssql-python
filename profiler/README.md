@@ -64,6 +64,15 @@ Targeted contention names (all prefixed `ddbc::`):
   `AppendDiagRecords::{state_no_data,record_no_data,record_error,record_read,
   internal_truncation,record_appended}` are zero-duration outcome events.
   Their enclosing names without suffixes are inclusive spans.
+- The diagnostic candidate additionally times
+  `CaptureFetchDiagnostics::SQL_DIAG_NUMBER_call`, with zero-duration
+  `CaptureFetchDiagnostics::diag_number_{missing,fallback,zero,nonzero}` outcomes.
+  These calls do not occur in the behavior reference or autocommit-only variant.
+  Only `SQL_SUCCESS` with a `SQLINTEGER` count of zero skips record enumeration.
+  Missing pointers, errors, `SQL_SUCCESS_WITH_INFO`, negative/untouched counts and
+  nonzero counts retain the original warning/PRINT/truncation enumeration.
+  The probe can cost as much as (or more than) the avoided record read; no gain
+  is assumed. All variants use the same timer/event sampling implementation.
 
 The existing `FetchBatchData::SQLFetchScroll_call` is also a raw ODBC span.
 No independent GIL reacquisition span is provided: differences between nested,
