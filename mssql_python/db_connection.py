@@ -7,6 +7,7 @@ This module provides a way to create a new connection object to interact with th
 from typing import Any, Dict, Optional, Union
 
 from mssql_python.connection import Connection, TokenProvider
+from mssql_python.retry import RetryPolicy
 
 
 def connect(
@@ -16,6 +17,7 @@ def connect(
     timeout: int = 0,
     native_uuid: Optional[bool] = None,
     token_provider: Optional[TokenProvider] = None,
+    retry_policy: Optional[RetryPolicy] = None,
     **kwargs: Any,
 ) -> Connection:
     """
@@ -69,6 +71,16 @@ def connect(
             (``https://database.windows.net/.default``). Sovereign clouds (Azure US
             Government, Azure China, Azure Germany) are **out of scope** — acquire the token
             yourself and pass it via ``attrs_before[SQL_COPT_SS_ACCESS_TOKEN]`` instead.
+        retry_policy (RetryPolicy, optional): Policy for retrying the connection attempt when
+            it fails with a transient SQLSTATE such as a login timeout or a lost link. None
+            (default) makes a single attempt, exactly as before. See ``RetryPolicy`` for the
+            settings and ``mssql_python.retry.DEFAULT_RETRIABLE_SQLSTATES`` for the codes
+            retried by default.
+
+            Example::
+
+                policy = mssql_python.RetryPolicy(max_attempts=5, base_delay=0.5)
+                conn = mssql_python.connect("Server=s;Database=d", retry_policy=policy)
     Keyword Args:
         **kwargs: Additional key/value pairs for the connection string.
     Below attributes are not implemented in the internal driver:
@@ -81,6 +93,7 @@ def connect(
     Raises:
         DatabaseError: If there is an error while trying to connect to the database.
         InterfaceError: If there is an error related to the database interface.
+        TypeError: If ``retry_policy`` is neither None nor a ``RetryPolicy``.
 
     This function provides a way to create a new connection object, which can then
     be used to perform database operations such as executing queries, committing
@@ -93,6 +106,7 @@ def connect(
         timeout=timeout,
         native_uuid=native_uuid,
         token_provider=token_provider,
+        retry_policy=retry_policy,
         **kwargs,
     )
     return conn
